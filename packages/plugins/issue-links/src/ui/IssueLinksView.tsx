@@ -33,7 +33,7 @@ function buildOpenWithHref(path: string, openWith: "vscode" | "finder"): string 
   if (openWith === "vscode") {
     return `vscode://file/${encodeURIComponent(path)}`;
   }
-  return `file://${path}`;
+  return `file://${encodeURI(path)}`;
 }
 
 type LinkRowProps = {
@@ -93,15 +93,25 @@ function LinkRow({ label, value, placeholder, displayValue, href, openInNewTab, 
             disabled={saving}
           />
         ) : value ? (
-          <a
-            href={href(value)}
-            {...(openInNewTab ? { target: "_blank", rel: "noopener noreferrer" } : {})}
-            className="text-xs text-primary hover:underline truncate block"
-            title={value}
-            onClick={openInNewTab ? undefined : (e) => { e.preventDefault(); window.location.href = href(value); }}
-          >
-            {displayValue(value)}
-          </a>
+          <div className="flex items-center gap-1 min-w-0">
+            <a
+              href={href(value)}
+              {...(openInNewTab ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+              className="text-xs text-primary hover:underline truncate"
+              title={value}
+              onClick={openInNewTab ? undefined : (e) => { e.preventDefault(); window.location.href = href(value); }}
+            >
+              {displayValue(value)}
+            </a>
+            <button
+              type="button"
+              className="shrink-0 text-xs text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+              onClick={startEdit}
+              title="Edit"
+            >
+              ✎
+            </button>
+          </div>
         ) : (
           <button
             type="button"
@@ -109,16 +119,6 @@ function LinkRow({ label, value, placeholder, displayValue, href, openInNewTab, 
             onClick={startEdit}
           >
             {placeholder}
-          </button>
-        )}
-        {value && !editing && (
-          <button
-            type="button"
-            className="ml-2 text-xs text-muted-foreground/40 hover:text-muted-foreground transition-colors"
-            onClick={startEdit}
-            title="Edit"
-          >
-            ✎
           </button>
         )}
       </div>
