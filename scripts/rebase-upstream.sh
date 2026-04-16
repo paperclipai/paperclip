@@ -3,21 +3,31 @@
 # Rebase master and all feature branches onto the latest upstream/master.
 #
 # Usage:
-#   ./scripts/rebase-upstream.sh [--dry-run]
+#   ./scripts/rebase-upstream.sh [--dry-run | --check-only]
 #
 # What it does:
 #   1. Fetches upstream/master
-#   2. Rebases local master onto upstream/master
-#   3. Rebases each feature branch onto master
-#   4. Reports status of each branch
-#   5. Returns to master when done
+#   2. Checks upstream status of each security backport branch
+#      (reads docs/security-backports.md index block; queries gh api;
+#       prompts to delete branches whose upstream fix has landed)
+#   3. Rebases local master onto upstream/master
+#   4. Rebases each feature branch + each active security branch onto master
+#   5. Merges rebased branches back into master
+#   6. Rebuilds private-release from master
+#   7. Returns to master when done
+#
+# Modes:
+#   --dry-run    : preview rebase scope without making any changes
+#   --check-only : run the security-backport upstream status check only,
+#                  then exit (no fetch-rebase-merge-push)
 #
 # If conflicts occur during any rebase, the script pauses and tells you
 # which branch failed. Resolve conflicts, run `git rebase --continue`,
 # then re-run this script to pick up where it left off.
 #
 # Feature branches are listed in FEATURE_BRANCHES below. Update this list
-# when you create or remove feature branches.
+# when you create or remove feature branches. Security branches are tracked
+# in docs/security-backports.md and discovered automatically.
 #
 set -euo pipefail
 
@@ -30,10 +40,23 @@ FEATURE_BRANCHES=(
   "chore/update-issue-templates"
 )
 
+SECURITY_INDEX_FILE="docs/security-backports.md"
+SECURITY_CACHE_FILE=".git/security-backports-cache.tsv"
+SECURITY_CACHE_TTL_SECONDS=3600
+UPSTREAM_REPO="paperclipai/paperclip"
+
 DRY_RUN=false
-if [[ "${1:-}" == "--dry-run" ]]; then
-  DRY_RUN=true
-fi
+CHECK_ONLY=false
+case "${1:-}" in
+  --dry-run)    DRY_RUN=true ;;
+  --check-only) CHECK_ONLY=true ;;
+  "") ;;
+  *)
+    echo "Unknown flag: ${1}" >&2
+    echo "Usage: $0 [--dry-run | --check-only]" >&2
+    exit 1
+    ;;
+esac
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -49,6 +72,183 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# --- security-backport parsing and upstream-status check --------------------
+
+# Parse the <!-- BEGIN/END security-backports-index --> block in
+# docs/security-backports.md. Outputs one line per entry: "branch|issue|pr".
+parse_security_index() {
+  if [[ ! -f "$SECURITY_INDEX_FILE" ]]; then
+    return 0
+  fi
+  awk '
+    /<!-- BEGIN security-backports-index -->/ { in_block=1; next }
+    /<!-- END security-backports-index -->/   { in_block=0 }
+    in_block && /branch=/ {
+      branch=""; issue=""; pr="";
+      for (i=1; i<=NF; i++) {
+        if ($i ~ /^branch=/) { sub(/^branch=/, "", $i); branch=$i }
+        else if ($i ~ /^issue=/) { sub(/^issue=/, "", $i); issue=$i }
+        else if ($i ~ /^pr=/) { sub(/^pr=/, "", $i); pr=$i }
+      }
+      if (branch != "") print branch "|" issue "|" pr
+    }
+  ' "$SECURITY_INDEX_FILE"
+}
+
+# Look up a cached value. Returns the cached value (e.g. "merged", "closed",
+# "open") on stdout, or nothing if the cache entry is missing or stale.
+cache_get() {
+  local key="$1"
+  [[ -f "$SECURITY_CACHE_FILE" ]] || return 0
+  local now
+  now=$(date +%s)
+  local line
+  line=$(awk -F'\t' -v k="$key" '$1 == k { print }' "$SECURITY_CACHE_FILE" | tail -1)
+  [[ -z "$line" ]] && return 0
+  local ts value
+  ts=$(echo "$line" | awk -F'\t' '{ print $2 }')
+  value=$(echo "$line" | awk -F'\t' '{ print $3 }')
+  if (( now - ts < SECURITY_CACHE_TTL_SECONDS )); then
+    echo "$value"
+  fi
+}
+
+cache_set() {
+  local key="$1"
+  local value="$2"
+  local now
+  now=$(date +%s)
+  mkdir -p "$(dirname "$SECURITY_CACHE_FILE")"
+  printf '%s\t%s\t%s\n' "$key" "$now" "$value" >> "$SECURITY_CACHE_FILE"
+}
+
+# Returns one of: ACTIVE, RETIRED_PR_MERGED, RETIRED_ISSUE_CLOSED, ERROR
+query_upstream_state() {
+  local issue="$1"
+  local pr="$2"
+
+  if [[ -n "$pr" ]]; then
+    local cached
+    cached=$(cache_get "pr:$pr")
+    if [[ -z "$cached" ]]; then
+      cached=$(gh api "repos/$UPSTREAM_REPO/pulls/$pr" --jq '.merged' 2>/dev/null || echo "error")
+      cache_set "pr:$pr" "$cached"
+    fi
+    if [[ "$cached" == "true" ]]; then
+      echo "RETIRED_PR_MERGED"
+      return
+    fi
+  fi
+
+  if [[ -n "$issue" ]]; then
+    local cached
+    cached=$(cache_get "issue:$issue")
+    if [[ -z "$cached" ]]; then
+      cached=$(gh api "repos/$UPSTREAM_REPO/issues/$issue" --jq '.state' 2>/dev/null || echo "error")
+      cache_set "issue:$issue" "$cached"
+    fi
+    if [[ "$cached" == "closed" ]]; then
+      echo "RETIRED_ISSUE_CLOSED"
+      return
+    fi
+  fi
+
+  echo "ACTIVE"
+}
+
+# Populated by check_security_backports:
+#   SECURITY_ACTIVE_BRANCHES — array of active security branch names
+#   SECURITY_RETIRED_BRANCHES — array of "branch|reason" entries
+SECURITY_ACTIVE_BRANCHES=()
+SECURITY_RETIRED_BRANCHES=()
+
+check_security_backports() {
+  info ""
+  info "=== Checking upstream status of security backports ==="
+
+  if [[ ! -f "$SECURITY_INDEX_FILE" ]]; then
+    warn "  $SECURITY_INDEX_FILE not found — skipping"
+    return 0
+  fi
+
+  if ! command -v gh >/dev/null 2>&1; then
+    warn "  gh CLI not available — treating all security branches as ACTIVE"
+  fi
+
+  local entries
+  entries=$(parse_security_index)
+  if [[ -z "$entries" ]]; then
+    info "  index block is empty"
+    return 0
+  fi
+
+  local line branch issue pr state url reason
+  while IFS='|' read -r branch issue pr; do
+    if ! git rev-parse --verify "$branch" &>/dev/null; then
+      warn "  $branch — branch not found locally, skipping"
+      continue
+    fi
+
+    if command -v gh >/dev/null 2>&1; then
+      state=$(query_upstream_state "$issue" "$pr")
+    else
+      state="ACTIVE"
+    fi
+
+    if [[ -n "$pr" ]]; then
+      url="https://github.com/$UPSTREAM_REPO/pull/$pr"
+    elif [[ -n "$issue" ]]; then
+      url="https://github.com/$UPSTREAM_REPO/issues/$issue"
+    else
+      url="(no upstream reference)"
+    fi
+
+    case "$state" in
+      ACTIVE)
+        info "  $branch — ACTIVE   $url"
+        SECURITY_ACTIVE_BRANCHES+=("$branch")
+        ;;
+      RETIRED_PR_MERGED)
+        reason="PR #$pr merged"
+        warn "  $branch — RETIRED  $url ($reason)"
+        SECURITY_RETIRED_BRANCHES+=("$branch|$reason")
+        ;;
+      RETIRED_ISSUE_CLOSED)
+        reason="issue #$issue closed"
+        warn "  $branch — RETIRED  $url ($reason)"
+        SECURITY_RETIRED_BRANCHES+=("$branch|$reason")
+        ;;
+      *)
+        warn "  $branch — UNKNOWN  $url (treating as ACTIVE)"
+        SECURITY_ACTIVE_BRANCHES+=("$branch")
+        ;;
+    esac
+  done <<< "$entries"
+
+  # Prompt to delete retired branches (skip in --dry-run / --check-only)
+  if [[ ${#SECURITY_RETIRED_BRANCHES[@]} -gt 0 ]] && ! $DRY_RUN && ! $CHECK_ONLY; then
+    info ""
+    warn "${#SECURITY_RETIRED_BRANCHES[@]} security branch(es) can be retired:"
+    local entry
+    for entry in "${SECURITY_RETIRED_BRANCHES[@]}"; do
+      warn "  ${entry%%|*} (${entry##*|})"
+    done
+    read -p "Delete these retired branches locally? (y/N) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      for entry in "${SECURITY_RETIRED_BRANCHES[@]}"; do
+        local b="${entry%%|*}"
+        info "  Deleting $b..."
+        git branch -D "$b" 2>&1 | tail -1 || warn "  Failed to delete $b"
+      done
+    else
+      info "  Keeping retired branches (re-run when ready to delete)"
+    fi
+  fi
+}
+
+# --- main flow --------------------------------------------------------------
+
 # Check for clean working tree
 if [[ -n "$(git status --porcelain)" ]]; then
   error "Working tree is dirty. Commit or stash changes first."
@@ -59,11 +259,22 @@ fi
 info "Fetching upstream..."
 if $DRY_RUN; then
   info "(dry-run) Would fetch upstream"
+elif $CHECK_ONLY; then
+  git fetch upstream 2>/dev/null || warn "  fetch failed, continuing with cached refs"
 else
   git fetch upstream
 fi
 
-# 2. Rebase master onto upstream/master
+# 2. Security-backport upstream status check
+check_security_backports
+
+if $CHECK_ONLY; then
+  info ""
+  info "(check-only mode — skipping rebase/merge/push)"
+  exit 0
+fi
+
+# 3. Rebase master onto upstream/master
 info ""
 info "=== Rebasing master onto upstream/master ==="
 if $DRY_RUN; then
@@ -84,15 +295,22 @@ else
   info "master rebased successfully"
 fi
 
-# 3. Rebase each feature branch onto master
+# 4. Combine feature branches + active security branches
+ALL_BRANCHES=("${FEATURE_BRANCHES[@]}")
+if [[ ${#SECURITY_ACTIVE_BRANCHES[@]} -gt 0 ]]; then
+  ALL_BRANCHES+=("${SECURITY_ACTIVE_BRANCHES[@]}")
+fi
+
+# 5. Rebase each branch onto master
 info ""
-info "=== Rebasing feature branches onto master ==="
+info "=== Rebasing branches onto master ==="
 
 SUCCEEDED=()
 FAILED=()
 SKIPPED=()
+SECURITY_PATCH_ALREADY_UPSTREAM=()
 
-for branch in "${FEATURE_BRANCHES[@]}"; do
+for branch in "${ALL_BRANCHES[@]}"; do
   if ! git rev-parse --verify "$branch" &>/dev/null; then
     warn "  $branch — not found locally, skipping"
     SKIPPED+=("$branch")
@@ -110,10 +328,19 @@ for branch in "${FEATURE_BRANCHES[@]}"; do
   info "  Rebasing $branch..."
   git checkout "$branch"
 
-  if git rebase master; then
+  REBASE_LOG=$(mktemp)
+  if git rebase master 2>&1 | tee "$REBASE_LOG"; then
     info "  $branch — OK"
     SUCCEEDED+=("$branch")
+    # Secondary upstream-detection signal: if rebase output contains
+    # "previously applied commit" or "patch contents already upstream"
+    # for a security branch, flag it.
+    if [[ "$branch" == security/* ]] && grep -qE "previously applied commit|patch contents already upstream" "$REBASE_LOG"; then
+      SECURITY_PATCH_ALREADY_UPSTREAM+=("$branch")
+    fi
+    rm -f "$REBASE_LOG"
   else
+    rm -f "$REBASE_LOG"
     error "  $branch — CONFLICTS"
     error ""
     error "  Resolve conflicts, then run:"
@@ -128,12 +355,12 @@ for branch in "${FEATURE_BRANCHES[@]}"; do
   fi
 done
 
-# 4. Return to master and merge feature branches in
+# 6. Return to master
 if ! $DRY_RUN; then
   git checkout master
 fi
 
-# 5. Summary
+# 7. Summary
 info ""
 info "=== Summary ==="
 if [[ ${#SUCCEEDED[@]} -gt 0 ]]; then
@@ -149,10 +376,21 @@ if [[ ${#FAILED[@]} -gt 0 ]]; then
   exit 1
 fi
 
-# 6. Merge feature branches into master
+# 7b. Secondary signal: security branches whose patches are already upstream
+if [[ ${#SECURITY_PATCH_ALREADY_UPSTREAM[@]} -gt 0 ]]; then
+  info ""
+  warn "The following security branches rebased cleanly but git detected"
+  warn "their patches are already upstream (via cherry-pick equivalence):"
+  for b in "${SECURITY_PATCH_ALREADY_UPSTREAM[@]}"; do
+    warn "  $b"
+  done
+  warn "Consider retiring these branches on the next run."
+fi
+
+# 8. Merge feature branches into master
 if [[ ${#SUCCEEDED[@]} -gt 0 ]] && [[ ${#FAILED[@]} -eq 0 ]] && ! $DRY_RUN; then
   info ""
-  info "=== Merging feature branches into master ==="
+  info "=== Merging branches into master ==="
   for branch in "${SUCCEEDED[@]}"; do
     AHEAD=$(git rev-list --count "master..$branch" 2>/dev/null || echo "0")
     if [[ "$AHEAD" -gt 0 ]]; then
@@ -168,7 +406,7 @@ if [[ ${#SUCCEEDED[@]} -gt 0 ]] && [[ ${#FAILED[@]} -eq 0 ]] && ! $DRY_RUN; then
   done
 fi
 
-# 7. Build private-release branch (copy of master for distribution)
+# 9. Build private-release branch (copy of master for distribution)
 if [[ ${#FAILED[@]} -eq 0 ]] && ! $DRY_RUN; then
   info ""
   info "=== Building private-release branch ==="
@@ -178,7 +416,7 @@ if [[ ${#FAILED[@]} -eq 0 ]] && ! $DRY_RUN; then
   git checkout master
 fi
 
-# 8. Optionally push all branches
+# 10. Optionally push all branches
 if ! $DRY_RUN; then
   info ""
   read -p "Push all rebased branches + private-release to origin? (y/N) " -n 1 -r
