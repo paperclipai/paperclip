@@ -22,8 +22,8 @@ import {
 } from "@opentelemetry/sdk-metrics";
 import type { ViewOptions } from "@opentelemetry/sdk-metrics";
 import {
+  BatchLogRecordProcessor,
   LoggerProvider,
-  SimpleLogRecordProcessor,
 } from "@opentelemetry/sdk-logs";
 import { metrics, trace, type Tracer, type Meter } from "@opentelemetry/api";
 import { logs, type Logger } from "@opentelemetry/api-logs";
@@ -128,7 +128,7 @@ export function initOTel(config: ObservabilityConfig): OTelHandle {
     loggerProvider = new LoggerProvider({
       resource,
       processors: [
-        new SimpleLogRecordProcessor(
+        new BatchLogRecordProcessor(
           new OTLPLogExporter({ url: `${config.otlpEndpoint}/v1/logs` }),
         ),
       ],

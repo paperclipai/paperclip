@@ -319,31 +319,42 @@ const plugin: PaperclipPlugin = definePlugin({
 
     const router = createRouter();
 
-    const telemetryCtx: TelemetryContext | null = otel
-      ? {
-          meter: otel.meter,
-          tracer: otel.tracer,
-          state: ctx.state,
-          logger: ctx.logger,
-          issues: ctx.issues,
-          companies: ctx.companies,
-          agents: ctx.agents,
-          otelLogger: otel.otelLogger,
-          activeRunSpans,
-          activeIssueSpans,
-          activeApprovalSpans,
-          activeSessionSpans,
-          getTracerForAgent(_agentId: string, _agentName: string) {
-            return otel!.tracer;
-          },
-          projectNameMap,
-          agentIssueMap,
-          issueContextMap,
-          agentActiveRunId,
-          agentNameMap,
-          endedRunSpanContexts,
-        }
-      : null;
+    // TelemetryContext must resolve meter/tracer/otelLogger dynamically from the
+    // current `otel` handle. onConfigChanged shuts down the old SDK and assigns a
+    // new one to `otel`; without getters, handlers would keep firing against the
+    // shut-down providers and silently drop telemetry.
+    const telemetryCtx: TelemetryContext = {
+      get meter() {
+        if (!otel) throw new Error("OTel SDK not initialised");
+        return otel.meter;
+      },
+      get tracer() {
+        if (!otel) throw new Error("OTel SDK not initialised");
+        return otel.tracer;
+      },
+      get otelLogger() {
+        return otel?.otelLogger ?? null;
+      },
+      state: ctx.state,
+      logger: ctx.logger,
+      issues: ctx.issues,
+      companies: ctx.companies,
+      agents: ctx.agents,
+      activeRunSpans,
+      activeIssueSpans,
+      activeApprovalSpans,
+      activeSessionSpans,
+      getTracerForAgent(_agentId: string, _agentName: string) {
+        if (!otel) throw new Error("OTel SDK not initialised");
+        return otel.tracer;
+      },
+      projectNameMap,
+      agentIssueMap,
+      issueContextMap,
+      agentActiveRunId,
+      agentNameMap,
+      endedRunSpanContexts,
+    };
 
     // ----- Subscribe to domain events via router -----
 
@@ -372,7 +383,7 @@ const plugin: PaperclipPlugin = definePlugin({
 
     for (const eventType of eventTypes) {
       ctx.events.on(eventType, async (event) => {
-        if (!telemetryCtx) return;
+        if (!otel) return;
         eventsProcessed++;
         await router.dispatch(event, telemetryCtx);
       });
@@ -765,14 +776,14 @@ const plugin: PaperclipPlugin = definePlugin({
         });
 
         await ctx.activity.log({
-          companyId: "615e9564-65df-4465-9b19-a5afb73446c6",
+          companyId: "",
           message: `Metrics collection — ${snapshots.length} agents, ${issueSnapshots.length} issue buckets, ${govSnapshots.length} governance snapshots, ${healthSnapshots.length} health scores, ${eventsProcessed} events processed since startup`,
         });
       },
     );
 
     await ctx.activity.log({
-      companyId: "615e9564-65df-4465-9b19-a5afb73446c6",
+      companyId: "",
       message:
         "Observability plugin initialised and subscribed to domain events",
     });
