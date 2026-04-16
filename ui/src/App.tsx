@@ -44,6 +44,7 @@ import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
+import { InfrastructureHealth } from "./pages/InfrastructureHealth";
 import { NotFoundPage } from "./pages/NotFound";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
@@ -126,6 +127,7 @@ function boardRoutes() {
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
+      <Route path="company/infrastructure" element={<InfrastructureHealth />} />
       <Route path="company/export/*" element={<CompanyExport />} />
       <Route path="company/import" element={<CompanyImport />} />
       <Route path="skills/*" element={<CompanySkills />} />
