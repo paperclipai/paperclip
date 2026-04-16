@@ -6,12 +6,15 @@ import {
 } from "@paperclipai/db";
 import type { SidebarOrderPreference } from "@paperclipai/shared";
 
+const MAX_ORDERED_IDS = 500;
+
 function normalizeOrderedIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
 
   const orderedIds: string[] = [];
   const seen = new Set<string>();
   for (const item of value) {
+    if (orderedIds.length >= MAX_ORDERED_IDS) break;
     if (typeof item !== "string") continue;
     const trimmed = item.trim();
     if (!trimmed || seen.has(trimmed)) continue;

@@ -2999,6 +2999,8 @@ export function heartbeatService(db: Db) {
   async function reconcileStrandedAssignedIssues() {
     // Limit per-tick to avoid OOM/timeout on large installs during recovery.
     // Remaining candidates will be handled on subsequent reconcile ticks.
+    // ORDER BY createdAt ensures the 100-row window is deterministic across ticks
+    // and provides fair round-robin coverage in multi-company instances over time.
     const candidates = await db
       .select()
       .from(issues)
@@ -3009,6 +3011,7 @@ export function heartbeatService(db: Db) {
           sql`${issues.assigneeAgentId} is not null`,
         ),
       )
+      .orderBy(asc(issues.createdAt))
       .limit(100);
 
     const result = {

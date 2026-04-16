@@ -53,7 +53,7 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     if [[ -n "$LOCK_PID" ]] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
       echo "Aviso: removendo lock obsoleto do PID $LOCK_PID (processo não encontrado)." >&2
       rm -rf "$LOCK_DIR"
-      mkdir "$LOCK_DIR"
+      mkdir "$LOCK_DIR" || { echo "Erro: outra instância venceu a corrida no stale-lock recovery." >&2; exit 1; }
     else
       echo "Erro: outro backup já está em execução (lockdir: $LOCK_DIR, PID: ${LOCK_PID:-desconhecido}). Aguarde e tente novamente." >&2
       exit 1
