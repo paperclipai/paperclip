@@ -161,6 +161,13 @@ export interface IssueExecutionWorkspaceSettings {
   workspaceRuntime?: Record<string, unknown> | null;
 }
 
+export interface ExecutionWorkspaceSummary {
+  id: string;
+  name: string;
+  mode: Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing" | "agent_default"> | "adapter_managed" | "cloud_sandbox";
+  projectWorkspaceId: string | null;
+}
+
 export interface ExecutionWorkspace {
   id: string;
   companyId: string;

@@ -318,6 +318,108 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       refetchType: "inactive",
     });
   });
+
+  it("refreshes visible issue run queries when the displayed run changes status", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: (key: unknown) => {
+        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-759"))) {
+          return {
+            id: "issue-1",
+            identifier: "PAP-759",
+            assigneeAgentId: "agent-1",
+          };
+        }
+        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.activeRun("PAP-759"))) {
+          return {
+            id: "run-1",
+          };
+        }
+        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.liveRuns("PAP-759"))) {
+          return [{ id: "run-1" }];
+        }
+        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.runs("PAP-759"))) {
+          return [{ runId: "run-1" }];
+        }
+        return undefined;
+      },
+    };
+
+    const invalidated = __liveUpdatesTestUtils.invalidateVisibleIssueRunQueries(
+      queryClient as never,
+      "/PAP/issues/PAP-759",
+      {
+        runId: "run-1",
+        agentId: "agent-1",
+        status: "succeeded",
+      },
+      { isForegrounded: true },
+    );
+
+    expect(invalidated).toBe(true);
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.detail("PAP-759"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.activity("PAP-759"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.runs("PAP-759"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.liveRuns("PAP-759"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.activeRun("PAP-759"),
+    });
+  });
+
+  it("ignores run status events for other issues", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: (key: unknown) => {
+        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-759"))) {
+          return {
+            id: "issue-1",
+            identifier: "PAP-759",
+            assigneeAgentId: "agent-1",
+          };
+        }
+        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.activeRun("PAP-759"))) {
+          return {
+            id: "run-1",
+          };
+        }
+        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.liveRuns("PAP-759"))) {
+          return [{ id: "run-1" }];
+        }
+        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.runs("PAP-759"))) {
+          return [{ runId: "run-1" }];
+        }
+        return undefined;
+      },
+    };
+
+    const invalidated = __liveUpdatesTestUtils.invalidateVisibleIssueRunQueries(
+      queryClient as never,
+      "/PAP/issues/PAP-759",
+      {
+        runId: "run-2",
+        agentId: "agent-2",
+        status: "succeeded",
+      },
+      { isForegrounded: true },
+    );
+
+    expect(invalidated).toBe(false);
+    expect(invalidations).toEqual([]);
+  });
 });
 
 describe("LiveUpdatesProvider visible issue comment hydration", () => {
