@@ -31,7 +31,7 @@ function parseGithubPrUrl(url: string): string | null {
 
 function buildOpenWithHref(path: string, openWith: "vscode" | "finder"): string {
   if (openWith === "vscode") {
-    return `vscode://file/${encodeURIComponent(path)}`;
+    return `vscode://file${encodeURI(path)}`;
   }
   return `file://${encodeURI(path)}`;
 }
@@ -51,15 +51,20 @@ function LinkRow({ label, value, placeholder, displayValue, href, openInNewTab, 
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const cancelledRef = useRef(false);
 
   function startEdit() {
+    cancelledRef.current = false;
     setDraft(value ?? "");
     setEditing(true);
     setTimeout(() => inputRef.current?.focus(), 0);
   }
 
   async function commitEdit() {
-    if (saving) return;
+    if (saving || cancelledRef.current) {
+      cancelledRef.current = false;
+      return;
+    }
     setSaving(true);
     try {
       const trimmed = draft.trim();
@@ -71,6 +76,7 @@ function LinkRow({ label, value, placeholder, displayValue, href, openInNewTab, 
   }
 
   function cancelEdit() {
+    cancelledRef.current = true;
     setEditing(false);
   }
 
