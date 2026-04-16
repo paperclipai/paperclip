@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
-import { createTranslator } from "@paperclipai/i18n";
+import { createTranslator } from "@paperclipai/shared/i18n";
 import { Columns3 } from "lucide-react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Button } from "@/components/ui/button";

@@ -4,7 +4,7 @@ import {
   formatDateTimeForLocale,
   formatRelativeTimeForLocale,
   formatShortDateForLocale,
-} from "@paperclipai/i18n";
+} from "@paperclipai/shared/i18n";
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { deriveAgentUrlKey, deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "@paperclipai/shared";

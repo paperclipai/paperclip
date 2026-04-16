@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { formatDateTimeForLocale } from "@paperclipai/i18n";
+import { formatDateTimeForLocale } from "@paperclipai/shared/i18n";
 import { Link } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";

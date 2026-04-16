@@ -1,4 +1,4 @@
-import { createTranslator, matchSupportedLocale, translateSystemMessage } from "@paperclipai/i18n";
+import { createTranslator, matchSupportedLocale, translateSystemMessage } from "@paperclipai/shared/i18n";
 import { DEFAULT_LOCALE, type SupportedLocale } from "@paperclipai/shared";
 
 function resolveCliLocale(): SupportedLocale {

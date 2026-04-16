@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { createTranslator } from "@paperclipai/i18n";
+import { createTranslator } from "@paperclipai/shared/i18n";
 import type { TranscriptEntry } from "../../adapters";
 import { MarkdownBody } from "../MarkdownBody";
 import { getCurrentLocale } from "../../lib/locale-store";

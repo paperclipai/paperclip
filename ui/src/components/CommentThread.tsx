@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { createTranslator } from "@paperclipai/i18n";
+import { createTranslator } from "@paperclipai/shared/i18n";
 import { Link, useLocation } from "react-router-dom";
 import type {
   Agent,

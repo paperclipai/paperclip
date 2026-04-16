@@ -1,4 +1,4 @@
-import type { MessageKey, MessageParams } from "@paperclipai/i18n";
+import type { MessageKey, MessageParams } from "@paperclipai/shared/i18n";
 import type { Agent } from "@paperclipai/shared";
 
 type ActivityDetails = Record<string, unknown> | null | undefined;

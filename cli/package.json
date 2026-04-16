@@ -46,7 +46,6 @@
     "@paperclipai/adapter-openclaw-gateway": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*",
     "@paperclipai/db": "workspace:*",
-    "@paperclipai/i18n": "workspace:*",
     "@paperclipai/server": "workspace:*",
     "@paperclipai/shared": "workspace:*",
     "drizzle-orm": "0.38.4",

@@ -8,7 +8,7 @@ import {
   useMessage,
 } from "@assistant-ui/react";
 import type { ToolCallMessagePart } from "@assistant-ui/react";
-import { createTranslator } from "@paperclipai/i18n";
+import { createTranslator } from "@paperclipai/shared/i18n";
 import {
   createContext,
   Component,

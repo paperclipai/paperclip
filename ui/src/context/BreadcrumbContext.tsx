@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
-import { translateText } from "@paperclipai/i18n";
+import { translateText } from "@paperclipai/shared/i18n";
 import { getCurrentLocale } from "@/lib/locale-store";
 
 export interface Breadcrumb {

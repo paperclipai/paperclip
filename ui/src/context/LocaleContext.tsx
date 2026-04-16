@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createTranslator, localeOptionLabels, matchSupportedLocale } from "@paperclipai/i18n";
+import { createTranslator, localeOptionLabels, matchSupportedLocale } from "@paperclipai/shared/i18n";
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES, type SupportedLocale } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
 import { i18nApi } from "@/api/i18n";

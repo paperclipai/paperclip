@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
-import { createTranslator } from "@paperclipai/i18n";
+import { createTranslator } from "@paperclipai/shared/i18n";
 import {
   ChevronDown,
   ChevronRight,

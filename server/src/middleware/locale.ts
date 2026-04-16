@@ -1,7 +1,11 @@
 import type { Request, RequestHandler } from "express";
 import type { Db } from "@paperclipai/db";
 import { DEFAULT_LOCALE, type SupportedLocale } from "@paperclipai/shared";
-import { matchSupportedLocale, pickSupportedLocaleFromAcceptLanguage, translateSystemMessage } from "@paperclipai/i18n";
+import {
+  matchSupportedLocale,
+  pickSupportedLocaleFromAcceptLanguage,
+  translateSystemMessage,
+} from "@paperclipai/shared/i18n";
 import { instanceSettingsService, userPreferencesService } from "../services/index.js";
 
 function readExplicitLocale(req: Request) {

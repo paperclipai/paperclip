@@ -64,9 +64,6 @@ importers:
       '@paperclipai/db':
         specifier: workspace:*
         version: link:../packages/db
-      '@paperclipai/i18n':
-        specifier: workspace:*
-        version: link:../packages/i18n
       '@paperclipai/server':
         specifier: workspace:*
         version: link:../server
@@ -256,16 +253,6 @@ importers:
       vitest:
         specifier: ^3.0.5
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@2.0.1))(lightningcss@1.30.2)(tsx@4.21.0)
-
-  packages/i18n:
-    dependencies:
-      '@paperclipai/shared':
-        specifier: workspace:*
-        version: link:../shared
-    devDependencies:
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
 
   packages/mcp-server:
     dependencies:
@@ -505,9 +492,6 @@ importers:
       '@paperclipai/db':
         specifier: workspace:*
         version: link:../packages/db
-      '@paperclipai/i18n':
-        specifier: workspace:*
-        version: link:../packages/i18n
       '@paperclipai/plugin-sdk':
         specifier: workspace:*
         version: link:../packages/plugins/sdk
@@ -662,9 +646,6 @@ importers:
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils
-      '@paperclipai/i18n':
-        specifier: workspace:*
-        version: link:../packages/i18n
       '@paperclipai/shared':
         specifier: workspace:*
         version: link:../packages/shared

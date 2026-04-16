@@ -10,7 +10,7 @@ import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 import { useLocale } from "@/context/LocaleContext";
-import { formatDateTimeForLocale } from "@paperclipai/i18n";
+import { formatDateTimeForLocale } from "@paperclipai/shared/i18n";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
 type JoinType = "human" | "agent";
