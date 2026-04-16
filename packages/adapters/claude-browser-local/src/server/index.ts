@@ -1,6 +1,7 @@
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 export { execute } from "./execute.js";
+export { testEnvironment } from "./test.js";
 export type { BrowserTool, BrowserToolCall, BrowserToolResult } from "./tools/types.js";
 export { redactDomHtml, redactScreenshotRegions } from "./tools/redaction.js";
 export { tokenizeSecrets, resolveSecretToken } from "./tools/secrets.js";

@@ -1,0 +1,42 @@
+###############################################################################
+# Surfer sidecar — Playwright + Chromium in an isolated container
+#
+# The sidecar exposes a unix socket (/surfer/surfer.sock inside the container,
+# bind-mounted to the host) so the Paperclip adapter process can connect to it.
+#
+# Egress is restricted to an allowlist via iptables rules applied inside an
+# init script. The container requires NET_ADMIN capability to modify iptables.
+###############################################################################
+
+FROM mcr.microsoft.com/playwright:v1.48.0-jammy
+
+# System dependencies for Chromium (most are already in the Playwright image,
+# but we pin a few extras for stability on our target platform).
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+      iptables \
+      iproute2 \
+      dnsutils \
+      curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy only the compiled sidecar output. The adapter build produces
+# dist/sidecar/index.js via `pnpm build` in the package root.
+COPY dist/ ./dist/
+COPY package.json ./
+
+# Install production deps only (playwright is a runtime dep)
+RUN npm install --omit=dev --ignore-scripts
+
+# Create profile and run directories
+RUN mkdir -p /var/lib/surfer/profile /var/run/paperclip
+
+# Egress init: run as part of container startup (see entrypoint.sh).
+COPY deploy/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["node", "dist/sidecar/index.js", \
+     "--socket", "/surfer/surfer.sock", \
+     "--profile", "/var/lib/surfer/profile"]

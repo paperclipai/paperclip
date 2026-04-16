@@ -1,0 +1,89 @@
+###############################################################################
+# Surfer sidecar — docker-compose for local dev + Week 2 server deployment
+#
+# The sidecar runs in a container with:
+#   - NET_ADMIN capability so it can apply iptables egress rules.
+#   - A shared unix socket directory bind-mounted to the host so the
+#     Paperclip server process can connect to it directly.
+#   - Persistent Chromium profile on a named volume.
+#   - An env file for secrets (never committed).
+#
+# Quick start:
+#   cp .env.example .env  # fill in real values
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# The Paperclip adapter reads SURFER_SOCKET_PATH to know where to connect.
+# Default: /var/run/paperclip/surfer.sock (set by SURFER_SOCKET_PATH below).
+###############################################################################
+
+version: "3.9"
+
+services:
+  surfer-sidecar:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.sidecar
+    container_name: surfer-sidecar
+    restart: unless-stopped
+
+    # NET_ADMIN is required for the iptables egress allowlist in entrypoint.sh.
+    cap_add:
+      - NET_ADMIN
+
+    # Unix socket directory shared with the host.
+    # The adapter process on the host connects to this socket.
+    volumes:
+      - /var/run/paperclip:/surfer:rw
+      - surfer-profile:/var/lib/surfer/profile
+      - surfer-captcha:/var/lib/surfer
+
+    # Pass the socket path to the sidecar so it matches the bind-mount.
+    command:
+      - node
+      - dist/sidecar/index.js
+      - --socket
+      - /surfer/surfer.sock
+      - --profile
+      - /var/lib/surfer/profile
+
+    env_file:
+      - .env
+
+    environment:
+      # Egress allowlist (comma-separated hostnames).
+      # Override here or in .env to add partner domains.
+      SURFER_EGRESS_ALLOWLIST: "${SURFER_EGRESS_ALLOWLIST:-dev.to,2captcha.com,hcaptcha.com,challenges.cloudflare.com,api.paperclip.ing}"
+      # The sidecar resolves the socket path at startup
+      SURFER_SOCKET_PATH: /surfer/surfer.sock
+      SURFER_PROFILE_DIR: /var/lib/surfer/profile
+
+    # No published ports — the only external surface is the unix socket.
+    # network_mode: bridge ensures iptables rules apply cleanly.
+    network_mode: bridge
+
+    # Playwright / Chromium needs /dev/shm to be large enough.
+    shm_size: "512mb"
+
+    healthcheck:
+      # Ping the unix socket to confirm the sidecar is alive.
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          const net = require('net');
+          const s = net.createConnection('/surfer/surfer.sock');
+          s.on('connect', () => { s.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'ping',params:null})+'\n'); });
+          s.on('data', () => { s.destroy(); process.exit(0); });
+          s.on('error', () => process.exit(1));
+          setTimeout(() => process.exit(1), 3000);
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  surfer-profile:
+    driver: local
+  surfer-captcha:
+    driver: local

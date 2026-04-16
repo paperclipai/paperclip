@@ -1,6 +1,16 @@
 import type { ServerAdapterModule } from "./types.js";
 import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
+  execute as claudeBrowserExecute,
+  testEnvironment as claudeBrowserTestEnvironment,
+  sessionCodec as claudeBrowserSessionCodec,
+} from "@paperclipai/adapter-claude-browser-local/server";
+import {
+  type as claudeBrowserType,
+  models as claudeBrowserModels,
+  agentConfigurationDoc as claudeBrowserAgentConfigurationDoc,
+} from "@paperclipai/adapter-claude-browser-local";
+import {
   execute as claudeExecute,
   listClaudeSkills,
   syncClaudeSkills,
@@ -85,6 +95,17 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+
+const claudeBrowserLocalAdapter: ServerAdapterModule = {
+  type: claudeBrowserType,
+  execute: claudeBrowserExecute,
+  testEnvironment: claudeBrowserTestEnvironment,
+  sessionCodec: claudeBrowserSessionCodec,
+  sessionManagement: getAdapterSessionManagement("claude_browser_local") ?? undefined,
+  models: claudeBrowserModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: claudeBrowserAgentConfigurationDoc,
+};
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
@@ -206,6 +227,7 @@ const pausedOverrides = new Set<string>();
 
 function registerBuiltInAdapters() {
   for (const adapter of [
+    claudeBrowserLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
