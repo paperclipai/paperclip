@@ -62,6 +62,7 @@ async function waitForSidecar(socketPath: string, timeoutMs: number): Promise<vo
 async function spawnSidecarIfNeeded(
   socketPath: string,
   profileDir: string,
+  sidecarEnv: Record<string, string>,
   onLog: AdapterExecutionContext["onLog"],
 ): Promise<cp.ChildProcess | null> {
   // If something is already listening, reuse it
@@ -84,7 +85,8 @@ async function spawnSidecarIfNeeded(
     {
       detached: false,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env },
+      // Merge sidecarEnv AFTER process.env so secrets override nothing critical
+      env: { ...process.env, ...sidecarEnv },
     },
   );
 
@@ -101,6 +103,33 @@ async function spawnSidecarIfNeeded(
   return child;
 }
 
+function buildSidecarEnv(ctx: AdapterExecutionContext): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  // Paperclip API credentials — needed by save_artifact to upload attachments
+  const apiUrl = process.env["PAPERCLIP_API_URL"] ?? "";
+  const apiKey = ctx.authToken ?? process.env["PAPERCLIP_API_KEY"] ?? "";
+  const companyId = process.env["PAPERCLIP_COMPANY_ID"] ?? "";
+
+  if (apiUrl) env["SURFER_PAPERCLIP_API_URL"] = apiUrl;
+  if (apiKey) env["SURFER_PAPERCLIP_API_KEY"] = apiKey;
+  if (companyId) env["SURFER_PAPERCLIP_COMPANY_ID"] = companyId;
+
+  // Secret injection: config.secrets is a Record<NAME, resolved_value>.
+  // We expose them as SURFER_SECRET_<NAME> so the sidecar can resolve
+  // {{SECRET:NAME}} tokens without ever sending the values back to the server.
+  const secrets = ctx.config["secrets"];
+  if (secrets && typeof secrets === "object" && !Array.isArray(secrets)) {
+    for (const [name, value] of Object.entries(secrets as Record<string, unknown>)) {
+      if (typeof value === "string" && /^[A-Z0-9_]+$/.test(name)) {
+        env[`SURFER_SECRET_${name}`] = value;
+      }
+    }
+  }
+
+  return env;
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const config = ctx.config as Record<string, unknown>;
 
@@ -112,10 +141,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const profileDir =
     typeof config.profileDir === "string" ? config.profileDir : DEFAULT_PROFILE_DIR;
 
+  const sidecarEnv = buildSidecarEnv(ctx);
   let sidecarProcess: cp.ChildProcess | null = null;
 
   try {
-    sidecarProcess = await spawnSidecarIfNeeded(socketPath, profileDir, ctx.onLog);
+    sidecarProcess = await spawnSidecarIfNeeded(socketPath, profileDir, sidecarEnv, ctx.onLog);
 
     const client = new SidecarClient(socketPath);
     await client.connect();

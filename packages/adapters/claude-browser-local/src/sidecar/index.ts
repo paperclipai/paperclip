@@ -18,6 +18,7 @@ import { RpcServer } from "./rpc.js";
 import { execGoto } from "./tools/goto.js";
 import { execClick } from "./tools/click.js";
 import { execType } from "./tools/type.js";
+import { execSaveArtifact } from "./tools/save-artifact.js";
 import { execWaitFor } from "./tools/wait-for.js";
 import { execScreenshot } from "./tools/screenshot.js";
 import { resolveSecretToken } from "../server/tools/secrets.js";
@@ -168,15 +169,19 @@ async function dispatch(
         errorCode: "NOT_IMPLEMENTED",
       };
 
-    case "save_artifact":
-      // Artifact upload to Paperclip API lands Day 3.
-      return {
-        ok: false, tool: "save_artifact",
-        startedAt: new Date().toISOString(),
-        finishedAt: new Date().toISOString(),
-        errorMessage: "save_artifact not implemented in Day 2 build — lands Day 3",
-        errorCode: "NOT_IMPLEMENTED",
-      };
+    case "save_artifact": {
+      // For screenshot saves, re-take the screenshot so we pass the buffer.
+      // For dom saves, grab the current page HTML.
+      let pngBase64: string | undefined;
+      let domHtml: string | undefined;
+      if (call.kind === "screenshot") {
+        const buf = await page.screenshot({ fullPage: false, type: "png" });
+        pngBase64 = buf.toString("base64");
+      } else if (call.kind === "dom") {
+        domHtml = await page.content();
+      }
+      return execSaveArtifact(call, pngBase64, domHtml);
+    }
 
     default: {
       const exhaustive: never = call;
