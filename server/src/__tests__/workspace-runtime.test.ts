@@ -304,6 +304,33 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
 });
 
 describe("realizeExecutionWorkspace", () => {
+  // Isolate PATH so that provision-worktree.sh sees a fake `paperclipai` (exit 1 = not
+  // available) regardless of whether paperclipai is globally installed on the host. Without
+  // this, tests that call provision-worktree.sh diverge depending on the test runner's PATH.
+  let savedPath: string | undefined;
+  let fakePaperclipBinDir: string | undefined;
+
+  beforeEach(async () => {
+    savedPath = process.env.PATH;
+    fakePaperclipBinDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fake-bin-"));
+    const fakePaperclipAi = path.join(fakePaperclipBinDir, "paperclipai");
+    await fs.writeFile(fakePaperclipAi, "#!/bin/sh\nexit 1\n", "utf8");
+    await fs.chmod(fakePaperclipAi, 0o755);
+    process.env.PATH = `${fakePaperclipBinDir}:${savedPath ?? ""}`;
+  });
+
+  afterEach(async () => {
+    if (savedPath !== undefined) {
+      process.env.PATH = savedPath;
+    } else {
+      delete process.env.PATH;
+    }
+    if (fakePaperclipBinDir) {
+      await fs.rm(fakePaperclipBinDir, { recursive: true, force: true }).catch(() => {});
+      fakePaperclipBinDir = undefined;
+    }
+  });
+
   it("creates and reuses a git worktree for an issue-scoped branch", async () => {
     const repoRoot = await createTempRepo();
 
@@ -1303,6 +1330,11 @@ describe("realizeExecutionWorkspace", () => {
       );
       await fs.chmod(fakePnpmPath, 0o755);
 
+      // Block global paperclipai so the script takes the fast fallback config path.
+      const fakePaperclipAiPath = path.join(fakeBin, "paperclipai");
+      await fs.writeFile(fakePaperclipAiPath, "#!/bin/sh\nexit 1\n", "utf8");
+      await fs.chmod(fakePaperclipAiPath, 0o755);
+
       const result = await execFileAsync(scriptPath, [], {
         cwd: worktreeRoot,
         env: {
@@ -1321,7 +1353,7 @@ describe("realizeExecutionWorkspace", () => {
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it(
     "provisions worktree-local pnpm node_modules instead of reusing base-repo links",
