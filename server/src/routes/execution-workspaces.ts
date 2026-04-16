@@ -359,21 +359,27 @@ export function executionWorkspaceRoutes(db: Db) {
           ?? ((existing.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running")
             ? "running"
             : "stopped");
+        // When targeting by runtimeServiceId without a known serviceIndex, resolve
+        // the configIndex from the live runtime service record so that
+        // buildWorkspaceRuntimeDesiredStatePatch can update serviceStates correctly.
+        // Without this, stopping a service by ID leaves desiredState=running and
+        // the reconciler restarts the service on the next tick.
+        const resolvedServiceIndex: number | null | undefined =
+          selectedServiceIndex !== undefined && selectedServiceIndex !== null
+            ? selectedServiceIndex
+            : selectedRuntimeServiceId
+              ? (existing.runtimeServices ?? []).find((s) => s.id === selectedRuntimeServiceId)?.configIndex ?? null
+              : null;
         const nextRuntimeState: {
           desiredState: "running" | "stopped";
           serviceStates: Record<string, "running" | "stopped"> | null | undefined;
-        } = selectedRuntimeServiceId && (selectedServiceIndex === undefined || selectedServiceIndex === null)
-          ? {
-              desiredState: currentDesiredState,
-              serviceStates: existing.config?.serviceStates ?? null,
-            }
-          : buildWorkspaceRuntimeDesiredStatePatch({
-              config: { workspaceRuntime: effectiveRuntimeConfig },
-              currentDesiredState,
-              currentServiceStates: existing.config?.serviceStates ?? null,
-              action,
-              serviceIndex: selectedServiceIndex,
-            });
+        } = buildWorkspaceRuntimeDesiredStatePatch({
+          config: { workspaceRuntime: effectiveRuntimeConfig },
+          currentDesiredState,
+          currentServiceStates: existing.config?.serviceStates ?? null,
+          action,
+          serviceIndex: resolvedServiceIndex,
+        });
         const metadata = mergeExecutionWorkspaceConfig(existing.metadata as Record<string, unknown> | null, {
           desiredState: nextRuntimeState.desiredState,
           serviceStates: nextRuntimeState.serviceStates,
