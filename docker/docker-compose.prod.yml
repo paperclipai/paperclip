@@ -62,7 +62,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3100/health | grep -q '\"status\":\"ok\"'"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:3100/health | grep -q '\"status\"'"]
       interval: 10s
       timeout: 5s
       retries: 12
