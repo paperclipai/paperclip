@@ -42,6 +42,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     projectWorkspaceId: "project-workspace-1",
     goalId: "goal-1",
     parentId: null,
+    kind: "task",
     title: "Parent issue",
     description: null,
     status: "todo",

@@ -40,6 +40,7 @@ describe("issueDetailBreadcrumb", () => {
       projectWorkspaceId: null,
       goalId: null,
       parentId: null,
+      kind: "task",
       title: "Prefilled issue title",
       description: null,
       status: "todo",

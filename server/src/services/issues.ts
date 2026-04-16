@@ -536,6 +536,7 @@ const issueListSelect = {
   projectWorkspaceId: issues.projectWorkspaceId,
   goalId: issues.goalId,
   parentId: issues.parentId,
+  kind: issues.kind,
   title: issues.title,
   description: sql<string | null>`
     CASE
