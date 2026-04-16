@@ -207,6 +207,20 @@ export type {
   Goal,
 } from "./types.js";
 
+// Memory adapter contract types
+export type {
+  MemoryAdapterCapabilities,
+  MemoryScope,
+  MemorySourceRef,
+  MemoryUsage,
+  MemoryWriteRequest,
+  MemoryRecordHandle,
+  MemoryQueryRequest,
+  MemorySnippet,
+  MemoryContextBundle,
+  MemoryAdapter,
+} from "./types.js";
+
 // Manifest and constant types re-exported from @paperclipai/shared
 // Plugin authors import manifest types from here so they have a single
 // dependency (@paperclipai/plugin-sdk) for all plugin authoring needs.

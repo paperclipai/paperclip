@@ -654,6 +654,18 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  createMemoryBindingSchema,
+  updateMemoryBindingSchema,
+  createMemoryBindingTargetSchema,
+  memoryWriteSchema,
+  memoryQuerySchema,
+  memoryForgetSchema,
+  type CreateMemoryBinding,
+  type UpdateMemoryBinding,
+  type CreateMemoryBindingTarget,
+  type MemoryWrite,
+  type MemoryQuery,
+  type MemoryForget,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

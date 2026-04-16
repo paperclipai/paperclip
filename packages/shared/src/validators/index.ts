@@ -307,3 +307,18 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  createMemoryBindingSchema,
+  updateMemoryBindingSchema,
+  createMemoryBindingTargetSchema,
+  memoryWriteSchema,
+  memoryQuerySchema,
+  memoryForgetSchema,
+  type CreateMemoryBinding,
+  type UpdateMemoryBinding,
+  type CreateMemoryBindingTarget,
+  type MemoryWrite,
+  type MemoryQuery,
+  type MemoryForget,
+} from "./memory-binding.js";

@@ -1092,6 +1092,154 @@ export interface PluginStreamsClient {
 }
 
 // ---------------------------------------------------------------------------
+// Memory adapter contract
+// ---------------------------------------------------------------------------
+
+/**
+ * Declares optional capabilities a memory adapter supports beyond the
+ * required `write` / `query` / `get` / `forget` surface.
+ *
+ * @see doc/plans/2026-03-17-memory-service-surface-api.md — Required Adapter Contract
+ */
+export interface MemoryAdapterCapabilities {
+  profile?: boolean;
+  browse?: boolean;
+  correction?: boolean;
+  asyncIngestion?: boolean;
+  multimodal?: boolean;
+  providerManagedExtraction?: boolean;
+}
+
+/**
+ * Normalized Paperclip scope passed into every memory operation so the
+ * provider knows which company / agent / project / run the request belongs to.
+ */
+export interface MemoryScope {
+  companyId: string;
+  agentId?: string;
+  projectId?: string;
+  issueId?: string;
+  runId?: string;
+  subjectId?: string;
+}
+
+/**
+ * Provenance handle that explains where a memory came from.
+ */
+export interface MemorySourceRef {
+  kind:
+    | "issue_comment"
+    | "issue_document"
+    | "issue"
+    | "run"
+    | "activity"
+    | "manual_note"
+    | "external_document";
+  companyId: string;
+  issueId?: string;
+  commentId?: string;
+  documentKey?: string;
+  runId?: string;
+  activityId?: string;
+  externalRef?: string;
+}
+
+/**
+ * Usage / cost telemetry returned by a memory adapter after an operation.
+ */
+export interface MemoryUsage {
+  provider: string;
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  embeddingTokens?: number;
+  costCents?: number;
+  latencyMs?: number;
+  details?: Record<string, unknown>;
+}
+
+/**
+ * A request to write content into memory via a binding.
+ */
+export interface MemoryWriteRequest {
+  bindingKey: string;
+  scope: MemoryScope;
+  source: MemorySourceRef;
+  content: string;
+  metadata?: Record<string, unknown>;
+  mode?: "append" | "upsert" | "summarize";
+}
+
+/**
+ * Opaque handle referencing a record inside a specific memory provider.
+ */
+export interface MemoryRecordHandle {
+  providerKey: string;
+  providerRecordId: string;
+}
+
+/**
+ * A request to query memory via a binding.
+ */
+export interface MemoryQueryRequest {
+  bindingKey: string;
+  scope: MemoryScope;
+  query: string;
+  topK?: number;
+  intent?: "agent_preamble" | "answer" | "browse";
+  metadataFilter?: Record<string, unknown>;
+}
+
+/**
+ * A single memory retrieval result returned by a provider.
+ */
+export interface MemorySnippet {
+  handle: MemoryRecordHandle;
+  text: string;
+  score?: number;
+  summary?: string;
+  source?: MemorySourceRef;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Bundle of memory context returned by a `query` call, including optional
+ * profile summary and usage telemetry.
+ */
+export interface MemoryContextBundle {
+  snippets: MemorySnippet[];
+  profileSummary?: string;
+  usage?: MemoryUsage[];
+}
+
+/**
+ * The adapter interface that memory provider plugins must implement.
+ *
+ * This contract is intentionally small — it fits local markdown providers,
+ * mem0, supermemory, MemOS, and similar backends without forcing providers
+ * to expose internal graph, filesystem, or ontology details.
+ *
+ * @see doc/plans/2026-03-17-memory-service-surface-api.md — Required Adapter Contract
+ */
+export interface MemoryAdapter {
+  /** Stable key identifying this provider inside a company. */
+  key: string;
+  /** Declares which optional surfaces this adapter supports. */
+  capabilities: MemoryAdapterCapabilities;
+  /** Write content into memory. */
+  write(req: MemoryWriteRequest): Promise<{
+    records?: MemoryRecordHandle[];
+    usage?: MemoryUsage[];
+  }>;
+  /** Query memory for relevant context. */
+  query(req: MemoryQueryRequest): Promise<MemoryContextBundle>;
+  /** Retrieve a single record by handle. */
+  get(handle: MemoryRecordHandle, scope: MemoryScope): Promise<MemorySnippet | null>;
+  /** Delete one or more records by handle. */
+  forget(handles: MemoryRecordHandle[], scope: MemoryScope): Promise<{ usage?: MemoryUsage[] }>;
+}
+
+// ---------------------------------------------------------------------------
 // Full plugin context
 // ---------------------------------------------------------------------------
 
