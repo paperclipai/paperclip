@@ -13,6 +13,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
+import { prepareManagedCodexHome } from "./codex-home.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 
@@ -80,6 +81,10 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  const configuredCodexHome = isNonEmpty(env.CODEX_HOME) ? path.resolve(env.CODEX_HOME) : null;
+  const effectiveCodexHome =
+    configuredCodexHome ?? await prepareManagedCodexHome({ ...process.env, ...env }, async () => {}, ctx.companyId);
+  env.CODEX_HOME = effectiveCodexHome;
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);

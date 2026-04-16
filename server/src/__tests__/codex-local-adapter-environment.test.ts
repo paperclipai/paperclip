@@ -99,6 +99,122 @@ describe("codex_local environment diagnostics", () => {
     }
   });
 
+  it("uses managed api-key auth for the hello probe even when shared Codex auth is chatgpt", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-apikey-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const sharedCodexHome = path.join(root, ".codex");
+    const paperclipHome = path.join(root, ".paperclip");
+    const binDir = path.join(root, "bin");
+    const cwd = path.join(root, "workspace");
+    const fakeCodex = path.join(binDir, "codex");
+    const script = [
+      "#!/bin/sh",
+      "AUTH_FILE=\"$CODEX_HOME/auth.json\"",
+      "if grep -q '\"auth_mode\": \"apikey\"' \"$AUTH_FILE\" && grep -q '\"OPENAI_API_KEY\": \"sk-test-key\"' \"$AUTH_FILE\"; then",
+      "  echo '{\"type\":\"thread.started\",\"thread_id\":\"test-thread\"}'",
+      "  echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"hello\"}}'",
+      "  echo '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1}}'",
+      "  exit 0",
+      "fi",
+      "echo '{\"type\":\"error\",\"message\":\"unexpected auth mode\"}'",
+      "echo '{\"type\":\"turn.failed\",\"error\":{\"message\":\"unexpected auth mode\"}}'",
+      "exit 1",
+      "",
+    ].join("\n");
+
+    try {
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.mkdir(binDir, { recursive: true });
+      await fs.writeFile(
+        path.join(sharedCodexHome, "auth.json"),
+        JSON.stringify({ auth_mode: "chatgpt", OPENAI_API_KEY: null }, null, 2),
+        "utf8",
+      );
+      await fs.writeFile(fakeCodex, script, { mode: 0o755 });
+
+      vi.stubEnv("OPENAI_API_KEY", "sk-test-key");
+      vi.stubEnv("CODEX_HOME", sharedCodexHome);
+      vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      vi.stubEnv("PATH", `${binDir}${path.delimiter}${process.env.PATH ?? ""}`);
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: "codex",
+          cwd,
+        },
+      });
+
+      expect(result.status).toBe("pass");
+      expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses adapter-config OPENAI_API_KEY to seed managed auth for the hello probe", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-apikey-config-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const sharedCodexHome = path.join(root, ".codex");
+    const paperclipHome = path.join(root, ".paperclip");
+    const binDir = path.join(root, "bin");
+    const cwd = path.join(root, "workspace");
+    const fakeCodex = path.join(binDir, "codex");
+    const script = [
+      "#!/bin/sh",
+      "AUTH_FILE=\"$CODEX_HOME/auth.json\"",
+      "if grep -q '\"auth_mode\": \"apikey\"' \"$AUTH_FILE\" && grep -q '\"OPENAI_API_KEY\": \"sk-config-key\"' \"$AUTH_FILE\"; then",
+      "  echo '{\"type\":\"thread.started\",\"thread_id\":\"test-thread\"}'",
+      "  echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"hello\"}}'",
+      "  echo '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":1}}'",
+      "  exit 0",
+      "fi",
+      "echo '{\"type\":\"error\",\"message\":\"unexpected auth mode\"}'",
+      "echo '{\"type\":\"turn.failed\",\"error\":{\"message\":\"unexpected auth mode\"}}'",
+      "exit 1",
+      "",
+    ].join("\n");
+
+    try {
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.mkdir(binDir, { recursive: true });
+      await fs.writeFile(
+        path.join(sharedCodexHome, "auth.json"),
+        JSON.stringify({ auth_mode: "chatgpt", OPENAI_API_KEY: null }, null, 2),
+        "utf8",
+      );
+      await fs.writeFile(fakeCodex, script, { mode: 0o755 });
+
+      vi.stubEnv("CODEX_HOME", sharedCodexHome);
+      vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      vi.stubEnv("PATH", `${binDir}${path.delimiter}${process.env.PATH ?? ""}`);
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: "codex",
+          cwd,
+          env: {
+            OPENAI_API_KEY: "sk-config-key",
+          },
+        },
+      });
+
+      expect(result.status).toBe("pass");
+      expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   itWindows("runs the hello probe when Codex is available via a Windows .cmd wrapper", async () => {
     const root = path.join(
       os.tmpdir(),

@@ -69,11 +69,13 @@ describe("codex execute", () => {
     const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
     const previousPaperclipInWorktree = process.env.PAPERCLIP_IN_WORKTREE;
     const previousCodexHome = process.env.CODEX_HOME;
+    const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
     process.env.HOME = root;
     process.env.PAPERCLIP_HOME = paperclipHome;
     delete process.env.PAPERCLIP_INSTANCE_ID;
     delete process.env.PAPERCLIP_IN_WORKTREE;
     process.env.CODEX_HOME = sharedCodexHome;
+    delete process.env.OPENAI_API_KEY;
 
     try {
       const logs: LogEntry[] = [];
@@ -137,6 +139,8 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      if (previousOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousOpenAiApiKey;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -757,11 +761,13 @@ describe("codex execute", () => {
     const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
     const previousPaperclipInWorktree = process.env.PAPERCLIP_IN_WORKTREE;
     const previousCodexHome = process.env.CODEX_HOME;
+    const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
     process.env.HOME = root;
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = "worktree-1";
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.CODEX_HOME = sharedCodexHome;
+    delete process.env.OPENAI_API_KEY;
 
     try {
       const logs: LogEntry[] = [];
@@ -843,6 +849,8 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      if (previousOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousOpenAiApiKey;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

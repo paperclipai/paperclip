@@ -391,23 +391,30 @@ describe("worktree config repair", () => {
       "utf8",
     );
 
+    const previousPort = process.env.PORT;
     process.chdir(worktreeRoot);
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.PAPERCLIP_WORKTREE_NAME = "PAP-878-create-a-mine-tab-in-inbox";
     process.env.PAPERCLIP_HOME = isolatedHome;
     process.env.PAPERCLIP_INSTANCE_ID = "pap-878-create-a-mine-tab-in-inbox";
     process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.PORT;
 
-    maybePersistWorktreeRuntimePorts({
-      serverPort: 3103,
-      databasePort: 54335,
-    });
+    try {
+      maybePersistWorktreeRuntimePorts({
+        serverPort: 3103,
+        databasePort: 54335,
+      });
 
-    const writtenConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+      const writtenConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
 
-    expect(writtenConfig.server.port).toBe(3103);
-    expect(writtenConfig.database.embeddedPostgresPort).toBe(54335);
-    expect(writtenConfig.auth.publicBaseUrl).toBe("http://127.0.0.1:3103/");
+      expect(writtenConfig.server.port).toBe(3103);
+      expect(writtenConfig.database.embeddedPostgresPort).toBe(54335);
+      expect(writtenConfig.auth.publicBaseUrl).toBe("http://127.0.0.1:3103/");
+    } finally {
+      if (previousPort === undefined) delete process.env.PORT;
+      else process.env.PORT = previousPort;
+    }
   });
 
   it("can update the in-memory config without rewriting env-driven ports", () => {

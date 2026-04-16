@@ -1,7 +1,7 @@
 import { readConfigFile } from "./config-file.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
@@ -30,18 +30,46 @@ import {
   resolveHomeAwarePath,
 } from "./home-paths.js";
 
-const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
-if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
-  loadDotenv({ path: PAPERCLIP_ENV_FILE_PATH, override: false, quiet: true });
+const loadedEnvRealPaths = new Set<string>();
+
+function loadEnvFileOnce(envPath: string): void {
+  if (!existsSync(envPath)) return;
+  const real = realpathSync(envPath);
+  if (loadedEnvRealPaths.has(real)) return;
+  loadedEnvRealPaths.add(real);
+  loadDotenv({ path: envPath, override: false, quiet: true });
 }
 
-const CWD_ENV_PATH = resolve(process.cwd(), ".env");
-const isSameFile = existsSync(CWD_ENV_PATH) && existsSync(PAPERCLIP_ENV_FILE_PATH)
-  ? realpathSync(CWD_ENV_PATH) === realpathSync(PAPERCLIP_ENV_FILE_PATH)
-  : CWD_ENV_PATH === PAPERCLIP_ENV_FILE_PATH;
-if (!isSameFile && existsSync(CWD_ENV_PATH)) {
-  loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
+// Walk from CWD up to the project root to find .env files that should be
+// loaded.  In monorepos the server CWD is often a subdirectory (e.g.
+// `server/`) while the user's .env lives at the repository root.  We stop
+// at the first directory that looks like a project boundary (.git or
+// pnpm-workspace.yaml).
+function findProjectRootEnvPath(): string | null {
+  let dir = dirname(resolve(process.cwd()));
+  while (true) {
+    const isProjectRoot =
+      existsSync(resolve(dir, ".git")) ||
+      existsSync(resolve(dir, "pnpm-workspace.yaml"));
+    if (isProjectRoot) {
+      const envCandidate = resolve(dir, ".env");
+      return existsSync(envCandidate) ? envCandidate : null;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
 }
+
+const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
+loadEnvFileOnce(PAPERCLIP_ENV_FILE_PATH);
+
+const CWD_ENV_PATH = resolve(process.cwd(), ".env");
+loadEnvFileOnce(CWD_ENV_PATH);
+
+const PROJECT_ROOT_ENV_PATH = findProjectRootEnvPath();
+if (PROJECT_ROOT_ENV_PATH) loadEnvFileOnce(PROJECT_ROOT_ENV_PATH);
 
 maybeRepairLegacyWorktreeConfigAndEnvFiles();
 
