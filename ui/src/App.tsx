@@ -41,6 +41,7 @@ import { Voice } from "./pages/Voice";
 import { YouTube } from "./pages/YouTube";
 import { ApiRunner } from "./pages/ApiRunner";
 import { CalendarPage } from "./pages/CalendarPage";
+import { DigestPlayerPage } from "./pages/DigestPlayerPage";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -139,6 +140,7 @@ function boardRoutes() {
       <Route path="youtube" element={<YouTube />} />
       <Route path="api-runner" element={<ApiRunner />} />
       <Route path="calendar" element={<CalendarPage />} />
+      <Route path="digest-player" element={<DigestPlayerPage />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
