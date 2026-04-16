@@ -91,6 +91,10 @@ export const queryKeys = {
       ["projects", "files-tree", projectId, relativePath, showIgnored, companyId ?? null] as const,
     fileContent: (projectId: string, relativePath: string, companyId?: string) =>
       ["projects", "file-content", projectId, relativePath, companyId ?? null] as const,
+    gitStatus: (projectId: string, companyId?: string) =>
+      ["projects", "git-status", projectId, companyId ?? null] as const,
+    fileDiff: (projectId: string, filePath: string, staged: boolean, companyId?: string) =>
+      ["projects", "file-diff", projectId, filePath, staged, companyId ?? null] as const,
   },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,

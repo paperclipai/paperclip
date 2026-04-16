@@ -4,6 +4,11 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import type {
+  GitCommitResult,
+  GitDiffResponse,
+  GitPushResult,
+  GitStatusEntry,
+  GitStatusResponse,
   ProjectFileDetail,
   ProjectFilesAheadBehind,
   ProjectFilesBranch,
@@ -717,6 +722,119 @@ export function projectFilesService(db: Db) {
         summary: await buildSummary(project),
         message: messageParts.join(", ") || null,
       };
+    },
+
+    async getGitStatus(projectId: string): Promise<GitStatusResponse> {
+      const project = await ensureProject(projectId, db);
+      const summary = await buildSummary(project);
+      if (!summary.available || !summary.repoRoot) {
+        return { entries: [] };
+      }
+      const output = (await runGit(["status", "--porcelain=v1", "--untracked-files=all"], summary.repoRoot)).stdout;
+      const entries: GitStatusEntry[] = [];
+      for (const line of output.split(/\r?\n/)) {
+        if (!line) continue;
+        const x = line[0] ?? " ";
+        const y = line[1] ?? " ";
+        const rest = line.slice(3);
+        let filePath = rest;
+        let oldPath: string | null = null;
+        if ((x === "R" || x === "C") && rest.includes(" -> ")) {
+          const parts = rest.split(" -> ");
+          oldPath = parts[0] ?? null;
+          filePath = parts[1] ?? rest;
+        }
+        entries.push({
+          path: filePath,
+          oldPath,
+          indexStatus: x,
+          workingStatus: y,
+          isStaged: x !== " " && x !== "?",
+          isUnstaged: y !== " " && y !== "?",
+          isUntracked: x === "?" && y === "?",
+        });
+      }
+      return { entries };
+    },
+
+    async stageFiles(projectId: string, paths: string[]): Promise<GitStatusResponse> {
+      const project = await ensureProject(projectId, db);
+      const summary = await buildSummary(project);
+      if (!summary.available || !summary.repoRoot) throw badRequest("Project is not a git checkout");
+      if (!paths.length) throw badRequest("At least one path is required");
+      try {
+        await runGit(["add", "--", ...paths], summary.repoRoot);
+      } catch (error) {
+        throw conflict(sanitizeGitError(error, "Failed to stage files"));
+      }
+      const result = await this.getGitStatus(projectId);
+      return result;
+    },
+
+    async unstageFiles(projectId: string, paths: string[]): Promise<GitStatusResponse> {
+      const project = await ensureProject(projectId, db);
+      const summary = await buildSummary(project);
+      if (!summary.available || !summary.repoRoot) throw badRequest("Project is not a git checkout");
+      if (!paths.length) throw badRequest("At least one path is required");
+      try {
+        await runGit(["restore", "--staged", "--", ...paths], summary.repoRoot);
+      } catch (error) {
+        throw conflict(sanitizeGitError(error, "Failed to unstage files"));
+      }
+      const result = await this.getGitStatus(projectId);
+      return result;
+    },
+
+    async commitStaged(projectId: string, message: string): Promise<GitCommitResult> {
+      const project = await ensureProject(projectId, db);
+      const summary = await buildSummary(project);
+      if (!summary.available || !summary.repoRoot) throw badRequest("Project is not a git checkout");
+      const trimmedMessage = message.trim();
+      if (!trimmedMessage) throw badRequest("Commit message is required");
+      try {
+        const result = await runGit(
+          ["-c", "user.email=paperclip@local", "-c", "user.name=Paperclip", "commit", "-m", trimmedMessage],
+          summary.repoRoot,
+        );
+        const shaMatch = result.stdout.match(/\[(?:[^\]]+)\s+([0-9a-f]{6,40})\]/);
+        return { status: "success", message: null, sha: shaMatch?.[1] ?? null };
+      } catch (error) {
+        const msg = sanitizeGitError(error, "Commit failed");
+        if (/nothing to commit/i.test(msg)) {
+          return { status: "nothing_to_commit", message: msg, sha: null };
+        }
+        return { status: "error", message: msg, sha: null };
+      }
+    },
+
+    async getFileDiff(projectId: string, filePath: string, staged: boolean): Promise<GitDiffResponse> {
+      const project = await ensureProject(projectId, db);
+      const summary = await buildSummary(project);
+      if (!summary.available || !summary.repoRoot) return { diff: "", path: filePath };
+      const normalizedPath = normalizeRelativePath(filePath);
+      try {
+        const args = staged
+          ? ["diff", "--staged", "--", normalizedPath]
+          : ["diff", "--", normalizedPath];
+        const result = await runGit(args, summary.repoRoot);
+        return { diff: result.stdout, path: normalizedPath };
+      } catch {
+        return { diff: "", path: normalizedPath };
+      }
+    },
+
+    async pushFiles(projectId: string): Promise<GitPushResult> {
+      const project = await ensureProject(projectId, db);
+      const summary = await buildSummary(project);
+      if (!summary.available || !summary.repoRoot) throw badRequest("Project is not a git checkout");
+      try {
+        await runGit(["push"], summary.repoRoot);
+        return { status: "success", message: null };
+      } catch (error) {
+        const msg = sanitizeGitError(error, "Push failed");
+        const isAuthError = /auth|permission denied|could not read from remote repository|authentication/i.test(msg);
+        return { status: isAuthError ? "auth_error" : "error", message: msg };
+      }
     },
 
     async publishToRemote(

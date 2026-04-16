@@ -164,6 +164,26 @@ export const FRONTMATTER_FIELD_LABELS: Record<string, string> = {
   targetDate: "Target date",
 };
 
+// ── Git status badge ──────────────────────────────────────────────────
+
+const GIT_STATUS_COLORS: Record<string, string> = {
+  M: "text-yellow-400",
+  A: "text-green-400",
+  D: "text-red-400",
+  U: "text-blue-400",
+  R: "text-purple-400",
+  "?": "text-blue-400",
+};
+
+function GitStatusBadge({ status }: { status: string }) {
+  const colorClass = GIT_STATUS_COLORS[status] ?? "text-muted-foreground";
+  return (
+    <span className={`ml-auto shrink-0 font-mono text-[10px] font-semibold ${colorClass}`}>
+      {status === "?" ? "U" : status}
+    </span>
+  );
+}
+
 // ── File tree component ───────────────────────────────────────────────
 
 export function PackageFileTree({
@@ -179,6 +199,7 @@ export function PackageFileTree({
   wrapDirRow,
   wrapFileRow,
   fileRowClassName,
+  fileStatusMap,
   showCheckboxes = true,
   depth = 0,
 }: {
@@ -199,6 +220,8 @@ export function PackageFileTree({
   wrapFileRow?: (node: FileTreeNode, checked: boolean, row: ReactNode) => ReactNode;
   /** Optional additional className for file rows */
   fileRowClassName?: (node: FileTreeNode, checked: boolean) => string | undefined;
+  /** Optional map of file path → git status letter (M, A, D, U, R) for badges */
+  fileStatusMap?: Record<string, string>;
   showCheckboxes?: boolean;
   depth?: number;
 }) {
@@ -284,6 +307,7 @@ export function PackageFileTree({
                   wrapDirRow={wrapDirRow}
                   wrapFileRow={wrapFileRow}
                   fileRowClassName={fileRowClassName}
+                  fileStatusMap={fileStatusMap}
                   showCheckboxes={showCheckboxes}
                   depth={depth + 1}
                 />
@@ -328,6 +352,9 @@ export function PackageFileTree({
               </span>
               <span className="truncate" title={node.name}>{node.name}</span>
             </button>
+            {fileStatusMap?.[node.path] ? (
+              <GitStatusBadge status={fileStatusMap[node.path]} />
+            ) : null}
             {renderFileExtra?.(node, checked)}
           </div>
         );

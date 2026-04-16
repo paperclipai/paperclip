@@ -758,6 +758,81 @@ export function projectRoutes(db: Db) {
     res.json(result);
   });
 
+  router.get("/projects/:id/files/git-status", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+    assertBoard(req);
+    assertCompanyAccess(req, project.companyId);
+    const result = await filesSvc.getGitStatus(id);
+    res.json(result);
+  });
+
+  router.post("/projects/:id/files/git-stage", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+    assertBoard(req);
+    assertCompanyAccess(req, project.companyId);
+    const { paths } = req.body as { paths?: unknown };
+    if (!Array.isArray(paths) || paths.length === 0) {
+      res.status(400).json({ error: "paths array is required" }); return;
+    }
+    const result = await filesSvc.stageFiles(id, paths.map(String));
+    res.json(result);
+  });
+
+  router.post("/projects/:id/files/git-unstage", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+    assertBoard(req);
+    assertCompanyAccess(req, project.companyId);
+    const { paths } = req.body as { paths?: unknown };
+    if (!Array.isArray(paths) || paths.length === 0) {
+      res.status(400).json({ error: "paths array is required" }); return;
+    }
+    const result = await filesSvc.unstageFiles(id, paths.map(String));
+    res.json(result);
+  });
+
+  router.post("/projects/:id/files/git-commit", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+    assertBoard(req);
+    assertCompanyAccess(req, project.companyId);
+    const { message } = req.body as { message?: string };
+    if (!message || typeof message !== "string" || !message.trim()) {
+      res.status(400).json({ error: "message is required" }); return;
+    }
+    const result = await filesSvc.commitStaged(id, message);
+    res.json(result);
+  });
+
+  router.get("/projects/:id/files/git-diff", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+    assertBoard(req);
+    assertCompanyAccess(req, project.companyId);
+    const filePath = req.query.path as string | undefined;
+    if (!filePath) { res.status(400).json({ error: "path is required" }); return; }
+    const staged = req.query.staged === "true";
+    const result = await filesSvc.getFileDiff(id, filePath, staged);
+    res.json(result);
+  });
+
+  router.post("/projects/:id/files/git-push", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+    assertBoard(req);
+    assertCompanyAccess(req, project.companyId);
+    const result = await filesSvc.pushFiles(id);
+    res.json(result);
+  });
+
   router.delete("/projects/:id", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);

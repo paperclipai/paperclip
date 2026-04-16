@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import type { ProjectFileDetail, ProjectFilesBranch, ProjectFilesBranchSyncDetail, ProjectFilesBranchSyncResult, ProjectFilesTreeEntry } from "@paperclipai/shared";
-import { AlertCircle, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Check, CheckCircle2, ChevronLeft, ChevronRight, Cloud, Copy, FilePlus2, FolderPlus, FolderTree, GitBranch, GitMerge, Loader2, RefreshCw, Save, UploadCloud, XCircle } from "lucide-react";
+import type { GitStatusEntry, GitStatusResponse, ProjectFileDetail, ProjectFilesBranch, ProjectFilesBranchSyncDetail, ProjectFilesBranchSyncResult, ProjectFilesTreeEntry } from "@paperclipai/shared";
+import { AlertCircle, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Check, CheckCircle2, ChevronLeft, ChevronRight, Cloud, Copy, FilePlus2, FolderPlus, FolderTree, GitBranch, GitCommitHorizontal, GitMerge, Loader2, Minus, Plus, RefreshCw, Save, UploadCloud, XCircle } from "lucide-react";
 import { projectsApi } from "../api/projects";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
@@ -76,6 +76,131 @@ function BranchSyncDetailRow({ detail }: { detail: ProjectFilesBranchSyncDetail 
   );
 }
 
+const GIT_STATUS_LABEL: Record<string, { letter: string; color: string }> = {
+  M: { letter: "M", color: "text-yellow-400" },
+  A: { letter: "A", color: "text-green-400" },
+  D: { letter: "D", color: "text-red-400" },
+  R: { letter: "R", color: "text-purple-400" },
+  "?": { letter: "U", color: "text-blue-400" },
+  C: { letter: "C", color: "text-green-300" },
+};
+
+function gitStatusBadge(status: string) {
+  const cfg = GIT_STATUS_LABEL[status] ?? { letter: status, color: "text-muted-foreground" };
+  return (
+    <span className={`shrink-0 font-mono text-[10px] font-semibold ${cfg.color}`}>{cfg.letter}</span>
+  );
+}
+
+function GitFileRow({
+  entry,
+  staged,
+  selected,
+  onSelect,
+  onStage,
+  onUnstage,
+}: {
+  entry: GitStatusEntry;
+  staged: boolean;
+  selected: boolean;
+  onSelect: () => void;
+  onStage?: () => void;
+  onUnstage?: () => void;
+}) {
+  const statusLetter = staged ? entry.indexStatus : (entry.isUntracked ? "?" : entry.workingStatus);
+  const fileName = entry.path.split("/").pop() ?? entry.path;
+  return (
+    <div
+      className={`group flex items-center gap-1 rounded px-2 py-1 text-sm cursor-pointer hover:bg-accent/30 ${selected ? "bg-accent/20 text-foreground" : "text-muted-foreground"}`}
+      onClick={onSelect}
+    >
+      <span className="min-w-0 flex-1 truncate font-mono text-xs" title={entry.path}>
+        {fileName}
+        <span className="ml-1 text-[10px] opacity-50">{entry.path !== fileName ? entry.path.slice(0, entry.path.lastIndexOf("/")) : ""}</span>
+      </span>
+      {gitStatusBadge(statusLetter)}
+      {staged && onUnstage ? (
+        <button
+          type="button"
+          title="Unstage"
+          className="ml-1 shrink-0 rounded p-0.5 opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
+          onClick={(e) => { e.stopPropagation(); onUnstage(); }}
+        >
+          <Minus className="h-3 w-3" />
+        </button>
+      ) : null}
+      {!staged && onStage ? (
+        <button
+          type="button"
+          title="Stage"
+          className="ml-1 shrink-0 rounded p-0.5 opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
+          onClick={(e) => { e.stopPropagation(); onStage(); }}
+        >
+          <Plus className="h-3 w-3" />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function GitSectionHeader({
+  label,
+  count,
+  onStageAll,
+  onUnstageAll,
+}: {
+  label: string;
+  count: number;
+  onStageAll?: () => void;
+  onUnstageAll?: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-1 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+      <span className="flex-1">{label} <span className="font-normal opacity-60">({count})</span></span>
+      {onStageAll ? (
+        <button type="button" title="Stage all" className="rounded p-0.5 hover:bg-accent hover:text-foreground" onClick={onStageAll}>
+          <Plus className="h-3 w-3" />
+        </button>
+      ) : null}
+      {onUnstageAll ? (
+        <button type="button" title="Unstage all" className="rounded p-0.5 hover:bg-accent hover:text-foreground" onClick={onUnstageAll}>
+          <Minus className="h-3 w-3" />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function DiffViewer({ diff, path }: { diff: string; path: string }) {
+  if (!diff) {
+    return (
+      <div className="rounded-lg border border-dashed border-border p-8 text-sm text-muted-foreground">
+        No diff available for this file.
+      </div>
+    );
+  }
+  const lines = diff.split("\n");
+  return (
+    <div className="rounded-lg border border-border overflow-auto max-h-[70vh]">
+      <div className="px-3 py-2 border-b border-border text-xs font-mono text-muted-foreground bg-muted/30">
+        {path}
+      </div>
+      <pre className="text-xs font-mono leading-5 p-3 min-w-0">
+        {lines.map((line, i) => {
+          let cls = "text-muted-foreground";
+          if (line.startsWith("+") && !line.startsWith("+++")) cls = "text-green-400 bg-green-400/10";
+          else if (line.startsWith("-") && !line.startsWith("---")) cls = "text-red-400 bg-red-400/10";
+          else if (line.startsWith("@@")) cls = "text-blue-400";
+          else if (line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("---") || line.startsWith("+++")) cls = "text-muted-foreground opacity-60";
+          return (
+            <div key={i} className={`${cls} block whitespace-pre`}>{line || " "}</div>
+          );
+        })}
+      </pre>
+    </div>
+  );
+}
+
 export function ProjectFilesTab({
   projectId,
   companyId,
@@ -104,6 +229,9 @@ export function ProjectFilesTab({
   const [editorValue, setEditorValue] = useState("");
   const [markdownViewMode, setMarkdownViewMode] = useState<"preview" | "source">("preview");
   const [compactTreePane, setCompactTreePane] = useState(false);
+  const [gitViewActive, setGitViewActive] = useState(false);
+  const [gitSelectedFile, setGitSelectedFile] = useState<{ path: string; staged: boolean } | null>(null);
+  const [commitMessage, setCommitMessage] = useState("");
   const entriesByDirRef = useRef<TreeCache>({});
   const selectedPathRef = useRef<string | null>(null);
   const loadingDirKeysRef = useRef<Set<string>>(new Set());
@@ -113,6 +241,21 @@ export function ProjectFilesTab({
     queryKey: queryKeys.projects.filesSummary(projectId, companyId),
     queryFn: () => projectsApi.filesSummary(projectId, companyId),
     enabled: Boolean(projectId && companyId),
+  });
+
+  const gitStatusQuery = useQuery({
+    queryKey: queryKeys.projects.gitStatus(projectId, companyId),
+    queryFn: () => projectsApi.gitStatus(projectId, companyId),
+    enabled: Boolean(projectId && companyId && summary?.gitEnabled),
+    refetchInterval: gitViewActive ? 4000 : false,
+  });
+
+  const gitDiffQuery = useQuery({
+    queryKey: gitSelectedFile
+      ? queryKeys.projects.fileDiff(projectId, gitSelectedFile.path, gitSelectedFile.staged, companyId)
+      : ["projects", "file-diff", "none"],
+    queryFn: () => projectsApi.fileDiff(projectId, gitSelectedFile!.path, gitSelectedFile!.staged, companyId),
+    enabled: Boolean(gitSelectedFile),
   });
 
   const fileTree = useMemo(() => fileNodesFromCache(entriesByDir), [entriesByDir]);
@@ -331,6 +474,53 @@ export function ProjectFilesTab({
     },
   });
 
+  const stageFiles = useMutation({
+    mutationFn: (paths: string[]) => projectsApi.stageFiles(projectId, { paths }, companyId),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.projects.gitStatus(projectId, companyId), data);
+    },
+    onError: (err) => pushToast({ title: err instanceof Error ? err.message : "Stage failed", tone: "error" }),
+  });
+
+  const unstageFiles = useMutation({
+    mutationFn: (paths: string[]) => projectsApi.unstageFiles(projectId, { paths }, companyId),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.projects.gitStatus(projectId, companyId), data);
+    },
+    onError: (err) => pushToast({ title: err instanceof Error ? err.message : "Unstage failed", tone: "error" }),
+  });
+
+  const commitStaged = useMutation({
+    mutationFn: (message: string) => projectsApi.commitStaged(projectId, { message }, companyId),
+    onSuccess: async (result) => {
+      if (result.status === "success") {
+        pushToast({ title: `Committed${result.sha ? ` (${result.sha})` : ""}`, tone: "success" });
+        setCommitMessage("");
+        setGitSelectedFile(null);
+        await queryClient.invalidateQueries({ queryKey: queryKeys.projects.gitStatus(projectId, companyId) });
+        await refetch();
+      } else if (result.status === "nothing_to_commit") {
+        pushToast({ title: "Nothing to commit", tone: "error" });
+      } else {
+        pushToast({ title: result.message ?? "Commit failed", tone: "error" });
+      }
+    },
+    onError: (err) => pushToast({ title: err instanceof Error ? err.message : "Commit failed", tone: "error" }),
+  });
+
+  const pushFiles = useMutation({
+    mutationFn: () => projectsApi.pushFiles(projectId, companyId),
+    onSuccess: async (result) => {
+      if (result.status === "success") {
+        pushToast({ title: "Pushed to remote", tone: "success" });
+        await refetch();
+      } else {
+        pushToast({ title: result.message ?? "Push failed", tone: "error" });
+      }
+    },
+    onError: (err) => pushToast({ title: err instanceof Error ? err.message : "Push failed", tone: "error" }),
+  });
+
   const createPath = useMutation({
     mutationFn: async () => {
       if (createPathOpen === "file") {
@@ -376,6 +566,21 @@ export function ProjectFilesTab({
     () => filterBranches((summary?.branches ?? []).filter((b) => b.kind === "remote"), branchSearch),
     [branchSearch, summary?.branches],
   );
+
+  const gitEntries: GitStatusResponse["entries"] = gitStatusQuery.data?.entries ?? [];
+  const stagedEntries = gitEntries.filter((e) => e.isStaged);
+  const unstagedEntries = gitEntries.filter((e) => !e.isUntracked && e.isUnstaged && !e.isStaged);
+  const untrackedEntries = gitEntries.filter((e) => e.isUntracked);
+
+  const fileStatusMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const entry of gitEntries) {
+      if (entry.isUntracked) { map[entry.path] = "?"; }
+      else if (entry.isStaged) { map[entry.path] = entry.indexStatus; }
+      else if (entry.isUnstaged) { map[entry.path] = entry.workingStatus; }
+    }
+    return map;
+  }, [gitEntries]);
 
   const selectedFile = selectedFileQuery.data ?? null;
   const fileDirty = selectedFile?.textContent != null && editorValue !== selectedFile.textContent;
@@ -521,21 +726,52 @@ export function ProjectFilesTab({
       <div className={`grid gap-4 ${treePaneColumns}`}>
         <div className="rounded-lg border border-border p-3 space-y-3">
           <div className="flex items-center gap-1">
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2" onClick={() => void refreshAll()}>
-                    <FolderTree className="h-4 w-4" />
-                    Files
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent sideOffset={4}>
-                  Refresh tree
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+            <div className="inline-flex items-center rounded-md border border-border bg-background p-0.5">
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="sm"
+                      variant={gitViewActive ? "ghost" : "secondary"}
+                      className="h-7 gap-1.5 px-2 text-xs"
+                      onClick={() => setGitViewActive(false)}
+                    >
+                      <FolderTree className="h-3.5 w-3.5" />
+                      {!compactTreePane ? "Files" : null}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent sideOffset={4}>File explorer</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="sm"
+                      variant={gitViewActive ? "secondary" : "ghost"}
+                      className="h-7 gap-1.5 px-2 text-xs"
+                      onClick={() => { setGitViewActive(true); void gitStatusQuery.refetch(); }}
+                      disabled={!summary.gitEnabled}
+                    >
+                      <GitCommitHorizontal className="h-3.5 w-3.5" />
+                      {!compactTreePane ? (
+                        <span className="flex items-center gap-1">
+                          Source Control
+                          {gitEntries.length > 0 ? (
+                            <span className="rounded-full bg-primary/20 px-1.5 py-0 text-[10px] font-semibold text-primary">
+                              {gitEntries.length}
+                            </span>
+                          ) : null}
+                        </span>
+                      ) : null}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent sideOffset={4}>{summary.gitEnabled ? "Source control" : "Git not available"}</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </div>
             <div className="ml-auto flex items-center gap-1">
-              {!compactTreePane ? (
+              {!gitViewActive && !compactTreePane ? (
                 <>
                   <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openPathDialog("file")}>
                     <FilePlus2 className="h-4 w-4" />
@@ -556,55 +792,194 @@ export function ProjectFilesTab({
               </Button>
             </div>
           </div>
-          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground px-2">
-            <label className="flex items-center gap-2 cursor-pointer" title="Show ignored folders">
-              <input
-                type="checkbox"
-                checked={showIgnored}
-                onChange={(event) => {
-                  setShowIgnored(event.target.checked);
-                  setEntriesByDir({});
-                  entriesByDirRef.current = {};
-                  setShowReloadHint(false);
-                }}
-              />
-              {!compactTreePane ? "Show ignored folders" : null}
-            </label>
-            {summary.rootPath ? (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <div className="flex items-center gap-1">
-                      {!compactTreePane ? <span className="cursor-default">Folder path</span> : null}
-                      <CopyText text={summary.rootPath} copiedLabel="Path copied">
-                        <Copy className="h-3.5 w-3.5" />
-                      </CopyText>
+
+          {gitViewActive ? (
+            <div className="space-y-2">
+              {gitStatusQuery.isLoading ? (
+                <p className="px-2 py-4 text-xs text-muted-foreground flex items-center gap-2">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading changes...
+                </p>
+              ) : gitEntries.length === 0 ? (
+                <p className="px-2 py-6 text-center text-xs text-muted-foreground">No changes</p>
+              ) : (
+                <div className="max-h-[45vh] overflow-auto space-y-1">
+                  {stagedEntries.length > 0 ? (
+                    <div>
+                      <GitSectionHeader
+                        label="Staged"
+                        count={stagedEntries.length}
+                        onUnstageAll={() => unstageFiles.mutate(stagedEntries.map((e) => e.path))}
+                      />
+                      {stagedEntries.map((entry) => (
+                        <GitFileRow
+                          key={`staged:${entry.path}`}
+                          entry={entry}
+                          staged
+                          selected={gitSelectedFile?.path === entry.path && gitSelectedFile?.staged === true}
+                          onSelect={() => setGitSelectedFile({ path: entry.path, staged: true })}
+                          onUnstage={() => unstageFiles.mutate([entry.path])}
+                        />
+                      ))}
                     </div>
-                  </TooltipTrigger>
-                  <TooltipContent sideOffset={4} className="max-w-md break-all font-mono">
-                    {summary.rootPath}
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            ) : null}
-          </div>
-          <div className="max-h-[70vh] overflow-auto">
-            <PackageFileTree
-              nodes={fileTree}
-              selectedFile={selectedPath}
-              expandedDirs={expandedDirs}
-              onToggleDir={(dirPath) => { void toggleDir(dirPath); }}
-              onSelectFile={(nextPath) => setSelectedPath(nextPath)}
-              wrapDirRow={wrapNodeWithContextMenu}
-              wrapFileRow={(_node, _checked, row) => wrapNodeWithContextMenu(_node, row)}
-              showCheckboxes={false}
-            />
-            {loadingDirs.has("") ? <p className="px-3 py-2 text-xs text-muted-foreground">Loading files...</p> : null}
-          </div>
+                  ) : null}
+
+                  {unstagedEntries.length > 0 ? (
+                    <div>
+                      <GitSectionHeader
+                        label="Changes"
+                        count={unstagedEntries.length}
+                        onStageAll={() => stageFiles.mutate(unstagedEntries.map((e) => e.path))}
+                      />
+                      {unstagedEntries.map((entry) => (
+                        <GitFileRow
+                          key={`unstaged:${entry.path}`}
+                          entry={entry}
+                          staged={false}
+                          selected={gitSelectedFile?.path === entry.path && gitSelectedFile?.staged === false}
+                          onSelect={() => setGitSelectedFile({ path: entry.path, staged: false })}
+                          onStage={() => stageFiles.mutate([entry.path])}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {untrackedEntries.length > 0 ? (
+                    <div>
+                      <GitSectionHeader
+                        label="Untracked"
+                        count={untrackedEntries.length}
+                        onStageAll={() => stageFiles.mutate(untrackedEntries.map((e) => e.path))}
+                      />
+                      {untrackedEntries.map((entry) => (
+                        <GitFileRow
+                          key={`untracked:${entry.path}`}
+                          entry={entry}
+                          staged={false}
+                          selected={gitSelectedFile?.path === entry.path && gitSelectedFile?.staged === false}
+                          onSelect={() => setGitSelectedFile({ path: entry.path, staged: false })}
+                          onStage={() => stageFiles.mutate([entry.path])}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
+              <div className="space-y-2 border-t border-border pt-2">
+                <textarea
+                  className="w-full resize-none rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                  rows={3}
+                  placeholder="Commit message..."
+                  value={commitMessage}
+                  onChange={(e) => setCommitMessage(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && commitMessage.trim() && stagedEntries.length > 0) {
+                      commitStaged.mutate(commitMessage);
+                    }
+                  }}
+                />
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => commitStaged.mutate(commitMessage)}
+                    disabled={!commitMessage.trim() || stagedEntries.length === 0 || commitStaged.isPending}
+                  >
+                    {commitStaged.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitCommitHorizontal className="h-3.5 w-3.5" />}
+                    Commit
+                  </Button>
+                  {summary.hasRemote ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => pushFiles.mutate()}
+                      disabled={pushFiles.isPending}
+                      title="Push to remote"
+                    >
+                      {pushFiles.isPending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <ArrowUpFromLine className="h-3.5 w-3.5" />
+                      )}
+                      Push
+                      {summary.aheadBehind?.ahead ? (
+                        <span className="ml-1 text-xs opacity-70">↑{summary.aheadBehind.ahead}</span>
+                      ) : null}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground px-2">
+                <label className="flex items-center gap-2 cursor-pointer" title="Show ignored folders">
+                  <input
+                    type="checkbox"
+                    checked={showIgnored}
+                    onChange={(event) => {
+                      setShowIgnored(event.target.checked);
+                      setEntriesByDir({});
+                      entriesByDirRef.current = {};
+                      setShowReloadHint(false);
+                    }}
+                  />
+                  {!compactTreePane ? "Show ignored folders" : null}
+                </label>
+                {summary.rootPath ? (
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="flex items-center gap-1">
+                          {!compactTreePane ? <span className="cursor-default">Folder path</span> : null}
+                          <CopyText text={summary.rootPath} copiedLabel="Path copied">
+                            <Copy className="h-3.5 w-3.5" />
+                          </CopyText>
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent sideOffset={4} className="max-w-md break-all font-mono">
+                        {summary.rootPath}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                ) : null}
+              </div>
+              <div className="max-h-[70vh] overflow-auto">
+                <PackageFileTree
+                  nodes={fileTree}
+                  selectedFile={selectedPath}
+                  expandedDirs={expandedDirs}
+                  onToggleDir={(dirPath) => { void toggleDir(dirPath); }}
+                  onSelectFile={(nextPath) => setSelectedPath(nextPath)}
+                  wrapDirRow={wrapNodeWithContextMenu}
+                  wrapFileRow={(_node, _checked, row) => wrapNodeWithContextMenu(_node, row)}
+                  fileStatusMap={fileStatusMap}
+                  showCheckboxes={false}
+                />
+                {loadingDirs.has("") ? <p className="px-3 py-2 text-xs text-muted-foreground">Loading files...</p> : null}
+              </div>
+            </>
+          )}
         </div>
 
         <div className="rounded-lg border border-border p-4 space-y-4 min-w-0">
-          {selectedPath ? (
+          {gitViewActive && gitSelectedFile ? (
+            <>
+              <div className="flex items-center gap-2 min-w-0">
+                <p className="truncate font-mono text-sm flex-1" title={gitSelectedFile.path}>{gitSelectedFile.path}</p>
+                <span className="shrink-0 text-xs text-muted-foreground">{gitSelectedFile.staged ? "staged" : "working tree"}</span>
+              </div>
+              {gitDiffQuery.isLoading ? (
+                <p className="text-sm text-muted-foreground flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Loading diff...</p>
+              ) : (
+                <DiffViewer diff={gitDiffQuery.data?.diff ?? ""} path={gitSelectedFile.path} />
+              )}
+            </>
+          ) : gitViewActive ? (
+            <p className="text-sm text-muted-foreground">Select a changed file to view its diff.</p>
+          ) : null}
+
+          {!gitViewActive && selectedPath ? (
             <div className="flex flex-wrap items-center gap-2">
               <div className="min-w-0 flex-1">
                 <p className="truncate font-mono text-sm" title={selectedPath}>{selectedPath}</p>
@@ -649,7 +1024,7 @@ export function ProjectFilesTab({
             </div>
           ) : null}
 
-          {!selectedPath ? (
+          {!gitViewActive ? (!selectedPath ? (
             <p className="text-sm text-muted-foreground">Select a file to preview it.</p>
           ) : selectedFileQuery.isLoading ? (
             <p className="text-sm text-muted-foreground">Loading file...</p>
@@ -680,7 +1055,7 @@ export function ProjectFilesTab({
             <div className="rounded-lg border border-dashed border-border p-8 text-sm text-muted-foreground">
               No preview available.
             </div>
-          )}
+          )) : null}
         </div>
       </div>
 

@@ -80,6 +80,11 @@ export type {
   ProjectFilesBranchSyncAction,
   ProjectFilesBranchSyncDetail,
   ProjectFilesBranchSyncResult,
+  GitStatusEntry,
+  GitStatusResponse,
+  GitDiffResponse,
+  GitCommitResult,
+  GitPushResult,
 } from "./project.js";
 export type {
   ExecutionWorkspace,

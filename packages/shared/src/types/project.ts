@@ -159,6 +159,36 @@ export interface ProjectFilesBranchSyncResult {
   message: string | null;
 }
 
+export interface GitStatusEntry {
+  path: string;
+  oldPath: string | null;
+  indexStatus: string;
+  workingStatus: string;
+  isStaged: boolean;
+  isUnstaged: boolean;
+  isUntracked: boolean;
+}
+
+export interface GitStatusResponse {
+  entries: GitStatusEntry[];
+}
+
+export interface GitDiffResponse {
+  diff: string;
+  path: string;
+}
+
+export interface GitCommitResult {
+  status: "success" | "error" | "nothing_to_commit";
+  message: string | null;
+  sha: string | null;
+}
+
+export interface GitPushResult {
+  status: "success" | "error" | "auth_error";
+  message: string | null;
+}
+
 export interface Project {
   id: string;
   companyId: string;

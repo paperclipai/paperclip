@@ -1,4 +1,8 @@
 import type {
+  GitCommitResult,
+  GitDiffResponse,
+  GitPushResult,
+  GitStatusResponse,
   Project,
   ProjectFileDetail,
   ProjectFilesBranchSyncResult,
@@ -88,6 +92,20 @@ export const projectsApi = {
       projectPath(projectId, companyId, "/files/publish-remote"),
       { remoteUrl },
     ),
+  gitStatus: (projectId: string, companyId?: string) =>
+    api.get<GitStatusResponse>(projectPath(projectId, companyId, "/files/git-status")),
+  stageFiles: (projectId: string, data: { paths: string[] }, companyId?: string) =>
+    api.post<GitStatusResponse>(projectPath(projectId, companyId, "/files/git-stage"), data),
+  unstageFiles: (projectId: string, data: { paths: string[] }, companyId?: string) =>
+    api.post<GitStatusResponse>(projectPath(projectId, companyId, "/files/git-unstage"), data),
+  commitStaged: (projectId: string, data: { message: string }, companyId?: string) =>
+    api.post<GitCommitResult>(projectPath(projectId, companyId, "/files/git-commit"), data),
+  fileDiff: (projectId: string, filePath: string, staged: boolean, companyId?: string) =>
+    api.get<GitDiffResponse>(
+      projectPath(projectId, companyId, `/files/git-diff?path=${encodeURIComponent(filePath)}${staged ? "&staged=true" : ""}`),
+    ),
+  pushFiles: (projectId: string, companyId?: string) =>
+    api.post<GitPushResult>(projectPath(projectId, companyId, "/files/git-push"), {}),
   removeWorkspace: (projectId: string, workspaceId: string, companyId?: string) =>
     api.delete<ProjectWorkspace>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`)),
   remove: (id: string, companyId?: string) => api.delete<Project>(projectPath(id, companyId)),
