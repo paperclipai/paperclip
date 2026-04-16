@@ -23,6 +23,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "instance.settings.register",
     "agent.tools.register",
     "ui.action.register",
+    "activity.log.write",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
