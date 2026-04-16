@@ -1720,8 +1720,14 @@ function PromptsTab({
     externalBundleRef.current = null;
   }, [agent.id]);
 
-  const getCapabilities = useAdapterCapabilities();
-  const isLocal = getCapabilities(agent.adapterType).supportsInstructionsBundle;
+  const isLocal =
+    agent.adapterType === "claude_local" ||
+    agent.adapterType === "codex_local" ||
+    agent.adapterType === "opencode_local" ||
+    agent.adapterType === "pi_local" ||
+    agent.adapterType === "hermes_local" ||
+    agent.adapterType === "cursor" ||
+    agent.adapterType === "openrouter_local";
 
   const { data: bundle, isLoading: bundleLoading } = useQuery({
     queryKey: queryKeys.agents.instructionsBundle(agent.id),
