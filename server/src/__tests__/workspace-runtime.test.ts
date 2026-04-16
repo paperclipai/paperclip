@@ -1341,11 +1341,6 @@ describe("realizeExecutionWorkspace", () => {
       );
       await fs.chmod(fakePnpmPath, 0o755);
 
-      // Block global paperclipai so the script takes the fast fallback config path.
-      const fakePaperclipAiPath = path.join(fakeBin, "paperclipai");
-      await fs.writeFile(fakePaperclipAiPath, "#!/bin/sh\nexit 1\n", "utf8");
-      await fs.chmod(fakePaperclipAiPath, 0o755);
-
       const result = await execFileAsync(scriptPath, [], {
         cwd: worktreeRoot,
         env: {

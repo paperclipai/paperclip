@@ -463,6 +463,7 @@ async function executeProcess(input: {
   env?: NodeJS.ProcessEnv;
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
+  timeoutMs?: number;
 }): Promise<{
   stdout: string;
   stderr: string;
@@ -492,6 +493,13 @@ async function executeProcess(input: {
     });
     child.on("error", reject);
     child.on("close", (code) => resolve({ stdout, stderr, code }));
+    if (input.timeoutMs && input.timeoutMs > 0) {
+      const timer = setTimeout(() => {
+        terminateChildProcess(child);
+        reject(new Error(`Process timed out after ${Math.round(input.timeoutMs! / 1000)}s`));
+      }, input.timeoutMs);
+      child.once("close", () => clearTimeout(timer));
+    }
   });
   const stdout = proc.stdout.finish();
   const stderr = proc.stderr.finish();
@@ -742,6 +750,7 @@ async function runWorkspaceCommand(input: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   label: string;
+  timeoutMs?: number;
 }) {
   const shell = resolveShell();
   const proc = await executeProcess({
@@ -749,6 +758,7 @@ async function runWorkspaceCommand(input: {
     args: ["-c", input.resolvedCommand ?? input.command],
     cwd: input.cwd,
     env: input.env,
+    timeoutMs: input.timeoutMs,
   });
   if (proc.code === 0) return;
 
@@ -833,6 +843,7 @@ async function recordWorkspaceCommandOperation(
     label: string;
     metadata?: Record<string, unknown> | null;
     successMessage?: string | null;
+    timeoutMs?: number;
   },
 ) {
   if (!recorder) {
@@ -855,6 +866,7 @@ async function recordWorkspaceCommandOperation(
         args: ["-c", input.resolvedCommand ?? input.command],
         cwd: input.cwd,
         env: input.env,
+        timeoutMs: input.timeoutMs,
       });
       stdout = result.stdout;
       stderr = result.stderr;
@@ -1669,6 +1681,13 @@ export async function runWorkspaceJobForControl(input: {
     throw new Error(`Workspace job "${resolved.name}" is missing command`);
   }
 
+  const MAX_JOB_TIMEOUT_MS = 10 * 60 * 1000;
+  const configuredTimeoutSec = asNumber(input.command.timeoutSec, 0);
+  const timeoutMs =
+    configuredTimeoutSec > 0
+      ? Math.min(MAX_JOB_TIMEOUT_MS, Math.max(1000, configuredTimeoutSec * 1000))
+      : MAX_JOB_TIMEOUT_MS;
+
   await ensureServerWorkspaceLinksCurrent(resolved.cwd);
   return await recordWorkspaceCommandOperation(input.recorder, {
     phase: "workspace_provision",
@@ -1682,6 +1701,7 @@ export async function runWorkspaceJobForControl(input: {
       ...(input.metadata ?? {}),
     },
     successMessage: `Completed workspace job "${resolved.name}"\n`,
+    timeoutMs,
   });
 }
 

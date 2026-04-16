@@ -427,7 +427,7 @@ const heartbeatRunListResultColumns = {
 const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
   case
     when ${heartbeatRuns.resultJson} is null then null
-    when pg_column_size(${heartbeatRuns.resultJson}) <= ${HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES}
+    when octet_length(${heartbeatRuns.resultJson}::text) <= ${HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES}
       then ${heartbeatRuns.resultJson}
     else jsonb_strip_nulls(
       jsonb_build_object(
@@ -464,7 +464,7 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
         ),
         'truncated', true,
         'truncationReason', 'oversized_result_json',
-        'originalSizeBytes', pg_column_size(${heartbeatRuns.resultJson})
+        'originalSizeBytes', octet_length(${heartbeatRuns.resultJson}::text)
       )
     )
   end

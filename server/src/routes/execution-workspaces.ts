@@ -185,6 +185,21 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(422).json({ error: "Selected runtime service is not defined in this execution workspace runtime config" });
       return;
     }
+    if (
+      selectedRuntimeServiceId
+      && (selectedServiceIndex === undefined || selectedServiceIndex === null)
+      && !workspaceCommand
+    ) {
+      const liveConfigIndex = (existing.runtimeServices ?? []).find(
+        (s) => s.id === selectedRuntimeServiceId,
+      )?.configIndex;
+      if (liveConfigIndex === undefined || liveConfigIndex === null) {
+        res.status(422).json({
+          error: "Runtime service has no config position — it may have been registered before this workspace's runtime config was defined. Re-register the service or select it by service index instead.",
+        });
+        return;
+      }
+    }
     if (workspaceCommand?.kind === "job" && action !== "run") {
       res.status(422).json({ error: `Workspace job "${workspaceCommand.name}" can only be run` });
       return;
@@ -370,24 +385,16 @@ export function executionWorkspaceRoutes(db: Db) {
             : selectedRuntimeServiceId
               ? (existing.runtimeServices ?? []).find((s) => s.id === selectedRuntimeServiceId)?.configIndex ?? null
               : null;
-        // Guard: if targeting by runtimeServiceId but configIndex is null (service was
-        // registered without a config position), falling through with serviceIndex=null
-        // would apply the action to ALL services. Preserve current state instead.
         const nextRuntimeState: {
           desiredState: "running" | "stopped";
           serviceStates: Record<string, "running" | "stopped"> | null | undefined;
-        } = selectedRuntimeServiceId && (resolvedServiceIndex === undefined || resolvedServiceIndex === null)
-          ? {
-              desiredState: currentDesiredState,
-              serviceStates: existing.config?.serviceStates ?? null,
-            }
-          : buildWorkspaceRuntimeDesiredStatePatch({
-              config: { workspaceRuntime: effectiveRuntimeConfig },
-              currentDesiredState,
-              currentServiceStates: existing.config?.serviceStates ?? null,
-              action,
-              serviceIndex: resolvedServiceIndex,
-            });
+        } = buildWorkspaceRuntimeDesiredStatePatch({
+          config: { workspaceRuntime: effectiveRuntimeConfig },
+          currentDesiredState,
+          currentServiceStates: existing.config?.serviceStates ?? null,
+          action,
+          serviceIndex: resolvedServiceIndex,
+        });
         const metadata = mergeExecutionWorkspaceConfig(existing.metadata as Record<string, unknown> | null, {
           desiredState: nextRuntimeState.desiredState,
           serviceStates: nextRuntimeState.serviceStates,

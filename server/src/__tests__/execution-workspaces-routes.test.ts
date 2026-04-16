@@ -21,6 +21,23 @@ function registerServiceMocks() {
     logActivity: vi.fn(async () => undefined),
     workspaceOperationService: () => mockWorkspaceOperationService,
   }));
+  vi.doMock("../routes/workspace-runtime-service-authz.js", () => ({
+    assertCanManageExecutionWorkspaceRuntimeServices: vi.fn(async () => undefined),
+    assertCanManageProjectWorkspaceRuntimeServices: vi.fn(async () => undefined),
+  }));
+  vi.doMock("../services/workspace-runtime.js", () => ({
+    startRuntimeServicesForWorkspaceControl: vi.fn(async () => undefined),
+    stopRuntimeServicesForExecutionWorkspace: vi.fn(async () => undefined),
+    normalizeAdapterManagedRuntimeServices: vi.fn(async () => []),
+    buildWorkspaceRuntimeDesiredStatePatch: vi.fn(() => ({ desiredState: "stopped", serviceStates: null })),
+    mergeExecutionWorkspaceConfig: vi.fn((meta: unknown, patch: unknown) => patch),
+    listConfiguredRuntimeServiceEntries: vi.fn(() => []),
+    resolveShell: vi.fn(() => "/bin/sh"),
+  }));
+  vi.doMock("../services/execution-workspaces.js", () => ({
+    mergeExecutionWorkspaceConfig: vi.fn((meta: unknown, patch: unknown) => patch),
+    readExecutionWorkspaceConfig: vi.fn(() => null),
+  }));
 }
 
 async function createApp() {
@@ -63,6 +80,29 @@ describe("execution workspace routes", () => {
         projectWorkspaceId: null,
       },
     ]);
+  });
+
+  it("returns 422 when targeting a runtime service by id whose configIndex is null", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "ws-1",
+      companyId: "company-1",
+      cwd: "/workspace/path",
+      projectWorkspaceId: null,
+      projectId: null,
+      sourceIssueId: null,
+      metadata: null,
+      config: null,
+      runtimeServices: [
+        { id: "11111111-1111-4111-8111-111111111111", configIndex: null, status: "running" },
+      ],
+    });
+
+    const res = await request(await createApp())
+      .post("/api/execution-workspaces/ws-1/runtime-services/stop")
+      .send({ runtimeServiceId: "11111111-1111-4111-8111-111111111111" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/no config position/);
   });
 
   it("uses summary mode for lightweight workspace lookups", async () => {
