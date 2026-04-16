@@ -32,7 +32,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
-import { infrastructureHealthRoutes } from "./routes/infrastructure-health.js";
+import { infrastructureHealthRoutes, PAPERCLIP_HEALTH_URL } from "./routes/infrastructure-health.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -190,7 +190,9 @@ export async function createApp(
       companyDeletionEnabled: opts.companyDeletionEnabled,
     }),
   );
-  api.use("/infrastructure/health", infrastructureHealthRoutes());
+  if (PAPERCLIP_HEALTH_URL) {
+    api.use("/infrastructure/health", infrastructureHealthRoutes());
+  }
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));
   api.use(agentRoutes(db));

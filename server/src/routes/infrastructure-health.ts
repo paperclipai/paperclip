@@ -1,16 +1,30 @@
 import { Router } from "express";
 
-const VIBE_HEALTH_URL = process.env.VIBE_HEALTH_URL ?? "http://vibe:8080";
+/**
+ * Proxies infrastructure health checks to an external health aggregator.
+ *
+ * Enable by setting `PAPERCLIP_HEALTH_URL` to the base URL of a service that
+ * exposes `/api/infrastructure/health` (aggregate) and
+ * `/api/infrastructure/health/:service` (per-service) endpoints returning
+ * standardized JSON:
+ *
+ *   { status: "ok"|"degraded"|"error", services: { ... }, summary: { ... } }
+ *
+ * When the env var is unset these routes are not mounted.
+ */
+
+export const PAPERCLIP_HEALTH_URL = process.env.PAPERCLIP_HEALTH_URL;
 
 export function infrastructureHealthRoutes() {
   const router = Router();
+  const baseUrl = PAPERCLIP_HEALTH_URL!;
 
   router.get("/", async (_req, res) => {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
       const upstream = await fetch(
-        `${VIBE_HEALTH_URL}/api/infrastructure/health`,
+        `${baseUrl}/api/infrastructure/health`,
         { signal: controller.signal, headers: { Accept: "application/json" } },
       );
       clearTimeout(timer);
@@ -30,7 +44,7 @@ export function infrastructureHealthRoutes() {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
       const upstream = await fetch(
-        `${VIBE_HEALTH_URL}/api/infrastructure/health/${encodeURIComponent(service)}`,
+        `${baseUrl}/api/infrastructure/health/${encodeURIComponent(service)}`,
         { signal: controller.signal, headers: { Accept: "application/json" } },
       );
       clearTimeout(timer);
