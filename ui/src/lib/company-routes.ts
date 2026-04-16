@@ -18,6 +18,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "design-guide",
   "voice",
   "youtube",
+  "api-runner",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);
