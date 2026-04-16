@@ -54,11 +54,25 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
     }
   }
   if (config.deploymentMode === "authenticated") {
+    const port = config.port;
     for (const hostname of config.allowedHostnames) {
       const trimmed = hostname.trim().toLowerCase();
       if (!trimmed) continue;
-      trustedOrigins.add(`https://${trimmed}`);
-      trustedOrigins.add(`http://${trimmed}`);
+      // Detect whether the hostname already carries an explicit port.
+      // IPv6 literals use colons in the address (e.g. "::1", "[::1]"),
+      // so only treat a colon as a port separator when it follows a
+      // closing bracket (IPv6 with port) or appears in a non-IPv6 host.
+      const isIPv6 = trimmed.includes("[") || /^[0-9a-f:]+$/.test(trimmed);
+      const hasExplicitPort = isIPv6
+        ? trimmed.includes("]:") // e.g. "[::1]:3100"
+        : trimmed.includes(":");  // e.g. "localhost:3100"
+      const httpSuffix = hasExplicitPort || port === 80 ? "" : `:${port}`;
+      const httpsSuffix = hasExplicitPort || port === 443 ? "" : `:${port}`;
+      // Note: for reverse-proxy setups where the browser-facing port differs
+      // from config.port, use auth.baseUrlMode="explicit" with authPublicBaseUrl
+      // instead — those origins are handled by the baseUrl block above.
+      trustedOrigins.add(`https://${trimmed}${httpsSuffix}`);
+      trustedOrigins.add(`http://${trimmed}${httpSuffix}`);
     }
   }
 
