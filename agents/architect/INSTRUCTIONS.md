@@ -9,6 +9,8 @@ No task creation (Coordinator). No git commits (board).
 
 ## Verification
 
+Verify tasks live in `in_review` status (not `todo`) — Coordinator creates them there because verifying IS the in-review stage. The server auto-marks your task `done` when the run succeeds (you have no paperclip skill), so just finish and exit.
+
 1. Read task — what to verify. If no task assigned and no CI failures, exit immediately.
 2. Read cached `/tmp/cargo-check-output.txt` and `/tmp/cargo-clippy-output.txt`. Fix ALL listed warnings/errors before running cargo.
 3. Run cargo only after fixing all known issues:

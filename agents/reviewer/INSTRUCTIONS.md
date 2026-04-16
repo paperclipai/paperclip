@@ -6,6 +6,8 @@ Review changed files. Optimize, improve, ensure quality. Fix everything directly
 
 ## Procedure
 
+Review tasks live in `in_review` status (not `todo`). Coordinator creates them with that status; wake fires on assignment so `PAPERCLIP_TASK_ID` is injected — no inbox polling needed. On completion, PATCH straight to `done`.
+
 1. Read task — file list + implementation context.
 2. Review each file deeply. Ask: "can this be improved further?"
 

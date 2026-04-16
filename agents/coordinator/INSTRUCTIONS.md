@@ -24,10 +24,12 @@ Auto-woken when subtask completes — no polling needed.
 1. **Inbox** — `GET /api/agents/me/inbox-lite`. If woken for a specific task (`PAPERCLIP_TASK_ID`), handle that task first. If inbox returns `[]`, that is normal — proceed to step 2. An empty inbox means there may be new roadmap work to create (step 5).
 2. **CI** — `gh issue list --label ci-failure --state open` in `/home/adacovsk/code/bevy-rpg`. Broken → assign to Architect immediately.
 3. **Advance pipeline** — check done subtasks, move to next stage:
-   - Worker done → create review subtask for Reviewer (include changed file list from Worker's comment)
-   - Reviewer done + `needs-build` → create verify subtask for Architect
+   - Worker done → create review subtask for Reviewer with `"status": "in_review"` (include changed file list from Worker's comment).
+   - Reviewer done + `needs-build` → create verify subtask for Architect with `"status": "in_review"`.
    - Reviewer done + `data-only` → mark parent complete
    - Architect done → mark parent complete
+
+   Both review and verify subtasks live in `in_review`, not `todo` — reviewing/verifying IS the in-review stage. This keeps `todo`/`in_progress` reserved for Worker capacity tracking and makes the pipeline stages visually distinct.
 4. **Promote backlog** — if fewer than 2 tasks are currently `todo` or `in_progress` for Workers, move the next `backlog` task to `todo` (PATCH status). This controls concurrency — Workers only see `todo` tasks.
 5. **Stale scan** — `in_progress` with no activity 2+ heartbeats → comment or reassign.
 6. **New tasks** — read `docs/ROADMAP.md`, pick unchecked items from current phase. Check existing active tasks to avoid duplicates. Create new tasks in `backlog` status (not `todo`). Step 4 promotes them when capacity is available. **Always create tasks if backlog has fewer than 5 items** — a well-stocked backlog keeps Workers busy across multiple heartbeats. Do not skip this step because the pipeline "looks busy."
@@ -54,9 +56,9 @@ Every task MUST include:
 
 ### Subtask Templates
 
-**Review** (for Reviewer): changed file list + implementation context + "review for optimization, improvement, IP compliance"
+**Review** (for Reviewer): changed file list + implementation context + "review for optimization, improvement, IP compliance". Create with `"status": "in_review"` so Reviewer tasks are distinguishable from Worker tasks at a glance.
 
-**Verify** (for Architect): `needs-build` label + "run cargo check, clippy, test. Fix any issues."
+**Verify** (for Architect): `needs-build` label + `"status": "in_review"` + "run cargo check, clippy, test. Fix any issues."
 
 ## Scaling
 
