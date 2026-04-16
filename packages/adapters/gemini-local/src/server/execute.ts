@@ -9,6 +9,7 @@ import {
   asNumber,
   asString,
   asStringArray,
+  filterDangerousExtraArgs,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
@@ -241,9 +242,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
   const extraArgs = (() => {
-    const fromExtraArgs = asStringArray(config.extraArgs);
+    const fromExtraArgs = filterDangerousExtraArgs(asStringArray(config.extraArgs));
     if (fromExtraArgs.length > 0) return fromExtraArgs;
-    return asStringArray(config.args);
+    return filterDangerousExtraArgs(asStringArray(config.args));
   })();
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);

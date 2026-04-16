@@ -34,6 +34,7 @@ export const ensureAbsoluteDirectory = serverUtils.ensureAbsoluteDirectory;
 export const ensureCommandResolvable = serverUtils.ensureCommandResolvable;
 export const resolveCommandForLogs = serverUtils.resolveCommandForLogs;
 export const filterDangerousEnvKeys = serverUtils.filterDangerousEnvKeys;
+export const filterDangerousExtraArgs = serverUtils.filterDangerousExtraArgs;
 
 export function buildInvocationEnvForLogs(
   env: Record<string, string>,
