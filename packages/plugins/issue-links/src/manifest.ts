@@ -22,7 +22,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "plugin.state.write",
     "instance.settings.register",
     "agent.tools.register",
-    "ui.action.register",
+    "ui.detailTab.register",
     "activity.log.write",
   ],
   entrypoints: {
