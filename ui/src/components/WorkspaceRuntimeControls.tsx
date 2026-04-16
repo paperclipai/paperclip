@@ -3,12 +3,14 @@ import type {
   WorkspaceRuntimeControlTarget,
   WorkspaceRuntimeService,
 } from "@paperclipai/shared";
+import { createTranslator } from "@paperclipai/shared/i18n";
 import {
   listWorkspaceCommandDefinitions,
   matchWorkspaceRuntimeServiceToCommand,
 } from "@paperclipai/shared";
 import { Activity, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { getCurrentLocale } from "@/lib/locale-store";
 import { cn } from "@/lib/utils";
 import { useLocaleOrFallback } from "../context/LocaleContext";
 
@@ -74,6 +76,12 @@ type WorkspaceRuntimeControlsProps = {
 const MISSING_COMMAND_REASON = "__missing_workspace_command__";
 const UNTRACKED_SERVICE_REASON = "__untracked_runtime_service__";
 
+function runtimeStatusLabel(status: string, kind: "service" | "job") {
+  const { t } = createTranslator(getCurrentLocale());
+  if (kind === "job" && status === "run_once") return t("workspaceRuntimeControls.runOnce");
+  return status;
+}
+
 export function hasRunningRuntimeServices(
   runtimeServices: Array<{ status: string }> | null | undefined,
 ) {
@@ -113,7 +121,7 @@ function buildJobItem(
     key: `command:${command.id}`,
     title: command.name,
     kind: "job",
-    statusLabel: "run_once",
+    statusLabel: runtimeStatusLabel("run_once", "job"),
     lifecycle: null,
     healthStatus: null,
     command: command.command,
@@ -158,7 +166,7 @@ export function buildWorkspaceRuntimeControlSections(input: {
       key: `runtime:${runtimeService.id}`,
       title: runtimeService.serviceName,
       kind: "service" as const,
-      statusLabel: runtimeService.status,
+      statusLabel: runtimeStatusLabel(runtimeService.status, "service"),
       lifecycle: runtimeService.lifecycle,
       healthStatus: runtimeService.healthStatus,
       command: runtimeService.command ?? null,

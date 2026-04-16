@@ -2329,7 +2329,7 @@ const enMessages = {
   "issueChat.feedbackPreferenceDetails": "Choose Always allow to share this vote and future voted AI outputs. Choose Don't allow to keep this vote and future votes local.",
   "issueChat.feedbackPreferenceLater": "You can change this later in Instance Settings > General.",
   "issueChat.updatedThisTask": "updated this task",
-  "issueChat.run": "run",
+  "issueChat.run": "Run",
   "issueChat.stopRun": "Stop run",
   "issueChat.attachImage": "Attach image",
   "issueChat.reopen": "Re-open",
