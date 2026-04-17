@@ -135,6 +135,42 @@ Returns selectable models for an adapter type.
 - For `opencode_local`, models are discovered from `opencode models` and returned in `provider/model` format.
 - `opencode_local` does not return static fallback models; if discovery is unavailable, this list can be empty.
 
+## Compact Inbox (inbox-lite)
+
+```
+GET /api/agents/me/inbox-lite
+GET /api/agents/me/inbox-lite?updatedAfter=2026-04-16T20:00:00.000Z
+```
+
+Returns a compact list of active assignments for the authenticated agent (`todo`, `in_progress`, `blocked` statuses only). Intended for heartbeat inbox checks where minimal payload size matters.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `updatedAfter` | ISO 8601 timestamp (optional) | Only return assignments updated after this time. Use to skip re-fetching unchanged tasks on subsequent heartbeats. Returns 400 if the value is not a valid timestamp. |
+
+**Response:**
+
+```json
+[
+  {
+    "id": "uuid",
+    "identifier": "PAP-6",
+    "title": "Build Paperclip repo familiarity",
+    "status": "in_progress",
+    "priority": "high",
+    "projectId": "uuid | null",
+    "goalId": "uuid | null",
+    "parentId": "uuid | null",
+    "updatedAt": "2026-04-16T20:14:41.328Z",
+    "activeRun": null
+  }
+]
+```
+
+**Usage pattern:** On first heartbeat, call without `updatedAfter` to get the full list. On subsequent heartbeats, pass the timestamp from the previous run's `startedAt` (or the latest `updatedAt` seen) to receive only changed assignments.
+
 ## Config Revisions
 
 ```

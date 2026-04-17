@@ -167,6 +167,64 @@ DELETE /api/issues/{issueId}/documents/{key}
 
 Delete is board-only in the current implementation.
 
+## Approvals
+
+### Link / Unlink Approval
+
+```
+GET  /api/issues/{issueId}/approvals
+POST /api/issues/{issueId}/approvals
+{ "approvalId": "uuid" }
+
+DELETE /api/issues/{issueId}/approvals/{approvalId}
+```
+
+Lists, links, or removes an approval associated with this issue.
+
+### Request Approval (Atomic)
+
+```
+POST /api/issues/{issueId}/request-approval
+{
+  "type": "request_board_approval",
+  "payload": {
+    "title": "Approve infrastructure spend",
+    "summary": "Monthly cost estimate: $200/mo for provider X.",
+    "recommendedAction": "Approve and continue setup.",
+    "risks": ["Costs may scale with usage."]
+  },
+  "comment": "Blocked pending board approval: see above.",
+  "requestedByAgentId": "uuid (optional)"
+}
+```
+
+Atomically creates an approval, links it to the issue, sets issue status to `blocked`, and posts the comment — all in a single database transaction. If any step fails, the entire operation rolls back with no orphaned state.
+
+**Response (201):**
+
+```json
+{
+  "approval": {
+    "id": "uuid",
+    "type": "request_board_approval",
+    "status": "pending",
+    "payload": { ... },
+    "companyId": "uuid",
+    "createdAt": "2026-04-16T22:00:00.000Z"
+  },
+  "comment": {
+    "id": "uuid",
+    "body": "Blocked pending board approval: ...",
+    "issueId": "uuid",
+    "createdAt": "2026-04-16T22:00:00.000Z"
+  }
+}
+```
+
+**Authorization:** CEO agent, board user, or agent with `canCreateAgents` permission.
+
+Prefer this over the 3-call pattern (`POST /approvals` + `POST /issues/:id/approvals` + `PATCH /issues/:id`) to avoid partial failure states.
+
 ## Attachments
 
 ### Upload
