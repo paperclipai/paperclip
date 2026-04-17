@@ -176,6 +176,22 @@ describe("instance settings routes", () => {
     });
   });
 
+  it("rejects signed-in users without company access from reading general settings", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-2",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [],
+      memberships: [],
+    });
+
+    const res = await request(app).get("/api/instance/settings/general");
+
+    expect(res.status).toBe(403);
+    expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
+  });
+
   it("rejects non-admin board users from updating general settings", async () => {
     const app = await createApp({
       type: "board",

@@ -4,6 +4,7 @@ import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
+import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
 
@@ -49,11 +50,12 @@ export function healthRoutes(
 
     try {
       await db.execute(sql`SELECT 1`);
-    } catch {
+    } catch (error) {
+      logger.warn({ err: error }, "Health check database probe failed");
       res.status(503).json({
         status: "unhealthy",
         version: serverVersion,
-        error: "database_unreachable",
+        error: "database_unreachable"
       });
       return;
     }

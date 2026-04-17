@@ -379,7 +379,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   it("returns null instead of throwing for malformed non-uuid issue refs", async () => {
     await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
   });
-
   it("filters issues by execution workspace id", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -1216,6 +1215,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 });
+
 describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
