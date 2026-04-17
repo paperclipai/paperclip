@@ -2244,7 +2244,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Key not found for this agent" });
       return;
     }
-    const revoked = await svc.revokeKey(keyId);
+    const revoked = await svc.revokeKey(id, keyId);
     if (!revoked) {
       res.status(404).json({ error: "Key not found" });
       return;
