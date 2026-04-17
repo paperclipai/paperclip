@@ -302,7 +302,7 @@ export function companyService(db: Db) {
         await tx
           .update(companies)
           .set({ status: nextStatus, updatedAt: new Date() })
-          .where(eq(companies.id, id));
+          .where(and(eq(companies.id, id), inArray(companies.status, ["active", "pausing"])));
 
         // Re-check in the same transaction so we do not leave the company
         // stuck in "pausing" if runs drain between count and update.
