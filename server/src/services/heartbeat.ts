@@ -94,6 +94,8 @@ const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const ACTIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
+const TIMEOUT_REASON_STALL = "stall";
+const TIMEOUT_REASON_ABSOLUTE_CEILING = "absolute_ceiling";
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -104,11 +106,36 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "pi_local",
 ]);
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
+const requestedRunTimeouts = new Map<string, RunTimeoutTermination>();
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
   "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
 >;
+
+type RunTimeoutReason = typeof TIMEOUT_REASON_STALL | typeof TIMEOUT_REASON_ABSOLUTE_CEILING;
+
+type RunTimeoutPolicy = {
+  stallTimeoutSec: number | null;
+  absoluteTimeoutSec: number | null;
+  source: "dual_fields" | "dual_stall_plus_legacy_absolute" | "legacy_timeoutSec" | "unconfigured";
+};
+
+type RunTimeoutEvaluation = {
+  breached: boolean;
+  reason: RunTimeoutReason | null;
+  firedThresholdSec: number | null;
+  firedThresholdKey: "stallTimeoutSec" | "absoluteTimeoutSec" | "timeoutSec" | null;
+  stallExceeded: boolean;
+  telemetryFallback: boolean;
+};
+
+type RunTimeoutTermination = {
+  reason: RunTimeoutReason;
+  errorCode: RunTimeoutReason;
+  errorMessage: string;
+  resultJson: Record<string, unknown>;
+};
 
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
@@ -375,6 +402,7 @@ const heartbeatRunListColumns = {
   triggerDetail: heartbeatRuns.triggerDetail,
   status: heartbeatRuns.status,
   startedAt: heartbeatRuns.startedAt,
+  lastActivityAt: heartbeatRuns.lastActivityAt,
   finishedAt: heartbeatRuns.finishedAt,
   error: heartbeatRuns.error,
   wakeupRequestId: heartbeatRuns.wakeupRequestId,
@@ -487,6 +515,7 @@ const heartbeatRunIssueSummaryColumns = {
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,
   startedAt: heartbeatRuns.startedAt,
+  lastActivityAt: heartbeatRuns.lastActivityAt,
   finishedAt: heartbeatRuns.finishedAt,
   createdAt: heartbeatRuns.createdAt,
   agentId: heartbeatRuns.agentId,
@@ -598,6 +627,183 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readPositiveTimeoutSec(value: unknown): number | null {
+  const parsed = Math.floor(asNumber(value, 0));
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+function resolveRunTimeoutPolicy(config: Record<string, unknown>): RunTimeoutPolicy {
+  const timeoutPolicy = parseObject(config.timeoutPolicy);
+  const stallTimeoutSec = readPositiveTimeoutSec(timeoutPolicy.stallTimeoutSec ?? config.stallTimeoutSec);
+  const explicitAbsoluteTimeoutSec = readPositiveTimeoutSec(
+    timeoutPolicy.absoluteTimeoutSec
+      ?? timeoutPolicy.absoluteCeilingSec
+      ?? config.absoluteTimeoutSec,
+  );
+  const legacyTimeoutSec = readPositiveTimeoutSec(config.timeoutSec);
+  const absoluteTimeoutSec = explicitAbsoluteTimeoutSec ?? legacyTimeoutSec;
+
+  if (stallTimeoutSec != null || explicitAbsoluteTimeoutSec != null) {
+    return {
+      stallTimeoutSec,
+      absoluteTimeoutSec,
+      source:
+        explicitAbsoluteTimeoutSec != null
+          ? "dual_fields"
+          : absoluteTimeoutSec != null
+            ? "dual_stall_plus_legacy_absolute"
+            : "dual_fields",
+    };
+  }
+
+  if (legacyTimeoutSec != null) {
+    return {
+      stallTimeoutSec: null,
+      absoluteTimeoutSec: legacyTimeoutSec,
+      source: "legacy_timeoutSec",
+    };
+  }
+
+  return {
+    stallTimeoutSec: null,
+    absoluteTimeoutSec: null,
+    source: "unconfigured",
+  };
+}
+
+function buildRunTimeoutPolicySnapshot(policy: RunTimeoutPolicy) {
+  if (policy.source === "unconfigured") return null;
+  return {
+    stallTimeoutSec: policy.stallTimeoutSec,
+    absoluteTimeoutSec: policy.absoluteTimeoutSec,
+    policySource: policy.source,
+  };
+}
+
+function resolveRunTimeoutPolicyFromContext(contextSnapshot: Record<string, unknown> | null | undefined) {
+  const timeoutPolicy = parseObject(contextSnapshot?.timeoutPolicy);
+  if (Object.keys(timeoutPolicy).length === 0) return null;
+  return {
+    stallTimeoutSec: readPositiveTimeoutSec(timeoutPolicy.stallTimeoutSec),
+    absoluteTimeoutSec: readPositiveTimeoutSec(timeoutPolicy.absoluteTimeoutSec),
+    source: (() => {
+      const source = readNonEmptyString(timeoutPolicy.policySource);
+      if (
+        source === "dual_fields"
+        || source === "dual_stall_plus_legacy_absolute"
+        || source === "legacy_timeoutSec"
+      ) {
+        return source;
+      }
+      return "unconfigured";
+    })(),
+  } satisfies RunTimeoutPolicy;
+}
+
+function evaluateRunTimeoutPolicy(input: {
+  run: Pick<typeof heartbeatRuns.$inferSelect, "startedAt" | "lastActivityAt">;
+  policy: RunTimeoutPolicy;
+  now: Date;
+}): RunTimeoutEvaluation {
+  const startedAt = input.run.startedAt ? new Date(input.run.startedAt) : null;
+  const lastActivityAt = input.run.lastActivityAt ? new Date(input.run.lastActivityAt) : null;
+  const absoluteElapsedSec =
+    startedAt ? (input.now.getTime() - startedAt.getTime()) / 1000 : null;
+  const stallElapsedSec =
+    lastActivityAt ? (input.now.getTime() - lastActivityAt.getTime()) / 1000 : null;
+  const telemetryFallback = input.policy.stallTimeoutSec != null && !lastActivityAt;
+  const stallExceeded =
+    input.policy.stallTimeoutSec != null
+    && stallElapsedSec != null
+    && stallElapsedSec >= input.policy.stallTimeoutSec;
+  const absoluteExceeded =
+    input.policy.absoluteTimeoutSec != null
+    && absoluteElapsedSec != null
+    && absoluteElapsedSec >= input.policy.absoluteTimeoutSec;
+
+  if (absoluteExceeded) {
+    return {
+      breached: true,
+      reason: TIMEOUT_REASON_ABSOLUTE_CEILING,
+      firedThresholdSec: input.policy.absoluteTimeoutSec,
+      firedThresholdKey:
+        input.policy.source === "legacy_timeoutSec" ? "timeoutSec" : "absoluteTimeoutSec",
+      stallExceeded,
+      telemetryFallback,
+    };
+  }
+
+  if (stallExceeded) {
+    return {
+      breached: true,
+      reason: TIMEOUT_REASON_STALL,
+      firedThresholdSec: input.policy.stallTimeoutSec,
+      firedThresholdKey: "stallTimeoutSec",
+      stallExceeded,
+      telemetryFallback: false,
+    };
+  }
+
+  return {
+    breached: false,
+    reason: null,
+    firedThresholdSec: null,
+    firedThresholdKey: null,
+    stallExceeded,
+    telemetryFallback,
+  };
+}
+
+function buildRunTimeoutTermination(input: {
+  runId: string;
+  run: Pick<typeof heartbeatRuns.$inferSelect, "startedAt" | "lastActivityAt">;
+  policy: RunTimeoutPolicy;
+  evaluation: RunTimeoutEvaluation;
+  now: Date;
+}): RunTimeoutTermination {
+  const startedAt = input.run.startedAt ? new Date(input.run.startedAt).toISOString() : null;
+  const lastActivityAt = input.run.lastActivityAt ? new Date(input.run.lastActivityAt).toISOString() : null;
+  const reason = input.evaluation.reason ?? TIMEOUT_REASON_ABSOLUTE_CEILING;
+  const thresholdSec = input.evaluation.firedThresholdSec;
+  const reasonLabel = reason === TIMEOUT_REASON_STALL ? "Stall timeout" : "Absolute ceiling timeout";
+  const thresholdPhrase =
+    thresholdSec != null
+      ? `${thresholdSec}s`
+      : "the configured threshold";
+  const errorMessage =
+    reason === TIMEOUT_REASON_STALL
+      ? `${reasonLabel} after ${thresholdPhrase} without server-observed activity`
+      : input.evaluation.telemetryFallback
+        ? `${reasonLabel} after ${thresholdPhrase} (stall enforcement skipped because no qualifying server-observed activity was available)`
+        : input.evaluation.stallExceeded
+          ? `${reasonLabel} after ${thresholdPhrase} (stall threshold was also exceeded)`
+          : `${reasonLabel} after ${thresholdPhrase}`;
+
+  return {
+    reason,
+    errorCode: reason,
+    errorMessage,
+    resultJson: {
+      summary: errorMessage,
+      timeoutTermination: {
+        runId: input.runId,
+        reason,
+        firedThresholdSec: input.evaluation.firedThresholdSec,
+        firedThresholdKey: input.evaluation.firedThresholdKey,
+        stallThresholdSec: input.policy.stallTimeoutSec,
+        absoluteTimeoutSec: input.policy.absoluteTimeoutSec,
+        startedAt,
+        lastActivityAt,
+        triggeredAt: input.now.toISOString(),
+        telemetryFallback: input.evaluation.telemetryFallback,
+        stallExceeded: input.evaluation.stallExceeded,
+        policySource: input.policy.source,
+      },
+    },
+  };
 }
 
 export function summarizeHeartbeatRunContextSnapshot(
@@ -2147,12 +2353,13 @@ export function heartbeatService(db: Db) {
           status: updated.status,
           invocationSource: updated.invocationSource,
           triggerDetail: updated.triggerDetail,
-          error: updated.error ?? null,
-          errorCode: updated.errorCode ?? null,
-          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
-          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
-        },
-      });
+        error: updated.error ?? null,
+        errorCode: updated.errorCode ?? null,
+        startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
+        lastActivityAt: updated.lastActivityAt ? new Date(updated.lastActivityAt).toISOString() : null,
+        finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
+      },
+    });
     }
 
     return updated;
@@ -2246,13 +2453,13 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function clearDetachedRunWarning(runId: string) {
+  async function clearDetachedRunWarning(runId: string, observedAt = new Date()) {
     const updated = await db
       .update(heartbeatRuns)
       .set({
         error: null,
         errorCode: null,
-        updatedAt: new Date(),
+        updatedAt: observedAt,
       })
       .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.errorCode, DETACHED_PROCESS_ERROR_CODE)))
       .returning()
@@ -2265,6 +2472,25 @@ export function heartbeatService(db: Db) {
       level: "info",
       message: "Detached child process reported activity; cleared detached warning",
     });
+    return updated;
+  }
+
+  async function recordRunActivity(runId: string, observedAt = new Date()) {
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({
+        lastActivityAt: observedAt,
+        updatedAt: observedAt,
+      })
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!updated) return null;
+
+    if (updated.errorCode === DETACHED_PROCESS_ERROR_CODE) {
+      return clearDetachedRunWarning(runId, observedAt);
+    }
+
     return updated;
   }
 
@@ -2653,6 +2879,7 @@ export function heartbeatService(db: Db) {
         error: claimed.error ?? null,
         errorCode: claimed.errorCode ?? null,
         startedAt: claimed.startedAt ? new Date(claimed.startedAt).toISOString() : null,
+        lastActivityAt: claimed.lastActivityAt ? new Date(claimed.lastActivityAt).toISOString() : null,
         finishedAt: claimed.finishedAt ? new Date(claimed.finishedAt).toISOString() : null,
       },
     });
@@ -2735,6 +2962,87 @@ export function heartbeatService(db: Db) {
         },
       });
     }
+  }
+
+  async function requestTimedOutRunTermination(
+    run: typeof heartbeatRuns.$inferSelect,
+    termination: RunTimeoutTermination,
+  ) {
+    if (requestedRunTimeouts.has(run.id)) return false;
+
+    requestedRunTimeouts.set(run.id, termination);
+    await appendRunEvent(run, await nextRunEventSeq(run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: `timeout enforcement requested: ${termination.reason}`,
+      payload: termination.resultJson,
+    });
+
+    const running = runningProcesses.get(run.id);
+    if (running) {
+      await terminateHeartbeatRunProcess({
+        pid: running.child.pid ?? run.processPid,
+        processGroupId: running.processGroupId ?? run.processGroupId,
+        graceMs: Math.max(1, running.graceSec) * 1000,
+      });
+      return true;
+    }
+
+    if (run.processPid || run.processGroupId) {
+      await terminateHeartbeatRunProcess({
+        pid: run.processPid,
+        processGroupId: run.processGroupId,
+      });
+      return true;
+    }
+
+    return false;
+  }
+
+  async function enforceRunningRunTimeouts(now = new Date()) {
+    const activeRuns = await db
+      .select({
+        run: heartbeatRuns,
+        adapterConfig: agents.adapterConfig,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(eq(heartbeatRuns.status, "running"));
+
+    let checked = 0;
+    let enforcementRequested = 0;
+    let telemetryFallbackOnly = 0;
+
+    for (const { run, adapterConfig } of activeRuns) {
+      checked += 1;
+      if (requestedRunTimeouts.has(run.id)) continue;
+
+      const policy =
+        resolveRunTimeoutPolicyFromContext(parseObject(run.contextSnapshot))
+        ?? resolveRunTimeoutPolicy(parseObject(adapterConfig));
+      if (!policy.stallTimeoutSec && !policy.absoluteTimeoutSec) continue;
+
+      const evaluation = evaluateRunTimeoutPolicy({ run, policy, now });
+      if (!evaluation.breached) {
+        if (evaluation.telemetryFallback) telemetryFallbackOnly += 1;
+        continue;
+      }
+
+      const termination = buildRunTimeoutTermination({
+        runId: run.id,
+        run,
+        policy,
+        evaluation,
+        now,
+      });
+      const requested = await requestTimedOutRunTermination(run, termination);
+      if (requested) {
+        enforcementRequested += 1;
+      }
+    }
+
+    return { checked, enforcementRequested, telemetryFallbackOnly };
   }
 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
@@ -3404,10 +3712,21 @@ export function heartbeatService(db: Db) {
       companyId: agent.companyId,
       issueId,
     });
-    const effectiveResolvedConfig = applyRunScopedMentionedSkillKeys(
+    const baseResolvedConfig = applyRunScopedMentionedSkillKeys(
       resolvedConfig,
       runScopedMentionedSkillKeys,
     );
+    const runTimeoutPolicy = resolveRunTimeoutPolicy(baseResolvedConfig);
+    const effectiveResolvedConfig = {
+      ...baseResolvedConfig,
+      timeoutSec: runTimeoutPolicy.absoluteTimeoutSec ?? 0,
+    };
+    const runTimeoutPolicySnapshot = buildRunTimeoutPolicySnapshot(runTimeoutPolicy);
+    if (runTimeoutPolicySnapshot) {
+      context.timeoutPolicy = runTimeoutPolicySnapshot;
+    } else {
+      delete context.timeoutPolicy;
+    }
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
     const runtimeConfig = {
       ...effectiveResolvedConfig,
@@ -3744,13 +4063,20 @@ export function heartbeatService(db: Db) {
         .where(eq(heartbeatRuns.id, runId));
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-      const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
+      const appendRunLog = async (
+        stream: "stdout" | "stderr",
+        chunk: string,
+        options?: { countsAsActivity?: boolean },
+      ) => {
         const sanitizedChunk = compactRunLogChunk(
           redactCurrentUserText(chunk, currentUserRedactionOptions),
         );
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
         const ts = new Date().toISOString();
+        if (options?.countsAsActivity !== false) {
+          await recordRunActivity(run.id, new Date(ts));
+        }
 
         if (handle) {
           await runLogStore.append(handle, {
@@ -3778,15 +4104,19 @@ export function heartbeatService(db: Db) {
           },
         });
       };
+      const onLog = async (stream: "stdout" | "stderr", chunk: string) =>
+        appendRunLog(stream, chunk, { countsAsActivity: true });
+      const logSystem = async (stream: "stdout" | "stderr", chunk: string) =>
+        appendRunLog(stream, chunk, { countsAsActivity: false });
       if (runScopedMentionedSkillKeys.length > 0) {
-        await onLog(
+        await logSystem(
           "stdout",
           `[paperclip] Enabled run-scoped skills from issue mentions: ${runScopedMentionedSkillKeys.join(", ")}\n`,
         );
       }
       for (const warning of runtimeWorkspaceWarnings) {
         const logEntry = formatRuntimeWorkspaceWarningLog(warning);
-        await onLog(logEntry.stream, logEntry.chunk);
+        await logSystem(logEntry.stream, logEntry.chunk);
       }
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfig.env)).filter(
@@ -3806,7 +4136,7 @@ export function heartbeatService(db: Db) {
         executionWorkspaceId: persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
         config: effectiveResolvedConfig,
         adapterEnv,
-        onLog,
+        onLog: logSystem,
       });
       if (runtimeServices.length > 0) {
         context.paperclipRuntimeServices = runtimeServices;
@@ -3831,7 +4161,7 @@ export function heartbeatService(db: Db) {
             { agentId: agent.id, runId: run.id },
           );
         } catch (err) {
-          await onLog(
+          await logSystem(
             "stderr",
             `[paperclip] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
           );
@@ -3925,10 +4255,10 @@ export function heartbeatService(db: Db) {
                 workspace: executionWorkspace,
                 runtimeServices: adapterManagedRuntimeServices,
               }),
-              { agentId: agent.id, runId: run.id },
-            );
+            { agentId: agent.id, runId: run.id },
+          );
           } catch (err) {
-            await onLog(
+            await logSystem(
               "stderr",
               `[paperclip] Failed to post adapter-managed runtime comment: ${err instanceof Error ? err.message : String(err)}\n`,
             );
@@ -3953,9 +4283,24 @@ export function heartbeatService(db: Db) {
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
       const latestRun = await getRun(run.id);
+      const timeoutTermination =
+        requestedRunTimeouts.get(run.id)
+        ?? (adapterResult.timedOut
+          ? buildRunTimeoutTermination({
+              runId: run.id,
+              run: latestRun ?? run,
+              policy: runTimeoutPolicy,
+              evaluation: evaluateRunTimeoutPolicy({
+                run: latestRun ?? run,
+                policy: runTimeoutPolicy,
+                now: new Date(),
+              }),
+              now: new Date(),
+            })
+          : null);
       if (latestRun?.status === "cancelled") {
         outcome = "cancelled";
-      } else if (adapterResult.timedOut) {
+      } else if (timeoutTermination) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
         outcome = "succeeded";
@@ -4003,10 +4348,15 @@ export function heartbeatService(db: Db) {
             } as Record<string, unknown>)
           : null;
 
-      const persistedResultJson = mergeHeartbeatRunResultJson(
-        adapterResult.resultJson ?? null,
-        adapterResult.summary ?? null,
-      );
+      const persistedResultJson = timeoutTermination
+        ? {
+            ...(adapterResult.resultJson ?? {}),
+            ...timeoutTermination.resultJson,
+          }
+        : mergeHeartbeatRunResultJson(
+            adapterResult.resultJson ?? null,
+            adapterResult.summary ?? null,
+          );
 
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
@@ -4014,12 +4364,14 @@ export function heartbeatService(db: Db) {
           outcome === "succeeded"
             ? null
             : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                timeoutTermination?.errorMessage
+                  ?? adapterResult.errorMessage
+                  ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               ),
         errorCode:
           outcome === "timed_out"
-            ? "timeout"
+            ? (timeoutTermination?.errorCode ?? "timeout")
             : outcome === "cancelled"
               ? "cancelled"
               : outcome === "failed"
@@ -4039,7 +4391,7 @@ export function heartbeatService(db: Db) {
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
-        error: adapterResult.errorMessage ?? null,
+        error: timeoutTermination?.errorMessage ?? adapterResult.errorMessage ?? null,
       });
 
       const finalizedRun = await getRun(run.id);
@@ -4052,9 +4404,10 @@ export function heartbeatService(db: Db) {
           payload: {
             status,
             exitCode: adapterResult.exitCode,
+            ...(timeoutTermination ? { timeoutTermination: timeoutTermination.resultJson.timeoutTermination } : {}),
           },
         });
-        if (issueId && outcome === "succeeded") {
+        if (issueId && (outcome === "succeeded" || timeoutTermination)) {
           try {
             const existingRunComment = await findRunIssueComment(finalizedRun.id, finalizedRun.companyId, issueId);
             if (!existingRunComment) {
@@ -4064,7 +4417,7 @@ export function heartbeatService(db: Db) {
               }
             }
           } catch (err) {
-            await onLog(
+            await logSystem(
               "stderr",
               `[paperclip] Failed to post run summary comment: ${err instanceof Error ? err.message : String(err)}\n`,
             );
@@ -4100,6 +4453,63 @@ export function heartbeatService(db: Db) {
       }
       await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
+      const timeoutTermination = requestedRunTimeouts.get(run.id) ?? null;
+      if (timeoutTermination) {
+        logger.warn({ err, runId, reason: timeoutTermination.reason }, "heartbeat execution settled after timeout enforcement");
+
+        let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
+        if (handle) {
+          try {
+            logSummary = await runLogStore.finalize(handle);
+          } catch (finalizeErr) {
+            logger.warn({ err: finalizeErr, runId }, "failed to finalize run log after timeout");
+          }
+        }
+
+        const timedOutRun = await setRunStatus(run.id, "timed_out", {
+          error: timeoutTermination.errorMessage,
+          errorCode: timeoutTermination.errorCode,
+          finishedAt: new Date(),
+          stdoutExcerpt,
+          stderrExcerpt,
+          logBytes: logSummary?.bytes,
+          logSha256: logSummary?.sha256,
+          logCompressed: logSummary?.compressed ?? false,
+          resultJson: timeoutTermination.resultJson,
+        });
+        await setWakeupStatus(run.wakeupRequestId, "timed_out", {
+          finishedAt: new Date(),
+          error: timeoutTermination.errorMessage,
+        });
+
+        if (timedOutRun) {
+          await appendRunEvent(timedOutRun, seq++, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "error",
+            message: "run timed_out",
+            payload: {
+              timeoutTermination: timeoutTermination.resultJson.timeoutTermination,
+            },
+          });
+          const issueId = readNonEmptyString(parseObject(timedOutRun.contextSnapshot).issueId);
+          if (issueId) {
+            const existingRunComment = await findRunIssueComment(timedOutRun.id, timedOutRun.companyId, issueId);
+            if (!existingRunComment) {
+              const issueComment = buildHeartbeatRunIssueComment(timeoutTermination.resultJson);
+              if (issueComment) {
+                await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: timedOutRun.id });
+              }
+            }
+          }
+          await finalizeIssueCommentPolicy(timedOutRun, agent);
+          await releaseIssueExecutionAndPromote(timedOutRun);
+        }
+
+        await finalizeAgentStatus(agent.id, "timed_out");
+        return;
+      }
+
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
@@ -4199,6 +4609,7 @@ export function heartbeatService(db: Db) {
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
           await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
         } finally {
+          requestedRunTimeouts.delete(run.id);
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
@@ -5317,7 +5728,7 @@ export function heartbeatService(db: Db) {
 
     wakeup: enqueueWakeup,
 
-    reportRunActivity: clearDetachedRunWarning,
+    reportRunActivity: recordRunActivity,
 
     reapOrphanedRuns,
 
@@ -5326,6 +5737,7 @@ export function heartbeatService(db: Db) {
     reconcileStrandedAssignedIssues,
 
     tickTimers: async (now = new Date()) => {
+      const timeoutEnforcement = await enforceRunningRunTimeouts(now);
       const allAgents = await db.select().from(agents);
       let checked = 0;
       let enqueued = 0;
@@ -5357,7 +5769,14 @@ export function heartbeatService(db: Db) {
         else skipped += 1;
       }
 
-      return { checked, enqueued, skipped };
+      return {
+        checked,
+        enqueued,
+        skipped,
+        timeoutChecked: timeoutEnforcement.checked,
+        timeoutEnforced: timeoutEnforcement.enforcementRequested,
+        telemetryFallbackOnly: timeoutEnforcement.telemetryFallbackOnly,
+      };
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
