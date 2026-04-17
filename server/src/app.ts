@@ -118,6 +118,8 @@ export async function createApp(
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    postDoneCleanupEnabled: boolean;
+    postDoneCleanupAllowedRoots: string[];
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
@@ -181,6 +183,8 @@ export async function createApp(
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
+    postDoneCleanupEnabled: opts.postDoneCleanupEnabled,
+    postDoneCleanupAllowedRoots: opts.postDoneCleanupAllowedRoots,
   }));
   api.use(routineRoutes(db));
   api.use(executionWorkspaceRoutes(db));
