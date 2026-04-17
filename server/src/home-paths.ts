@@ -93,3 +93,12 @@ export function resolveManagedProjectWorkspaceDir(input: {
 export function resolveHomeAwarePath(value: string): string {
   return path.resolve(expandHomePrefix(value));
 }
+
+export function resolveWithinRoot(value: string, allowedRoot: string): string {
+  const resolved = path.resolve(expandHomePrefix(value));
+  const normalizedRoot = path.resolve(allowedRoot);
+  if (!resolved.startsWith(normalizedRoot + path.sep) && resolved !== normalizedRoot) {
+    throw new Error(`Path "${value}" resolves outside allowed root "${allowedRoot}"`);
+  }
+  return resolved;
+}

@@ -191,7 +191,7 @@ export function agentRoutes(db: Db) {
     ]);
 
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...(options?.restricted ? redactForRestrictedAgentView(agent) : redactAdapterConfigEnv(agent)),
       chainOfCommand,
       access: accessState,
     };
@@ -499,9 +499,11 @@ export function agentRoutes(db: Db) {
 
   function parseSchedulerHeartbeatPolicy(runtimeConfig: unknown) {
     const heartbeat = asRecord(asRecord(runtimeConfig)?.heartbeat) ?? {};
+    const rawModel = heartbeat.model;
     return {
       enabled: parseBooleanLike(heartbeat.enabled) ?? false,
       intervalSec: Math.max(0, parseNumberLike(heartbeat.intervalSec) ?? 0),
+      model: typeof rawModel === "string" && rawModel.trim().length > 0 ? rawModel.trim() : null,
     };
   }
 
@@ -756,6 +758,37 @@ export function agentRoutes(db: Db) {
       desiredSkills,
       runtimeSkillEntries,
     };
+  }
+
+  const ENV_SECRET_KEY_RE = /(_KEY|_TOKEN|_SECRET|PASSWORD|_CREDENTIAL)$/i;
+
+  /**
+   * Redact the values inside adapterConfig.env so that API responses
+   * never leak plaintext secrets or secret-ref UUIDs. Keys are preserved
+   * so the UI knows which env vars are bound; only values are masked.
+   * See upstream issue #1818.
+   */
+  function redactAdapterConfigEnv<T extends Record<string, unknown> | null | undefined>(
+    agent: T,
+  ): T {
+    if (!agent || typeof agent !== "object") return agent;
+    const record = agent as Record<string, unknown>;
+    const ac = record.adapterConfig;
+    if (!ac || typeof ac !== "object" || Array.isArray(ac)) return agent;
+    const env = (ac as Record<string, unknown>).env;
+    if (!env || typeof env !== "object" || Array.isArray(env)) return agent;
+    const redactedEnv: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+      if (ENV_SECRET_KEY_RE.test(key) || typeof value === "object") {
+        redactedEnv[key] = "***";
+      } else {
+        redactedEnv[key] = value;
+      }
+    }
+    return {
+      ...agent,
+      adapterConfig: { ...(ac as Record<string, unknown>), env: redactedEnv },
+    } as T;
   }
 
   function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
@@ -1036,7 +1069,7 @@ export function agentRoutes(db: Db) {
     const result = await svc.list(companyId);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((a) => redactAdapterConfigEnv(a)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -1084,6 +1117,7 @@ export function agentRoutes(db: Db) {
           adapterType: row.adapterType,
           intervalSec: policy.intervalSec,
           heartbeatEnabled: policy.enabled,
+          heartbeatModel: policy.model,
           schedulerActive: statusEligible && policy.enabled && policy.intervalSec > 0,
           lastHeartbeatAt: row.lastHeartbeatAt,
         };
@@ -2018,6 +2052,24 @@ export function agentRoutes(db: Db) {
         requestedAdapterType,
         effectiveAdapterConfig,
       );
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patchData, "runtimeConfig")) {
+      const existingRuntimeConfig = asRecord(existing.runtimeConfig) ?? {};
+      const incomingRuntimeConfig = asRecord(patchData.runtimeConfig) ?? {};
+      const mergedRuntimeConfig = { ...existingRuntimeConfig };
+      for (const [key, value] of Object.entries(incomingRuntimeConfig)) {
+        const existingValue = existingRuntimeConfig[key];
+        if (
+          typeof value === "object" && value !== null && !Array.isArray(value) &&
+          typeof existingValue === "object" && existingValue !== null && !Array.isArray(existingValue)
+        ) {
+          mergedRuntimeConfig[key] = { ...existingValue as Record<string, unknown>, ...value as Record<string, unknown> };
+        } else {
+          mergedRuntimeConfig[key] = value;
+        }
+      }
+      patchData.runtimeConfig = mergedRuntimeConfig;
     }
 
     const actor = getActorInfo(req);
