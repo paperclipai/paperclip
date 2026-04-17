@@ -45,6 +45,7 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -579,8 +580,18 @@ export function agentRoutes(db: Db) {
         env: runtimeEnv,
       });
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+      // Non-blocking: log the validation failure but let agent creation
+      // continue. The opencode_local probe shells out to the opencode binary
+      // and is unreliable on Apple-Silicon hosts running an amd64 build under
+      // Rosetta — the binary intermittently crashes during model discovery,
+      // which used to surface as a hard 422 and block onboarding entirely.
+      // The same model list is re-validated lazily by the
+      // /adapters/opencode_local/models endpoint when the agent actually
+      // runs, so a stale config here won't go undetected.
+      logger.warn(
+        { err, adapterType, companyId },
+        "opencode_local model validation failed; continuing without blocking agent create/update",
+      );
     }
   }
 

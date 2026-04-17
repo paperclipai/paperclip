@@ -59,6 +59,36 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+const mockEnsureOpenCodeModel = vi.hoisted(() => vi.fn());
+vi.mock("@paperclipai/adapter-opencode-local/server", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    ensureOpenCodeModelConfiguredAndAvailable: mockEnsureOpenCodeModel,
+  };
+});
+
+const mockLoggerWarn = vi.hoisted(() => vi.fn());
+vi.mock("../middleware/logger.js", () => ({
+  logger: {
+    warn: mockLoggerWarn,
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    fatal: vi.fn(),
+    trace: vi.fn(),
+    child: vi.fn(() => ({
+      warn: mockLoggerWarn,
+      info: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      fatal: vi.fn(),
+      trace: vi.fn(),
+    })),
+  },
+  httpLogger: vi.fn((_req: unknown, _res: unknown, next: () => void) => next()),
+}));
+
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
   agentInstructionsService: () => mockAgentInstructionsService,
@@ -217,5 +247,58 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
+  });
+
+  // The opencode_local probe (`ensureOpenCodeModelConfiguredAndAvailable`)
+  // shells out to the opencode binary, which crashes intermittently on
+  // Apple-Silicon hosts running an amd64 build under Rosetta. Treat the
+  // failure as a soft warning instead of a 422 so onboarding can continue;
+  // the same model list is re-validated lazily by the
+  // /adapters/opencode_local/models endpoint when the agent actually runs.
+  it("creates an opencode_local agent even when model probing fails (Rosetta crash)", async () => {
+    mockEnsureOpenCodeModel.mockRejectedValueOnce(
+      new Error("opencode binary crashed: SIGTRAP (Rosetta emulation)"),
+    );
+
+    const res = await request(createApp())
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "OpenCode Agent",
+        adapterType: "opencode_local",
+        // Set an explicit instructions path so the create flow skips the
+        // managed-bundle materialization branch — that path is unrelated to
+        // what we're testing here and would otherwise need its own mocks.
+        adapterConfig: { instructionsFilePath: "/tmp/opencode-agent.md" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.adapterType).toBe("opencode_local");
+    expect(mockAgentService.create).toHaveBeenCalledTimes(1);
+    expect(mockEnsureOpenCodeModel).toHaveBeenCalledTimes(1);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        adapterType: "opencode_local",
+        companyId: "company-1",
+        err: expect.any(Error),
+      }),
+      expect.stringContaining("opencode_local model validation failed"),
+    );
+  });
+
+  it("creates an opencode_local agent without warnings when model probing succeeds", async () => {
+    mockEnsureOpenCodeModel.mockResolvedValueOnce([]);
+
+    const res = await request(createApp())
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Healthy OpenCode Agent",
+        adapterType: "opencode_local",
+        adapterConfig: { instructionsFilePath: "/tmp/healthy-opencode-agent.md" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledTimes(1);
+    expect(mockEnsureOpenCodeModel).toHaveBeenCalledTimes(1);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
   });
 });
