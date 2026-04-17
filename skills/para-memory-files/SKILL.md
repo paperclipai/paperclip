@@ -90,12 +90,20 @@ Memory does not survive session restarts. Files do.
 Use `qmd` rather than grepping files:
 
 ```bash
+qmd collection show agent-home        # Verify the bootstrapped agent-home collection
+qmd update                            # Refresh the local index for this agent home
+qmd embed                             # Recommended before semantic recall
 qmd query "what happened at Christmas"   # Semantic search with reranking
 qmd search "specific phrase"              # BM25 keyword search
 qmd vsearch "conceptual question"         # Pure vector similarity
 ```
 
-Index your personal folder: `qmd index $AGENT_HOME`
+Local Paperclip agents should bootstrap an isolated qmd config and the `agent-home` collection automatically.
+If that alias is missing in an older runtime, repair it with:
+
+```bash
+qmd collection add "$AGENT_HOME" --name agent-home
+```
 
 Vectors + BM25 + reranking finds things even when the wording differs.
 

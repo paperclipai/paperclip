@@ -14,8 +14,10 @@ import {
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
+  filterPreparedAgentQmdEnvOverrides,
   joinPromptSections,
   ensurePathInEnv,
+  prepareAgentQmdEnvironment,
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
   resolvePaperclipDesiredSkillNames,
@@ -168,6 +170,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureGeminiSkillsInjected(onLog, geminiSkillEntries, desiredGeminiSkillNames);
 
   const envConfig = parseObject(config.env);
+  const envOverrides = Object.fromEntries(
+    Object.entries(envConfig).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
@@ -208,12 +213,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (workspaceId) env.PAPERCLIP_WORKSPACE_ID = workspaceId;
   if (workspaceRepoUrl) env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
   if (workspaceRepoRef) env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
-  if (agentHome) env.AGENT_HOME = agentHome;
+  if (agentHome) {
+    const preparedQmd = await prepareAgentQmdEnvironment(agentHome, {
+      baseEnv: { ...process.env, ...env, ...envOverrides },
+      onLog,
+    });
+    Object.assign(env, preparedQmd.env);
+    env.AGENT_HOME = agentHome;
+  }
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
 
-  for (const [key, value] of Object.entries(envConfig)) {
-    if (typeof value === "string") env[key] = value;
-  }
+  Object.assign(env, filterPreparedAgentQmdEnvOverrides(envOverrides, Boolean(agentHome)));
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }

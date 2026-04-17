@@ -15,6 +15,8 @@ const addDir = addDirIndex >= 0 ? argv[addDirIndex + 1] : null;
 const instructionsIndex = argv.indexOf("--append-system-prompt-file");
 const instructionsFilePath = instructionsIndex >= 0 ? argv[instructionsIndex + 1] : null;
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const promptFileFlagIndex = process.argv.indexOf("--append-system-prompt-file");
+const appendedSystemPromptFilePath = promptFileFlagIndex >= 0 ? process.argv[promptFileFlagIndex + 1] : null;
 const payload = {
   argv,
   prompt: fs.readFileSync(0, "utf8"),
@@ -23,6 +25,12 @@ const payload = {
   instructionsContents: instructionsFilePath ? fs.readFileSync(instructionsFilePath, "utf8") : null,
   skillEntries: addDir ? fs.readdirSync(path.join(addDir, ".claude", "skills")).sort() : [],
   claudeConfigDir: process.env.CLAUDE_CONFIG_DIR || null,
+  appendedSystemPromptFilePath,
+  appendedSystemPromptFileContents: appendedSystemPromptFilePath ? fs.readFileSync(appendedSystemPromptFilePath, "utf8") : null,
+  agentHome: process.env.AGENT_HOME || null,
+  nodeLlamaCppGpu: process.env.NODE_LLAMA_CPP_GPU || null,
+  qmdConfigDir: process.env.QMD_CONFIG_DIR || null,
+  xdgCacheHome: process.env.XDG_CACHE_HOME || null,
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
@@ -45,6 +53,9 @@ type CapturePayload = {
   claudeConfigDir: string | null;
   appendedSystemPromptFilePath?: string | null;
   appendedSystemPromptFileContents?: string | null;
+  agentHome?: string | null;
+  qmdConfigDir?: string | null;
+  xdgCacheHome?: string | null;
 };
 
 async function writeRetryThenSucceedClaudeCommand(commandPath: string): Promise<void> {
@@ -83,6 +94,60 @@ if (shouldFailResume) {
 console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-2", model: "claude-sonnet" }));
 console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-2", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "claude-session-2", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeFakeQmdCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const statePath = process.env.PAPERCLIP_QMD_STATE_PATH;
+const args = process.argv.slice(2);
+const readState = () => {
+  if (!statePath || !fs.existsSync(statePath)) {
+    return { path: null, collectionName: null, addCount: 0, removeCount: 0, updateCount: 0 };
+  }
+  return JSON.parse(fs.readFileSync(statePath, "utf8"));
+};
+const writeState = (state) => {
+  if (!statePath) return;
+  fs.writeFileSync(statePath, JSON.stringify(state), "utf8");
+};
+
+const state = readState();
+if (args[0] === "collection" && args[1] === "show") {
+  if (state.path && state.collectionName === args[2]) {
+    writeState(state);
+    process.stdout.write("Collection: " + args[2] + "\\n");
+    process.stdout.write("  Path:     " + state.path + "\\n");
+    process.exit(0);
+  }
+  writeState(state);
+  process.exit(1);
+}
+if (args[0] === "collection" && args[1] === "remove") {
+  state.path = null;
+  state.collectionName = null;
+  state.removeCount += 1;
+  writeState(state);
+  process.exit(0);
+}
+if (args[0] === "collection" && args[1] === "add") {
+  const nameIndex = args.indexOf("--name");
+  state.path = args[2] || null;
+  state.collectionName = nameIndex >= 0 ? args[nameIndex + 1] || null : null;
+  state.addCount += 1;
+  writeState(state);
+  process.exit(0);
+}
+if (args[0] === "update") {
+  state.updateCount += 1;
+  writeState(state);
+  process.exit(0);
+}
+process.exit(0);
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -316,11 +381,13 @@ describe("claude execute", () => {
   it("logs HOME, CLAUDE_CONFIG_DIR, and the resolved executable path in invocation metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-meta-"));
     const workspace = path.join(root, "workspace");
+    const agentHome = path.join(root, "agent-home");
     const binDir = path.join(root, "bin");
     const commandPath = path.join(binDir, "claude");
     const capturePath = path.join(root, "capture.json");
     const claudeConfigDir = path.join(root, "claude-config");
     await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(agentHome, { recursive: true });
     await fs.mkdir(binDir, { recursive: true });
     await fs.mkdir(claudeConfigDir, { recursive: true });
     await writeFakeClaudeCommand(commandPath);
@@ -358,7 +425,11 @@ describe("claude execute", () => {
           },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
-        context: {},
+        context: {
+          paperclipWorkspace: {
+            agentHome,
+          },
+        },
         authToken: "run-jwt-token",
         onLog: async () => {},
         onMeta: async (meta) => {
@@ -369,10 +440,26 @@ describe("claude execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        claudeConfigDir: string | null;
+        agentHome: string | null;
+        nodeLlamaCppGpu: string | null;
+        qmdConfigDir: string | null;
+        xdgCacheHome: string | null;
+      };
       expect(loggedCommand).toBe(commandPath);
       expect(loggedEnv.HOME).toBe(root);
       expect(loggedEnv.CLAUDE_CONFIG_DIR).toBe(claudeConfigDir);
+      expect(loggedEnv.AGENT_HOME).toBe(agentHome);
+      expect(loggedEnv.NODE_LLAMA_CPP_GPU).toBe("false");
+      expect(loggedEnv.QMD_CONFIG_DIR).toBe(path.join(agentHome, ".config", "qmd"));
+      expect(loggedEnv.XDG_CACHE_HOME).toBe(path.join(agentHome, ".cache"));
       expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(commandPath);
+      expect(capture.claudeConfigDir).toBe(claudeConfigDir);
+      expect(capture.agentHome).toBe(agentHome);
+      expect(capture.nodeLlamaCppGpu).toBe("false");
+      expect(capture.qmdConfigDir).toBe(path.join(agentHome, ".config", "qmd"));
+      expect(capture.xdgCacheHome).toBe(path.join(agentHome, ".cache"));
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -380,6 +467,107 @@ describe("claude execute", () => {
       else process.env.PATH = previousPath;
       if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
       else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards qmd bootstrap logs and keeps prepared qmd paths authoritative", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-qmd-"));
+    const workspace = path.join(root, "workspace");
+    const agentHome = path.join(root, "agent-home");
+    const sharedHome = path.join(root, "shared-home");
+    const manualQmdConfig = path.join(root, "manual-qmd-config");
+    const manualQmdCache = path.join(root, "manual-qmd-cache");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "claude");
+    const qmdPath = path.join(binDir, "qmd");
+    const capturePath = path.join(root, "capture.json");
+    const qmdStatePath = path.join(root, "qmd-state.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(agentHome, { recursive: true });
+    await fs.mkdir(path.join(manualQmdCache, "qmd", "models"), { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await writeFakeClaudeCommand(commandPath);
+    await writeFakeQmdCommand(qmdPath);
+    await fs.writeFile(
+      qmdStatePath,
+      JSON.stringify({ path: null, collectionName: null, addCount: 0, removeCount: 0, updateCount: 0 }),
+      "utf8",
+    );
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    const previousQmdStatePath = process.env.PAPERCLIP_QMD_STATE_PATH;
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+    process.env.PAPERCLIP_QMD_STATE_PATH = qmdStatePath;
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    try {
+      const result = await execute({
+        runId: "run-qmd-logs",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "claude",
+          cwd: workspace,
+          env: {
+            HOME: sharedHome,
+            QMD_CONFIG_DIR: manualQmdConfig,
+            XDG_CACHE_HOME: manualQmdCache,
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipWorkspace: {
+            agentHome,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        agentHome: string | null;
+        qmdConfigDir: string | null;
+        xdgCacheHome: string | null;
+      };
+      expect(capture.agentHome).toBe(agentHome);
+      expect(capture.qmdConfigDir).toBe(path.join(agentHome, ".config", "qmd"));
+      expect(capture.xdgCacheHome).toBe(path.join(agentHome, ".cache"));
+      expect(await fs.realpath(path.join(agentHome, ".cache", "qmd", "models"))).toBe(
+        await fs.realpath(path.join(manualQmdCache, "qmd", "models")),
+      );
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("Linked shared qmd models"),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousQmdStatePath === undefined) delete process.env.PAPERCLIP_QMD_STATE_PATH;
+      else process.env.PAPERCLIP_QMD_STATE_PATH = previousQmdStatePath;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

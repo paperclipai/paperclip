@@ -14,6 +14,10 @@ const payload = {
   prompt: fs.readFileSync(0, "utf8"),
   codexHome: process.env.CODEX_HOME || null,
   paperclipWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
+  agentHome: process.env.AGENT_HOME || null,
+  nodeLlamaCppGpu: process.env.NODE_LLAMA_CPP_GPU || null,
+  qmdConfigDir: process.env.QMD_CONFIG_DIR || null,
+  xdgCacheHome: process.env.XDG_CACHE_HOME || null,
   paperclipEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
     .sort(),
@@ -29,11 +33,73 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, c
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeFakeQmdCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const statePath = process.env.PAPERCLIP_QMD_STATE_PATH;
+const args = process.argv.slice(2);
+const readState = () => {
+  if (!statePath || !fs.existsSync(statePath)) {
+    return { path: null, collectionName: null, addCount: 0, removeCount: 0, updateCount: 0 };
+  }
+  return JSON.parse(fs.readFileSync(statePath, "utf8"));
+};
+const writeState = (state) => {
+  if (!statePath) return;
+  fs.writeFileSync(statePath, JSON.stringify(state), "utf8");
+};
+
+const state = readState();
+state.gpuValues = Array.isArray(state.gpuValues) ? state.gpuValues : [];
+state.homeValues = Array.isArray(state.homeValues) ? state.homeValues : [];
+state.gpuValues.push(process.env.NODE_LLAMA_CPP_GPU || null);
+state.homeValues.push(process.env.HOME || null);
+if (args[0] === "collection" && args[1] === "show") {
+  if (state.path && state.collectionName === args[2]) {
+    writeState(state);
+    process.stdout.write("Collection: " + args[2] + "\\n");
+    process.stdout.write("  Path:     " + state.path + "\\n");
+    process.exit(0);
+  }
+  writeState(state);
+  process.exit(1);
+}
+if (args[0] === "collection" && args[1] === "remove") {
+  state.path = null;
+  state.collectionName = null;
+  state.removeCount += 1;
+  writeState(state);
+  process.exit(0);
+}
+if (args[0] === "collection" && args[1] === "add") {
+  const nameIndex = args.indexOf("--name");
+  state.path = args[2] || null;
+  state.collectionName = nameIndex >= 0 ? args[nameIndex + 1] || null : null;
+  state.addCount += 1;
+  writeState(state);
+  process.exit(0);
+}
+if (args[0] === "update") {
+  state.updateCount += 1;
+  writeState(state);
+  process.exit(0);
+}
+process.exit(0);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   prompt: string;
   codexHome: string | null;
   paperclipWakePayloadJson: string | null;
+  agentHome: string | null;
+  nodeLlamaCppGpu: string | null;
+  qmdConfigDir: string | null;
+  xdgCacheHome: string | null;
   paperclipEnvKeys: string[];
 };
 
@@ -729,6 +795,298 @@ describe("codex execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("isolates qmd state per agent home and repairs a stale agent-home alias", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-qmd-"));
+    const workspace = path.join(root, "workspace");
+    const agentHome = path.join(root, "agent-home");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "codex");
+    const qmdPath = path.join(binDir, "qmd");
+    const capturePath = path.join(root, "capture.json");
+    const qmdStatePath = path.join(root, "qmd-state.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(agentHome, { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+    await writeFakeQmdCommand(qmdPath);
+    await fs.writeFile(
+      qmdStatePath,
+      JSON.stringify({
+        path: path.join(root, "stale-agent-home"),
+        collectionName: "agent-home",
+        addCount: 0,
+        removeCount: 0,
+        updateCount: 0,
+      }),
+      "utf8",
+    );
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    const previousQmdStatePath = process.env.PAPERCLIP_QMD_STATE_PATH;
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+    process.env.PAPERCLIP_QMD_STATE_PATH = qmdStatePath;
+
+    try {
+      const result = await execute({
+        runId: "run-qmd",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "codex",
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipWorkspace: {
+            agentHome,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.agentHome).toBe(agentHome);
+      expect(capture.nodeLlamaCppGpu).toBe("false");
+      expect(capture.qmdConfigDir).toBe(path.join(agentHome, ".config", "qmd"));
+      expect(capture.xdgCacheHome).toBe(path.join(agentHome, ".cache"));
+
+      const qmdState = JSON.parse(await fs.readFile(qmdStatePath, "utf8")) as {
+        path: string | null;
+        collectionName: string | null;
+        addCount: number;
+        removeCount: number;
+        updateCount: number;
+        gpuValues: Array<string | null>;
+      };
+      expect(qmdState.path).toBe(agentHome);
+      expect(qmdState.collectionName).toBe("agent-home");
+      expect(qmdState.removeCount).toBe(1);
+      expect(qmdState.addCount).toBe(1);
+      expect(qmdState.updateCount).toBe(0);
+      expect(qmdState.gpuValues).toEqual(["false", "false", "false"]);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousQmdStatePath === undefined) delete process.env.PAPERCLIP_QMD_STATE_PATH;
+      else process.env.PAPERCLIP_QMD_STATE_PATH = previousQmdStatePath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves explicit NODE_LLAMA_CPP_GPU overrides during qmd bootstrap", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-qmd-gpu-"));
+    const workspace = path.join(root, "workspace");
+    const agentHome = path.join(root, "agent-home");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "codex");
+    const qmdPath = path.join(binDir, "qmd");
+    const capturePath = path.join(root, "capture.json");
+    const qmdStatePath = path.join(root, "qmd-state.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(agentHome, { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+    await writeFakeQmdCommand(qmdPath);
+    await fs.writeFile(
+      qmdStatePath,
+      JSON.stringify({
+        path: null,
+        collectionName: null,
+        addCount: 0,
+        removeCount: 0,
+        updateCount: 0,
+        gpuValues: [],
+      }),
+      "utf8",
+    );
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    const previousQmdStatePath = process.env.PAPERCLIP_QMD_STATE_PATH;
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+    process.env.PAPERCLIP_QMD_STATE_PATH = qmdStatePath;
+
+    try {
+      const result = await execute({
+        runId: "run-qmd-gpu",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "codex",
+          cwd: workspace,
+          env: {
+            NODE_LLAMA_CPP_GPU: "true",
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipWorkspace: {
+            agentHome,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.nodeLlamaCppGpu).toBe("true");
+
+      const qmdState = JSON.parse(await fs.readFile(qmdStatePath, "utf8")) as {
+        addCount: number;
+        gpuValues: Array<string | null>;
+      };
+      expect(qmdState.addCount).toBe(1);
+      expect(qmdState.gpuValues).toEqual(["true", "true"]);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousQmdStatePath === undefined) delete process.env.PAPERCLIP_QMD_STATE_PATH;
+      else process.env.PAPERCLIP_QMD_STATE_PATH = previousQmdStatePath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps prepared qmd paths authoritative even when config env overrides define qmd directories", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-qmd-override-"));
+    const workspace = path.join(root, "workspace");
+    const agentHome = path.join(root, "agent-home");
+    const sharedHome = path.join(root, "shared-home");
+    const manualQmdConfig = path.join(root, "manual-qmd-config");
+    const manualQmdCache = path.join(root, "manual-qmd-cache");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "codex");
+    const qmdPath = path.join(binDir, "qmd");
+    const capturePath = path.join(root, "capture.json");
+    const qmdStatePath = path.join(root, "qmd-state.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(agentHome, { recursive: true });
+    await fs.mkdir(path.join(manualQmdCache, "qmd", "models"), { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+    await writeFakeQmdCommand(qmdPath);
+    await fs.writeFile(
+      qmdStatePath,
+      JSON.stringify({
+        path: null,
+        collectionName: null,
+        addCount: 0,
+        removeCount: 0,
+        updateCount: 0,
+        gpuValues: [],
+        homeValues: [],
+      }),
+      "utf8",
+    );
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    const previousQmdStatePath = process.env.PAPERCLIP_QMD_STATE_PATH;
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+    process.env.PAPERCLIP_QMD_STATE_PATH = qmdStatePath;
+
+    try {
+      const result = await execute({
+        runId: "run-qmd-override",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "codex",
+          cwd: workspace,
+          env: {
+            HOME: sharedHome,
+            QMD_CONFIG_DIR: manualQmdConfig,
+            XDG_CACHE_HOME: manualQmdCache,
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipWorkspace: {
+            agentHome,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.qmdConfigDir).toBe(path.join(agentHome, ".config", "qmd"));
+      expect(capture.xdgCacheHome).toBe(path.join(agentHome, ".cache"));
+      expect(await fs.realpath(path.join(agentHome, ".cache", "qmd", "models"))).toBe(
+        await fs.realpath(path.join(manualQmdCache, "qmd", "models")),
+      );
+
+      const qmdState = JSON.parse(await fs.readFile(qmdStatePath, "utf8")) as {
+        homeValues: Array<string | null>;
+      };
+      expect(qmdState.homeValues).toEqual([sharedHome, sharedHome]);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousQmdStatePath === undefined) delete process.env.PAPERCLIP_QMD_STATE_PATH;
+      else process.env.PAPERCLIP_QMD_STATE_PATH = previousQmdStatePath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a worktree-isolated CODEX_HOME while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-"));
     const workspace = path.join(root, "workspace");
