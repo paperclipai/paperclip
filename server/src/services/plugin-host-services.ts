@@ -35,6 +35,7 @@ import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { conflict } from "../errors.js";
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -940,6 +941,13 @@ export function buildHostServices(
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
+        const company = await companies.getById(companyId);
+        if (!company) throw new Error(`Company not found: ${companyId}`);
+        if (company.status === "pausing" || company.status === "paused") {
+          throw conflict("Company is paused or pausing — no new agent sessions allowed", {
+            companyStatus: company.status,
+          });
+        }
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
         const taskKey = params.taskKey ?? `plugin:${pluginKey}:session:${randomUUID()}`;

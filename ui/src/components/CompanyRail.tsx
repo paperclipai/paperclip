@@ -94,6 +94,7 @@ function SortableCompanyItem({
                 companyName={company.name}
                 logoUrl={company.logoUrl}
                 brandColor={company.brandColor}
+                dimmed={company.status === "pausing" || company.status === "paused"}
                 className={cn(
                   isSelected
                     ? "rounded-[14px]"

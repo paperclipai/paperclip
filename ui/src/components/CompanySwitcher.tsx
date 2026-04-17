@@ -15,6 +15,8 @@ function statusDotColor(status?: string): string {
   switch (status) {
     case "active":
       return "bg-green-400";
+    case "pausing":
+      return "bg-orange-400";
     case "paused":
       return "bg-yellow-400";
     case "archived":

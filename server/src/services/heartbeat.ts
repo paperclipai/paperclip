@@ -2862,6 +2862,7 @@ export function heartbeatService(db: Db) {
 
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
+      await checkCompanyGracefulPause(run.companyId).catch(() => undefined);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -5098,6 +5099,7 @@ export function heartbeatService(db: Db) {
     runningProcesses.delete(run.id);
     await finalizeAgentStatus(run.agentId, "cancelled");
     await startNextQueuedRunForAgent(run.agentId);
+    await checkCompanyGracefulPause(run.companyId).catch(() => undefined);
     return cancelled;
   }
 
