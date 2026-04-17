@@ -1,8 +1,0 @@
-pyproject.toml
-v0.py
-paperclip_harness.egg-info/PKG-INFO
-paperclip_harness.egg-info/SOURCES.txt
-paperclip_harness.egg-info/dependency_links.txt
-paperclip_harness.egg-info/requires.txt
-paperclip_harness.egg-info/top_level.txt
-tests/test_v0.py

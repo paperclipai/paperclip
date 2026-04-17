@@ -51,3 +51,10 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
