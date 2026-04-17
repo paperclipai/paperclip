@@ -16,6 +16,7 @@ import {
   feedbackVoteValueSchema,
   upsertIssueFeedbackVoteSchema,
   linkIssueApprovalSchema,
+  createIssueRelationSchema,
   issueDocumentKeySchema,
   restoreIssueDocumentRevisionSchema,
   updateIssueWorkProductSchema,
@@ -38,6 +39,7 @@ import {
   heartbeatService,
   instanceSettingsService,
   issueApprovalService,
+  issueRelationService,
   issueService,
   documentService,
   logActivity,
@@ -306,6 +308,7 @@ export function issueRoutes(
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+  const issueRelationsSvc = issueRelationService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
@@ -1326,6 +1329,80 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
+  router.get("/issues/:id/relations", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const relations = await issueRelationsSvc.listForIssue(id);
+    res.json(relations);
+  });
+
+  router.post("/issues/:id/relations", validate(createIssueRelationSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const actor = getActorInfo(req);
+    const relation = await issueRelationsSvc.create(
+      id,
+      { relatedIssueId: req.body.relatedIssueId, type: req.body.type },
+      {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      },
+    );
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.relation_added",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { relatedIssueId: req.body.relatedIssueId, type: req.body.type },
+    });
+
+    res.status(201).json(relation);
+  });
+
+  router.delete("/issues/:id/relations/:relationId", async (req, res) => {
+    const id = req.params.id as string;
+    const relationId = req.params.relationId as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const actor = getActorInfo(req);
+    const removed = await issueRelationsSvc.delete(id, relationId);
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.relation_removed",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { relatedIssueId: removed.relatedIssueId, type: removed.type },
+    });
+
+    res.json({ ok: true });
+  });
+
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -1902,6 +1979,25 @@ export function issueRoutes(
 
       const becameDone = existing.status !== "done" && issue.status === "done";
       if (becameDone) {
+        // Auto-transition any dependents that are currently `blocked` with
+        // this as their sole remaining blocker: move them to `todo` before
+        // emitting wakeups, so the state change is deterministic even if the
+        // assignee agent is unavailable.
+        const transitioned = await issueRelationsSvc.autoTransitionBlockedDependents(issue.id);
+        for (const t of transitioned) {
+          await logActivity(db, {
+            companyId: t.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.auto_unblocked",
+            entityType: "issue",
+            entityId: t.id,
+            details: { resolvedBlockerIssueId: issue.id },
+          });
+        }
+
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
           addWakeup(dependent.assigneeAgentId, {
