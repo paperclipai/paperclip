@@ -743,7 +743,8 @@ function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string): 
   try {
     realRepoRoot = realpathSync(repoRoot);
   } catch {
-    return command;
+    // repoRoot is unresolvable — block execution rather than allowing the raw command
+    return null;
   }
 
   for (const pattern of patterns) {
@@ -754,14 +755,15 @@ function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string): 
     const repoManagedPath = path.join(repoRoot, relativePath.slice(2));
     // Lexical path traversal guard
     if (!repoManagedPath.startsWith(repoRoot + path.sep)) return null;
-    if (!existsSync(repoManagedPath)) continue;
-    // Symlink escape guard — resolve to real path and re-check containment
+    // Symlink escape guard — realpathSync resolves symlinks and throws if the path
+    // does not exist, collapsing the TOCTOU window from a separate existsSync call.
+    let realPath: string;
     try {
-      const realPath = realpathSync(repoManagedPath);
-      if (!realPath.startsWith(realRepoRoot + path.sep)) return null;
+      realPath = realpathSync(repoManagedPath);
     } catch {
-      return null;
+      continue; // does not exist or permission denied — try next pattern
     }
+    if (!realPath.startsWith(realRepoRoot + path.sep)) return null;
 
     const prefix = match.groups.prefix ?? "";
     const suffix = match.groups.suffix ?? "";
