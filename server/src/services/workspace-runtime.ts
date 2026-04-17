@@ -286,6 +286,12 @@ export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
     }
   }
   delete env.DATABASE_URL;
+  // Strip server-side secrets that must never leak into workspace child processes
+  delete env.BETTER_AUTH_SECRET;
+  delete env.ANTHROPIC_API_KEY;
+  delete env.OPENAI_API_KEY;
+  delete env.REDIS_URL;
+  delete env.REDIS_PASSWORD;
   delete env.npm_config_tailscale_auth;
   delete env.npm_config_authenticated_private;
   return env;
@@ -725,11 +731,20 @@ function quoteShellArg(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
+// Returns the resolved absolute-path command, the original command if it does not look
+// like a repo-relative path, or null if the path resolves to a symlink escaping the repo.
+function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string): string | null {
   const patterns = [
     /^(?<prefix>(?:bash|sh|zsh)\s+)(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
     /^(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
   ];
+
+  let realRepoRoot: string;
+  try {
+    realRepoRoot = realpathSync(repoRoot);
+  } catch {
+    return command;
+  }
 
   for (const pattern of patterns) {
     const match = command.match(pattern);
@@ -737,8 +752,16 @@ function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
 
     const relativePath = match.groups.relative;
     const repoManagedPath = path.join(repoRoot, relativePath.slice(2));
-    if (!repoManagedPath.startsWith(repoRoot + path.sep)) continue;
+    // Lexical path traversal guard
+    if (!repoManagedPath.startsWith(repoRoot + path.sep)) return null;
     if (!existsSync(repoManagedPath)) continue;
+    // Symlink escape guard — resolve to real path and re-check containment
+    try {
+      const realPath = realpathSync(repoManagedPath);
+      if (!realPath.startsWith(realRepoRoot + path.sep)) return null;
+    } catch {
+      return null;
+    }
 
     const prefix = match.groups.prefix ?? "";
     const suffix = match.groups.suffix ?? "";
@@ -918,6 +941,7 @@ async function provisionExecutionWorktree(input: {
   const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
   if (!provisionCommand) return;
   const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(provisionCommand, input.repoRoot);
+  if (resolvedProvisionCommand === null) return;
 
   await recordWorkspaceCommandOperation(input.recorder, {
     phase: "workspace_provision",
@@ -1379,6 +1403,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
       const resolvedCommand = repoRoot
         ? resolveRepoManagedWorkspaceCommand(command, repoRoot)
         : command;
+      if (resolvedCommand === null) continue;
       await recordWorkspaceCommandOperation(input.recorder, {
         phase: "workspace_teardown",
         command,
@@ -2530,7 +2555,6 @@ export async function releaseRuntimeServicesForRun(runId: string) {
 export async function stopRuntimeServicesForExecutionWorkspace(input: {
   db?: Db;
   executionWorkspaceId: string;
-  workspaceCwd?: string | null;
   runtimeServiceId?: string | null;
 }) {
   const matchingServiceIds = Array.from(runtimeServicesById.values())

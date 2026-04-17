@@ -118,6 +118,9 @@ export function collectIssueWorkspaceCommandPaths(input: {
   if (isRecord(input.assigneeAdapterOverrides)) {
     const adapterConfig = input.assigneeAdapterOverrides.adapterConfig;
     if (isRecord(adapterConfig)) {
+      if (hasOwn(adapterConfig, "workspaceRuntime")) {
+        paths.push("assigneeAdapterOverrides.adapterConfig.workspaceRuntime");
+      }
       paths.push(
         ...collectWorkspaceStrategyCommandPaths(
           adapterConfig.workspaceStrategy,

@@ -191,6 +191,25 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
     expect(sanitized.npm_config_authenticated_private).toBeUndefined();
     expect(sanitized.HOST).toBe("0.0.0.0");
   });
+
+  it("strips server-side secrets that must never reach workspace child processes", () => {
+    const sanitized = sanitizeRuntimeServiceBaseEnv({
+      PATH: process.env.PATH,
+      BETTER_AUTH_SECRET: "super-secret-jwt-key",
+      ANTHROPIC_API_KEY: "sk-ant-abc123",
+      OPENAI_API_KEY: "sk-openai-abc123",
+      REDIS_URL: "redis://:password@redis:6379",
+      REDIS_PASSWORD: "redis-password",
+      HOST: "0.0.0.0",
+    });
+
+    expect(sanitized.BETTER_AUTH_SECRET).toBeUndefined();
+    expect(sanitized.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(sanitized.OPENAI_API_KEY).toBeUndefined();
+    expect(sanitized.REDIS_URL).toBeUndefined();
+    expect(sanitized.REDIS_PASSWORD).toBeUndefined();
+    expect(sanitized.HOST).toBe("0.0.0.0");
+  });
 });
 
 describe("ensureServerWorkspaceLinksCurrent", () => {
@@ -898,6 +917,54 @@ describe("realizeExecutionWorkspace", () => {
     });
 
     await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-version"), "utf8")).resolves.toBe("v2\n");
+  });
+
+  it("does not execute a repo-managed provision command that is a symlink pointing outside the repo", async () => {
+    const repoRoot = await createTempRepo();
+
+    // Create a sentinel file outside the repo that should never be executed
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-symlink-escape-"));
+    const outsideTarget = path.join(outsideDir, "evil.sh");
+    const markerFile = path.join(outsideDir, "evil-executed");
+    await fs.writeFile(outsideTarget, `#!/usr/bin/env bash\ntouch "${markerFile}"\n`, "utf8");
+    await fs.chmod(outsideTarget, 0o755);
+
+    // Create a symlink inside the repo pointing to the outside target
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.symlink(outsideTarget, path.join(repoRoot, "scripts", "provision.sh"));
+    await runGit(repoRoot, ["add", "scripts/provision.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Add symlinked provision script"]);
+
+    await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          provisionCommand: "bash ./scripts/provision.sh",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-symlink",
+        title: "Symlink escape test",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    // The outside target must NOT have been executed
+    await expect(fs.access(markerFile)).rejects.toThrow();
   });
 
   it("writes an isolated repo-local Paperclip config and worktree branding when provisioning", async () => {
@@ -2418,9 +2485,7 @@ describe("ensureRuntimeServicesForRun", () => {
 
     expect(services[0]?.url).toBeTruthy();
     await stopRuntimeServicesForExecutionWorkspace({
-      executionWorkspaceId: "execution-workspace-stop",
-      workspaceCwd: workspace.cwd,
-    });
+      executionWorkspaceId: "execution-workspace-stop",    });
     await releaseRuntimeServicesForRun(runId);
     leasedRunIds.delete(runId);
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -2476,9 +2541,7 @@ describe("ensureRuntimeServicesForRun", () => {
     });
 
     await stopRuntimeServicesForExecutionWorkspace({
-      executionWorkspaceId: "execution-workspace-target",
-      workspaceCwd: targetWorkspaceRoot,
-    });
+      executionWorkspaceId: "execution-workspace-target",    });
 
     const response = await fetch(services[0]!.url!);
     expect(await response.text()).toBe("ok");
@@ -2543,9 +2606,7 @@ describe("ensureRuntimeServicesForRun", () => {
     await expect(fetch(services[0]!.url!)).resolves.toMatchObject({ ok: true });
 
     await stopRuntimeServicesForExecutionWorkspace({
-      executionWorkspaceId: "execution-workspace-control-start",
-      workspaceCwd: workspace.cwd,
-    });
+      executionWorkspaceId: "execution-workspace-control-start",    });
   });
 
   it("stops only the selected execution workspace runtime service", async () => {
@@ -2609,18 +2670,14 @@ describe("ensureRuntimeServicesForRun", () => {
     const worker = services.find((service) => service.serviceName === "worker");
 
     await stopRuntimeServicesForExecutionWorkspace({
-      executionWorkspaceId: "execution-workspace-control-stop",
-      workspaceCwd: workspace.cwd,
-      runtimeServiceId: web?.id ?? null,
+      executionWorkspaceId: "execution-workspace-control-stop",      runtimeServiceId: web?.id ?? null,
     });
 
     await expect(fetch(web!.url!)).rejects.toThrow();
     await expect(fetch(worker!.url!)).resolves.toMatchObject({ ok: true });
 
     await stopRuntimeServicesForExecutionWorkspace({
-      executionWorkspaceId: "execution-workspace-control-stop",
-      workspaceCwd: workspace.cwd,
-      runtimeServiceId: worker?.id ?? null,
+      executionWorkspaceId: "execution-workspace-control-stop",      runtimeServiceId: worker?.id ?? null,
     });
   });
 
@@ -2666,9 +2723,7 @@ describe("ensureRuntimeServicesForRun", () => {
 
     // Attempt to stop workspace-A's service using workspace-B's scope — must be a no-op
     await stopRuntimeServicesForExecutionWorkspace({
-      executionWorkspaceId: "execution-workspace-cross-b",
-      workspaceCwd: workspace.cwd,
-      runtimeServiceId: serviceA.id,
+      executionWorkspaceId: "execution-workspace-cross-b",      runtimeServiceId: serviceA.id,
     });
 
     // Service A must still be running
@@ -2676,12 +2731,10 @@ describe("ensureRuntimeServicesForRun", () => {
 
     // Cleanup
     await stopRuntimeServicesForExecutionWorkspace({
-      executionWorkspaceId: "execution-workspace-cross-a",
-      workspaceCwd: workspace.cwd,
-    });
+      executionWorkspaceId: "execution-workspace-cross-a",    });
   });
 
-  it("does not stop a service from a different execution workspace when bulk-stopping by workspaceCwd", async () => {
+  it("does not stop a service when bulk-stopping by a different executionWorkspaceId", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-cwd-scope-"));
     const workspace = buildWorkspace(workspaceRoot);
 
@@ -2712,10 +2765,9 @@ describe("ensureRuntimeServicesForRun", () => {
     expect(servicesA).toHaveLength(1);
     const serviceA = servicesA[0]!;
 
-    // Bulk stop using the SAME workspaceCwd but a DIFFERENT executionWorkspaceId — must not stop serviceA.
+    // Bulk-stop with a DIFFERENT executionWorkspaceId — must not stop serviceA.
     await stopRuntimeServicesForExecutionWorkspace({
       executionWorkspaceId: "execution-workspace-cwd-scope-b",
-      workspaceCwd: workspace.cwd,
     });
 
     await expect(fetch(serviceA.url!)).resolves.toMatchObject({ ok: true });
@@ -3034,9 +3086,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
 
     await stopRuntimeServicesForExecutionWorkspace({
       db,
-      executionWorkspaceId,
-      workspaceCwd: workspace.cwd,
-    });
+      executionWorkspaceId,    });
 
     await expect(fetch(service!.url!)).rejects.toThrow();
   });
@@ -3232,9 +3282,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
 
     await stopRuntimeServicesForExecutionWorkspace({
       db,
-      executionWorkspaceId,
-      workspaceCwd: workspace.cwd,
-    });
+      executionWorkspaceId,    });
     await releaseRuntimeServicesForRun(runId);
     leasedRunIds.delete(runId);
     await new Promise((resolve) => setTimeout(resolve, 250));
