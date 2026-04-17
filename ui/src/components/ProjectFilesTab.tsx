@@ -804,16 +804,6 @@ export function ProjectFilesTab({
               </TooltipProvider>
             </div>
             <div className="ml-auto flex items-center gap-1">
-              {!gitViewActive && !compactTreePane ? (
-                <>
-                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openPathDialog("file")}>
-                    <FilePlus2 className="h-4 w-4" />
-                  </Button>
-                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openPathDialog("folder")}>
-                    <FolderPlus className="h-4 w-4" />
-                  </Button>
-                </>
-              ) : null}
               <Button
                 size="icon"
                 variant="ghost"
@@ -825,6 +815,19 @@ export function ProjectFilesTab({
               </Button>
             </div>
           </div>
+
+          {!gitViewActive && !compactTreePane ? (
+            <div className="flex items-center gap-1 border-b border-border pb-2">
+              <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" onClick={() => openPathDialog("file")}>
+                <FilePlus2 className="h-3.5 w-3.5" />
+                New file
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" onClick={() => openPathDialog("folder")}>
+                <FolderPlus className="h-3.5 w-3.5" />
+                New folder
+              </Button>
+            </div>
+          ) : null}
 
           {gitViewActive ? (
             <div className="space-y-2">
