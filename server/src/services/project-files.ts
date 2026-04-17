@@ -222,7 +222,8 @@ async function inspectBranches(repoRoot: string): Promise<{ currentBranch: strin
     for (const line of localRaw.split(/\r?\n/)) {
       if (!line) continue;
       const [name, tracking] = line.split("|");
-      if (!name) continue;
+      // "origin" as a local branch name collides with the remote name — exclude it
+      if (!name || name === "origin") continue;
       branches.push({
         name,
         kind: "local",
@@ -647,8 +648,10 @@ export function projectFilesService(db: Db) {
       const remoteBranchNames = new Set<string>();
       for (const line of remoteRaw.split(/\r?\n/)) {
         const name = line.trim();
-        if (!name || name === "origin/HEAD") continue;
+        // "origin" is the bare remote-tracking root ref, not a real branch — skip it
+        if (!name || name === "origin/HEAD" || name === "origin") continue;
         const shortName = name.startsWith("origin/") ? name.slice("origin/".length) : name;
+        if (!shortName) continue;
         remoteBranchNames.add(shortName);
       }
 
@@ -690,15 +693,23 @@ export function projectFilesService(db: Db) {
         }
 
         if (!local.upstream) {
-          // No upstream configured — push to establish tracking
+          // No upstream — branch only exists locally, not on origin. Delete it.
+          if (local.name === summary.currentBranch) {
+            details.push({
+              branchName: local.name,
+              action: "remote_deleted_local_remains",
+              errorMessage: "Cannot delete current branch — switch to another branch first",
+            });
+            continue;
+          }
           try {
-            await runGit(["push", "--set-upstream", "origin", local.name], repoRoot);
-            details.push({ branchName: local.name, action: "pushed_to_remote", errorMessage: null });
+            await runGit(["branch", "-d", local.name], repoRoot);
+            details.push({ branchName: local.name, action: "local_auto_deleted", errorMessage: null });
           } catch (error) {
             details.push({
               branchName: local.name,
-              action: "error",
-              errorMessage: sanitizeGitError(error, `Failed to push ${local.name}`),
+              action: "remote_deleted_local_remains",
+              errorMessage: sanitizeGitError(error, `Could not delete ${local.name} — may have unmerged commits`),
             });
           }
           continue;
@@ -747,6 +758,23 @@ export function projectFilesService(db: Db) {
         summary: await buildSummary(project),
         message: messageParts.join(", ") || null,
       };
+    },
+
+    async deleteBranch(projectId: string, name: string, force = false): Promise<ProjectFilesSummary> {
+      const project = await ensureProject(projectId, db);
+      const summary = await buildSummary(project);
+      if (!summary.available || !summary.repoRoot) {
+        throw badRequest("Project is not a git checkout");
+      }
+      if (!name.trim()) throw badRequest("Branch name is required");
+      if (name === summary.currentBranch) throw conflict("Cannot delete the currently checked-out branch");
+      if (name === "origin") throw badRequest("Cannot delete branch named 'origin'");
+      try {
+        await runGit(["branch", force ? "-D" : "-d", name], summary.repoRoot);
+      } catch (error) {
+        throw conflict(sanitizeGitError(error, `Failed to delete branch ${name}`));
+      }
+      return buildSummary(project);
     },
 
     async getGitStatus(projectId: string): Promise<GitStatusResponse> {

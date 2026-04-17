@@ -87,6 +87,8 @@ export const projectsApi = {
     api.post<ProjectFilesSyncResult>(projectPath(projectId, companyId, "/files/sync"), {}),
   syncBranches: (projectId: string, companyId?: string) =>
     api.post<ProjectFilesBranchSyncResult>(projectPath(projectId, companyId, "/files/branches/sync"), {}),
+  deleteBranch: (projectId: string, name: string, force = false, companyId?: string) =>
+    api.delete<ProjectFilesSummary>(projectPath(projectId, companyId, `/files/branch?name=${encodeURIComponent(name)}${force ? "&force=true" : ""}`)),
   publishToRemote: (projectId: string, remoteUrl: string, companyId?: string) =>
     api.post<{ status: string; message: string | null }>(
       projectPath(projectId, companyId, "/files/publish-remote"),

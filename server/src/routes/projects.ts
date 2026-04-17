@@ -671,6 +671,36 @@ export function projectRoutes(db: Db) {
     res.status(201).json(result);
   });
 
+  router.delete("/projects/:id/files/branch", async (req, res) => {
+    const id = req.params.id as string;
+    const name = req.query.name as string | undefined;
+    const force = req.query.force === "true";
+    if (!name) {
+      res.status(400).json({ error: "Branch name is required" });
+      return;
+    }
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertBoard(req);
+    assertCompanyAccess(req, project.companyId);
+    const result = await filesSvc.deleteBranch(id, name, force);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.branch_deleted",
+      entityType: "project",
+      entityId: id,
+      details: { name, force },
+    });
+    res.json(result);
+  });
+
   router.post("/projects/:id/files/sync", async (req, res) => {
     const id = req.params.id as string;
     const project = await svc.getById(id);

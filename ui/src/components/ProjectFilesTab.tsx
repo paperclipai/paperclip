@@ -243,6 +243,8 @@ export function ProjectFilesTab({
   const [actionTargetPath, setActionTargetPath] = useState<string | null>(null);
   const [pathDraft, setPathDraft] = useState("");
   const [dirtyBranchTarget, setDirtyBranchTarget] = useState<string | null>(null);
+  const [deleteBranchTarget, setDeleteBranchTarget] = useState<string | null>(null);
+  const [deleteBranchConfirmed, setDeleteBranchConfirmed] = useState(false);
   const [branchSyncDialogOpen, setBranchSyncDialogOpen] = useState(false);
   const [branchSyncResult, setBranchSyncResult] = useState<ProjectFilesBranchSyncResult | null>(null);
   const [publishUrl, setPublishUrl] = useState("");
@@ -441,6 +443,22 @@ export function ProjectFilesTab({
     onError: (mutationError) => {
       pushToast({
         title: mutationError instanceof Error ? mutationError.message : "Failed to sync repository",
+        tone: "error",
+      });
+    },
+  });
+
+  const deleteBranch = useMutation({
+    mutationFn: ({ name, force }: { name: string; force?: boolean }) =>
+      projectsApi.deleteBranch(projectId, name, force ?? false, companyId),
+    onSuccess: async () => {
+      setDeleteBranchTarget(null);
+      setDeleteBranchConfirmed(false);
+      await refreshAll();
+    },
+    onError: (mutationError) => {
+      pushToast({
+        title: mutationError instanceof Error ? mutationError.message : "Failed to delete branch",
         tone: "error",
       });
     },
@@ -1177,20 +1195,43 @@ export function ProjectFilesTab({
               {filteredLocalBranches.length > 0 && (
                 <CommandGroup heading="Local">
                   {filteredLocalBranches.map((branch) => (
-                    <CommandItem
-                      key={`local:${branch.name}`}
-                      onSelect={() => switchBranch.mutate({ branch: branch.name })}
-                      className="rounded-md"
-                    >
-                      <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                      <span className={`flex-1 truncate text-sm ${branch.current ? "font-semibold" : ""}`}>{branch.name}</span>
-                      {branch.tracking ? (
-                        <span className="text-xs text-muted-foreground/60 truncate max-w-[100px] shrink-0">
-                          {branch.tracking.replace("origin/", "↑ ")}
-                        </span>
-                      ) : null}
-                      {branch.current ? <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
-                    </CommandItem>
+                    <ContextMenu key={`local:${branch.name}`}>
+                      <ContextMenuTrigger asChild>
+                        <CommandItem
+                          onSelect={() => switchBranch.mutate({ branch: branch.name })}
+                          className="rounded-md group"
+                        >
+                          <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <span className={`flex-1 truncate text-sm ${branch.current ? "font-semibold" : ""}`}>{branch.name}</span>
+                          {branch.tracking ? (
+                            <span className="text-xs text-muted-foreground/60 truncate max-w-[100px] shrink-0">
+                              {branch.tracking.replace("origin/", "↑ ")}
+                            </span>
+                          ) : null}
+                          {branch.current ? (
+                            <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          ) : (
+                            <button
+                              type="button"
+                              className="ml-1 rounded opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:text-destructive transition-opacity"
+                              onClick={(e) => { e.stopPropagation(); setDeleteBranchTarget(branch.name); setDeleteBranchConfirmed(false); }}
+                              tabIndex={-1}
+                            >
+                              <XIcon className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </CommandItem>
+                      </ContextMenuTrigger>
+                      <ContextMenuContent>
+                        <ContextMenuItem
+                          className="text-destructive focus:text-destructive"
+                          onSelect={() => { setDeleteBranchTarget(branch.name); setDeleteBranchConfirmed(false); }}
+                          disabled={branch.current}
+                        >
+                          Delete branch
+                        </ContextMenuItem>
+                      </ContextMenuContent>
+                    </ContextMenu>
                   ))}
                 </CommandGroup>
               )}
@@ -1303,6 +1344,41 @@ export function ProjectFilesTab({
             >
               {createPathOpen === "delete" ? "Delete" : "Confirm"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={deleteBranchTarget !== null}
+        onOpenChange={(open) => { if (!open) { setDeleteBranchTarget(null); setDeleteBranchConfirmed(false); } }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete branch</DialogTitle>
+            <DialogDescription>
+              {deleteBranchConfirmed
+                ? <>Are you <strong>absolutely sure</strong>? This cannot be undone.</>
+                : <>Delete local branch <code className="font-mono">{deleteBranchTarget}</code>? This only removes it locally.</>}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setDeleteBranchTarget(null); setDeleteBranchConfirmed(false); }}>
+              Cancel
+            </Button>
+            {deleteBranchConfirmed ? (
+              <Button
+                variant="destructive"
+                disabled={deleteBranch.isPending}
+                onClick={() => deleteBranchTarget && deleteBranch.mutate({ name: deleteBranchTarget })}
+              >
+                {deleteBranch.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                Yes, delete it
+              </Button>
+            ) : (
+              <Button variant="destructive" onClick={() => setDeleteBranchConfirmed(true)}>
+                Delete
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
