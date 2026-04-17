@@ -656,6 +656,9 @@ export async function startServer(): Promise<StartedServer> {
     resolveSessionFromHeaders,
   });
 
+  const runtimeIntervals: Array<ReturnType<typeof setInterval>> = [];
+  let heartbeat: ReturnType<typeof heartbeatService> | null = null;
+
   void reconcilePersistedRuntimeServicesOnStartup(db as any)
     .then((result) => {
       if (result.reconciled > 0) {
@@ -670,12 +673,13 @@ export async function startServer(): Promise<StartedServer> {
     });
   
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const heartbeatScheduler = heartbeatService(db as any, { pluginWorkerManager });
+    heartbeat = heartbeatScheduler;
     const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
-    void heartbeat
+    void heartbeatScheduler
       .reapOrphanedRuns()
       .then(() => heartbeat.promoteDueScheduledRetries())
       .then(async (promotion) => {
@@ -716,8 +720,8 @@ export async function startServer(): Promise<StartedServer> {
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
-    setInterval(() => {
-      void heartbeat
+    const schedulerInterval = setInterval(() => {
+      void heartbeatScheduler
         .tickTimers(new Date())
         .then((result) => {
           if (result.enqueued > 0) {
@@ -741,7 +745,7 @@ export async function startServer(): Promise<StartedServer> {
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
-      void heartbeat
+      void heartbeatScheduler
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
         .then(() => heartbeat.promoteDueScheduledRetries())
         .then(async (promotion) => {
@@ -783,6 +787,7 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+    runtimeIntervals.push(schedulerInterval);
   }
   
   if (config.databaseBackupEnabled) {
@@ -796,11 +801,12 @@ export async function startServer(): Promise<StartedServer> {
       },
       "Automatic database backups enabled",
     );
-    setInterval(() => {
+    const backupInterval = setInterval(() => {
       void runServerDatabaseBackup("scheduled").catch(() => {
         // runServerDatabaseBackup already logs the failure with context.
       });
     }, backupIntervalMs);
+    runtimeIntervals.push(backupInterval);
   }
   
   // Wait for external adapters to finish loading before accepting requests.
@@ -871,7 +877,32 @@ export async function startServer(): Promise<StartedServer> {
   });
   
   {
+    let shuttingDown = false;
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+
+      for (const interval of runtimeIntervals) {
+        clearInterval(interval);
+      }
+
+      await new Promise<void>((resolveClose) => {
+        server.close(() => resolveClose());
+      });
+
+      if (heartbeat) {
+        try {
+          const drainedCount = await heartbeat.drainRunningRunsForShutdown(
+            `Cancelled due to server shutdown (${signal})`,
+          );
+          if (drainedCount > 0) {
+            logger.warn({ signal, drainedCount }, "drained running heartbeat runs before shutdown");
+          }
+        } catch (err) {
+          logger.error({ err, signal }, "failed to drain heartbeat runs during shutdown");
+        }
+      }
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();
