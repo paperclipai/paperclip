@@ -8,6 +8,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -717,6 +719,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -994,6 +997,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -1179,6 +1183,96 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       id: parentId,
       assigneeAgentId,
       childIssueIds: [childA, childB],
+    });
+  });
+
+  it("lets the current assignee check out when a queued lock belongs to the previous assignee", async () => {
+    const companyId = randomUUID();
+    const previousAgentId = randomUUID();
+    const nextAgentId = randomUUID();
+    const issueId = randomUUID();
+    const previousRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: previousAgentId,
+        companyId,
+        name: "Previous Agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: nextAgentId,
+        companyId,
+        name: "Next Agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      {
+        id: previousRunId,
+        companyId,
+        agentId: previousAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "queued",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+      },
+      {
+        id: nextRunId,
+        companyId,
+        agentId: nextAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned issue",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: nextAgentId,
+      executionRunId: previousRunId,
+      executionAgentNameKey: "previous-agent",
+      executionLockedAt: new Date(),
+    });
+
+    const checkedOut = await svc.checkout(issueId, nextAgentId, ["todo"], nextRunId);
+
+    expect(checkedOut).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: nextAgentId,
+      checkoutRunId: nextRunId,
+      executionRunId: nextRunId,
     });
   });
 });

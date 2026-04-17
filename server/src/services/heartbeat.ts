@@ -898,6 +898,25 @@ function shouldAutoCheckoutIssueForWake(input: {
   return true;
 }
 
+function isIssueWakeAllowedWithoutCurrentAssignment(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  agentId: string,
+) {
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  if (wakeReason === "issue_comment_mentioned") return true;
+
+  const executionStage = parseObject(contextSnapshot?.executionStage);
+  const wakeRole = readNonEmptyString(executionStage.wakeRole);
+  const currentParticipant = parseObject(executionStage.currentParticipant);
+  const participantType = readNonEmptyString(currentParticipant.type);
+  const participantAgentId = readNonEmptyString(currentParticipant.agentId);
+  const isCurrentAgentParticipant = participantType === "agent" && participantAgentId === agentId;
+  if (wakeReason === "execution_review_requested" && wakeRole === "reviewer" && isCurrentAgentParticipant) return true;
+  if (wakeReason === "execution_approval_requested" && wakeRole === "approver" && isCurrentAgentParticipant) return true;
+
+  return false;
+}
+
 function isCheckoutConflictError(error: unknown): boolean {
   return error instanceof HttpError && error.status === 409 && error.message === "Issue checkout conflict";
 }
@@ -2425,25 +2444,48 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
-  async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
+  async function claimQueuedRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    opts: { startNextOnCancel?: boolean } = {},
+  ) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
     if (!agent) {
-      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
+      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists", {
+        startNext: opts.startNextOnCancel,
+      });
       return null;
     }
     if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-      await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
+      await cancelRunInternal(run.id, "Cancelled because the agent is not invokable", {
+        startNext: opts.startNextOnCancel,
+      });
       return null;
     }
 
     const context = parseObject(run.contextSnapshot);
+    const claimedIssueId = readNonEmptyString(context.issueId);
+    const allowWithoutCurrentAssignment = isIssueWakeAllowedWithoutCurrentAssignment(context, run.agentId);
+    if (claimedIssueId && !allowWithoutCurrentAssignment) {
+      const issue = await db
+        .select({ assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(and(eq(issues.id, claimedIssueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue || issue.assigneeAgentId !== run.agentId) {
+        await cancelRunInternal(run.id, "Cancelled because the issue is no longer assigned to this agent", {
+          startNext: opts.startNextOnCancel,
+        });
+        return null;
+      }
+    }
+
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
-      issueId: readNonEmptyString(context.issueId),
+      issueId: claimedIssueId,
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
-      await cancelRunInternal(run.id, budgetBlock.reason);
+      await cancelRunInternal(run.id, budgetBlock.reason, { startNext: opts.startNextOnCancel });
       return null;
     }
 
@@ -2479,8 +2521,8 @@ export function heartbeatService(db: Db) {
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
 
     // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
-    // not at queue time. Guard is idempotent — safe if called more than once.
-    const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
+    // not at queue time. Ordinary issue wakes must still match the current
+    // assignee so reassigned queued runs cannot recreate stale execution locks.
     if (claimedIssueId) {
       const claimedAgent = await getAgent(claimed.agentId);
       await db
@@ -2496,6 +2538,7 @@ export function heartbeatService(db: Db) {
             eq(issues.id, claimedIssueId),
             eq(issues.companyId, claimed.companyId),
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            allowWithoutCurrentAssignment ? sql`true` : eq(issues.assigneeAgentId, claimed.agentId),
           ),
         );
     }
@@ -2996,18 +3039,24 @@ export function heartbeatService(db: Db) {
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
 
-      const queuedRuns = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
-        .orderBy(asc(heartbeatRuns.createdAt))
-        .limit(availableSlots);
-      if (queuedRuns.length === 0) return [];
-
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of queuedRuns) {
-        const claimed = await claimQueuedRun(queuedRun);
-        if (claimed) claimedRuns.push(claimed);
+      while (claimedRuns.length < availableSlots) {
+        const queuedRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
+          .orderBy(asc(heartbeatRuns.createdAt))
+          .limit(Math.max(1, availableSlots - claimedRuns.length));
+        if (queuedRuns.length === 0) break;
+
+        let madeProgress = false;
+        for (const queuedRun of queuedRuns) {
+          const claimed = await claimQueuedRun(queuedRun, { startNextOnCancel: false });
+          madeProgress = true;
+          if (claimed) claimedRuns.push(claimed);
+          if (claimedRuns.length >= availableSlots) break;
+        }
+        if (!madeProgress) break;
       }
       if (claimedRuns.length === 0) return [];
 
@@ -4352,6 +4401,7 @@ export function heartbeatService(db: Db) {
           .select({
             id: issues.id,
             companyId: issues.companyId,
+            assigneeAgentId: issues.assigneeAgentId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
           })
@@ -4401,7 +4451,7 @@ export function heartbeatService(db: Db) {
         }
 
         if (!activeExecutionRun) {
-          const legacyRun = await tx
+          const legacyRunCandidates = await tx
             .select()
             .from(heartbeatRuns)
             .where(
@@ -4415,8 +4465,17 @@ export function heartbeatService(db: Db) {
               sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
               asc(heartbeatRuns.createdAt),
             )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
+            .then((rows) => rows);
+          const legacyRun =
+            legacyRunCandidates.find((candidate) => {
+              if (candidate.agentId === issue.assigneeAgentId) return true;
+              const candidateAllowsWithoutCurrentAssignment = isIssueWakeAllowedWithoutCurrentAssignment(
+                parseObject(candidate.contextSnapshot),
+                candidate.agentId,
+              );
+              if (!candidateAllowsWithoutCurrentAssignment) return false;
+              return candidate.status === "running" || candidate.agentId === agentId;
+            }) ?? null;
 
           if (legacyRun) {
             activeExecutionRun = legacyRun;
@@ -4825,7 +4884,11 @@ export function heartbeatService(db: Db) {
     return wakeupIds.length;
   }
 
-  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane") {
+  async function cancelRunInternal(
+    runId: string,
+    reason = "Cancelled by control plane",
+    opts: { startNext?: boolean } = {},
+  ) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     if (run.status !== "running" && run.status !== "queued") return run;
@@ -4867,7 +4930,9 @@ export function heartbeatService(db: Db) {
 
     runningProcesses.delete(run.id);
     await finalizeAgentStatus(run.agentId, "cancelled");
-    await startNextQueuedRunForAgent(run.agentId);
+    if (opts.startNext !== false) {
+      await startNextQueuedRunForAgent(run.agentId);
+    }
     return cancelled;
   }
 

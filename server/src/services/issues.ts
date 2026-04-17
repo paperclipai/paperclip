@@ -1751,17 +1751,25 @@ export function issueService(db: Db) {
           sql`select id from issues where id = ${id} for update`,
         );
         const preCheckRow = await tx
-          .select({ executionRunId: issues.executionRunId })
+          .select({
+            assigneeAgentId: issues.assigneeAgentId,
+            executionRunId: issues.executionRunId,
+          })
           .from(issues)
           .where(eq(issues.id, id))
           .then((rows) => rows[0] ?? null);
         if (!preCheckRow?.executionRunId) return;
         const lockRun = await tx
-          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, agentId: heartbeatRuns.agentId })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, preCheckRow.executionRunId))
           .then((rows) => rows[0] ?? null);
-        if (!lockRun || (lockRun.status !== "queued" && lockRun.status !== "running")) {
+        const isTerminalOrMissing = !lockRun || (lockRun.status !== "queued" && lockRun.status !== "running");
+        const isMismatchedQueuedLock =
+          lockRun?.status === "queued" &&
+          preCheckRow.assigneeAgentId === agentId &&
+          lockRun.agentId !== agentId;
+        if (isTerminalOrMissing || isMismatchedQueuedLock) {
           await tx
             .update(issues)
             .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })

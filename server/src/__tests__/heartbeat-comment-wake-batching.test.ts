@@ -929,6 +929,599 @@ describe("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 120_000);
+  it("claims execution review wakes for reviewers who are not the issue assignee", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const developerId = randomUUID();
+    const reviewerId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values([
+        {
+          id: developerId,
+          companyId,
+          name: "Developer",
+          role: "engineer",
+          status: "idle",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: reviewerId,
+          companyId,
+          name: "CTO Reviewer",
+          role: "cto",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "review now",
+            },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Review gated work",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: developerId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const executionStage = {
+        wakeRole: "reviewer",
+        stageId: "stage-1",
+        stageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerId },
+        returnAssignee: { type: "agent", agentId: developerId },
+        lastDecisionOutcome: null,
+        allowedActions: ["approve", "request_changes"],
+      };
+      const run = await heartbeat.wakeup(reviewerId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "execution_review_requested",
+        payload: {
+          issueId,
+          mutation: "update",
+          executionStage,
+        },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_requested",
+          source: "issue.execution_stage",
+          executionStage,
+        },
+        requestedByActorType: "agent",
+        requestedByActorId: developerId,
+      });
+
+      expect(run).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const [claimedRun] = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id));
+      expect(claimedRun?.status).toBe("running");
+
+      const [issue] = await db
+        .select({
+          assigneeAgentId: issues.assigneeAgentId,
+          executionRunId: issues.executionRunId,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId));
+
+      expect(issue).toMatchObject({
+        assigneeAgentId: developerId,
+        executionRunId: run!.id,
+      });
+      expect(issue?.executionLockedAt).toBeInstanceOf(Date);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("does not defer reviewer wakes behind stale queued assignment runs for previous assignees", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const previousAgentId = randomUUID();
+    const developerId = randomUUID();
+    const reviewerId = randomUUID();
+    const issueId = randomUUID();
+    const staleRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values([
+        {
+          id: previousAgentId,
+          companyId,
+          name: "Previous Developer",
+          role: "engineer",
+          status: "idle",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: developerId,
+          companyId,
+          name: "Developer",
+          role: "engineer",
+          status: "idle",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: reviewerId,
+          companyId,
+          name: "CTO Reviewer",
+          role: "cto",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "review now",
+            },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Review gated work after reassignment",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: developerId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: staleRunId,
+        companyId,
+        agentId: previousAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "queued",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+      });
+
+      const executionStage = {
+        wakeRole: "reviewer",
+        stageId: "stage-1",
+        stageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerId },
+        returnAssignee: { type: "agent", agentId: developerId },
+        lastDecisionOutcome: null,
+        allowedActions: ["approve", "request_changes"],
+      };
+      const run = await heartbeat.wakeup(reviewerId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "execution_review_requested",
+        payload: {
+          issueId,
+          mutation: "update",
+          executionStage,
+        },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_requested",
+          source: "issue.execution_stage",
+          executionStage,
+        },
+        requestedByActorType: "agent",
+        requestedByActorId: developerId,
+      });
+
+      expect(run).not.toBeNull();
+      expect(run?.id).not.toBe(staleRunId);
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const [issue] = await db
+        .select({
+          executionRunId: issues.executionRunId,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId));
+
+      expect(issue?.executionRunId).toBe(run!.id);
+      expect(issue?.executionRunId).not.toBe(staleRunId);
+      expect(issue?.executionLockedAt).toBeInstanceOf(Date);
+
+      const [staleRun] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, staleRunId));
+      expect(staleRun?.status).toBe("queued");
+
+      const deferredRequests = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.agentId, reviewerId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+      expect(deferredRequests).toHaveLength(0);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("does not defer reviewer wakes behind stale queued review runs for previous participants", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const developerId = randomUUID();
+    const previousReviewerId = randomUUID();
+    const reviewerId = randomUUID();
+    const issueId = randomUUID();
+    const staleRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values([
+        {
+          id: developerId,
+          companyId,
+          name: "Developer",
+          role: "engineer",
+          status: "idle",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: previousReviewerId,
+          companyId,
+          name: "Previous CTO Reviewer",
+          role: "cto",
+          status: "idle",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: reviewerId,
+          companyId,
+          name: "Current CTO Reviewer",
+          role: "cto",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "review now",
+            },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Review gated work after reviewer change",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: developerId,
+        issueNumber: 3,
+        identifier: `${issuePrefix}-3`,
+      });
+
+      const staleExecutionStage = {
+        wakeRole: "reviewer",
+        stageId: "stage-old",
+        stageType: "review",
+        currentParticipant: { type: "agent", agentId: previousReviewerId },
+        returnAssignee: { type: "agent", agentId: developerId },
+        lastDecisionOutcome: null,
+        allowedActions: ["approve", "request_changes"],
+      };
+      await db.insert(heartbeatRuns).values({
+        id: staleRunId,
+        companyId,
+        agentId: previousReviewerId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "queued",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_requested",
+          source: "issue.execution_stage",
+          executionStage: staleExecutionStage,
+        },
+      });
+
+      const executionStage = {
+        wakeRole: "reviewer",
+        stageId: "stage-current",
+        stageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerId },
+        returnAssignee: { type: "agent", agentId: developerId },
+        lastDecisionOutcome: null,
+        allowedActions: ["approve", "request_changes"],
+      };
+      const run = await heartbeat.wakeup(reviewerId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "execution_review_requested",
+        payload: {
+          issueId,
+          mutation: "update",
+          executionStage,
+        },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_requested",
+          source: "issue.execution_stage",
+          executionStage,
+        },
+        requestedByActorType: "agent",
+        requestedByActorId: developerId,
+      });
+
+      expect(run).not.toBeNull();
+      expect(run?.id).not.toBe(staleRunId);
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const [issue] = await db
+        .select({
+          executionRunId: issues.executionRunId,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId));
+
+      expect(issue?.executionRunId).toBe(run!.id);
+      expect(issue?.executionRunId).not.toBe(staleRunId);
+      expect(issue?.executionLockedAt).toBeInstanceOf(Date);
+
+      const [staleRun] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, staleRunId));
+      expect(staleRun?.status).toBe("queued");
+
+      const deferredRequests = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.agentId, reviewerId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+      expect(deferredRequests).toHaveLength(0);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("starts the next eligible queued run after cancelling a stale reassignment wake", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const previousAgentId = randomUUID();
+    const agentId = randomUUID();
+    const staleIssueId = randomUUID();
+    const validIssueId = randomUUID();
+    const staleRunId = randomUUID();
+    const validRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values([
+        {
+          id: previousAgentId,
+          companyId,
+          name: "Previous Developer",
+          role: "engineer",
+          status: "idle",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: agentId,
+          companyId,
+          name: "Gateway Agent",
+          role: "engineer",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "wake now",
+            },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {
+            heartbeat: {
+              maxConcurrentRuns: 1,
+            },
+          },
+          permissions: {},
+        },
+      ]);
+
+      await db.insert(issues).values([
+        {
+          id: staleIssueId,
+          companyId,
+          title: "Reassigned away",
+          status: "todo",
+          priority: "high",
+          assigneeAgentId: previousAgentId,
+          issueNumber: 4,
+          identifier: `${issuePrefix}-4`,
+        },
+        {
+          id: validIssueId,
+          companyId,
+          title: "Still assigned",
+          status: "todo",
+          priority: "high",
+          assigneeAgentId: agentId,
+          issueNumber: 5,
+          identifier: `${issuePrefix}-5`,
+        },
+      ]);
+
+      const now = Date.now();
+      await db.insert(heartbeatRuns).values([
+        {
+          id: staleRunId,
+          companyId,
+          agentId,
+          invocationSource: "assignment",
+          triggerDetail: "system",
+          status: "queued",
+          contextSnapshot: {
+            issueId: staleIssueId,
+            taskId: staleIssueId,
+            wakeReason: "issue_assigned",
+          },
+          createdAt: new Date(now - 2_000),
+          updatedAt: new Date(now - 2_000),
+        },
+        {
+          id: validRunId,
+          companyId,
+          agentId,
+          invocationSource: "assignment",
+          triggerDetail: "system",
+          status: "queued",
+          contextSnapshot: {
+            issueId: validIssueId,
+            taskId: validIssueId,
+            wakeReason: "issue_assigned",
+          },
+          createdAt: new Date(now - 1_000),
+          updatedAt: new Date(now - 1_000),
+        },
+      ]);
+
+      await heartbeat.resumeQueuedRuns();
+
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const runs = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          startedAt: heartbeatRuns.startedAt,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId))
+        .orderBy(asc(heartbeatRuns.createdAt));
+
+      expect(runs).toMatchObject([
+        {
+          id: staleRunId,
+          status: "cancelled",
+        },
+        {
+          id: validRunId,
+          status: "running",
+        },
+      ]);
+      expect(runs[1]?.startedAt).toBeInstanceOf(Date);
+
+      const [validIssue] = await db
+        .select({
+          executionRunId: issues.executionRunId,
+          checkoutRunId: issues.checkoutRunId,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(eq(issues.id, validIssueId));
+
+      expect(validIssue).toMatchObject({
+        executionRunId: validRunId,
+        checkoutRunId: validRunId,
+        status: "in_progress",
+      });
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
   it("treats the automatic run summary as fallback-only when the run already posted a comment", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
