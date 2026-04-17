@@ -127,3 +127,16 @@ export interface AdapterEnvironmentTestResult {
   checks: AdapterEnvironmentCheck[];
   testedAt: string;
 }
+
+export interface CompressionConfig {
+  enabled: boolean;
+  instructionsCompression: boolean;
+  wakeContextCompression: boolean;
+  bootstrapPromptCompression: boolean;
+  environmentNotesCompression: boolean;
+  apiNotesCompression: boolean;
+  cavemanFormatting: boolean;
+  cavemanIntensity: "lite" | "full" | "ultra";
+  maxContextWindow: number;
+  compressionThreshold: number;
+}

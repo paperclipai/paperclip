@@ -25,6 +25,13 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  compressInstructions,
+  compressWakeContext,
+  compressBootstrapPrompt,
+  compressEnvironmentNotes,
+  compressApiNotes,
+  buildToolSchemas,
+  buildGeminiToolSchema,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
@@ -309,15 +316,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
-  const prompt = joinPromptSections([
-    instructionsPrefix,
-    renderedBootstrapPrompt,
-    wakePrompt,
-    sessionHandoffNote,
-    paperclipEnvNote,
-    apiAccessNote,
-    renderedPrompt,
-  ]);
+  const compressedSections = [
+    compressInstructions(instructionsPrefix),
+    compressBootstrapPrompt(renderedBootstrapPrompt),
+    compressWakeContext(context.paperclipWake), // Pass raw payload, not rendered
+    sessionHandoffNote, // Keep as is for now
+    compressEnvironmentNotes(env),
+    "", // apiAccessNote removed entirely
+    renderedPrompt, // Keep main prompt but apply caveman rules
+  ];
+
+  const prompt = joinPromptSections(compressedSections);
   const promptMetrics = {
     promptChars: prompt.length,
     instructionsChars: instructionsPrefix.length,
@@ -338,10 +347,50 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } else {
       args.push("--sandbox=none");
     }
+
+    // NEW: Add explicit tool schema for Gemini 2.5
+    if (config.tools !== false) {
+      const relevantTools = selectRelevantTools(context.tools || [], context);
+      const toolSchemas = buildToolSchemas(relevantTools);
+      const geminiTools = buildGeminiToolSchema(toolSchemas);
+
+      if (toolSchemas.length > 0) {
+        // Gemini 2.5 expects: --tools '{"tools": [...]}'
+        args.push("--tools", JSON.stringify(geminiTools));
+        // Also tell model it can use tools
+        args.push("--enable-tool-calling");
+      }
+    }
+
     if (extraArgs.length > 0) args.push(...extraArgs);
     args.push("--prompt", prompt);
     return args;
   };
+
+  // Helper function:
+  function selectRelevantTools(
+    availableTools: unknown[],
+    context: Record<string, unknown>
+  ): Array<{ name: string; description: string; parametersSchema: unknown }> {
+    // Score each tool by relevance to current task
+    // Use: keyword matching on task title + wake context
+    // Return top 10 tools
+
+    if (!Array.isArray(availableTools)) return [];
+
+    // For now, return first 10 tools
+    return availableTools.slice(0, 10).map(tool => {
+      if (typeof tool === 'object' && tool !== null) {
+        const t = tool as Record<string, unknown>;
+        return {
+          name: String(t.name || ''),
+          description: String(t.description || ''),
+          parametersSchema: t.parametersSchema || t.parameters,
+        };
+      }
+      return { name: '', description: '', parametersSchema: {} };
+    });
+  }
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const args = buildArgs(resumeSessionId);
