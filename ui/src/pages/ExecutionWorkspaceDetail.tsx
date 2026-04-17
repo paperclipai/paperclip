@@ -8,6 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs } from "@/components/ui/tabs";
 import { CopyText } from "../components/CopyText";
 import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
+import { ExecutionWorkspacePullRequestPanel } from "../components/ExecutionWorkspacePullRequestPanel";
 import { agentsApi } from "../api/agents";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -583,6 +584,10 @@ export function ExecutionWorkspaceDetail() {
 
         {activeTab === "configuration" ? (
           <div className="space-y-4 sm:space-y-6">
+            <ExecutionWorkspacePullRequestPanel
+              workspace={workspace}
+              policy={project?.executionWorkspacePolicy?.pullRequestPolicy ?? null}
+            />
             <div className="rounded-2xl border border-border bg-card p-4 sm:p-5">
               <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
                 <div className="space-y-1">
@@ -927,6 +932,7 @@ export function ExecutionWorkspaceDetail() {
         currentStatus={workspace.status}
         open={closeDialogOpen}
         onOpenChange={setCloseDialogOpen}
+        pullRequestPolicy={project?.executionWorkspacePolicy?.pullRequestPolicy ?? null}
         onClosed={(nextWorkspace) => {
           queryClient.setQueryData(queryKeys.executionWorkspaces.detail(nextWorkspace.id), nextWorkspace);
           queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.closeReadiness(nextWorkspace.id) });

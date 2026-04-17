@@ -1,21 +1,43 @@
 import { and, eq } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
+  pullRequestResultRequestSchema,
   updateExecutionWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
+  type ExecutionWorkspace,
+  type ExecutionWorkspacePullRequestRecord,
+  type ExecutionWorkspaceStatus,
+  type PullRequestPolicy,
+  type PullRequestRecordStatus,
 } from "@paperclipai/shared";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
+import {
+  applyPullRequestResult,
+  buildPullRequestRequestRecord,
+  mergePullRequestRecordIntoMetadata,
+  pullRequestRequestResponse,
+  readPullRequestRecord,
+} from "../services/execution-workspaces.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
-import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
+import {
+  parseProjectExecutionWorkspacePolicy,
+  pullRequestPolicyBlocksArchive,
+  pullRequestPolicyRequestsAutoOpen,
+} from "../services/execution-workspace-policy.js";
+import {
+  cancelArchiveTimeout,
+  onPullRequestRequested,
+} from "../services/execution-workspace-timeout.js";
+import { runArchiveSideEffects } from "../services/execution-workspace-archive.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
-  cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   listConfiguredRuntimeServiceEntries,
   runWorkspaceJobForControl,
@@ -434,6 +456,287 @@ export function executionWorkspaceRoutes(db: Db) {
   router.post("/execution-workspaces/:id/runtime-services/:action", validate(workspaceRuntimeControlTargetSchema), handleExecutionWorkspaceRuntimeCommand);
   router.post("/execution-workspaces/:id/runtime-commands/:action", validate(workspaceRuntimeControlTargetSchema), handleExecutionWorkspaceRuntimeCommand);
 
+  async function loadEffectivePullRequestPolicy(workspace: ExecutionWorkspace): Promise<PullRequestPolicy | null> {
+    if (!workspace.projectId) return null;
+    const projectPolicy = await db
+      .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+      .from(projects)
+      .where(and(eq(projects.id, workspace.projectId), eq(projects.companyId, workspace.companyId)))
+      .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy));
+    return projectPolicy?.pullRequestPolicy ?? null;
+  }
+
+  async function persistPullRequestRecord(
+    workspace: ExecutionWorkspace,
+    record: ExecutionWorkspacePullRequestRecord | null,
+    extraPatch: Record<string, unknown> = {},
+  ) {
+    const mergedMetadata = mergePullRequestRecordIntoMetadata(workspace.metadata, record);
+    const updated = await svc.update(workspace.id, {
+      ...extraPatch,
+      metadata: mergedMetadata,
+    });
+    return updated ?? workspace;
+  }
+
+  async function emitPullRequestEvent(
+    req: Request,
+    workspace: ExecutionWorkspace,
+    action:
+      | "pull_request_requested"
+      | "pull_request_resolved"
+      | "pull_request_timed_out",
+    details: Record<string, unknown>,
+  ) {
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: workspace.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: `execution_workspace.${action}`,
+      entityType: "execution_workspace",
+      entityId: workspace.id,
+      details,
+    });
+  }
+
+  router.post("/execution-workspaces/:id/pull-request/request", async (req, res) => {
+    const id = req.params.id as string;
+    const workspace = await svc.getById(id);
+    if (!workspace) throw notFound("Execution workspace not found");
+    assertCompanyAccess(req, workspace.companyId);
+
+    const existingRecord = readPullRequestRecord(workspace.metadata);
+    if (existingRecord) {
+      // Replay path: the operator action explicitly exists to nudge a
+      // stuck consumer. When the record is still in `requested`
+      // status, re-emit `pull_request_requested` so subscribers
+      // (Polaris, plugin-bus listeners) get another shot at handling
+      // it. The record itself stays untouched — `mode`,
+      // `requestedAt`, and the policy snapshot are stamped once at
+      // initial request time and never recomputed (see
+      // `buildPullRequestRequestRecord`). Records already in
+      // `opened`/`merged`/`failed`/`skipped` do not re-emit because
+      // the consumer has already moved past the request signal.
+      const response = pullRequestRequestResponse(workspace, existingRecord);
+      if (existingRecord.status === "requested") {
+        await emitPullRequestEvent(req, workspace, "pull_request_requested", {
+          workspaceId: workspace.id,
+          projectId: workspace.projectId,
+          mode: existingRecord.mode,
+          requestedAt: existingRecord.requestedAt,
+          sourceIssueId: workspace.sourceIssueId,
+          branchName: workspace.branchName,
+          baseRef: workspace.baseRef,
+          repoUrl: workspace.repoUrl,
+          providerRef: workspace.providerRef,
+          policy: existingRecord.policy ?? null,
+          record: existingRecord,
+          replay: true,
+        });
+      }
+      res.status(200).json({
+        workspace,
+        pullRequest: existingRecord,
+        request: response,
+        replayed: existingRecord.status === "requested",
+      });
+      return;
+    }
+
+    // Shared workspaces are explicitly excluded from pull-request
+    // planned actions in `getCloseReadiness`. Mirror that here so an
+    // operator cannot manually park a shared workspace into
+    // `in_review` and trigger `runArchiveSideEffects` (which detaches
+    // every linked issue) on a workspace that was never meant to be
+    // archived this way. Guard runs ahead of the policy load so the
+    // refusal is cheap and does not leak project-policy errors as
+    // 5xx for an obviously-unsupported mode.
+    if (workspace.mode === "shared_workspace") {
+      throw conflict(
+        "Pull-request requests are not supported on shared workspaces; archive uses the project workspace lifecycle instead",
+      );
+    }
+    const policy = await loadEffectivePullRequestPolicy(workspace);
+    if (!policy || !pullRequestPolicyRequestsAutoOpen(policy)) {
+      throw conflict(
+        "Project pullRequestPolicy must enable autoOpen or requireResultBeforeArchive before a PR can be requested",
+      );
+    }
+    if (!workspace.branchName) throw conflict("Execution workspace has no branchName to push");
+    if (!workspace.baseRef) throw conflict("Execution workspace has no baseRef to target");
+    if (workspace.status === "archived" && !existingRecord) {
+      throw unprocessable(
+        "Cannot replay a pull-request request for a workspace that archived before the feature was enabled",
+      );
+    }
+
+    const built = buildPullRequestRequestRecord(policy, null);
+    const statusPatch = built.mode === "blocking" && workspace.status !== "archived"
+      ? { status: "in_review" as const }
+      : {};
+    const nextWorkspace = await persistPullRequestRecord(workspace, built.record, statusPatch);
+    const response = pullRequestRequestResponse(nextWorkspace, built.record);
+    onPullRequestRequested({
+      db,
+      companyId: nextWorkspace.companyId,
+      workspaceId: nextWorkspace.id,
+      record: built.record,
+    });
+    await emitPullRequestEvent(req, nextWorkspace, "pull_request_requested", {
+      workspaceId: nextWorkspace.id,
+      projectId: nextWorkspace.projectId,
+      mode: built.mode,
+      requestedAt: built.requestedAt,
+      sourceIssueId: nextWorkspace.sourceIssueId,
+      branchName: nextWorkspace.branchName,
+      baseRef: nextWorkspace.baseRef,
+      repoUrl: nextWorkspace.repoUrl,
+      providerRef: nextWorkspace.providerRef,
+      policy,
+      record: built.record,
+    });
+    res.status(200).json({ workspace: nextWorkspace, pullRequest: built.record, request: response });
+  });
+
+  router.post(
+    "/execution-workspaces/:id/pull-request/result",
+    validate(pullRequestResultRequestSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const initial = await svc.getById(id);
+      if (!initial) throw notFound("Execution workspace not found");
+      assertCompanyAccess(req, initial.companyId);
+
+      // Acquire the workspace row lock before reading the record so a
+      // concurrent archive-timeout finalization does not clobber us
+      // (or vice versa). On a late result after the timeout fired, the
+      // locked re-read will surface the resolved terminal record and
+      // this route returns 409 instead of a 200 that would silently
+      // overwrite a server-driven close.
+      type Outcome =
+        | { kind: "missing" }
+        | { kind: "no_record" }
+        | { kind: "conflict"; record: ExecutionWorkspacePullRequestRecord }
+        | {
+            kind: "ok";
+            record: ExecutionWorkspacePullRequestRecord;
+            workspaceStatus: ExecutionWorkspaceStatus;
+            previousStatus: PullRequestRecordStatus;
+          };
+      const locked = await svc.updateWithRowLock<Outcome>(
+        initial.id,
+        initial.companyId,
+        async (current) => {
+          const existingRecord = readPullRequestRecord(current.metadata);
+          if (!existingRecord) {
+            return { patch: null, result: { kind: "no_record" } };
+          }
+          if (
+            existingRecord.status === "merged" ||
+            existingRecord.status === "failed" ||
+            existingRecord.status === "skipped"
+          ) {
+            return { patch: null, result: { kind: "conflict", record: existingRecord } };
+          }
+          const transitioned = applyPullRequestResult(existingRecord, current.status, req.body);
+          const nextMetadata = mergePullRequestRecordIntoMetadata(current.metadata, transitioned.record);
+          const now = new Date();
+          const patch: Partial<typeof executionWorkspaces.$inferInsert> = {
+            metadata: nextMetadata as Record<string, unknown> | null,
+          };
+          if (transitioned.workspaceStatus !== current.status) {
+            patch.status = transitioned.workspaceStatus;
+            if (transitioned.workspaceStatus === "archived") {
+              patch.closedAt = now;
+              patch.cleanupReason = null;
+            }
+          }
+          return {
+            patch,
+            result: {
+              kind: "ok" as const,
+              record: transitioned.record,
+              workspaceStatus: transitioned.workspaceStatus,
+              previousStatus: transitioned.previousStatus,
+            },
+          };
+        },
+      );
+
+      if (!locked.workspace) {
+        throw notFound("Execution workspace not found");
+      }
+      const outcome = locked.result;
+      if (!outcome || outcome.kind === "missing") {
+        throw notFound("Execution workspace not found");
+      }
+      if (outcome.kind === "no_record") {
+        throw conflict("No pending pull-request record on this execution workspace");
+      }
+      if (outcome.kind === "conflict") {
+        // Terminal: the scheduler or another caller already resolved
+        // this record. Return 409 with the current record so the
+        // consumer can log the outcome without overwriting it.
+        res.status(409).json({
+          error: `Pull-request record is already ${outcome.record.status}`,
+          pullRequest: outcome.record,
+        });
+        return;
+      }
+
+      // The transition committed. Cancel any scheduled archive timeout
+      // — if the consumer's result landed first, the scheduler should
+      // not fire later and emit a contradictory timed_out event.
+      cancelArchiveTimeout(initial.id);
+
+      const transitionedWorkspace = locked.workspace;
+
+      // Blocking mode terminal-to-archived transition: run the same
+      // cleanup side effects that PATCH archive would have run if the
+      // workspace had closed synchronously in fire-and-forget mode.
+      // Run BEFORE emitting the resolved event so the event's
+      // `workspaceStatus` reflects the final state — if cleanup
+      // downgrades the workspace to `cleanup_failed`, subscribers
+      // must see that, not the intermediate `archived`.
+      let finalWorkspace = transitionedWorkspace;
+      if (outcome.workspaceStatus === "archived" && initial.status !== "archived") {
+        const sideEffects = await runArchiveSideEffects({
+          db,
+          workspace: transitionedWorkspace,
+        });
+        if (sideEffects.status !== "archived" || sideEffects.cleanupReason !== null) {
+          finalWorkspace =
+            (await svc.update(initial.id, {
+              status: sideEffects.status,
+              closedAt: sideEffects.closedAt,
+              cleanupReason: sideEffects.cleanupReason,
+            })) ?? finalWorkspace;
+        }
+      }
+
+      await emitPullRequestEvent(req, finalWorkspace, "pull_request_resolved", {
+        workspaceId: finalWorkspace.id,
+        projectId: finalWorkspace.projectId,
+        mode: outcome.record.mode,
+        source: "consumer_result",
+        previousStatus: outcome.previousStatus,
+        nextStatus: outcome.record.status,
+        workspaceStatus: finalWorkspace.status,
+        record: outcome.record,
+        resolvedAt: outcome.record.resolvedAt,
+      });
+
+      res.status(200).json({
+        workspaceId: finalWorkspace.id,
+        pullRequest: outcome.record,
+        workspaceStatus: finalWorkspace.status,
+      });
+    },
+  );
+
   router.patch("/execution-workspaces/:id", validate(updateExecutionWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
@@ -491,6 +794,102 @@ export function executionWorkspaceRoutes(db: Db) {
         return;
       }
 
+      const existingPullRequestRecord = readPullRequestRecord(
+        ((patch.metadata as Record<string, unknown> | null | undefined) ?? (existing.metadata as Record<string, unknown> | null)) ?? null,
+      );
+
+      // Blocking mode with an in-flight non-terminal record: archive is deferred.
+      // Short-circuit before loading the policy: we already know the record
+      // was stamped with the policy at request time, and the 409 response
+      // carries enough information for the caller to proceed.
+      if (existingPullRequestRecord?.mode === "blocking" &&
+          (existingPullRequestRecord.status === "requested" ||
+           existingPullRequestRecord.status === "opened")) {
+        res.status(409).json({
+          error:
+            `Pull-request record is still ${existingPullRequestRecord.status}. ` +
+            "POST /execution-workspaces/:id/pull-request/result to resolve it before archiving.",
+          pullRequest: existingPullRequestRecord,
+        });
+        return;
+      }
+
+      const pullRequestPolicy = existingPullRequestRecord
+        ? null
+        : await loadEffectivePullRequestPolicy(existing);
+      const wantsAutoInvoke =
+        pullRequestPolicy !== null &&
+        pullRequestPolicyRequestsAutoOpen(pullRequestPolicy) &&
+        Boolean(existing.branchName) &&
+        Boolean(existing.baseRef);
+
+      // Auto-invoke path: policy wants a request and no record exists yet.
+      if (wantsAutoInvoke && pullRequestPolicy) {
+        const built = buildPullRequestRequestRecord(pullRequestPolicy, null);
+        const blocking = pullRequestPolicyBlocksArchive(pullRequestPolicy);
+        const nextMetadata = mergePullRequestRecordIntoMetadata(
+          (patch.metadata as Record<string, unknown> | null | undefined) ?? existing.metadata ?? null,
+          built.record,
+        );
+        if (blocking) {
+          const parked = await svc.update(id, { ...patch, metadata: nextMetadata, status: "in_review" });
+          if (!parked) {
+            res.status(404).json({ error: "Execution workspace not found" });
+            return;
+          }
+          onPullRequestRequested({
+            db,
+            companyId: parked.companyId,
+            workspaceId: parked.id,
+            record: built.record,
+          });
+          await emitPullRequestEvent(req, parked, "pull_request_requested", {
+            workspaceId: parked.id,
+            projectId: parked.projectId,
+            mode: "blocking",
+            requestedAt: built.requestedAt,
+            sourceIssueId: parked.sourceIssueId,
+            branchName: parked.branchName,
+            baseRef: parked.baseRef,
+            repoUrl: parked.repoUrl,
+            providerRef: parked.providerRef,
+            policy: pullRequestPolicy,
+            record: built.record,
+          });
+          res.status(202).json({
+            workspace: parked,
+            pullRequest: built.record,
+            message:
+              "Workspace parked in in_review pending pull-request result. POST /pull-request/result to proceed.",
+          });
+          return;
+        }
+        // fire-and-forget: stamp the record on the patch metadata, then let
+        // the normal archive flow proceed below.
+        patch.metadata = nextMetadata;
+        // Deferred emission: we still need to log the request before moving on.
+        const parkedForEvent = { ...existing, metadata: nextMetadata } as ExecutionWorkspace;
+        onPullRequestRequested({
+          db,
+          companyId: parkedForEvent.companyId,
+          workspaceId: parkedForEvent.id,
+          record: built.record,
+        });
+        await emitPullRequestEvent(req, parkedForEvent, "pull_request_requested", {
+          workspaceId: parkedForEvent.id,
+          projectId: parkedForEvent.projectId,
+          mode: "fire_and_forget",
+          requestedAt: built.requestedAt,
+          sourceIssueId: parkedForEvent.sourceIssueId,
+          branchName: parkedForEvent.branchName,
+          baseRef: parkedForEvent.baseRef,
+          repoUrl: parkedForEvent.repoUrl,
+          providerRef: parkedForEvent.providerRef,
+          policy: pullRequestPolicy,
+          record: built.record,
+        });
+      }
+
       const closedAt = new Date();
       const archivedWorkspace = await svc.update(id, {
         ...patch,
@@ -504,82 +903,26 @@ export function executionWorkspaceRoutes(db: Db) {
       }
       workspace = archivedWorkspace;
 
-      if (existing.mode === "shared_workspace") {
-        await db
-          .update(issues)
-          .set({
-            executionWorkspaceId: null,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(issues.companyId, existing.companyId),
-              eq(issues.executionWorkspaceId, existing.id),
-            ),
-          );
+      // Pass the post-patch workspace so the cleanup helper reads
+      // teardown/cleanup commands and runtime config from the
+      // metadata actually persisted by this PATCH, not from the
+      // stale snapshot captured before we wrote the row.
+      const sideEffects = await runArchiveSideEffects({
+        db,
+        workspace: archivedWorkspace,
+        closedAt,
+      });
+      cleanupWarnings = sideEffects.cleanupWarnings;
+      if (sideEffects.status !== "archived" || sideEffects.cleanupReason !== null) {
+        workspace = (await svc.update(id, {
+          status: sideEffects.status,
+          closedAt: sideEffects.closedAt,
+          cleanupReason: sideEffects.cleanupReason,
+        })) ?? workspace;
       }
-
-      try {
-        await stopRuntimeServicesForExecutionWorkspace({
-          db,
-          executionWorkspaceId: existing.id,
-          workspaceCwd: existing.cwd,
-        });
-        const projectWorkspace = existing.projectWorkspaceId
-          ? await db
-              .select({
-                cwd: projectWorkspaces.cwd,
-                cleanupCommand: projectWorkspaces.cleanupCommand,
-              })
-              .from(projectWorkspaces)
-            .where(
-                and(
-                  eq(projectWorkspaces.id, existing.projectWorkspaceId),
-                  eq(projectWorkspaces.companyId, existing.companyId),
-                ),
-              )
-              .then((rows) => rows[0] ?? null)
-          : null;
-        const projectPolicy = existing.projectId
-          ? await db
-              .select({
-                executionWorkspacePolicy: projects.executionWorkspacePolicy,
-              })
-              .from(projects)
-              .where(and(eq(projects.id, existing.projectId), eq(projects.companyId, existing.companyId)))
-              .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
-          : null;
-        const cleanupResult = await cleanupExecutionWorkspaceArtifacts({
-          workspace: existing,
-          projectWorkspace,
-          teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
-          cleanupCommand: configForCleanup?.cleanupCommand ?? null,
-          recorder: workspaceOperationsSvc.createRecorder({
-            companyId: existing.companyId,
-            executionWorkspaceId: existing.id,
-          }),
-        });
-        cleanupWarnings = cleanupResult.warnings;
-        const cleanupPatch: Record<string, unknown> = {
-          closedAt,
-          cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
-        };
-        if (!cleanupResult.cleaned) {
-          cleanupPatch.status = "cleanup_failed";
-        }
-        if (cleanupResult.warnings.length > 0 || !cleanupResult.cleaned) {
-          workspace = (await svc.update(id, cleanupPatch)) ?? workspace;
-        }
-      } catch (error) {
-        const failureReason = error instanceof Error ? error.message : String(error);
-        workspace =
-          (await svc.update(id, {
-            status: "cleanup_failed",
-            closedAt,
-            cleanupReason: failureReason,
-          })) ?? workspace;
+      if (sideEffects.error) {
         res.status(500).json({
-          error: `Failed to archive execution workspace: ${failureReason}`,
+          error: `Failed to archive execution workspace: ${sideEffects.error}`,
         });
         return;
       }

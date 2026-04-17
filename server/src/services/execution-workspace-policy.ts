@@ -4,8 +4,92 @@ import type {
   IssueExecutionWorkspaceSettings,
   ProjectExecutionWorkspaceDefaultMode,
   ProjectExecutionWorkspacePolicy,
+  PullRequestMergeStrategy,
+  PullRequestPolicy,
 } from "@paperclipai/shared";
 import { asString, parseObject } from "../adapters/utils.js";
+
+const KNOWN_PULL_REQUEST_POLICY_KEYS = new Set([
+  "autoOpen",
+  "autoMerge",
+  "mergeStrategy",
+  "targetBranch",
+  "titleTemplate",
+  "bodyTemplate",
+  "draft",
+  "requireResultBeforeArchive",
+  "archiveTimeoutMs",
+  "extensions",
+]);
+
+function parsePullRequestMergeStrategy(raw: unknown): PullRequestMergeStrategy | undefined {
+  if (raw === "merge" || raw === "squash" || raw === "rebase") return raw;
+  return undefined;
+}
+
+export function parsePullRequestPolicy(raw: unknown): PullRequestPolicy | null {
+  const parsed = parseObject(raw);
+  if (Object.keys(parsed).length === 0) return null;
+
+  const policy: PullRequestPolicy = {};
+
+  const autoMerge = typeof parsed.autoMerge === "boolean" ? parsed.autoMerge : undefined;
+  const autoOpenRaw = typeof parsed.autoOpen === "boolean" ? parsed.autoOpen : undefined;
+  // autoMerge=true implies autoOpen=true. Normalize once so downstream
+  // consumers don't re-check the invariant every time.
+  const autoOpen = autoMerge === true ? true : autoOpenRaw;
+  if (autoOpen !== undefined) policy.autoOpen = autoOpen;
+  if (autoMerge !== undefined) policy.autoMerge = autoMerge;
+
+  const mergeStrategy = parsePullRequestMergeStrategy(parsed.mergeStrategy);
+  if (mergeStrategy !== undefined) policy.mergeStrategy = mergeStrategy;
+
+  if (typeof parsed.targetBranch === "string" && parsed.targetBranch.length > 0) {
+    policy.targetBranch = parsed.targetBranch;
+  }
+  if (typeof parsed.titleTemplate === "string") policy.titleTemplate = parsed.titleTemplate;
+  if (typeof parsed.bodyTemplate === "string") policy.bodyTemplate = parsed.bodyTemplate;
+  if (typeof parsed.draft === "boolean") policy.draft = parsed.draft;
+  if (typeof parsed.requireResultBeforeArchive === "boolean") {
+    policy.requireResultBeforeArchive = parsed.requireResultBeforeArchive;
+  }
+  if (
+    typeof parsed.archiveTimeoutMs === "number" &&
+    Number.isInteger(parsed.archiveTimeoutMs) &&
+    parsed.archiveTimeoutMs > 0
+  ) {
+    policy.archiveTimeoutMs = parsed.archiveTimeoutMs;
+  }
+
+  // Preserve unknown keys on policy.extensions so that a round-trip
+  // through the parser does not silently drop forward-compat data the
+  // consumer may have embedded in the project policy.
+  const existingExtensions =
+    typeof parsed.extensions === "object" &&
+    parsed.extensions !== null &&
+    !Array.isArray(parsed.extensions)
+      ? (parsed.extensions as Record<string, unknown>)
+      : null;
+  const unknownKeys: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (KNOWN_PULL_REQUEST_POLICY_KEYS.has(key)) continue;
+    unknownKeys[key] = value;
+  }
+  const merged = { ...(existingExtensions ?? {}), ...unknownKeys };
+  if (Object.keys(merged).length > 0) {
+    policy.extensions = merged;
+  }
+
+  return Object.keys(policy).length > 0 ? policy : null;
+}
+
+export function pullRequestPolicyRequestsAutoOpen(policy: PullRequestPolicy | null | undefined) {
+  return Boolean(policy?.autoOpen || policy?.requireResultBeforeArchive);
+}
+
+export function pullRequestPolicyBlocksArchive(policy: PullRequestPolicy | null | undefined) {
+  return policy?.requireResultBeforeArchive === true;
+}
 
 type ParsedExecutionWorkspaceMode = Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing">;
 
@@ -65,9 +149,10 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(parsed.branchPolicy && typeof parsed.branchPolicy === "object" && !Array.isArray(parsed.branchPolicy)
       ? { branchPolicy: { ...(parsed.branchPolicy as Record<string, unknown>) } }
       : {}),
-    ...(parsed.pullRequestPolicy && typeof parsed.pullRequestPolicy === "object" && !Array.isArray(parsed.pullRequestPolicy)
-      ? { pullRequestPolicy: { ...(parsed.pullRequestPolicy as Record<string, unknown>) } }
-      : {}),
+    ...(() => {
+      const pullRequestPolicy = parsePullRequestPolicy(parsed.pullRequestPolicy);
+      return pullRequestPolicy ? { pullRequestPolicy } : {};
+    })(),
     ...(parsed.runtimePolicy && typeof parsed.runtimePolicy === "object" && !Array.isArray(parsed.runtimePolicy)
       ? { runtimePolicy: { ...(parsed.runtimePolicy as Record<string, unknown>) } }
       : {}),

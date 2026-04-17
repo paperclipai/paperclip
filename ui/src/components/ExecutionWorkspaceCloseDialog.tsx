@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionWorkspace } from "@paperclipai/shared";
+import type { ExecutionWorkspace, PullRequestPolicy } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -23,6 +23,7 @@ type ExecutionWorkspaceCloseDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onClosed?: (workspace: ExecutionWorkspace) => void;
+  pullRequestPolicy?: PullRequestPolicy | null;
 };
 
 function readinessTone(state: "ready" | "ready_with_warnings" | "blocked") {
@@ -42,6 +43,7 @@ export function ExecutionWorkspaceCloseDialog({
   open,
   onOpenChange,
   onClosed,
+  pullRequestPolicy,
 }: ExecutionWorkspaceCloseDialogProps) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -108,6 +110,28 @@ export function ExecutionWorkspaceCloseDialog({
           </div>
         ) : readiness ? (
           <div className="space-y-4">
+            {pullRequestPolicy?.requireResultBeforeArchive && currentStatus !== "archived" ? (
+              <div
+                className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-300"
+                data-testid="execution-workspace-close-dialog-blocking-banner"
+              >
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div className="min-w-0">
+                  This workspace will enter <span className="font-medium">in_review</span> until a terminal pull-request
+                  result is posted.
+                  {typeof pullRequestPolicy.archiveTimeoutMs === "number" ? (
+                    <>
+                      {" "}If no result arrives within
+                      {" "}
+                      <span className="font-medium">
+                        {Math.round(pullRequestPolicy.archiveTimeoutMs / 1000)}s
+                      </span>
+                      , the server will mark it skipped and archive it automatically.
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             <div className={`rounded-xl border px-4 py-3 text-sm ${readinessTone(readiness.state)}`}>
               <div className="font-medium">
                 {readiness.state === "blocked"

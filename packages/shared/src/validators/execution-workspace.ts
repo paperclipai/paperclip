@@ -37,7 +37,120 @@ export const executionWorkspaceCloseActionKindSchema = z.enum([
   "git_worktree_remove",
   "git_branch_delete",
   "remove_local_directory",
+  "pull_request_push",
+  "pull_request_open",
+  "pull_request_merge",
 ]);
+
+export const pullRequestMergeStrategySchema = z.enum(["merge", "squash", "rebase"]);
+
+export const pullRequestRecordStatusSchema = z.enum([
+  "requested",
+  "opened",
+  "merged",
+  "failed",
+  "skipped",
+]);
+
+export const pullRequestRequestModeSchema = z.enum(["fire_and_forget", "blocking"]);
+
+const KNOWN_PULL_REQUEST_POLICY_KEYS = new Set([
+  "autoOpen",
+  "autoMerge",
+  "mergeStrategy",
+  "targetBranch",
+  "titleTemplate",
+  "bodyTemplate",
+  "draft",
+  "requireResultBeforeArchive",
+  "archiveTimeoutMs",
+  "extensions",
+]);
+
+const pullRequestPolicyStrictSchema = z.object({
+  autoOpen: z.boolean().optional(),
+  autoMerge: z.boolean().optional(),
+  mergeStrategy: pullRequestMergeStrategySchema.optional(),
+  targetBranch: z.string().min(1).optional(),
+  titleTemplate: z.string().optional(),
+  bodyTemplate: z.string().optional(),
+  draft: z.boolean().optional(),
+  requireResultBeforeArchive: z.boolean().optional(),
+  archiveTimeoutMs: z.number().int().positive().optional(),
+  extensions: z.record(z.unknown()).optional(),
+}).strict();
+
+/**
+ * Strict-at-the-known-keys but forward-compatible at the top level.
+ *
+ * The design contract (docs/31-upstream-paperclip-pull-request-policy.md
+ * §1) guarantees that unknown top-level keys on `pullRequestPolicy`
+ * survive a round-trip through the parser by being moved onto
+ * `policy.extensions`. To honor that contract at the API boundary —
+ * where zod runs before the server-side parser — we preprocess the
+ * input: known keys are kept in place, everything else is merged
+ * into `extensions`. The downstream strict schema then validates
+ * that known keys have the right types without tripping on the
+ * unknowns.
+ *
+ * This keeps vendor-specific additions (e.g. a consumer carrying
+ * `gitlabApprovalRule` on its policy) working even when the server
+ * hasn't upgraded to understand them yet.
+ */
+export const pullRequestPolicySchema = z.preprocess((raw) => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const input = raw as Record<string, unknown>;
+  const known: Record<string, unknown> = {};
+  const unknowns: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (key === "extensions") continue;
+    if (KNOWN_PULL_REQUEST_POLICY_KEYS.has(key)) {
+      known[key] = value;
+    } else {
+      unknowns[key] = value;
+    }
+  }
+  const existingExt =
+    input.extensions && typeof input.extensions === "object" && !Array.isArray(input.extensions)
+      ? (input.extensions as Record<string, unknown>)
+      : {};
+  const mergedExtensions = { ...existingExt, ...unknowns };
+  if (Object.keys(mergedExtensions).length > 0) {
+    known.extensions = mergedExtensions;
+  }
+  return known;
+}, pullRequestPolicyStrictSchema);
+
+export const executionWorkspacePullRequestRecordSchema = z.object({
+  status: pullRequestRecordStatusSchema,
+  mode: pullRequestRequestModeSchema,
+  url: z.string().optional().nullable(),
+  number: z.number().int().optional().nullable(),
+  sha: z.string().optional().nullable(),
+  mergedAt: z.string().optional().nullable(),
+  requestedAt: z.string().optional().nullable(),
+  resolvedAt: z.string().optional().nullable(),
+  error: z.string().optional().nullable(),
+  policy: pullRequestPolicySchema.optional(),
+}).strict();
+
+export const pullRequestResultRequestSchema = z.object({
+  status: pullRequestRecordStatusSchema.extract(["opened", "merged", "failed", "skipped"]),
+  url: z.string().optional(),
+  number: z.number().int().optional(),
+  sha: z.string().optional(),
+  error: z.string().optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.status === "failed" && (!value.error || value.error.trim().length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "error is required when status is failed",
+      path: ["error"],
+    });
+  }
+});
+
+export type PullRequestResultRequest = z.infer<typeof pullRequestResultRequestSchema>;
 
 export const executionWorkspaceCloseActionSchema = z.object({
   kind: executionWorkspaceCloseActionKindSchema,
