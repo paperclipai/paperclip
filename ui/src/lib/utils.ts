@@ -29,6 +29,31 @@ export function formatDateTime(date: Date | string): string {
   });
 }
 
+export function calendarDateKey(date: Date | string = new Date(), timeZone?: string): string {
+  const value = new Date(date);
+  if (!timeZone) {
+    const year = String(value.getFullYear());
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = formatter.formatToParts(value);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  if (!year || !month || !day) {
+    throw new Error("Failed to format calendar date");
+  }
+  return `${year}-${month}-${day}`;
+}
+
 export function formatShortDate(date: Date | string): string {
   return new Date(date).toLocaleString("en-US", {
     month: "short",

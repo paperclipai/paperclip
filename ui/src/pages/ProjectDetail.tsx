@@ -32,7 +32,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspaceSummaryCard } from "../components/ProjectWorkspaceSummaryCard";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
-import { projectRouteRef } from "../lib/utils";
+import { calendarDateKey, projectRouteRef } from "../lib/utils";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
@@ -259,7 +259,7 @@ function ProjectRt2TasksList({ projectId, companyId }: { projectId: string; comp
 }
 
 function resolveCurrentReportDate() {
-  return new Date().toISOString().slice(0, 10);
+  return calendarDateKey();
 }
 
 function ProjectRt2DailySurface({ companyId, projectId }: { companyId: string; projectId: string }) {
