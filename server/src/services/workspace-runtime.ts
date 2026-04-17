@@ -2533,25 +2533,16 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
   workspaceCwd?: string | null;
   runtimeServiceId?: string | null;
 }) {
-  const normalizedWorkspaceCwd = input.workspaceCwd ? path.resolve(input.workspaceCwd) : null;
   const matchingServiceIds = Array.from(runtimeServicesById.values())
     .filter((record) => {
       if (input.runtimeServiceId) {
         return record.id === input.runtimeServiceId && record.executionWorkspaceId === input.executionWorkspaceId;
       }
-      if (record.executionWorkspaceId === input.executionWorkspaceId) return true;
-      if (!normalizedWorkspaceCwd || !record.cwd) return false;
-      const resolvedCwd = path.resolve(record.cwd);
-      return (
-        resolvedCwd === normalizedWorkspaceCwd ||
-        resolvedCwd.startsWith(`${normalizedWorkspaceCwd}${path.sep}`)
-      );
+      return record.executionWorkspaceId === input.executionWorkspaceId;
     })
     .map((record) => record.id);
 
-  for (const serviceId of matchingServiceIds) {
-    await stopRuntimeService(serviceId);
-  }
+  await Promise.allSettled(matchingServiceIds.map((serviceId) => stopRuntimeService(serviceId)));
 
   if (input.db) {
     if (input.runtimeServiceId) {
@@ -2569,6 +2560,7 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
           and(
             eq(workspaceRuntimeServices.id, input.runtimeServiceId),
             eq(workspaceRuntimeServices.executionWorkspaceId, input.executionWorkspaceId),
+            inArray(workspaceRuntimeServices.status, ["starting", "running"]),
           ),
         );
     } else {
@@ -2594,9 +2586,7 @@ export async function stopRuntimeServicesForProjectWorkspace(input: {
     })
     .map((record) => record.id);
 
-  for (const serviceId of matchingServiceIds) {
-    await stopRuntimeService(serviceId);
-  }
+  await Promise.allSettled(matchingServiceIds.map((serviceId) => stopRuntimeService(serviceId)));
 
   if (input.db) {
     const now = new Date();
@@ -2614,6 +2604,7 @@ export async function stopRuntimeServicesForProjectWorkspace(input: {
           ? and(
               eq(workspaceRuntimeServices.id, input.runtimeServiceId),
               eq(workspaceRuntimeServices.projectWorkspaceId, input.projectWorkspaceId),
+              inArray(workspaceRuntimeServices.status, ["starting", "running"]),
             )
           : and(
               eq(workspaceRuntimeServices.projectWorkspaceId, input.projectWorkspaceId),

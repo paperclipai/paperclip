@@ -2680,6 +2680,51 @@ describe("ensureRuntimeServicesForRun", () => {
       workspaceCwd: workspace.cwd,
     });
   });
+
+  it("does not stop a service from a different execution workspace when bulk-stopping by workspaceCwd", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-cwd-scope-"));
+    const workspace = buildWorkspace(workspaceRoot);
+
+    const servicesA = await startRuntimeServicesForWorkspaceControl({
+      actor: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-cwd-scope-a",
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command:
+                "node -e \"require('node:http').createServer((req,res)=>res.end('web')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+              port: { type: "auto" },
+              readiness: { type: "http", urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10, intervalMs: 100 },
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+              stopPolicy: { type: "manual" },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    expect(servicesA).toHaveLength(1);
+    const serviceA = servicesA[0]!;
+
+    // Bulk stop using the SAME workspaceCwd but a DIFFERENT executionWorkspaceId — must not stop serviceA.
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-workspace-cwd-scope-b",
+      workspaceCwd: workspace.cwd,
+    });
+
+    await expect(fetch(serviceA.url!)).resolves.toMatchObject({ ok: true });
+
+    // Cleanup
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-workspace-cwd-scope-a",
+    });
+  });
 });
 
 describe("buildWorkspaceRuntimeDesiredStatePatch", () => {
