@@ -2536,7 +2536,9 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
   const normalizedWorkspaceCwd = input.workspaceCwd ? path.resolve(input.workspaceCwd) : null;
   const matchingServiceIds = Array.from(runtimeServicesById.values())
     .filter((record) => {
-      if (input.runtimeServiceId) return record.id === input.runtimeServiceId;
+      if (input.runtimeServiceId) {
+        return record.id === input.runtimeServiceId && record.executionWorkspaceId === input.executionWorkspaceId;
+      }
       if (record.executionWorkspaceId === input.executionWorkspaceId) return true;
       if (!normalizedWorkspaceCwd || !record.cwd) return false;
       const resolvedCwd = path.resolve(record.cwd);
@@ -2563,7 +2565,12 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
           lastUsedAt: now,
           updatedAt: now,
         })
-        .where(eq(workspaceRuntimeServices.id, input.runtimeServiceId));
+        .where(
+          and(
+            eq(workspaceRuntimeServices.id, input.runtimeServiceId),
+            eq(workspaceRuntimeServices.executionWorkspaceId, input.executionWorkspaceId),
+          ),
+        );
     } else {
       await markPersistedRuntimeServicesStoppedForExecutionWorkspace({
         db: input.db,
@@ -2580,7 +2587,9 @@ export async function stopRuntimeServicesForProjectWorkspace(input: {
 }) {
   const matchingServiceIds = Array.from(runtimeServicesById.values())
     .filter((record) => {
-      if (input.runtimeServiceId) return record.id === input.runtimeServiceId;
+      if (input.runtimeServiceId) {
+        return record.id === input.runtimeServiceId && record.projectWorkspaceId === input.projectWorkspaceId;
+      }
       return record.projectWorkspaceId === input.projectWorkspaceId && record.scopeType === "project_workspace";
     })
     .map((record) => record.id);
@@ -2602,7 +2611,10 @@ export async function stopRuntimeServicesForProjectWorkspace(input: {
       })
       .where(
         input.runtimeServiceId
-          ? eq(workspaceRuntimeServices.id, input.runtimeServiceId)
+          ? and(
+              eq(workspaceRuntimeServices.id, input.runtimeServiceId),
+              eq(workspaceRuntimeServices.projectWorkspaceId, input.projectWorkspaceId),
+            )
           : and(
               eq(workspaceRuntimeServices.projectWorkspaceId, input.projectWorkspaceId),
               eq(workspaceRuntimeServices.scopeType, "project_workspace"),

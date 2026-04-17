@@ -2623,6 +2623,63 @@ describe("ensureRuntimeServicesForRun", () => {
       runtimeServiceId: worker?.id ?? null,
     });
   });
+
+  it("does not stop a service when runtimeServiceId belongs to a different execution workspace", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-control-cross-workspace-"));
+    const workspace = buildWorkspace(workspaceRoot);
+
+    const servicesA = await startRuntimeServicesForWorkspaceControl({
+      actor: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-cross-a",
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command:
+                "node -e \"require('node:http').createServer((req,res)=>res.end('web')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 10,
+                intervalMs: 100,
+              },
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+              stopPolicy: { type: "manual" },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    expect(servicesA).toHaveLength(1);
+    const serviceA = servicesA[0]!;
+
+    // Attempt to stop workspace-A's service using workspace-B's scope — must be a no-op
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-workspace-cross-b",
+      workspaceCwd: workspace.cwd,
+      runtimeServiceId: serviceA.id,
+    });
+
+    // Service A must still be running
+    await expect(fetch(serviceA.url!)).resolves.toMatchObject({ ok: true });
+
+    // Cleanup
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-workspace-cross-a",
+      workspaceCwd: workspace.cwd,
+    });
+  });
 });
 
 describe("buildWorkspaceRuntimeDesiredStatePatch", () => {
