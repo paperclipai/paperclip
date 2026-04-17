@@ -28,7 +28,8 @@ export function formatDayKeyForTimeZone(date: Date | string, timeZone = getLocal
 
 export function getLast14Days(now: Date = new Date(), timeZone = getLocalTimeZone()): string[] {
   const { year, month, day } = getDatePartsInTimeZone(now, timeZone);
-  return Array.from({ length: 14 }, (_, i) =>
-    formatDayKeyForTimeZone(new Date(Date.UTC(year, month - 1, day - (13 - i), 12)), timeZone),
-  );
+  return Array.from({ length: 14 }, (_, i) => {
+    const date = new Date(Date.UTC(year, month - 1, day - (13 - i)));
+    return `${date.getUTCFullYear().toString().padStart(4, "0")}-${(date.getUTCMonth() + 1).toString().padStart(2, "0")}-${date.getUTCDate().toString().padStart(2, "0")}`;
+  });
 }
