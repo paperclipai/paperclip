@@ -11,6 +11,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { ActivityRow } from "../components/ActivityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { useI18n } from "@/i18n/runtime";
 import {
   Select,
   SelectContent,
@@ -24,11 +25,12 @@ import type { Agent } from "@paperclipai/shared";
 export function Activity() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useI18n();
   const [filter, setFilter] = useState("all");
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Activity" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("activity.breadcrumb", "Activity") }]);
+  }, [setBreadcrumbs, t]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.activity(selectedCompanyId!),
@@ -82,7 +84,7 @@ export function Activity() {
   }, [issues]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={History} message="Select a company to view activity." />;
+    return <EmptyState icon={History} message={t("activity.empty.selectCompany", "Select a company to view activity.")} />;
   }
 
   if (isLoading) {
@@ -103,10 +105,10 @@ export function Activity() {
       <div className="flex items-center justify-end">
         <Select value={filter} onValueChange={setFilter}>
           <SelectTrigger className="w-[140px] h-8 text-xs">
-            <SelectValue placeholder="Filter by type" />
+            <SelectValue placeholder={t("activity.filter.placeholder", "Filter by type")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All types</SelectItem>
+            <SelectItem value="all">{t("activity.filter.all", "All types")}</SelectItem>
             {entityTypes.map((type) => (
               <SelectItem key={type} value={type}>
                 {type.charAt(0).toUpperCase() + type.slice(1)}
@@ -119,7 +121,7 @@ export function Activity() {
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {filtered && filtered.length === 0 && (
-        <EmptyState icon={History} message="No activity yet." />
+        <EmptyState icon={History} message={t("activity.empty.none", "No activity yet.")} />
       )}
 
       {filtered && filtered.length > 0 && (

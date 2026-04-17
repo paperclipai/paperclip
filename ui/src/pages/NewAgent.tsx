@@ -30,6 +30,7 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { useI18n } from "@/i18n/runtime";
 
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
@@ -53,6 +54,7 @@ function createValuesForAdapterType(
 export function NewAgent() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -97,10 +99,10 @@ export function NewAgent() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Agents", href: "/agents" },
-      { label: "New Agent" },
+      { label: t("agents.breadcrumb", "Agents"), href: "/agents" },
+      { label: t("newAgent.breadcrumb", "New Agent") },
     ]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   useEffect(() => {
     if (isFirstAgent) {
@@ -198,9 +200,9 @@ export function NewAgent() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <h1 className="text-lg font-semibold">New Agent</h1>
+        <h1 className="text-lg font-semibold">{t("newAgent.title", "New Agent")}</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Advanced agent configuration
+          {t("newAgent.subtitle", "Advanced agent configuration")}
         </p>
       </div>
 
@@ -209,7 +211,7 @@ export function NewAgent() {
         <div className="px-4 pt-4 pb-2">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Agent name"
+            placeholder={t("newAgent.fields.name", "Agent name")}
             value={name}
             onChange={(e) => setName(e.target.value)}
             autoFocus
@@ -220,7 +222,7 @@ export function NewAgent() {
         <div className="px-4 pb-2">
           <input
             className="w-full bg-transparent outline-none text-sm text-muted-foreground placeholder:text-muted-foreground/40"
-            placeholder="Title (e.g. VP of Engineering)"
+            placeholder={t("newAgent.fields.title", "Title (e.g. VP of Engineering)")}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
@@ -276,14 +278,14 @@ export function NewAgent() {
         <div className="border-t border-border px-4 py-4">
           <div className="space-y-3">
             <div>
-              <h2 className="text-sm font-medium">Company skills</h2>
+              <h2 className="text-sm font-medium">{t("newAgent.skills.title", "Company skills")}</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.
+                {t("newAgent.skills.description", "Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.")}
               </p>
             </div>
             {availableSkills.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                No optional company skills installed yet.
+                {t("newAgent.skills.empty", "No optional company skills installed yet.")}
               </p>
             ) : (
               <div className="space-y-3">
@@ -314,21 +316,23 @@ export function NewAgent() {
         {/* Footer */}
         <div className="border-t border-border px-4 py-3">
           {isFirstAgent && (
-            <p className="text-xs text-muted-foreground mb-2">This will be the CEO</p>
+            <p className="text-xs text-muted-foreground mb-2">{t("newAgent.firstAgent.ceo", "This will be the CEO")}</p>
           )}
           {formError && (
             <p className="text-xs text-destructive mb-2">{formError}</p>
           )}
           <div className="flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => navigate("/agents")}>
-              Cancel
+              {t("newAgent.actions.cancel", "Cancel")}
             </Button>
             <Button
               size="sm"
               disabled={!name.trim() || createAgent.isPending}
               onClick={handleSubmit}
             >
-              {createAgent.isPending ? "Creating…" : "Create agent"}
+              {createAgent.isPending
+                ? t("newAgent.actions.creating", "Creating…")
+                : t("newAgent.actions.create", "Create agent")}
             </Button>
           </div>
         </div>

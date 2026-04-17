@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { WorkspaceRuntimeService } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nProvider, I18N_LOCALE_STORAGE_KEY } from "@/i18n/runtime";
 import {
   buildWorkspaceRuntimeControlItems,
   buildWorkspaceRuntimeControlSections,
@@ -72,7 +73,7 @@ describe("buildWorkspaceRuntimeControlSections", () => {
     });
     expect(sections.jobs[0]).toMatchObject({
       title: "db:migrate",
-      statusLabel: "run once",
+      statusLabel: "run_once",
       workspaceCommandId: "db-migrate",
     });
   });
@@ -110,6 +111,7 @@ describe("WorkspaceRuntimeControls", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    localStorage.clear();
   });
 
   afterEach(() => {
@@ -131,13 +133,16 @@ describe("WorkspaceRuntimeControls", () => {
       canRunJobs: true,
     });
 
+    localStorage.setItem(I18N_LOCALE_STORAGE_KEY, "en");
     const root = createRoot(container);
     act(() => {
       root.render(
-        <WorkspaceRuntimeControls
-          sections={sections}
-          onAction={vi.fn()}
-        />,
+        <I18nProvider>
+          <WorkspaceRuntimeControls
+            sections={sections}
+            onAction={vi.fn()}
+          />
+        </I18nProvider>,
       );
     });
 
@@ -162,14 +167,17 @@ describe("WorkspaceRuntimeControls", () => {
       canRunJobs: false,
     });
 
+    localStorage.setItem(I18N_LOCALE_STORAGE_KEY, "en");
     const root = createRoot(container);
     act(() => {
       root.render(
-        <WorkspaceRuntimeControls
-          sections={sections}
-          disabledHint="Add a workspace path first."
-          onAction={vi.fn()}
-        />,
+        <I18nProvider>
+          <WorkspaceRuntimeControls
+            sections={sections}
+            disabledHint="Add a workspace path first."
+            onAction={vi.fn()}
+          />
+        </I18nProvider>,
       );
     });
 
@@ -193,14 +201,17 @@ describe("WorkspaceRuntimeControls", () => {
       canStartServices: true,
     });
 
+    localStorage.setItem(I18N_LOCALE_STORAGE_KEY, "en");
     const root = createRoot(container);
     act(() => {
       root.render(
-        <WorkspaceRuntimeControls
-          sections={sections}
-          disabledHint="Add runtime settings first."
-          onAction={vi.fn()}
-        />,
+        <I18nProvider>
+          <WorkspaceRuntimeControls
+            sections={sections}
+            disabledHint="Add runtime settings first."
+            onAction={vi.fn()}
+          />
+        </I18nProvider>,
       );
     });
 
@@ -222,17 +233,20 @@ describe("WorkspaceRuntimeControls", () => {
       canStartServices: true,
     });
 
+    localStorage.setItem(I18N_LOCALE_STORAGE_KEY, "en");
     const root = createRoot(container);
     act(() => {
       root.render(
-        <WorkspaceRuntimeControls
-          sections={sections}
-          onAction={vi.fn()}
-        />,
+        <I18nProvider>
+          <WorkspaceRuntimeControls
+            sections={sections}
+            onAction={vi.fn()}
+          />
+        </I18nProvider>,
       );
     });
 
-    expect(container.textContent).not.toContain("unknown");
+    expect(container.textContent).not.toContain("Unknown");
 
     act(() => root.unmount());
   });
@@ -248,15 +262,18 @@ describe("WorkspaceRuntimeControls", () => {
       canStartServices: false,
     });
 
+    localStorage.setItem(I18N_LOCALE_STORAGE_KEY, "en");
     const root = createRoot(container);
     act(() => {
       root.render(
-        <WorkspaceRuntimeControls
-          items={items}
-          emptyMessage="No runtime services have been started yet."
-          disabledHint="Add runtime settings first."
-          onAction={vi.fn()}
-        />,
+        <I18nProvider>
+          <WorkspaceRuntimeControls
+            items={items}
+            emptyMessage="No runtime services have been started yet."
+            disabledHint="Add runtime settings first."
+            onAction={vi.fn()}
+          />
+        </I18nProvider>,
       );
     });
 

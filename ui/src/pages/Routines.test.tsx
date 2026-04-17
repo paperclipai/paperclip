@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Routines, buildRoutineGroups } from "./Routines";
+import { I18nProvider } from "@/i18n/runtime";
 
 let currentSearch = "";
 
@@ -327,6 +328,7 @@ describe("Routines page", () => {
         ["agent-1", { name: "Agent One" }],
         ["agent-2", { name: "Agent Two" }],
       ]),
+      ((key: string, fallback?: string) => fallback ?? key) as ReturnType<typeof import("@/i18n/runtime")["useI18n"]>["t"],
     );
 
     expect(groups.map((group) => group.label)).toEqual(["Project Alpha", "Project Beta"]);
@@ -352,7 +354,9 @@ describe("Routines page", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <Routines />
+          <I18nProvider>
+            <Routines />
+          </I18nProvider>
         </QueryClientProvider>,
       );
       await flush();

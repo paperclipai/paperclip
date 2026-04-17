@@ -93,6 +93,7 @@ import {
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 import { Input } from "@/components/ui/input";
+import { useI18n } from "@/i18n/runtime";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
@@ -618,6 +619,7 @@ function JoinRequestInboxRow({
 export function Inbox() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useI18n();
   const { isMobile } = useSidebar();
   const navigate = useNavigate();
   const location = useLocation();
@@ -2165,7 +2167,9 @@ export function Inbox() {
                       >
                         <div className="h-px flex-1 bg-border/80" />
                         <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                          {group.searchSection === "archived" ? "Archived" : "Other results"}
+                          {group.searchSection === "archived"
+                            ? t("inbox.searchSection.archived", "Archived")
+                            : t("inbox.searchSection.otherResults", "Other results")}
                         </span>
                         <div className="h-px flex-1 bg-border/80" />
                       </div>,

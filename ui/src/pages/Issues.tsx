@@ -12,6 +12,7 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { CircleDot } from "lucide-react";
+import { useI18n } from "@/i18n/runtime";
 
 export function buildIssuesSearchUrl(currentHref: string, search: string): string | null {
   const url = new URL(currentHref);
@@ -30,6 +31,7 @@ export function buildIssuesSearchUrl(currentHref: string, search: string): strin
 export function Issues() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useI18n();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -69,19 +71,20 @@ export function Issues() {
     return ids;
   }, [liveRuns]);
 
+  const breadcrumbLabel = t("issues.breadcrumb", "Issues");
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Issues",
+        breadcrumbLabel,
         `${location.pathname}${location.search}${location.hash}`,
         "issues",
       ),
-    [location.pathname, location.search, location.hash],
+    [breadcrumbLabel, location.pathname, location.search, location.hash],
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Issues" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: breadcrumbLabel }]);
+  }, [breadcrumbLabel, setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({
     queryKey: [
@@ -103,7 +106,7 @@ export function Issues() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={CircleDot} message="Select a company to view issues." />;
+    return <EmptyState icon={CircleDot} message={t("issues.empty.selectCompany", "Select a company to view issues.")} />;
   }
 
   return (
