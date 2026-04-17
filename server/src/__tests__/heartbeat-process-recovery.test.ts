@@ -491,7 +491,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
   });
 
-  it("does not queue a second retry after the first process-loss retry was already used", async () => {
+  it("does not keep the checkout lock after the first process-loss retry was already used", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
       processLossRetryCount: 1,
@@ -515,7 +515,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBeNull();
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
