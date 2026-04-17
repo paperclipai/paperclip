@@ -1,11 +1,16 @@
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import { models as DIRECT_MODELS } from "../index.js";
 
-/** AWS Bedrock model IDs — region-qualified identifiers required by the Bedrock API. */
+/**
+ * AWS Bedrock model IDs using global inference profiles.
+ * Global profiles (global.anthropic.*) route requests to the nearest available
+ * region automatically, so they work for US, EU, and AP users alike.
+ * See: https://docs.aws.amazon.com/bedrock/latest/userguide/cross-region-inference.html
+ */
 const BEDROCK_MODELS: AdapterModel[] = [
-  { id: "us.anthropic.claude-opus-4-6-v1", label: "Bedrock Opus 4.6" },
-  { id: "us.anthropic.claude-sonnet-4-5-20250929-v2:0", label: "Bedrock Sonnet 4.5" },
-  { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
+  { id: "global.anthropic.claude-opus-4-6-v1", label: "Bedrock Opus 4.6" },
+  { id: "global.anthropic.claude-sonnet-4-5-20250929-v2:0", label: "Bedrock Sonnet 4.5" },
+  { id: "global.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
 ];
 
 function isBedrockEnv(): boolean {
