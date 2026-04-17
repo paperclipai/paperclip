@@ -25,7 +25,7 @@ import { Router } from "express";
 import type { Request } from "express";
 import { and, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies, pluginLogs, pluginWebhookDeliveries } from "@paperclipai/db";
+import { companies, pluginCompanySettings, pluginLogs, pluginWebhookDeliveries } from "@paperclipai/db";
 import type {
   PluginStatus,
   PaperclipPluginManifestV1,
@@ -408,6 +408,11 @@ export function pluginRoutes(
    * Return UI contributions from all plugins in 'ready' state.
    * Used by the frontend to discover plugin UI slots and launcher metadata.
    *
+   * Query params:
+   * - `companyId` (optional): scope visibility to a company. Plugins with an
+   *   explicit disabled company setting are omitted. When omitted, returns the
+   *   instance-wide ready plugin contributions for global surfaces.
+   *
    * The response is normalized for the frontend slot host:
    * - Only includes plugins with at least one declared UI slot or launcher
    * - Excludes plugins with null/missing manifestJson (defensive)
@@ -441,7 +446,30 @@ export function pluginRoutes(
    */
   router.get("/plugins/ui-contributions", async (req, res) => {
     assertBoard(req);
-    const plugins = await registry.listByStatus("ready");
+    const rawCompanyId = req.query.companyId;
+    const companyId = typeof rawCompanyId === "string" && rawCompanyId.trim()
+      ? rawCompanyId.trim()
+      : null;
+    if (rawCompanyId !== undefined && typeof rawCompanyId !== "string") {
+      res.status(400).json({ error: '"companyId" query parameter must be a string' });
+      return;
+    }
+    if (companyId) {
+      assertCompanyAccess(req, companyId);
+    }
+
+    let plugins = await registry.listByStatus("ready");
+    if (companyId) {
+      const disabledRows = await db
+        .select({ pluginId: pluginCompanySettings.pluginId })
+        .from(pluginCompanySettings)
+        .where(and(
+          eq(pluginCompanySettings.companyId, companyId),
+          eq(pluginCompanySettings.enabled, false),
+        ));
+      const disabledPluginIds = new Set(disabledRows.map((row) => row.pluginId));
+      plugins = plugins.filter((plugin) => !disabledPluginIds.has(plugin.id));
+    }
 
     const contributions: PluginUiContribution[] = plugins
       .map((plugin) => {

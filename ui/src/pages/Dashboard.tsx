@@ -26,13 +26,67 @@ import { AwaitingBoardWidget } from "../components/AwaitingBoardWidget";
 import { RecentActivityWidget } from "../components/RecentActivityWidget";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, AgentWorkload, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
+}
+
+function toDate(value: Date | string | null | undefined): Date | null {
+  if (!value) return null;
+  return value instanceof Date ? value : new Date(value);
+}
+
+function buildAgentWorkloadFallback(
+  agents: Agent[] | undefined,
+  issues: Issue[] | undefined,
+): AgentWorkload | null {
+  if (!agents || !issues) return null;
+
+  const operationalAgents = agents.filter(
+    (agent) => !["paused", "error", "pending_approval", "terminated"].includes(agent.status),
+  );
+  const inProgressTasks = issues.filter((issue) => issue.status === "in_progress");
+  const queuedTasks = issues.filter(
+    (issue) => (issue.status === "todo" || issue.status === "backlog") && !!issue.assigneeAgentId,
+  ).length;
+  const now = Date.now();
+
+  const engineers = operationalAgents.map((agent) => {
+    const currentIssues = inProgressTasks.filter((issue) => issue.assigneeAgentId === agent.id);
+    const earliestStart = currentIssues.reduce<Date | null>((earliest, issue) => {
+      const startedAt = toDate(issue.startedAt);
+      if (!startedAt) return earliest;
+      return !earliest || startedAt < earliest ? startedAt : earliest;
+    }, null);
+
+    return {
+      agentId: agent.id,
+      name: agent.name,
+      urlKey: agent.urlKey,
+      status: agent.status,
+      currentTasks: currentIssues.map((issue) => ({
+        issueId: issue.id,
+        identifier: issue.identifier ?? String(issue.issueNumber ?? issue.id),
+        title: issue.title,
+        startedAt: toDate(issue.startedAt)?.toISOString() ?? null,
+      })),
+      timeInCurrentTaskSec: earliestStart ? Math.floor((now - earliestStart.getTime()) / 1000) : null,
+    };
+  });
+
+  const idleEngineers = engineers.filter((engineer) => engineer.currentTasks.length === 0).length;
+  const allBusy = engineers.length > 0 && idleEngineers === 0;
+
+  return {
+    capacityStatus: !allBusy ? "GREEN" : queuedTasks > 0 ? "RED" : "YELLOW",
+    idleEngineers,
+    queuedTasks,
+    engineers,
+  };
 }
 
 export function Dashboard() {
@@ -99,6 +153,8 @@ export function Dashboard() {
   const totalTokens = data
     ? (data.costs.monthInputTokens ?? 0) + (data.costs.monthOutputTokens ?? 0)
     : 0;
+  const agentWorkload = (data as { agentWorkload?: AgentWorkload } | undefined)?.agentWorkload
+    ?? buildAgentWorkloadFallback(agents, issues);
 
   return (
     <div className="space-y-6">
@@ -125,7 +181,7 @@ export function Dashboard() {
 
       <ActiveAgentsPanel companyId={selectedCompanyId!} />
 
-      {data?.agentWorkload && <CapacityPanel workload={data.agentWorkload} />}
+      {agentWorkload && <CapacityPanel workload={agentWorkload} />}
 
       <ActiveWorkWidget companyId={selectedCompanyId!} />
 

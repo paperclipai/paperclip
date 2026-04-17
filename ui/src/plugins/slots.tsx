@@ -543,9 +543,10 @@ function usePluginModuleLoader(contributions: PluginUiContribution[] | undefined
  */
 export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
   const queryEnabled = filters.enabled ?? true;
+  const companyId = filters.companyId ?? null;
   const { data, isLoading: isQueryLoading, error } = useQuery({
-    queryKey: queryKeys.plugins.uiContributions,
-    queryFn: () => pluginsApi.listUiContributions(),
+    queryKey: [...queryKeys.plugins.uiContributions, companyId ?? "__global__"],
+    queryFn: () => pluginsApi.listUiContributions(companyId),
     enabled: queryEnabled,
   });
 

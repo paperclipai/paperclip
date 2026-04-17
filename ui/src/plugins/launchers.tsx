@@ -264,9 +264,10 @@ export function usePluginLaunchers(
   filters: UsePluginLaunchersFilters,
 ): UsePluginLaunchersResult {
   const queryEnabled = filters.enabled ?? true;
+  const companyId = filters.companyId ?? null;
   const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.plugins.uiContributions,
-    queryFn: () => pluginsApi.listUiContributions(),
+    queryKey: [...queryKeys.plugins.uiContributions, companyId ?? "__global__"],
+    queryFn: () => pluginsApi.listUiContributions(companyId),
     enabled: queryEnabled,
   });
 

@@ -5,6 +5,7 @@ function makeSelectBuilder(result: unknown) {
   const builder = {
     from: vi.fn(() => builder),
     where: vi.fn(() => builder),
+    orderBy: vi.fn(() => builder),
     groupBy: vi.fn(() => Promise.resolve(result)),
     then: (onFulfilled?: ((value: unknown) => unknown) | null, onRejected?: ((reason: unknown) => unknown) | null) =>
       Promise.resolve(result).then(onFulfilled ?? undefined, onRejected ?? undefined),
@@ -17,7 +18,7 @@ function makeMockDb(selectResults: unknown[]) {
   const queue = [...selectResults];
 
   return {
-    select: vi.fn(() => makeSelectBuilder(queue.shift())),
+    select: vi.fn(() => makeSelectBuilder(queue.shift() ?? [])),
   };
 }
 
