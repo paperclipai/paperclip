@@ -120,6 +120,9 @@ describe("runPostDoneCleanup — unit (execFile mocked)", () => {
       expect.objectContaining({
         status: "closed",
         cleanupReason: "non_local_provider_skipped",
+        metadata: expect.objectContaining({
+          cleanup: { branchDeleted: false, worktreeRemoved: false, skippedReason: "non_local_provider" },
+        }),
       }),
     );
     expect(updateSetWhere).toHaveBeenCalledOnce();

@@ -333,7 +333,7 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
-    postDoneCleanupEnabled: process.env.PAPERCLIP_POSTDONE_CLEANUP_ENABLED === "true",
+    postDoneCleanupEnabled: process.env.PAPERCLIP_POSTDONE_CLEANUP_ENABLED !== "false",
     postDoneCleanupAllowedRoots:
       process.env.PAPERCLIP_POSTDONE_CLEANUP_ALLOWED_ROOTS
         ? process.env.PAPERCLIP_POSTDONE_CLEANUP_ALLOWED_ROOTS.split(",").map((r) => r.trim()).filter(Boolean)

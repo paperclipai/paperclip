@@ -65,7 +65,16 @@ export async function runPostDoneCleanup(opts: RunPostDoneCleanupOpts): Promise<
   if (workspace.providerType !== "local_fs") {
     await db
       .update(executionWorkspaces)
-      .set({ status: "closed", closedAt: now, cleanupReason: "non_local_provider_skipped", updatedAt: now })
+      .set({
+        status: "closed",
+        closedAt: now,
+        cleanupReason: "non_local_provider_skipped",
+        metadata: {
+          ...(workspace.metadata ?? {}),
+          cleanup: { branchDeleted: false, worktreeRemoved: false, skippedReason: "non_local_provider" },
+        },
+        updatedAt: now,
+      })
       .where(eq(executionWorkspaces.id, workspace.id));
     return;
   }
