@@ -62,6 +62,7 @@ import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
+import { DEFAULT_CLAUDE_LOCAL_SKIP_PERMISSIONS } from "@paperclipai/adapter-claude-local";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -540,6 +541,13 @@ export function agentRoutes(db: Db) {
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     const next = { ...adapterConfig };
+    if (adapterType === "claude_local" || adapterType === "opencode_local") {
+      // Both claude_local and opencode_local default to skipping permissions because
+      // Paperclip runs agents in headless mode where interactive prompts cannot be answered.
+      if (typeof next.dangerouslySkipPermissions !== "boolean") {
+        next.dangerouslySkipPermissions = DEFAULT_CLAUDE_LOCAL_SKIP_PERMISSIONS;
+      }
+    }
     if (adapterType === "codex_local") {
       if (!asNonEmptyString(next.model)) {
         next.model = DEFAULT_CODEX_LOCAL_MODEL;

@@ -27,7 +27,7 @@ import { listUIAdapters } from "../adapters";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
-import { defaultCreateValues } from "./agent-config-defaults";
+import { defaultCreateValues, adapterConfigDefaults } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import {
   buildOnboardingIssuePayload,
@@ -36,7 +36,6 @@ import {
 } from "../lib/onboarding-launch";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import {
-  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
@@ -314,26 +313,15 @@ export function OnboardingWizard() {
 
   function buildAdapterConfig(): Record<string, unknown> {
     const adapter = getUIAdapter(adapterType);
+    const adapterOverrides = adapterConfigDefaults[adapterType] ?? {};
     const config = adapter.buildAdapterConfig({
       ...defaultCreateValues,
+      ...adapterOverrides,
       adapterType,
-      model:
-        adapterType === "codex_local"
-          ? model || DEFAULT_CODEX_LOCAL_MODEL
-          : adapterType === "gemini_local"
-            ? model || DEFAULT_GEMINI_LOCAL_MODEL
-          : adapterType === "cursor"
-          ? model || DEFAULT_CURSOR_LOCAL_MODEL
-          : model,
+      model: model || adapterOverrides.model || "",
       command,
       args,
       url,
-      dangerouslySkipPermissions:
-        adapterType === "claude_local" || adapterType === "opencode_local",
-      dangerouslyBypassSandbox:
-        adapterType === "codex_local"
-          ? DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
-          : defaultCreateValues.dangerouslyBypassSandbox
     });
     if (adapterType === "claude_local" && forceUnsetAnthropicApiKey) {
       const env =
