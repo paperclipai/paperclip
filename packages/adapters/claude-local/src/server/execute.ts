@@ -29,6 +29,7 @@ import {
   detectClaudeLoginRequired,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
+  isClaudeGhostResumeResult,
 } from "./parse.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
@@ -623,6 +624,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
     const retry = await runAttempt(null);
     return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+  }
+
+  // Detect "ghost resume": session resumed successfully but model produced zero
+  // output tokens and no result text. This happens with local/Ollama-backed models
+  // (e.g. Gemma via a proxy) when the resumed session has no pending context and
+  // the model silently no-ops. Clear the session so the next heartbeat starts
+  // fresh with a new session and re-reads the agent instructions.
+  if (sessionId && isClaudeGhostResumeResult(initial.parsed, true)) {
+    await onLog(
+      "stdout",
+      `[paperclip] Claude resumed session "${sessionId}" produced no output (ghost resume). ` +
+        `Clearing session so next heartbeat starts fresh.\n`,
+    );
+    return toAdapterResult(initial, { fallbackSessionId: null, clearSessionOnMissingSession: true });
   }
 
   return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });

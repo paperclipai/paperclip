@@ -177,3 +177,29 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
     /no conversation found with session id|unknown session|session .* not found/i.test(msg),
   );
 }
+
+/**
+ * Detects a "ghost resume" — a resumed session that completed successfully
+ * (exit code 0, valid JSON result) but produced zero output tokens. This
+ * happens with local/Ollama-backed models (e.g. Gemma via Manifest router)
+ * when the session was resumed but the model had nothing pending in its
+ * context and silently completed with no response.
+ *
+ * In this case the session should be cleared and the next heartbeat should
+ * start fresh so the model can re-read its instructions and act on its inbox.
+ */
+export function isClaudeGhostResumeResult(
+  parsed: Record<string, unknown> | null,
+  resumedSession: boolean,
+): boolean {
+  if (!parsed || !resumedSession) return false;
+  // Only applies to successful runs (subtype=success, exit code 0)
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  if (subtype !== "success") return false;
+  // Check for zero output tokens — the telltale sign of a ghost resume
+  const usageObj = parseObject(parsed.usage);
+  const outputTokens = asNumber(usageObj.output_tokens, -1);
+  const result = asString(parsed.result, "").trim();
+  // Zero output tokens AND empty result text = ghost resume
+  return outputTokens === 0 && result.length === 0;
+}
