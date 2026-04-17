@@ -46,6 +46,8 @@ import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
 import { setPluginEventBus } from "./services/activity-log.js";
+import { setDbInstrumentationEventBus } from "./services/db-instrumentation.js";
+import { initServerTracing } from "./services/trace-context.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
@@ -125,6 +127,10 @@ export async function createApp(
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
 ) {
+  // Initialize server-side tracing so spans have valid trace IDs.
+  // Must happen before any route/service code that creates spans.
+  initServerTracing();
+
   const app = express();
 
   app.use(express.json({
@@ -199,6 +205,7 @@ export async function createApp(
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
+  setDbInstrumentationEventBus(eventBus);
   const jobStore = pluginJobStore(db);
   const lifecycle = pluginLifecycleManager(db, { workerManager });
   const scheduler = createPluginJobScheduler({

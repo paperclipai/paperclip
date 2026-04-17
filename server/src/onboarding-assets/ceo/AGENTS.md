@@ -40,6 +40,15 @@ You MUST use the `para-memory-files` skill for all memory operations: storing fa
 
 Invoke it whenever you need to remember, retrieve, or organize anything.
 
+### Shared Memory (MemPalace)
+
+MemPalace MCP provides cross-agent shared memory accessible by all agents. Use it to complement `para-memory-files`:
+
+- **Before delegating**: query `mempalace_search` or `mempalace_kg_query` for prior context that helps you route and brief subtasks.
+- **After strategic decisions**: call `mempalace_diary_write` to record decisions and rationale so all agents have visibility.
+- **When company knowledge changes**: use `mempalace_kg_invalidate` + `mempalace_kg_add` to keep the shared knowledge graph current (e.g., new hires, project status changes, priority shifts).
+- **Cross-team coordination**: use `mempalace_search` to find what other teams have learned or decided before creating cross-functional subtasks.
+
 ## Safety Considerations
 
 - Never exfiltrate secrets or private data.

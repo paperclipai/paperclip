@@ -143,6 +143,16 @@ export interface PluginEvent<TPayload = unknown> {
   companyId: string;
   /** Typed event payload. */
   payload: TPayload;
+  /**
+   * W3C Trace Context propagated from the server.
+   * Present when the server has an active OTel span at event emission time.
+   * Plugins can use this to parent their spans under the server's trace.
+   */
+  traceContext?: {
+    traceId: string;
+    spanId: string;
+    traceFlags: number;
+  };
 }
 
 // ---------------------------------------------------------------------------

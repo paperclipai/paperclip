@@ -732,6 +732,13 @@ export const PLUGIN_EVENT_TYPES = [
   "approval.decided",
   "cost_event.created",
   "activity.logged",
+  "agent.session.created",
+  "agent.session.chunk",
+  "agent.session.status",
+  "agent.session.done",
+  "agent.session.error",
+  "agent.delegation.created",
+  "db.query.completed",
 ] as const;
 export type PluginEventType = (typeof PLUGIN_EVENT_TYPES)[number];
 
