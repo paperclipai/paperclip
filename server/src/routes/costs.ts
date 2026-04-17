@@ -67,18 +67,6 @@ export function costRoutes(db: Db) {
       occurredAt: new Date(req.body.occurredAt),
     });
 
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "cost.reported",
-      entityType: "cost_event",
-      entityId: event.id,
-      details: { costCents: event.costCents, model: event.model },
-    });
-
     res.status(201).json(event);
   });
 

@@ -1359,6 +1359,34 @@ export function issueRoutes(
       },
     });
 
+    // Emit agent.delegation.created when an agent run creates a subtask assigned to another agent
+    if (
+      actor.agentId &&
+      actor.runId &&
+      issue.assigneeAgentId &&
+      issue.assigneeAgentId !== actor.agentId &&
+      issue.parentId
+    ) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agent.delegation.created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          delegatingAgentId: actor.agentId,
+          delegatingRunId: actor.runId,
+          delegatedAgentId: issue.assigneeAgentId,
+          issueId: issue.id,
+          reason: "subtask_creation",
+          identifier: issue.identifier,
+        },
+      });
+    }
+
     void queueIssueAssignmentWakeup({
       heartbeat,
       issue,
@@ -1691,6 +1719,34 @@ export function issueRoutes(
       });
     }
 
+    // Emit agent.delegation.created when an agent run reassigns to another agent
+    if (
+      assigneeWillChange &&
+      actor.agentId &&
+      actor.runId &&
+      issue.assigneeAgentId &&
+      issue.assigneeAgentId !== actor.agentId
+    ) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agent.delegation.created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          delegatingAgentId: actor.agentId,
+          delegatingRunId: actor.runId,
+          delegatedAgentId: issue.assigneeAgentId,
+          issueId: issue.id,
+          reason: "assignee_change",
+          identifier: issue.identifier,
+        },
+      });
+    }
+
     const approverChanges = diffExecutionParticipants(previousExecutionPolicy, nextExecutionPolicy, "approval");
     if (approverChanges.addedParticipants.length > 0 || approverChanges.removedParticipants.length > 0) {
       await logActivity(db, {
@@ -1726,6 +1782,7 @@ export function issueRoutes(
         }
       }
     }
+
 
     let comment = null;
     if (commentBody) {
