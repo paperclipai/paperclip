@@ -1,35 +1,218 @@
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import type { ExecutionWorkspacePullRequestRecord } from "@paperclipai/shared";
+import { executionWorkspaces } from "@paperclipai/db";
+import type {
+  ExecutionWorkspacePullRequestRecord,
+  PullRequestPolicy,
+} from "@paperclipai/shared";
+import { logActivity } from "./activity-log.js";
+import {
+  applyPullRequestResult,
+  mergePullRequestRecordIntoMetadata,
+  readPullRequestRecord,
+} from "./execution-workspaces.js";
+import { logger } from "../middleware/logger.js";
+
+type TimerHandle = { handle: ReturnType<typeof setTimeout>; deadline: number };
+
+const scheduled = new Map<string, TimerHandle>();
 
 /**
- * Notifies the timeout scheduler that a blocking-mode PR request was
- * just recorded. In this commit the function is a no-op stub; the
- * follow-up commit in this branch wires it to a real timeout
- * scheduler that emits `execution_workspace.pull_request_timed_out`
- * and transitions the workspace to `archived` when the record's
- * `archiveTimeoutMs` deadline passes.
- *
- * Kept as a stub here so the routes (which import it) compile cleanly
- * in the review window between the routes commit and the scheduler
- * commit. Callers should pass the workspace id, the record, and the
- * Db handle so the eventual implementation can do its row-lock race
- * checks.
+ * Cancels any scheduled timer for the given workspace. Safe to call
+ * when nothing is scheduled.
  */
-export function onPullRequestRequested(_input: {
+export function cancelArchiveTimeout(workspaceId: string): void {
+  const existing = scheduled.get(workspaceId);
+  if (!existing) return;
+  clearTimeout(existing.handle);
+  scheduled.delete(workspaceId);
+}
+
+function computeDeadline(record: ExecutionWorkspacePullRequestRecord): number | null {
+  const policy: PullRequestPolicy | undefined = record.policy;
+  const timeoutMs = policy?.archiveTimeoutMs;
+  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return null;
+  }
+  const requestedAt = record.requestedAt ? new Date(record.requestedAt).getTime() : Number.NaN;
+  if (!Number.isFinite(requestedAt)) return null;
+  return requestedAt + timeoutMs;
+}
+
+/**
+ * Race-safe resolution of a timeout. Acquires a row lock on the
+ * workspace to serialize against a consumer result call that may be
+ * arriving at the same moment. Returns false when the record is
+ * already terminal (the consumer won the race) or the workspace has
+ * been deleted.
+ */
+async function finalizeTimeout(
+  db: Db,
+  companyId: string,
+  workspaceId: string,
+  archiveTimeoutMs: number,
+): Promise<boolean> {
+  return await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT ${executionWorkspaces.id} FROM ${executionWorkspaces}
+          WHERE ${and(eq(executionWorkspaces.companyId, companyId), eq(executionWorkspaces.id, workspaceId))}
+          FOR UPDATE`,
+    );
+    const row = await tx
+      .select()
+      .from(executionWorkspaces)
+      .where(
+        and(
+          eq(executionWorkspaces.companyId, companyId),
+          eq(executionWorkspaces.id, workspaceId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!row) return false;
+    const metadata = (row.metadata as Record<string, unknown> | null) ?? null;
+    const existingRecord = readPullRequestRecord(metadata);
+    if (!existingRecord) return false;
+    if (existingRecord.mode !== "blocking") return false;
+    if (existingRecord.status !== "requested" && existingRecord.status !== "opened") return false;
+
+    const result = applyPullRequestResult(existingRecord, row.status as any, {
+      status: "skipped",
+      error: "archive_timeout_reached",
+    });
+    const nextMetadata = mergePullRequestRecordIntoMetadata(metadata, result.record);
+    const timedOutAt = new Date();
+    await tx
+      .update(executionWorkspaces)
+      .set({
+        metadata: nextMetadata,
+        status: result.workspaceStatus,
+        closedAt: timedOutAt,
+        updatedAt: timedOutAt,
+      })
+      .where(
+        and(
+          eq(executionWorkspaces.companyId, companyId),
+          eq(executionWorkspaces.id, workspaceId),
+        ),
+      );
+
+    const deadlineIso = existingRecord.requestedAt
+      ? new Date(new Date(existingRecord.requestedAt).getTime() + archiveTimeoutMs).toISOString()
+      : null;
+
+    // Ordering: timed_out first, then resolved. The design doc locks
+    // this ordering so auditors can distinguish a consumer-driven
+    // close from a server-driven close even if they only see one of
+    // the two events.
+    await logActivity(db, {
+      companyId,
+      actorType: "system",
+      actorId: "server",
+      action: "execution_workspace.pull_request_timed_out",
+      entityType: "execution_workspace",
+      entityId: workspaceId,
+      details: {
+        record: result.record,
+        archiveTimeoutMs,
+        deadline: deadlineIso,
+        timedOutAt: timedOutAt.toISOString(),
+      },
+    });
+    await logActivity(db, {
+      companyId,
+      actorType: "system",
+      actorId: "server",
+      action: "execution_workspace.pull_request_resolved",
+      entityType: "execution_workspace",
+      entityId: workspaceId,
+      details: {
+        record: result.record,
+        workspaceStatus: result.workspaceStatus,
+        source: "archive_timeout",
+        previousStatus: result.previousStatus,
+        nextStatus: result.record.status,
+      },
+    });
+    return true;
+  });
+}
+
+function scheduleAt(
+  db: Db,
+  companyId: string,
+  workspaceId: string,
+  deadline: number,
+  archiveTimeoutMs: number,
+) {
+  cancelArchiveTimeout(workspaceId);
+  const delayMs = Math.max(0, deadline - Date.now());
+  const handle = setTimeout(() => {
+    scheduled.delete(workspaceId);
+    void finalizeTimeout(db, companyId, workspaceId, archiveTimeoutMs).catch((err) => {
+      logger.error({ err, workspaceId }, "pull-request timeout finalization failed");
+    });
+  }, delayMs);
+  // node's setTimeout may keep the event loop alive; we want the
+  // timer to not prevent process shutdown in tests.
+  if (typeof (handle as any)?.unref === "function") (handle as any).unref();
+  scheduled.set(workspaceId, { handle, deadline });
+}
+
+export function onPullRequestRequested(input: {
   db: Db;
   companyId: string;
   workspaceId: string;
   record: ExecutionWorkspacePullRequestRecord;
 }): void {
-  // Replaced in a follow-up commit on this branch.
+  if (input.record.mode !== "blocking") return;
+  const deadline = computeDeadline(input.record);
+  if (deadline === null) return;
+  const archiveTimeoutMs = input.record.policy?.archiveTimeoutMs;
+  if (typeof archiveTimeoutMs !== "number") return;
+  scheduleAt(input.db, input.companyId, input.workspaceId, deadline, archiveTimeoutMs);
 }
 
 /**
- * Boot-time re-scan hook. In this commit the function is a no-op; the
- * follow-up commit implements the DB re-scan that restores timers for
- * blocking-mode records that were in flight when the server last
- * shut down.
+ * Boot-time re-scan. Called from server startup after the DB pool is
+ * ready. Re-schedules blocking, non-terminal records whose deadline is
+ * in the future, and processes immediately any whose deadline has
+ * already passed.
  */
-export async function rescheduleBlockingPullRequestTimeouts(_db: Db): Promise<{ rescheduled: number }> {
-  return { rescheduled: 0 };
+export async function rescheduleBlockingPullRequestTimeouts(db: Db): Promise<{ rescheduled: number }> {
+  const rows = await db
+    .select({
+      id: executionWorkspaces.id,
+      companyId: executionWorkspaces.companyId,
+      metadata: executionWorkspaces.metadata,
+    })
+    .from(executionWorkspaces)
+    .where(eq(executionWorkspaces.status, "in_review"));
+
+  let rescheduled = 0;
+  for (const row of rows) {
+    const metadata = (row.metadata as Record<string, unknown> | null) ?? null;
+    const record = readPullRequestRecord(metadata);
+    if (!record) continue;
+    if (record.mode !== "blocking") continue;
+    if (record.status !== "requested" && record.status !== "opened") continue;
+    const deadline = computeDeadline(record);
+    if (deadline === null) continue;
+    const archiveTimeoutMs = record.policy?.archiveTimeoutMs;
+    if (typeof archiveTimeoutMs !== "number") continue;
+    scheduleAt(db, row.companyId, row.id, deadline, archiveTimeoutMs);
+    rescheduled += 1;
+  }
+  return { rescheduled };
+}
+
+// Test-only: clears all pending timers without executing them. Not
+// exported through the module's canonical surface; callers should
+// import it by name from this file.
+export function __resetArchiveTimeoutSchedulerForTests(): void {
+  for (const { handle } of scheduled.values()) clearTimeout(handle);
+  scheduled.clear();
+}
+
+export function __getScheduledArchiveTimeoutForTests(workspaceId: string): number | null {
+  return scheduled.get(workspaceId)?.deadline ?? null;
 }
