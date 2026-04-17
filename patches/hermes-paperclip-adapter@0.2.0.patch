@@ -1,0 +1,24 @@
+diff --git a/dist/server/execute.js b/dist/server/execute.js
+--- a/dist/server/execute.js
++++ b/dist/server/execute.js
+@@ -45,6 +45,9 @@
+   Agent ID: {{agentId}}
+   Company ID: {{companyId}}
+   API Base: {{paperclipApiUrl}}
++  API Key: available as env var $PAPERCLIP_API_KEY
++
++IMPORTANT: ALL curl calls to the Paperclip API MUST include: -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+
+ {{#taskId}}
+ ## Assigned Task
+@@ -302,6 +305,10 @@
+     if (userEnv && typeof userEnv === "object") {
+         Object.assign(env, userEnv);
+     }
++    // Inject the run-scoped JWT so Hermes can authenticate to the Paperclip API
++    if (ctx.authToken && !env.PAPERCLIP_API_KEY) {
++        env.PAPERCLIP_API_KEY = ctx.authToken;
++    }
+     // ── Resolve working directory ──────────────────────────────────────────
+     const cwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+     try {
