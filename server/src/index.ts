@@ -16,8 +16,6 @@ import {
   applyPendingMigrations,
   createEmbeddedPostgresLogBuffer,
   reconcilePendingMigrationHistory,
-  formatDatabaseBackupResult,
-  runDatabaseBackup,
   authUsers,
   companies,
   companyMemberships,
@@ -41,6 +39,7 @@ import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
+import { startDatabaseBackupScheduler } from "./database-backup-scheduler.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -643,56 +642,19 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   if (config.databaseBackupEnabled) {
-    const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
     const settingsSvc = instanceSettingsService(db);
-    let backupInFlight = false;
-
-    const runScheduledBackup = async () => {
-      if (backupInFlight) {
-        logger.warn("Skipping scheduled database backup because a previous backup is still running");
-        return;
-      }
-
-      backupInFlight = true;
-      try {
-        // Read retention from Instance Settings (DB) so changes take effect without restart
+    startDatabaseBackupScheduler({
+      connectionString: activeDatabaseConnectionString,
+      backupDir: config.databaseBackupDir,
+      intervalMinutes: config.databaseBackupIntervalMinutes,
+      getRetention: async () => {
+        // Read retention from Instance Settings (DB) so changes take effect without restart.
         const generalSettings = await settingsSvc.getGeneral();
-        const retention = generalSettings.backupRetention;
-
-        const result = await runDatabaseBackup({
-          connectionString: activeDatabaseConnectionString,
-          backupDir: config.databaseBackupDir,
-          retention,
-          filenamePrefix: "paperclip",
-        });
-        logger.info(
-          {
-            backupFile: result.backupFile,
-            sizeBytes: result.sizeBytes,
-            prunedCount: result.prunedCount,
-            backupDir: config.databaseBackupDir,
-            retention,
-          },
-          `Automatic database backup complete: ${formatDatabaseBackupResult(result)}`,
-        );
-      } catch (err) {
-        logger.error({ err, backupDir: config.databaseBackupDir }, "Automatic database backup failed");
-      } finally {
-        backupInFlight = false;
-      }
-    };
-
-    logger.info(
-      {
-        intervalMinutes: config.databaseBackupIntervalMinutes,
-        retentionSource: "instance-settings-db",
-        backupDir: config.databaseBackupDir,
+        return generalSettings.backupRetention;
       },
-      "Automatic database backups enabled",
-    );
-    setInterval(() => {
-      void runScheduledBackup();
-    }, backupIntervalMs);
+      logger,
+      filenamePrefix: "paperclip",
+    });
   }
   
   // Wait for external adapters to finish loading before accepting requests.
