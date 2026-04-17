@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# setup.sh — Instalador interativo da Toca da IA
-# Uso: ./setup.sh
+# setup.sh — Interactive Paperclip self-hosted installer
+# Usage: ./setup.sh
 set -euo pipefail
 umask 077  # ensure temp files (e.g. .env.tmp.$$) are not world-readable
 
@@ -15,35 +15,35 @@ warn()    { echo -e "${YELLOW}⚠${RESET}  $*"; }
 error()   { echo -e "${RED}✘${RESET} $*" >&2; }
 heading() { echo -e "\n${BOLD}$*${RESET}"; }
 
-# ─── Verificações de dependências ────────────────────────────────────────────
+# ─── Dependency checks ───────────────────────────────────────────────────────
 
-heading "Verificando dependências..."
+heading "Checking dependencies..."
 MISSING=()
 command -v docker  >/dev/null 2>&1 || MISSING+=("docker")
 command -v curl    >/dev/null 2>&1 || MISSING+=("curl")
 command -v openssl >/dev/null 2>&1 || MISSING+=("openssl")
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
-  error "Dependências ausentes: ${MISSING[*]}"
-  echo "Instale-as antes de continuar."
+  error "Missing dependencies: ${MISSING[*]}"
+  echo "Install them before continuing."
   exit 1
 fi
 
 if ! docker info >/dev/null 2>&1; then
-  error "Docker não está rodando. Inicie o Docker e tente novamente."
+  error "Docker is not running. Start Docker and try again."
   exit 1
 fi
-info "Docker disponível"
+info "Docker available"
 
-# ─── Coleta de configuração ──────────────────────────────────────────────────
+# ─── Instance configuration ──────────────────────────────────────────────────
 
-heading "Configuração da instância"
+heading "Instance configuration"
 
 if [[ -f .env ]]; then
-  warn ".env já existe. Pressione Enter para mantê-lo ou 's' para recriar."
+  warn ".env already exists. Press Enter to keep it or 's' to recreate."
   read -r RECREATE
   if [[ "$RECREATE" != "s" && "$RECREATE" != "S" ]]; then
-    info "Usando .env existente."
+    info "Using existing .env."
     ENV_READY=true
     # Read PUBLIC_URL and HTTP_PORT from existing .env so health check uses the correct values
     PUBLIC_URL=$(grep -E '^PAPERCLIP_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '"'"'"'"' || true)
@@ -56,27 +56,27 @@ fi
 
 if [[ "${ENV_READY:-false}" != "true" ]]; then
   echo ""
-  read -rp "URL pública da instância (ex: https://tocadaia.exemplo.com.br): " PUBLIC_URL
+  read -rp "Public URL for this instance (e.g. https://paperclip.example.com): " PUBLIC_URL
   if [[ -z "$PUBLIC_URL" ]]; then
-    warn "URL não informada — usando http://localhost:3100"
+    warn "No URL provided — defaulting to http://localhost:3100"
     PUBLIC_URL="http://localhost:3100"
   elif [[ ! "$PUBLIC_URL" =~ ^https?://[^[:space:]]+$ ]]; then
-    error "URL inválida (deve começar com http:// ou https://): $PUBLIC_URL"
+    error "Invalid URL (must start with http:// or https://): $PUBLIC_URL"
     exit 1
   fi
 
   AUTH_SECRET=$(openssl rand -hex 32)
   DB_PASSWORD=$(openssl rand -hex 16)
   REDIS_PASSWORD=$(openssl rand -hex 16)
-  info "Segredos gerados automaticamente."
+  info "Secrets generated automatically."
 
   echo ""
-  echo "Chaves de API de IA (opcional — pressione Enter para usar conta Claude MAX/subscription):"
-  read -rsp "  ANTHROPIC_API_KEY (Enter para pular): " ANTHROPIC_KEY; echo
-  read -rsp "  OPENAI_API_KEY    (Enter para pular): " OPENAI_KEY; echo
+  echo "AI API keys (optional — press Enter to use Claude MAX/subscription account):"
+  read -rsp "  ANTHROPIC_API_KEY (Enter to skip): " ANTHROPIC_KEY; echo
+  read -rsp "  OPENAI_API_KEY    (Enter to skip): " OPENAI_KEY; echo
 
   if [[ -z "$ANTHROPIC_KEY" && -z "$OPENAI_KEY" ]]; then
-    info "Sem chave de API — agentes usarão modo subscription (Claude MAX). Faça login quando solicitado."
+    info "No API key provided — agents will use subscription mode (Claude MAX). Sign in when prompted."
   fi
 
   # Strip any embedded newlines/carriage-returns from user-supplied values before
@@ -93,21 +93,20 @@ if [[ "${ENV_READY:-false}" != "true" ]]; then
   chmod 600 "$ENV_TMP"
   mv "$ENV_TMP" .env
   trap - EXIT  # temp file successfully renamed; clear the cleanup trap
-  info ".env criado com sucesso."
+  info ".env created successfully."
 fi
 
-# ─── Subir serviços ──────────────────────────────────────────────────────────
+# ─── Start services ──────────────────────────────────────────────────────────
 
-heading "Iniciando serviços..."
+heading "Starting services..."
 # Build locally — never pull the app image from a registry (avoids auth errors on private GHCR)
-# Fork-specific: APP_IMAGE=toca-da-ia:local is the Toca da IA build tag. Upstream adopters
-# should substitute their own image name (e.g. APP_IMAGE=paperclip:local).
-APP_IMAGE=toca-da-ia:local docker compose -f docker/docker-compose.prod.yml --env-file .env build
-APP_IMAGE=toca-da-ia:local docker compose -f docker/docker-compose.prod.yml --env-file .env up -d --pull never
+# APP_IMAGE=paperclip:local is the default local build tag. Override with APP_IMAGE=<your-tag> if needed.
+APP_IMAGE=paperclip:local docker compose -f docker/docker-compose.prod.yml --env-file .env build
+APP_IMAGE=paperclip:local docker compose -f docker/docker-compose.prod.yml --env-file .env up -d --pull never
 
-# ─── Aguardar app ficar saudável ─────────────────────────────────────────────
+# ─── Wait for app health ─────────────────────────────────────────────────────
 
-heading "Aguardando a aplicação ficar pronta..."
+heading "Waiting for the application to become ready..."
 APP_URL="${PUBLIC_URL:-http://localhost:3100}"
 # Always poll locally via nginx (avoids DNS/TLS dependency during first-time setup)
 HTTP_PORT_LOCAL="${HTTP_PORT:-80}"
@@ -118,11 +117,11 @@ for i in $(seq 1 $RETRIES); do
   HEALTH_RESPONSE=$(curl -sf "$HEALTH_URL" 2>/dev/null || true)
   if echo "$HEALTH_RESPONSE" | grep -qE '"status"\s*:\s*"ok"'; then
     echo ""
-    info "Aplicação pronta!"
+    info "Application ready!"
     break
   fi
   if [[ $i -eq $RETRIES ]]; then
-    error "Timeout aguardando a aplicação. Verifique os logs:"
+    error "Timeout waiting for application. Check the logs:"
     echo "  docker compose -f docker/docker-compose.prod.yml logs app"
     echo "  docker compose -f docker/docker-compose.prod.yml logs nginx"
     exit 1
@@ -131,9 +130,9 @@ for i in $(seq 1 $RETRIES); do
   sleep 3
 done
 
-# ─── Resumo ──────────────────────────────────────────────────────────────────
+# ─── Summary ─────────────────────────────────────────────────────────────────
 
-heading "Instalação concluída!"
+heading "Installation complete!"
 echo ""
 echo -e "  ${BOLD}URL:${RESET}    ${APP_URL}"
 echo -e "  ${BOLD}Health:${RESET} ${APP_URL%/}/health"

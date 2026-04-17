@@ -52,7 +52,7 @@ services:
       - redisdata:/data
 
   app:
-    image: "${APP_IMAGE:-toca-da-ia:local}"
+    image: "${APP_IMAGE:-paperclip:local}"
     build:
       context: ..
       dockerfile: Dockerfile
