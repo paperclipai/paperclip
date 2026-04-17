@@ -269,14 +269,6 @@ export function companyService(db: Db) {
         return enrichCompany(hydrated);
       }),
 
-    countActiveRuns: async (companyId: string) => {
-      const [{ value }] = await db
-        .select({ value: sql<number>`count(*)` })
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.status, ["queued", "running"])));
-      return Number(value ?? 0);
-    },
-
     pause: (id: string, force = false) =>
       db.transaction(async (tx) => {
         const company = await tx

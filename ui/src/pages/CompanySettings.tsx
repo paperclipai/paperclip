@@ -576,6 +576,7 @@ export function CompanySettings() {
             label="Company active"
             hint="When disabled, new agent sessions and heartbeat runs are blocked. Running work is allowed to finish."
             checked={selectedCompany.status === "active"}
+            disabled={pauseMutation.isPending || resumeMutation.isPending}
             onChange={(enabled) => {
               if (enabled) {
                 resumeMutation.mutate();
