@@ -33,7 +33,15 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const rawRunIdHeader = req.header("x-paperclip-run-id");
+    // Drop the header if it's not a valid UUID — activity_log.run_id is a UUID FK
+    // to heartbeat_runs.id, so any non-UUID value (e.g. cortextos audit IDs like
+    // "cortextos_20260415T175447_ceo") will 500 the whole PATCH at insert time.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const runIdHeader = rawRunIdHeader && UUID_RE.test(rawRunIdHeader) ? rawRunIdHeader : undefined;
+    if (rawRunIdHeader && !runIdHeader) {
+      logger.debug({ rawRunIdHeader }, "dropping non-UUID x-paperclip-run-id header");
+    }
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
