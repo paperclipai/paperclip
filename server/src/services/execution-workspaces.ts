@@ -12,9 +12,18 @@ import type {
   ExecutionWorkspaceCloseGitReadiness,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceConfig,
+  ExecutionWorkspacePullRequestRecord,
+  ExecutionWorkspaceStatus,
+  PullRequestPolicy,
+  PullRequestRecordStatus,
+  PullRequestRequestMode,
   WorkspaceRuntimeService,
 } from "@paperclipai/shared";
-import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import {
+  parseProjectExecutionWorkspacePolicy,
+  pullRequestPolicyBlocksArchive,
+  pullRequestPolicyRequestsAutoOpen,
+} from "./execution-workspace-policy.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
@@ -269,6 +278,179 @@ export function mergeExecutionWorkspaceConfig(
   }
 
   return Object.keys(nextMetadata).length > 0 ? nextMetadata : null;
+}
+
+export function readPullRequestRecord(
+  metadata: Record<string, unknown> | null | undefined,
+): ExecutionWorkspacePullRequestRecord | null {
+  const raw = isRecord(metadata?.pullRequest) ? metadata.pullRequest : null;
+  if (!raw) return null;
+  const status = raw.status;
+  const mode = raw.mode;
+  if (
+    status !== "requested" && status !== "opened" && status !== "merged" &&
+    status !== "failed" && status !== "skipped"
+  ) return null;
+  if (mode !== "fire_and_forget" && mode !== "blocking") return null;
+  const record: ExecutionWorkspacePullRequestRecord = {
+    status,
+    mode,
+    url: typeof raw.url === "string" ? raw.url : null,
+    number: typeof raw.number === "number" ? raw.number : null,
+    sha: typeof raw.sha === "string" ? raw.sha : null,
+    mergedAt: typeof raw.mergedAt === "string" ? raw.mergedAt : null,
+    requestedAt: typeof raw.requestedAt === "string" ? raw.requestedAt : null,
+    resolvedAt: typeof raw.resolvedAt === "string" ? raw.resolvedAt : null,
+    error: typeof raw.error === "string" ? raw.error : null,
+  };
+  if (isRecord(raw.policy)) {
+    record.policy = raw.policy as PullRequestPolicy;
+  }
+  return record;
+}
+
+function writePullRequestRecord(
+  metadata: Record<string, unknown> | null | undefined,
+  record: ExecutionWorkspacePullRequestRecord | null,
+): Record<string, unknown> | null {
+  const nextMetadata: Record<string, unknown> = isRecord(metadata) ? { ...metadata } : {};
+  if (record === null) {
+    delete nextMetadata.pullRequest;
+  } else {
+    nextMetadata.pullRequest = record as unknown as Record<string, unknown>;
+  }
+  return Object.keys(nextMetadata).length > 0 ? nextMetadata : null;
+}
+
+export interface PullRequestRequestBuilderResult {
+  record: ExecutionWorkspacePullRequestRecord;
+  mode: PullRequestRequestMode;
+  requestedAt: string;
+}
+
+export function buildPullRequestRequestRecord(
+  policy: PullRequestPolicy,
+  existing: ExecutionWorkspacePullRequestRecord | null,
+): PullRequestRequestBuilderResult {
+  if (existing) {
+    return {
+      record: existing,
+      mode: existing.mode,
+      requestedAt: existing.requestedAt ?? new Date().toISOString(),
+    };
+  }
+  const mode: PullRequestRequestMode = pullRequestPolicyBlocksArchive(policy)
+    ? "blocking"
+    : "fire_and_forget";
+  const requestedAt = new Date().toISOString();
+  const record: ExecutionWorkspacePullRequestRecord = {
+    status: "requested",
+    mode,
+    requestedAt,
+    resolvedAt: null,
+    url: null,
+    number: null,
+    sha: null,
+    mergedAt: null,
+    error: null,
+    policy,
+  };
+  return { record, mode, requestedAt };
+}
+
+export interface PullRequestResultApplyInput {
+  status: Exclude<PullRequestRecordStatus, "requested">;
+  url?: string;
+  number?: number;
+  sha?: string;
+  error?: string;
+}
+
+export interface PullRequestResultApplyOutput {
+  record: ExecutionWorkspacePullRequestRecord;
+  workspaceStatus: ExecutionWorkspaceStatus;
+  previousStatus: PullRequestRecordStatus;
+}
+
+/**
+ * Applies a result payload to the existing record and returns the
+ * post-transition record plus the resulting workspace status.
+ *
+ * Transitions follow the table in §4 "Result route" of the design doc:
+ *
+ *   | request mode     | result.status | workspace status             |
+ *   |------------------|---------------|------------------------------|
+ *   | fire_and_forget  | opened        | unchanged                    |
+ *   | fire_and_forget  | merged        | unchanged                    |
+ *   | fire_and_forget  | skipped       | unchanged                    |
+ *   | fire_and_forget  | failed        | unchanged (error stamped)    |
+ *   | blocking         | opened        | in_review                    |
+ *   | blocking         | merged        | archived                     |
+ *   | blocking         | skipped       | archived                     |
+ *   | blocking         | failed        | cleanup_failed               |
+ */
+export function applyPullRequestResult(
+  existing: ExecutionWorkspacePullRequestRecord,
+  workspaceStatus: ExecutionWorkspaceStatus,
+  input: PullRequestResultApplyInput,
+): PullRequestResultApplyOutput {
+  const resolvedAt = new Date().toISOString();
+  const next: ExecutionWorkspacePullRequestRecord = {
+    ...existing,
+    status: input.status,
+    url: input.url ?? existing.url ?? null,
+    number: input.number ?? existing.number ?? null,
+    sha: input.sha ?? existing.sha ?? null,
+    error: input.status === "failed" ? (input.error ?? null) : existing.error ?? null,
+    resolvedAt,
+    mergedAt: input.status === "merged" ? resolvedAt : existing.mergedAt ?? null,
+  };
+
+  let nextWorkspaceStatus: ExecutionWorkspaceStatus = workspaceStatus;
+  if (existing.mode === "blocking") {
+    if (input.status === "merged" || input.status === "skipped") {
+      nextWorkspaceStatus = "archived";
+    } else if (input.status === "failed") {
+      nextWorkspaceStatus = "cleanup_failed";
+    } else {
+      nextWorkspaceStatus = "in_review";
+    }
+  }
+
+  return {
+    record: next,
+    workspaceStatus: nextWorkspaceStatus,
+    previousStatus: existing.status,
+  };
+}
+
+export function mergePullRequestRecordIntoMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+  record: ExecutionWorkspacePullRequestRecord | null,
+): Record<string, unknown> | null {
+  return writePullRequestRecord(metadata, record);
+}
+
+export function pullRequestRequestResponse(
+  workspace: ExecutionWorkspace,
+  record: ExecutionWorkspacePullRequestRecord,
+) {
+  if (!workspace.branchName) {
+    throw new Error("workspace has no branchName; callers must check before invoking");
+  }
+  if (!workspace.baseRef) {
+    throw new Error("workspace has no baseRef; callers must check before invoking");
+  }
+  return {
+    workspaceId: workspace.id,
+    projectId: workspace.projectId,
+    sourceIssueId: workspace.sourceIssueId,
+    branchName: workspace.branchName,
+    baseRef: workspace.baseRef,
+    repoUrl: workspace.repoUrl,
+    providerRef: workspace.providerRef,
+    policy: record.policy ?? {},
+  };
 }
 
 function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeService {
@@ -673,6 +855,42 @@ export function executionWorkspaceService(db: Db) {
           description: "Paperclip will try to delete the runtime-created branch after removing the worktree.",
           command: `git branch -d ${executionWorkspace.branchName}`,
         });
+      }
+
+      const pullRequestPolicy = projectPolicy?.pullRequestPolicy ?? null;
+      const pullRequestRequiresAction =
+        pullRequestPolicyRequestsAutoOpen(pullRequestPolicy) &&
+        Boolean(executionWorkspace.branchName) &&
+        !isSharedWorkspace;
+      if (pullRequestRequiresAction && pullRequestPolicy) {
+        const branchLabel = executionWorkspace.branchName ?? "<unknown branch>";
+        const baseLabel = pullRequestPolicy.targetBranch ?? executionWorkspace.baseRef ?? "base ref";
+        plannedActions.push({
+          kind: "pull_request_push",
+          label: "Push branch to remote",
+          description:
+            `An external consumer will push ${branchLabel} so the branch exists on the remote before a PR can be opened.`,
+          command: null,
+        });
+        plannedActions.push({
+          kind: "pull_request_open",
+          label: pullRequestPolicy.draft ? "Open draft pull request" : "Open pull request",
+          description:
+            `An external consumer will open a pull request targeting ${baseLabel} from ${branchLabel}.`,
+          command: null,
+        });
+        if (pullRequestPolicy.autoMerge) {
+          const strategyLabel = pullRequestPolicy.mergeStrategy
+            ? ` using the ${pullRequestPolicy.mergeStrategy} strategy`
+            : "";
+          plannedActions.push({
+            kind: "pull_request_merge",
+            label: "Merge pull request",
+            description:
+              `An external consumer will merge the pull request${strategyLabel} once checks permit.`,
+            command: null,
+          });
+        }
       }
 
       if (executionWorkspace.providerType === "local_fs" && git?.createdByRuntime && workspacePath) {
