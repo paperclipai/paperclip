@@ -2,6 +2,7 @@ import type { ServerAdapterModule } from "./types.js";
 import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   execute as claudeExecute,
+  listClaudeRuntimeSkillCatalog,
   listClaudeSkills,
   syncClaudeSkills,
   listClaudeModels,
@@ -102,6 +103,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getQuotaWindows: claudeGetQuotaWindows,
+  listRuntimeSkillCatalog: listClaudeRuntimeSkillCatalog,
 };
 
 const codexLocalAdapter: ServerAdapterModule = {
