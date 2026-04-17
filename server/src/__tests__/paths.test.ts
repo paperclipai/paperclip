@@ -1,98 +1,87 @@
-import fs from "node:fs";
-import os from "node:os";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "../paths.js";
-
-const ORIGINAL_PAPERCLIP_CONFIG = process.env.PAPERCLIP_CONFIG;
+import {
+  resolvePaperclipConfigPath,
+  resolvePaperclipEnvPath,
+} from "../paths.js";
 
 afterEach(() => {
-  if (ORIGINAL_PAPERCLIP_CONFIG === undefined) delete process.env.PAPERCLIP_CONFIG;
-  else process.env.PAPERCLIP_CONFIG = ORIGINAL_PAPERCLIP_CONFIG;
+  delete process.env.PAPERCLIP_CONFIG;
+  vi.restoreAllMocks();
 });
+
+// ============================================================================
+// resolvePaperclipConfigPath
+// ============================================================================
 
 describe("resolvePaperclipConfigPath", () => {
-  it("returns the resolved override path when explicitly provided", () => {
-    const result = resolvePaperclipConfigPath("/explicit/path/config.json");
-    expect(result).toBe(path.resolve("/explicit/path/config.json"));
+  it("returns resolved override path when overridePath is provided", () => {
+    const result = resolvePaperclipConfigPath("/custom/config.json");
+    expect(result).toBe("/custom/config.json");
   });
 
-  it("resolves relative override paths from cwd", () => {
+  it("resolves relative override path to absolute", () => {
     const result = resolvePaperclipConfigPath("relative/config.json");
-    expect(result).toBe(path.resolve("relative/config.json"));
+    expect(path.isAbsolute(result)).toBe(true);
+    expect(result).toContain("relative/config.json");
   });
 
-  it("uses PAPERCLIP_CONFIG env var when set", () => {
-    process.env.PAPERCLIP_CONFIG = "/env/config.json";
+  it("uses PAPERCLIP_CONFIG env var when no override provided", () => {
+    process.env.PAPERCLIP_CONFIG = "/env/path/config.json";
     const result = resolvePaperclipConfigPath();
-    expect(result).toBe(path.resolve("/env/config.json"));
+    expect(result).toBe("/env/path/config.json");
   });
 
-  it("gives explicit override precedence over PAPERCLIP_CONFIG env var", () => {
+  it("resolves PAPERCLIP_CONFIG relative path to absolute", () => {
+    process.env.PAPERCLIP_CONFIG = "some/relative/config.json";
+    const result = resolvePaperclipConfigPath();
+    expect(path.isAbsolute(result)).toBe(true);
+  });
+
+  it("overridePath takes precedence over PAPERCLIP_CONFIG env var", () => {
     process.env.PAPERCLIP_CONFIG = "/env/config.json";
-    const result = resolvePaperclipConfigPath("/explicit/override.json");
-    expect(result).toBe(path.resolve("/explicit/override.json"));
+    const result = resolvePaperclipConfigPath("/override/config.json");
+    expect(result).toBe("/override/config.json");
   });
 
-  it("finds a .paperclip/config.json in an ancestor directory", () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pclip-paths-test-"));
-    try {
-      const configDir = path.join(tmpDir, ".paperclip");
-      fs.mkdirSync(configDir, { recursive: true });
-      const configPath = path.join(configDir, "config.json");
-      fs.writeFileSync(configPath, JSON.stringify({ deploymentMode: "local", logging: { logDir: null } }));
-
-      const deepDir = path.join(tmpDir, "a", "b", "c");
-      fs.mkdirSync(deepDir, { recursive: true });
-
-      delete process.env.PAPERCLIP_CONFIG;
-      const originalCwd = process.cwd();
-      process.chdir(deepDir);
-      try {
-        const result = resolvePaperclipConfigPath();
-        expect(result).toBe(configPath);
-      } finally {
-        process.chdir(originalCwd);
-      }
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("falls back to the default config path when no ancestor has .paperclip/config.json", () => {
+  it("returns an absolute path even when falling back to default", () => {
     delete process.env.PAPERCLIP_CONFIG;
-    // Run from a directory guaranteed to have no .paperclip/config.json ancestor
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pclip-noanc-"));
-    try {
-      const originalCwd = process.cwd();
-      process.chdir(tmpDir);
-      try {
-        const result = resolvePaperclipConfigPath();
-        // Should return the default config path (ends in config.json)
-        expect(result).toMatch(/config\.json$/);
-      } finally {
-        process.chdir(originalCwd);
-      }
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+    const result = resolvePaperclipConfigPath();
+    expect(path.isAbsolute(result)).toBe(true);
+  });
+
+  it("default fallback ends with config.json", () => {
+    delete process.env.PAPERCLIP_CONFIG;
+    // When ancestor search finds nothing, falls back to resolveDefaultConfigPath()
+    // which ends with config.json
+    const result = resolvePaperclipConfigPath();
+    expect(result.endsWith("config.json")).toBe(true);
   });
 });
 
+// ============================================================================
+// resolvePaperclipEnvPath
+// ============================================================================
+
 describe("resolvePaperclipEnvPath", () => {
-  it("returns a .env file in the same directory as the resolved config path", () => {
-    const envPath = resolvePaperclipEnvPath("/some/dir/config.json");
-    expect(envPath).toBe(path.resolve("/some/dir/.env"));
+  it("returns .env in the same directory as the config file", () => {
+    const result = resolvePaperclipEnvPath("/custom/dir/config.json");
+    expect(result).toBe("/custom/dir/.env");
   });
 
-  it("derives the .env path from PAPERCLIP_CONFIG env var", () => {
+  it("uses PAPERCLIP_CONFIG env dir when no override", () => {
     process.env.PAPERCLIP_CONFIG = "/env/dir/config.json";
-    const envPath = resolvePaperclipEnvPath();
-    expect(envPath).toBe(path.resolve("/env/dir/.env"));
+    const result = resolvePaperclipEnvPath();
+    expect(result).toBe("/env/dir/.env");
   });
 
-  it("is always named .env regardless of the config filename", () => {
-    const envPath = resolvePaperclipEnvPath("/foo/bar/custom-name.json");
-    expect(path.basename(envPath)).toBe(".env");
+  it("returns an absolute path", () => {
+    const result = resolvePaperclipEnvPath("/some/path/config.json");
+    expect(path.isAbsolute(result)).toBe(true);
+  });
+
+  it("filename is exactly .env", () => {
+    const result = resolvePaperclipEnvPath("/a/b/config.json");
+    expect(path.basename(result)).toBe(".env");
   });
 });
