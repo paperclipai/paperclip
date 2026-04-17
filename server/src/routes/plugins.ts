@@ -518,9 +518,8 @@ export function pluginRoutes(
    * - 502 if the plugin worker is unavailable or the RPC call fails
    */
   router.post("/plugins/tools/execute", async (req, res) => {
-    // NOTE: Fork carries an intentional skip of assertBoardOrgAccess here so
-    // agent JWTs (actor.type === "agent") can invoke plugin tools. Authorization
-    // is enforced by assertCompanyAccess(req, runContext.companyId) below.
+    assertBoardOrgAccess(req);
+
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
       return;
