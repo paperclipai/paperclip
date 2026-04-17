@@ -49,6 +49,8 @@ export interface QueryDescriptor {
   agentId?: string;
   /** Run ID that triggered this query (if known) */
   runId?: string;
+  /** Database name (defaults to "paperclip") */
+  dbName?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,14 +71,23 @@ export async function instrumentQuery<T>(
   const tracer = trace.getTracer(TRACER_NAME);
   const spanName = `db.${descriptor.operation} ${descriptor.table}`;
 
+  const dbName = descriptor.dbName ?? "paperclip";
+
   return tracer.startActiveSpan(
     spanName,
     {
       kind: SpanKind.CLIENT,
       attributes: {
+        // Stable OTel database semantic conventions
         "db.system": "postgresql",
+        "db.name": dbName,
         "db.operation": descriptor.operation,
         "db.sql.table": descriptor.table,
+        // New semconv (v1.25+) — parallel attributes for forward compat
+        "db.system.name": "postgresql",
+        "db.namespace": dbName,
+        "db.operation.name": descriptor.operation,
+        "db.collection.name": descriptor.table,
         ...(descriptor.description
           ? { "db.query.summary": descriptor.description }
           : {}),
@@ -96,7 +107,7 @@ export async function instrumentQuery<T>(
         });
 
         // Fire-and-forget event emission
-        emitDbQueryEvent(descriptor, durationMs, rowCount);
+        emitDbQueryEvent(descriptor, durationMs, dbName, rowCount);
 
         return result;
       } catch (err) {
@@ -107,7 +118,7 @@ export async function instrumentQuery<T>(
           message: String(err),
         });
 
-        emitDbQueryEvent(descriptor, durationMs, undefined, String(err));
+        emitDbQueryEvent(descriptor, durationMs, dbName, undefined, String(err));
 
         throw err;
       } finally {
@@ -124,6 +135,7 @@ export async function instrumentQuery<T>(
 function emitDbQueryEvent(
   descriptor: QueryDescriptor,
   durationMs: number,
+  dbName: string,
   rowCount: number | undefined,
   error?: string,
 ): void {
@@ -144,6 +156,7 @@ function emitDbQueryEvent(
       operation: descriptor.operation,
       table: descriptor.table,
       description: descriptor.description ?? null,
+      dbName,
       durationMs,
       rowCount: rowCount ?? null,
       error: error ?? null,

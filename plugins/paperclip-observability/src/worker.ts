@@ -89,6 +89,7 @@ import {
 // DB query handlers
 import {
   handleDbQueryMetrics,
+  handleDbQueryTraces,
 } from "./telemetry/db-query-handlers.js";
 
 // Session handlers
@@ -278,9 +279,11 @@ function createRouter(): EventTelemetryRouter {
   router.register("agent.session.error", handleSessionErrorMetrics);
   router.register("agent.session.error", handleSessionErrorLogs);
 
-  // db.query.completed — traces are created server-side by instrumentQuery;
-  // only record metrics in the plugin to avoid duplicate spans.
+  // db.query.completed — plugin-side spans nest DB operations under agent run
+  // spans for end-to-end trace visibility in the backend (e.g. Dynatrace).
+  // Server-side spans from instrumentQuery provide server-context tracing.
   router.register("db.query.completed", handleDbQueryMetrics);
+  router.register("db.query.completed", handleDbQueryTraces);
 
   return router;
 }
