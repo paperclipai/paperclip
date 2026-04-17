@@ -639,12 +639,35 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
-  it("blocks stranded in-progress work after the continuation retry was already used", async () => {
-    const { issueId } = await seedStrandedIssueFixture({
+  it("blocks stranded in-progress work once the continuation retry cap is reached", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
       retryReason: "issue_continuation_needed",
     });
+    // Seed two additional prior continuation-retry runs so the cap (3) is hit.
+    for (let i = 0; i < 2; i += 1) {
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+        },
+        startedAt: new Date(`2026-03-18T${String(i).padStart(2, "0")}:00:00.000Z`),
+        finishedAt: new Date(`2026-03-18T${String(i).padStart(2, "0")}:05:00.000Z`),
+        updatedAt: new Date(`2026-03-18T${String(i).padStart(2, "0")}:05:00.000Z`),
+        errorCode: "process_lost",
+        error: "run failed before issue advanced",
+      });
+    }
+
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
@@ -657,8 +680,59 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried continuation");
+    expect(comments[0]?.body).toContain("Auto-blocked after 3 continuation retries");
+    expect(comments[0]?.body).toContain("Retry history:");
     expect(comments[0]?.body).toContain("Latest retry failure: `process_lost` - run failed before issue advanced.");
+  });
+
+  it("resets the continuation retry counter once the assignee posts a comment", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    // Seed three prior continuation retries (above the cap) — but fenced off by
+    // a subsequent assignee comment, so they should not count.
+    for (let i = 0; i < 3; i += 1) {
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+        },
+        startedAt: new Date(`2026-03-18T${String(i).padStart(2, "0")}:00:00.000Z`),
+        finishedAt: new Date(`2026-03-18T${String(i).padStart(2, "0")}:05:00.000Z`),
+        updatedAt: new Date(`2026-03-18T${String(i).padStart(2, "0")}:05:00.000Z`),
+        errorCode: "process_lost",
+        error: "run failed before issue advanced",
+      });
+    }
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "progress update from assignee",
+      createdAt: new Date("2026-03-18T23:00:00.000Z"),
+      updatedAt: new Date("2026-03-18T23:00:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
   });
 
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {

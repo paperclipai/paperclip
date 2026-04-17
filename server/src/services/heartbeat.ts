@@ -2906,6 +2906,46 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  // Cap how many `issue_continuation_needed` wakes may fire for a single issue
+  // before we escalate to `blocked` for human review. The counter resets when
+  // the assignee posts a comment (treated as proof of progress). See SHA-1866.
+  const MAX_CONTINUATION_RETRIES = 3;
+
+  async function countContinuationRetriesSinceLastAssigneeComment(
+    companyId: string,
+    issueId: string,
+    assigneeAgentId: string,
+  ): Promise<{ count: number; runIds: string[] }> {
+    const lastComment = await db
+      .select({ createdAt: issueComments.createdAt })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, issueId),
+          eq(issueComments.authorAgentId, assigneeAgentId),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    const runs = await db
+      .select({ id: heartbeatRuns.id, createdAt: heartbeatRuns.createdAt })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' = 'issue_continuation_needed'`,
+          lastComment ? gt(heartbeatRuns.createdAt, lastComment.createdAt) : sql`true`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt));
+
+    return { count: runs.length, runIds: runs.map((r) => r.id) };
+  }
+
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
     const [run, deferredWake] = await Promise.all([
       db
@@ -3120,16 +3160,22 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      if (latestRetryReason === "issue_continuation_needed") {
+      const continuation = await countContinuationRetriesSinceLastAssigneeComment(
+        issue.companyId,
+        issue.id,
+        agentId,
+      );
+
+      if (continuation.count >= MAX_CONTINUATION_RETRIES) {
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+        const retryHistory = continuation.runIds.slice(0, MAX_CONTINUATION_RETRIES).join(", ");
         const updated = await escalateStrandedAssignedIssue({
           issue,
           previousStatus: "in_progress",
           latestRun,
           comment:
-            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-            `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
-            "Moving it to `blocked` so it is visible for intervention.",
+            `Auto-blocked after ${continuation.count} continuation retries without agent comment progress — ` +
+            `needs human review.${failureSummary ?? ""} Retry history: ${retryHistory}.`,
         });
         if (updated) {
           result.escalated += 1;
