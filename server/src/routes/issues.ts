@@ -1929,6 +1929,36 @@ export function issueRoutes(
 
       const becameTerminal =
         !["done", "cancelled"].includes(existing.status) && ["done", "cancelled"].includes(issue.status);
+
+      if (becameTerminal && !(actor.actorType === "agent" && actor.actorId === existing.assigneeAgentId)) {
+        try {
+          const runToCancel = await resolveActiveIssueRun(existing);
+          if (runToCancel) {
+            const cancelled = await heartbeat.cancelRun(runToCancel.id);
+            if (cancelled) {
+              await logActivity(db, {
+                companyId: cancelled.companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                action: "heartbeat.cancelled",
+                entityType: "heartbeat_run",
+                entityId: cancelled.id,
+                details: {
+                  agentId: cancelled.agentId,
+                  source: "issue_status_terminal",
+                  issueId: existing.id,
+                  newStatus: issue.status,
+                },
+              });
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: existing.id }, "failed to cancel run on terminal status transition");
+        }
+      }
+
       if (becameTerminal && issue.parentId) {
         const parent = await svc.getWakeableParentAfterChildCompletion(issue.parentId);
         if (parent) {
