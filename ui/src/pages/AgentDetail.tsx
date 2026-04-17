@@ -72,6 +72,7 @@ import {
   ArrowLeft,
   HelpCircle,
   FolderOpen,
+  AlertTriangle,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -628,6 +629,7 @@ export function AgentDetail() {
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [confirmClearError, setConfirmClearError] = useState(false);
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
   const needsDashboardData = activeView === "dashboard";
   const needsRunData = activeView === "runs" || Boolean(urlRunId);
@@ -834,6 +836,33 @@ export function AgentDetail() {
     },
   });
 
+  const clearErrorAndRestart = useMutation({
+    mutationFn: async () => {
+      if (!agentLookupRef) throw new Error("No agent reference");
+      await agentsApi.resetSession(agentLookupRef, null, resolvedCompanyId ?? undefined);
+      await agentsApi.update(agentLookupRef, { status: "idle", pauseReason: null, pausedAt: null }, resolvedCompanyId ?? undefined);
+      return agentsApi.invoke(agentLookupRef, resolvedCompanyId ?? undefined);
+    },
+    onSuccess: (data) => {
+      setActionError(null);
+      setConfirmClearError(false);
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agentLookupRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.taskSessions(agentLookupRef) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      }
+      if (data && typeof data === "object" && "id" in data) {
+        navigate(`/agents/${canonicalAgentRef}/runs/${(data as HeartbeatRun).id}`);
+      }
+    },
+    onError: (err) => {
+      setConfirmClearError(false);
+      setActionError(err instanceof Error ? err.message : "Failed to restart agent");
+    },
+  });
+
   const updatePermissions = useMutation({
     mutationFn: (permissions: AgentPermissionUpdate) =>
       agentsApi.updatePermissions(agentLookupRef, permissions, resolvedCompanyId ?? undefined),
@@ -942,6 +971,43 @@ export function AgentDetail() {
             onResume={() => agentAction.mutate("resume")}
             disabled={agentAction.isPending || isPendingApproval}
           />
+          {agent.status === "error" && (
+            confirmClearError ? (
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-destructive font-medium hidden sm:inline">Restart?</span>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={clearErrorAndRestart.isPending}
+                  onClick={() => clearErrorAndRestart.mutate()}
+                >
+                  {clearErrorAndRestart.isPending ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    "Confirm"
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={clearErrorAndRestart.isPending}
+                  onClick={() => setConfirmClearError(false)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={clearErrorAndRestart.isPending}
+                onClick={() => setConfirmClearError(true)}
+              >
+                <AlertTriangle className="h-3.5 w-3.5 text-destructive sm:mr-1" />
+                <span className="hidden sm:inline">Restart Agent</span>
+              </Button>
+            )
+          )}
           <span className="hidden sm:inline"><StatusBadge status={agent.status} /></span>
           {mobileLiveRun && (
             <Link

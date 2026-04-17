@@ -526,7 +526,10 @@ function buildAgentStatusToast(
 
   const agents = queryClient.getQueryData<Agent[]>(queryKeys.agents.list(companyId));
   const agent = agents?.find((a) => a.id === agentId);
-  const body = agent?.title ?? undefined;
+  const errorMessage = readString(payload.errorMessage);
+  const body = status === "error"
+    ? (errorMessage ? truncate(errorMessage, 120) : agent?.title ?? undefined)
+    : (agent?.title ?? undefined);
 
   return {
     title,
