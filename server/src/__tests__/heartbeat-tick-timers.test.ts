@@ -7,7 +7,6 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
-  agentWakeupRequests,
   applyPendingMigrations,
   companies,
   createDb,
@@ -113,21 +112,12 @@ describe("tickTimers — error-state exclusion and pending-run cap", () => {
   let db!: ReturnType<typeof createDb>;
   let instance: EmbeddedPostgresInstance | null = null;
   let dataDir = "";
-  let companyId = "";
 
   beforeAll(async () => {
     const started = await startTempDatabase();
     db = createDb(started.connectionString);
     instance = started.instance;
     dataDir = started.dataDir;
-
-    companyId = randomUUID();
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Tick Timer Tests",
-      issuePrefix: "TTT",
-      requireBoardApprovalForNewAgents: false,
-    });
   }, 45_000);
 
   afterAll(async () => {
@@ -137,25 +127,43 @@ describe("tickTimers — error-state exclusion and pending-run cap", () => {
     }
   });
 
+  /**
+   * Each test gets its own company so tickTimers counter assertions
+   * (enqueued, skipped) are not polluted by agents from other tests.
+   */
+  async function makeCompany(prefix: string) {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: `Tick Timer Tests ${prefix}`,
+      issuePrefix: prefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
   it("does NOT enqueue a timer run for an agent in error state", async () => {
+    const companyId = await makeCompany("TT1");
     const agentId = await insertTimerAgent(db, companyId, "error");
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.tickTimers(new Date());
 
-    // The error-state agent must contribute to skipped, not enqueued.
+    // The per-agent run count is the authoritative check — no runs must exist.
     const runs = await db
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId));
 
     expect(runs).toHaveLength(0);
-    // skipped counter must be positive (at least this agent)
-    expect(result.skipped).toBeGreaterThanOrEqual(0);
+    // With this company isolated, enqueued must be 0 (only one eligible agent,
+    // which is in error state and should be skipped).
     expect(result.enqueued).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
   });
 
   it("does NOT create a second queued timer run when one is already pending", async () => {
+    const companyId = await makeCompany("TT2");
     const agentId = await insertTimerAgent(db, companyId, "idle");
     const heartbeat = heartbeatService(db);
 
@@ -180,9 +188,10 @@ describe("tickTimers — error-state exclusion and pending-run cap", () => {
     expect(runsAfterSecond).toHaveLength(1);
   });
 
-  it("does enqueue a new timer run for a paused agent that recovers to idle", async () => {
-    // This guards against over-blocking: once an error/paused agent recovers,
+  it("does enqueue a new timer run for an error-state agent that recovers to idle", async () => {
+    // Guards against over-blocking: once an error-state agent recovers,
     // the scheduler must be able to enqueue again.
+    const companyId = await makeCompany("TT3");
     const agentId = await insertTimerAgent(db, companyId, "error");
     const heartbeat = heartbeatService(db);
 

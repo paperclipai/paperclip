@@ -4698,6 +4698,21 @@ export function heartbeatService(db: Db) {
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
+
+      // Pre-fetch all agents that already have a queued timer run in a single
+      // query. Used inside the loop to cap pending timer runs at 1 without
+      // issuing N round-trips to the database.
+      const agentsWithPendingTimerRun = await db
+        .selectDistinctOn([heartbeatRuns.agentId], { agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.status, "queued"),
+            eq(heartbeatRuns.invocationSource, "timer"),
+          ),
+        )
+        .then((rows) => new Set(rows.map((r) => r.agentId)));
+
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
@@ -4724,20 +4739,7 @@ export function heartbeatService(db: Db) {
         // this agent it will wake the agent on its own — scheduling another now
         // would cause unbounded queue growth when runs complete faster than the
         // timer interval (e.g. fast-failing agents).
-        const pendingTimerRun = await db
-          .select({ id: heartbeatRuns.id })
-          .from(heartbeatRuns)
-          .where(
-            and(
-              eq(heartbeatRuns.agentId, agent.id),
-              eq(heartbeatRuns.status, "queued"),
-              eq(heartbeatRuns.invocationSource, "timer"),
-            ),
-          )
-          .limit(1)
-          .then((rows) => rows[0] ?? null);
-
-        if (pendingTimerRun) {
+        if (agentsWithPendingTimerRun.has(agent.id)) {
           skipped += 1;
           continue;
         }
