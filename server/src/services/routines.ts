@@ -640,6 +640,31 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  /**
+   * Finds any open execution issue for the routine that has an executionRunId stamped on it,
+   * regardless of whether the heartbeat run is still live. Used as a fallback when the
+   * unique constraint fires but findLiveExecutionIssue returns null — which happens when
+   * the heartbeat run has finished but the agent never closed the issue.
+   */
+  async function findStrandedOpenExecutionIssue(routine: typeof routines.$inferSelect, executor: Db = db) {
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -752,7 +777,11 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb);
+        const activeIssue =
+          (await findLiveExecutionIssue(input.routine, txDb)) ??
+          (input.routine.concurrencyPolicy !== "always_enqueue"
+            ? await findStrandedOpenExecutionIssue(input.routine, txDb)
+            : null);
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           const updated = await finalizeRun(createdRun.id, {
@@ -801,7 +830,9 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb);
+          const existingIssue =
+            (await findLiveExecutionIssue(input.routine, txDb)) ??
+            (await findStrandedOpenExecutionIssue(input.routine, txDb));
           if (!existingIssue) throw error;
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           const updated = await finalizeRun(createdRun.id, {
