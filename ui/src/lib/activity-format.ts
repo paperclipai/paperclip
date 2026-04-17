@@ -60,6 +60,9 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "company.updated": "updated company",
   "company.archived": "archived",
   "company.budget_updated": "updated budget for",
+  "execution_workspace.pull_request_requested": "requested a pull request for",
+  "execution_workspace.pull_request_resolved": "resolved the pull request for",
+  "execution_workspace.pull_request_timed_out": "timed out the pull request for",
 };
 
 const ISSUE_ACTIVITY_LABELS: Record<string, string> = {

@@ -1,12 +1,44 @@
 import type {
   ExecutionWorkspace,
+  ExecutionWorkspacePullRequestRecord,
+  ExecutionWorkspaceStatus,
   ExecutionWorkspaceSummary,
   ExecutionWorkspaceCloseReadiness,
+  PullRequestPolicy,
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
 } from "@paperclipai/shared";
 import { api } from "./client";
 import { sanitizeWorkspaceRuntimeControlTarget } from "./workspace-runtime-control";
+
+export type PullRequestRequestResponse = {
+  workspace: ExecutionWorkspace;
+  pullRequest: ExecutionWorkspacePullRequestRecord;
+  request: {
+    workspaceId: string;
+    projectId: string;
+    sourceIssueId: string | null;
+    branchName: string;
+    baseRef: string;
+    repoUrl: string | null;
+    providerRef: string | null;
+    policy: PullRequestPolicy;
+  };
+};
+
+export type PullRequestResultResponse = {
+  workspaceId: string;
+  pullRequest: ExecutionWorkspacePullRequestRecord;
+  workspaceStatus: ExecutionWorkspaceStatus;
+};
+
+export type PullRequestResultInput = {
+  status: "opened" | "merged" | "failed" | "skipped";
+  url?: string;
+  number?: number;
+  sha?: string;
+  error?: string;
+};
 
 export const executionWorkspacesApi = {
   listSummaries: (
@@ -74,4 +106,8 @@ export const executionWorkspacesApi = {
       sanitizeWorkspaceRuntimeControlTarget(target),
     ),
   update: (id: string, data: Record<string, unknown>) => api.patch<ExecutionWorkspace>(`/execution-workspaces/${id}`, data),
+  requestPullRequest: (id: string) =>
+    api.post<PullRequestRequestResponse>(`/execution-workspaces/${id}/pull-request/request`, {}),
+  recordPullRequestResult: (id: string, input: PullRequestResultInput) =>
+    api.post<PullRequestResultResponse>(`/execution-workspaces/${id}/pull-request/result`, input),
 };
