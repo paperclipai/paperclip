@@ -40,9 +40,27 @@ vi.mock("../adapters/index.ts", async () => {
         if (ctx.config.emitInitialLog !== false) {
           await ctx.onLog?.("stdout", "[test] initial activity\n");
         }
+        const additionalActivityDelaysMs = Array.isArray(ctx.config.additionalActivityDelaysMs)
+          ? ctx.config.additionalActivityDelaysMs
+              .map((value) => Number(value))
+              .filter((value) => Number.isFinite(value) && value >= 0)
+          : [];
+        const scheduledActivityTimers = additionalActivityDelaysMs.map((delayMs, index) =>
+          setTimeout(() => {
+            void ctx.onLog?.("stdout", `[test] follow-up activity ${index + 1}\n`);
+          }, delayMs),
+        );
         return await new Promise((resolve, reject) => {
-          child.once("error", reject);
+          child.once("error", (error) => {
+            for (const timer of scheduledActivityTimers) {
+              clearTimeout(timer);
+            }
+            reject(error);
+          });
           child.once("exit", (exitCode, signal) => {
+            for (const timer of scheduledActivityTimers) {
+              clearTimeout(timer);
+            }
             resolve({
               exitCode,
               signal,
@@ -236,6 +254,48 @@ describeEmbeddedPostgres("heartbeat dual timeout policy", () => {
       .from(issueComments)
       .where(eq(issueComments.issueId, issueId));
     expect(comments.some((comment) => comment.body.includes("terminal reason: `stall`"))).toBe(true);
+  }, 20_000);
+
+  it("keeps a run alive past the stall threshold when qualifying activity continues", async () => {
+    const { agentId } = await seedAgentAndIssue({
+      stallTimeoutSec: 1,
+      absoluteTimeoutSec: 30,
+      emitInitialLog: true,
+      additionalActivityDelaysMs: [1_200],
+    });
+    const heartbeat = heartbeatService(db);
+    const queuedRun = await heartbeat.invoke(agentId, "on_demand", {});
+
+    await heartbeat.resumeQueuedRuns();
+    const initialRun = await waitForRun(
+      heartbeat,
+      queuedRun!.id,
+      (run) => run?.status === "running" && run.lastActivityAt != null && run.processPid != null,
+    );
+    expect(initialRun?.status).toBe("running");
+    expect(initialRun?.lastActivityAt).toBeTruthy();
+
+    const initialLastActivityAt = new Date(initialRun!.lastActivityAt!).getTime();
+    const refreshedRun = await waitForRun(
+      heartbeat,
+      queuedRun!.id,
+      (run) =>
+        run?.status === "running"
+        && run.lastActivityAt != null
+        && new Date(run.lastActivityAt).getTime() > initialLastActivityAt,
+      8_000,
+    );
+    expect(refreshedRun?.status).toBe("running");
+    expect(refreshedRun?.lastActivityAt).toBeTruthy();
+
+    const refreshedLastActivityAt = new Date(refreshedRun!.lastActivityAt!).getTime();
+    expect(refreshedLastActivityAt - initialLastActivityAt).toBeGreaterThanOrEqual(1_000);
+
+    await heartbeat.tickTimers(new Date(refreshedLastActivityAt + 100));
+    const survivingRun = await heartbeat.getRun(queuedRun!.id);
+
+    expect(survivingRun?.status).toBe("running");
+    expect(survivingRun?.errorCode).toBeNull();
   }, 20_000);
 
   it("falls back to absolute ceiling when no qualifying activity was observed", async () => {
