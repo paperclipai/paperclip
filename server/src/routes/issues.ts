@@ -599,6 +599,18 @@ export function issueRoutes(
     });
   });
 
+  // Company-scoped shim: agents often construct /companies/:companyId/issues/:id/...
+  // by pattern-matching from the list/create endpoint. Rewrite to canonical /issues/:id/...
+  // before route matching. The regex requires an issue ID segment after /issues/ so it
+  // does not interfere with GET/POST /companies/:companyId/issues (list & create).
+  router.use((req, _res, next) => {
+    const match = req.url.match(/^\/companies\/[^/]+\/issues\/([^/?]+)(\/[^?]*)?(\?.*)?$/);
+    if (match) {
+      req.url = `/issues/${match[1]}${match[2] || ""}${match[3] || ""}`;
+    }
+    next();
+  });
+
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
