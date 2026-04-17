@@ -378,6 +378,13 @@ export type {
   PluginWebhookDeliveryRecord,
   QuotaWindow,
   ProviderQuotaResult,
+  Rt2DailyLane,
+  Rt2DailyActivityType,
+  Rt2DailyReportCard,
+  Rt2DailyBoard,
+  Rt2DailyActivityEntry,
+  Rt2DailyWikiPage,
+  Rt2DailyWikiAnswer,
 } from "./types/index.js";
 
 export {
@@ -404,6 +411,17 @@ export {
   type UpdateRt2TaskCapacity,
   type EndRt2Participant,
 } from "./validators/rt2-task.js";
+
+export {
+  rt2DailyLaneSchema,
+  rt2DailyReportDateSchema,
+  upsertRt2DailyReportCardSchema,
+  listRt2DailyBoardSchema,
+  queryRt2DailyWikiSchema,
+  type UpsertRt2DailyReportCard,
+  type ListRt2DailyBoard,
+  type QueryRt2DailyWiki,
+} from "./validators/rt2-daily-report.js";
 
 export { workspaceRuntimeControlTargetSchema } from "./validators/execution-workspace.js";
 export {

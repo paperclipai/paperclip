@@ -19,3 +19,4 @@ export { sidebarPreferencesApi } from "./sidebarPreferences";
 export { inboxDismissalsApi } from "./inboxDismissals";
 export { companySkillsApi } from "./companySkills";
 export { rt2TasksApi } from "./rt2-tasks";
+export { rt2DailyReportApi } from "./rt2-daily-report";

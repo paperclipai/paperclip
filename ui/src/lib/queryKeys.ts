@@ -62,6 +62,12 @@ export const queryKeys = {
     detail: (taskIssueId: string) => ["rt2-tasks", "detail", taskIssueId] as const,
     assignableUsers: (taskIssueId: string) => ["rt2-tasks", "assignable-users", taskIssueId] as const,
   },
+  rt2Daily: {
+    board: (companyId: string, projectId: string, userId: string, reportDate: string) =>
+      ["rt2-daily", companyId, projectId, userId, reportDate, "board"] as const,
+    wiki: (companyId: string, projectId: string, userId: string, reportDate: string) =>
+      ["rt2-daily", companyId, projectId, userId, reportDate, "wiki"] as const,
+  },
   routines: {
     list: (companyId: string) => ["routines", companyId] as const,
     detail: (id: string) => ["routines", "detail", id] as const,

@@ -190,6 +190,17 @@ export {
 } from "./rt2-task.js";
 
 export {
+  rt2DailyLaneSchema,
+  rt2DailyReportDateSchema,
+  upsertRt2DailyReportCardSchema,
+  listRt2DailyBoardSchema,
+  queryRt2DailyWikiSchema,
+  type UpsertRt2DailyReportCard,
+  type ListRt2DailyBoard,
+  type QueryRt2DailyWiki,
+} from "./rt2-daily-report.js";
+
+export {
   executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,

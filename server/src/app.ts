@@ -17,6 +17,7 @@ import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { routineRoutes } from "./routes/routines.js";
 import { rt2TaskRoutes } from "./routes/rt2-tasks.js";
+import { rt2DailyReportRoutes } from "./routes/rt2-daily-report.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
@@ -199,6 +200,7 @@ export async function createApp(
     feedbackExportService: opts.feedbackExportService,
   }));
   api.use(rt2TaskRoutes(db));
+  api.use(rt2DailyReportRoutes(db));
   api.use(routineRoutes(db));
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));

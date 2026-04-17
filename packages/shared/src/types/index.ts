@@ -113,6 +113,15 @@ export type {
   Rt2TaskDetail,
 } from "./rt2-task.js";
 export type {
+  Rt2DailyLane,
+  Rt2DailyActivityType,
+  Rt2DailyReportCard,
+  Rt2DailyBoard,
+  Rt2DailyActivityEntry,
+  Rt2DailyWikiPage,
+  Rt2DailyWikiAnswer,
+} from "./rt2-daily-report.js";
+export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueRelation,

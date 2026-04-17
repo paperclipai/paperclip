@@ -357,6 +357,8 @@ export const LIVE_EVENT_TYPES = [
   "rt2.participant.updated",
   "rt2.todo.updated",
   "rt2.deliverable.updated",
+  "rt2.daily-report.updated",
+  "rt2.daily-wiki.updated",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 

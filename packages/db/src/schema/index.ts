@@ -29,6 +29,8 @@ export { goals } from "./goals.js";
 export { issues } from "./issues.js";
 export { rt2V33TaskProfiles } from "./rt2_v33_task_profiles.js";
 export { rt2V33TaskParticipants } from "./rt2_v33_task_participants.js";
+export { rt2V33DailyReportCards } from "./rt2_v33_daily_report_cards.js";
+export { rt2V33DailyWikiPages } from "./rt2_v33_daily_wiki_pages.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineTriggers, routineRuns } from "./routines.js";
 export { issueWorkProducts } from "./issue_work_products.js";

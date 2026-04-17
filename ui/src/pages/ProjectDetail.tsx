@@ -7,6 +7,8 @@ import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
+import { authApi } from "../api/auth";
+import { rt2DailyReportApi } from "../api/rt2-daily-report";
 import { rt2TasksApi } from "../api/rt2-tasks";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -23,6 +25,8 @@ import { StatusBadge } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
 import { IssuesList } from "../components/IssuesList";
+import { Rt2DailyBoard } from "../components/Rt2DailyBoard";
+import { Rt2DailyWikiPanel } from "../components/Rt2DailyWikiPanel";
 import { Rt2TaskList } from "../components/Rt2TaskList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
@@ -36,7 +40,7 @@ import { Loader2 } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "tasks" | "list" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "overview" | "tasks" | "daily" | "wiki" | "list" | "workspaces" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -50,6 +54,8 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (projectsIdx === -1 || segments[projectsIdx + 1] !== projectId) return null;
   const tab = segments[projectsIdx + 2];
   if (tab === "tasks") return "tasks";
+  if (tab === "daily") return "daily";
+  if (tab === "wiki") return "wiki";
   if (tab === "overview") return "overview";
   if (tab === "configuration") return "configuration";
   if (tab === "budget") return "budget";
@@ -248,6 +254,114 @@ function ProjectRt2TasksList({ projectId, companyId }: { projectId: string; comp
           capacity: 1,
         })
       }
+    />
+  );
+}
+
+function resolveCurrentReportDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function ProjectRt2DailySurface({ companyId, projectId }: { companyId: string; projectId: string }) {
+  const queryClient = useQueryClient();
+  const reportDate = resolveCurrentReportDate();
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    retry: false,
+  });
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const boardQueryKey = currentUserId
+    ? queryKeys.rt2Daily.board(companyId, projectId, currentUserId, reportDate)
+    : ["rt2-daily", "board-disabled"] as const;
+  const wikiQueryKey = currentUserId
+    ? queryKeys.rt2Daily.wiki(companyId, projectId, currentUserId, reportDate)
+    : ["rt2-daily", "wiki-disabled"] as const;
+  const { data: board, isLoading, error } = useQuery({
+    queryKey: boardQueryKey,
+    queryFn: () => rt2DailyReportApi.getBoard(companyId, projectId, reportDate),
+    enabled: !!currentUserId,
+  });
+
+  const saveCard = useMutation({
+    mutationFn: ({ todoIssueId, data }: { todoIssueId: string; data: Parameters<typeof rt2DailyReportApi.saveCard>[2] }) =>
+      rt2DailyReportApi.saveCard(companyId, todoIssueId, data),
+    onSuccess: ({ wikiPage }) => {
+      queryClient.setQueryData(wikiQueryKey, wikiPage);
+      queryClient.invalidateQueries({ queryKey: boardQueryKey });
+      queryClient.invalidateQueries({ queryKey: wikiQueryKey });
+    },
+  });
+
+  if (!currentUserId) {
+    return <p className="text-sm text-muted-foreground">일일업무보고서를 보려면 로그인 정보가 필요합니다.</p>;
+  }
+
+  if (isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading daily board...</p>;
+  }
+
+  if (error) {
+    return <p className="text-sm text-destructive">{(error as Error).message}</p>;
+  }
+
+  if (!board) return null;
+
+  return (
+    <Rt2DailyBoard
+      board={board}
+      pendingTodoIssueId={saveCard.isPending ? saveCard.variables?.todoIssueId ?? null : null}
+      onSaveCard={(todoIssueId, data) => saveCard.mutate({ todoIssueId, data })}
+    />
+  );
+}
+
+function ProjectRt2WikiSurface({ companyId, projectId }: { companyId: string; projectId: string }) {
+  const reportDate = resolveCurrentReportDate();
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    retry: false,
+  });
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const wikiQueryKey = currentUserId
+    ? queryKeys.rt2Daily.wiki(companyId, projectId, currentUserId, reportDate)
+    : ["rt2-daily", "wiki-disabled"] as const;
+  const { data: page, isLoading, error } = useQuery({
+    queryKey: wikiQueryKey,
+    queryFn: () => rt2DailyReportApi.getWiki(companyId, projectId, reportDate),
+    enabled: !!currentUserId,
+  });
+
+  const ask = useMutation({
+    mutationFn: (question: "오늘 뭐 했지?") =>
+      rt2DailyReportApi.queryWiki(companyId, {
+        projectId,
+        reportDate,
+        question,
+      }),
+  });
+
+  if (!currentUserId) {
+    return <p className="text-sm text-muted-foreground">위키 확인 화면을 보려면 로그인 정보가 필요합니다.</p>;
+  }
+
+  if (isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading daily wiki...</p>;
+  }
+
+  if (error) {
+    return <p className="text-sm text-destructive">{(error as Error).message}</p>;
+  }
+
+  if (!page) return null;
+
+  return (
+    <Rt2DailyWikiPanel
+      page={page}
+      answer={ask.data ?? null}
+      queryPending={ask.isPending}
+      onAsk={(question) => ask.mutate(question)}
     />
   );
 }
@@ -535,6 +649,14 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/tasks`, { replace: true });
       return;
     }
+    if (activeTab === "daily") {
+      navigate(`/projects/${canonicalProjectRef}/daily`, { replace: true });
+      return;
+    }
+    if (activeTab === "wiki") {
+      navigate(`/projects/${canonicalProjectRef}/wiki`, { replace: true });
+      return;
+    }
     if (activeTab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`, { replace: true });
       return;
@@ -673,6 +795,12 @@ export function ProjectDetail() {
     if (cachedTab === "tasks") {
       return <Navigate to={`/projects/${canonicalProjectRef}/tasks`} replace />;
     }
+    if (cachedTab === "daily") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/daily`} replace />;
+    }
+    if (cachedTab === "wiki") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/wiki`} replace />;
+    }
     if (cachedTab === "configuration") {
       return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
     }
@@ -708,6 +836,10 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/overview`);
     } else if (tab === "tasks") {
       navigate(`/projects/${canonicalProjectRef}/tasks`);
+    } else if (tab === "daily") {
+      navigate(`/projects/${canonicalProjectRef}/daily`);
+    } else if (tab === "wiki") {
+      navigate(`/projects/${canonicalProjectRef}/wiki`);
     } else if (tab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "budget") {
@@ -779,6 +911,8 @@ export function ProjectDetail() {
         <PageTabBar
           items={[
             { value: "tasks", label: "Tasks" },
+            { value: "daily", label: "Daily" },
+            { value: "wiki", label: "Wiki" },
             { value: "list", label: "Issues" },
             { value: "overview", label: "Overview" },
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
@@ -808,6 +942,14 @@ export function ProjectDetail() {
 
       {activeTab === "tasks" && project?.id && resolvedCompanyId && (
         <ProjectRt2TasksList projectId={project.id} companyId={resolvedCompanyId} />
+      )}
+
+      {activeTab === "daily" && project?.id && resolvedCompanyId && (
+        <ProjectRt2DailySurface projectId={project.id} companyId={resolvedCompanyId} />
+      )}
+
+      {activeTab === "wiki" && project?.id && resolvedCompanyId && (
+        <ProjectRt2WikiSurface projectId={project.id} companyId={resolvedCompanyId} />
       )}
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
