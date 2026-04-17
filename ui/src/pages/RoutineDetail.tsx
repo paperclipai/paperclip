@@ -157,14 +157,18 @@ function TriggerEditor({
     replayWindowSec: String(trigger.replayWindowSec ?? 300),
   });
 
+  // Only reset the draft when the trigger identity changes (not on every background refetch)
+  const prevTriggerIdRef = useRef(trigger.id);
   useEffect(() => {
+    if (prevTriggerIdRef.current === trigger.id) return;
+    prevTriggerIdRef.current = trigger.id;
     setDraft({
       label: trigger.label ?? "",
       cronExpression: trigger.cronExpression ?? "",
       signingMode: trigger.signingMode ?? "bearer",
       replayWindowSec: String(trigger.replayWindowSec ?? 300),
     });
-  }, [trigger]);
+  }, [trigger.id, trigger.label, trigger.cronExpression, trigger.signingMode, trigger.replayWindowSec]);
 
   return (
     <div className="rounded-lg border border-border p-4 space-y-4">
