@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: paperclip-harness
+Version: 0.1.0
+Summary: Agent loop harness for the Paperclip ticket→PR pipeline
+Requires-Python: >=3.11
+Requires-Dist: anthropic>=0.49.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-timeout>=2.3; extra == "dev"

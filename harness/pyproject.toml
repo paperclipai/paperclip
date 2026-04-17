@@ -1,0 +1,22 @@
+[project]
+name = "paperclip-harness"
+version = "0.1.0"
+description = "Agent loop harness for the Paperclip ticket→PR pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.49.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 30
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
