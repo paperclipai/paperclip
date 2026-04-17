@@ -2166,6 +2166,22 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
+      // Structured logging for all status transitions
+      const logLevel = status === "failed" ? "error" : status === "succeeded" ? "info" : "debug";
+      const logData = {
+        runId: updated.id,
+        agentId: updated.agentId,
+        status: updated.status,
+        invocationSource: updated.invocationSource,
+        triggerDetail: updated.triggerDetail,
+        ...(updated.error ? { error: updated.error } : {}),
+        ...(updated.errorCode ? { errorCode: updated.errorCode } : {}),
+        ...(updated.startedAt ? { startedAt: new Date(updated.startedAt).toISOString() } : {}),
+        ...(updated.finishedAt ? { finishedAt: new Date(updated.finishedAt).toISOString() } : {}),
+      };
+
+      logger[logLevel](logData, `heartbeat run status → ${status}`);
+
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -2717,6 +2733,19 @@ export function heartbeatService(db: Db) {
       .returning()
       .then((rows) => rows[0] ?? null);
     if (!claimed) return null;
+
+    // Structured logging for run claim
+    const taskId = readNonEmptyString(context.issueId) || readNonEmptyString(context.taskId);
+    logger.info(
+      {
+        runId: claimed.id,
+        agentId: claimed.agentId,
+        invocationSource: claimed.invocationSource,
+        ...(taskId ? { taskId } : {}),
+        ...(claimed.triggerDetail ? { triggerDetail: claimed.triggerDetail } : {}),
+      },
+      "heartbeat run claimed and started"
+    );
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -4005,6 +4034,25 @@ export function heartbeatService(db: Db) {
       } else {
         outcome = "failed";
       }
+
+      // Structured logging for adapter execution completion
+      const taskId = issueContext?.id || readNonEmptyString(context.issueId) || readNonEmptyString(context.taskId);
+      logger.info(
+        {
+          runId: run.id,
+          agentId: agent.id,
+          outcome,
+          exitCode: adapterResult.exitCode ?? 0,
+          ...(taskId ? { taskId } : {}),
+          ...(adapterResult.errorMessage ? { errorMessage: adapterResult.errorMessage } : {}),
+          ...(adapterResult.errorCode ? { errorCode: adapterResult.errorCode } : {}),
+          ...(rawUsage?.inputTokens ? { inputTokens: rawUsage.inputTokens } : {}),
+          ...(rawUsage?.cachedInputTokens ? { cachedInputTokens: rawUsage.cachedInputTokens } : {}),
+          ...(rawUsage?.outputTokens ? { outputTokens: rawUsage.outputTokens } : {}),
+          ...(adapterResult.costUsd ? { costUsd: adapterResult.costUsd } : {}),
+        },
+        `adapter execution completed: ${outcome}`
+      );
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
