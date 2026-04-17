@@ -5,13 +5,30 @@ import { issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
+  pullRequestResultRequestSchema,
   updateExecutionWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
+  type ExecutionWorkspace,
+  type ExecutionWorkspacePullRequestRecord,
+  type PullRequestPolicy,
 } from "@paperclipai/shared";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
+import {
+  applyPullRequestResult,
+  buildPullRequestRequestRecord,
+  mergePullRequestRecordIntoMetadata,
+  pullRequestRequestResponse,
+  readPullRequestRecord,
+} from "../services/execution-workspaces.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
-import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
+import {
+  parseProjectExecutionWorkspacePolicy,
+  pullRequestPolicyBlocksArchive,
+  pullRequestPolicyRequestsAutoOpen,
+} from "../services/execution-workspace-policy.js";
+import { onPullRequestRequested } from "../services/execution-workspace-timeout.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -434,6 +451,144 @@ export function executionWorkspaceRoutes(db: Db) {
   router.post("/execution-workspaces/:id/runtime-services/:action", validate(workspaceRuntimeControlTargetSchema), handleExecutionWorkspaceRuntimeCommand);
   router.post("/execution-workspaces/:id/runtime-commands/:action", validate(workspaceRuntimeControlTargetSchema), handleExecutionWorkspaceRuntimeCommand);
 
+  async function loadEffectivePullRequestPolicy(workspace: ExecutionWorkspace): Promise<PullRequestPolicy | null> {
+    if (!workspace.projectId) return null;
+    const projectPolicy = await db
+      .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+      .from(projects)
+      .where(and(eq(projects.id, workspace.projectId), eq(projects.companyId, workspace.companyId)))
+      .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy));
+    return projectPolicy?.pullRequestPolicy ?? null;
+  }
+
+  async function persistPullRequestRecord(
+    workspace: ExecutionWorkspace,
+    record: ExecutionWorkspacePullRequestRecord | null,
+    extraPatch: Record<string, unknown> = {},
+  ) {
+    const mergedMetadata = mergePullRequestRecordIntoMetadata(workspace.metadata, record);
+    const updated = await svc.update(workspace.id, {
+      ...extraPatch,
+      metadata: mergedMetadata,
+    });
+    return updated ?? workspace;
+  }
+
+  async function emitPullRequestEvent(
+    req: Request,
+    workspace: ExecutionWorkspace,
+    action:
+      | "pull_request_requested"
+      | "pull_request_resolved"
+      | "pull_request_timed_out",
+    details: Record<string, unknown>,
+  ) {
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: workspace.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: `execution_workspace.${action}`,
+      entityType: "execution_workspace",
+      entityId: workspace.id,
+      details,
+    });
+  }
+
+  router.post("/execution-workspaces/:id/pull-request/request", async (req, res) => {
+    const id = req.params.id as string;
+    const workspace = await svc.getById(id);
+    if (!workspace) throw notFound("Execution workspace not found");
+    assertCompanyAccess(req, workspace.companyId);
+
+    const existingRecord = readPullRequestRecord(workspace.metadata);
+    if (existingRecord) {
+      const response = pullRequestRequestResponse(workspace, existingRecord);
+      res.status(200).json({ workspace, pullRequest: existingRecord, request: response });
+      return;
+    }
+
+    const policy = await loadEffectivePullRequestPolicy(workspace);
+    if (!policy || !pullRequestPolicyRequestsAutoOpen(policy)) {
+      throw conflict(
+        "Project pullRequestPolicy must enable autoOpen or requireResultBeforeArchive before a PR can be requested",
+      );
+    }
+    if (!workspace.branchName) throw conflict("Execution workspace has no branchName to push");
+    if (!workspace.baseRef) throw conflict("Execution workspace has no baseRef to target");
+    if (workspace.status === "archived" && !existingRecord) {
+      throw unprocessable(
+        "Cannot replay a pull-request request for a workspace that archived before the feature was enabled",
+      );
+    }
+
+    const built = buildPullRequestRequestRecord(policy, null);
+    const statusPatch = built.mode === "blocking" && workspace.status !== "archived"
+      ? { status: "in_review" as const }
+      : {};
+    const nextWorkspace = await persistPullRequestRecord(workspace, built.record, statusPatch);
+    const response = pullRequestRequestResponse(nextWorkspace, built.record);
+    onPullRequestRequested({
+      db,
+      companyId: nextWorkspace.companyId,
+      workspaceId: nextWorkspace.id,
+      record: built.record,
+    });
+    await emitPullRequestEvent(req, nextWorkspace, "pull_request_requested", {
+      mode: built.mode,
+      requestedAt: built.requestedAt,
+      sourceIssueId: nextWorkspace.sourceIssueId,
+      branchName: nextWorkspace.branchName,
+      baseRef: nextWorkspace.baseRef,
+      repoUrl: nextWorkspace.repoUrl,
+      providerRef: nextWorkspace.providerRef,
+      policy,
+    });
+    res.status(200).json({ workspace: nextWorkspace, pullRequest: built.record, request: response });
+  });
+
+  router.post(
+    "/execution-workspaces/:id/pull-request/result",
+    validate(pullRequestResultRequestSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const workspace = await svc.getById(id);
+      if (!workspace) throw notFound("Execution workspace not found");
+      assertCompanyAccess(req, workspace.companyId);
+
+      const existingRecord = readPullRequestRecord(workspace.metadata);
+      if (!existingRecord) {
+        throw conflict("No pending pull-request record on this execution workspace");
+      }
+      if (existingRecord.status === "merged" || existingRecord.status === "failed" ||
+          existingRecord.status === "skipped") {
+        throw unprocessable(
+          `Cannot transition pull-request record from terminal status "${existingRecord.status}"`,
+        );
+      }
+
+      const result = applyPullRequestResult(existingRecord, workspace.status, req.body);
+      const statusPatch = result.workspaceStatus !== workspace.status
+        ? { status: result.workspaceStatus }
+        : {};
+      const nextWorkspace = await persistPullRequestRecord(workspace, result.record, statusPatch);
+      await emitPullRequestEvent(req, nextWorkspace, "pull_request_resolved", {
+        mode: result.record.mode,
+        source: "consumer_result",
+        previousStatus: result.previousStatus,
+        nextStatus: result.record.status,
+        workspaceStatus: result.workspaceStatus,
+      });
+      res.status(200).json({
+        workspaceId: nextWorkspace.id,
+        pullRequest: result.record,
+        workspaceStatus: result.workspaceStatus,
+      });
+    },
+  );
+
   router.patch("/execution-workspaces/:id", validate(updateExecutionWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
@@ -489,6 +644,91 @@ export function executionWorkspaceRoutes(db: Db) {
           closeReadiness: readiness,
         });
         return;
+      }
+
+      const pullRequestPolicy = await loadEffectivePullRequestPolicy(existing);
+      const existingPullRequestRecord = readPullRequestRecord(
+        ((patch.metadata as Record<string, unknown> | null | undefined) ?? (existing.metadata as Record<string, unknown> | null)) ?? null,
+      );
+      const wantsAutoInvoke =
+        pullRequestPolicy !== null &&
+        pullRequestPolicyRequestsAutoOpen(pullRequestPolicy) &&
+        Boolean(existing.branchName) &&
+        Boolean(existing.baseRef) &&
+        !existingPullRequestRecord;
+
+      // Blocking mode with an in-flight non-terminal record: archive is deferred.
+      if (existingPullRequestRecord?.mode === "blocking" &&
+          (existingPullRequestRecord.status === "requested" ||
+           existingPullRequestRecord.status === "opened")) {
+        res.status(409).json({
+          error:
+            `Pull-request record is still ${existingPullRequestRecord.status}. ` +
+            "POST /execution-workspaces/:id/pull-request/result to resolve it before archiving.",
+          pullRequest: existingPullRequestRecord,
+        });
+        return;
+      }
+
+      // Auto-invoke path: policy wants a request and no record exists yet.
+      if (wantsAutoInvoke && pullRequestPolicy) {
+        const built = buildPullRequestRequestRecord(pullRequestPolicy, null);
+        const blocking = pullRequestPolicyBlocksArchive(pullRequestPolicy);
+        const nextMetadata = mergePullRequestRecordIntoMetadata(
+          (patch.metadata as Record<string, unknown> | null | undefined) ?? existing.metadata ?? null,
+          built.record,
+        );
+        if (blocking) {
+          const parked = await svc.update(id, { ...patch, metadata: nextMetadata, status: "in_review" });
+          if (!parked) {
+            res.status(404).json({ error: "Execution workspace not found" });
+            return;
+          }
+          onPullRequestRequested({
+            db,
+            companyId: parked.companyId,
+            workspaceId: parked.id,
+            record: built.record,
+          });
+          await emitPullRequestEvent(req, parked, "pull_request_requested", {
+            mode: "blocking",
+            requestedAt: built.requestedAt,
+            sourceIssueId: parked.sourceIssueId,
+            branchName: parked.branchName,
+            baseRef: parked.baseRef,
+            repoUrl: parked.repoUrl,
+            providerRef: parked.providerRef,
+            policy: pullRequestPolicy,
+          });
+          res.status(202).json({
+            workspace: parked,
+            pullRequest: built.record,
+            message:
+              "Workspace parked in in_review pending pull-request result. POST /pull-request/result to proceed.",
+          });
+          return;
+        }
+        // fire-and-forget: stamp the record on the patch metadata, then let
+        // the normal archive flow proceed below.
+        patch.metadata = nextMetadata;
+        // Deferred emission: we still need to log the request before moving on.
+        const parkedForEvent = { ...existing, metadata: nextMetadata } as ExecutionWorkspace;
+        onPullRequestRequested({
+          db,
+          companyId: parkedForEvent.companyId,
+          workspaceId: parkedForEvent.id,
+          record: built.record,
+        });
+        await emitPullRequestEvent(req, parkedForEvent, "pull_request_requested", {
+          mode: "fire_and_forget",
+          requestedAt: built.requestedAt,
+          sourceIssueId: parkedForEvent.sourceIssueId,
+          branchName: parkedForEvent.branchName,
+          baseRef: parkedForEvent.baseRef,
+          repoUrl: parkedForEvent.repoUrl,
+          providerRef: parkedForEvent.providerRef,
+          policy: pullRequestPolicy,
+        });
       }
 
       const closedAt = new Date();
