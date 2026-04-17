@@ -235,6 +235,70 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("does not recreate the mention decoration observer when the external value changes", async () => {
+    const originalMutationObserver = globalThis.MutationObserver;
+
+    class MockMutationObserver implements MutationObserver {
+      static instances: MockMutationObserver[] = [];
+
+      readonly observe = vi.fn();
+      readonly disconnect = vi.fn();
+      readonly takeRecords = vi.fn<() => MutationRecord[]>(() => []);
+
+      constructor(readonly callback: MutationCallback) {
+        MockMutationObserver.instances.push(this);
+      }
+    }
+
+    vi.stubGlobal("MutationObserver", MockMutationObserver);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <MarkdownEditor
+            value="First value"
+            onChange={() => {}}
+            placeholder="Markdown body"
+          />,
+        );
+      });
+
+      await flush();
+      const editable = container.querySelector('[contenteditable="true"]');
+      expect(editable).not.toBeNull();
+      const mentionObserverCountAfterInitialRender = MockMutationObserver.instances.filter(
+        (observer) => observer.observe.mock.calls.some(([target]) => target === editable),
+      ).length;
+
+      await act(async () => {
+        root.render(
+          <MarkdownEditor
+            value="Updated value"
+            onChange={() => {}}
+            placeholder="Markdown body"
+          />,
+        );
+      });
+
+      await flush();
+
+      // A separate rich-editor health observer is expected to recreate when the
+      // controlled value changes. This assertion only covers the mention
+      // decoration observer that attaches to the editable element itself.
+      expect(
+        MockMutationObserver.instances.filter(
+          (observer) => observer.observe.mock.calls.some(([target]) => target === editable),
+        ),
+      ).toHaveLength(mentionObserverCountAfterInitialRender);
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+      vi.stubGlobal("MutationObserver", originalMutationObserver);
+    }
+  });
+
   it("converts advisory-style html image tags to markdown image syntax before mounting the editor", async () => {
     const root = createRoot(container);
 

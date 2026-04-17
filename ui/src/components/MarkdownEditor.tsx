@@ -822,17 +822,39 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   useEffect(() => {
     const editable = containerRef.current?.querySelector('[contenteditable="true"]');
     if (!editable) return;
-    decorateProjectMentions();
-    const observer = new MutationObserver(() => {
+    let frameId: number | null = null;
+    let disposed = false;
+    const observe = () => {
+      observer.observe(editable, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      });
+    };
+    const flushDecorations = () => {
+      frameId = null;
+      if (disposed) return;
+      observer.disconnect();
       decorateProjectMentions();
+      if (!disposed) observe();
+    };
+    const scheduleDecorations = () => {
+      if (frameId !== null) return;
+      frameId = requestAnimationFrame(flushDecorations);
+    };
+    const observer = new MutationObserver(() => {
+      scheduleDecorations();
     });
-    observer.observe(editable, {
-      subtree: true,
-      childList: true,
-      characterData: true,
-    });
-    return () => observer.disconnect();
-  }, [decorateProjectMentions, value]);
+
+    flushDecorations();
+    return () => {
+      disposed = true;
+      observer.disconnect();
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId);
+      }
+    };
+  }, [decorateProjectMentions]);
 
   const selectMention = useCallback(
     (option: AutocompleteOption) => {
