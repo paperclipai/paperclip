@@ -59,6 +59,14 @@ BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
   docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
+When up for the first time, setup via onboard:
+
+```sh
+docker exec -it docker-paperclip-1 bash
+su node
+npm run paperclipai onboard
+```
+
 Defaults:
 
 - host port: `3100`
