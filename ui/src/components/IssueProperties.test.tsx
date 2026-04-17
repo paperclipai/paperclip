@@ -229,6 +229,27 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("shows the current issue reference in properties", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({ id: "issue-abc12345", identifier: "PAP-123" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Issue");
+    expect(container.textContent).toContain("PAP-123");
+    const issueLink = container.querySelector('a[href="/issues/PAP-123"]');
+    expect(issueLink).not.toBeNull();
+    const issueLabelIndex = container.textContent?.indexOf("Issue") ?? -1;
+    const statusLabelIndex = container.textContent?.indexOf("Status") ?? -1;
+    expect(issueLabelIndex).toBeGreaterThanOrEqual(0);
+    expect(statusLabelIndex).toBeGreaterThanOrEqual(0);
+    expect(issueLabelIndex).toBeLessThan(statusLabelIndex);
+
+    act(() => root.unmount());
+  });
+
   it("shows an add-label button when labels already exist and opens the picker", async () => {
     const root = renderProperties(container, {
       issue: createIssue({

@@ -1116,7 +1116,11 @@ export function IssueDetail() {
     () => mergeIssueComments(comments ?? [], optimisticComments),
     [comments, optimisticComments],
   );
-  const breadcrumbTitle = issue?.title ?? issueId ?? "Issue";
+  const breadcrumbTitle = useMemo(() => {
+    const issueRef = issue?.identifier ?? issue?.id.slice(0, 8) ?? issueId ?? "Issue";
+    const titleLabel = issue?.title ?? "Issue";
+    return `${issueRef}: ${titleLabel}`;
+  }, [issue?.id, issue?.identifier, issue?.title, issueId]);
 
   const invalidateIssueDetail = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
@@ -1759,11 +1763,12 @@ export function IssueDetail() {
   useEffect(() => {
     setBreadcrumbs([
       sourceBreadcrumb,
-      { label: hasLiveRuns ? `🔵 ${breadcrumbTitle}` : breadcrumbTitle },
+      { label: hasLiveRuns ? `🔵 ${breadcrumbTitle}` : breadcrumbTitle, status: issue?.status },
     ]);
   }, [
     breadcrumbTitle,
     hasLiveRuns,
+    issue?.status,
     setBreadcrumbs,
     sourceBreadcrumb.href,
     sourceBreadcrumb.label,

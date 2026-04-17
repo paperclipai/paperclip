@@ -3,6 +3,7 @@ import { Menu } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
+import { StatusIcon } from "./StatusIcon";
 import { Button } from "@/components/ui/button";
 import {
   Breadcrumb,
@@ -75,12 +76,14 @@ export function BreadcrumbBar() {
 
   // Single breadcrumb = page title (uppercase)
   if (breadcrumbs.length === 1) {
+    const crumb = breadcrumbs[0]!;
     return (
       <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
         {menuButton}
         <div className="min-w-0 overflow-hidden flex-1">
-          <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
-            {breadcrumbs[0].label}
+          <h1 className="text-sm font-semibold uppercase tracking-wider truncate inline-flex items-center gap-1.5">
+            {crumb.status ? <StatusIcon status={crumb.status} className="h-3.5 w-3.5" /> : null}
+            <span className="truncate">{crumb.label}</span>
           </h1>
         </div>
         {globalToolbarSlots}
@@ -102,10 +105,16 @@ export function BreadcrumbBar() {
                   {i > 0 && <BreadcrumbSeparator />}
                   <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
                     {isLast || !crumb.href ? (
-                      <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
+                      <BreadcrumbPage className="truncate inline-flex items-center gap-1.5">
+                        {crumb.status ? <StatusIcon status={crumb.status} className="h-3.5 w-3.5" /> : null}
+                        <span className="truncate">{crumb.label}</span>
+                      </BreadcrumbPage>
                     ) : (
                       <BreadcrumbLink asChild>
-                        <Link to={crumb.href}>{crumb.label}</Link>
+                        <Link to={crumb.href} className="inline-flex items-center gap-1.5">
+                          {crumb.status ? <StatusIcon status={crumb.status} className="h-3.5 w-3.5" /> : null}
+                          <span className="truncate">{crumb.label}</span>
+                        </Link>
                       </BreadcrumbLink>
                     )}
                   </BreadcrumbItem>
