@@ -43,6 +43,7 @@ const COMPLETED_STATUS: IssueExecutionState["status"] = "completed";
 const PENDING_STATUS: IssueExecutionState["status"] = "pending";
 const CHANGES_REQUESTED_STATUS: IssueExecutionState["status"] = "changes_requested";
 
+/** Parses, validates, and deduplicates an issue execution policy input, returning null if empty or invalid. */
 export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
   if (input == null) return null;
   const parsed = issueExecutionPolicySchema.safeParse(input);
@@ -89,6 +90,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   };
 }
 
+/** Parses a raw value into a typed IssueExecutionState, returning null if the input is absent or invalid. */
 export function parseIssueExecutionState(input: unknown): IssueExecutionState | null {
   if (input == null) return null;
   const parsed = issueExecutionStateSchema.safeParse(input);
@@ -96,6 +98,7 @@ export function parseIssueExecutionState(input: unknown): IssueExecutionState | 
   return parsed.data;
 }
 
+/** Derives an IssueExecutionStagePrincipal from an assignee-like object, returning null if no assignee is set. */
 export function assigneePrincipal(input: AssigneeLike): IssueExecutionStagePrincipal | null {
   if (input.assigneeAgentId) {
     return { type: "agent", agentId: input.assigneeAgentId, userId: null };
@@ -284,6 +287,7 @@ function canAutoSkipPendingStage(input: {
     input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
 }
 
+/** Computes the issue field patch required to advance or enforce an execution-policy workflow stage transition. */
 export function applyIssueExecutionPolicyTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
   const existingState = parseIssueExecutionState(input.issue.executionState);

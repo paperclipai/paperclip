@@ -15,6 +15,7 @@ function shouldExposeFullHealthDetails(
   return actorType === "board" || actorType === "agent";
 }
 
+/** Creates the Express router for health check and status endpoints. */
 export function healthRoutes(
   db?: Db,
   opts: {

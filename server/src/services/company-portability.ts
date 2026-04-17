@@ -2691,6 +2691,7 @@ function normalizeGitHubSourcePath(value: string | null | undefined) {
   return value.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 }
 
+/** Parses a GitHub source URL into its hostname, owner, repo, ref, and path components. */
 export function parseGitHubSourceUrl(rawUrl: string) {
   const url = new URL(rawUrl);
   if (url.protocol !== "https:") {
@@ -2742,6 +2743,7 @@ export function parseGitHubSourceUrl(rawUrl: string) {
 }
 
 
+/** Creates the company portability service for importing and exporting company data bundles. */
 export function companyPortabilityService(db: Db, storage?: StorageService) {
   const companies = companyService(db);
   const agents = agentService(db);
