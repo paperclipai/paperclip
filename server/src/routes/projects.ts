@@ -9,9 +9,10 @@ import {
 } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
-import { conflict } from "../errors.js";
+import { projectService, logActivity, issueService, secretService, workspaceOperationService } from "../services/index.js";
+import { badRequest, conflict, unprocessable } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { listFiles, readFile, writeFile } from "../services/workspace-files.js";
 import { startRuntimeServicesForWorkspaceControl, stopRuntimeServicesForProjectWorkspace } from "../services/workspace-runtime.js";
 import { getTelemetryClient } from "../telemetry.js";
 
@@ -457,6 +458,169 @@ export function projectRoutes(db: Db) {
     });
 
     res.json(project);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Workspace file endpoints — operate on the project's primary workspace cwd
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Resolve the primary workspace `cwd` for a project, or respond with an
+   * appropriate error status and return `null`.
+   */
+  async function resolvePrimaryWorkspaceCwd(
+    req: Request,
+    res: import("express").Response,
+  ): Promise<{ project: NonNullable<Awaited<ReturnType<typeof svc.getById>>>; cwd: string } | null> {
+    const id = req.params.id as string;
+    const project = await svc.getById(id);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return null;
+    }
+    assertCompanyAccess(req, project.companyId);
+    const workspace = project.primaryWorkspace;
+    if (!workspace || !workspace.cwd) {
+      res.status(422).json({ error: "Project has no workspace with a local path" });
+      return null;
+    }
+    return { project, cwd: workspace.cwd };
+  }
+
+  // GET /projects/:id/workspace/files — list directory contents
+  router.get("/projects/:id/workspace/files", async (req, res) => {
+    const ctx = await resolvePrimaryWorkspaceCwd(req, res);
+    if (!ctx) return;
+
+    const requestedPath = typeof req.query.path === "string" ? req.query.path : ".";
+    const depth = Math.min(Math.max(parseInt(String(req.query.depth), 10) || 1, 1), 10);
+
+    try {
+      const entries = await listFiles(ctx.cwd, requestedPath, depth);
+      res.json({ entries });
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      if (code === "BAD_PATH") {
+        res.status(400).json({ error: (err as Error).message });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  // GET /projects/:id/workspace/files/read — read a text file
+  router.get("/projects/:id/workspace/files/read", async (req, res) => {
+    const ctx = await resolvePrimaryWorkspaceCwd(req, res);
+    if (!ctx) return;
+
+    const requestedPath = typeof req.query.path === "string" ? req.query.path : "";
+    if (!requestedPath) {
+      res.status(400).json({ error: "Query parameter 'path' is required" });
+      return;
+    }
+
+    try {
+      const result = await readFile(ctx.cwd, requestedPath);
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: ctx.project.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "workspace.file.read",
+        entityType: "project",
+        entityId: ctx.project.id,
+        details: { path: result.path, size: result.size },
+      });
+
+      res.json(result);
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      if (code === "BAD_PATH") {
+        res.status(400).json({ error: (err as Error).message });
+        return;
+      }
+      if (code === "NOT_FOUND") {
+        res.status(404).json({ error: (err as Error).message });
+        return;
+      }
+      if (code === "NOT_FILE") {
+        res.status(400).json({ error: (err as Error).message });
+        return;
+      }
+      if (code === "BINARY") {
+        res.status(422).json({ error: (err as Error).message });
+        return;
+      }
+      if (code === "TOO_LARGE") {
+        res.status(413).json({ error: (err as Error).message });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  // POST /projects/:id/workspace/files/write — write a text file
+  router.post("/projects/:id/workspace/files/write", async (req, res) => {
+    const ctx = await resolvePrimaryWorkspaceCwd(req, res);
+    if (!ctx) return;
+
+    const { path: filePath, content, issueId } = req.body as {
+      path?: string;
+      content?: string;
+      issueId?: string;
+    };
+
+    if (!filePath || typeof filePath !== "string") {
+      throw badRequest("Body field 'path' is required");
+    }
+    if (typeof content !== "string") {
+      throw badRequest("Body field 'content' is required and must be a string");
+    }
+
+    // Agent callers must include issueId; board callers: optional
+    const actor = getActorInfo(req);
+    if (actor.actorType === "agent") {
+      if (!issueId || typeof issueId !== "string") {
+        throw badRequest("Agent callers must include 'issueId' in the request body");
+      }
+      const issueSvc = issueService(db);
+      const issue = await issueSvc.getById(issueId);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+    }
+
+    try {
+      const result = await writeFile(ctx.cwd, filePath, content);
+
+      await logActivity(db, {
+        companyId: ctx.project.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "workspace.file.written",
+        entityType: "project",
+        entityId: ctx.project.id,
+        details: { path: result.path, size: result.size, issueId: issueId ?? null },
+      });
+
+      res.json(result);
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      if (code === "BAD_PATH") {
+        res.status(400).json({ error: (err as Error).message });
+        return;
+      }
+      if (code === "TOO_LARGE") {
+        res.status(413).json({ error: (err as Error).message });
+        return;
+      }
+      throw err;
+    }
   });
 
   return router;
