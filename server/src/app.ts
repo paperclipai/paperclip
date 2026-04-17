@@ -193,8 +193,9 @@ export async function createApp(
     }),
   );
   const portabilityService = companyPortabilityService(db, opts.storageService);
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const templateRegistry = createTemplateRegistry(
-    path.resolve(process.cwd(), "docs/templates/registry.json"),
+    path.resolve(__dirname, "../../docs/templates/registry.json"),
   );
   api.use("/companies", companyRoutes(db, opts.storageService, portabilityService));
   api.use("/templates", templateRoutes({
@@ -301,7 +302,6 @@ export async function createApp(
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
 
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
     // Try published location first (server/ui-dist/), then monorepo dev location (../../ui/dist)
     const candidates = [

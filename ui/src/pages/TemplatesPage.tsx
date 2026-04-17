@@ -41,6 +41,7 @@ export function TemplatesPage() {
             company={company}
             onInstall={(slug) => install.mutate(slug)}
             installing={install.isPending && install.variables === company.slug}
+            disabled={install.isPending}
           />
         ))}
       </div>

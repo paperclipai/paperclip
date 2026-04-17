@@ -38,7 +38,7 @@ export function templateRoutes(deps: {
       const registry = await deps.registry.get();
       res.json({ companies: registry.companies });
     } catch (err) {
-      res.status(503).json({ error: "registry unavailable", detail: (err as Error).message });
+      res.status(503).json({ error: "registry unavailable" });
     }
   });
 
@@ -90,7 +90,7 @@ export function templateRoutes(deps: {
       const registry = await deps.registry.get();
       res.json({ ok: true, companies: registry.companies.length });
     } catch (err) {
-      res.status(503).json({ error: "registry reload failed", detail: (err as Error).message });
+      res.status(503).json({ error: "registry reload failed" });
     }
   });
 

@@ -5,9 +5,10 @@ interface Props {
   company: TemplateCompany;
   onInstall: (slug: string) => void;
   installing: boolean;
+  disabled?: boolean;
 }
 
-export function CompanyCard({ company, onInstall, installing }: Props) {
+export function CompanyCard({ company, onInstall, installing, disabled = false }: Props) {
   return (
     <div className="rounded-lg border p-4 flex flex-col gap-3">
       <div>
@@ -28,7 +29,7 @@ export function CompanyCard({ company, onInstall, installing }: Props) {
       )}
       <Button
         onClick={() => onInstall(company.slug)}
-        disabled={installing}
+        disabled={installing || disabled}
         className="mt-auto"
       >
         {installing ? "Installing…" : "Install"}
