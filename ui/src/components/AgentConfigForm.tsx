@@ -904,6 +904,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 )}
                 onChange={(v) => mark("heartbeat", "wakeOnDemand", v)}
               />
+              <ToggleField
+                label="Skip heartbeat if no actionable assignments"
+                hint="On timer-triggered wakes, skip the LLM invocation entirely when the agent has no assigned issues in todo or backlog status. Issues in in_progress, in_review, blocked, done, or cancelled do not count. Prevents token burn on blocked or stalled work. Event-triggered wakes (assignments, on-demand) are unaffected."
+                checked={eff(
+                  "heartbeat",
+                  "skipIfNoActionableAssignments",
+                  !!heartbeat.skipIfNoActionableAssignments,
+                )}
+                onChange={(v) => mark("heartbeat", "skipIfNoActionableAssignments", v)}
+              />
               <Field label="Cooldown (sec)" hint={help.cooldownSec}>
                 <DraftNumberInput
                   value={eff(
