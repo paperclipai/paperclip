@@ -123,7 +123,7 @@ describe("pull-request routes", () => {
     }));
   });
 
-  it("POST /pull-request/request returns the existing record idempotently", async () => {
+  it("POST /pull-request/request returns the existing record without re-emitting once the PR has moved past requested", async () => {
     const existing = makeWorkspace({
       metadata: {
         pullRequest: {
@@ -143,6 +143,67 @@ describe("pull-request routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.pullRequest.status).toBe("opened");
     expect(res.body.pullRequest.url).toBe("https://git.example.com/pr/1");
+    expect(res.body.replayed).toBe(false);
+    expect(mockExecutionWorkspaceService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("POST /pull-request/request re-emits when an existing record is still in requested (Greptile P1)", async () => {
+    // Replay path: the operator pressed Replay request because a
+    // consumer is stuck. The route must re-emit
+    // `pull_request_requested` so subscribed consumers get a fresh
+    // notification, not silently return the existing record.
+    const existing = makeWorkspace({
+      branchName: "feat/x",
+      baseRef: "main",
+      metadata: {
+        pullRequest: {
+          status: "requested",
+          mode: "blocking",
+          requestedAt: "2026-01-01T00:00:00.000Z",
+          policy: { requireResultBeforeArchive: true, autoOpen: true },
+        },
+      },
+    });
+    mockExecutionWorkspaceService.getById.mockResolvedValue(existing);
+
+    const res = await request(await createApp())
+      .post("/api/execution-workspaces/workspace-1/pull-request/request")
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.replayed).toBe(true);
+
+    const requestedCall = mockLogActivity.mock.calls.find(
+      ([, input]: [unknown, { action?: string }]) =>
+        input.action === "execution_workspace.pull_request_requested",
+    );
+    expect(requestedCall).toBeDefined();
+    const [, input] = requestedCall as [unknown, Record<string, unknown>];
+    expect((input.details as any).replay).toBe(true);
+    expect((input.details as any).requestedAt).toBe("2026-01-01T00:00:00.000Z");
+    // Record itself is untouched: no svc.update call.
+    expect(mockExecutionWorkspaceService.update).not.toHaveBeenCalled();
+  });
+
+  it("POST /pull-request/request rejects shared workspaces (Greptile P2 #4)", async () => {
+    // Shared workspaces are excluded from getCloseReadiness's PR
+    // planned actions and from auto-invoke in PATCH archive. The
+    // /request route must mirror that guard so an operator cannot
+    // park a shared workspace into in_review and then trigger
+    // runArchiveSideEffects (which detaches every linked issue) on
+    // it. The guard runs ahead of the policy load so the response
+    // is a clean 409 even when there is no project policy at all.
+    const sharedWorkspace = makeWorkspace({
+      mode: "shared_workspace",
+      metadata: null,
+    });
+    mockExecutionWorkspaceService.getById.mockResolvedValue(sharedWorkspace);
+
+    const res = await request(await createApp())
+      .post("/api/execution-workspaces/workspace-1/pull-request/request")
+      .send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("shared workspaces");
     expect(mockExecutionWorkspaceService.update).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });

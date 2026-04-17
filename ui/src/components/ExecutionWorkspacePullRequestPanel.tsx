@@ -57,9 +57,26 @@ export function ExecutionWorkspacePullRequestPanel({
 
   const replayMutation = useMutation({
     mutationFn: () => executionWorkspacesApi.requestPullRequest(workspace.id),
-    onSuccess: () => {
+    onSuccess: (response) => {
       invalidate();
-      pushToast({ title: "Replayed pull-request request", tone: "success" });
+      // The server only re-emits `pull_request_requested` when the
+      // record is still in `requested`. Reflect what actually
+      // happened so an operator pressing Replay on a record that has
+      // already moved to `opened`/`merged` is not misled by a
+      // misleading success toast.
+      if (response.replayed) {
+        pushToast({
+          title: "Re-emitted pull-request request",
+          body: "Subscribed consumers will be re-notified.",
+          tone: "success",
+        });
+      } else {
+        pushToast({
+          title: "No re-emit needed",
+          body: `Pull-request record is ${response.pullRequest.status}; no event sent.`,
+          tone: "info",
+        });
+      }
     },
     onError: (err) => {
       pushToast({

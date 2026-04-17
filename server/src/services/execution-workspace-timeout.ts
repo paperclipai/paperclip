@@ -128,7 +128,12 @@ async function finalizeTimeout(
     const workspaceRow = await db
       .select()
       .from(executionWorkspaces)
-      .where(eq(executionWorkspaces.id, workspaceId))
+      .where(
+        and(
+          eq(executionWorkspaces.companyId, companyId),
+          eq(executionWorkspaces.id, workspaceId),
+        ),
+      )
       .then((rows) => rows[0] ?? null);
     if (workspaceRow) {
       const workspace = toExecutionWorkspace(workspaceRow);
@@ -142,7 +147,12 @@ async function finalizeTimeout(
             cleanupReason: sideEffects.cleanupReason,
             updatedAt: new Date(),
           })
-          .where(eq(executionWorkspaces.id, workspaceId));
+          .where(
+            and(
+              eq(executionWorkspaces.companyId, companyId),
+              eq(executionWorkspaces.id, workspaceId),
+            ),
+          );
         finalWorkspaceStatus = sideEffects.status;
       }
     }
@@ -151,43 +161,48 @@ async function finalizeTimeout(
   // Phase 3: emit events with the true final state. Ordering is
   // preserved — `timed_out` first, `resolved` second — so auditors
   // can tell a consumer-driven close apart from a server-driven one
-  // even if they only see one of the two events.
+  // even if they only see one of the two events. The two activity-log
+  // inserts are wrapped in a single transaction so a transient DB
+  // failure cannot leave a `timed_out` row in the audit log without
+  // its `resolved` counterpart (and vice versa).
   const deadlineIso = phase1.existingRequestedAt
     ? new Date(new Date(phase1.existingRequestedAt).getTime() + archiveTimeoutMs).toISOString()
     : null;
-  await logActivity(db, {
-    companyId,
-    actorType: "system",
-    actorId: "server",
-    action: "execution_workspace.pull_request_timed_out",
-    entityType: "execution_workspace",
-    entityId: workspaceId,
-    details: {
-      workspaceId,
-      projectId: phase1.projectId,
-      record: phase1.record,
-      archiveTimeoutMs,
-      deadline: deadlineIso,
-      timedOutAt: phase1.timedOutAt.toISOString(),
-    },
-  });
-  await logActivity(db, {
-    companyId,
-    actorType: "system",
-    actorId: "server",
-    action: "execution_workspace.pull_request_resolved",
-    entityType: "execution_workspace",
-    entityId: workspaceId,
-    details: {
-      workspaceId,
-      projectId: phase1.projectId,
-      record: phase1.record,
-      workspaceStatus: finalWorkspaceStatus,
-      source: "archive_timeout",
-      previousStatus: phase1.previousStatus,
-      nextStatus: phase1.record.status,
-      resolvedAt: phase1.record.resolvedAt,
-    },
+  await db.transaction(async (tx) => {
+    await logActivity(tx as unknown as Db, {
+      companyId,
+      actorType: "system",
+      actorId: "server",
+      action: "execution_workspace.pull_request_timed_out",
+      entityType: "execution_workspace",
+      entityId: workspaceId,
+      details: {
+        workspaceId,
+        projectId: phase1.projectId,
+        record: phase1.record,
+        archiveTimeoutMs,
+        deadline: deadlineIso,
+        timedOutAt: phase1.timedOutAt.toISOString(),
+      },
+    });
+    await logActivity(tx as unknown as Db, {
+      companyId,
+      actorType: "system",
+      actorId: "server",
+      action: "execution_workspace.pull_request_resolved",
+      entityType: "execution_workspace",
+      entityId: workspaceId,
+      details: {
+        workspaceId,
+        projectId: phase1.projectId,
+        record: phase1.record,
+        workspaceStatus: finalWorkspaceStatus,
+        source: "archive_timeout",
+        previousStatus: phase1.previousStatus,
+        nextStatus: phase1.record.status,
+        resolvedAt: phase1.record.resolvedAt,
+      },
+    });
   });
   return {
     transitioned: true,

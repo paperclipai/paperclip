@@ -510,11 +510,55 @@ export function executionWorkspaceRoutes(db: Db) {
 
     const existingRecord = readPullRequestRecord(workspace.metadata);
     if (existingRecord) {
+      // Replay path: the operator action explicitly exists to nudge a
+      // stuck consumer. When the record is still in `requested`
+      // status, re-emit `pull_request_requested` so subscribers
+      // (Polaris, plugin-bus listeners) get another shot at handling
+      // it. The record itself stays untouched — `mode`,
+      // `requestedAt`, and the policy snapshot are stamped once at
+      // initial request time and never recomputed (see
+      // `buildPullRequestRequestRecord`). Records already in
+      // `opened`/`merged`/`failed`/`skipped` do not re-emit because
+      // the consumer has already moved past the request signal.
       const response = pullRequestRequestResponse(workspace, existingRecord);
-      res.status(200).json({ workspace, pullRequest: existingRecord, request: response });
+      if (existingRecord.status === "requested") {
+        await emitPullRequestEvent(req, workspace, "pull_request_requested", {
+          workspaceId: workspace.id,
+          projectId: workspace.projectId,
+          mode: existingRecord.mode,
+          requestedAt: existingRecord.requestedAt,
+          sourceIssueId: workspace.sourceIssueId,
+          branchName: workspace.branchName,
+          baseRef: workspace.baseRef,
+          repoUrl: workspace.repoUrl,
+          providerRef: workspace.providerRef,
+          policy: existingRecord.policy ?? null,
+          record: existingRecord,
+          replay: true,
+        });
+      }
+      res.status(200).json({
+        workspace,
+        pullRequest: existingRecord,
+        request: response,
+        replayed: existingRecord.status === "requested",
+      });
       return;
     }
 
+    // Shared workspaces are explicitly excluded from pull-request
+    // planned actions in `getCloseReadiness`. Mirror that here so an
+    // operator cannot manually park a shared workspace into
+    // `in_review` and trigger `runArchiveSideEffects` (which detaches
+    // every linked issue) on a workspace that was never meant to be
+    // archived this way. Guard runs ahead of the policy load so the
+    // refusal is cheap and does not leak project-policy errors as
+    // 5xx for an obviously-unsupported mode.
+    if (workspace.mode === "shared_workspace") {
+      throw conflict(
+        "Pull-request requests are not supported on shared workspaces; archive uses the project workspace lifecycle instead",
+      );
+    }
     const policy = await loadEffectivePullRequestPolicy(workspace);
     if (!policy || !pullRequestPolicyRequestsAutoOpen(policy)) {
       throw conflict(

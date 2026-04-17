@@ -24,6 +24,14 @@ export type PullRequestRequestResponse = {
     providerRef: string | null;
     policy: PullRequestPolicy;
   };
+  /**
+   * True when this call re-emitted `pull_request_requested` because
+   * the existing record was still in `requested`. False when no event
+   * was emitted (record already in `opened`/`merged`/`failed`/
+   * `skipped`, or this was the first request and the route fell
+   * through to the new-record path).
+   */
+  replayed?: boolean;
 };
 
 export type PullRequestResultResponse = {
