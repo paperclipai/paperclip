@@ -115,7 +115,6 @@ function makeComment(overrides: Record<string, unknown> = {}) {
 
 describe("issue comment cancel routes", () => {
   beforeEach(() => {
-    vi.resetModules();
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });

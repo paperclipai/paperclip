@@ -527,7 +527,7 @@ export function ExecutionWorkspaceDetail() {
           </div>
           <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Configure the concrete runtime workspace that Paperclip reuses for this issue flow.
+            Configure the concrete runtime workspace that Toca da IA reuses for this issue flow.
             <span className="hidden sm:inline"> These settings stay attached to the execution workspace so future runs can keep local paths, repo refs, provisioning, teardown, and runtime-service behavior in sync with the actual workspace being reused.</span>
           </p>
         </div>
@@ -582,9 +582,204 @@ export function ExecutionWorkspaceDetail() {
         </Tabs>
 
         {activeTab === "configuration" ? (
-          <div className="space-y-4 sm:space-y-6">
-            <div className="rounded-2xl border border-border bg-card p-4 sm:p-5">
-              <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+          <div className="grid gap-4 sm:gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.95fr)]">
+            <div className="min-w-0 space-y-4 sm:space-y-6">
+              <div className="rounded-2xl border border-border bg-card p-4 sm:p-5">
+                <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                      Configuration
+                    </div>
+                    <h2 className="text-lg font-semibold">Workspace settings</h2>
+                    <p className="text-sm text-muted-foreground">
+                      Edit the concrete path, repo, branch, provisioning, teardown, and runtime overrides attached to this execution workspace.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    className="w-full sm:w-auto"
+                    onClick={() => setCloseDialogOpen(true)}
+                    disabled={workspace.status === "archived"}
+                  >
+                    {workspace.status === "cleanup_failed" ? "Retry close" : "Close workspace"}
+                  </Button>
+                </div>
+
+                <Separator className="my-5" />
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label="Workspace name">
+                    <input
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                      value={form.name}
+                      onChange={(event) => setForm((current) => current ? { ...current, name: event.target.value } : current)}
+                      placeholder="Execution workspace name"
+                    />
+                  </Field>
+                  <Field label="Branch name" hint="Useful for isolated worktrees">
+                    <input
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                      value={form.branchName}
+                      onChange={(event) => setForm((current) => current ? { ...current, branchName: event.target.value } : current)}
+                      placeholder="PAP-946-workspace"
+                    />
+                  </Field>
+                </div>
+
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <Field label="Working directory">
+                    <input
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                      value={form.cwd}
+                      onChange={(event) => setForm((current) => current ? { ...current, cwd: event.target.value } : current)}
+                      placeholder="/absolute/path/to/workspace"
+                    />
+                  </Field>
+                  <Field label="Provider path / ref">
+                    <input
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                      value={form.providerRef}
+                      onChange={(event) => setForm((current) => current ? { ...current, providerRef: event.target.value } : current)}
+                      placeholder="/path/to/worktree or provider ref"
+                    />
+                  </Field>
+                </div>
+
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <Field label="Repo URL">
+                    <input
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                      value={form.repoUrl}
+                      onChange={(event) => setForm((current) => current ? { ...current, repoUrl: event.target.value } : current)}
+                      placeholder="https://github.com/org/repo"
+                    />
+                  </Field>
+                  <Field label="Base ref">
+                    <input
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
+                      value={form.baseRef}
+                      onChange={(event) => setForm((current) => current ? { ...current, baseRef: event.target.value } : current)}
+                      placeholder="origin/main"
+                    />
+                  </Field>
+                </div>
+
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <Field label="Provision command" hint="Runs when Toca da IA prepares this execution workspace">
+                    <textarea
+                      className="min-h-20 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none sm:min-h-28"
+                      value={form.provisionCommand}
+                      onChange={(event) => setForm((current) => current ? { ...current, provisionCommand: event.target.value } : current)}
+                      placeholder="bash ./scripts/provision-worktree.sh"
+                    />
+                  </Field>
+                  <Field label="Teardown command" hint="Runs when the execution workspace is archived or cleaned up">
+                    <textarea
+                      className="min-h-20 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none sm:min-h-28"
+                      value={form.teardownCommand}
+                      onChange={(event) => setForm((current) => current ? { ...current, teardownCommand: event.target.value } : current)}
+                      placeholder="bash ./scripts/teardown-worktree.sh"
+                    />
+                  </Field>
+                </div>
+
+                <div className="mt-4 grid gap-4">
+                  <Field label="Cleanup command" hint="Workspace-specific cleanup before teardown">
+                    <textarea
+                      className="min-h-16 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none sm:min-h-24"
+                      value={form.cleanupCommand}
+                      onChange={(event) => setForm((current) => current ? { ...current, cleanupCommand: event.target.value } : current)}
+                      placeholder="pkill -f vite || true"
+                    />
+                  </Field>
+
+                  <div className="rounded-xl border border-dashed border-border/70 bg-muted/20 px-3 py-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                      <div>
+                        <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                          Runtime config source
+                        </div>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {runtimeConfigSource === "execution_workspace"
+                            ? "This execution workspace currently overrides the project workspace runtime config."
+                            : runtimeConfigSource === "project_workspace"
+                              ? "This execution workspace is inheriting the project workspace runtime config."
+                              : "No runtime config is currently defined on this execution workspace or its project workspace."}
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        className="w-full sm:w-auto"
+                        size="sm"
+                        disabled={!linkedProjectWorkspace?.runtimeConfig?.workspaceRuntime}
+                        onClick={() =>
+                          setForm((current) => current ? {
+                            ...current,
+                            inheritRuntime: true,
+                            workspaceRuntime: "",
+                          } : current)
+                        }
+                      >
+                        Reset to inherit
+                      </Button>
+                    </div>
+                  </div>
+
+                  <Field label="Runtime services JSON" hint="Concrete workspace runtime settings for this execution workspace. Leave this inheriting unless you need a one-off override. If you are missing the right commands, ask your CEO to set them up for you.">
+                    <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                      <input
+                        id="inherit-runtime-config"
+                        type="checkbox"
+                        checked={form.inheritRuntime}
+                        onChange={(event) => {
+                          const checked = event.target.checked;
+                          setForm((current) => {
+                            if (!current) return current;
+                            if (!checked && !current.workspaceRuntime.trim() && inheritedRuntimeConfig) {
+                              return { ...current, inheritRuntime: checked, workspaceRuntime: formatJson(inheritedRuntimeConfig) };
+                            }
+                            return { ...current, inheritRuntime: checked };
+                          });
+                        }}
+                      />
+                      <label htmlFor="inherit-runtime-config">Inherit project workspace runtime config</label>
+                    </div>
+                    <textarea
+                      className="min-h-32 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-48"
+                      value={form.workspaceRuntime}
+                      onChange={(event) => setForm((current) => current ? { ...current, workspaceRuntime: event.target.value } : current)}
+                      disabled={form.inheritRuntime}
+                      placeholder={'{\n  "services": [\n    {\n      "name": "web",\n      "command": "pnpm dev",\n      "port": 3100\n    }\n  ]\n}'}
+                    />
+                  </Field>
+                </div>
+
+                <div className="mt-5 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                  <Button className="w-full sm:w-auto" disabled={!isDirty || updateWorkspace.isPending} onClick={saveChanges}>
+                    {updateWorkspace.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    Save changes
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full sm:w-auto"
+                    disabled={!isDirty || updateWorkspace.isPending}
+                    onClick={() => {
+                      setForm(initialState);
+                      setErrorMessage(null);
+                      setRuntimeActionMessage(null);
+                    }}
+                  >
+                    Reset
+                  </Button>
+                  {errorMessage ? <p className="text-sm text-destructive">{errorMessage}</p> : null}
+                  {!errorMessage && runtimeActionMessage ? <p className="text-sm text-muted-foreground">{runtimeActionMessage}</p> : null}
+                  {!errorMessage && !isDirty ? <p className="text-sm text-muted-foreground">No unsaved changes.</p> : null}
+                </div>
+              </div>
+            </div>
+
+            <div className="min-w-0 space-y-4 sm:space-y-6">
+              <div className="rounded-2xl border border-border bg-card p-4 sm:p-5">
                 <div className="space-y-1">
                   <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
                     Configuration

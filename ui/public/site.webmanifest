@@ -1,14 +1,14 @@
 {
   "id": "/",
-  "name": "Paperclip",
-  "short_name": "Paperclip",
-  "description": "AI-powered project management and agent coordination platform",
+  "name": "Toca da IA",
+  "short_name": "Toca da IA",
+  "description": "Plataforma de gestão de projetos e coordenação de agentes com IA",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "theme_color": "#18181b",
-  "background_color": "#18181b",
+  "theme_color": "#2C1810",
+  "background_color": "#2C1810",
   "icons": [
     {
       "src": "/android-chrome-192x192.png",

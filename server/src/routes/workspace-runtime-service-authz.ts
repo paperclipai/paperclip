@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, issues } from "@paperclipai/db";
 import type { Request } from "express";
@@ -20,7 +20,9 @@ async function listReportingSubtreeAgentIds(db: Db, companyId: string, actorAgen
       reportsTo: agents.reportsTo,
     })
     .from(agents)
-    .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
+    .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")))
+    .orderBy(asc(agents.createdAt))
+    .limit(500);
 
   const reportsByManager = new Map<string, string[]>();
   for (const agent of companyAgents) {

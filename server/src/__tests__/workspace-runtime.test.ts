@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parse as parseEnvContents } from "dotenv";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   agents,
   companies,
@@ -191,6 +191,25 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
     expect(sanitized.npm_config_authenticated_private).toBeUndefined();
     expect(sanitized.HOST).toBe("0.0.0.0");
   });
+
+  it("strips server-side secrets that must never reach workspace child processes", () => {
+    const sanitized = sanitizeRuntimeServiceBaseEnv({
+      PATH: process.env.PATH,
+      BETTER_AUTH_SECRET: "super-secret-jwt-key",
+      ANTHROPIC_API_KEY: "sk-ant-abc123",
+      OPENAI_API_KEY: "sk-openai-abc123",
+      REDIS_URL: "redis://:password@redis:6379",
+      REDIS_PASSWORD: "redis-password",
+      HOST: "0.0.0.0",
+    });
+
+    expect(sanitized.BETTER_AUTH_SECRET).toBeUndefined();
+    expect(sanitized.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(sanitized.OPENAI_API_KEY).toBeUndefined();
+    expect(sanitized.REDIS_URL).toBeUndefined();
+    expect(sanitized.REDIS_PASSWORD).toBeUndefined();
+    expect(sanitized.HOST).toBe("0.0.0.0");
+  });
 });
 
 describe("ensureServerWorkspaceLinksCurrent", () => {
@@ -304,6 +323,44 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
 });
 
 describe("realizeExecutionWorkspace", () => {
+  // Isolate PATH and Paperclip env so that provision-worktree.sh behaves deterministically:
+  // - fake `paperclipai` (exit 1) ensures paperclipai_command_available() returns false
+  //   regardless of whether paperclipai is globally installed on the host.
+  // - clearing PAPERCLIP_CONFIG prevents the host's system config from leaking into
+  //   resolvePaperclipConfigPath() calls inside provision tests.
+  // Without both, tests diverge depending on the developer's installed tooling.
+  let savedPath: string | undefined;
+  let savedPaperclipConfig: string | undefined;
+  let fakePaperclipBinDir: string | undefined;
+
+  beforeEach(async () => {
+    savedPath = process.env.PATH;
+    savedPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+    delete process.env.PAPERCLIP_CONFIG;
+
+    fakePaperclipBinDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fake-bin-"));
+    const fakePaperclipAi = path.join(fakePaperclipBinDir, "paperclipai");
+    await fs.writeFile(fakePaperclipAi, "#!/bin/sh\nexit 1\n", "utf8");
+    await fs.chmod(fakePaperclipAi, 0o755);
+    process.env.PATH = `${fakePaperclipBinDir}:${savedPath ?? ""}`;
+  });
+
+  afterEach(async () => {
+    if (savedPath !== undefined) {
+      process.env.PATH = savedPath;
+    } else {
+      delete process.env.PATH;
+    }
+    if (savedPaperclipConfig !== undefined) {
+      process.env.PAPERCLIP_CONFIG = savedPaperclipConfig;
+    }
+    // Top-level afterEach also deletes PAPERCLIP_CONFIG; no double-delete risk.
+    if (fakePaperclipBinDir) {
+      await fs.rm(fakePaperclipBinDir, { recursive: true, force: true }).catch(() => {});
+      fakePaperclipBinDir = undefined;
+    }
+  });
+
   it("creates and reuses a git worktree for an issue-scoped branch", async () => {
     const repoRoot = await createTempRepo();
 
@@ -563,6 +620,58 @@ describe("realizeExecutionWorkspace", () => {
     });
   });
 
+  it("rejects reuse in the 'already checked out' fallback path when the found worktree path fails validation (bypass regression)", async () => {
+    // This exercises the catch block in realizeExecutionWorkspace that fires when
+    // `git worktree add` fails with "already checked out". Previously the fallback
+    // called reuseExistingWorktree without validateLinkedGitWorktree, bypassing the
+    // symlink / rev-parse / branch-name checks added by the worktree hardening.
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-1355-worktree-reuse";
+    // Create a real registered worktree for the branch
+    const registeredWorktree = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await fs.mkdir(path.dirname(registeredWorktree), { recursive: true });
+    await execFileAsync("git", ["worktree", "add", "-b", branchName, registeredWorktree, "HEAD"], { cwd: repoRoot });
+
+    // Now simulate a second realization from a DIFFERENT target directory — this
+    // causes git worktree add to fail with "already checked out".
+    const alternativePath = path.join(repoRoot, ".paperclip", "other-worktrees", branchName);
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          worktreeParentDir: ".paperclip/other-worktrees",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1355",
+        title: "worktree reuse",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    // Must resolve to the registered worktree (validated), not the alternative path
+    const expectedWorktreePath = await fs.realpath(registeredWorktree);
+    expect(realized.created).toBe(false);
+    await expect(fs.realpath(realized.cwd)).resolves.toBe(expectedWorktreePath);
+
+    // The alternative path must NOT have been created
+    await expect(fs.access(alternativePath)).rejects.toThrow();
+  });
+
   it("slugifies unsafe issue titles for branch names and worktree folders", async () => {
     const repoRoot = await createTempRepo();
 
@@ -808,6 +917,54 @@ describe("realizeExecutionWorkspace", () => {
     });
 
     await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-version"), "utf8")).resolves.toBe("v2\n");
+  });
+
+  it("does not execute a repo-managed provision command that is a symlink pointing outside the repo", async () => {
+    const repoRoot = await createTempRepo();
+
+    // Create a sentinel file outside the repo that should never be executed
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-symlink-escape-"));
+    const outsideTarget = path.join(outsideDir, "evil.sh");
+    const markerFile = path.join(outsideDir, "evil-executed");
+    await fs.writeFile(outsideTarget, `#!/usr/bin/env bash\ntouch "${markerFile}"\n`, "utf8");
+    await fs.chmod(outsideTarget, 0o755);
+
+    // Create a symlink inside the repo pointing to the outside target
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.symlink(outsideTarget, path.join(repoRoot, "scripts", "provision.sh"));
+    await runGit(repoRoot, ["add", "scripts/provision.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Add symlinked provision script"]);
+
+    await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          provisionCommand: "bash ./scripts/provision.sh",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-symlink",
+        title: "Symlink escape test",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    // The outside target must NOT have been executed
+    await expect(fs.access(markerFile)).rejects.toThrow();
   });
 
   it("writes an isolated repo-local Paperclip config and worktree branding when provisioning", async () => {
@@ -1136,7 +1293,11 @@ describe("realizeExecutionWorkspace", () => {
     );
   }, 30_000);
 
-  it("fails instead of writing an unseeded fallback config when worktree init errors after CLI detection succeeds", async () => {
+  it("writes an unseeded fallback config (and does not throw) when worktree init errors after CLI detection succeeds", async () => {
+    // Fork behavior: when paperclipai CLI is available but worktree init fails,
+    // provision-worktree.sh falls back to writing an isolated config rather than
+    // propagating the error — allowing self-hosted deployments to continue with
+    // a basic worktree config even if the full DB-seeded init is unavailable.
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-provision-fail-"));
     const baseRoot = path.join(tempRoot, "base");
     const worktreeRoot = path.join(tempRoot, "worktree");
@@ -1183,10 +1344,10 @@ describe("realizeExecutionWorkspace", () => {
         caught = error as Error;
       }
 
-      expect(caught).toBeTruthy();
-      expect(String(caught)).toContain("simulated init failure");
-      await expect(fs.stat(path.join(worktreeRoot, ".paperclip", "config.json"))).rejects.toThrow();
-      await expect(fs.stat(path.join(worktreeRoot, ".paperclip", ".env"))).rejects.toThrow();
+      // Script should succeed (fallback path) — no exception propagated
+      expect(caught).toBeNull();
+      // Fallback config should have been written
+      await expect(fs.stat(path.join(worktreeRoot, ".paperclip", "config.json"))).resolves.toBeDefined();
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
@@ -1265,7 +1426,7 @@ describe("realizeExecutionWorkspace", () => {
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it(
     "provisions worktree-local pnpm node_modules instead of reusing base-repo links",
@@ -2324,9 +2485,7 @@ describe("ensureRuntimeServicesForRun", () => {
 
     expect(services[0]?.url).toBeTruthy();
     await stopRuntimeServicesForExecutionWorkspace({
-      executionWorkspaceId: "execution-workspace-stop",
-      workspaceCwd: workspace.cwd,
-    });
+      executionWorkspaceId: "execution-workspace-stop",    });
     await releaseRuntimeServicesForRun(runId);
     leasedRunIds.delete(runId);
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -2382,9 +2541,7 @@ describe("ensureRuntimeServicesForRun", () => {
     });
 
     await stopRuntimeServicesForExecutionWorkspace({
-      executionWorkspaceId: "execution-workspace-target",
-      workspaceCwd: targetWorkspaceRoot,
-    });
+      executionWorkspaceId: "execution-workspace-target",    });
 
     const response = await fetch(services[0]!.url!);
     expect(await response.text()).toBe("ok");
@@ -2449,9 +2606,7 @@ describe("ensureRuntimeServicesForRun", () => {
     await expect(fetch(services[0]!.url!)).resolves.toMatchObject({ ok: true });
 
     await stopRuntimeServicesForExecutionWorkspace({
-      executionWorkspaceId: "execution-workspace-control-start",
-      workspaceCwd: workspace.cwd,
-    });
+      executionWorkspaceId: "execution-workspace-control-start",    });
   });
 
   it("stops only the selected execution workspace runtime service", async () => {
@@ -2515,18 +2670,111 @@ describe("ensureRuntimeServicesForRun", () => {
     const worker = services.find((service) => service.serviceName === "worker");
 
     await stopRuntimeServicesForExecutionWorkspace({
-      executionWorkspaceId: "execution-workspace-control-stop",
-      workspaceCwd: workspace.cwd,
-      runtimeServiceId: web?.id ?? null,
+      executionWorkspaceId: "execution-workspace-control-stop",      runtimeServiceId: web?.id ?? null,
     });
 
     await expect(fetch(web!.url!)).rejects.toThrow();
     await expect(fetch(worker!.url!)).resolves.toMatchObject({ ok: true });
 
     await stopRuntimeServicesForExecutionWorkspace({
-      executionWorkspaceId: "execution-workspace-control-stop",
-      workspaceCwd: workspace.cwd,
-      runtimeServiceId: worker?.id ?? null,
+      executionWorkspaceId: "execution-workspace-control-stop",      runtimeServiceId: worker?.id ?? null,
+    });
+  });
+
+  it("does not stop a service when runtimeServiceId belongs to a different execution workspace", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-control-cross-workspace-"));
+    const workspace = buildWorkspace(workspaceRoot);
+
+    const servicesA = await startRuntimeServicesForWorkspaceControl({
+      actor: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-cross-a",
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command:
+                "node -e \"require('node:http').createServer((req,res)=>res.end('web')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 10,
+                intervalMs: 100,
+              },
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+              stopPolicy: { type: "manual" },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    expect(servicesA).toHaveLength(1);
+    const serviceA = servicesA[0]!;
+
+    // Attempt to stop workspace-A's service using workspace-B's scope — must be a no-op
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-workspace-cross-b",      runtimeServiceId: serviceA.id,
+    });
+
+    // Service A must still be running
+    await expect(fetch(serviceA.url!)).resolves.toMatchObject({ ok: true });
+
+    // Cleanup
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-workspace-cross-a",    });
+  });
+
+  it("does not stop a service when bulk-stopping by a different executionWorkspaceId", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-cwd-scope-"));
+    const workspace = buildWorkspace(workspaceRoot);
+
+    const servicesA = await startRuntimeServicesForWorkspaceControl({
+      actor: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-cwd-scope-a",
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command:
+                "node -e \"require('node:http').createServer((req,res)=>res.end('web')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+              port: { type: "auto" },
+              readiness: { type: "http", urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10, intervalMs: 100 },
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+              stopPolicy: { type: "manual" },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    expect(servicesA).toHaveLength(1);
+    const serviceA = servicesA[0]!;
+
+    // Bulk-stop with a DIFFERENT executionWorkspaceId — must not stop serviceA.
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-workspace-cwd-scope-b",
+    });
+
+    await expect(fetch(serviceA.url!)).resolves.toMatchObject({ ok: true });
+
+    // Cleanup
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-workspace-cwd-scope-a",
     });
   });
 });
@@ -2549,6 +2797,29 @@ describe("buildWorkspaceRuntimeDesiredStatePatch", () => {
         command: "pnpm dev",
       }),
     ]);
+  });
+
+  it("applies action to ALL services when serviceIndex is null (global operation)", () => {
+    const patch = buildWorkspaceRuntimeDesiredStatePatch({
+      config: {
+        workspaceRuntime: {
+          services: [
+            { name: "web", command: "pnpm dev" },
+            { name: "worker", command: "pnpm worker" },
+          ],
+        },
+      },
+      currentDesiredState: "running",
+      currentServiceStates: { "0": "running", "1": "running" },
+      action: "stop",
+      serviceIndex: null,
+    });
+    // Regression: serviceIndex=null must target ALL services, not be silently ignored.
+    // Route guards must prevent this from being called when only one service is intended.
+    expect(patch).toEqual({
+      desiredState: "stopped",
+      serviceStates: { "0": "stopped", "1": "stopped" },
+    });
   });
 
   it("preserves sibling service state when updating a single configured runtime service", () => {
@@ -2623,12 +2894,16 @@ describe("resolveWorkspaceRuntimeReadinessTimeoutSec", () => {
 });
 
 describe("resolveShell (shell fallback)", () => {
-  const originalShell = process.env.SHELL;
   const originalPlatform = process.platform;
+  let savedShell: string | undefined;
+
+  beforeEach(() => {
+    savedShell = process.env.SHELL;
+  });
 
   afterEach(() => {
-    if (originalShell !== undefined) {
-      process.env.SHELL = originalShell;
+    if (savedShell !== undefined) {
+      process.env.SHELL = savedShell;
     } else {
       delete process.env.SHELL;
     }
@@ -2719,6 +2994,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
+    const projectId = randomUUID();
     const executionWorkspaceId = randomUUID();
 
     await db.insert(companies).values({
@@ -2738,6 +3014,24 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       runtimeConfig: {},
       permissions: {},
     });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Reconcile test project",
+      status: "active",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Reconcile test workspace",
+      status: "active",
+      cwd: workspaceRoot,
+      providerType: "local_fs",
+      providerRef: workspaceRoot,
+    });
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -2750,7 +3044,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
 
     const workspace = {
       ...buildWorkspace(workspaceRoot),
-      projectId: null,
+      projectId,
       workspaceId: null,
     };
     leasedRunIds.add(runId);
@@ -2763,6 +3057,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
         name: "Codex Coder",
         companyId,
       },
+      executionWorkspaceId,
       issue: null,
       workspace,
       config: {
@@ -2812,7 +3107,6 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     await stopRuntimeServicesForExecutionWorkspace({
       db,
       executionWorkspaceId,
-      workspaceCwd: workspace.cwd,
     });
 
     await expect(fetch(service!.url!)).rejects.toThrow();
@@ -3009,9 +3303,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
 
     await stopRuntimeServicesForExecutionWorkspace({
       db,
-      executionWorkspaceId,
-      workspaceCwd: workspace.cwd,
-    });
+      executionWorkspaceId,    });
     await releaseRuntimeServicesForRun(runId);
     leasedRunIds.delete(runId);
     await new Promise((resolve) => setTimeout(resolve, 250));

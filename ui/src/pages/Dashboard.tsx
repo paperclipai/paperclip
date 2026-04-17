@@ -170,7 +170,7 @@ export function Dashboard() {
       return (
         <EmptyState
           icon={LayoutDashboard}
-          message="Welcome to Paperclip. Set up your first company and agent to get started."
+          message="Bem-vindo à Toca da IA. Configure sua primeira empresa e agente para começar."
           action="Get Started"
           onAction={openOnboarding}
         />

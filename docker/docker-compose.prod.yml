@@ -1,0 +1,113 @@
+# Production: full stack with nginx reverse proxy.
+# See docs/deploy/guia-instalacao.md for complete instructions.
+#
+# Usage:
+#   cp .env.example .env        # edit BETTER_AUTH_SECRET, PAPERCLIP_PUBLIC_URL, etc.
+#   docker compose -f docker/docker-compose.prod.yml --env-file .env up -d
+#
+# Or use the interactive installer:
+#   ./setup.sh
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: "${DB_PASSWORD:?DB_PASSWORD must be set}"
+      POSTGRES_DB: paperclip
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Write password to a config file at startup so it never appears in
+    # /proc/<pid>/cmdline (--requirepass would expose it there).
+    # Note: REDIS_PASSWORD and REDISCLI_AUTH are still visible via `docker inspect`
+    # to anyone with Docker socket access — use Docker secrets for stricter isolation.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        printf 'requirepass %s\n' "$$REDIS_PASSWORD" > /tmp/redis-auth.conf
+        chmod 600 /tmp/redis-auth.conf
+        exec redis-server /tmp/redis-auth.conf
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
+      # REDISCLI_AUTH lets the healthcheck redis-cli authenticate
+      # without a password flag on its command line.
+      REDISCLI_AUTH: "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - redisdata:/data
+
+  app:
+    image: "${APP_IMAGE:-toca-da-ia:local}"
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3100"
+      DATABASE_URL: "postgres://paperclip:${DB_PASSWORD:?DB_PASSWORD must be set}@db:5432/paperclip"
+      REDIS_URL: "redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379"
+      SERVE_UI: "true"
+      PAPERCLIP_HOME: "/paperclip"
+      PAPERCLIP_DEPLOYMENT_MODE: "${PAPERCLIP_DEPLOYMENT_MODE:-authenticated}"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "${PAPERCLIP_DEPLOYMENT_EXPOSURE:-private}"
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:?PAPERCLIP_PUBLIC_URL must be set}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    volumes:
+      - app-data:/paperclip
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3100/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - nginx-certs:/etc/nginx/certs:ro
+      - nginx-logs:/var/log/nginx
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  app-data:
+  nginx-certs:
+  nginx-logs:
