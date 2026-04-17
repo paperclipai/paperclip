@@ -3392,6 +3392,7 @@ export function heartbeatService(db: Db) {
       ? { ...persistedWorkspaceManagedConfig, ...issueAssigneeOverrides.adapterConfig }
       : persistedWorkspaceManagedConfig;
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig);
+    const workspaceRuntimeForServices = mergedConfig.workspaceRuntime as Record<string, unknown> | undefined;
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
     const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
@@ -3412,6 +3413,7 @@ export function heartbeatService(db: Db) {
     const runtimeConfig = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
+      ...(workspaceRuntimeForServices ? { workspaceRuntime: workspaceRuntimeForServices } : {}),
     };
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
