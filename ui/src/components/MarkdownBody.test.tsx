@@ -4,50 +4,13 @@ import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import {
-  buildAgentMentionHref,
-  buildProjectMentionHref,
-  buildSkillMentionHref,
-} from "@paperclipai/shared/project-mentions";
+import { buildAgentMentionHref, buildProjectMentionHref, buildSkillMentionHref, buildUserMentionHref } from "@paperclipai/shared";
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
 import { queryKeys } from "../lib/queryKeys";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
-}));
-
-vi.mock("@paperclipai/shared", () => ({
-  AGENT_ICON_NAMES: ["bot", "code"],
-  deriveAgentUrlKey: (name?: string | null, id?: string | null) => name ?? id ?? "",
-  deriveProjectUrlKey: (name?: string | null, id?: string | null) => name ?? id ?? "",
-  normalizeProjectUrlKey: (name?: string | null) => name ?? "",
-  hasNonAsciiContent: (value?: string | null) => /[^\x00-\x7F]/.test(value ?? ""),
-  parseAgentMentionHref: (href: string) => {
-    if (!href.startsWith("agent://")) return null;
-    const url = new URL(href);
-    return {
-      agentId: `${url.hostname}${url.pathname}`.replace(/^\/+/, "").trim(),
-      icon: url.searchParams.get("i") ?? url.searchParams.get("icon"),
-    };
-  },
-  parseProjectMentionHref: (href: string) => {
-    if (!href.startsWith("project://")) return null;
-    const url = new URL(href);
-    const color = url.searchParams.get("c") ?? url.searchParams.get("color");
-    return {
-      projectId: `${url.hostname}${url.pathname}`.replace(/^\/+/, "").trim(),
-      color: color ? `#${color.replace(/^#/, "")}` : null,
-    };
-  },
-  parseSkillMentionHref: (href: string) => {
-    if (!href.startsWith("skill://")) return null;
-    const url = new URL(href);
-    return {
-      skillId: `${url.hostname}${url.pathname}`.replace(/^\/+/, "").trim(),
-      slug: url.searchParams.get("s") ?? url.searchParams.get("slug"),
-    };
-  },
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -112,17 +75,19 @@ describe("MarkdownBody", () => {
     expect(html).toContain('alt="Org chart"');
   });
 
-  it("renders agent, project, and skill mentions as chips", () => {
+  it("renders user, agent, project, and skill mentions as chips", () => {
     const html = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
         <ThemeProvider>
           <MarkdownBody>
-            {`[@CodexCoder](${buildAgentMentionHref("agent-123", "code")}) [@Paperclip App](${buildProjectMentionHref("project-456", "#336699")}) [/release-changelog](${buildSkillMentionHref("skill-789", "release-changelog")})`}
+            {`[@Taylor](${buildUserMentionHref("user-123")}) [@CodexCoder](${buildAgentMentionHref("agent-123", "code")}) [@Paperclip App](${buildProjectMentionHref("project-456", "#336699")}) [/release-changelog](${buildSkillMentionHref("skill-789", "release-changelog")})`}
           </MarkdownBody>
         </ThemeProvider>
       </QueryClientProvider>,
     );
 
+    expect(html).toContain('href="/company/settings/access"');
+    expect(html).toContain('data-mention-kind="user"');
     expect(html).toContain('href="/agents/agent-123"');
     expect(html).toContain('data-mention-kind="agent"');
     expect(html).toContain("--paperclip-mention-icon-mask");

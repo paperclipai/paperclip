@@ -51,6 +51,21 @@ All tests must pass before a PR can be merged. Run them locally first and verify
 
 We use [Greptile](https://greptile.com) for automated code review. Your PR must achieve a **5/5 Greptile score** with **all Greptile comments addressed** before it can be merged. If Greptile leaves comments, fix or respond to each one and request a re-review.
 
+## Feature Contributions
+
+We actively manage the core Paperclip feature roadmap.
+
+Uncoordinated feature PRs against the core product may be closed, even when the implementation is thoughtful and high quality. That is about roadmap ownership, product coherence, and long-term maintenance commitment, not a judgment about the effort.
+
+If you want to contribute a feature:
+
+- Check [ROADMAP.md](ROADMAP.md) first
+- Start the discussion in Discord -> `#dev` before writing code
+- If the idea fits as an extension, prefer building it with the [plugin system](doc/plugins/PLUGIN_SPEC.md)
+- If you want to show a possible direction, reference implementations are welcome as feedback, but they generally will not be merged directly into core
+
+Bugs, docs improvements, and small targeted improvements are still the easiest path to getting merged, and we really do appreciate them.
+
 ## General Rules (both paths)
 
 - Write clear commit messages

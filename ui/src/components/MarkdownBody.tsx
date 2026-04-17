@@ -229,6 +229,8 @@ export function MarkdownBody({
           ? `/projects/${parsed.projectId}`
           : parsed.kind === "skill"
             ? `/skills/${parsed.skillId}`
+            : parsed.kind === "user"
+              ? "/company/settings/access"
             : `/agents/${parsed.agentId}`;
         return (
           <a
