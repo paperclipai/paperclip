@@ -2020,6 +2020,18 @@ export function agentRoutes(db: Db) {
       );
     }
 
+    // Preserve sibling keys of runtimeConfig across partial PATCHes.
+    // The column is stored as a single JSONB blob, so writing a partial
+    // object would drop any top-level keys the caller didn't include.
+    // Spread the existing row's runtimeConfig first, then overlay the
+    // patch — callers sending only { heartbeat: {...} } keep their
+    // adapter/env/etc. sibling keys intact.
+    if (Object.prototype.hasOwnProperty.call(patchData, "runtimeConfig")) {
+      const existingRuntimeConfig = asRecord(existing.runtimeConfig) ?? {};
+      const requestedRuntimeConfig = asRecord(patchData.runtimeConfig) ?? {};
+      patchData.runtimeConfig = { ...existingRuntimeConfig, ...requestedRuntimeConfig };
+    }
+
     const actor = getActorInfo(req);
     const agent = await svc.update(id, patchData, {
       recordRevision: {
