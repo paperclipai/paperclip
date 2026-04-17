@@ -4,6 +4,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import {
+  asNumber,
   asBoolean,
   asString,
   asStringArray,
@@ -16,6 +17,12 @@ import {
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import {
+  parseOllamaModelId,
+  resolveOllamaBaseUrl,
+  runDirectOllamaGenerate,
+  shouldUseDirectOllamaApi,
+} from "./ollama-direct.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -239,6 +246,67 @@ export async function testEnvironment(
       })();
       const variant = asString(config.variant, "").trim();
       const probeModel = configuredModel;
+      const directOllamaModel = shouldUseDirectOllamaApi(config, configuredModel)
+        ? parseOllamaModelId(configuredModel)
+        : null;
+
+      if (directOllamaModel) {
+        try {
+          const direct = await runDirectOllamaGenerate({
+            baseUrl: resolveOllamaBaseUrl(config, runtimeEnv),
+            model: directOllamaModel,
+            prompt: "Respond with hello.",
+            timeoutSec: asNumber(config.ollamaTimeoutSec, 60),
+          });
+          const detail = summarizeProbeDetail(
+            direct.responseText,
+            direct.errorMessage ?? "",
+            direct.errorMessage ?? null,
+          );
+          if (direct.timedOut) {
+            checks.push({
+              code: "ollama_direct_hello_probe_timed_out",
+              level: "warn",
+              message: "Direct Ollama hello probe timed out.",
+              hint: "Verify the local Ollama API with `curl http://127.0.0.1:11434/api/version` and retry.",
+            });
+          } else if (direct.ok) {
+            const hasHello = /\bhello\b/i.test(direct.responseText);
+            checks.push({
+              code: hasHello ? "ollama_direct_hello_probe_passed" : "ollama_direct_hello_probe_unexpected_output",
+              level: hasHello ? "info" : "warn",
+              message: hasHello
+                ? "Direct Ollama hello probe succeeded."
+                : "Direct Ollama probe ran but did not return `hello` as expected.",
+              ...(direct.responseText
+                ? { detail: direct.responseText.replace(/\s+/g, " ").trim().slice(0, 240) }
+                : {}),
+            });
+          } else {
+            checks.push({
+              code: "ollama_direct_hello_probe_failed",
+              level: "error",
+              message: "Direct Ollama hello probe failed.",
+              ...(detail ? { detail } : {}),
+              hint: "Run the same model through `/api/generate` to verify Ollama Cloud access.",
+            });
+          }
+        } catch (err) {
+          checks.push({
+            code: "ollama_direct_hello_probe_failed",
+            level: "error",
+            message: "Direct Ollama hello probe failed.",
+            detail: err instanceof Error ? err.message : String(err),
+            hint: "Run the same model through `/api/generate` to verify Ollama Cloud access.",
+          });
+        }
+        return {
+          adapterType: ctx.adapterType,
+          status: summarizeStatus(checks),
+          checks,
+          testedAt: new Date().toISOString(),
+        };
+      }
 
       const args = ["run", "--format", "json"];
       args.push("--model", probeModel);

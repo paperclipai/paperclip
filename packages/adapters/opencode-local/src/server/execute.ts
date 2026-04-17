@@ -27,6 +27,12 @@ import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import {
+  parseOllamaModelId,
+  resolveOllamaBaseUrl,
+  runDirectOllamaGenerate,
+  shouldUseDirectOllamaApi,
+} from "./ollama-direct.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -48,6 +54,48 @@ function parseModelProvider(model: string | null): string | null {
 
 function resolveOpenCodeBiller(env: Record<string, string>, provider: string | null): string {
   return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
+}
+
+async function finalizeDirectOllamaPaperclipIssue(input: {
+  context: Record<string, unknown>;
+  runtimeEnv: Record<string, string>;
+  runId: string;
+  responseText: string;
+  onLog: AdapterExecutionContext["onLog"];
+}) {
+  const issueId =
+    asString(input.context.issueId, "").trim() ||
+    asString(input.context.taskId, "").trim();
+  const apiUrl = (input.runtimeEnv.PAPERCLIP_API_URL ?? "").trim().replace(/\/+$/, "");
+  const apiKey = (input.runtimeEnv.PAPERCLIP_API_KEY ?? "").trim();
+  if (!issueId || !apiUrl || !apiKey || !input.responseText.trim()) return;
+
+  try {
+    const response = await fetch(`${apiUrl}/api/issues/${encodeURIComponent(issueId)}`, {
+      method: "PATCH",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "X-Paperclip-Run-Id": input.runId,
+      },
+      body: JSON.stringify({
+        status: "done",
+        comment: `Ollama Cloud direct result:\n\n${input.responseText.trim().slice(0, 3000)}`,
+      }),
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      await input.onLog(
+        "stderr",
+        `[paperclip] Direct Ollama issue finalization failed (${response.status}): ${detail.slice(0, 500)}\n`,
+      );
+    }
+  } catch (err) {
+    await input.onLog(
+      "stderr",
+      `[paperclip] Direct Ollama issue finalization failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
 }
 
 function claudeSkillsHome(): string {
@@ -116,8 +164,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       )
     : [];
   const configuredCwd = asString(config.cwd, "");
-  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
-  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
+  const effectiveWorkspaceCwd = workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const openCodeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
@@ -190,20 +237,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    await ensureCommandResolvable(command, cwd, runtimeEnv);
-    const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
+    const useDirectOllamaApi = shouldUseDirectOllamaApi(config, model);
+    if (!useDirectOllamaApi) {
+      await ensureCommandResolvable(command, cwd, runtimeEnv);
+    }
+    const ollamaBaseUrl = useDirectOllamaApi ? resolveOllamaBaseUrl(config, runtimeEnv) : "";
+    const resolvedCommand = useDirectOllamaApi
+      ? `${ollamaBaseUrl}/api/generate`
+      : await resolveCommandForLogs(command, cwd, runtimeEnv);
     const loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
       runtimeEnv,
       includeRuntimeKeys: ["HOME"],
       resolvedCommand,
     });
 
-    await ensureOpenCodeModelConfiguredAndAvailable({
-      model,
-      command,
-      cwd,
-      env: runtimeEnv,
-    });
+    if (!useDirectOllamaApi) {
+      await ensureOpenCodeModelConfiguredAndAvailable({
+        model,
+        command,
+        cwd,
+        env: runtimeEnv,
+      });
+    }
 
     const timeoutSec = asNumber(config.timeoutSec, 0);
     const graceSec = asNumber(config.graceSec, 20);
@@ -250,6 +305,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const commandNotes = (() => {
       const notes = [...preparedRuntimeConfig.notes];
+      if (useDirectOllamaApi) {
+        notes.push(
+          "Using direct Ollama /api/generate for ollama/* model execution; set useDirectOllamaApi=false to force OpenCode.",
+        );
+      }
       if (!resolvedInstructionsFilePath) return notes;
       if (instructionsPrefix.length > 0) {
         notes.push(`Loaded agent instructions from ${resolvedInstructionsFilePath}`);
@@ -297,6 +357,89 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionHandoffChars: sessionHandoffNote.length,
       heartbeatPromptChars: renderedPrompt.length,
     };
+
+    if (useDirectOllamaApi) {
+      const ollamaModel = parseOllamaModelId(model);
+      const directTimeoutSec = asNumber(
+        config.ollamaTimeoutSec,
+        timeoutSec > 0 ? timeoutSec : 420,
+      );
+      if (onMeta) {
+        await onMeta({
+          adapterType: "opencode_local",
+          command: resolvedCommand,
+          cwd,
+          commandNotes,
+          commandArgs: [`model=${ollamaModel ?? model}`, `<prompt ${prompt.length} chars>`],
+          env: loggedEnv,
+          prompt,
+          promptMetrics,
+          context,
+        });
+      }
+      if (!ollamaModel) {
+        return {
+          exitCode: 2,
+          signal: null,
+          timedOut: false,
+          errorMessage: `Direct Ollama execution requires an ollama/<model> id; got ${model || "(empty)"}`,
+          provider: "ollama",
+          biller: "ollama",
+          model: model || null,
+          billingType: "subscription_included",
+          costUsd: 0,
+          resultJson: { stdout: "", stderr: "Invalid Ollama model id" },
+          summary: null,
+        };
+      }
+
+      const direct = await runDirectOllamaGenerate({
+        baseUrl: ollamaBaseUrl,
+        model: ollamaModel,
+        prompt,
+        timeoutSec: directTimeoutSec,
+      });
+      if (direct.responseText) {
+        await onLog("stdout", `${direct.responseText}\n`);
+      }
+      if (direct.errorMessage) {
+        await onLog("stderr", `[paperclip] Direct Ollama execution failed: ${direct.errorMessage}\n`);
+      }
+      if (direct.ok) {
+        await finalizeDirectOllamaPaperclipIssue({
+          context,
+          runtimeEnv,
+          runId,
+          responseText: direct.responseText,
+          onLog,
+        });
+      }
+      return {
+        exitCode: direct.ok ? 0 : direct.timedOut ? null : 1,
+        signal: null,
+        timedOut: direct.timedOut,
+        errorMessage: direct.ok ? null : direct.errorMessage ?? "Direct Ollama execution failed",
+        usage: {
+          inputTokens: direct.usage.inputTokens,
+          outputTokens: direct.usage.outputTokens,
+          cachedInputTokens: 0,
+        },
+        sessionId: runtime.sessionId ?? null,
+        sessionParams: parseObject(runtime.sessionParams),
+        sessionDisplayId: runtime.sessionDisplayId ?? runtime.sessionId ?? null,
+        provider: "ollama",
+        biller: "ollama",
+        model,
+        billingType: "subscription_included",
+        costUsd: 0,
+        resultJson: {
+          stdout: direct.responseText,
+          stderr: direct.errorMessage ?? "",
+          ollama: direct.rawJson ?? {},
+        },
+        summary: direct.responseText,
+      };
+    }
 
     const buildArgs = (resumeSessionId: string | null) => {
       const args = ["run", "--format", "json"];

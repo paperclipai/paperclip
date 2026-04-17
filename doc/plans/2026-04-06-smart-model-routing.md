@@ -56,6 +56,14 @@ That separation is a better fit for Paperclip than copying Hermes' exact keyword
 
 Paperclip already has the right execution shape for adapter-specific routing, but it currently assumes one model per heartbeat run.
 
+2026-04-17 Sigma5C update:
+
+- `opencode_local` now treats `ollama/*` models as a direct Ollama Cloud lane by default.
+- Direct Ollama execution calls `/api/generate` and can be disabled per agent with `useDirectOllamaApi=false`.
+- The direct path exists because OpenCode model discovery works locally while `opencode run --model ollama/...` has stalled during production Paperclip heartbeats.
+- Direct Ollama runs are still single-model Paperclip runs. Codex peer-review pairing is enforced in The Bridge comms dispatch path; Paperclip's future segmented-execution contract is still needed before Paperclip can truthfully represent an Ollama-plus-Codex heartbeat as one routed run.
+- Sigma5C live recurring routines that had been assigned to Claude were reassigned to Codex on 2026-04-17 to reduce Claude Code usage while preserving operational execution capability.
+
 Current implementation facts:
 
 - `server/src/services/heartbeat.ts` builds rich run context, including `paperclipWake`, workspace metadata, and session handoff context
