@@ -714,17 +714,6 @@ async function withSchedulerLock(db: any, fn: () => Promise<void>) {
       });
     }, config.heartbeatSchedulerIntervalMs);
 
-    // Periodically sweep runs that have been running longer than the maximum allowed duration.
-    const sweepTimerId = setInterval(() => {
-      void withSchedulerLock(db, async () => {
-        await heartbeat
-          .sweepStaleRuns()
-          .catch((err) => {
-            logger.error({ err }, "stale run sweep failed");
-          });
-      });
-    }, 60_000); // every minute
-
     // Send trial expiry warning emails once per hour
     let lastTrialCheckMs = 0;
     const TRIAL_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -740,7 +729,6 @@ async function withSchedulerLock(db: any, fn: () => Promise<void>) {
     function gracefulShutdown(signal: string) {
       logger.info({ signal }, "Received shutdown signal, cleaning up...");
       clearInterval(schedulerTimerId);
-      clearInterval(sweepTimerId);
       clearInterval(trialCheckTimerId);
       // Give in-flight work 10 seconds to finish
       setTimeout(() => process.exit(0), 10_000);

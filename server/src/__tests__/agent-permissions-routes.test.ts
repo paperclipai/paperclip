@@ -635,7 +635,7 @@ describe("agent permission routes", () => {
 
     const res = await request(app).post("/api/heartbeat-runs/run-1/cancel").send({});
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(403);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 });

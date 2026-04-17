@@ -6,7 +6,14 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
-import { assertBoard } from "./authz.js";
+
+function shouldExposeFullHealthDetails(
+  actorType: "none" | "board" | "agent" | null | undefined,
+  deploymentMode: DeploymentMode,
+) {
+  if (deploymentMode !== "authenticated") return true;
+  return actorType === "board" || actorType === "agent";
+}
 
 export function healthRoutes(
   db?: Db,
@@ -15,55 +22,28 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
-    emailEnabled: boolean;
-    socialProviders: string[];
-    cloudSandboxEnabled: boolean;
-    managedInferenceEnabled: boolean;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
     authReady: true,
     companyDeletionEnabled: true,
-    emailEnabled: false,
-    socialProviders: [],
-    cloudSandboxEnabled: false,
-    managedInferenceEnabled: false,
   },
 ) {
   const router = Router();
 
-  // Public, no auth required — includes deploymentMode so the UI knows
-  // whether to redirect to /auth before the user has a session.
-  router.get("/", async (_req, res) => {
-    if (db) {
-      try {
-        await db.execute(sql`SELECT 1`);
-      } catch {
-        res.status(503).json({
-          status: "unhealthy",
-          version: serverVersion,
-          error: "database_unreachable",
-        });
-        return;
-      }
-    }
-
-    res.json({
-      status: "ok",
-      version: serverVersion,
-      deploymentMode: opts.deploymentMode,
-      features: {
-        socialProviders: opts.socialProviders,
-      },
-    });
-  });
-
-  // Authenticated — full details
-  router.get("/details", async (req, res) => {
-    assertBoard(req);
+  router.get("/", async (req, res) => {
+    const actorType = "actor" in req ? req.actor?.type : null;
+    const exposeFullDetails = shouldExposeFullHealthDetails(
+      actorType,
+      opts.deploymentMode,
+    );
 
     if (!db) {
-      res.json({ status: "ok", version: serverVersion });
+      res.json(
+        exposeFullDetails
+          ? { status: "ok", version: serverVersion }
+          : { status: "ok", deploymentMode: opts.deploymentMode },
+      );
       return;
     }
 
@@ -108,7 +88,7 @@ export function healthRoutes(
 
     const persistedDevServerStatus = readPersistedDevServerStatus();
     let devServer: ReturnType<typeof toDevServerHealthStatus> | undefined;
-    if (persistedDevServerStatus) {
+    if (persistedDevServerStatus && typeof (db as { select?: unknown }).select === "function") {
       const instanceSettings = instanceSettingsService(db);
       const experimentalSettings = await instanceSettings.getExperimental();
       const activeRunCount = await db
@@ -123,6 +103,16 @@ export function healthRoutes(
       });
     }
 
+    if (!exposeFullDetails) {
+      res.json({
+        status: "ok",
+        deploymentMode: opts.deploymentMode,
+        bootstrapStatus,
+        bootstrapInviteActive,
+      });
+      return;
+    }
+
     res.json({
       status: "ok",
       version: serverVersion,
@@ -133,10 +123,6 @@ export function healthRoutes(
       bootstrapInviteActive,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
-        emailEnabled: opts.emailEnabled,
-        socialProviders: opts.socialProviders,
-        cloudSandboxEnabled: opts.cloudSandboxEnabled,
-        managedInferenceEnabled: opts.managedInferenceEnabled,
       },
       ...(devServer ? { devServer } : {}),
     });

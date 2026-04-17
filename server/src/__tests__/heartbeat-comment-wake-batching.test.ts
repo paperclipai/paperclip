@@ -407,11 +407,7 @@ describe("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
-      await waitFor(() => gateway.getAgentPayloads().length >= 2);
-      // Tolerate the upstream comment-retry feature optionally adding a 3rd run
-      // after the deferred-promoted run #2 finishes without posting a comment.
-      // The first two runs (original + deferred-batched) are what this test
-      // actually validates; any retry runs are tested separately below.
+      await waitFor(() => gateway.getAgentPayloads().length === 2);
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
         return runs.length === 2 && runs.every((run) => run.status === "succeeded");

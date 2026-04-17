@@ -1,4 +1,4 @@
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
@@ -45,8 +45,11 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, hasCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
-import { planLimits } from "../middleware/plan-limits.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import {
+  assertNoAgentHostWorkspaceCommandMutation,
+  collectAgentAdapterWorkspaceCommandPaths,
+} from "./workspace-command-authz.js";
 import {
   detectAdapterModel,
   findActiveServerAdapter,
@@ -73,6 +76,8 @@ import {
 import { getTelemetryClient } from "../telemetry.js";
 
 export function agentRoutes(db: Db) {
+  // Legacy hardcoded maps — used as fallback when adapter module does not
+  // declare capability flags explicitly.
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
@@ -84,6 +89,22 @@ export function agentRoutes(db: Db) {
     pi_local: "instructionsFilePath",
   };
   const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set(Object.keys(DEFAULT_INSTRUCTIONS_PATH_KEYS));
+
+  /** Check if an adapter supports the managed instructions bundle. */
+  function adapterSupportsInstructionsBundle(adapterType: string): boolean {
+    const adapter = findActiveServerAdapter(adapterType);
+    if (adapter?.supportsInstructionsBundle !== undefined) return adapter.supportsInstructionsBundle;
+    return DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES.has(adapterType);
+  }
+
+  /** Resolve the adapter config key for the instructions file path. */
+  function resolveInstructionsPathKey(adapterType: string): string | null {
+    const adapter = findActiveServerAdapter(adapterType);
+    if (adapter?.instructionsPathKey) return adapter.instructionsPathKey;
+    if (adapter?.supportsInstructionsBundle === true) return "instructionsFilePath";
+    if (adapter?.supportsInstructionsBundle === false) return null;
+    return DEFAULT_INSTRUCTIONS_PATH_KEYS[adapterType] ?? null;
+  }
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
   const KNOWN_INSTRUCTIONS_BUNDLE_KEYS = [
     "instructionsBundleMode",
@@ -99,7 +120,6 @@ export function agentRoutes(db: Db) {
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
   const heartbeat = heartbeatService(db);
-  const limits = planLimits(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const instructions = agentInstructionsService();
@@ -107,7 +127,6 @@ export function agentRoutes(db: Db) {
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
-  const cloudSandboxEnabled = process.env.PAPERCLIP_CLOUD_SANDBOX_ENABLED === "true";
 
   async function getCurrentUserRedactionOptions() {
     return {
@@ -216,23 +235,44 @@ export function agentRoutes(db: Db) {
     return actorAgent;
   }
 
-  async function assertCanReadConfigurations(req: Request, companyId: string) {
-    // Any company member can read agent configurations and skills.
-    // This intentionally does NOT require agents:create permission.
+  async function assertBoardCanManageAgentsForCompany(req: Request, companyId: string) {
+    assertBoard(req);
     assertCompanyAccess(req, companyId);
-    if (req.actor.type === "agent") {
-      if (!req.actor.agentId) throw forbidden("Agent authentication required");
-      const actorAgent = await svc.getById(req.actor.agentId);
-      if (!actorAgent || actorAgent.companyId !== companyId) {
-        throw forbidden("Agent key cannot access another company");
-      }
-      return actorAgent;
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    const allowed = await access.canUser(companyId, req.actor.userId, "agents:create");
+    if (!allowed) {
+      throw forbidden("Missing permission: agents:create");
     }
-    return null;
+  }
+
+  async function assertCanReadConfigurations(req: Request, companyId: string) {
+    return assertCanCreateAgentsForCompany(req, companyId);
+  }
+
+  async function getAccessibleAgent(req: Request, res: Response, id: string) {
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return null;
+    }
+    assertCompanyAccess(req, agent.companyId);
+    if (req.actor.type === "board") {
+      await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    }
+    return agent;
   }
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
-    return hasCompanyAccess(req, companyId);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+      return access.canUser(companyId, req.actor.userId, "agents:create");
+    }
+    if (!req.actor.agentId) return false;
+    const actorAgent = await svc.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) return false;
+    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "agents:create");
+    return allowedByGrant || canCreateAgents(actorAgent);
   }
 
   async function buildSkippedWakeupResponse(
@@ -304,7 +344,10 @@ export function agentRoutes(db: Db) {
 
   async function assertCanUpdateAgent(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
-    if (req.actor.type === "board") return;
+    if (req.actor.type === "board") {
+      await assertBoardCanManageAgentsForCompany(req, targetAgent.companyId);
+      return;
+    }
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
 
     const actorAgent = await svc.getById(req.actor.agentId);
@@ -326,7 +369,10 @@ export function agentRoutes(db: Db) {
 
   async function assertCanReadAgent(req: Request, targetAgent: { companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
-    if (req.actor.type === "board") return;
+    if (req.actor.type === "board") {
+      await assertCanReadConfigurations(req, targetAgent.companyId);
+      return;
+    }
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
 
     const actorAgent = await svc.getById(req.actor.agentId);
@@ -562,7 +608,7 @@ export function agentRoutes(db: Db) {
     adapterType: string;
     adapterConfig: unknown;
   }>(agent: T): Promise<T> {
-    if (!DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES.has(agent.adapterType)) {
+    if (!adapterSupportsInstructionsBundle(agent.adapterType)) {
       return agent;
     }
 
@@ -597,19 +643,24 @@ export function agentRoutes(db: Db) {
 
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
-    if (req.actor.type === "board") return;
-    if (!req.actor.agentId) throw forbidden("Agent authentication required");
-
-    const actorAgent = await svc.getById(req.actor.agentId);
-    if (!actorAgent || actorAgent.companyId !== targetAgent.companyId) {
-      throw forbidden("Agent key cannot access another company");
+    if (req.actor.type !== "board") {
+      throw forbidden(
+        "Only board-authenticated callers can manage instructions path or bundle configuration",
+      );
     }
-    if (actorAgent.id === targetAgent.id) return;
+    await assertBoardCanManageAgentsForCompany(req, targetAgent.companyId);
+  }
 
-    const chainOfCommand = await svc.getChainOfCommand(targetAgent.id);
-    if (chainOfCommand.some((manager) => manager.id === actorAgent.id)) return;
-
-    throw forbidden("Only the target agent or an ancestor manager can update instructions path");
+  function assertNoAgentInstructionsConfigMutation(
+    req: Request,
+    adapterConfig: Record<string, unknown> | null | undefined,
+  ) {
+    if (req.actor.type !== "agent" || !adapterConfig) return;
+    const changedSensitiveKeys = KNOWN_INSTRUCTIONS_BUNDLE_KEYS.filter((key) => adapterConfig[key] !== undefined);
+    if (changedSensitiveKeys.length === 0) return;
+    throw forbidden(
+      `Agent-authenticated callers cannot modify instructions path or bundle configuration (${changedSensitiveKeys.join(", ")})`,
+    );
   }
 
   function summarizeAgentUpdateDetails(patch: Record<string, unknown>) {
@@ -643,7 +694,9 @@ export function agentRoutes(db: Db) {
     };
   }
 
-  const ADAPTERS_REQUIRING_MATERIALIZED_RUNTIME_SKILLS = new Set([
+  // Legacy hardcoded set — used as fallback when adapter module does not
+  // declare requiresMaterializedRuntimeSkills explicitly.
+  const LEGACY_MATERIALIZED_SKILLS_SET = new Set([
     "cursor",
     "gemini_local",
     "opencode_local",
@@ -651,7 +704,11 @@ export function agentRoutes(db: Db) {
   ]);
 
   function shouldMaterializeRuntimeSkillsForAdapter(adapterType: string) {
-    return ADAPTERS_REQUIRING_MATERIALIZED_RUNTIME_SKILLS.has(adapterType);
+    const adapter = findActiveServerAdapter(adapterType);
+    if (adapter?.requiresMaterializedRuntimeSkills !== undefined) {
+      return adapter.requiresMaterializedRuntimeSkills;
+    }
+    return LEGACY_MATERIALIZED_SKILLS_SET.has(adapterType);
   }
 
   async function buildRuntimeSkillConfig(
@@ -799,72 +856,6 @@ export function agentRoutes(db: Db) {
     res.json(detected);
   });
 
-  // Validate an API key by making a lightweight call to the provider
-  router.post("/companies/:companyId/validate-api-key", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-
-    const { provider, apiKey } = req.body as { provider?: string; apiKey?: string };
-    if (!provider || !apiKey) {
-      res.status(400).json({ valid: false, error: "provider and apiKey are required" });
-      return;
-    }
-
-    try {
-      let valid = false;
-      let error: string | null = null;
-
-      switch (provider) {
-        case "openai": {
-          const resp = await fetch("https://api.openai.com/v1/models", {
-            headers: { Authorization: `Bearer ${apiKey}` },
-            signal: AbortSignal.timeout(10000),
-          });
-          valid = resp.ok;
-          if (!valid) error = resp.status === 401 ? "Invalid API key" : `API returned ${resp.status}`;
-          break;
-        }
-        case "anthropic": {
-          const resp = await fetch("https://api.anthropic.com/v1/models", {
-            headers: {
-              "x-api-key": apiKey,
-              "anthropic-version": "2023-06-01",
-            },
-            signal: AbortSignal.timeout(10000),
-          });
-          valid = resp.ok;
-          if (!valid) error = resp.status === 401 ? "Invalid API key" : `API returned ${resp.status}`;
-          break;
-        }
-        case "google": {
-          const resp = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
-            { signal: AbortSignal.timeout(10000) },
-          );
-          valid = resp.ok;
-          if (!valid) error = resp.status === 400 || resp.status === 403 ? "Invalid API key" : `API returned ${resp.status}`;
-          break;
-        }
-        case "openrouter": {
-          const resp = await fetch("https://openrouter.ai/api/v1/models", {
-            headers: { Authorization: `Bearer ${apiKey}` },
-            signal: AbortSignal.timeout(10000),
-          });
-          valid = resp.ok;
-          if (!valid) error = resp.status === 401 ? "Invalid API key" : `API returned ${resp.status}`;
-          break;
-        }
-        default:
-          res.status(400).json({ valid: false, error: `Unknown provider: ${provider}` });
-          return;
-      }
-
-      res.json({ valid, error });
-    } catch (err) {
-      res.json({ valid: false, error: err instanceof Error ? err.message : "Validation failed" });
-    }
-  });
-
   router.post(
     "/companies/:companyId/adapters/:type/test-environment",
     validate(testAdapterEnvironmentSchema),
@@ -900,7 +891,7 @@ export function agentRoutes(db: Db) {
   router.get("/agents/:id/skills", async (req, res) => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
+    if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -943,7 +934,7 @@ export function agentRoutes(db: Db) {
     async (req, res) => {
       const id = req.params.id as string;
       const agent = await svc.getById(id);
-      if (!agent || !hasCompanyAccess(req, agent.companyId)) {
+      if (!agent) {
         res.status(404).json({ error: "Agent not found" });
         return;
       }
@@ -1044,7 +1035,7 @@ export function agentRoutes(db: Db) {
     }
     const result = await svc.list(companyId);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs || req.actor.type === "board") {
+    if (canReadConfigs) {
       res.json(result);
       return;
     }
@@ -1176,6 +1167,7 @@ export function agentRoutes(db: Db) {
     const rows = await issuesSvc.list(req.actor.companyId, {
       assigneeAgentId: req.actor.agentId,
       status: "todo,in_progress,blocked",
+      includeRoutineExecutions: true,
     });
 
     res.json(
@@ -1214,16 +1206,18 @@ export function agentRoutes(db: Db) {
   router.get("/agents/:id", async (req, res) => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
+    if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      const canRead = await actorCanReadConfigurationsForCompany(req, agent.companyId);
-      if (!canRead) {
-        res.json(await buildAgentDetail(agent, { restricted: true }));
-        return;
-      }
+    assertCompanyAccess(req, agent.companyId);
+    const isSelf = req.actor.type === "agent" && req.actor.agentId === id;
+    const canReadSensitiveDetail = isSelf
+      ? true
+      : await actorCanReadConfigurationsForCompany(req, agent.companyId);
+    if (!canReadSensitiveDetail) {
+      res.json(await buildAgentDetail(agent, { restricted: true }));
+      return;
     }
     res.json(await buildAgentDetail(agent));
   });
@@ -1231,7 +1225,7 @@ export function agentRoutes(db: Db) {
   router.get("/agents/:id/configuration", async (req, res) => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
+    if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -1242,7 +1236,7 @@ export function agentRoutes(db: Db) {
   router.get("/agents/:id/config-revisions", async (req, res) => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
+    if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -1255,7 +1249,7 @@ export function agentRoutes(db: Db) {
     const id = req.params.id as string;
     const revisionId = req.params.revisionId as string;
     const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
+    if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -1272,7 +1266,7 @@ export function agentRoutes(db: Db) {
     const id = req.params.id as string;
     const revisionId = req.params.revisionId as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -1307,10 +1301,12 @@ export function agentRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
+    if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    assertCompanyAccess(req, agent.companyId);
 
     const state = await heartbeat.getRuntimeState(id);
     res.json(state);
@@ -1320,10 +1316,12 @@ export function agentRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
+    if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    assertCompanyAccess(req, agent.companyId);
 
     const sessions = await heartbeat.listTaskSessions(id);
     res.json(
@@ -1338,10 +1336,12 @@ export function agentRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
+    if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    assertCompanyAccess(req, agent.companyId);
 
     const taskKey =
       typeof req.body.taskKey === "string" && req.body.taskKey.trim().length > 0
@@ -1365,7 +1365,6 @@ export function agentRoutes(db: Db) {
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
-    await limits.checkAgentLimit(companyId);
     const sourceIssueIds = parseSourceIssueIds(req.body);
     const {
       desiredSkills: requestedDesiredSkills,
@@ -1373,21 +1372,15 @@ export function agentRoutes(db: Db) {
       sourceIssueIds: _sourceIssueIds,
       ...hireInput
     } = req.body;
-
-    // Cloud sandbox enforcement: only cloud_sandbox adapter type is allowed
-    if (cloudSandboxEnabled && hireInput.adapterType !== "cloud_sandbox") {
-      res.status(400).json({ error: "Only cloud_sandbox adapter type is allowed when cloud sandbox mode is enabled" });
-      return;
-    }
-
-    // Strip dangerous fields from cloud_sandbox adapterConfig
-    if (hireInput.adapterType === "cloud_sandbox" && hireInput.adapterConfig) {
-      const cfg = hireInput.adapterConfig as Record<string, unknown>;
-      delete cfg.command;
-      delete cfg.args;
-    }
-
     hireInput.adapterType = assertKnownAdapterType(hireInput.adapterType);
+    assertNoAgentHostWorkspaceCommandMutation(
+      req,
+      collectAgentAdapterWorkspaceCommandPaths(hireInput.adapterConfig),
+    );
+    assertNoAgentInstructionsConfigMutation(
+      req,
+      (hireInput.adapterConfig ?? {}) as Record<string, unknown>,
+    );
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       hireInput.adapterType,
       ((hireInput.adapterConfig ?? {}) as Record<string, unknown>),
@@ -1549,27 +1542,10 @@ export function agentRoutes(db: Db) {
       assertBoard(req);
     }
 
-    // Check plan-based agent limit before creating
-    await limits.checkAgentLimit(companyId);
-
     const {
       desiredSkills: requestedDesiredSkills,
       ...createInput
     } = req.body;
-
-    // Cloud sandbox enforcement: only cloud_sandbox adapter type is allowed
-    if (cloudSandboxEnabled && createInput.adapterType !== "cloud_sandbox") {
-      res.status(400).json({ error: "Only cloud_sandbox adapter type is allowed when cloud sandbox mode is enabled" });
-      return;
-    }
-
-    // Strip dangerous fields from cloud_sandbox adapterConfig
-    if (createInput.adapterType === "cloud_sandbox" && createInput.adapterConfig) {
-      const cfg = createInput.adapterConfig as Record<string, unknown>;
-      delete cfg.command;
-      delete cfg.args;
-    }
-
     createInput.adapterType = assertKnownAdapterType(createInput.adapterType);
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       createInput.adapterType,
@@ -1648,10 +1624,11 @@ export function agentRoutes(db: Db) {
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    assertCompanyAccess(req, existing.companyId);
 
     if (req.actor.type === "agent") {
       const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
@@ -1663,6 +1640,8 @@ export function agentRoutes(db: Db) {
         res.status(403).json({ error: "Only CEO can manage permissions" });
         return;
       }
+    } else {
+      await assertBoardCanManageAgentsForCompany(req, existing.companyId);
     }
 
     const agent = await svc.updatePermissions(id, req.body);
@@ -1705,7 +1684,7 @@ export function agentRoutes(db: Db) {
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -1714,7 +1693,7 @@ export function agentRoutes(db: Db) {
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     const explicitKey = asNonEmptyString(req.body.adapterConfigKey);
-    const defaultKey = DEFAULT_INSTRUCTIONS_PATH_KEYS[existing.adapterType] ?? null;
+    const defaultKey = resolveInstructionsPathKey(existing.adapterType);
     const adapterConfigKey = explicitKey ?? defaultKey;
     if (!adapterConfigKey) {
       res.status(422).json({
@@ -1783,7 +1762,7 @@ export function agentRoutes(db: Db) {
   router.get("/agents/:id/instructions-bundle", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -1794,7 +1773,7 @@ export function agentRoutes(db: Db) {
   router.patch("/agents/:id/instructions-bundle", validate(updateAgentInstructionsBundleSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -1842,7 +1821,7 @@ export function agentRoutes(db: Db) {
   router.get("/agents/:id/instructions-bundle/file", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -1860,7 +1839,7 @@ export function agentRoutes(db: Db) {
   router.put("/agents/:id/instructions-bundle/file", validate(upsertAgentInstructionsFileSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -1909,7 +1888,7 @@ export function agentRoutes(db: Db) {
   router.delete("/agents/:id/instructions-bundle/file", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -1943,7 +1922,7 @@ export function agentRoutes(db: Db) {
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -1955,28 +1934,6 @@ export function agentRoutes(db: Db) {
     }
 
     const patchData = { ...(req.body as Record<string, unknown>) };
-
-    // Cloud sandbox enforcement: reject adapter type changes to non-cloud_sandbox
-    if (cloudSandboxEnabled) {
-      const requestedAdapterType =
-        typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType;
-      if (requestedAdapterType !== "cloud_sandbox") {
-        res.status(400).json({ error: "Only cloud_sandbox adapter type is allowed when cloud sandbox mode is enabled" });
-        return;
-      }
-    }
-
-    // Strip dangerous fields from cloud_sandbox adapterConfig
-    if (
-      (typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType) === "cloud_sandbox" &&
-      patchData.adapterConfig &&
-      typeof patchData.adapterConfig === "object"
-    ) {
-      const cfg = patchData.adapterConfig as Record<string, unknown>;
-      delete cfg.command;
-      delete cfg.args;
-    }
-
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
     if (hasOwn(patchData, "adapterConfig")) {
@@ -1985,10 +1942,15 @@ export function agentRoutes(db: Db) {
         res.status(422).json({ error: "adapterConfig must be an object" });
         return;
       }
-      const changingInstructionsPath = Object.keys(adapterConfig).some((key) =>
-        KNOWN_INSTRUCTIONS_PATH_KEYS.has(key),
+      assertNoAgentInstructionsConfigMutation(req, adapterConfig);
+      assertNoAgentHostWorkspaceCommandMutation(
+        req,
+        collectAgentAdapterWorkspaceCommandPaths(adapterConfig),
       );
-      if (changingInstructionsPath) {
+      const changingInstructionsConfig = Object.keys(adapterConfig).some((key) =>
+        KNOWN_INSTRUCTIONS_BUNDLE_KEYS.includes(key as (typeof KNOWN_INSTRUCTIONS_BUNDLE_KEYS)[number]),
+      );
+      if (changingInstructionsConfig) {
         await assertCanManageInstructionsPath(req, existing);
       }
       patchData.adapterConfig = adapterConfig;
@@ -2089,9 +2051,7 @@ export function agentRoutes(db: Db) {
   router.post("/agents/:id/pause", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Agent not found" });
+    if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
     const agent = await svc.pause(id);
@@ -2117,9 +2077,7 @@ export function agentRoutes(db: Db) {
   router.post("/agents/:id/resume", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Agent not found" });
+    if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
     const agent = await svc.resume(id);
@@ -2143,9 +2101,7 @@ export function agentRoutes(db: Db) {
   router.post("/agents/:id/terminate", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Agent not found" });
+    if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
     const agent = await svc.terminate(id);
@@ -2171,9 +2127,7 @@ export function agentRoutes(db: Db) {
   router.delete("/agents/:id", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Agent not found" });
+    if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
     const agent = await svc.remove(id);
@@ -2197,9 +2151,8 @@ export function agentRoutes(db: Db) {
   router.get("/agents/:id/keys", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
-      res.status(404).json({ error: "Agent not found" });
+    const agent = await getAccessibleAgent(req, res, id);
+    if (!agent) {
       return;
     }
     const keys = await svc.listKeys(id);
@@ -2209,9 +2162,8 @@ export function agentRoutes(db: Db) {
   router.post("/agents/:id/keys", validate(createAgentKeySchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
-      res.status(404).json({ error: "Agent not found" });
+    const agent = await getAccessibleAgent(req, res, id);
+    if (!agent) {
       return;
     }
     const key = await svc.createApiKey(id, req.body.name);
@@ -2233,36 +2185,52 @@ export function agentRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const keyId = req.params.keyId as string;
-    const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
-      res.status(404).json({ error: "Agent not found" });
+    const agent = await getAccessibleAgent(req, res, id);
+    if (!agent) {
       return;
     }
-    // Verify the key belongs to this agent to prevent cross-agent key revocation
-    const keys = await svc.listKeys(id);
-    if (!keys.some((k) => k.id === keyId)) {
-      res.status(404).json({ error: "Key not found for this agent" });
+
+    const key = await svc.getKeyById(keyId);
+    if (!key || key.agentId !== agent.id) {
+      res.status(404).json({ error: "Key not found" });
       return;
     }
-    const revoked = await svc.revokeKey(id, keyId);
+
+    const revoked = await svc.revokeKey(agent.id, keyId);
     if (!revoked) {
       res.status(404).json({ error: "Key not found" });
       return;
     }
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.key_revoked",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { keyId: key.id, name: key.name },
+    });
+
     res.json({ ok: true });
   });
 
   router.post("/agents/:id/wakeup", validate(wakeAgentSchema), async (req, res) => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
+    if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    assertCompanyAccess(req, agent.companyId);
 
-    if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      res.status(403).json({ error: "Agent can only invoke itself" });
-      return;
+    if (req.actor.type === "agent") {
+      if (req.actor.agentId !== id) {
+        res.status(403).json({ error: "Agent can only invoke itself" });
+        return;
+      }
+    } else {
+      await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
 
     const run = await heartbeat.wakeup(id, {
@@ -2304,14 +2272,19 @@ export function agentRoutes(db: Db) {
   router.post("/agents/:id/heartbeat/invoke", async (req, res) => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
+    if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    assertCompanyAccess(req, agent.companyId);
 
-    if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      res.status(403).json({ error: "Agent can only invoke itself" });
-      return;
+    if (req.actor.type === "agent") {
+      if (req.actor.agentId !== id) {
+        res.status(403).json({ error: "Agent can only invoke itself" });
+        return;
+      }
+    } else {
+      await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
 
     const run = await heartbeat.invoke(
@@ -2353,10 +2326,12 @@ export function agentRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const agent = await svc.getById(id);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
+    if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    assertCompanyAccess(req, agent.companyId);
     if (agent.adapterType !== "claude_local") {
       res.status(400).json({ error: "Login is only supported for claude_local agents" });
       return;
@@ -2448,10 +2423,11 @@ export function agentRoutes(db: Db) {
   router.get("/heartbeat-runs/:runId", async (req, res) => {
     const runId = req.params.runId as string;
     const run = await heartbeat.getRun(runId);
-    if (!run || !hasCompanyAccess(req, run.companyId)) {
+    if (!run) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
+    assertCompanyAccess(req, run.companyId);
     res.json(redactCurrentUserValue(run, await getCurrentUserRedactionOptions()));
   });
 
@@ -2459,9 +2435,8 @@ export function agentRoutes(db: Db) {
     assertBoard(req);
     const runId = req.params.runId as string;
     const existing = await heartbeat.getRun(runId);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Heartbeat run not found" });
-      return;
+    if (existing) {
+      assertCompanyAccess(req, existing.companyId);
     }
     const run = await heartbeat.cancelRun(runId);
 
@@ -2483,10 +2458,11 @@ export function agentRoutes(db: Db) {
   router.get("/heartbeat-runs/:runId/events", async (req, res) => {
     const runId = req.params.runId as string;
     const run = await heartbeat.getRun(runId);
-    if (!run || !hasCompanyAccess(req, run.companyId)) {
+    if (!run) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
+    assertCompanyAccess(req, run.companyId);
 
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
@@ -2503,21 +2479,20 @@ export function agentRoutes(db: Db) {
 
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {
     const runId = req.params.runId as string;
-    const run = await heartbeat.getRun(runId);
-    if (!run || !hasCompanyAccess(req, run.companyId)) {
+    const run = await heartbeat.getRunLogAccess(runId);
+    if (!run) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
+    assertCompanyAccess(req, run.companyId);
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = Number(req.query.limitBytes ?? 256000);
-    const result = await heartbeat.readLog(runId, {
+    const result = await heartbeat.readLog(run, {
       offset: Number.isFinite(offset) ? offset : 0,
       limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
     });
 
-    // Disable ETag caching - log content grows during runs and stale
-    // 304 responses from earlier empty/error states break the UI.
     res.set("Cache-Control", "no-cache, no-store");
     res.json(result);
   });
@@ -2525,10 +2500,11 @@ export function agentRoutes(db: Db) {
   router.get("/heartbeat-runs/:runId/workspace-operations", async (req, res) => {
     const runId = req.params.runId as string;
     const run = await heartbeat.getRun(runId);
-    if (!run || !hasCompanyAccess(req, run.companyId)) {
+    if (!run) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
+    assertCompanyAccess(req, run.companyId);
 
     const context = asRecord(run.contextSnapshot);
     const executionWorkspaceId = asNonEmptyString(context?.executionWorkspaceId);
@@ -2539,10 +2515,11 @@ export function agentRoutes(db: Db) {
   router.get("/workspace-operations/:operationId/log", async (req, res) => {
     const operationId = req.params.operationId as string;
     const operation = await workspaceOperations.getById(operationId);
-    if (!operation || !hasCompanyAccess(req, operation.companyId)) {
+    if (!operation) {
       res.status(404).json({ error: "Workspace operation not found" });
       return;
     }
+    assertCompanyAccess(req, operation.companyId);
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = Number(req.query.limitBytes ?? 256000);
@@ -2551,18 +2528,20 @@ export function agentRoutes(db: Db) {
       limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
     });
 
+    res.set("Cache-Control", "no-cache, no-store");
     res.json(result);
   });
 
   router.get("/issues/:issueId/live-runs", async (req, res) => {
     const rawId = req.params.issueId as string;
     const issueSvc = issueService(db);
-    const isIdentifier = /^[A-Z][A-Z0-9]*-\d+$/i.test(rawId);
+    const isIdentifier = /^[A-Z]+-\d+$/i.test(rawId);
     const issue = isIdentifier ? await issueSvc.getByIdentifier(rawId) : await issueSvc.getById(rawId);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
+    if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    assertCompanyAccess(req, issue.companyId);
 
     const liveRuns = await db
       .select({
@@ -2594,12 +2573,13 @@ export function agentRoutes(db: Db) {
   router.get("/issues/:issueId/active-run", async (req, res) => {
     const rawId = req.params.issueId as string;
     const issueSvc = issueService(db);
-    const isIdentifier = /^[A-Z][A-Z0-9]*-\d+$/i.test(rawId);
+    const isIdentifier = /^[A-Z]+-\d+$/i.test(rawId);
     const issue = isIdentifier ? await issueSvc.getByIdentifier(rawId) : await issueSvc.getById(rawId);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
+    if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    assertCompanyAccess(req, issue.companyId);
 
     let run = issue.executionRunId ? await heartbeat.getRunIssueSummary(issue.executionRunId) : null;
     if (
