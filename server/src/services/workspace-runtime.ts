@@ -696,7 +696,7 @@ function buildWorkspaceCommandEnv(input: {
   agent: ExecutionWorkspaceAgentRef;
   created: boolean;
 }) {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env: NodeJS.ProcessEnv = { ...sanitizeRuntimeServiceBaseEnv(process.env) };
   env.PAPERCLIP_WORKSPACE_CWD = input.worktreePath;
   env.PAPERCLIP_WORKSPACE_PATH = input.worktreePath;
   env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = input.worktreePath;
@@ -734,6 +734,7 @@ function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
 
     const relativePath = match.groups.relative;
     const repoManagedPath = path.join(repoRoot, relativePath.slice(2));
+    if (!repoManagedPath.startsWith(repoRoot + path.sep)) continue;
     if (!existsSync(repoManagedPath)) continue;
 
     const prefix = match.groups.prefix ?? "";
