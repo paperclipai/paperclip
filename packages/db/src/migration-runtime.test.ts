@@ -72,6 +72,63 @@ if (!embeddedPostgresSupport.supported) {
 
 describeEmbeddedPostgres("resolveMigrationConnection", () => {
   it(
+    "adopts the running embedded postgres when the preferred port matches the resolved data dir but postmaster.pid is missing",
+    async () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-migration-runtime-"));
+      const dataDir = path.join(tempRoot, "running-db");
+      const configPath = path.join(tempRoot, "instance", "config.json");
+      const postmasterPidPath = path.join(dataDir, "postmaster.pid");
+      const hiddenPidPath = path.join(dataDir, "postmaster.pid.hidden");
+      const port = await getAvailablePort();
+      const EmbeddedPostgres = await getEmbeddedPostgresCtor();
+      const instance = new EmbeddedPostgres({
+        databaseDir: dataDir,
+        user: "paperclip",
+        password: "paperclip",
+        port,
+        persistent: true,
+        initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+        onLog: () => {},
+        onError: () => {},
+      });
+
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          database: {
+            mode: "embedded-postgres",
+            embeddedPostgresDataDir: dataDir,
+            embeddedPostgresPort: port,
+          },
+        }, null, 2),
+      );
+
+      process.env.PAPERCLIP_CONFIG = configPath;
+
+      try {
+        await instance.initialise();
+        await instance.start();
+
+        fs.renameSync(postmasterPidPath, hiddenPidPath);
+
+        const connection = await resolveMigrationConnection();
+        expect(connection.source).toBe(`embedded-postgres@${port}`);
+        expect(connection.connectionString).toBe(`postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`);
+
+        await connection.stop();
+      } finally {
+        if (fs.existsSync(hiddenPidPath) && !fs.existsSync(postmasterPidPath)) {
+          fs.renameSync(hiddenPidPath, postmasterPidPath);
+        }
+        await instance.stop().catch(() => {});
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  it(
     "refuses to side-start a second embedded postgres when the preferred port belongs to another data dir",
     async () => {
       const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-migration-runtime-"));
@@ -110,7 +167,7 @@ describeEmbeddedPostgres("resolveMigrationConnection", () => {
         await instance.start();
 
         await expect(resolveMigrationConnection()).rejects.toThrow(
-          new RegExp(`Another embedded PostgreSQL instance is already running on port ${port}`),
+          new RegExp(`Port ${port} is already in use with data_directory=`),
         );
         expect(fs.existsSync(path.join(resolvedDataDir, "PG_VERSION"))).toBe(false);
       } finally {

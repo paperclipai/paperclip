@@ -118,9 +118,11 @@ async function ensureEmbeddedPostgresConnection(
   if (!runningPid && await isPortInUse(preferredPort)) {
     const { matchesDataDir, actualDataDir } = await inspectExistingPostgresAtPort(dataDir, preferredPort);
     if (!matchesDataDir) {
-      const actual = actualDataDir ?? "unknown";
+      const detail = actualDataDir
+        ? `with data_directory=${actualDataDir}`
+        : "(unable to query data_directory - the port may be held by a non-PostgreSQL process)";
       throw new Error(
-        `Another embedded PostgreSQL instance is already running on port ${preferredPort} with data_directory=${actual}, but migrations resolved dataDir=${path.resolve(dataDir)}. Refusing to start a side instance; align PAPERCLIP_HOME/PAPERCLIP_CONFIG or stop the running server first.`,
+        `Port ${preferredPort} is already in use ${detail}, but migrations resolved dataDir=${path.resolve(dataDir)}. Refusing to start a side instance; align PAPERCLIP_HOME/PAPERCLIP_CONFIG or stop the running server first.`,
       );
     }
 
