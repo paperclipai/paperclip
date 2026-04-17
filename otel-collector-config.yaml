@@ -1,14 +1,17 @@
 # OpenTelemetry Collector configuration for Paperclip
 # Receives OTLP from the observability plugin and collects host metrics,
 # then exports everything to Dynatrace.
+#
+# This file is the source of truth. The systemd service (otelcol-contrib)
+# loads it from this repo path.
 
 receivers:
   otlp:
     protocols:
-      http:
-        endpoint: 0.0.0.0:4318
       grpc:
         endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
 
   hostmetrics:
     collection_interval: 30s
@@ -22,12 +25,12 @@ receivers:
           system.memory.utilization:
             enabled: true
       disk: {}
-      network: {}
       filesystem:
         metrics:
           system.filesystem.utilization:
             enabled: true
       load: {}
+      network: {}
       process:
         mute_process_exe_error: true
         mute_process_io_error: true
@@ -35,8 +38,21 @@ receivers:
 
 processors:
   batch:
-    send_batch_size: 1024
-    timeout: 5s
+    timeout: 200ms
+    send_batch_size: 512
+
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 500
+
+  resource:
+    attributes:
+      - key: host.name
+        value: paperclip
+        action: upsert
+      - key: deployment.environment
+        value: production
+        action: upsert
 
   resource/hostmetrics:
     attributes:
@@ -44,10 +60,59 @@ processors:
         value: paperclip
         action: upsert
 
-  resourcedetection:
-    detectors: [system]
+  resourcedetection/system:
+    detectors: [env, system]
     system:
       hostname_sources: ["os"]
+
+  cumulativetodelta:
+
+  transform/drop_empty_dims:
+    metric_statements:
+      - context: datapoint
+        statements:
+          - delete_key(attributes, "project_id") where attributes["project_id"] == ""
+          - delete_key(attributes, "project_name") where attributes["project_name"] == ""
+          - delete_key(attributes, "company_id") where attributes["company_id"] == ""
+
+  metricstransform/rename_github:
+    transforms:
+      - include: github.repo.stars
+        action: update
+        new_name: github.radar.stars
+      - include: github.repo.forks
+        action: update
+        new_name: github.radar.forks
+      - include: github.repo.open_issues
+        action: update
+        new_name: github.radar.open_issues
+      - include: github.repo.open_prs
+        action: update
+        new_name: github.radar.open_prs
+      - include: github.repo.contributors
+        action: update
+        new_name: github.radar.contributors
+      - include: github.repo.growth_score
+        action: update
+        new_name: github.radar.growth_score
+      - include: github.repo.growth_score_normalized
+        action: update
+        new_name: github.radar.growth_score_normalized
+      - include: github.repo.star_velocity
+        action: update
+        new_name: github.radar.star_velocity
+      - include: github.repo.star_acceleration
+        action: update
+        new_name: github.radar.star_acceleration
+      - include: github.repo.pr_velocity
+        action: update
+        new_name: github.radar.pr_velocity
+      - include: github.repo.issue_velocity
+        action: update
+        new_name: github.radar.issue_velocity
+      - include: github.repo.contributor_growth
+        action: update
+        new_name: github.radar.contributor_growth
 
 exporters:
   otlphttp/dynatrace:
@@ -57,33 +122,31 @@ exporters:
 
   debug:
     verbosity: basic
-    sampling_initial: 5
-    sampling_thereafter: 200
 
 service:
-  pipelines:
-    traces:
-      receivers: [otlp]
-      processors: [batch]
-      exporters: [otlphttp/dynatrace]
-
-    metrics/app:
-      receivers: [otlp]
-      processors: [batch]
-      exporters: [otlphttp/dynatrace]
-
-    metrics/host:
-      receivers: [hostmetrics]
-      processors: [resourcedetection, resource/hostmetrics, batch]
-      exporters: [otlphttp/dynatrace]
-
-    logs:
-      receivers: [otlp]
-      processors: [batch]
-      exporters: [otlphttp/dynatrace]
-
   telemetry:
     logs:
       level: info
     metrics:
       address: 0.0.0.0:8888
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection/system, resource, batch]
+      exporters: [otlphttp/dynatrace, debug]
+
+    metrics/app:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection/system, resource, cumulativetodelta, metricstransform/rename_github, transform/drop_empty_dims, batch]
+      exporters: [otlphttp/dynatrace, debug]
+
+    metrics/host:
+      receivers: [hostmetrics]
+      processors: [resourcedetection/system, resource/hostmetrics, cumulativetodelta, batch]
+      exporters: [otlphttp/dynatrace]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection/system, resource, batch]
+      exporters: [otlphttp/dynatrace]
