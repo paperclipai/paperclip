@@ -90,17 +90,19 @@ export async function handleDbQueryTraces(
     ...(rowCount !== undefined ? { "db.response.rows": rowCount } : {}),
     ...(agentId ? { "paperclip.agent.id": agentId } : {}),
     ...(runId ? { "paperclip.run.id": runId } : {}),
-    status: error ? "error" : "ok",
+    "db.status": error ? "error" : "ok",
   };
 
   // Resolve parent context: prefer the active run span so DB operations
   // appear as children of the agent's heartbeat run in the trace tree.
   let parentCtx: ReturnType<typeof context.active> | undefined;
+  let parentSource = "none";
 
   if (runId) {
     const runSpan = ctx.activeRunSpans.get(runId);
     if (runSpan) {
       parentCtx = trace.setSpan(context.active(), runSpan);
+      parentSource = "active_run";
     } else {
       // Fallback: ended run span context (DB events may arrive after run.finished)
       const ended = ctx.endedRunSpanContexts.get(runId);
@@ -111,29 +113,43 @@ export async function handleDbQueryTraces(
           traceFlags: ended.traceFlags,
           isRemote: true,
         });
+        parentSource = "ended_run";
       }
     }
   }
 
   // Fallback: use server-propagated trace context
   if (!parentCtx) {
-    parentCtx = parentCtxFromServerTrace(event);
+    const serverCtx = parentCtxFromServerTrace(event);
+    if (serverCtx) {
+      parentCtx = serverCtx;
+      parentSource = "server_trace";
+    }
   }
 
-  // Backdate the span for accurate timing
-  const endTimeMs = Date.now();
-  const startTimeMs = endTimeMs - Math.max(1, durationMs);
+  ctx.logger.debug("db.query.completed trace handler invoked", {
+    operation,
+    table,
+    durationMs,
+    runId: runId ?? null,
+    agentId: agentId ?? null,
+    parentSource,
+    hasError: Boolean(error),
+  });
 
+  // Create span using the default (current time) for start and end. This
+  // matches the pattern used by exporting handlers (issue lifecycle, run spans).
+  // Duration is preserved in the `db.query.duration_ms` attribute so the
+  // waterfall can still be reconstructed downstream.
   const span = parentCtx
     ? ctx.tracer.startSpan(
         spanName,
-        { kind: SpanKind.CLIENT, attributes: spanAttrs, startTime: startTimeMs },
+        { kind: SpanKind.CLIENT, attributes: spanAttrs },
         parentCtx,
       )
     : ctx.tracer.startSpan(spanName, {
         kind: SpanKind.CLIENT,
         attributes: spanAttrs,
-        startTime: startTimeMs,
       });
 
   if (error) {
@@ -143,5 +159,5 @@ export async function handleDbQueryTraces(
     span.setStatus({ code: SpanStatusCode.OK });
   }
 
-  span.end(endTimeMs);
+  span.end();
 }

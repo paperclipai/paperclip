@@ -40,6 +40,17 @@ export async function handleRunStartedTraces(
   const agentId = String(p.agentId ?? "");
   const agentName = String(p.agentName ?? "");
 
+  // Diagnostic entry log for ISI-559: confirms handler reach before any
+  // lookups/state calls that could silently throw.
+  ctx.logger.info("handleRunStartedTraces invoked", {
+    runId,
+    agentId,
+    agentName,
+    issueId,
+  });
+
+  try {
+
   // Resolve business context from agentIssueMap (primary) or issueContextMap (fallback)
   let agentIssue = ctx.agentIssueMap.get(agentId);
   let resolvedIssueId = issueId || agentIssue?.issueId || "";
@@ -218,9 +229,32 @@ export async function handleRunStartedTraces(
           startTime: Date.now(),
         },
       )
-      .catch(() => {});
+      .catch((err) => {
+        ctx.logger.warn("handleRunStartedTraces: state.set failed for span:run", {
+          runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+
+    ctx.logger.info("handleRunStartedTraces: run span created", {
+      runId,
+      agentId,
+      traceId: span.spanContext().traceId,
+      spanId: span.spanContext().spanId,
+      parentLinked: Boolean(parentCtx),
+    });
   } else {
     span.end();
+  }
+  } catch (err) {
+    // Surface any failure in the handler so silent drops stop happening.
+    ctx.logger.error("handleRunStartedTraces threw", {
+      runId,
+      agentId,
+      issueId,
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
   }
 }
 

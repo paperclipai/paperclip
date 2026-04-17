@@ -910,6 +910,12 @@ const plugin: PaperclipPlugin = definePlugin({
   async onShutdown() {
     ctx?.logger.info(
       "Observability plugin shutting down — flushing telemetry",
+      {
+        activeRunSpanCount: activeRunSpans.size,
+        activeIssueSpanCount: activeIssueSpans.size,
+        activeApprovalSpanCount: activeApprovalSpans.size,
+        activeSessionSpanCount: activeSessionSpans.size,
+      },
     );
 
     // End any active run spans before shutdown
@@ -950,8 +956,20 @@ const plugin: PaperclipPlugin = definePlugin({
     activeSessionSpans.clear();
 
     if (otel) {
+      // Bound the shutdown to under the plugin-worker-manager's 10s drain
+      // timeout so BatchSpanProcessor gets a chance to flush, but we still
+      // reply to the shutdown RPC before the host escalates to SIGTERM.
+      const SHUTDOWN_BUDGET_MS = 8_000;
       try {
-        await otel.shutdown();
+        await Promise.race([
+          otel.shutdown(),
+          new Promise<void>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("otel.shutdown() exceeded budget")),
+              SHUTDOWN_BUDGET_MS,
+            ),
+          ),
+        ]);
         ctx?.logger.info("OTel SDK shut down successfully");
       } catch (err) {
         ctx?.logger.error("Error during OTel shutdown", {
