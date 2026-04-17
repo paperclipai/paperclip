@@ -57,6 +57,8 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       permission: {
         read: "allow",
         external_directory: "allow",
+        doom_loop: "deny",
+        question: "deny",
       },
     });
 
