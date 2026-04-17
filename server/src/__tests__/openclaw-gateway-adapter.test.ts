@@ -494,6 +494,10 @@ describe("openclaw gateway adapter execute", () => {
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
       expect(String(payload?.message ?? "")).toContain("## Paperclip Wake Payload");
+      expect(String(payload?.message ?? "")).toContain("Paperclip context JSON:");
+      expect(String(payload?.message ?? "")).toContain('"agentName": "OpenClaw Gateway Agent"');
+      expect(String(payload?.message ?? "")).toContain('"cwd": "/tmp/worktrees/pap-123"');
+      expect(String(payload?.message ?? "")).toContain('"name": "preview"');
       expect(String(payload?.message ?? "")).toContain(
         "Treat this wake payload as the highest-priority change for the current heartbeat.",
       );
@@ -571,6 +575,11 @@ describe("openclaw gateway adapter execute", () => {
       const payload = gateway.getAgentPayload();
       expect(payload).toBeTruthy();
       expect(payload).not.toHaveProperty("paperclip");
+      expect(String(payload?.message ?? "")).toContain("Paperclip context JSON:");
+      expect(String(payload?.message ?? "")).toContain('"agentName": "OpenClaw Gateway Agent"');
+      expect(String(payload?.message ?? "")).toContain('"apiUrl": "http://localhost:3100"');
+      expect(String(payload?.message ?? "")).toContain('"workspace": {');
+      expect(String(payload?.message ?? "")).toContain('"/tmp/persisted-workspace"');
       expect(String(payload?.message ?? "")).toContain('"latestCommentId":"comment-123"');
     } finally {
       await gateway.close();

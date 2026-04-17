@@ -448,6 +448,62 @@ function appendWakeText(baseText: string, wakeText: string): string {
   return trimmedBase.length > 0 ? `${trimmedBase}\n\n${wakeText}` : wakeText;
 }
 
+function buildStandardPaperclipPayload(
+  ctx: AdapterExecutionContext,
+  wakePayload: WakePayload,
+  paperclipEnv: Record<string, string>,
+  payloadTemplate: Record<string, unknown>,
+): Record<string, unknown> {
+  const templatePaperclip = parseObject(payloadTemplate.paperclip);
+  const workspace = asRecord(ctx.context.paperclipWorkspace);
+  const workspaces = Array.isArray(ctx.context.paperclipWorkspaces)
+    ? ctx.context.paperclipWorkspaces.filter((entry): entry is Record<string, unknown> => Boolean(asRecord(entry)))
+    : [];
+  const configuredWorkspaceRuntime = parseObject(ctx.config.workspaceRuntime);
+  const runtimeServiceIntents = Array.isArray(ctx.context.paperclipRuntimeServiceIntents)
+    ? ctx.context.paperclipRuntimeServiceIntents.filter(
+        (entry): entry is Record<string, unknown> => Boolean(asRecord(entry)),
+      )
+    : [];
+
+  const standardPaperclip: Record<string, unknown> = {
+    runId: ctx.runId,
+    companyId: ctx.agent.companyId,
+    agentId: ctx.agent.id,
+    agentName: ctx.agent.name,
+    taskId: wakePayload.taskId,
+    issueId: wakePayload.issueId,
+    issueIds: wakePayload.issueIds,
+    wakeReason: wakePayload.wakeReason,
+    wakeCommentId: wakePayload.wakeCommentId,
+    approvalId: wakePayload.approvalId,
+    approvalStatus: wakePayload.approvalStatus,
+    apiUrl: paperclipEnv.PAPERCLIP_API_URL ?? null,
+  };
+  const structuredWake = parseObject(ctx.context.paperclipWake);
+  if (Object.keys(structuredWake).length > 0) {
+    standardPaperclip.wake = structuredWake;
+  }
+
+  if (workspace) {
+    standardPaperclip.workspace = workspace;
+  }
+  if (workspaces.length > 0) {
+    standardPaperclip.workspaces = workspaces;
+  }
+  if (runtimeServiceIntents.length > 0 || Object.keys(configuredWorkspaceRuntime).length > 0) {
+    standardPaperclip.workspaceRuntime = {
+      ...configuredWorkspaceRuntime,
+      ...(runtimeServiceIntents.length > 0 ? { services: runtimeServiceIntents } : {}),
+    };
+  }
+
+  return {
+    ...templatePaperclip,
+    ...standardPaperclip,
+  };
+}
+
 function joinWakePayloadSections(structuredWakePrompt: string, structuredWakeJson: string): string {
   const sections = [
     structuredWakePrompt.trim(),
@@ -457,6 +513,15 @@ function joinWakePayloadSections(structuredWakePrompt: string, structuredWakeJso
     "```",
   ].filter((entry) => entry.trim().length > 0);
   return sections.join("\n");
+}
+
+function joinPaperclipContextSection(paperclipContext: Record<string, unknown>): string {
+  return [
+    "Paperclip context JSON:",
+    "```json",
+    JSON.stringify(paperclipContext, null, 2),
+    "```",
+  ].join("\n");
 }
 function normalizeUrl(input: string): URL | null {
   try {
@@ -1044,14 +1109,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
+  const paperclipContext = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
-    structuredWakeJson
-      ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
-      : structuredWakePrompt,
+    [
+      structuredWakeJson
+        ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
+        : structuredWakePrompt,
+      joinPaperclipContextSection(paperclipContext),
+    ]
+      .filter((entry) => entry.trim().length > 0)
+      .join("\n\n"),
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
