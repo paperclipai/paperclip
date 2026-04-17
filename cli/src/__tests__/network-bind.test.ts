@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveRuntimeBind, validateConfiguredBindMode } from "@paperclipai/shared";
+import { resolveRuntimeBind, validateConfiguredBindMode } from "@paperclipai/shared/network-bind";
 import { buildPresetServerConfig } from "../config/server-bind.js";
 
 describe("network bind helpers", () => {
@@ -12,6 +12,16 @@ describe("network bind helpers", () => {
         host: "0.0.0.0",
       }),
     ).toContain("local_trusted requires server.bind=loopback");
+  });
+
+  it("resolves lan bind to the IPv6 all-interfaces host", () => {
+    const resolved = resolveRuntimeBind({
+      bind: "lan",
+      host: "0.0.0.0",
+    });
+
+    expect(resolved.errors).toEqual([]);
+    expect(resolved.host).toBe("::");
   });
 
   it("resolves tailnet bind using the detected tailscale address", () => {
