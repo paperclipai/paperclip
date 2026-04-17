@@ -80,7 +80,7 @@ export function parsePullRequestPolicy(raw: unknown): PullRequestPolicy | null {
     policy.extensions = merged;
   }
 
-  return policy;
+  return Object.keys(policy).length > 0 ? policy : null;
 }
 
 export function pullRequestPolicyRequestsAutoOpen(policy: PullRequestPolicy | null | undefined) {

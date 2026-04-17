@@ -646,18 +646,14 @@ export function executionWorkspaceRoutes(db: Db) {
         return;
       }
 
-      const pullRequestPolicy = await loadEffectivePullRequestPolicy(existing);
       const existingPullRequestRecord = readPullRequestRecord(
         ((patch.metadata as Record<string, unknown> | null | undefined) ?? (existing.metadata as Record<string, unknown> | null)) ?? null,
       );
-      const wantsAutoInvoke =
-        pullRequestPolicy !== null &&
-        pullRequestPolicyRequestsAutoOpen(pullRequestPolicy) &&
-        Boolean(existing.branchName) &&
-        Boolean(existing.baseRef) &&
-        !existingPullRequestRecord;
 
       // Blocking mode with an in-flight non-terminal record: archive is deferred.
+      // Short-circuit before loading the policy: we already know the record
+      // was stamped with the policy at request time, and the 409 response
+      // carries enough information for the caller to proceed.
       if (existingPullRequestRecord?.mode === "blocking" &&
           (existingPullRequestRecord.status === "requested" ||
            existingPullRequestRecord.status === "opened")) {
@@ -669,6 +665,15 @@ export function executionWorkspaceRoutes(db: Db) {
         });
         return;
       }
+
+      const pullRequestPolicy = existingPullRequestRecord
+        ? null
+        : await loadEffectivePullRequestPolicy(existing);
+      const wantsAutoInvoke =
+        pullRequestPolicy !== null &&
+        pullRequestPolicyRequestsAutoOpen(pullRequestPolicy) &&
+        Boolean(existing.branchName) &&
+        Boolean(existing.baseRef);
 
       // Auto-invoke path: policy wants a request and no record exists yet.
       if (wantsAutoInvoke && pullRequestPolicy) {
