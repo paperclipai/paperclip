@@ -2477,6 +2477,23 @@ export function heartbeatService(db: Db) {
         message: "run started",
       });
 
+      // Auto-advance task to in_progress for agents without the paperclip skill.
+      // These agents can't PATCH their own status, so the server reflects the run
+      // lifecycle into the task: todo → in_progress on run start, mirrored by
+      // in_progress → done on run success (see auto-done block below).
+      // Only transitions from `todo` — leaves `in_review` (Architect verify) alone,
+      // since in_review already means "review in progress".
+      if (!agentHasPaperclipSkill && issueId) {
+        const runningIssue = await issuesSvc.getById(issueId);
+        if (runningIssue && runningIssue.status === "todo") {
+          await issuesSvc.update(issueId, { status: "in_progress" });
+          logger.info(
+            { issueId, agentId: agent.id, runId: run.id },
+            "auto-advanced task to in_progress for agent without paperclip skill",
+          );
+        }
+      }
+
       handle = await runLogStore.begin({
         companyId: run.companyId,
         agentId: run.agentId,

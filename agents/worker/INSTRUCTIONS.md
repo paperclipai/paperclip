@@ -55,5 +55,6 @@ pixi run process-sprites | optimize-images | generate-atlas | process-all-assets
 
 ## Completion
 
-Do the work and stop. Server auto-marks done, wakes Coordinator. No completion comments needed.
-If stuck, leave code in clear state and stop. Coordinator detects stall.
+The server reflects your run lifecycle into the task: `todo` → `in_progress` when your run starts, `in_progress` → `done` when it succeeds. You never PATCH status.
+
+Do the work and stop. No completion comments needed. If stuck, leave code in a clear state and stop — the task stays `in_progress` and Coordinator's stale-scan detects it.
