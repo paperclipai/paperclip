@@ -35,6 +35,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { utf8Trunc } from "./sql-utils.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -536,12 +537,7 @@ const issueListSelect = {
   goalId: issues.goalId,
   parentId: issues.parentId,
   title: issues.title,
-  description: sql<string | null>`
-    CASE
-      WHEN ${issues.description} IS NULL THEN NULL
-      ELSE left(convert_from(convert_to(${issues.description}, 'SQL_ASCII'), 'UTF8'), ${ISSUE_LIST_DESCRIPTION_MAX_CHARS})
-    END
-  `,
+  description: utf8Trunc(sql`${issues.description}`, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
   status: issues.status,
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,

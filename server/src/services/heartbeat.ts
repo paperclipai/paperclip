@@ -56,6 +56,7 @@ import { issueService } from "./issues.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
+import { utf8Trunc } from "./sql-utils.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
   gateProjectExecutionWorkspacePolicy,
@@ -412,12 +413,6 @@ const heartbeatRunListContextColumns = {
   contextWakeTriggerDetail: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeTriggerDetail'`.as("contextWakeTriggerDetail"),
 } as const;
 
-// SQL_ASCII clusters count bytes not chars in left()/length(). Round-tripping through
-// convert_to/convert_from forces UTF-8 character semantics so the cut never splits a
-// multi-byte sequence and avoids "invalid byte sequence for encoding UTF8" 500 errors.
-function utf8Trunc(expr: SQL, maxChars: number): SQL<string | null> {
-  return sql<string | null>`left(convert_from(convert_to(${expr}, 'SQL_ASCII'), 'UTF8'), ${maxChars})`;
-}
 
 const heartbeatRunListResultColumns = {
   resultSummary: utf8Trunc(sql`${heartbeatRuns.resultJson} ->> 'summary'`, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS).as("resultSummary"),
