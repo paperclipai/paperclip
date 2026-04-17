@@ -574,6 +574,50 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("does not reap a local run without a pid while process metadata is still fresh", async () => {
+    const { runId } = await seedRunFixture({
+      processPid: null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        startedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+  });
+
+  it("drains running runs during shutdown and marks wakeups cancelled", async () => {
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const drained = await heartbeat.drainRunningRunsForShutdown("Cancelled due to server shutdown (SIGTERM)");
+    expect(drained).toBe(1);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("cancelled");
+    expect(run?.error).toContain("server shutdown (SIGTERM)");
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+  });
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,

@@ -343,11 +343,12 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
   const comment = parseObject(value);
   const author = parseObject(comment.author);
   const body = asString(comment.body, "");
-  if (!body.trim()) return null;
+  const sanitizedBody = body.replace(/!\[[^\]]*?\]\(([^)]+)\)/g, "[image attachment omitted: $1]");
+  if (!sanitizedBody.trim()) return null;
   return {
     id: asString(comment.id, "").trim() || null,
     issueId: asString(comment.issueId, "").trim() || null,
-    body,
+    body: sanitizedBody,
     bodyTruncated: asBoolean(comment.bodyTruncated, false),
     createdAt: asString(comment.createdAt, "").trim() || null,
     authorType: asString(author.type, "").trim() || null,
