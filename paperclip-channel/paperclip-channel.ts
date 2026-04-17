@@ -7,6 +7,14 @@
  * → Claude does the work → calls paperclip_update tool to report back.
  *
  * Runs alongside Telegram channel in the same session.
+ *
+ * Cost tracking (SHA-1865):
+ *   claude+ writes a session JSONL at ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl
+ *   with per-assistant-message `message.usage`. On each /heartbeat POST we record
+ *   the current tail offset of the most recent JSONL; when claude+ calls a
+ *   paperclip_* tool with a known run_id we read the delta, aggregate usage by
+ *   model, price it, and POST a cost-event so HTTP-adapter agents show up in
+ *   Paperclip's spend dashboards like claude_local agents do.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -15,9 +23,12 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { open } from "fs/promises";
+import { homedir } from "os";
+import path from "path";
 
 // Load /etc/default/paperclip if env vars are missing
-import { existsSync, readFileSync } from "fs";
 const envFile = "/etc/default/paperclip";
 if (existsSync(envFile)) {
   for (const line of readFileSync(envFile, "utf-8").split("\n")) {
@@ -52,6 +63,165 @@ async function paperclipFetch(
   });
   return res.json();
 }
+
+// --- Cost tracking ----------------------------------------------------------
+// Anthropic USD pricing per million tokens. Prefix match so dated model IDs
+// (claude-opus-4-7-20260101) still resolve.
+type Pricing = { input: number; output: number; cacheRead: number; cacheWrite: number };
+const PRICING: Record<string, Pricing> = {
+  "claude-opus-4": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+  "claude-sonnet-4": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "claude-haiku-4": { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
+};
+function priceFor(model: string): Pricing {
+  for (const [key, value] of Object.entries(PRICING)) {
+    if (model.startsWith(key)) return value;
+  }
+  if (model.includes("opus")) return PRICING["claude-opus-4"];
+  if (model.includes("haiku")) return PRICING["claude-haiku-4"];
+  return PRICING["claude-sonnet-4"];
+}
+
+const CLAUDE_PROJECTS_DIR = path.join(homedir(), ".claude", "projects");
+function currentSessionJsonl(): string | null {
+  const encoded = process.cwd().replace(/\//g, "-");
+  const dir = path.join(CLAUDE_PROJECTS_DIR, encoded);
+  if (!existsSync(dir)) return null;
+  let best: { path: string; mtime: number } | null = null;
+  try {
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(".jsonl")) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = statSync(full);
+        if (!best || st.mtimeMs > best.mtime) best = { path: full, mtime: st.mtimeMs };
+      } catch {}
+    }
+  } catch {}
+  return best?.path ?? null;
+}
+
+type PendingRun = {
+  runId: string;
+  taskId: string;
+  jsonlPath: string | null;
+  offset: number;
+  startedAt: number;
+  flushed: boolean;
+};
+const pendingRuns = new Map<string, PendingRun>();
+
+function snapshotOffset(jsonlPath: string | null): number {
+  if (!jsonlPath) return 0;
+  try { return statSync(jsonlPath).size; } catch { return 0; }
+}
+
+async function flushUsageForRun(runId: string, opts: { final?: boolean } = {}) {
+  if (!runId) return;
+  const pending = pendingRuns.get(runId);
+  if (!pending || pending.flushed) return;
+
+  const jsonlPath = pending.jsonlPath;
+  if (!jsonlPath || !existsSync(jsonlPath)) return;
+
+  let size = 0;
+  try { size = statSync(jsonlPath).size; } catch { return; }
+  let start = pending.offset;
+  if (size < start) start = 0;
+  if (size <= start) return;
+
+  let content: string;
+  try {
+    const fh = await open(jsonlPath, "r");
+    try {
+      const buf = Buffer.alloc(size - start);
+      await fh.read(buf, 0, buf.length, start);
+      content = buf.toString("utf8");
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return;
+  }
+
+  type Totals = { input: number; cacheWrite: number; cacheRead: number; output: number };
+  const perModel = new Map<string, Totals>();
+  for (const line of content.split("\n")) {
+    if (!line.trim()) continue;
+    let parsed: any;
+    try { parsed = JSON.parse(line); } catch { continue; }
+    if (parsed.type !== "assistant") continue;
+    const msg = parsed.message;
+    if (!msg?.usage || !msg?.model) continue;
+    const u = msg.usage;
+    const t = perModel.get(msg.model) ?? { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 };
+    t.input += u.input_tokens || 0;
+    t.cacheWrite += u.cache_creation_input_tokens || 0;
+    t.cacheRead += u.cache_read_input_tokens || 0;
+    t.output += u.output_tokens || 0;
+    perModel.set(msg.model, t);
+  }
+
+  pending.offset = size;
+  if (opts.final) {
+    pending.flushed = true;
+    pendingRuns.delete(runId);
+  }
+
+  if (perModel.size === 0) return;
+
+  const occurredAt = new Date().toISOString();
+  for (const [model, t] of perModel) {
+    const price = priceFor(model);
+    const costUsd =
+      (t.input * price.input +
+        t.cacheWrite * price.cacheWrite +
+        t.cacheRead * price.cacheRead +
+        t.output * price.output) / 1_000_000;
+    const costCents = Math.max(0, Math.round(costUsd * 100));
+    const body: Record<string, unknown> = {
+      agentId: AGENT_ID,
+      heartbeatRunId: pending.runId,
+      provider: "anthropic",
+      biller: "anthropic",
+      billingType: "metered_api",
+      model,
+      inputTokens: t.input,
+      cachedInputTokens: t.cacheRead + t.cacheWrite,
+      outputTokens: t.output,
+      costCents,
+      occurredAt,
+    };
+    if (pending.taskId) body.issueId = pending.taskId;
+    try {
+      await paperclipFetch("POST", `/companies/${COMPANY_ID}/cost-events`, body);
+    } catch (err) {
+      console.error(`[paperclip-channel] cost-event POST failed: ${(err as Error).message}`);
+    }
+  }
+}
+
+function flushFromToolCall(toolName: string, args: Record<string, string>) {
+  const runId = args?.run_id;
+  if (!runId) return;
+  const final =
+    toolName === "paperclip_update" &&
+    ["done", "blocked", "in_review"].includes(args?.status);
+  flushUsageForRun(runId, { final }).catch((err) =>
+    console.error(`[paperclip-channel] flush failed: ${err?.message ?? err}`)
+  );
+}
+
+// Best-effort cleanup of runs whose terminal paperclip_update never arrived.
+setInterval(() => {
+  const cutoffMs = 30 * 60_000;
+  const now = Date.now();
+  for (const [runId, p] of pendingRuns) {
+    if (now - p.startedAt > cutoffMs) {
+      flushUsageForRun(runId, { final: true }).catch(() => {});
+    }
+  }
+}, 5 * 60_000);
 
 // --- MCP Server with channel capability -------------------------------------
 const mcp = new Server(
@@ -174,22 +344,23 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 }));
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const args = req.params.arguments as Record<string, string>;
+  const args = (req.params.arguments || {}) as Record<string, string>;
+  let response: unknown;
 
   switch (req.params.name) {
     case "paperclip_inbox": {
-      const data = await paperclipFetch("GET", `/agents/me/inbox-lite`);
-      return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      response = await paperclipFetch("GET", `/agents/me/inbox-lite`);
+      break;
     }
 
     case "paperclip_checkout": {
-      const data = await paperclipFetch(
+      response = await paperclipFetch(
         "POST",
         `/issues/${args.issue_id}/checkout`,
         { agentId: AGENT_ID, expectedStatuses: ["todo", "backlog", "blocked"] },
         { "X-Paperclip-Run-Id": args.run_id }
       );
-      return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      break;
     }
 
     case "paperclip_update": {
@@ -197,20 +368,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         status: args.status,
         comment: args.comment,
       };
-      const data = await paperclipFetch("PATCH", `/issues/${args.issue_id}`, body, {
+      response = await paperclipFetch("PATCH", `/issues/${args.issue_id}`, body, {
         "X-Paperclip-Run-Id": args.run_id,
       });
-      return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      break;
     }
 
     case "paperclip_comment": {
-      const data = await paperclipFetch(
+      response = await paperclipFetch(
         "POST",
         `/issues/${args.issue_id}/comments`,
         { body: args.body },
         args.run_id ? { "X-Paperclip-Run-Id": args.run_id } : {}
       );
-      return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      break;
     }
 
     case "paperclip_create_issue": {
@@ -224,17 +395,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (args.label_ids) {
         try { body.labelIds = JSON.parse(args.label_ids); } catch {}
       }
-      const data = await paperclipFetch(
+      response = await paperclipFetch(
         "POST",
         `/companies/${COMPANY_ID}/issues`,
         body
       );
-      return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      break;
     }
 
     default:
       throw new Error(`Unknown tool: ${req.params.name}`);
   }
+
+  flushFromToolCall(req.params.name, args);
+  return { content: [{ type: "text", text: JSON.stringify(response, null, 2) }] };
 });
 
 // --- Connect to Claude Code over stdio --------------------------------------
@@ -259,6 +433,19 @@ Bun.serve({
       const runId = (body.runId || "") as string;
       const wakeReason = context.wakeReason || "manual";
       const commentId = context.wakeCommentId || "";
+
+      // Snapshot the current JSONL tail so cost-tracking can diff on flush.
+      if (runId) {
+        const jsonlPath = currentSessionJsonl();
+        pendingRuns.set(runId, {
+          runId,
+          taskId,
+          jsonlPath,
+          offset: snapshotOffset(jsonlPath),
+          startedAt: Date.now(),
+          flushed: false,
+        });
+      }
 
       // Build the task description for Claude
       let taskInfo = `Heartbeat received. Wake reason: ${wakeReason}.`;
