@@ -697,6 +697,9 @@ function buildWorkspaceCommandEnv(input: {
   created: boolean;
 }) {
   const env: NodeJS.ProcessEnv = { ...sanitizeRuntimeServiceBaseEnv(process.env) };
+  if (process.env.PAPERCLIP_WORKTREES_DIR) {
+    env.PAPERCLIP_WORKTREES_DIR = process.env.PAPERCLIP_WORKTREES_DIR;
+  }
   env.PAPERCLIP_WORKSPACE_CWD = input.worktreePath;
   env.PAPERCLIP_WORKSPACE_PATH = input.worktreePath;
   env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = input.worktreePath;
