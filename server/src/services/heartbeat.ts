@@ -4703,7 +4703,15 @@ export function heartbeatService(db: Db) {
       let skipped = 0;
 
       for (const agent of allAgents) {
-        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+        // Skip agents that cannot or should not receive timer wakeups.
+        // "error" is included: an agent stuck in error state should not
+        // accumulate unbounded pending timer runs while it is broken.
+        if (
+          agent.status === "paused" ||
+          agent.status === "terminated" ||
+          agent.status === "pending_approval" ||
+          agent.status === "error"
+        ) continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
@@ -4711,6 +4719,28 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Cap pending timer runs at 1. If a queued timer run already exists for
+        // this agent it will wake the agent on its own — scheduling another now
+        // would cause unbounded queue growth when runs complete faster than the
+        // timer interval (e.g. fast-failing agents).
+        const pendingTimerRun = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.agentId, agent.id),
+              eq(heartbeatRuns.status, "queued"),
+              eq(heartbeatRuns.invocationSource, "timer"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        if (pendingTimerRun) {
+          skipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
