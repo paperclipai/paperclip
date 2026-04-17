@@ -141,6 +141,14 @@ export function resolveAssistantMessageFoldedState(args: {
   return currentFolded;
 }
 
+export function getMessageCustomMetadata(message: {
+  metadata?: { custom?: unknown } | null;
+}): Record<string, unknown> {
+  return typeof message.metadata?.custom === "object" && message.metadata.custom !== null
+    ? message.metadata.custom as Record<string, unknown>
+    : {};
+}
+
 export function canStopIssueChatRun(args: {
   runId: string | null;
   runStatus: string | null;
@@ -577,7 +585,7 @@ function cleanToolDisplayText(tool: ToolCallMessagePart): string {
 function IssueChatChainOfThought() {
   const { agentMap } = useContext(IssueChatCtx);
   const message = useMessage();
-  const custom = message.metadata.custom as Record<string, unknown>;
+  const custom = getMessageCustomMetadata(message);
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
   const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
   const agentId = authorAgentId ?? runAgentId;
@@ -940,7 +948,7 @@ function IssueChatUserMessage() {
     userProfileMap,
   } = useContext(IssueChatCtx);
   const message = useMessage();
-  const custom = message.metadata.custom as Record<string, unknown>;
+  const custom = getMessageCustomMetadata(message);
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const commentId = typeof custom.commentId === "string" ? custom.commentId : message.id;
   const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
@@ -1094,7 +1102,7 @@ function IssueChatAssistantMessage() {
     stoppingRunId,
   } = useContext(IssueChatCtx);
   const message = useMessage();
-  const custom = message.metadata.custom as Record<string, unknown>;
+  const custom = getMessageCustomMetadata(message);
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const authorName = typeof custom.authorName === "string"
     ? custom.authorName
@@ -1534,7 +1542,7 @@ function IssueChatFeedbackButtons({
 function IssueChatSystemMessage() {
   const { agentMap, currentUserId, userLabelMap } = useContext(IssueChatCtx);
   const message = useMessage();
-  const custom = message.metadata.custom as Record<string, unknown>;
+  const custom = getMessageCustomMetadata(message);
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;

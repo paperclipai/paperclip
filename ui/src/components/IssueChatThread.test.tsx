@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   IssueChatThread,
   canStopIssueChatRun,
+  getMessageCustomMetadata,
   resolveAssistantMessageFoldedState,
   resolveIssueChatHumanAuthor,
 } from "./IssueChatThread";
@@ -665,6 +666,26 @@ describe("IssueChatThread", () => {
       runStatus: "cancelled",
       activeRunIds: new Set<string>(),
     })).toBe(false);
+  });
+
+  it("returns empty custom metadata when message metadata is missing", () => {
+    expect(getMessageCustomMetadata({ metadata: undefined })).toEqual({});
+    expect(getMessageCustomMetadata({ metadata: null })).toEqual({});
+    expect(getMessageCustomMetadata({ metadata: { custom: null } })).toEqual({});
+  });
+
+  it("preserves object custom metadata when present", () => {
+    expect(getMessageCustomMetadata({
+      metadata: {
+        custom: {
+          anchorId: "comment-1",
+          runId: "run-1",
+        },
+      },
+    })).toEqual({
+      anchorId: "comment-1",
+      runId: "run-1",
+    });
   });
 
   it("uses company profile data to distinguish the current user from other humans", () => {
