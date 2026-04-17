@@ -19,16 +19,16 @@ function attachErrorContext(
   payload: ErrorContext["error"],
   rawError?: Error,
 ) {
-  res.__errorContext = {
+  (res as any).__errorContext = {
     error: payload,
     method: req.method,
     url: req.originalUrl,
     reqBody: req.body,
     reqParams: req.params,
     reqQuery: req.query,
-  };
+  } satisfies ErrorContext;
   if (rawError) {
-    res.err = rawError;
+    (res as any).err = rawError;
   }
 }
 

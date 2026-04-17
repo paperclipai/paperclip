@@ -124,7 +124,7 @@ export const httpLogger = pinoHttp({
       const req = rawReq as PinoReq;
       const props: Record<string, unknown> = {};
       const { body, params, query } = req;
-      if (body && typeof body === "object" && Object.keys(body as object).length > 0) {
+      if (body && typeof body === "object" && Object.keys(body).length > 0) {
         props.reqBody = body;
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {

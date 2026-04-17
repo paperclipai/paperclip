@@ -23,6 +23,7 @@ import {
   companyMemberships,
   instanceUserRoles,
 } from "@paperclipai/db";
+import type { Db } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
@@ -202,7 +203,7 @@ export async function startServer(): Promise<StartedServer> {
   const LOCAL_BOARD_USER_EMAIL = "local@paperclip.local";
   const LOCAL_BOARD_USER_NAME = "Board";
   
-  async function ensureLocalTrustedBoardPrincipal(db: any): Promise<void> {
+  async function ensureLocalTrustedBoardPrincipal(db: Db): Promise<void> {
     const now = new Date();
     const existingUser = await db
       .select({ id: authUsers.id })
@@ -213,7 +214,6 @@ export async function startServer(): Promise<StartedServer> {
     if (!existingUser) {
       await db.insert(authUsers).values({
         id: LOCAL_BOARD_USER_ID,
-        clerkId: "local-board-clerk-id",
         name: LOCAL_BOARD_USER_NAME,
         email: LOCAL_BOARD_USER_EMAIL,
         emailVerified: true,
@@ -259,7 +259,7 @@ export async function startServer(): Promise<StartedServer> {
     }
   }
   
-  let db;
+  let db: Db;
   let embeddedPostgres: EmbeddedPostgresInstance | null = null;
   let embeddedPostgresStartedByThisProcess = false;
   let migrationSummary: MigrationSummary = "skipped";
@@ -473,7 +473,7 @@ export async function startServer(): Promise<StartedServer> {
     | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
     | undefined;
   if (config.deploymentMode === "local_trusted") {
-    await ensureLocalTrustedBoardPrincipal(db as any);
+    await ensureLocalTrustedBoardPrincipal(db);
   }
   if (config.deploymentMode === "authenticated") {
     const {
@@ -501,11 +501,11 @@ export async function startServer(): Promise<StartedServer> {
       },
       "Authenticated mode auth origin configuration",
     );
-    const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
+    const auth = createBetterAuthInstance(db, config, effectiveTrustedOrigins);
     betterAuthHandler = createBetterAuthHandler(auth);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
-    await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
+    await initializeBoardClaimChallenge(db, { deploymentMode: config.deploymentMode });
     authReady = true;
   }
   
@@ -526,10 +526,10 @@ export async function startServer(): Promise<StartedServer> {
   });
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
-  const feedback = feedbackService(db as any, {
+  const feedback = feedbackService(db, {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
-  const app = await createApp(db as any, {
+  const app = await createApp(db, {
     uiMode,
     serverPort: listenPort,
     storageService,
@@ -566,14 +566,14 @@ export async function startServer(): Promise<StartedServer> {
     process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
   }
   
-  setupLiveEventsWebSocketServer(server, db as any, {
+  setupLiveEventsWebSocketServer(server, db, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
   });
 
   startTelegramEventBridge();
 
-  void reconcilePersistedRuntimeServicesOnStartup(db as any)
+  void reconcilePersistedRuntimeServicesOnStartup(db)
     .then((result) => {
       if (result.reconciled > 0) {
         logger.warn(
@@ -587,8 +587,8 @@ export async function startServer(): Promise<StartedServer> {
     });
   
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any);
-    const routines = routineService(db as any);
+    const heartbeat = heartbeatService(db);
+    const routines = routineService(db);
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // clear any stale executionRunId/checkoutRunId locks left over from a crash,
