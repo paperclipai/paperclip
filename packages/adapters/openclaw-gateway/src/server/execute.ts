@@ -12,6 +12,9 @@ import {
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
+import os from "node:os";
+import path from "node:path";
+import { promises as fs } from "node:fs";
 import { WebSocket } from "ws";
 
 type SessionKeyStrategy = "fixed" | "issue" | "run";
@@ -362,8 +365,8 @@ function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
+  claimedApiKeyPath: string,
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -441,6 +444,17 @@ function buildWakeText(
     "Complete the workflow in this run.",
   ];
   return lines.join("\n");
+}
+
+export async function writeClaimedApiKeyFile(claimedApiKeyPath: string, authToken: string): Promise<void> {
+  const expandedPath = claimedApiKeyPath.startsWith("~/")
+    ? path.join(os.homedir(), claimedApiKeyPath.slice(2))
+    : claimedApiKeyPath === "~"
+      ? os.homedir()
+      : path.resolve(claimedApiKeyPath);
+
+  await fs.mkdir(path.dirname(expandedPath), { recursive: true });
+  await fs.writeFile(expandedPath, JSON.stringify({ token: authToken }, null, 2) + "\n", "utf8");
 }
 
 function appendWakeText(baseText: string, wakeText: string): string {
@@ -1101,6 +1115,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
+  const claimedApiKeyPath = resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath);
+  if (ctx.authToken && ctx.authToken.trim().length > 0) {
+    await writeClaimedApiKeyFile(claimedApiKeyPath, ctx.authToken.trim());
+  }
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const wakeText = buildWakeText(
@@ -1109,6 +1127,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
+    claimedApiKeyPath,
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
