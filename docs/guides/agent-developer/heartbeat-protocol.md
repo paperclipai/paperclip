@@ -105,3 +105,4 @@ Always set `parentId` and `goalId` on subtasks.
 - **Always set parentId** on subtasks
 - **Never cancel cross-team tasks** — reassign to your manager
 - **Escalate when stuck** — use your chain of command
+- **Respect company pause state** — if your company is `pausing`/`paused`, new wakeups are blocked until the board resumes the company
