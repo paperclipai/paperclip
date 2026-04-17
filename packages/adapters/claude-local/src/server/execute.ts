@@ -473,6 +473,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           },
         }
       : null;
+  // Prompt section order is optimised for Anthropic prompt-cache stability (5-min TTL).
+  // Static / semi-static sections must appear BEFORE dynamic ones so the longest
+  // possible prefix is cache-stable across heartbeats.
+  //   1. bootstrap_prompt  — static (config-time, empty on resumed sessions)
+  //   2. heartbeat_prompt  — semi-static (changes only when template is updated)
+  //   3. session_handoff   — per-session (changes between Claude sessions)
+  //   4. wake_prompt       — most volatile (new content every heartbeat)
   const assembled = assembleHeartbeatInvocation({
     context,
     promptFragments: [
@@ -484,11 +491,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         memoryClass: "procedural",
       },
       {
-        key: "wake_prompt",
-        title: "Wake prompt",
-        text: wakePrompt,
-        metricKey: "wakePromptChars",
-        memoryClass: "transient",
+        key: "heartbeat_prompt",
+        title: "Heartbeat prompt",
+        text: renderedPrompt,
+        metricKey: "heartbeatPromptChars",
+        memoryClass: "procedural",
       },
       {
         key: "session_handoff",
@@ -498,10 +505,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         memoryClass: "episodic",
       },
       {
-        key: "heartbeat_prompt",
-        title: "Heartbeat prompt",
-        text: renderedPrompt,
-        metricKey: "heartbeatPromptChars",
+        key: "wake_prompt",
+        title: "Wake prompt",
+        text: wakePrompt,
+        metricKey: "wakePromptChars",
         memoryClass: "transient",
       },
     ],
