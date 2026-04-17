@@ -8,7 +8,9 @@ import { models as DIRECT_MODELS } from "../index.js";
  * See: https://docs.aws.amazon.com/bedrock/latest/userguide/cross-region-inference.html
  */
 const BEDROCK_MODELS: AdapterModel[] = [
+  { id: "global.anthropic.claude-opus-4-7-v1", label: "Bedrock Opus 4.7" },
   { id: "global.anthropic.claude-opus-4-6-v1", label: "Bedrock Opus 4.6" },
+  { id: "global.anthropic.claude-sonnet-4-6-v1", label: "Bedrock Sonnet 4.6" },
   { id: "global.anthropic.claude-sonnet-4-5-20250929-v2:0", label: "Bedrock Sonnet 4.5" },
   { id: "global.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
 ];
