@@ -26,4 +26,26 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+# --- Ensure opencode state dirs are not scanned by rg and owned by runtime user ---
+# Background: opencode CLI (invoked by paperclip runner) creates short-lived
+# lock files under $HOME/.local/state/opencode/locks/. When the runner invokes
+# rg from $HOME, recursive traversal races on these files and the tool-call
+# fails with ENOENT (misrendered as "Permission denied"). See commit body.
+PAPERCLIP_HOME="${PAPERCLIP_HOME:-/paperclip}"
+if [ -d "$PAPERCLIP_HOME" ]; then
+    if [ ! -f "$PAPERCLIP_HOME/.rgignore" ]; then
+        cat > "$PAPERCLIP_HOME/.rgignore" <<RGIGNORE
+.local/state/opencode/
+.local/share/opencode/
+.cache/opencode/
+.config/opencode/
+RGIGNORE
+    fi
+    # Normalize ownership so runtime user can always clean up its own locks.
+    for d in .local/state/opencode .local/share/opencode .cache/opencode .config/opencode .rgignore; do
+        [ -e "$PAPERCLIP_HOME/$d" ] && chown -R "$PUID:$PGID" "$PAPERCLIP_HOME/$d" 2>/dev/null || true
+    done
+fi
+# --- end opencode rg race guard ---
+
 exec gosu node "$@"
