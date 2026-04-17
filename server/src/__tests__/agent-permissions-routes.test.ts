@@ -34,6 +34,7 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
+  update: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
@@ -166,6 +167,7 @@ describe("agent permission routes", () => {
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
     mockAgentService.create.mockResolvedValue(baseAgent);
+    mockAgentService.update.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
     mockAccessService.getMembership.mockResolvedValue({
       id: "membership-1",
@@ -637,5 +639,60 @@ describe("agent permission routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("resolves PATCH /agents/me to the authenticated agent", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch("/api/agents/me")
+      .send({ metadata: { lastHeartbeatNote: "ok" } });
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(agentId);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({ metadata: { lastHeartbeatNote: "ok" } }),
+      expect.any(Object),
+    );
+  });
+
+  it("rejects PATCH /agents/me without agent authentication", async () => {
+    const app = await createApp({ type: "none", source: "none" });
+
+    const res = await request(app)
+      .patch("/api/agents/me")
+      .send({ metadata: { lastHeartbeatNote: "ok" } });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("agent authentication");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("still resolves PATCH /agents/:uuid by direct id", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch(`/api/agents/${agentId}`)
+      .send({ metadata: { lastHeartbeatNote: "direct" } });
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({ metadata: { lastHeartbeatNote: "direct" } }),
+      expect.any(Object),
+    );
   });
 });
