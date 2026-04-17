@@ -6,6 +6,54 @@ import type {
   AdapterSkillSnapshot,
 } from "./types.js";
 
+const BLOCKED_ENV_KEYS = new Set([
+  // Dynamic linker injection
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  "DYLD_FRAMEWORK_PATH",
+  // Node.js code injection
+  "NODE_OPTIONS",
+  // Shell startup injection
+  "BASH_ENV",
+  "ENV",
+  "CDPATH",
+  // Python/Ruby/Perl code injection
+  "PYTHONPATH",
+  "PYTHONSTARTUP",
+  "RUBYOPT",
+  "RUBYLIB",
+  "PERL5OPT",
+  "PERL5LIB",
+  // Java agent injection
+  "JAVA_TOOL_OPTIONS",
+  "JDK_JAVA_OPTIONS",
+  "_JAVA_OPTIONS",
+]);
+
+/**
+ * Filters out environment variable keys that could be used for code injection
+ * (e.g. LD_PRELOAD, NODE_OPTIONS). Returns a new object with dangerous keys removed.
+ */
+export function filterDangerousEnvKeys(env: Record<string, string>): Record<string, string> {
+  const filtered: Record<string, string> = {};
+  const stripped: string[] = [];
+  for (const [key, value] of Object.entries(env)) {
+    if (BLOCKED_ENV_KEYS.has(key)) {
+      stripped.push(key);
+    } else {
+      filtered[key] = value;
+    }
+  }
+  if (stripped.length > 0) {
+    console.warn(
+      `[paperclip] filterDangerousEnvKeys: stripped potentially dangerous env keys: ${stripped.join(", ")}`,
+    );
+  }
+  return filtered;
+}
+
 export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
