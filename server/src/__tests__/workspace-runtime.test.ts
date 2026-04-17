@@ -2994,6 +2994,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
+    const projectId = randomUUID();
     const executionWorkspaceId = randomUUID();
 
     await db.insert(companies).values({
@@ -3013,6 +3014,24 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       runtimeConfig: {},
       permissions: {},
     });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Reconcile test project",
+      status: "active",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Reconcile test workspace",
+      status: "active",
+      cwd: workspaceRoot,
+      providerType: "local_fs",
+      providerRef: workspaceRoot,
+    });
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -3025,7 +3044,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
 
     const workspace = {
       ...buildWorkspace(workspaceRoot),
-      projectId: null,
+      projectId,
       workspaceId: null,
     };
     leasedRunIds.add(runId);
@@ -3038,6 +3057,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
         name: "Codex Coder",
         companyId,
       },
+      executionWorkspaceId,
       issue: null,
       workspace,
       config: {
@@ -3086,7 +3106,8 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
 
     await stopRuntimeServicesForExecutionWorkspace({
       db,
-      executionWorkspaceId,    });
+      executionWorkspaceId,
+    });
 
     await expect(fetch(service!.url!)).rejects.toThrow();
   });
