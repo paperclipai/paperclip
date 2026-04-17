@@ -22,6 +22,11 @@ import {
   runChildProcess,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
+  compressInstructions,
+  compressWakeContext,
+  compressBootstrapPrompt,
+  compressEnvironmentNotes,
+  compressApiNotes,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
@@ -282,13 +287,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-    const prompt = joinPromptSections([
-      instructionsPrefix,
-      renderedBootstrapPrompt,
-      wakePrompt,
-      sessionHandoffNote,
-      renderedPrompt,
-    ]);
+
+    // Apply compression to prompt sections
+    const compressedSections = [
+      compressInstructions(instructionsPrefix),
+      compressBootstrapPrompt(renderedBootstrapPrompt),
+      compressWakeContext(context.paperclipWake), // Pass raw payload, not rendered
+      sessionHandoffNote, // Keep as is for now
+      renderedPrompt, // Keep main prompt but apply caveman rules
+    ];
+
+    const prompt = joinPromptSections(compressedSections);
     const promptMetrics = {
       promptChars: prompt.length,
       instructionsChars: instructionsPrefix.length,
