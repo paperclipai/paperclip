@@ -99,7 +99,9 @@ async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });
 }
 
-async function createControlledGatewayServer() {
+async function createControlledGatewayServer(opts?: {
+  waitResultPayload?: Record<string, unknown> | null;
+}) {
   const server = createServer();
   const wss = new WebSocketServer({ server });
   const agentPayloads: Array<Record<string, unknown>> = [];
@@ -185,6 +187,7 @@ async function createControlledGatewayServer() {
               status: "ok",
               startedAt: 1,
               endedAt: 2,
+              ...(opts?.waitResultPayload ?? {}),
             },
           }),
         );
@@ -237,7 +240,11 @@ describe("heartbeat comment wake batching", () => {
   });
 
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
-    const gateway = await createControlledGatewayServer();
+    const gateway = await createControlledGatewayServer({
+      waitResultPayload: {
+        summary: "Heartbeat acknowledged",
+      },
+    });
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();

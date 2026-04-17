@@ -431,9 +431,11 @@ export function issueRoutes(
         entityType: "issue",
         entityId: issue.id,
         details: {
-          previousCheckoutRunId: ownership.adoptedFromRunId,
+          previousRunId: ownership.adoptedFromRunId,
+          previousLockType: ownership.adoptedFromLockType,
           checkoutRunId: runId,
-          reason: "stale_checkout_run",
+          reason:
+            ownership.adoptedFromLockType === "execution" ? "stale_execution_run" : "stale_checkout_run",
         },
       });
     }
