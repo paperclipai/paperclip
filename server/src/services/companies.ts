@@ -38,6 +38,8 @@ export function companyService(db: Db) {
     name: companies.name,
     description: companies.description,
     status: companies.status,
+    pauseReason: companies.pauseReason,
+    pausedAt: companies.pausedAt,
     issuePrefix: companies.issuePrefix,
     issueCounter: companies.issueCounter,
     budgetMonthlyCents: companies.budgetMonthlyCents,
@@ -287,7 +289,12 @@ export function companyService(db: Db) {
         if (force) {
           await tx
             .update(companies)
-            .set({ status: "paused", updatedAt: new Date() })
+            .set({
+              status: "paused",
+              pauseReason: "manual",
+              pausedAt: new Date(),
+              updatedAt: new Date(),
+            })
             .where(eq(companies.id, id));
           return loadHydratedCompany(id, tx);
         }
@@ -297,18 +304,37 @@ export function companyService(db: Db) {
           .from(heartbeatRuns)
           .where(and(eq(heartbeatRuns.companyId, id), inArray(heartbeatRuns.status, ["queued", "running"])));
         const activeRuns = Number(value ?? 0);
-        const nextStatus = activeRuns > 0 ? "pausing" : "paused";
-
-        await tx
-          .update(companies)
-          .set({ status: nextStatus, updatedAt: new Date() })
-          .where(and(eq(companies.id, id), inArray(companies.status, ["active", "pausing"])));
+        if (activeRuns > 0) {
+          await tx
+            .update(companies)
+            .set({
+              status: "pausing",
+              pauseReason: "manual",
+              pausedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(companies.id, id), inArray(companies.status, ["active", "pausing"])));
+        } else {
+          await tx
+            .update(companies)
+            .set({
+              status: "paused",
+              pauseReason: "manual",
+              pausedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(and(eq(companies.id, id), inArray(companies.status, ["active", "pausing"])));
+        }
 
         // Re-check in the same transaction so we do not leave the company
         // stuck in "pausing" if runs drain between count and update.
         await tx
           .update(companies)
-          .set({ status: "paused", updatedAt: new Date() })
+          .set({
+            status: "paused",
+            pausedAt: new Date(),
+            updatedAt: new Date(),
+          })
           .where(
             and(
               eq(companies.id, id),
@@ -342,7 +368,12 @@ export function companyService(db: Db) {
 
         await tx
           .update(companies)
-          .set({ status: "active", updatedAt: new Date() })
+          .set({
+            status: "active",
+            pauseReason: null,
+            pausedAt: null,
+            updatedAt: new Date(),
+          })
           .where(and(eq(companies.id, id), inArray(companies.status, ["paused", "pausing"])));
 
         return loadHydratedCompany(id, tx);

@@ -532,11 +532,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.reapOrphanedRuns();
 
     const company = await db
-      .select({ status: companies.status })
+      .select({ status: companies.status, pausedAt: companies.pausedAt })
       .from(companies)
       .where(eq(companies.id, companyId))
       .then((rows) => rows[0] ?? null);
     expect(company?.status).toBe("paused");
+    expect(company?.pausedAt).toBeInstanceOf(Date);
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
@@ -584,11 +585,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.cancelRun(runId);
 
     const company = await db
-      .select({ status: companies.status })
+      .select({ status: companies.status, pausedAt: companies.pausedAt })
       .from(companies)
       .where(eq(companies.id, companyId))
       .then((rows) => rows[0] ?? null);
     expect(company?.status).toBe("paused");
+    expect(company?.pausedAt).toBeInstanceOf(Date);
   });
 
   it("re-enqueues assigned todo work when the last issue run died and no wake remains", async () => {

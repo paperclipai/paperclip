@@ -2755,7 +2755,7 @@ export function heartbeatService(db: Db) {
 
     await db
       .update(companies)
-      .set({ status: "paused", updatedAt: new Date() })
+      .set({ status: "paused", pausedAt: new Date(), updatedAt: new Date() })
       .where(and(eq(companies.id, companyId), eq(companies.status, "pausing")));
 
     logger.info({ companyId }, "company graceful pause complete: pausing → paused");
