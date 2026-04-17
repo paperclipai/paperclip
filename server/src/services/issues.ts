@@ -49,6 +49,7 @@ function assertTransition(from: string, to: string) {
 function applyStatusSideEffects(
   status: string | undefined,
   patch: Partial<typeof issues.$inferInsert>,
+  existing?: typeof issues.$inferSelect,
 ): Partial<typeof issues.$inferInsert> {
   if (!status) return patch;
 
@@ -61,6 +62,21 @@ function applyStatusSideEffects(
   if (status === "cancelled") {
     patch.cancelledAt = new Date();
   }
+
+  // Auto-reassign on in_review: return to creator/delegator
+  if (status === "in_review" && existing) {
+    // Only if no explicit assignee is being set in this patch
+    if (patch.assigneeAgentId === undefined && patch.assigneeUserId === undefined) {
+      if (existing.createdByAgentId) {
+        patch.assigneeAgentId = existing.createdByAgentId;
+        patch.assigneeUserId = null;
+      } else if (existing.createdByUserId) {
+        patch.assigneeAgentId = null;
+        patch.assigneeUserId = existing.createdByUserId;
+      }
+    }
+  }
+
   return patch;
 }
 
@@ -1640,17 +1656,7 @@ export function issueService(db: Db) {
         updatedAt: new Date(),
       };
 
-      const nextAssigneeAgentId =
-        issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
-      const nextAssigneeUserId =
-        issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
-
-      if (nextAssigneeAgentId && nextAssigneeUserId) {
-        throw unprocessable("Issue can only have one assignee");
-      }
-      if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
-        throw unprocessable("in_progress issues require an assignee");
-      }
+      // Validate explicitly-supplied assignees before side effects
       if (issueData.assigneeAgentId) {
         await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
       }
@@ -1669,7 +1675,28 @@ export function issueService(db: Db) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
       }
 
-      applyStatusSideEffects(issueData.status, patch);
+      applyStatusSideEffects(issueData.status, patch, existing);
+
+      // Post-side-effect validation: guards now see effective values including auto-reassign
+      const effectiveAssigneeAgentId =
+        patch.assigneeAgentId !== undefined ? patch.assigneeAgentId : existing.assigneeAgentId;
+      const effectiveAssigneeUserId =
+        patch.assigneeUserId !== undefined ? patch.assigneeUserId : existing.assigneeUserId;
+
+      if (effectiveAssigneeAgentId && effectiveAssigneeUserId) {
+        throw unprocessable("Issue can only have one assignee");
+      }
+      if (patch.status === "in_progress" && !effectiveAssigneeAgentId && !effectiveAssigneeUserId) {
+        throw unprocessable("in_progress issues require an assignee");
+      }
+      // Validate auto-assigned creator (set by applyStatusSideEffects, not in the request)
+      if (patch.assigneeAgentId && patch.assigneeAgentId !== issueData.assigneeAgentId) {
+        await assertAssignableAgent(existing.companyId, patch.assigneeAgentId);
+      }
+      if (patch.assigneeUserId && patch.assigneeUserId !== issueData.assigneeUserId) {
+        await assertAssignableUser(existing.companyId, patch.assigneeUserId);
+      }
+
       if (issueData.status && issueData.status !== "done") {
         patch.completedAt = null;
       }
