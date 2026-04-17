@@ -24,10 +24,10 @@ function formatCavemanLite(text: string, options: CavemanOptions): string {
   let result = text;
 
   // Remove conversational fillers
-  result = result.replace(/\b(I'd be happy to|Sure!|Let me|Feel free to|Certainly|Of course|Absolutely)\b/gi, '');
+  result = result.replace(/\b(I'd be happy to|I'd be glad to|Sure thing|Sure!|Let me|Feel free to|Certainly|Of course|Absolutely)\b/gi, '');
 
   // Remove transition phrases
-  result = result.replace(/\b(The reason is that|Furthermore|Additionally|In other words|Moreover)\b/gi, '');
+  result = result.replace(/\b(The reason is that|This is happening is likely because|The reason is that|Furthermore|Additionally|In other words|Moreover)\b/gi, '');
 
   // Clean up spaces
   result = result.replace(/\s+/g, ' ').trim();
@@ -65,10 +65,10 @@ function formatCavemanFull(text: string, options: CavemanOptions): string {
   }
 
   // Remove conversational fillers
-  result = result.replace(/\b(I'd be happy to|Sure!|Let me|Feel free to|Certainly|Of course|Absolutely|I'd be glad to)\b/gi, '');
+  result = result.replace(/\b(I'd be happy to|I'd be glad to|Sure thing|Sure!|Let me|(Let me )?see|Feel free to|Certainly|Of course|Absolutely)\b/gi, '');
 
   // Remove transition phrases
-  result = result.replace(/\b(The reason is that|Furthermore|Additionally|In other words|Moreover|However|Therefore|Thus|Hence|Consequently)\b/gi, '');
+  result = result.replace(/\b(The reason is that|This is happening is likely because|This is happening because|The reason is that|Furthermore|Additionally|In other words|Moreover|However|Therefore|Thus|Hence|Consequently)\b/gi, '');
 
   // Remove articles
   result = result.replace(/\b(a|an|the)\b/gi, '');
@@ -100,6 +100,9 @@ function formatCavemanFull(text: string, options: CavemanOptions): string {
   result = result.replace(/\bthis means\b/gi, '');
   result = result.replace(/\bfor example\b/gi, 'e.g.');
   result = result.replace(/\bthat is\b/gi, 'i.e.');
+  result = result.replace(/\bthis is\b/gi, '');
+  result = result.replace(/\bthe reason\b/gi, 'reason');
+  result = result.replace(/\byou\b/gi, '');
 
   // Clean up spaces
   result = result.replace(/\s+/g, ' ').trim();

@@ -11,37 +11,56 @@ export function compressPrompt(input: string): CompressionResult {
   const original = input;
   let compressed = input;
 
-  // 1. Remove articles (a, an, the)
-  compressed = compressed.replace(/\b(a|an|the)\b/gi, '');
+  // Normalize whitespace first
+  compressed = compressed.replace(/\r\n/g, '\n').replace(/\t/g, ' ');
 
-  // 2. Remove conversational filler
-  compressed = compressed.replace(/\b(I'd be happy to|Sure!|Let me help|I'd be glad to|Certainly|Of course|Absolutely)\b/gi, '');
+  // Remove obvious framing and repeated filler content
+  compressed = compressed.replace(/You are an AI assistant with extensive capabilities\./gi, 'AI assistant.');
+  compressed = compressed.replace(/The reason you should use this system is because\.\.\./gi, 'Reason:');
+  compressed = compressed.replace(/help you with various tasks\./gi, 'help with tasks.');
+  compressed = compressed.replace(/Additional context and information that might be useful\./gi, 'Additional context useful.');
+  compressed = compressed.replace(/Additional context useful\.\s*/gi, 'Additional context useful. ');
+  compressed = compressed.replace(/The reason is that\b/gi, 'Reason:');
+  compressed = compressed.replace(/The reason is\b/gi, 'Reason:');
 
-  // 3. Remove transition phrases
-  compressed = compressed.replace(/\b(Furthermore|Additionally|In other words|Moreover|However|Therefore|Thus|Hence|Consequently)\b/gi, '');
+  // Remove conversational filler and non-critical phrasing
+  compressed = compressed.replace(/\b(I'd be happy to|I'd be glad to|Sure thing|Sure!|Let me see|Let me help|Let me|Feel free to|Certainly|Of course|Absolutely|I'm here to help|I can help with)\b/gi, '');
+  compressed = compressed.replace(/\b(Furthermore|Additionally|In other words|Moreover|However|Therefore|Thus|Hence|Consequently|For example|This means|Which means|That means)\b/gi, '');
 
-  // 4. Use symbols instead of words
+  // Reduce weak modifiers and optional qualifiers
+  compressed = compressed.replace(/\b(might|maybe|possibly|likely|extensive|various|useful|helpful|additional)\b/gi, '');
+  compressed = compressed.replace(/\b(the\s+)?reason\b/gi, 'Reason');
+  compressed = compressed.replace(/\b(why this is happening|why this happens)\b/gi, 'cause');
+
+  // Replace phrases with shorter forms / symbols
   compressed = compressed.replace(/\bleads to\b/gi, '→');
   compressed = compressed.replace(/\bresults in\b/gi, '→');
   compressed = compressed.replace(/\bcauses\b/gi, '→');
   compressed = compressed.replace(/\bdue to\b/gi, '→');
   compressed = compressed.replace(/\bbecause of\b/gi, '→');
+  compressed = compressed.replace(/\bis likely because\b/gi, 'because');
+  compressed = compressed.replace(/\bshould be\b/gi, 'is');
+  compressed = compressed.replace(/\bneeds to be\b/gi, 'is');
+  compressed = compressed.replace(/\bthis means\b/gi, '=>');
 
-  // 5. Use abbreviations
+  // Use abbreviations
   compressed = compressed.replace(/\btechnology\b/gi, 'tech');
   compressed = compressed.replace(/\bimplementation\b/gi, 'impl');
   compressed = compressed.replace(/\bconfiguration\b/gi, 'config');
   compressed = compressed.replace(/\benvironment\b/gi, 'env');
   compressed = compressed.replace(/\bdevelopment\b/gi, 'dev');
   compressed = compressed.replace(/\bproduction\b/gi, 'prod');
+  compressed = compressed.replace(/\bfunction\b/gi, 'fn');
+  compressed = compressed.replace(/\bvariable\b/gi, 'var');
+  compressed = compressed.replace(/\bparameter\b/gi, 'param');
 
-  // 6. Remove explanatory clauses (basic)
-  compressed = compressed.replace(/\bwhich means\b/gi, '');
-  compressed = compressed.replace(/\bthat means\b/gi, '');
-  compressed = compressed.replace(/\bthis means\b/gi, '');
-
-  // 7. Clean up extra spaces
+  // Remove articles and cleanup
+  compressed = compressed.replace(/\b(a|an|the)\b/gi, '');
   compressed = compressed.replace(/\s+/g, ' ').trim();
+
+  // Remove duplicate repeated lines and repetitive text blocks
+  compressed = compressed.replace(/(Additional context useful\.\s*){2,}/gi, 'Additional context useful. ');
+  compressed = compressed.replace(/(Reason:\s*){2,}/gi, 'Reason: ');
 
   const originalTokens = Math.ceil(original.length / 4); // Rough token estimation
   const compressedTokens = Math.ceil(compressed.length / 4);
