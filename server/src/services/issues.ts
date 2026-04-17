@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -46,13 +46,27 @@ function assertTransition(from: string, to: string) {
   }
 }
 
+function applyScheduledForAutoBacklog(
+  patch: Partial<typeof issues.$inferInsert>,
+  existingStatus?: string,
+): void {
+  const effectiveStatus = patch.status ?? existingStatus;
+  const scheduledFor = patch.scheduledFor;
+  if (scheduledFor && effectiveStatus === "todo" && scheduledFor > new Date()) {
+    patch.status = "backlog";
+  }
+}
+
 function applyStatusSideEffects(
   status: string | undefined,
   patch: Partial<typeof issues.$inferInsert>,
+  existingStatus?: string,
 ): Partial<typeof issues.$inferInsert> {
-  if (!status) return patch;
+  applyScheduledForAutoBacklog(patch, existingStatus);
+  if (!patch.status && !status) return patch;
+  const effectiveStatus = patch.status ?? status;
 
-  if (status === "in_progress" && !patch.startedAt) {
+  if (effectiveStatus === "in_progress" && !patch.startedAt) {
     patch.startedAt = new Date();
   }
   if (status === "done") {
@@ -568,6 +582,7 @@ const issueListSelect = {
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
+  scheduledFor: issues.scheduledFor,
   hiddenAt: issues.hiddenAt,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
@@ -1569,6 +1584,7 @@ export function issueService(db: Db) {
           issueNumber,
           identifier,
         } as typeof issues.$inferInsert;
+        applyScheduledForAutoBacklog(values);
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
         }
@@ -1669,7 +1685,7 @@ export function issueService(db: Db) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
       }
 
-      applyStatusSideEffects(issueData.status, patch);
+      applyStatusSideEffects(issueData.status, patch, existing.status);
       if (issueData.status && issueData.status !== "done") {
         patch.completedAt = null;
       }
@@ -2568,6 +2584,22 @@ export function issueService(db: Db) {
         project: a.projectId ? projectMap.get(a.projectId) ?? null : null,
         goal: a.goalId ? goalMap.get(a.goalId) ?? null : null,
       }));
+    },
+
+    tickScheduledIssues: async (now: Date = new Date()): Promise<{ transitioned: number }> => {
+      const result = await db
+        .update(issues)
+        .set({ status: "todo", updatedAt: now })
+        .where(
+          and(
+            eq(issues.status, "backlog"),
+            isNotNull(issues.scheduledFor),
+            lte(issues.scheduledFor, now),
+            isNull(issues.hiddenAt),
+          ),
+        )
+        .returning({ id: issues.id });
+      return { transitioned: result.length };
     },
   };
 }

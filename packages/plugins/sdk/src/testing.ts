@@ -378,6 +378,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           executionWorkspaceId: null,
           executionWorkspacePreference: null,
           executionWorkspaceSettings: null,
+          scheduledFor: null,
           startedAt: null,
           completedAt: null,
           cancelledAt: null,

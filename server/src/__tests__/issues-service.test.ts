@@ -1573,3 +1573,151 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
     ]);
   });
 });
+
+describeEmbeddedPostgres("issueService.scheduledFor auto-backlog and tick", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const companyId = randomUUID();
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-scheduled-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+    await db.insert(companies).values({
+      id: companyId,
+      name: "ScheduleTest",
+      issuePrefix: `S${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("demotes a todo issue with future scheduledFor to backlog on create", async () => {
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const created = await svc.create(companyId, {
+      title: "Future scheduled issue",
+      status: "todo",
+      priority: "medium",
+      scheduledFor: futureDate,
+    });
+
+    const issue = await db
+      .select({ status: issues.status, scheduledFor: issues.scheduledFor })
+      .from(issues)
+      .where(eq(issues.id, created.id))
+      .then((rows) => rows[0]);
+
+    expect(issue?.status).toBe("backlog");
+    expect(issue?.scheduledFor).toEqual(futureDate);
+  });
+
+  it("does not demote a todo issue with past scheduledFor", async () => {
+    const pastDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const created = await svc.create(companyId, {
+      title: "Past scheduled issue",
+      status: "todo",
+      priority: "medium",
+      scheduledFor: pastDate,
+    });
+
+    const issue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, created.id))
+      .then((rows) => rows[0]);
+
+    expect(issue?.status).toBe("todo");
+  });
+
+  it("demotes to backlog when updating a todo issue with future scheduledFor", async () => {
+    const created = await svc.create(companyId, {
+      title: "Update scheduled issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await svc.update(created.id, { scheduledFor: futureDate });
+
+    const issue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, created.id))
+      .then((rows) => rows[0]);
+
+    expect(issue?.status).toBe("backlog");
+  });
+
+  it("tickScheduledIssues transitions due backlog issues to todo", async () => {
+    const pastDate = new Date(Date.now() - 60 * 1000);
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Due scheduled issue",
+      status: "backlog",
+      priority: "medium",
+      scheduledFor: pastDate,
+      issueNumber: 9001,
+      identifier: `S${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-9001`,
+    });
+
+    const result = await svc.tickScheduledIssues(new Date());
+    expect(result.transitioned).toBe(1);
+
+    const remaining = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.status, "backlog"))
+      .then((rows) => rows);
+
+    expect(remaining).toHaveLength(0);
+  });
+
+  it("tickScheduledIssues does not transition future backlog issues", async () => {
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Future backlog issue",
+      status: "backlog",
+      priority: "medium",
+      scheduledFor: futureDate,
+      issueNumber: 9002,
+      identifier: `S${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-9002`,
+    });
+
+    const result = await svc.tickScheduledIssues(new Date());
+    expect(result.transitioned).toBe(0);
+  });
+
+  it("tickScheduledIssues skips hidden issues", async () => {
+    const pastDate = new Date(Date.now() - 60 * 1000);
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Hidden due issue",
+      status: "backlog",
+      priority: "medium",
+      scheduledFor: pastDate,
+      hiddenAt: new Date(),
+      issueNumber: 9003,
+      identifier: `S${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-9003`,
+    });
+
+    const result = await svc.tickScheduledIssues(new Date());
+    expect(result.transitioned).toBe(0);
+  });
+});
