@@ -7,6 +7,7 @@ import {
   asString,
   asNumber,
   asStringArray,
+  filterDangerousExtraArgs,
   parseObject,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
@@ -23,6 +24,8 @@ import {
   stringifyPaperclipWakePayload,
   joinPromptSections,
   runChildProcess,
+  filterDangerousEnvKeys,
+  wrapUntrustedHandoff,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
@@ -264,8 +267,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (workspaceHints.length > 0) {
     env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
   }
-  for (const [k, v] of Object.entries(envConfig)) {
-    if (typeof v === "string") env[k] = v;
+  const safeEnvConfig = filterDangerousEnvKeys(
+    Object.fromEntries(
+      Object.entries(envConfig).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    ),
+  );
+  for (const [k, v] of Object.entries(safeEnvConfig)) {
+    env[k] = v;
   }
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
@@ -288,9 +296,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
   const extraArgs = (() => {
-    const fromExtraArgs = asStringArray(config.extraArgs);
+    const fromExtraArgs = filterDangerousExtraArgs(asStringArray(config.extraArgs));
     if (fromExtraArgs.length > 0) return fromExtraArgs;
-    return asStringArray(config.args);
+    return filterDangerousExtraArgs(asStringArray(config.args));
   })();
   const autoTrustEnabled = !hasCursorTrustBypassArg(extraArgs);
 
@@ -365,7 +373,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const sessionHandoffNote = wrapUntrustedHandoff(asString(context.paperclipSessionHandoffMarkdown, ""));
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const prompt = joinPromptSections([
     instructionsPrefix,
