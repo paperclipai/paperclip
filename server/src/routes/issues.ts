@@ -1456,6 +1456,20 @@ export function issueRoutes(
     if (commentBody && effectiveReopenRequested && isClosed && updateFields.status === undefined) {
       updateFields.status = "todo";
     }
+    // Platform guardrail: only creator/delegator can set status to "done" (board users exempt).
+    // Skip when an execution policy is active — the policy intercepts "done" and routes
+    // through its own stages, so the agent never truly sets the final status.
+    const hasExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null) !== null;
+    if (updateFields.status === "done" && req.actor.type === "agent" && !hasExecutionPolicy) {
+      if ((req.actor.agentId ?? null) !== existing.createdByAgentId) {
+        res.status(422).json({
+          error: "Only the creator/delegator can close this task. Use in_review instead.",
+          code: "DONE_NOT_CREATOR",
+        });
+        return;
+      }
+    }
+
     if (req.body.executionPolicy !== undefined) {
       updateFields.executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
     }

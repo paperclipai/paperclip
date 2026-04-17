@@ -59,7 +59,8 @@ function makeIssue(status: "todo" | "done") {
     status,
     assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     assigneeUserId: null,
-    createdByUserId: "local-board",
+    createdByAgentId: "agent-1",
+    createdByUserId: null,
     identifier: "PAP-1018",
     title: "Telemetry test",
   };
