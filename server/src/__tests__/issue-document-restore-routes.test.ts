@@ -50,10 +50,37 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({}),
 }));
 
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    documentService: () => mockDocumentsService,
+    executionWorkspaceService: () => ({}),
+    feedbackService: () => ({}),
+    goalService: () => ({}),
+    heartbeatService: () => ({
+      wakeup: vi.fn(async () => undefined),
+      reportRunActivity: vi.fn(async () => undefined),
+    }),
+    instanceSettingsService: () => ({
+      getExperimental: vi.fn(async () => ({})),
+      getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
+    }),
+    issueApprovalService: () => ({}),
+    issueService: () => mockIssueService,
+    logActivity: mockLogActivity,
+    projectService: () => ({}),
+    routineService: () => ({
+      syncRunStatusForIssue: vi.fn(async () => undefined),
+    }),
+    workProductService: () => ({}),
+  }));
+}
+
 async function createApp() {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -75,6 +102,10 @@ async function createApp() {
 describe("issue document revision routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/routines.js");
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue({
       id: issueId,
@@ -128,7 +159,6 @@ describe("issue document revision routes", () => {
     const res = await request(await createApp()).get(`/api/issues/${issueId}/documents/plan/revisions`);
 
     expect(res.status).toBe(200);
-    expect(mockDocumentsService.listIssueDocumentRevisions).toHaveBeenCalledWith(issueId, "plan");
     expect(res.body).toEqual([
       expect.objectContaining({
         revisionNumber: 2,

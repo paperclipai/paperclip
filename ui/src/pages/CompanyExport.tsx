@@ -11,7 +11,7 @@ import type {
 import { useNavigate, useLocation } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
@@ -532,10 +532,10 @@ function ExportPreviewPane({
         {parsed ? (
           <>
             <FrontmatterCard data={parsed.data} onSkillClick={onSkillClick} />
-            {parsed.body.trim() && <MarkdownBody resolveImageSrc={resolveImageSrc}>{parsed.body}</MarkdownBody>}
+            {parsed.body.trim() && <MarkdownBody resolveImageSrc={resolveImageSrc} softBreaks={false} linkIssueReferences={false}>{parsed.body}</MarkdownBody>}
           </>
         ) : isMarkdown ? (
-          <MarkdownBody resolveImageSrc={resolveImageSrc}>{textContent ?? ""}</MarkdownBody>
+          <MarkdownBody resolveImageSrc={resolveImageSrc} softBreaks={false} linkIssueReferences={false}>{textContent ?? ""}</MarkdownBody>
         ) : imageSrc ? (
           <div className="flex min-h-[520px] items-center justify-center rounded-lg border border-border bg-accent/10 p-6">
             <img src={imageSrc} alt={selectedFile} className="max-h-[480px] max-w-full object-contain" />
@@ -580,7 +580,7 @@ function expandAncestors(filePath: string): string[] {
 export function CompanyExport() {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const navigate = useNavigate();
   const location = useLocation();
   const { data: session, isFetched: isSessionFetched } = useQuery({
@@ -983,6 +983,7 @@ export function CompanyExport() {
                 onChange={(e) => handleSearchChange(e.target.value)}
                 placeholder="Search files..."
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                data-page-search-target="true"
               />
             </div>
           </div>

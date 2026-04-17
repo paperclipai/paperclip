@@ -50,9 +50,7 @@ vi.mock("../home-paths.js", () => ({
 
 describe("logger translateTime respects TZ environment variable", () => {
   beforeEach(() => {
-    vi.resetModules();
-    mockTransport.mockClear();
-    mockPino.mockClear();
+    vi.clearAllMocks();
   });
 
   it("configures pino-pretty with SYS:HH:MM:ss so timestamps honour the TZ env var", async () => {

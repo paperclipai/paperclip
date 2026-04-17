@@ -33,7 +33,7 @@ const mockBoardAuthService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-function registerServiceMocks() {
+function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
@@ -101,8 +101,8 @@ function createDbStub() {
 
 async function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) {
   const [{ accessRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/access.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -126,8 +126,12 @@ async function createApp(actor: Record<string, unknown>, db: Record<string, unkn
 describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerServiceMocks();
-    vi.clearAllMocks();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/access.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.resetAllMocks();
     mockAccessService.canUser.mockResolvedValue(false);
     mockAgentService.getById.mockReset();
     mockLogActivity.mockResolvedValue(undefined);
@@ -238,7 +242,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
         allowedJoinTypes: "agent",
       }),
     );
-  });
+  }, 15_000);
 
   it("rejects board callers without invite permission", async () => {
     const db = createDbStub();

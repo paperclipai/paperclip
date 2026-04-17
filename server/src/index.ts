@@ -31,6 +31,7 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
   heartbeatService,
+  instanceSettingsService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
@@ -553,7 +554,9 @@ export async function startServer(): Promise<StartedServer> {
       : runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
+  if (!process.env.PAPERCLIP_API_URL) {
+    process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
+  }
   
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
@@ -582,6 +585,16 @@ export async function startServer(): Promise<StartedServer> {
     void heartbeat
       .reapOrphanedRuns()
       .then(() => heartbeat.resumeQueuedRuns())
+      .then(async () => {
+        const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+        if (
+          reconciled.dispatchRequeued > 0 ||
+          reconciled.continuationRequeued > 0 ||
+          reconciled.escalated > 0
+        ) {
+          logger.warn({ ...reconciled }, "startup stranded-issue reconciliation changed assigned issue state");
+        }
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
@@ -613,6 +626,16 @@ export async function startServer(): Promise<StartedServer> {
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
         .then(() => heartbeat.resumeQueuedRuns())
+        .then(async () => {
+          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+          if (
+            reconciled.dispatchRequeued > 0 ||
+            reconciled.continuationRequeued > 0 ||
+            reconciled.escalated > 0
+          ) {
+            logger.warn({ ...reconciled }, "periodic stranded-issue reconciliation changed assigned issue state");
+          }
+        })
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
@@ -621,20 +644,25 @@ export async function startServer(): Promise<StartedServer> {
   
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
+    const settingsSvc = instanceSettingsService(db);
     let backupInFlight = false;
-  
+
     const runScheduledBackup = async () => {
       if (backupInFlight) {
         logger.warn("Skipping scheduled database backup because a previous backup is still running");
         return;
       }
-  
+
       backupInFlight = true;
       try {
+        // Read retention from Instance Settings (DB) so changes take effect without restart
+        const generalSettings = await settingsSvc.getGeneral();
+        const retention = generalSettings.backupRetention;
+
         const result = await runDatabaseBackup({
           connectionString: activeDatabaseConnectionString,
           backupDir: config.databaseBackupDir,
-          retentionDays: config.databaseBackupRetentionDays,
+          retention,
           filenamePrefix: "paperclip",
         });
         logger.info(
@@ -643,7 +671,7 @@ export async function startServer(): Promise<StartedServer> {
             sizeBytes: result.sizeBytes,
             prunedCount: result.prunedCount,
             backupDir: config.databaseBackupDir,
-            retentionDays: config.databaseBackupRetentionDays,
+            retention,
           },
           `Automatic database backup complete: ${formatDatabaseBackupResult(result)}`,
         );
@@ -653,11 +681,11 @@ export async function startServer(): Promise<StartedServer> {
         backupInFlight = false;
       }
     };
-  
+
     logger.info(
       {
         intervalMinutes: config.databaseBackupIntervalMinutes,
-        retentionDays: config.databaseBackupRetentionDays,
+        retentionSource: "instance-settings-db",
         backupDir: config.databaseBackupDir,
       },
       "Automatic database backups enabled",
@@ -695,9 +723,10 @@ export async function startServer(): Promise<StartedServer> {
             logger.warn({ err, url }, "Failed to open browser on startup");
           });
       }
-      printStartupBanner({
-        host: config.host,
-        deploymentMode: config.deploymentMode,
+        printStartupBanner({
+          bind: config.bind,
+          host: config.host,
+          deploymentMode: config.deploymentMode,
         deploymentExposure: config.deploymentExposure,
         authReady,
         requestedPort: config.port,
@@ -765,7 +794,7 @@ export async function startServer(): Promise<StartedServer> {
     server,
     host: config.host,
     listenPort,
-    apiUrl: process.env.PAPERCLIP_API_URL ?? `http://${runtimeApiHost}:${listenPort}`,
+    apiUrl: process.env.PAPERCLIP_API_URL!,
     databaseUrl: activeDatabaseConnectionString,
   };
 }

@@ -120,7 +120,35 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
-Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
+For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string. That is how comments get "smooshed" together. Use the helper below or an equivalent `jq --arg` pattern so literal newlines survive JSON encoding:
+
+```bash
+scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
+Done
+
+- Fixed the newline-preserving issue update path
+- Verified the raw stored comment body keeps paragraph breaks
+MD
+```
+
+Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Use the quick guide below when choosing one. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
+
+### Status Quick Guide
+
+- `backlog` — not ready to execute yet. Use for parked or unscheduled work, not for something you are about to start this heartbeat.
+- `todo` — ready and actionable, but not actively checked out yet. Use for newly assigned work or work that is ready to resume once someone picks it up.
+- `in_progress` — actively owned work. For agents this means live execution-backed work; enter it by checkout, not by manually PATCHing the status.
+- `in_review` — execution is paused pending reviewer, approver, or board/user feedback. Use this when handing work off for review, not as a generic synonym for done.
+- `blocked` — cannot proceed until something specific changes. Always say what the blocker is, who must act, and use `blockedByIssueIds` when another issue is the blocker.
+- `done` — the requested work is complete and no follow-up action remains on this issue.
+- `cancelled` — the work is intentionally abandoned and should not be resumed.
+
+Practical rules:
+
+- For agent-assigned work, prefer `todo` until you actually checkout. Do not PATCH an issue into `in_progress` just to signal intent.
+- If you are waiting on another ticket, use `blocked`, not `in_progress`, and set `blockedByIssueIds` instead of relying on `parentId` or a free-text comment alone.
+- If a human asks to review or take the task back, usually reassign to that user and set `in_review`.
+- `parentId` is structural only. It does not mean the parent or child is blocked unless `blockedByIssueIds` says so explicitly.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 
@@ -302,6 +330,20 @@ Never leave bare ticket ids in issue descriptions or comments when a clickable i
 - Runs: `/<prefix>/agents/<agent-url-key-or-id>/runs/<run-id>`
 
 Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
+
+**Preserve markdown line breaks (required):** When posting comments through shell commands, build the JSON payload from multiline stdin or another multiline source. Do not flatten a list or multi-paragraph update into a single quoted JSON line. Preferred helper:
+
+```bash
+scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status in_progress <<'MD'
+Investigating comment formatting
+
+- Pulled the raw stored comment body
+- Compared it with the run's final assistant message
+- Traced whether the flattening happened before or after the API call
+MD
+```
+
+If you cannot use the helper, use `jq -n --arg comment "$comment"` with `comment` read from a heredoc or file. Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
 
 Example:
 

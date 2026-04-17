@@ -386,6 +386,20 @@
       "when": 1775750400000,
       "tag": "0054_draft_routines",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1775825256196,
+      "tag": "0055_kind_weapon_omega",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1776084034244,
+      "tag": "0056_spooky_ultragirl",
+      "breakpoints": true
     }
   ]
 }
