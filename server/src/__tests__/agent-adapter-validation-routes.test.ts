@@ -219,3 +219,98 @@ describe("agent routes adapter validation", () => {
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
   });
 });
+
+// Adapter model listing endpoints intentionally use `assertBoard` (not
+// `assertCompanyAccess`) because `listAdapterModels(type)` and
+// `detectAdapterModel(type)` ignore companyId — the model list is global per
+// adapter type. This lets the onboarding UI populate the model dropdown for a
+// company the user has not been added to yet. The companion `/test-environment`
+// endpoint is intentionally NOT loosened, because it resolves per-company
+// secrets via secretService.{normalizeAdapterConfigForPersistence,resolveAdapterConfigForRuntime}.
+describe("adapter model listing endpoints", () => {
+  beforeEach(() => {
+    unregisterServerAdapter("external_test");
+    registerServerAdapter(externalAdapter);
+    mockAccessService.canUser.mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    unregisterServerAdapter("external_test");
+  });
+
+  // The default createApp() above uses `source: "local_implicit"`, which is a
+  // god-mode bypass in assertCompanyAccess. To actually exercise the cross-
+  // company access path we need a realistic remote-session actor with the
+  // company list explicitly scoped.
+  function createSessionBoardApp() {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-1"],
+        source: "session",
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", agentRoutes({} as any));
+    app.use(errorHandler);
+    return app;
+  }
+
+  function createAgentActorApp() {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        runId: "run-1",
+      };
+      next();
+    });
+    app.use("/api", agentRoutes({} as any));
+    app.use(errorHandler);
+    return app;
+  }
+
+  it("lets a board user list adapter models for a company they don't belong to", async () => {
+    const res = await request(createSessionBoardApp()).get(
+      "/api/companies/other-company/adapters/external_test/models",
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+  });
+
+  it("lets a board user run model detection for a company they don't belong to", async () => {
+    const res = await request(createSessionBoardApp()).get(
+      "/api/companies/other-company/adapters/external_test/detect-model",
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // external_test has no detectModel implementation, so the route returns null.
+    expect(res.body).toBeNull();
+  });
+
+  it("still rejects /test-environment for a company the board user doesn't belong to", async () => {
+    // Regression guard: this endpoint touches per-company secrets and must
+    // remain company-scoped even when the model listing endpoints don't.
+    const res = await request(createSessionBoardApp())
+      .post("/api/companies/other-company/adapters/external_test/test-environment")
+      .send({ adapterConfig: {} });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+  });
+
+  it("rejects non-board actors (e.g. agents) from listing adapter models", async () => {
+    const res = await request(createAgentActorApp()).get(
+      "/api/companies/company-1/adapters/external_test/models",
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+  });
+});

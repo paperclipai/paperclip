@@ -840,16 +840,18 @@ export function agentRoutes(db: Db) {
   });
 
   router.get("/companies/:companyId/adapters/:type/models", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    // Adapter models are global per type — listAdapterModels(type) ignores
+    // companyId. Require board access only so the onboarding UI can populate
+    // the model dropdown for a company the user has not been added to yet.
+    assertBoard(req);
     const type = assertKnownAdapterType(req.params.type as string);
     const models = await listAdapterModels(type);
     res.json(models);
   });
 
   router.get("/companies/:companyId/adapters/:type/detect-model", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    // Same rationale as /models — detection runs against the adapter type only.
+    assertBoard(req);
     const type = assertKnownAdapterType(req.params.type as string);
 
     const detected = await detectAdapterModel(type);
