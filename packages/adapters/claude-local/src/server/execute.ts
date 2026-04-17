@@ -36,6 +36,40 @@ import { prepareClaudePromptBundle } from "./prompt-cache.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+export interface BuildClaudeArgsOptions {
+  resumeSessionId: string | null;
+  attemptInstructionsFilePath: string | undefined;
+  dangerouslySkipPermissions: boolean;
+  chrome: boolean;
+  model: string;
+  env: Record<string, string>;
+  effort: string;
+  maxTurns: number;
+  extraArgs: string[];
+  addDir: string;
+}
+
+export function buildClaudeArgs(opts: BuildClaudeArgsOptions): string[] {
+  const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+  if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
+  if (opts.dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
+  if (opts.chrome) args.push("--chrome");
+  if (opts.model && (!isBedrockAuth(opts.env) || isBedrockModelId(opts.model))) {
+    args.push("--model", opts.model);
+  }
+  if (opts.effort) args.push("--effort", opts.effort);
+  if (opts.maxTurns > 0) args.push("--max-turns", String(opts.maxTurns));
+  if (opts.attemptInstructionsFilePath && !opts.resumeSessionId) {
+    args.push("--append-system-prompt-file", opts.attemptInstructionsFilePath);
+  }
+  if (!opts.resumeSessionId) {
+    args.push("--exclude-dynamic-system-prompt-sections");
+  }
+  args.push("--add-dir", opts.addDir);
+  if (opts.extraArgs.length > 0) args.push(...opts.extraArgs);
+  return args;
+}
+
 interface ClaudeExecutionInput {
   runId: string;
   agent: AdapterExecutionContext["agent"];
@@ -425,40 +459,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
-  const buildClaudeArgs = (
+  const buildArgs = (
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
-  ) => {
-    const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
-    if (resumeSessionId) args.push("--resume", resumeSessionId);
-    if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
-    if (chrome) args.push("--chrome");
-    // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
-    // (e.g. "us.anthropic.*" or ARN). Anthropic-style IDs like "claude-opus-4-6" are invalid
-    // on Bedrock, so skip them and let the CLI use its own configured model.
-    if (model && (!isBedrockAuth(effectiveEnv) || isBedrockModelId(model))) {
-      args.push("--model", model);
-    }
-    if (effort) args.push("--effort", effort);
-    if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-    // On resumed sessions the instructions are already in the session cache;
-    // re-injecting them via --append-system-prompt-file wastes 5-10K tokens
-    // per heartbeat and the Claude CLI may reject the combination outright.
-    if (attemptInstructionsFilePath && !resumeSessionId) {
-      args.push("--append-system-prompt-file", attemptInstructionsFilePath);
-    }
-    // Move dynamic per-machine sections (cwd, env vars, git status, memory paths)
-    // from the system prompt into the first user message. This keeps the system
-    // prompt stable across heartbeats so Anthropic can cache it, reducing input
-    // token costs on repeated wakes. Only effective on fresh sessions — resumed
-    // sessions already benefit from context caching.
-    if (!resumeSessionId) {
-      args.push("--exclude-dynamic-system-prompt-sections");
-    }
-    args.push("--add-dir", promptBundle.addDir);
-    if (extraArgs.length > 0) args.push(...extraArgs);
-    return args;
-  };
+  ) =>
+    buildClaudeArgs({
+      resumeSessionId,
+      attemptInstructionsFilePath,
+      dangerouslySkipPermissions,
+      chrome,
+      model,
+      env: effectiveEnv,
+      effort,
+      maxTurns,
+      extraArgs,
+      addDir: promptBundle.addDir,
+    });
 
   const parseFallbackErrorMessage = (proc: RunProcessResult) => {
     const stderrLine =
@@ -478,7 +494,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const attemptInstructionsFilePath = resumeSessionId ? undefined : effectiveInstructionsFilePath;
-    const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath);
+    const args = buildArgs(resumeSessionId, attemptInstructionsFilePath);
     const commandNotes: string[] = [];
     if (!resumeSessionId) {
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
