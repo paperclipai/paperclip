@@ -138,7 +138,7 @@ export function DigestPlayerPage() {
           next = entries[entryIdx + 1] ?? null;
         } else if (topicIdx < currentTopics.length - 1) {
           const nextTopic = currentTopics[topicIdx + 1];
-          next = (nextTopic && currentGrouped[nextTopic]?.[0]) ?? null;
+          next = (nextTopic && currentGrouped[nextTopic]?.[0]) || null;
         }
         if (next) {
           setSelected(next);

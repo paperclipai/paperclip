@@ -14,6 +14,7 @@ import {
   CalendarDays,
   Terminal,
   Headphones,
+  Youtube,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -116,6 +117,7 @@ export function Sidebar() {
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
+          <SidebarNavItem to="/youtube" label="YouTube" icon={Youtube} />
           <SidebarNavItem to="/api-runner" label="API Runner" icon={Terminal} />
           <SidebarNavItem to="/digest-player" label="Digest Player" icon={Headphones} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />

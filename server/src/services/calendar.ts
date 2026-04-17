@@ -137,7 +137,7 @@ export function calendarService(db: Db) {
 
       for (const row of jobRows) {
         const occurrences = expandCronOccurrences(row.schedule, start, end);
-        const isPaused = row.jobStatus === "paused" || row.jobStatus === "error";
+        const isPaused = row.jobStatus === "paused";
 
         for (const occurrence of occurrences) {
           events.push({
