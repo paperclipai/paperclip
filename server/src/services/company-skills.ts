@@ -2319,9 +2319,7 @@ export function companySkillService(db: Db) {
         ...(skill.metadata ?? {}),
         skillKey: skill.key,
       };
-      const values = {
-        companyId,
-        key: skill.key,
+      const mutableValues = {
         slug: skill.slug,
         name: skill.name,
         description: skill.description,
@@ -2340,10 +2338,10 @@ export function companySkillService(db: Db) {
       // constraint when two callers inserted the same key concurrently (#3845).
       const row = await db
         .insert(companySkills)
-        .values(values)
+        .values({ companyId, key: skill.key, ...mutableValues })
         .onConflictDoUpdate({
           target: [companySkills.companyId, companySkills.key],
-          set: values,
+          set: mutableValues,
         })
         .returning()
         .then((rows) => rows[0] ?? null);
