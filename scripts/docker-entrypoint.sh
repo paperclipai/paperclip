@@ -24,6 +24,22 @@ fi
 
 if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
+else
+    # Always fix ownership of files that may have been written as root
+    # (e.g. via `docker exec` without --user), without a full recursive chown.
+    # This targets the instance directory where .env and config.json are written.
+    for DIR in "/paperclip/instances" "/paperclip/.codex"; do
+        if [ -d "$DIR" ]; then
+            find "$DIR" ! -user node -exec chown node:node {} +
+        fi
+    done
+fi
+
+# Auto-onboard on first run if no config exists and opt-in env var is set
+PAPERCLIP_CONFIG_FILE="${PAPERCLIP_CONFIG:-/paperclip/instances/default/config.json}"
+if [ ! -f "$PAPERCLIP_CONFIG_FILE" ] && [ "${PAPERCLIP_AUTO_ONBOARD:-}" = "1" ]; then
+    echo "No config found at $PAPERCLIP_CONFIG_FILE — running onboard with environment defaults..."
+    gosu node sh -c 'cd /app && pnpm paperclipai onboard --yes'
 fi
 
 exec gosu node "$@"
