@@ -201,6 +201,14 @@ export {
 } from "./rt2-daily-report.js";
 
 export {
+  rt2GraphNodeTypeSchema,
+  rt2GraphEdgeTypeSchema,
+  rt2GraphConfidenceSchema,
+  listRt2ProjectGraphSchema,
+  type ListRt2ProjectGraph,
+} from "./rt2-graph.js";
+
+export {
   executionWorkspaceConfigSchema,
   updateExecutionWorkspaceSchema,
   executionWorkspaceStatusSchema,

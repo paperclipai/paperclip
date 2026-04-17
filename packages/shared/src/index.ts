@@ -52,6 +52,9 @@ export {
   WAKEUP_TRIGGER_DETAILS,
   WAKEUP_REQUEST_STATUSES,
   LIVE_EVENT_TYPES,
+  RT2_GRAPH_NODE_TYPES,
+  RT2_GRAPH_EDGE_TYPES,
+  RT2_GRAPH_CONFIDENCES,
   PRINCIPAL_TYPES,
   MEMBERSHIP_STATUSES,
   INSTANCE_USER_ROLES,
@@ -422,6 +425,14 @@ export {
   type ListRt2DailyBoard,
   type QueryRt2DailyWiki,
 } from "./validators/rt2-daily-report.js";
+
+export {
+  rt2GraphNodeTypeSchema,
+  rt2GraphEdgeTypeSchema,
+  rt2GraphConfidenceSchema,
+  listRt2ProjectGraphSchema,
+  type ListRt2ProjectGraph,
+} from "./validators/rt2-graph.js";
 
 export { workspaceRuntimeControlTargetSchema } from "./validators/execution-workspace.js";
 export {

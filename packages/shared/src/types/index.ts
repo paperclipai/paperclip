@@ -122,6 +122,17 @@ export type {
   Rt2DailyWikiAnswer,
 } from "./rt2-daily-report.js";
 export type {
+  Rt2GraphNodeType,
+  Rt2GraphEdgeType,
+  Rt2GraphConfidence,
+  Rt2GraphNode,
+  Rt2GraphEdgeEvidence,
+  Rt2GraphEdge,
+  Rt2GraphCommunitySummary,
+  Rt2ProjectGraph,
+  Rt2GraphReport,
+} from "./rt2-graph.js";
+export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueRelation,
