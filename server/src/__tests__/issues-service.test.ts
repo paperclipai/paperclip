@@ -1297,3 +1297,91 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
     ]);
   });
 });
+
+describeEmbeddedPostgres("issueService.listComments cursor pagination", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-comments-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("paginates comments after a cursor without passing a Date bind param", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const firstCommentId = randomUUID();
+    const secondCommentId = randomUUID();
+    const thirdCommentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cursor pagination",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values([
+      {
+        id: firstCommentId,
+        companyId,
+        issueId,
+        body: "first",
+        createdAt: new Date("2026-04-17T00:00:00.000Z"),
+      },
+      {
+        id: secondCommentId,
+        companyId,
+        issueId,
+        body: "second",
+        createdAt: new Date("2026-04-17T00:00:01.000Z"),
+      },
+      {
+        id: thirdCommentId,
+        companyId,
+        issueId,
+        body: "third",
+        createdAt: new Date("2026-04-17T00:00:02.000Z"),
+      },
+    ]);
+
+    await expect(
+      svc.listComments(issueId, {
+        afterCommentId: firstCommentId,
+        order: "asc",
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({ id: secondCommentId, body: "second" }),
+      expect.objectContaining({ id: thirdCommentId, body: "third" }),
+    ]);
+  });
+});
