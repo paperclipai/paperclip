@@ -5,7 +5,7 @@ interface JwtHeader {
   typ?: string;
 }
 
-export interface LocalAgentJwtClaims {
+interface LocalAgentJwtClaims {
   sub: string;
   company_id: string;
   adapter_type: string;

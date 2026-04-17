@@ -1,14 +1,14 @@
 import type { StorageProvider as StorageProviderId } from "@paperclipai/shared";
 import type { Readable } from "node:stream";
 
-export interface PutObjectInput {
+interface PutObjectInput {
   objectKey: string;
   body: Buffer;
   contentType: string;
   contentLength: number;
 }
 
-export interface GetObjectInput {
+interface GetObjectInput {
   objectKey: string;
 }
 
