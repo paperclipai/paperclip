@@ -25,9 +25,11 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Popover,
   PopoverContent,
@@ -321,6 +323,11 @@ export function NewIssueDialog() {
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
+  const [buttonShake, setButtonShake] = useState(false);
+  const [showTitleWarning, setShowTitleWarning] = useState(false);
+  const [hasAttempted, setHasAttempted] = useState(false);
+  const shakeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const stageFileInputRef = useRef<HTMLInputElement | null>(null);
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
@@ -632,6 +639,8 @@ export function NewIssueDialog() {
   useEffect(() => {
     return () => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
+      if (shakeTimerRef.current) clearTimeout(shakeTimerRef.current);
+      if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
     };
   }, []);
 
@@ -658,6 +667,11 @@ export function NewIssueDialog() {
     setStagedFiles([]);
     setIsFileDragOver(false);
     setCompanyOpen(false);
+    setHasAttempted(false);
+    setButtonShake(false);
+    setShowTitleWarning(false);
+    if (shakeTimerRef.current) clearTimeout(shakeTimerRef.current);
+    if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
     executionWorkspaceDefaultProjectId.current = null;
   }
 
@@ -683,6 +697,21 @@ export function NewIssueDialog() {
     clearDraft();
     reset();
     closeNewIssue();
+  }
+
+  function handleButtonClick() {
+    if (createIssue.isPending) return;
+    if (!title.trim()) {
+      setHasAttempted(true);
+      if (shakeTimerRef.current) clearTimeout(shakeTimerRef.current);
+      if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
+      setButtonShake(true);
+      shakeTimerRef.current = setTimeout(() => setButtonShake(false), 500);
+      setShowTitleWarning(true);
+      warningTimerRef.current = setTimeout(() => setShowTitleWarning(false), 3000);
+      return;
+    }
+    handleSubmit();
   }
 
   function handleSubmit() {
@@ -964,6 +993,7 @@ export function NewIssueDialog() {
           }
         }}
       >
+        <DialogTitle className="sr-only">New Issue</DialogTitle>
         {/* Header bar */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -1085,12 +1115,26 @@ export function NewIssueDialog() {
               }
             }}
             autoFocus
-            />
-          </div>
+          />
+          {hasAttempted && !title.trim() && (
+            <div className="mt-1 text-xs text-destructive">
+              Issue title is required
+            </div>
+          )}
+        </div>
 
-          <div className="px-4 pb-2">
-            <div className="overflow-x-auto overscroll-x-contain">
-              <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
+        {showTitleWarning && (
+          <div className="mx-4 mb-2 px-4 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400 text-sm font-medium flex items-center gap-2 animate-[fadeIn_0.2s_ease-out]">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 shrink-0">
+              <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495ZM10 5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 10 5Zm0 9a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clipRule="evenodd" />
+            </svg>
+            <span>Please enter an issue title before creating</span>
+          </div>
+        )}
+
+        <div className="px-4 pb-2 shrink-0">
+          <div className="overflow-x-auto overscroll-x-contain">
+            <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
               <span className="w-6 shrink-0 text-center">For</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
@@ -1668,18 +1712,24 @@ export function NewIssueDialog() {
                 <span className="text-xs text-destructive">{createIssueErrorMessage}</span>
               ) : null}
             </div>
-            <Button
-              size="sm"
-              className="min-w-[8.5rem] disabled:opacity-100"
-              disabled={!title.trim() || createIssue.isPending}
-              onClick={handleSubmit}
-              aria-busy={createIssue.isPending}
-            >
-              <span className="inline-flex items-center justify-center gap-1.5">
-                {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Issue" : "Create Issue"}</span>
-              </span>
-            </Button>
+            <Tooltip delayDuration={300}>
+              <TooltipTrigger asChild>
+                <Button
+                  size="sm"
+                  className={`min-w-[8.5rem] ${!title.trim() && !createIssue.isPending ? 'opacity-50 cursor-not-allowed' : ''} ${createIssue.isPending ? 'opacity-50 cursor-not-allowed' : ''} ${buttonShake ? 'animate-[shake_0.5s_ease-in-out]' : ''}`}
+                  onClick={createIssue.isPending ? undefined : handleButtonClick}
+                  aria-busy={createIssue.isPending}
+                >
+                  <span className="inline-flex items-center justify-center gap-1.5">
+                    {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                    <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Issue" : "Create Issue"}</span>
+                  </span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-[240px] text-xs">
+                {!title.trim() ? "Please enter a title to create an issue" : createIssue.isPending ? "Creating issue, please wait..." : "Click to create issue"}
+              </TooltipContent>
+            </Tooltip>
           </div>
         </div>
       </DialogContent>
