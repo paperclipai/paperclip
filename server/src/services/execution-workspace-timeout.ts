@@ -10,7 +10,9 @@ import {
   applyPullRequestResult,
   mergePullRequestRecordIntoMetadata,
   readPullRequestRecord,
+  toExecutionWorkspace,
 } from "./execution-workspaces.js";
+import { runArchiveSideEffects } from "./execution-workspace-archive.js";
 import { logger } from "../middleware/logger.js";
 
 type TimerHandle = { handle: ReturnType<typeof setTimeout>; deadline: number };
@@ -51,8 +53,8 @@ async function finalizeTimeout(
   companyId: string,
   workspaceId: string,
   archiveTimeoutMs: number,
-): Promise<boolean> {
-  return await db.transaction(async (tx) => {
+): Promise<{ transitioned: boolean; archived: boolean }> {
+  const transitioned = await db.transaction(async (tx) => {
     await tx.execute(
       sql`SELECT ${executionWorkspaces.id} FROM ${executionWorkspaces}
           WHERE ${and(eq(executionWorkspaces.companyId, companyId), eq(executionWorkspaces.id, workspaceId))}
@@ -68,12 +70,12 @@ async function finalizeTimeout(
         ),
       )
       .then((rows) => rows[0] ?? null);
-    if (!row) return false;
+    if (!row) return null;
     const metadata = (row.metadata as Record<string, unknown> | null) ?? null;
     const existingRecord = readPullRequestRecord(metadata);
-    if (!existingRecord) return false;
-    if (existingRecord.mode !== "blocking") return false;
-    if (existingRecord.status !== "requested" && existingRecord.status !== "opened") return false;
+    if (!existingRecord) return null;
+    if (existingRecord.mode !== "blocking") return null;
+    if (existingRecord.status !== "requested" && existingRecord.status !== "opened") return null;
 
     const result = applyPullRequestResult(existingRecord, row.status as any, {
       status: "skipped",
@@ -112,6 +114,8 @@ async function finalizeTimeout(
       entityType: "execution_workspace",
       entityId: workspaceId,
       details: {
+        workspaceId,
+        projectId: row.projectId,
         record: result.record,
         archiveTimeoutMs,
         deadline: deadlineIso,
@@ -126,15 +130,44 @@ async function finalizeTimeout(
       entityType: "execution_workspace",
       entityId: workspaceId,
       details: {
+        workspaceId,
+        projectId: row.projectId,
         record: result.record,
         workspaceStatus: result.workspaceStatus,
         source: "archive_timeout",
         previousStatus: result.previousStatus,
         nextStatus: result.record.status,
+        resolvedAt: result.record.resolvedAt,
       },
     });
-    return true;
+    return { archived: result.workspaceStatus === "archived" };
   });
+
+  if (!transitioned) return { transitioned: false, archived: false };
+
+  if (transitioned.archived) {
+    const workspaceRow = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, workspaceId))
+      .then((rows) => rows[0] ?? null);
+    if (workspaceRow) {
+      const workspace = toExecutionWorkspace(workspaceRow);
+      const sideEffects = await runArchiveSideEffects({ db, workspace });
+      if (sideEffects.status !== "archived" || sideEffects.cleanupReason !== null) {
+        await db
+          .update(executionWorkspaces)
+          .set({
+            status: sideEffects.status,
+            closedAt: sideEffects.closedAt,
+            cleanupReason: sideEffects.cleanupReason,
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, workspaceId));
+      }
+    }
+  }
+  return { transitioned: true, archived: transitioned.archived };
 }
 
 function scheduleAt(

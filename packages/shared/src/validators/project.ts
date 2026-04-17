@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { PROJECT_STATUSES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
+import { pullRequestPolicySchema } from "./execution-workspace.js";
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -22,7 +23,7 @@ export const projectExecutionWorkspacePolicySchema = z
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.unknown()).optional().nullable(),
     branchPolicy: z.record(z.unknown()).optional().nullable(),
-    pullRequestPolicy: z.record(z.unknown()).optional().nullable(),
+    pullRequestPolicy: pullRequestPolicySchema.optional().nullable(),
     runtimePolicy: z.record(z.unknown()).optional().nullable(),
     cleanupPolicy: z.record(z.unknown()).optional().nullable(),
   })

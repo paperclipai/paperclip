@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
@@ -10,7 +10,9 @@ import {
   workspaceRuntimeControlTargetSchema,
   type ExecutionWorkspace,
   type ExecutionWorkspacePullRequestRecord,
+  type ExecutionWorkspaceStatus,
   type PullRequestPolicy,
+  type PullRequestRecordStatus,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -28,11 +30,14 @@ import {
   pullRequestPolicyBlocksArchive,
   pullRequestPolicyRequestsAutoOpen,
 } from "../services/execution-workspace-policy.js";
-import { onPullRequestRequested } from "../services/execution-workspace-timeout.js";
+import {
+  cancelArchiveTimeout,
+  onPullRequestRequested,
+} from "../services/execution-workspace-timeout.js";
+import { runArchiveSideEffects } from "../services/execution-workspace-archive.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
-  cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   listConfiguredRuntimeServiceEntries,
   runWorkspaceJobForControl,
@@ -537,6 +542,8 @@ export function executionWorkspaceRoutes(db: Db) {
       record: built.record,
     });
     await emitPullRequestEvent(req, nextWorkspace, "pull_request_requested", {
+      workspaceId: nextWorkspace.id,
+      projectId: nextWorkspace.projectId,
       mode: built.mode,
       requestedAt: built.requestedAt,
       sourceIssueId: nextWorkspace.sourceIssueId,
@@ -545,6 +552,7 @@ export function executionWorkspaceRoutes(db: Db) {
       repoUrl: nextWorkspace.repoUrl,
       providerRef: nextWorkspace.providerRef,
       policy,
+      record: built.record,
     });
     res.status(200).json({ workspace: nextWorkspace, pullRequest: built.record, request: response });
   });
@@ -554,37 +562,128 @@ export function executionWorkspaceRoutes(db: Db) {
     validate(pullRequestResultRequestSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const workspace = await svc.getById(id);
-      if (!workspace) throw notFound("Execution workspace not found");
-      assertCompanyAccess(req, workspace.companyId);
+      const initial = await svc.getById(id);
+      if (!initial) throw notFound("Execution workspace not found");
+      assertCompanyAccess(req, initial.companyId);
 
-      const existingRecord = readPullRequestRecord(workspace.metadata);
-      if (!existingRecord) {
+      // Acquire the workspace row lock before reading the record so a
+      // concurrent archive-timeout finalization does not clobber us
+      // (or vice versa). On a late result after the timeout fired, the
+      // locked re-read will surface the resolved terminal record and
+      // this route returns 409 instead of a 200 that would silently
+      // overwrite a server-driven close.
+      type Outcome =
+        | { kind: "missing" }
+        | { kind: "no_record" }
+        | { kind: "conflict"; record: ExecutionWorkspacePullRequestRecord }
+        | {
+            kind: "ok";
+            record: ExecutionWorkspacePullRequestRecord;
+            workspaceStatus: ExecutionWorkspaceStatus;
+            previousStatus: PullRequestRecordStatus;
+          };
+      const locked = await svc.updateWithRowLock<Outcome>(
+        initial.id,
+        initial.companyId,
+        async (current) => {
+          const existingRecord = readPullRequestRecord(current.metadata);
+          if (!existingRecord) {
+            return { patch: null, result: { kind: "no_record" } };
+          }
+          if (
+            existingRecord.status === "merged" ||
+            existingRecord.status === "failed" ||
+            existingRecord.status === "skipped"
+          ) {
+            return { patch: null, result: { kind: "conflict", record: existingRecord } };
+          }
+          const transitioned = applyPullRequestResult(existingRecord, current.status, req.body);
+          const nextMetadata = mergePullRequestRecordIntoMetadata(current.metadata, transitioned.record);
+          const now = new Date();
+          const patch: Partial<typeof executionWorkspaces.$inferInsert> = {
+            metadata: nextMetadata as Record<string, unknown> | null,
+          };
+          if (transitioned.workspaceStatus !== current.status) {
+            patch.status = transitioned.workspaceStatus;
+            if (transitioned.workspaceStatus === "archived") {
+              patch.closedAt = now;
+              patch.cleanupReason = null;
+            }
+          }
+          return {
+            patch,
+            result: {
+              kind: "ok" as const,
+              record: transitioned.record,
+              workspaceStatus: transitioned.workspaceStatus,
+              previousStatus: transitioned.previousStatus,
+            },
+          };
+        },
+      );
+
+      if (!locked.workspace) {
+        throw notFound("Execution workspace not found");
+      }
+      const outcome = locked.result;
+      if (!outcome || outcome.kind === "missing") {
+        throw notFound("Execution workspace not found");
+      }
+      if (outcome.kind === "no_record") {
         throw conflict("No pending pull-request record on this execution workspace");
       }
-      if (existingRecord.status === "merged" || existingRecord.status === "failed" ||
-          existingRecord.status === "skipped") {
-        throw unprocessable(
-          `Cannot transition pull-request record from terminal status "${existingRecord.status}"`,
-        );
+      if (outcome.kind === "conflict") {
+        // Terminal: the scheduler or another caller already resolved
+        // this record. Return 409 with the current record so the
+        // consumer can log the outcome without overwriting it.
+        res.status(409).json({
+          error: `Pull-request record is already ${outcome.record.status}`,
+          pullRequest: outcome.record,
+        });
+        return;
       }
 
-      const result = applyPullRequestResult(existingRecord, workspace.status, req.body);
-      const statusPatch = result.workspaceStatus !== workspace.status
-        ? { status: result.workspaceStatus }
-        : {};
-      const nextWorkspace = await persistPullRequestRecord(workspace, result.record, statusPatch);
-      await emitPullRequestEvent(req, nextWorkspace, "pull_request_resolved", {
-        mode: result.record.mode,
+      // The transition committed. Cancel any scheduled archive timeout
+      // — if the consumer's result landed first, the scheduler should
+      // not fire later and emit a contradictory timed_out event.
+      cancelArchiveTimeout(initial.id);
+
+      const transitionedWorkspace = locked.workspace;
+      await emitPullRequestEvent(req, transitionedWorkspace, "pull_request_resolved", {
+        workspaceId: transitionedWorkspace.id,
+        projectId: transitionedWorkspace.projectId,
+        mode: outcome.record.mode,
         source: "consumer_result",
-        previousStatus: result.previousStatus,
-        nextStatus: result.record.status,
-        workspaceStatus: result.workspaceStatus,
+        previousStatus: outcome.previousStatus,
+        nextStatus: outcome.record.status,
+        workspaceStatus: outcome.workspaceStatus,
+        record: outcome.record,
+        resolvedAt: outcome.record.resolvedAt,
       });
+
+      // Blocking mode terminal-to-archived transition: run the same
+      // cleanup side effects that PATCH archive would have run if the
+      // workspace had closed synchronously in fire-and-forget mode.
+      let finalWorkspace = transitionedWorkspace;
+      if (outcome.workspaceStatus === "archived" && initial.status !== "archived") {
+        const sideEffects = await runArchiveSideEffects({
+          db,
+          workspace: transitionedWorkspace,
+        });
+        if (sideEffects.status !== "archived" || sideEffects.cleanupReason !== null) {
+          finalWorkspace =
+            (await svc.update(initial.id, {
+              status: sideEffects.status,
+              closedAt: sideEffects.closedAt,
+              cleanupReason: sideEffects.cleanupReason,
+            })) ?? finalWorkspace;
+        }
+      }
+
       res.status(200).json({
-        workspaceId: nextWorkspace.id,
-        pullRequest: result.record,
-        workspaceStatus: result.workspaceStatus,
+        workspaceId: finalWorkspace.id,
+        pullRequest: outcome.record,
+        workspaceStatus: finalWorkspace.status,
       });
     },
   );
@@ -696,6 +795,8 @@ export function executionWorkspaceRoutes(db: Db) {
             record: built.record,
           });
           await emitPullRequestEvent(req, parked, "pull_request_requested", {
+            workspaceId: parked.id,
+            projectId: parked.projectId,
             mode: "blocking",
             requestedAt: built.requestedAt,
             sourceIssueId: parked.sourceIssueId,
@@ -704,6 +805,7 @@ export function executionWorkspaceRoutes(db: Db) {
             repoUrl: parked.repoUrl,
             providerRef: parked.providerRef,
             policy: pullRequestPolicy,
+            record: built.record,
           });
           res.status(202).json({
             workspace: parked,
@@ -725,6 +827,8 @@ export function executionWorkspaceRoutes(db: Db) {
           record: built.record,
         });
         await emitPullRequestEvent(req, parkedForEvent, "pull_request_requested", {
+          workspaceId: parkedForEvent.id,
+          projectId: parkedForEvent.projectId,
           mode: "fire_and_forget",
           requestedAt: built.requestedAt,
           sourceIssueId: parkedForEvent.sourceIssueId,
@@ -733,6 +837,7 @@ export function executionWorkspaceRoutes(db: Db) {
           repoUrl: parkedForEvent.repoUrl,
           providerRef: parkedForEvent.providerRef,
           policy: pullRequestPolicy,
+          record: built.record,
         });
       }
 
@@ -749,82 +854,22 @@ export function executionWorkspaceRoutes(db: Db) {
       }
       workspace = archivedWorkspace;
 
-      if (existing.mode === "shared_workspace") {
-        await db
-          .update(issues)
-          .set({
-            executionWorkspaceId: null,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(issues.companyId, existing.companyId),
-              eq(issues.executionWorkspaceId, existing.id),
-            ),
-          );
+      const sideEffects = await runArchiveSideEffects({
+        db,
+        workspace: existing,
+        closedAt,
+      });
+      cleanupWarnings = sideEffects.cleanupWarnings;
+      if (sideEffects.status !== "archived" || sideEffects.cleanupReason !== null) {
+        workspace = (await svc.update(id, {
+          status: sideEffects.status,
+          closedAt: sideEffects.closedAt,
+          cleanupReason: sideEffects.cleanupReason,
+        })) ?? workspace;
       }
-
-      try {
-        await stopRuntimeServicesForExecutionWorkspace({
-          db,
-          executionWorkspaceId: existing.id,
-          workspaceCwd: existing.cwd,
-        });
-        const projectWorkspace = existing.projectWorkspaceId
-          ? await db
-              .select({
-                cwd: projectWorkspaces.cwd,
-                cleanupCommand: projectWorkspaces.cleanupCommand,
-              })
-              .from(projectWorkspaces)
-            .where(
-                and(
-                  eq(projectWorkspaces.id, existing.projectWorkspaceId),
-                  eq(projectWorkspaces.companyId, existing.companyId),
-                ),
-              )
-              .then((rows) => rows[0] ?? null)
-          : null;
-        const projectPolicy = existing.projectId
-          ? await db
-              .select({
-                executionWorkspacePolicy: projects.executionWorkspacePolicy,
-              })
-              .from(projects)
-              .where(and(eq(projects.id, existing.projectId), eq(projects.companyId, existing.companyId)))
-              .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
-          : null;
-        const cleanupResult = await cleanupExecutionWorkspaceArtifacts({
-          workspace: existing,
-          projectWorkspace,
-          teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
-          cleanupCommand: configForCleanup?.cleanupCommand ?? null,
-          recorder: workspaceOperationsSvc.createRecorder({
-            companyId: existing.companyId,
-            executionWorkspaceId: existing.id,
-          }),
-        });
-        cleanupWarnings = cleanupResult.warnings;
-        const cleanupPatch: Record<string, unknown> = {
-          closedAt,
-          cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
-        };
-        if (!cleanupResult.cleaned) {
-          cleanupPatch.status = "cleanup_failed";
-        }
-        if (cleanupResult.warnings.length > 0 || !cleanupResult.cleaned) {
-          workspace = (await svc.update(id, cleanupPatch)) ?? workspace;
-        }
-      } catch (error) {
-        const failureReason = error instanceof Error ? error.message : String(error);
-        workspace =
-          (await svc.update(id, {
-            status: "cleanup_failed",
-            closedAt,
-            cleanupReason: failureReason,
-          })) ?? workspace;
+      if (sideEffects.error) {
         res.status(500).json({
-          error: `Failed to archive execution workspace: ${failureReason}`,
+          error: `Failed to archive execution workspace: ${sideEffects.error}`,
         });
         return;
       }

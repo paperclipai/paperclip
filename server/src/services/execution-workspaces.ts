@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import type {
@@ -401,7 +401,12 @@ export function applyPullRequestResult(
     url: input.url ?? existing.url ?? null,
     number: input.number ?? existing.number ?? null,
     sha: input.sha ?? existing.sha ?? null,
-    error: input.status === "failed" ? (input.error ?? null) : existing.error ?? null,
+    // Preserve input.error whenever it is supplied, regardless of status,
+    // so both `failed` (where error is required) and `skipped` (where
+    // error carries the timeout reason or an operator note) keep their
+    // provided context. Only fall back to the existing error when the
+    // caller did not pass one.
+    error: input.error !== undefined ? input.error : existing.error ?? null,
     resolvedAt,
     mergedAt: input.status === "merged" ? resolvedAt : existing.mergedAt ?? null,
   };
@@ -953,6 +958,58 @@ export function executionWorkspaceService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toExecutionWorkspace(row) : null;
+    },
+
+    /**
+     * Race-safe read-modify-write of a workspace row. Acquires the
+     * workspace row lock via `SELECT ... FOR UPDATE`, re-reads the
+     * latest state inside the transaction, and lets the caller decide
+     * the next patch (returning `null` means no write). The helper is
+     * used by the pull-request result route and the archive-timeout
+     * scheduler to serialize against each other — without the lock,
+     * a late consumer result could overwrite a server-driven timeout
+     * close, or vice versa.
+     */
+    updateWithRowLock: async <T>(
+      id: string,
+      companyId: string,
+      apply: (current: ExecutionWorkspace) => Promise<{
+        patch: Partial<typeof executionWorkspaces.$inferInsert> | null;
+        result: T;
+      } | null>,
+    ): Promise<{ workspace: ExecutionWorkspace | null; result: T | null }> => {
+      return await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT ${executionWorkspaces.id} FROM ${executionWorkspaces}
+              WHERE ${and(eq(executionWorkspaces.companyId, companyId), eq(executionWorkspaces.id, id))}
+              FOR UPDATE`,
+        );
+        const row = await tx
+          .select()
+          .from(executionWorkspaces)
+          .where(
+            and(
+              eq(executionWorkspaces.companyId, companyId),
+              eq(executionWorkspaces.id, id),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (!row) return { workspace: null, result: null };
+        const current = toExecutionWorkspace(row);
+        const outcome = await apply(current);
+        if (!outcome) return { workspace: current, result: null };
+        if (!outcome.patch) return { workspace: current, result: outcome.result };
+        const updatedRow = await tx
+          .update(executionWorkspaces)
+          .set({ ...outcome.patch, updatedAt: new Date() })
+          .where(eq(executionWorkspaces.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        return {
+          workspace: updatedRow ? toExecutionWorkspace(updatedRow) : current,
+          result: outcome.result,
+        };
+      });
     },
   };
 }

@@ -23,6 +23,7 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
   getById: vi.fn(),
   getCloseReadiness: vi.fn(),
   update: vi.fn(),
+  updateWithRowLock: vi.fn(),
 }));
 
 const mockWorkspaceOperationService = vi.hoisted(() => ({
@@ -44,6 +45,18 @@ function registerServiceMocks() {
     onPullRequestRequested: vi.fn(),
     rescheduleBlockingPullRequestTimeouts: vi.fn(async () => ({ rescheduled: 0 })),
     cancelArchiveTimeout: vi.fn(),
+  }));
+  // Archive side-effects hit git / child processes; mock to a
+  // no-failure success so route tests can exercise the terminal
+  // blocking path without a real workspace.
+  vi.doMock("../services/execution-workspace-archive.js", () => ({
+    runArchiveSideEffects: vi.fn(async () => ({
+      cleanupWarnings: [],
+      cleaned: true,
+      status: "archived",
+      cleanupReason: null,
+      closedAt: new Date(),
+    })),
   }));
 }
 
@@ -92,6 +105,7 @@ describe("pull-request routes", () => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../services/execution-workspace-timeout.js");
+    vi.doUnmock("../services/execution-workspace-archive.js");
     vi.doUnmock("../routes/execution-workspaces.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
@@ -142,27 +156,42 @@ describe("pull-request routes", () => {
     expect(res.body.error).toBe("Validation error");
   });
 
+  function stubRowLockWithRecord(record: Record<string, unknown> | null, currentStatus = "active") {
+    const workspace = makeWorkspace({
+      status: currentStatus,
+      metadata: record ? { pullRequest: record } : null,
+    });
+    mockExecutionWorkspaceService.getById.mockResolvedValue(workspace);
+    mockExecutionWorkspaceService.updateWithRowLock.mockImplementation(async (_id, _cid, apply) => {
+      const outcome = await apply(workspace as any);
+      if (!outcome) return { workspace, result: null };
+      if (!outcome.patch) return { workspace, result: outcome.result };
+      const nextWorkspace = {
+        ...workspace,
+        ...outcome.patch,
+        metadata: outcome.patch.metadata ?? workspace.metadata,
+        status: outcome.patch.status ?? workspace.status,
+      };
+      return { workspace: nextWorkspace, result: outcome.result };
+    });
+  }
+
   it("POST /pull-request/result rejects transition from terminal status", async () => {
-    mockExecutionWorkspaceService.getById.mockResolvedValue(
-      makeWorkspace({
-        metadata: {
-          pullRequest: {
-            status: "merged",
-            mode: "fire_and_forget",
-            requestedAt: "2026-01-01T00:00:00.000Z",
-            resolvedAt: "2026-01-01T01:00:00.000Z",
-          },
-        },
-      }),
-    );
+    stubRowLockWithRecord({
+      status: "merged",
+      mode: "fire_and_forget",
+      requestedAt: "2026-01-01T00:00:00.000Z",
+      resolvedAt: "2026-01-01T01:00:00.000Z",
+    });
     const res = await request(await createApp())
       .post("/api/execution-workspaces/workspace-1/pull-request/result")
       .send({ status: "opened" });
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(409);
+    expect(res.body.pullRequest.status).toBe("merged");
   });
 
   it("POST /pull-request/result returns 409 when no record exists", async () => {
-    mockExecutionWorkspaceService.getById.mockResolvedValue(makeWorkspace({ metadata: null }));
+    stubRowLockWithRecord(null);
     const res = await request(await createApp())
       .post("/api/execution-workspaces/workspace-1/pull-request/result")
       .send({ status: "opened", url: "https://git.example.com/pr/1" });
@@ -170,17 +199,13 @@ describe("pull-request routes", () => {
   });
 
   it("POST /pull-request/result updates metadata and emits resolved event", async () => {
-    mockExecutionWorkspaceService.getById.mockResolvedValue(
-      makeWorkspace({
-        status: "in_review",
-        metadata: {
-          pullRequest: {
-            status: "requested",
-            mode: "blocking",
-            requestedAt: "2026-01-01T00:00:00.000Z",
-          },
-        },
-      }),
+    stubRowLockWithRecord(
+      {
+        status: "requested",
+        mode: "blocking",
+        requestedAt: "2026-01-01T00:00:00.000Z",
+      },
+      "in_review",
     );
     mockExecutionWorkspaceService.update.mockImplementation(async (_id, patch) => {
       return {
@@ -204,6 +229,39 @@ describe("pull-request routes", () => {
     const [, input] = activityCall as [unknown, Record<string, unknown>];
     expect((input.details as any).source).toBe("consumer_result");
     expect((input.details as any).mode).toBe("blocking");
+    expect((input.details as any).projectId).toBe("project-1");
+    expect((input.details as any).record).toBeDefined();
+    expect((input.details as any).record.status).toBe("merged");
+  });
+
+  it("POST /pull-request/result races with timeout: 409 when record is already terminal", async () => {
+    // Simulates a late consumer result arriving after the scheduler
+    // has already moved the record to skipped. The locked re-read
+    // inside the transaction sees the terminal record and short-
+    // circuits with 409 instead of blindly writing the consumer's
+    // desired transition.
+    stubRowLockWithRecord(
+      {
+        status: "skipped",
+        mode: "blocking",
+        requestedAt: "2026-01-01T00:00:00.000Z",
+        resolvedAt: "2026-01-01T00:30:00.000Z",
+        error: "archive_timeout_reached",
+      },
+      "archived",
+    );
+    const res = await request(await createApp())
+      .post("/api/execution-workspaces/workspace-1/pull-request/result")
+      .send({ status: "merged", sha: "abc", url: "https://git.example.com/pr/1" });
+    expect(res.status).toBe(409);
+    expect(res.body.pullRequest.status).toBe("skipped");
+    expect(res.body.pullRequest.error).toBe("archive_timeout_reached");
+    // No resolved event should fire on the late loser.
+    const resolvedCall = mockLogActivity.mock.calls.find(
+      ([, input]: [unknown, { action?: string }]) => input.action === "execution_workspace.pull_request_resolved",
+    );
+    expect(resolvedCall).toBeUndefined();
+    expect(mockExecutionWorkspaceService.update).not.toHaveBeenCalled();
   });
 
   it("PATCH archive returns 409 while a blocking record is still in requested", async () => {
