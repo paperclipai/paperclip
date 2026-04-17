@@ -59,6 +59,13 @@ interface AdapterInstallRequest {
   version?: string;
 }
 
+interface AdapterCapabilities {
+  supportsInstructionsBundle: boolean;
+  supportsSkills: boolean;
+  supportsLocalAgentJwt: boolean;
+  requiresMaterializedRuntimeSkills: boolean;
+}
+
 interface AdapterInfo {
   type: string;
   label: string;
@@ -66,6 +73,7 @@ interface AdapterInfo {
   modelsCount: number;
   loaded: boolean;
   disabled: boolean;
+  capabilities: AdapterCapabilities;
   /** True when an external plugin has replaced a built-in adapter of the same type. */
   overriddenBuiltin?: boolean;
   /** True when the external override for a builtin type is currently paused. */
@@ -103,6 +111,15 @@ function readAdapterPackageVersionFromDisk(record: AdapterPluginRecord): string 
   }
 }
 
+function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterCapabilities {
+  return {
+    supportsInstructionsBundle: adapter.supportsInstructionsBundle ?? false,
+    supportsSkills: Boolean(adapter.listSkills || adapter.syncSkills),
+    supportsLocalAgentJwt: adapter.supportsLocalAgentJwt ?? false,
+    requiresMaterializedRuntimeSkills: adapter.requiresMaterializedRuntimeSkills ?? false,
+  };
+}
+
 function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterPluginRecord | undefined, disabledSet: Set<string>): AdapterInfo {
   const fromDisk = externalRecord ? readAdapterPackageVersionFromDisk(externalRecord) : undefined;
   return {
@@ -112,6 +129,7 @@ function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterP
     modelsCount: (adapter.models ?? []).length,
     loaded: true, // If it's in the registry, it's loaded
     disabled: disabledSet.has(adapter.type),
+    capabilities: buildAdapterCapabilities(adapter),
     overriddenBuiltin: externalRecord ? BUILTIN_ADAPTER_TYPES.has(adapter.type) : undefined,
     overridePaused: BUILTIN_ADAPTER_TYPES.has(adapter.type) ? isOverridePaused(adapter.type) : undefined,
     // Prefer on-disk package.json so the UI reflects bumps without relying on store-only fields.
@@ -587,7 +605,11 @@ export function adapterRoutes() {
   // Serve a declarative config schema for an adapter's UI form fields.
   // The adapter's getConfigSchema() resolves all options (static and dynamic)
   // so the UI receives a fully hydrated schema in a single fetch.
-  const configSchemaCache = new Map<string, { schema: AdapterConfigSchema; fetchedAt: number }>();
+  const configSchemaCache = new Map<string, {
+    adapter: ServerAdapterModule;
+    schema: AdapterConfigSchema;
+    fetchedAt: number;
+  }>();
   const CONFIG_SCHEMA_TTL_MS = 30_000;
 
   router.get("/adapters/:type/config-schema", async (req, res) => {
@@ -605,14 +627,14 @@ export function adapterRoutes() {
     }
 
     const cached = configSchemaCache.get(type);
-    if (cached && Date.now() - cached.fetchedAt < CONFIG_SCHEMA_TTL_MS) {
+    if (cached && cached.adapter === adapter && Date.now() - cached.fetchedAt < CONFIG_SCHEMA_TTL_MS) {
       res.json(cached.schema);
       return;
     }
 
     try {
       const schema = await adapter.getConfigSchema();
-      configSchemaCache.set(type, { schema, fetchedAt: Date.now() });
+      configSchemaCache.set(type, { adapter, schema, fetchedAt: Date.now() });
       res.json(schema);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

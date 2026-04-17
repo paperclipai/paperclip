@@ -1,6 +1,6 @@
 import { isValidElement, useEffect, useId, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import Markdown, { type Components, type Options } from "react-markdown";
+import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
 import { useTheme } from "../context/ThemeContext";
@@ -56,6 +56,30 @@ function loadMermaid() {
   return mermaidLoaderPromise;
 }
 
+const wrapAnywhereStyle: React.CSSProperties = {
+  overflowWrap: "anywhere",
+  wordBreak: "break-word",
+};
+
+const scrollableBlockStyle: React.CSSProperties = {
+  maxWidth: "100%",
+  overflowX: "auto",
+};
+
+function mergeWrapStyle(style?: React.CSSProperties): React.CSSProperties {
+  return {
+    ...wrapAnywhereStyle,
+    ...style,
+  };
+}
+
+function mergeScrollableBlockStyle(style?: React.CSSProperties): React.CSSProperties {
+  return {
+    ...scrollableBlockStyle,
+    ...style,
+  };
+}
+
 function flattenText(value: ReactNode): string {
   if (value == null) return "";
   if (typeof value === "string" || typeof value === "number") return String(value);
@@ -69,6 +93,10 @@ function extractMermaidSource(children: ReactNode): string | null {
   if (typeof childProps.className !== "string") return null;
   if (!/\blanguage-mermaid\b/i.test(childProps.className)) return null;
   return flattenText(childProps.children).replace(/\n$/, "");
+}
+
+function safeMarkdownUrlTransform(url: string): string {
+  return parseMentionChipHref(url) ? url : defaultUrlTransform(url);
 }
 
 function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: boolean }) {
@@ -144,14 +172,44 @@ export function MarkdownBody({
     remarkPlugins.push(remarkSoftBreaks);
   }
   const components: Components = {
+    p: ({ node: _node, style: paragraphStyle, children: paragraphChildren, ...paragraphProps }) => (
+      <p {...paragraphProps} style={mergeWrapStyle(paragraphStyle as React.CSSProperties | undefined)}>
+        {paragraphChildren}
+      </p>
+    ),
+    li: ({ node: _node, style: listItemStyle, children: listItemChildren, ...listItemProps }) => (
+      <li {...listItemProps} style={mergeWrapStyle(listItemStyle as React.CSSProperties | undefined)}>
+        {listItemChildren}
+      </li>
+    ),
+    blockquote: ({ node: _node, style: blockquoteStyle, children: blockquoteChildren, ...blockquoteProps }) => (
+      <blockquote {...blockquoteProps} style={mergeWrapStyle(blockquoteStyle as React.CSSProperties | undefined)}>
+        {blockquoteChildren}
+      </blockquote>
+    ),
+    td: ({ node: _node, style: tableCellStyle, children: tableCellChildren, ...tableCellProps }) => (
+      <td {...tableCellProps} style={mergeWrapStyle(tableCellStyle as React.CSSProperties | undefined)}>
+        {tableCellChildren}
+      </td>
+    ),
+    th: ({ node: _node, style: tableHeaderStyle, children: tableHeaderChildren, ...tableHeaderProps }) => (
+      <th {...tableHeaderProps} style={mergeWrapStyle(tableHeaderStyle as React.CSSProperties | undefined)}>
+        {tableHeaderChildren}
+      </th>
+    ),
     pre: ({ node: _node, children: preChildren, ...preProps }) => {
       const mermaidSource = extractMermaidSource(preChildren);
       if (mermaidSource) {
         return <MermaidDiagramBlock source={mermaidSource} darkMode={theme === "dark"} />;
       }
-      return <pre {...preProps}>{preChildren}</pre>;
+      return <pre {...preProps} style={mergeScrollableBlockStyle(preProps.style as React.CSSProperties | undefined)}>{preChildren}</pre>;
     },
-    a: ({ href, children: linkChildren }) => {
+    code: ({ node: _node, style: codeStyle, children: codeChildren, ...codeProps }) => (
+      <code {...codeProps} style={mergeWrapStyle(codeStyle as React.CSSProperties | undefined)}>
+        {codeChildren}
+      </code>
+    ),
+    a: ({ href, style: linkStyle, children: linkChildren }) => {
       const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
       if (issueRef) {
         return (
@@ -177,14 +235,14 @@ export function MarkdownBody({
               parsed.kind === "project" && "paperclip-project-mention-chip",
             )}
             data-mention-kind={parsed.kind}
-            style={mentionChipInlineStyle(parsed)}
+            style={{ ...mergeWrapStyle(linkStyle as React.CSSProperties | undefined), ...mentionChipInlineStyle(parsed) }}
           >
             {linkChildren}
           </a>
         );
       }
       return (
-        <a href={href} rel="noreferrer">
+        <a href={href} rel="noreferrer" style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}>
           {linkChildren}
         </a>
       );
@@ -209,13 +267,17 @@ export function MarkdownBody({
   return (
     <div
       className={cn(
-        "paperclip-markdown prose prose-sm max-w-none break-words overflow-hidden",
+        "paperclip-markdown prose prose-sm min-w-0 max-w-full break-words overflow-hidden",
         theme === "dark" && "prose-invert",
         className,
       )}
-      style={style}
+      style={mergeWrapStyle(style)}
     >
-      <Markdown remarkPlugins={remarkPlugins} components={components} urlTransform={(url) => url}>
+      <Markdown
+        remarkPlugins={remarkPlugins}
+        components={components}
+        urlTransform={safeMarkdownUrlTransform}
+      >
         {children}
       </Markdown>
     </div>

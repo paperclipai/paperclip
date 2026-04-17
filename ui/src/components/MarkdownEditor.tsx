@@ -8,6 +8,9 @@ import {
   useRef,
   useState,
   type DragEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type TouchEvent as ReactTouchEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -75,8 +78,74 @@ export interface MarkdownEditorRef {
   focus: () => void;
 }
 
+function readHtmlAttribute(attrs: string, name: string): string | null {
+  const match = new RegExp(`${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(attrs);
+  return match?.[2] ?? match?.[3] ?? match?.[4] ?? null;
+}
+
+function convertHtmlImagesToMarkdown(text: string): string {
+  return text.replace(/<img\b([^>]*?)\/?>/gi, (tag, attrs: string) => {
+    const src = readHtmlAttribute(attrs, "src");
+    if (!src) return tag;
+    const alt = readHtmlAttribute(attrs, "alt") ?? "image";
+    const title = readHtmlAttribute(attrs, "title");
+    const escapedAlt = alt.replace(/[[\]]/g, "\\$&");
+    const escapedTitle = title?.replace(/"/g, '\\"');
+    return escapedTitle
+      ? `![${escapedAlt}](${src} "${escapedTitle}")`
+      : `![${escapedAlt}](${src})`;
+  });
+}
+
+function prepareMarkdownForEditor(value: string): string {
+  const normalizedLineEndings = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  return convertHtmlImagesToMarkdown(normalizedLineEndings);
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasMeaningfulEditorContent(node: Node | null): boolean {
+  if (!node) return false;
+  if (node.nodeType === Node.TEXT_NODE) {
+    return (node.textContent ?? "").trim().length > 0;
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return false;
+  }
+
+  const element = node as HTMLElement;
+  if (["IMG", "HR", "TABLE", "VIDEO", "IFRAME"].includes(element.tagName)) {
+    return true;
+  }
+
+  return Array.from(element.childNodes).some((child) => hasMeaningfulEditorContent(child));
+}
+
+function isRichEditorDomEmpty(
+  editable: HTMLElement,
+  expectedValue: string,
+  placeholder?: string,
+): boolean {
+  const expectedText = expectedValue.trim();
+  if (!expectedText) return false;
+
+  const visibleText = (editable.textContent ?? "").trim();
+  if (visibleText.length === 0) {
+    return !Array.from(editable.childNodes).some((child) => hasMeaningfulEditorContent(child));
+  }
+
+  const normalizedPlaceholder = placeholder?.trim();
+  if (
+    normalizedPlaceholder
+    && visibleText === normalizedPlaceholder
+    && expectedText !== normalizedPlaceholder
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function isSafeMarkdownLinkUrl(url: string): boolean {
@@ -417,12 +486,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   mentions,
   onSubmit,
 }: MarkdownEditorProps, forwardedRef) {
+  const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
   const { slashCommands } = useEditorAutocomplete();
   const containerRef = useRef<HTMLDivElement>(null);
   const ref = useRef<MDXEditorMethods>(null);
-  const valueRef = useRef(value);
-  valueRef.current = value;
-  const latestValueRef = useRef(value);
+  const fallbackTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const valueRef = useRef(editorValue);
+  valueRef.current = editorValue;
+  const latestValueRef = useRef(editorValue);
   const initialChildOnChangeRef = useRef(true);
   /**
    * After imperative `setMarkdown` (prop sync, mentions, image upload), MDXEditor may emit `onChange`
@@ -432,6 +503,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const echoIgnoreMarkdownRef = useRef<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [richEditorError, setRichEditorError] = useState<string | null>(null);
   const dragDepthRef = useRef(0);
 
   // Stable ref for imageUploadHandler so plugins don't recreate on every render
@@ -443,6 +515,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const mentionStateRef = useRef<MentionState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const skillEnterArmedRef = useRef(false);
+  const autocompleteSelectionHandledRef = useRef(false);
   const mentionActive = mentionState !== null && (
     (mentionState.trigger === "mention" && Boolean(mentions?.length))
     || (mentionState.trigger === "skill" && slashCommands.length > 0)
@@ -491,9 +564,59 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
+      if (richEditorError) {
+        fallbackTextareaRef.current?.focus();
+        return;
+      }
       ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
     },
-  }), []);
+  }), [richEditorError]);
+
+  const autoSizeFallbackTextarea = useCallback((element: HTMLTextAreaElement | null) => {
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${element.scrollHeight}px`;
+  }, []);
+
+  useEffect(() => {
+    if (!richEditorError) return;
+    autoSizeFallbackTextarea(fallbackTextareaRef.current);
+  }, [autoSizeFallbackTextarea, richEditorError, value]);
+
+  useEffect(() => {
+    if (richEditorError || editorValue.trim().length === 0) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    let timeoutId = 0;
+    const scheduleCheck = () => {
+      window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(() => {
+        const editable = container.querySelector('[contenteditable="true"]');
+        if (!(editable instanceof HTMLElement)) return;
+        const activeElement = document.activeElement;
+        if (activeElement === editable || editable.contains(activeElement)) return;
+        if (isRichEditorDomEmpty(editable, editorValue, placeholder)) {
+          setRichEditorError("Rich editor failed to load content");
+        }
+      }, 0);
+    };
+
+    scheduleCheck();
+    const observer = new MutationObserver(() => {
+      scheduleCheck();
+    });
+    observer.observe(container, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      observer.disconnect();
+    };
+  }, [editorValue, placeholder, richEditorError]);
 
   // Whether the image plugin should be included (boolean is stable across renders
   // as long as the handler presence doesn't toggle)
@@ -558,15 +681,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }, [hasImageUpload]);
 
   useEffect(() => {
-    if (value !== latestValueRef.current) {
+    if (editorValue !== latestValueRef.current) {
       if (ref.current) {
         // Pair with onChange echo suppression (echoIgnoreMarkdownRef).
-        echoIgnoreMarkdownRef.current = value;
-        ref.current.setMarkdown(value);
-        latestValueRef.current = value;
+        echoIgnoreMarkdownRef.current = editorValue;
+        ref.current.setMarkdown(editorValue);
+        latestValueRef.current = editorValue;
       }
     }
-  }, [value]);
+  }, [editorValue]);
 
   const decorateProjectMentions = useCallback(() => {
     const editable = containerRef.current?.querySelector('[contenteditable="true"]');
@@ -677,6 +800,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }, [checkMention, mentionActive]);
 
   useEffect(() => {
+    if (mentionActive) return;
+    autocompleteSelectionHandledRef.current = false;
+  }, [mentionActive]);
+
+  useEffect(() => {
     const editable = containerRef.current?.querySelector('[contenteditable="true"]');
     if (!editable) return;
     decorateProjectMentions();
@@ -696,7 +824,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       // Read from ref to avoid stale-closure issues (selectionchange can
       // update state between the last render and this callback firing).
       const state = mentionStateRef.current;
-      if (!state) return;
+      if (!state) return false;
       const current = latestValueRef.current;
       const next = applyMention(current, state, option);
       if (next !== current) {
@@ -729,9 +857,23 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       mentionStateRef.current = null;
       skillEnterArmedRef.current = false;
       setMentionState(null);
+      return true;
     },
     [decorateProjectMentions, onChange],
   );
+
+  const handleAutocompletePress = useCallback((
+    event: ReactMouseEvent<HTMLButtonElement> | ReactPointerEvent<HTMLButtonElement> | ReactTouchEvent<HTMLButtonElement>,
+    option: AutocompleteOption,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (autocompleteSelectionHandledRef.current) return;
+    const handled = selectMention(option);
+    if (handled) {
+      autocompleteSelectionHandledRef.current = true;
+    }
+  }, [selectMention]);
 
   function hasFilePayload(evt: DragEvent<HTMLDivElement>) {
     return Array.from(evt.dataTransfer?.types ?? []).includes("Files");
@@ -760,6 +902,52 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         getMentionMenuSize(filteredMentions.length),
       )
     : null;
+
+  if (richEditorError) {
+    return (
+      <div
+        ref={containerRef}
+        className={cn(
+          "relative paperclip-mdxeditor-scope",
+          bordered ? "rounded-md border border-border bg-transparent" : "bg-transparent",
+          className,
+        )}
+      >
+        <div className="flex items-start justify-between gap-3 px-3 pt-2 text-xs text-muted-foreground">
+          <p>Rich editor unavailable for this markdown. Showing raw source instead.</p>
+          <button
+            type="button"
+            className="shrink-0 underline underline-offset-2 hover:text-foreground"
+            onClick={() => {
+              setRichEditorError(null);
+            }}
+          >
+            Retry rich editor
+          </button>
+        </div>
+        <textarea
+          ref={fallbackTextareaRef}
+          value={value}
+          placeholder={placeholder}
+          onChange={(event) => {
+            onChange(event.target.value);
+            autoSizeFallbackTextarea(event.target);
+          }}
+          onBlur={() => onBlur?.()}
+          onKeyDown={(event) => {
+            if (onSubmit && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              onSubmit();
+            }
+          }}
+          className={cn(
+            "min-h-[12rem] w-full resize-none bg-transparent px-3 pb-3 pt-2 font-mono text-sm leading-6 outline-none",
+            contentClassName,
+          )}
+        />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -868,7 +1056,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     >
       <MDXEditor
         ref={setEditorRef}
-        markdown={value}
+        markdown={editorValue}
         placeholder={placeholder}
         onChange={(next) => {
           const echo = echoIgnoreMarkdownRef.current;
@@ -883,9 +1071,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
           if (initialChildOnChangeRef.current) {
             initialChildOnChangeRef.current = false;
-            if (next === "" && value !== "") {
-              echoIgnoreMarkdownRef.current = value;
-              ref.current?.setMarkdown(value);
+            if (next === "" && editorValue !== "") {
+              echoIgnoreMarkdownRef.current = editorValue;
+              ref.current?.setMarkdown(editorValue);
               return;
             }
           }
@@ -893,6 +1081,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           onChange(next);
         }}
         onBlur={() => onBlur?.()}
+        onError={(payload) => {
+          setRichEditorError(payload.error);
+        }}
         className={cn("paperclip-mdxeditor", !bordered && "paperclip-mdxeditor--borderless")}
         contentEditableClassName={cn(
           "paperclip-mdxeditor-content focus:outline-none [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:list-item",
@@ -917,10 +1108,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
                   i === mentionIndex && "bg-accent",
                 )}
-                onPointerDown={(e) => {
-                  e.preventDefault(); // prevent blur
-                  selectMention(option);
-                }}
+                onPointerDown={(e) => handleAutocompletePress(e, option)}
+                onMouseDown={(e) => handleAutocompletePress(e, option)}
+                onTouchStart={(e) => handleAutocompletePress(e, option)}
                 onMouseEnter={() => {
                   if (mentionStateRef.current?.trigger === "skill") {
                     skillEnterArmedRef.current = true;

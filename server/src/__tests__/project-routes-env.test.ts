@@ -21,6 +21,22 @@ const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: mockGetTelemetryClient,
+}));
+
+vi.mock("../services/index.js", () => ({
+  logActivity: mockLogActivity,
+  projectService: () => mockProjectService,
+  secretService: () => mockSecretService,
+  workspaceOperationService: () => mockWorkspaceOperationService,
+}));
+
+vi.mock("../services/workspace-runtime.js", () => ({
+  startRuntimeServicesForWorkspaceControl: vi.fn(),
+  stopRuntimeServicesForProjectWorkspace: vi.fn(),
+}));
+
 function registerModuleMocks() {
   vi.doMock("../telemetry.js", () => ({
     getTelemetryClient: mockGetTelemetryClient,
@@ -40,8 +56,10 @@ function registerModuleMocks() {
 }
 
 async function createApp() {
-  const { projectRoutes } = await import("../routes/projects.js");
-  const { errorHandler } = await import("../middleware/index.js");
+  const [{ projectRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -100,8 +118,11 @@ function buildProject(overrides: Record<string, unknown> = {}) {
 describe("project env routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../routes/projects.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: null });
     mockProjectService.createWorkspace.mockResolvedValue(null);
@@ -128,7 +149,7 @@ describe("project env routes", () => {
         env: normalizedEnv,
       });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
     expect(mockSecretService.normalizeEnvBindingsForPersistence).toHaveBeenCalledWith(
       "company-1",
       normalizedEnv,

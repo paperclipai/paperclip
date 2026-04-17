@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
+import { ApiError } from "../../api/client";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { heartbeatsApi } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
@@ -85,6 +86,7 @@ export function useLiveRunTranscripts({
   const seenChunkKeysRef = useRef(new Set<string>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
+  const missingTerminalLogRunIdsRef = useRef(new Set<string>());
   // Tick counter to force transcript recomputation when dynamic parser loads
   const [parserTick, setParserTick] = useState(0);
   useEffect(() => {
@@ -160,6 +162,11 @@ export function useLiveRunTranscripts({
         logOffsetByRunRef.current.delete(runId);
       }
     }
+    for (const runId of missingTerminalLogRunIdsRef.current.keys()) {
+      if (!knownRunIds.has(runId)) {
+        missingTerminalLogRunIdsRef.current.delete(runId);
+      }
+    }
   }, [normalizedRuns]);
 
   useEffect(() => {
@@ -168,6 +175,9 @@ export function useLiveRunTranscripts({
     let cancelled = false;
 
     const readRunLog = async (run: RunTranscriptSource) => {
+      if (missingTerminalLogRunIdsRef.current.has(run.id)) {
+        return;
+      }
       const offset = logOffsetByRunRef.current.get(run.id) ?? 0;
       try {
         const result = await heartbeatsApi.log(run.id, offset, LOG_READ_LIMIT_BYTES);
@@ -182,8 +192,10 @@ export function useLiveRunTranscripts({
         if (result.content.length > 0) {
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
-      } catch {
-        // Ignore log read errors while output is initializing.
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {
+          missingTerminalLogRunIdsRef.current.add(run.id);
+        }
       } finally {
         if (!cancelled) {
           setHydratedRunIds((prev) => {

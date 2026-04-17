@@ -77,7 +77,7 @@ vi.mock("../context/CompanyContext", () => ({
 }));
 
 vi.mock("../context/ToastContext", () => ({
-  useToast: () => toastState,
+  useToastActions: () => toastState,
 }));
 
 vi.mock("../api/issues", () => ({
@@ -366,6 +366,43 @@ describe("NewIssueDialog", () => {
         goalId: "goal-1",
         projectId: "project-1",
         executionWorkspaceId: "workspace-1",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("submits the parent assignee when a sub-issue opens with inherited defaults", async () => {
+    dialogState.newIssueDefaults = {
+      parentId: "issue-1",
+      parentIdentifier: "PAP-1",
+      parentTitle: "Parent issue",
+      title: "Child issue",
+      projectId: "project-1",
+      goalId: "goal-1",
+      assigneeAgentId: "agent-1",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Sub-Issue"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Child issue",
+        parentId: "issue-1",
+        goalId: "goal-1",
+        projectId: "project-1",
+        assigneeAgentId: "agent-1",
       }),
     );
 

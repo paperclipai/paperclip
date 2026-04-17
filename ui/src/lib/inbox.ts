@@ -9,6 +9,7 @@ import type {
 import {
   applyIssueFilters,
   defaultIssueFilterState,
+  normalizeIssueFilterState,
   type IssueFilterState,
 } from "./issue-filters";
 
@@ -22,6 +23,7 @@ export const INBOX_ISSUE_COLUMNS_KEY = "paperclip:inbox:issue-columns";
 export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
+export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
 export type InboxTab = "mine" | "recent" | "unread" | "all";
 export type InboxCategoryFilter =
   | "everything"
@@ -31,7 +33,7 @@ export type InboxCategoryFilter =
   | "failed_runs"
   | "alerts";
 export type InboxApprovalFilter = "all" | "actionable" | "resolved";
-export type InboxWorkItemGroupBy = "none" | "type";
+export type InboxWorkItemGroupBy = "none" | "type" | "workspace";
 export const inboxIssueColumns = [
   "status",
   "id",
@@ -86,30 +88,55 @@ export interface InboxWorkItemGroup {
   items: InboxWorkItem[];
 }
 
+export type InboxSearchSection = "none" | "archived" | "other";
+
+export interface InboxGroupedSection {
+  key: string;
+  label: string | null;
+  displayItems: InboxWorkItem[];
+  childrenByIssueId: Map<string, Issue[]>;
+  searchSection: InboxSearchSection;
+}
+
+export interface InboxKeyboardGroupSection {
+  key: string;
+  displayItems: InboxWorkItem[];
+  childrenByIssueId: ReadonlyMap<string, Issue[]>;
+}
+
+export type InboxKeyboardNavEntry =
+  | {
+      type: "top";
+      itemKey: string;
+      item: InboxWorkItem;
+    }
+  | {
+      type: "child";
+      issueId: string;
+      issue: Issue;
+    };
+
+export interface InboxProjectWorkspaceLookup {
+  name: string;
+}
+
+export interface InboxExecutionWorkspaceLookup {
+  name: string;
+  mode: "shared_workspace" | "isolated_workspace" | "operator_branch" | "adapter_managed" | "cloud_sandbox";
+  projectWorkspaceId: string | null;
+}
+
+export interface InboxWorkspaceGroupingOptions {
+  executionWorkspaceById?: ReadonlyMap<string, InboxExecutionWorkspaceLookup>;
+  projectWorkspaceById?: ReadonlyMap<string, InboxProjectWorkspaceLookup>;
+  defaultProjectWorkspaceIdByProjectId?: ReadonlyMap<string, string>;
+}
+
 const defaultInboxFilterPreferences: InboxFilterPreferences = {
   allCategoryFilter: "everything",
   allApprovalFilter: "all",
   issueFilters: defaultIssueFilterState,
 };
-
-function normalizeStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === "string");
-}
-
-function normalizeIssueFilterState(value: unknown): IssueFilterState {
-  if (!value || typeof value !== "object") return { ...defaultIssueFilterState };
-  const candidate = value as Partial<Record<keyof IssueFilterState, unknown>>;
-  return {
-    statuses: normalizeStringArray(candidate.statuses),
-    priorities: normalizeStringArray(candidate.priorities),
-    assignees: normalizeStringArray(candidate.assignees),
-    labels: normalizeStringArray(candidate.labels),
-    projects: normalizeStringArray(candidate.projects),
-    workspaces: normalizeStringArray(candidate.workspaces),
-    showRoutineExecutions: candidate.showRoutineExecutions === true,
-  };
-}
 
 function normalizeInboxCategoryFilter(value: unknown): InboxCategoryFilter {
   return value === "issues_i_touched"
@@ -128,6 +155,11 @@ function normalizeInboxApprovalFilter(value: unknown): InboxApprovalFilter {
 function getInboxFilterPreferencesStorageKey(companyId: string | null | undefined): string | null {
   if (!companyId) return null;
   return `${INBOX_FILTER_PREFERENCES_KEY_PREFIX}:${companyId}`;
+}
+
+function getInboxCollapsedGroupsStorageKey(companyId: string | null | undefined): string | null {
+  if (!companyId) return null;
+  return `${INBOX_COLLAPSED_GROUPS_KEY_PREFIX}:${companyId}`;
 }
 
 export function loadInboxFilterPreferences(
@@ -179,6 +211,36 @@ export function saveInboxFilterPreferences(
         issueFilters: normalizeIssueFilterState(preferences.issueFilters),
       }),
     );
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
+export function loadCollapsedInboxGroupKeys(
+  companyId: string | null | undefined,
+): Set<string> {
+  const storageKey = getInboxCollapsedGroupsStorageKey(companyId);
+  if (!storageKey) return new Set();
+
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function saveCollapsedInboxGroupKeys(
+  companyId: string | null | undefined,
+  groupKeys: ReadonlySet<string>,
+) {
+  const storageKey = getInboxCollapsedGroupsStorageKey(companyId);
+  if (!storageKey) return;
+
+  try {
+    localStorage.setItem(storageKey, JSON.stringify([...groupKeys]));
   } catch {
     // Ignore localStorage failures.
   }
@@ -273,7 +335,7 @@ export function saveInboxIssueColumns(columns: InboxIssueColumn[]) {
 export function loadInboxWorkItemGroupBy(): InboxWorkItemGroupBy {
   try {
     const raw = localStorage.getItem(INBOX_GROUP_BY_KEY);
-    return raw === "type" ? raw : "none";
+    return raw === "type" || raw === "workspace" ? raw : "none";
   } catch {
     return "none";
   }
@@ -287,16 +349,24 @@ export function saveInboxWorkItemGroupBy(groupBy: InboxWorkItemGroupBy) {
   }
 }
 
-export function shouldIncludeRoutineExecutionIssue(
-  issue: Pick<Issue, "originKind">,
-  showRoutineExecutions: boolean,
+export function shouldResetInboxWorkspaceGrouping(
+  groupBy: InboxWorkItemGroupBy,
+  isolatedWorkspacesEnabled: boolean,
+  experimentalSettingsLoaded: boolean,
 ): boolean {
-  return showRoutineExecutions || issue.originKind !== "routine_execution";
+  return experimentalSettingsLoaded && groupBy === "workspace" && !isolatedWorkspacesEnabled;
 }
 
-export function filterInboxIssues(issues: Issue[], showRoutineExecutions: boolean): Issue[] {
-  if (showRoutineExecutions) return issues;
-  return issues.filter((issue) => shouldIncludeRoutineExecutionIssue(issue, showRoutineExecutions));
+export function shouldIncludeRoutineExecutionIssue(
+  issue: Pick<Issue, "originKind">,
+  hideRoutineExecutions: boolean,
+): boolean {
+  return !hideRoutineExecutions || issue.originKind !== "routine_execution";
+}
+
+export function filterInboxIssues(issues: Issue[], hideRoutineExecutions: boolean): Issue[] {
+  if (!hideRoutineExecutions) return issues;
+  return issues.filter((issue) => shouldIncludeRoutineExecutionIssue(issue, hideRoutineExecutions));
 }
 
 export function matchesInboxIssueSearch(
@@ -307,15 +377,8 @@ export function matchesInboxIssueSearch(
     executionWorkspaceById,
     projectWorkspaceById,
     defaultProjectWorkspaceIdByProjectId,
-  }: {
+  }: InboxWorkspaceGroupingOptions & {
     isolatedWorkspacesEnabled?: boolean;
-    executionWorkspaceById?: ReadonlyMap<string, {
-      name: string;
-      mode: "shared_workspace" | "isolated_workspace" | "operator_branch" | "adapter_managed" | "cloud_sandbox";
-      projectWorkspaceId: string | null;
-    }>;
-    projectWorkspaceById?: ReadonlyMap<string, { name: string }>;
-    defaultProjectWorkspaceIdByProjectId?: ReadonlyMap<string, string>;
   } = {},
 ): boolean {
   const normalizedQuery = query.trim().toLowerCase();
@@ -346,12 +409,8 @@ export function getArchivedInboxSearchIssues({
   searchableIssues: Issue[];
   query: string;
   isolatedWorkspacesEnabled?: boolean;
-  executionWorkspaceById?: ReadonlyMap<string, {
-    name: string;
-    mode: "shared_workspace" | "isolated_workspace" | "operator_branch" | "adapter_managed" | "cloud_sandbox";
-    projectWorkspaceId: string | null;
-  }>;
-  projectWorkspaceById?: ReadonlyMap<string, { name: string }>;
+  executionWorkspaceById?: ReadonlyMap<string, InboxExecutionWorkspaceLookup>;
+  projectWorkspaceById?: ReadonlyMap<string, InboxProjectWorkspaceLookup>;
   defaultProjectWorkspaceIdByProjectId?: ReadonlyMap<string, string>;
 }): Issue[] {
   const normalizedQuery = query.trim();
@@ -400,21 +459,34 @@ export function getInboxSearchSupplementIssues({
     .filter((issue) => !visibleIssueIds.has(issue.id));
 }
 
+function formatDefaultWorkspaceGroupLabel(name: string | null | undefined): string {
+  const normalizedName = name?.trim();
+  return normalizedName ? `${normalizedName} (default)` : "Default workspace";
+}
+
+function resolveDefaultProjectWorkspaceInfo(
+  issue: Pick<Issue, "projectId">,
+  {
+    projectWorkspaceById,
+    defaultProjectWorkspaceIdByProjectId,
+  }: Pick<InboxWorkspaceGroupingOptions, "projectWorkspaceById" | "defaultProjectWorkspaceIdByProjectId">,
+): { id: string; label: string } | null {
+  if (!issue.projectId) return null;
+  const defaultProjectWorkspaceId = defaultProjectWorkspaceIdByProjectId?.get(issue.projectId) ?? null;
+  if (!defaultProjectWorkspaceId) return null;
+  return {
+    id: defaultProjectWorkspaceId,
+    label: formatDefaultWorkspaceGroupLabel(projectWorkspaceById?.get(defaultProjectWorkspaceId)?.name),
+  };
+}
+
 export function resolveIssueWorkspaceName(
   issue: Pick<Issue, "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
   {
     executionWorkspaceById,
     projectWorkspaceById,
     defaultProjectWorkspaceIdByProjectId,
-  }: {
-    executionWorkspaceById?: ReadonlyMap<string, {
-      name: string;
-      mode: "shared_workspace" | "isolated_workspace" | "operator_branch" | "adapter_managed" | "cloud_sandbox";
-      projectWorkspaceId: string | null;
-    }>;
-    projectWorkspaceById?: ReadonlyMap<string, { name: string }>;
-    defaultProjectWorkspaceIdByProjectId?: ReadonlyMap<string, string>;
-  },
+  }: InboxWorkspaceGroupingOptions,
 ): string | null {
   const defaultProjectWorkspaceId = issue.projectId
     ? defaultProjectWorkspaceIdByProjectId?.get(issue.projectId) ?? null
@@ -439,6 +511,74 @@ export function resolveIssueWorkspaceName(
   }
 
   return null;
+}
+
+export function resolveIssueWorkspaceGroup(
+  issue: Pick<Issue, "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
+  {
+    executionWorkspaceById,
+    projectWorkspaceById,
+    defaultProjectWorkspaceIdByProjectId,
+  }: InboxWorkspaceGroupingOptions = {},
+): { key: string; label: string } {
+  const defaultProjectWorkspace = resolveDefaultProjectWorkspaceInfo(issue, {
+    projectWorkspaceById,
+    defaultProjectWorkspaceIdByProjectId,
+  });
+
+  if (issue.executionWorkspaceId) {
+    const executionWorkspace = executionWorkspaceById?.get(issue.executionWorkspaceId) ?? null;
+    const linkedProjectWorkspaceId =
+      executionWorkspace?.projectWorkspaceId ?? issue.projectWorkspaceId ?? null;
+    const isDefaultSharedExecutionWorkspace =
+      executionWorkspace?.mode === "shared_workspace"
+      && linkedProjectWorkspaceId != null
+      && linkedProjectWorkspaceId === defaultProjectWorkspace?.id;
+
+    if (isDefaultSharedExecutionWorkspace && defaultProjectWorkspace) {
+      return {
+        key: `workspace:project:${defaultProjectWorkspace.id}`,
+        label: defaultProjectWorkspace.label,
+      };
+    }
+
+    const workspaceName = executionWorkspace?.name?.trim();
+    if (workspaceName) {
+      return {
+        key: `workspace:execution:${issue.executionWorkspaceId}`,
+        label: workspaceName,
+      };
+    }
+  }
+
+  if (issue.projectWorkspaceId) {
+    if (issue.projectWorkspaceId === defaultProjectWorkspace?.id) {
+      return {
+        key: `workspace:project:${defaultProjectWorkspace.id}`,
+        label: defaultProjectWorkspace.label,
+      };
+    }
+
+    const workspaceName = projectWorkspaceById?.get(issue.projectWorkspaceId)?.name?.trim();
+    if (workspaceName) {
+      return {
+        key: `workspace:project:${issue.projectWorkspaceId}`,
+        label: workspaceName,
+      };
+    }
+  }
+
+  if (defaultProjectWorkspace) {
+    return {
+      key: `workspace:project:${defaultProjectWorkspace.id}`,
+      label: defaultProjectWorkspace.label,
+    };
+  }
+
+  return {
+    key: "workspace:none",
+    label: "No workspace",
+  };
 }
 
 export function loadInboxNesting(): boolean {
@@ -642,9 +782,48 @@ const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
 export function groupInboxWorkItems(
   items: InboxWorkItem[],
   groupBy: InboxWorkItemGroupBy,
+  options: InboxWorkspaceGroupingOptions = {},
 ): InboxWorkItemGroup[] {
   if (groupBy === "none") {
     return [{ key: "__all", label: null, items }];
+  }
+
+  if (groupBy === "workspace") {
+    const groups = new Map<string, { label: string; items: InboxWorkItem[]; latestTimestamp: number }>();
+    for (const item of items) {
+      const resolvedGroup = item.kind === "issue"
+        ? resolveIssueWorkspaceGroup(item.issue, options)
+        : { key: `kind:${item.kind}`, label: inboxWorkItemKindLabels[item.kind] };
+      const existing = groups.get(resolvedGroup.key);
+      if (existing) {
+        existing.items.push(item);
+        existing.latestTimestamp = Math.max(existing.latestTimestamp, item.timestamp);
+      } else {
+        groups.set(resolvedGroup.key, {
+          label: resolvedGroup.label,
+          items: [item],
+          latestTimestamp: item.timestamp,
+        });
+      }
+    }
+
+    return [...groups.entries()]
+      .map(([key, value]) => ({
+        key,
+        label: value.label,
+        items: value.items,
+        latestTimestamp: value.latestTimestamp,
+      }))
+      .sort((a, b) => {
+        const timestampDiff = b.latestTimestamp - a.latestTimestamp;
+        if (timestampDiff !== 0) return timestampDiff;
+        return a.label.localeCompare(b.label);
+      })
+      .map(({ key, label, items: groupItems }) => ({
+        key,
+        label,
+        items: groupItems,
+      }));
   }
 
   const groups = new Map<InboxWorkItem["kind"], InboxWorkItem[]>();
@@ -727,6 +906,73 @@ export function buildInboxNesting(items: InboxWorkItem[]): {
   });
 
   return { displayItems, childrenByIssueId };
+}
+
+export function buildGroupedInboxSections(
+  items: InboxWorkItem[],
+  groupBy: InboxWorkItemGroupBy,
+  workspaceGrouping: InboxWorkspaceGroupingOptions,
+  options?: { keyPrefix?: string; searchSection?: InboxSearchSection; nestingEnabled?: boolean },
+): InboxGroupedSection[] {
+  const keyPrefix = options?.keyPrefix ?? "";
+  const searchSection = options?.searchSection ?? "none";
+  const nestingEnabled = options?.nestingEnabled ?? false;
+
+  return groupInboxWorkItems(items, groupBy, workspaceGrouping).map((group) => {
+    const nestedGroup = nestingEnabled && group.items.some((item) => item.kind === "issue")
+      ? buildInboxNesting(group.items)
+      : { displayItems: group.items, childrenByIssueId: new Map<string, Issue[]>() };
+
+    return {
+      key: `${keyPrefix}${group.key}`,
+      label: group.label,
+      displayItems: nestedGroup.displayItems,
+      childrenByIssueId: nestedGroup.childrenByIssueId,
+      searchSection,
+    };
+  });
+}
+
+export function getInboxWorkItemKey(item: InboxWorkItem): string {
+  if (item.kind === "issue") return `issue:${item.issue.id}`;
+  if (item.kind === "approval") return `approval:${item.approval.id}`;
+  if (item.kind === "failed_run") return `run:${item.run.id}`;
+  return `join:${item.joinRequest.id}`;
+}
+
+export function buildInboxKeyboardNavEntries(
+  groupedSections: ReadonlyArray<InboxKeyboardGroupSection>,
+  collapsedGroupKeys: ReadonlySet<string>,
+  collapsedInboxParents: ReadonlySet<string>,
+): InboxKeyboardNavEntry[] {
+  const entries: InboxKeyboardNavEntry[] = [];
+
+  for (const group of groupedSections) {
+    if (collapsedGroupKeys.has(group.key)) continue;
+
+    for (const item of group.displayItems) {
+      entries.push({
+        type: "top",
+        itemKey: `${group.key}:${getInboxWorkItemKey(item)}`,
+        item,
+      });
+
+      if (item.kind !== "issue") continue;
+
+      const children = group.childrenByIssueId.get(item.issue.id);
+      if (!children?.length || collapsedInboxParents.has(item.issue.id)) continue;
+
+      for (const child of children) {
+        entries.push({
+          type: "child",
+          issueId: child.id,
+          issue: child,
+        });
+      }
+    }
+  }
+
+  return entries;
 }
 
 export function shouldShowInboxSection({

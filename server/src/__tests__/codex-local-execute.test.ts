@@ -568,9 +568,10 @@ describe("codex execute", () => {
               id: "issue-1",
               identifier: "PAP-1201",
               title: "Fix gallery opening for inline images",
-              status: "todo",
+              status: "in_progress",
               priority: "medium",
             },
+            checkedOutByHarness: true,
             commentIds: [],
             latestCommentId: null,
             comments: [],
@@ -598,16 +599,19 @@ describe("codex execute", () => {
         issue: {
           identifier: "PAP-1201",
           title: "Fix gallery opening for inline images",
-          status: "todo",
+          status: "in_progress",
           priority: "medium",
         },
+        checkedOutByHarness: true,
         commentIds: [],
       });
       expect(capture.prompt).toContain("## Paperclip Wake Payload");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
       expect(capture.prompt).toContain("- issue: PAP-1201 Fix gallery opening for inline images");
       expect(capture.prompt).toContain("- pending comments: 0/0");
-      expect(capture.prompt).toContain("- issue status: todo");
+      expect(capture.prompt).toContain("- issue status: in_progress");
+      expect(capture.prompt).toContain("- checkout: already claimed by the harness for this run");
+      expect(capture.prompt).toContain("The harness already checked out this issue for the current run.");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

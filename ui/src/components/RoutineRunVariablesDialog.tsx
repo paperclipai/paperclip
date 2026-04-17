@@ -131,6 +131,7 @@ export function RoutineRunVariablesDialog({
   open,
   onOpenChange,
   companyId,
+  routineName,
   projects,
   agents,
   defaultProjectId,
@@ -142,6 +143,7 @@ export function RoutineRunVariablesDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   companyId: string | null | undefined;
+  routineName?: string | null;
   projects: Project[];
   agents: Agent[];
   defaultProjectId?: string | null;
@@ -253,6 +255,9 @@ export function RoutineRunVariablesDialog({
     <Dialog open={open} onOpenChange={(next) => !isPending && onOpenChange(next)}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
+          {routineName && (
+            <p className="text-muted-foreground text-sm">{routineName}</p>
+          )}
           <DialogTitle>Run routine</DialogTitle>
           <DialogDescription>
             Choose the agent and optional project for this one run. Routine defaults are prefilled and won&apos;t be changed.

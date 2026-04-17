@@ -156,7 +156,7 @@ async function computeObservedAmount(
 
   const [row] = await db
     .select({
-      total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+      total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
     })
     .from(costEvents)
     .where(and(...conditions));
