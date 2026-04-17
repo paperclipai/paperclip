@@ -339,12 +339,18 @@ fi
 REBASE_BRANCHES=()
 for branch in "${ALL_BRANCHES[@]}"; do
   skip=false
-  for a in "${ANCHOR_BRANCHES[@]}"; do
-    if [[ "$a" == "$branch" ]]; then skip=true; break; fi
-  done
+  if [[ ${#ANCHOR_BRANCHES[@]} -gt 0 ]]; then
+    for a in "${ANCHOR_BRANCHES[@]}"; do
+      if [[ "$a" == "$branch" ]]; then skip=true; break; fi
+    done
+  fi
   $skip || REBASE_BRANCHES+=("$branch")
 done
-ALL_BRANCHES=("${REBASE_BRANCHES[@]}")
+if [[ ${#REBASE_BRANCHES[@]} -gt 0 ]]; then
+  ALL_BRANCHES=("${REBASE_BRANCHES[@]}")
+else
+  ALL_BRANCHES=()
+fi
 
 # 5. Rebase each branch onto master
 info ""
@@ -355,7 +361,11 @@ FAILED=()
 SKIPPED=()
 SECURITY_PATCH_ALREADY_UPSTREAM=()
 
-for branch in "${ALL_BRANCHES[@]}"; do
+if [[ ${#ALL_BRANCHES[@]} -eq 0 ]]; then
+  info "  (no branches with unique work to rebase)"
+fi
+
+for branch in "${ALL_BRANCHES[@]+"${ALL_BRANCHES[@]}"}"; do
   if ! git rev-parse --verify "$branch" &>/dev/null; then
     warn "  $branch — not found locally, skipping"
     SKIPPED+=("$branch")
