@@ -24,9 +24,37 @@ import {
   resolveHomeAwarePath,
 } from "./home-paths.js";
 
+/**
+ * Remove empty-string values from `process.env` so subsequent `dotenv` loads
+ * (which default to `override: false`) can populate them from .env files.
+ *
+ * Rationale: dotenv treats an empty-string parent-env value as "already set"
+ * and won't overwrite it. But an empty-string env var is almost always a
+ * configuration bug, not intentional — e.g. a stale `export ANTHROPIC_API_KEY=`
+ * in a shell startup file, or `ANTHROPIC_API_KEY=` in a .env file meant to
+ * "unset" the var (which actually just exports empty). Either way, the empty
+ * value blocks the real .env value from loading, which has caused production
+ * 401s on every agent heartbeat. Treating empty-string as unset here gives
+ * .env the chance to provide a real value.
+ *
+ * Legitimate `unset` remains available via `unset FOO` in shell.
+ */
+export function stripEmptyStringEnvVars(env: NodeJS.ProcessEnv = process.env) {
+  for (const key of Object.keys(env)) {
+    if (env[key] === "") {
+      delete env[key];
+    }
+  }
+}
+
+stripEmptyStringEnvVars();
+
 const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
 if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
   loadDotenv({ path: PAPERCLIP_ENV_FILE_PATH, override: false, quiet: true });
+  // dotenv itself happily assigns empty strings from `FOO=` lines; scrub again
+  // so the second .env file below can still populate such keys if present.
+  stripEmptyStringEnvVars();
 }
 
 const CWD_ENV_PATH = resolve(process.cwd(), ".env");
@@ -35,6 +63,7 @@ const isSameFile = existsSync(CWD_ENV_PATH) && existsSync(PAPERCLIP_ENV_FILE_PAT
   : CWD_ENV_PATH === PAPERCLIP_ENV_FILE_PATH;
 if (!isSameFile && existsSync(CWD_ENV_PATH)) {
   loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
+  stripEmptyStringEnvVars();
 }
 
 maybeRepairLegacyWorktreeConfigAndEnvFiles();
