@@ -321,5 +321,10 @@ describeEmbeddedPostgres("runPostDoneCleanup — integration (real git + real db
 
     expect(ws!.status).toBe("closed");
     expect(ws!.cleanupReason).toBe("non_local_provider_skipped");
+    expect(ws!.metadata?.cleanup).toMatchObject({
+      branchDeleted: false,
+      worktreeRemoved: false,
+      skippedReason: "non_local_provider",
+    });
   });
 });
