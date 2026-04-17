@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, utimes, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveVersionedModuleImportUrl } from "../services/plugin-loader.js";
 
@@ -45,7 +45,32 @@ describe("plugin-loader manifest imports", () => {
     const firstModule = await import(firstUrl);
 
     await new Promise((resolve) => setTimeout(resolve, 20));
+    await writeFile(manifestPath, manifestSource("0.10.0"));
+
+    const secondUrl = await resolveVersionedModuleImportUrl(manifestPath);
+    const secondModule = await import(secondUrl);
+
+    expect(firstUrl).not.toBe(secondUrl);
+    expect((firstModule.default as { version: string }).version).toBe("0.1.0");
+    expect((secondModule.default as { version: string }).version).toBe("0.10.0");
+  });
+
+  it("changes the import URL even when mtime and size stay the same", async () => {
+    const pluginDir = await makeTempPluginDir();
+    const distDir = path.join(pluginDir, "dist");
+    const manifestPath = path.join(distDir, "manifest.js");
+
+    await mkdir(distDir, { recursive: true });
+    await writeFile(manifestPath, manifestSource("0.1.0"));
+
+    const fixedTime = new Date("2026-01-01T00:00:00.000Z");
+    await utimes(manifestPath, fixedTime, fixedTime);
+
+    const firstUrl = await resolveVersionedModuleImportUrl(manifestPath);
+    const firstModule = await import(firstUrl);
+
     await writeFile(manifestPath, manifestSource("0.2.0"));
+    await utimes(manifestPath, fixedTime, fixedTime);
 
     const secondUrl = await resolveVersionedModuleImportUrl(manifestPath);
     const secondModule = await import(secondUrl);

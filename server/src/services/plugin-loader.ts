@@ -27,6 +27,7 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -54,8 +55,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export async function resolveVersionedModuleImportUrl(modulePath: string): Promise<string> {
   const moduleUrl = pathToFileURL(modulePath);
-  const metadata = await stat(modulePath);
-  moduleUrl.searchParams.set("v", `${metadata.mtimeMs}-${metadata.size}`);
+  const [metadata, source] = await Promise.all([
+    stat(modulePath),
+    readFile(modulePath),
+  ]);
+  const sourceHash = createHash("sha256").update(source).digest("hex").slice(0, 12);
+  moduleUrl.searchParams.set("v", `${metadata.mtimeMs}-${metadata.size}-${sourceHash}`);
   return moduleUrl.href;
 }
 
