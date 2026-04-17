@@ -5,6 +5,7 @@ import {
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
   ISSUE_PRIORITIES,
+  ISSUE_RELATION_TYPES,
   ISSUE_STATUSES,
 } from "../constants.js";
 
@@ -207,3 +208,10 @@ export const restoreIssueDocumentRevisionSchema = z.object({});
 export type IssueDocumentFormat = z.infer<typeof issueDocumentFormatSchema>;
 export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;
 export type RestoreIssueDocumentRevision = z.infer<typeof restoreIssueDocumentRevisionSchema>;
+
+export const createIssueRelationSchema = z.object({
+  relatedIssueId: z.string().uuid(),
+  type: z.enum(ISSUE_RELATION_TYPES),
+});
+
+export type CreateIssueRelation = z.infer<typeof createIssueRelationSchema>;
