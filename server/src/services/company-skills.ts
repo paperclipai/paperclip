@@ -2319,9 +2319,7 @@ export function companySkillService(db: Db) {
         ...(skill.metadata ?? {}),
         skillKey: skill.key,
       };
-      const values = {
-        companyId,
-        key: skill.key,
+      const mutableValues = {
         slug: skill.slug,
         name: skill.name,
         description: skill.description,
@@ -2335,18 +2333,18 @@ export function companySkillService(db: Db) {
         metadata,
         updatedAt: new Date(),
       };
-      const row = existing
-        ? await db
-          .update(companySkills)
-          .set(values)
-          .where(eq(companySkills.id, existing.id))
-          .returning()
-          .then((rows) => rows[0] ?? null)
-        : await db
-          .insert(companySkills)
-          .values(values)
-          .returning()
-          .then((rows) => rows[0] ?? null);
+      // Single idempotent upsert keyed on the unique (company_id, key) index.
+      // Previously this was a check-then-insert race that tripped the unique
+      // constraint when two callers inserted the same key concurrently (#3845).
+      const row = await db
+        .insert(companySkills)
+        .values({ companyId, key: skill.key, ...mutableValues })
+        .onConflictDoUpdate({
+          target: [companySkills.companyId, companySkills.key],
+          set: mutableValues,
+        })
+        .returning()
+        .then((rows) => rows[0] ?? null);
       if (!row) throw notFound("Failed to persist company skill");
       out.push(toCompanySkill(row));
     }
