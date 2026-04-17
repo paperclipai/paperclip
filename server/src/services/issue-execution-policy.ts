@@ -43,7 +43,6 @@ const COMPLETED_STATUS: IssueExecutionState["status"] = "completed";
 const PENDING_STATUS: IssueExecutionState["status"] = "pending";
 const CHANGES_REQUESTED_STATUS: IssueExecutionState["status"] = "changes_requested";
 
-/** Parses, validates, and deduplicates an issue execution policy input, returning null if empty or invalid. */
 export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
   if (input == null) return null;
   const parsed = issueExecutionPolicySchema.safeParse(input);
@@ -90,7 +89,6 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   };
 }
 
-/** Parses a raw value into a typed IssueExecutionState, returning null if the input is absent or invalid. */
 export function parseIssueExecutionState(input: unknown): IssueExecutionState | null {
   if (input == null) return null;
   const parsed = issueExecutionStateSchema.safeParse(input);
@@ -98,7 +96,6 @@ export function parseIssueExecutionState(input: unknown): IssueExecutionState | 
   return parsed.data;
 }
 
-/** Derives an IssueExecutionStagePrincipal from an assignee-like object, returning null if no assignee is set. */
 export function assigneePrincipal(input: AssigneeLike): IssueExecutionStagePrincipal | null {
   if (input.assigneeAgentId) {
     return { type: "agent", agentId: input.assigneeAgentId, userId: null };
@@ -177,6 +174,42 @@ function buildCompletedState(previous: IssueExecutionState | null, currentStage:
   };
 }
 
+function buildStateWithCompletedStages(input: {
+  previous: IssueExecutionState | null;
+  completedStageIds: string[];
+  returnAssignee: IssueExecutionStagePrincipal | null;
+}): IssueExecutionState {
+  return {
+    status: input.previous?.status ?? PENDING_STATUS,
+    currentStageId: input.previous?.currentStageId ?? null,
+    currentStageIndex: input.previous?.currentStageIndex ?? null,
+    currentStageType: input.previous?.currentStageType ?? null,
+    currentParticipant: input.previous?.currentParticipant ?? null,
+    returnAssignee: input.previous?.returnAssignee ?? input.returnAssignee,
+    completedStageIds: input.completedStageIds,
+    lastDecisionId: input.previous?.lastDecisionId ?? null,
+    lastDecisionOutcome: input.previous?.lastDecisionOutcome ?? null,
+  };
+}
+
+function buildSkippedStageCompletedState(input: {
+  previous: IssueExecutionState | null;
+  completedStageIds: string[];
+  returnAssignee: IssueExecutionStagePrincipal | null;
+}): IssueExecutionState {
+  return {
+    status: COMPLETED_STATUS,
+    currentStageId: null,
+    currentStageIndex: null,
+    currentStageType: null,
+    currentParticipant: null,
+    returnAssignee: input.previous?.returnAssignee ?? input.returnAssignee,
+    completedStageIds: input.completedStageIds,
+    lastDecisionId: input.previous?.lastDecisionId ?? null,
+    lastDecisionOutcome: input.previous?.lastDecisionOutcome ?? null,
+  };
+}
+
 function buildPendingState(input: {
   previous: IssueExecutionState | null;
   stage: IssueExecutionStage;
@@ -239,7 +272,18 @@ function clearExecutionStatePatch(input: {
   }
 }
 
-/** Computes the issue field patch required to advance or enforce an execution-policy workflow stage transition. */
+function canAutoSkipPendingStage(input: {
+  stage: IssueExecutionStage;
+  returnAssignee: IssueExecutionStagePrincipal | null;
+  requestedStatus?: string;
+}) {
+  if (input.requestedStatus !== "done" || input.stage.type !== "review" || !input.returnAssignee) {
+    return false;
+  }
+  return input.stage.participants.length > 0 &&
+    input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
+}
+
 export function applyIssueExecutionPolicyTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
   const existingState = parseIssueExecutionState(input.issue.executionState);
@@ -435,27 +479,61 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
     return { patch };
   }
 
-  const pendingStage =
+  let pendingStage =
     existingState?.status === CHANGES_REQUESTED_STATUS && currentStage
       ? currentStage
       : nextPendingStage(input.policy, existingState);
   if (!pendingStage) return { patch };
 
   const returnAssignee = existingState?.returnAssignee ?? currentAssignee;
-  const participant = selectStageParticipant(pendingStage, {
+  const skippedStageIds = [...(existingState?.completedStageIds ?? [])];
+  let participant = selectStageParticipant(pendingStage, {
     preferred:
       existingState?.status === CHANGES_REQUESTED_STATUS
         ? explicitAssignee ?? existingState.currentParticipant ?? null
         : explicitAssignee,
     exclude: returnAssignee,
   });
+  while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee, requestedStatus })) {
+    skippedStageIds.push(pendingStage.id);
+    pendingStage = nextPendingStage(
+      input.policy,
+      buildStateWithCompletedStages({
+        previous: existingState,
+        completedStageIds: skippedStageIds,
+        returnAssignee,
+      }),
+    );
+    if (!pendingStage) {
+      patch.executionState = buildSkippedStageCompletedState({
+        previous: existingState,
+        completedStageIds: skippedStageIds,
+        returnAssignee,
+      });
+      return { patch };
+    }
+    participant = selectStageParticipant(pendingStage, {
+      preferred:
+        existingState?.status === CHANGES_REQUESTED_STATUS
+          ? explicitAssignee ?? existingState.currentParticipant ?? null
+          : explicitAssignee,
+      exclude: returnAssignee,
+    });
+  }
   if (!participant) {
     throw unprocessable(`No eligible ${pendingStage.type} participant is configured for this issue`);
   }
 
   buildPendingStagePatch({
     patch,
-    previous: existingState,
+    previous:
+      skippedStageIds.length === (existingState?.completedStageIds ?? []).length
+        ? existingState
+        : buildStateWithCompletedStages({
+            previous: existingState,
+            completedStageIds: skippedStageIds,
+            returnAssignee,
+          }),
     policy: input.policy,
     stage: pendingStage,
     participant,

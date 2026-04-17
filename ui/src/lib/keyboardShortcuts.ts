@@ -12,6 +12,7 @@ const PAGE_SEARCH_SHORTCUT_SELECTOR = "[data-page-search-target='true']";
 const MODIFIER_ONLY_KEYS = new Set(["Shift", "Meta", "Control", "Alt"]);
 
 export type InboxQuickArchiveKeyAction = "ignore" | "archive" | "disarm";
+export type InboxUndoArchiveKeyAction = "ignore" | "undo_archive";
 export type IssueDetailGoKeyAction = "ignore" | "arm" | "navigate_inbox" | "focus_comment" | "disarm";
 
 export function isKeyboardShortcutTextInputTarget(target: EventTarget | null): boolean {
@@ -102,6 +103,33 @@ export function resolveInboxQuickArchiveKeyAction({
   if (metaKey || ctrlKey || altKey || isModifierOnlyKey(key)) return "ignore";
   if (hasOpenDialog || isKeyboardShortcutTextInputTarget(target)) return "ignore";
   if (key.toLowerCase() === "y") return "archive";
+  return "ignore";
+}
+
+export function resolveInboxUndoArchiveKeyAction({
+  hasUndoableArchive,
+  defaultPrevented,
+  key,
+  metaKey,
+  ctrlKey,
+  altKey,
+  target,
+  hasOpenDialog,
+}: {
+  hasUndoableArchive: boolean;
+  defaultPrevented: boolean;
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  target: EventTarget | null;
+  hasOpenDialog: boolean;
+}): InboxUndoArchiveKeyAction {
+  if (!hasUndoableArchive) return "ignore";
+  if (defaultPrevented) return "ignore";
+  if (metaKey || ctrlKey || altKey || isModifierOnlyKey(key)) return "ignore";
+  if (hasOpenDialog || isKeyboardShortcutTextInputTarget(target)) return "ignore";
+  if (key === "u") return "undo_archive";
   return "ignore";
 }
 

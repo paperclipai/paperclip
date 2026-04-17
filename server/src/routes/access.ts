@@ -48,7 +48,7 @@ import {
   logActivity,
   notifyHireApproved
 } from "../services/index.js";
-import { assertCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertCompanyAccess } from "./authz.js";
 import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
@@ -868,6 +868,7 @@ function toInviteSummaryResponse(
   const baseUrl = requestBaseUrl(req);
   const onboardingPath = `/api/invites/${token}/onboarding`;
   const onboardingTextPath = `/api/invites/${token}/onboarding.txt`;
+  const skillIndexPath = `/api/invites/${token}/skills/index`;
   const inviteMessage = extractInviteMessage(invite);
   return {
     id: invite.id,
@@ -882,10 +883,10 @@ function toInviteSummaryResponse(
     onboardingTextUrl: baseUrl
       ? `${baseUrl}${onboardingTextPath}`
       : onboardingTextPath,
-    skillIndexPath: "/api/skills/index",
+    skillIndexPath,
     skillIndexUrl: baseUrl
-      ? `${baseUrl}/api/skills/index`
-      : "/api/skills/index",
+      ? `${baseUrl}${skillIndexPath}`
+      : skillIndexPath,
     inviteMessage
   };
 }
@@ -1009,7 +1010,7 @@ function buildInviteOnboardingManifest(
   }
 ) {
   const baseUrl = requestBaseUrl(req);
-  const skillPath = "/api/skills/paperclip";
+  const skillPath = `/api/invites/${token}/skills/paperclip`;
   const skillUrl = baseUrl ? `${baseUrl}${skillPath}` : skillPath;
   const registrationEndpointPath = `/api/invites/${token}/accept`;
   const registrationEndpointUrl = baseUrl
@@ -1930,11 +1931,13 @@ export function accessRoutes(
     return company?.name ?? null;
   }
 
-  router.get("/skills/available", (_req, res) => {
+  router.get("/skills/available", (req, res) => {
+    assertAuthenticated(req);
     res.json({ skills: listAvailableSkills() });
   });
 
-  router.get("/skills/index", (_req, res) => {
+  router.get("/skills/index", (req, res) => {
+    assertAuthenticated(req);
     res.json({
       skills: [
         { name: "paperclip", path: "/api/skills/paperclip" },
@@ -1951,6 +1954,7 @@ export function accessRoutes(
   });
 
   router.get("/skills/:skillName", (req, res) => {
+    assertAuthenticated(req);
     const skillName = (req.params.skillName as string).trim().toLowerCase();
     const markdown = readSkillMarkdown(skillName);
     if (!markdown) throw notFound("Skill not found");
@@ -2122,6 +2126,47 @@ export function accessRoutes(
           companyName
         })
       );
+  });
+
+  router.get("/invites/:token/skills/index", async (req, res) => {
+    const token = (req.params.token as string).trim();
+    if (!token) throw notFound("Invite not found");
+    const invite = await db
+      .select()
+      .from(invites)
+      .where(eq(invites.tokenHash, hashToken(token)))
+      .then((rows) => rows[0] ?? null);
+    if (!invite || invite.revokedAt || inviteExpired(invite)) {
+      throw notFound("Invite not found");
+    }
+
+    res.json({
+      skills: [
+        {
+          name: "paperclip",
+          path: `/api/invites/${token}/skills/paperclip`,
+        },
+      ],
+    });
+  });
+
+  router.get("/invites/:token/skills/:skillName", async (req, res) => {
+    const token = (req.params.token as string).trim();
+    if (!token) throw notFound("Invite not found");
+    const invite = await db
+      .select()
+      .from(invites)
+      .where(eq(invites.tokenHash, hashToken(token)))
+      .then((rows) => rows[0] ?? null);
+    if (!invite || invite.revokedAt || inviteExpired(invite)) {
+      throw notFound("Invite not found");
+    }
+
+    const skillName = (req.params.skillName as string).trim().toLowerCase();
+    if (skillName !== "paperclip") throw notFound("Skill not found");
+    const markdown = readSkillMarkdown(skillName);
+    if (!markdown) throw notFound("Skill not found");
+    res.type("text/markdown").send(markdown);
   });
 
   router.get("/invites/:token/test-resolution", async (req, res) => {

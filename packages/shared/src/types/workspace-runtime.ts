@@ -46,6 +46,27 @@ export type ExecutionWorkspaceCloseActionKind =
   | "remove_local_directory";
 
 export type WorkspaceRuntimeDesiredState = "running" | "stopped";
+export type WorkspaceRuntimeServiceStateMap = Record<string, WorkspaceRuntimeDesiredState>;
+export type WorkspaceCommandKind = "service" | "job";
+
+export interface WorkspaceCommandSource {
+  type: "paperclip";
+  key: "commands" | "services" | "jobs";
+  index: number;
+}
+
+export interface WorkspaceCommandDefinition {
+  id: string;
+  name: string;
+  kind: WorkspaceCommandKind;
+  command: string | null;
+  cwd: string | null;
+  lifecycle: "shared" | "ephemeral" | null;
+  serviceIndex: number | null;
+  disabledReason: string | null;
+  rawConfig: Record<string, unknown>;
+  source: WorkspaceCommandSource;
+}
 
 export interface ExecutionWorkspaceStrategy {
   type: ExecutionWorkspaceStrategyType;
@@ -62,11 +83,19 @@ export interface ExecutionWorkspaceConfig {
   cleanupCommand: string | null;
   workspaceRuntime: Record<string, unknown> | null;
   desiredState: WorkspaceRuntimeDesiredState | null;
+  serviceStates?: WorkspaceRuntimeServiceStateMap | null;
 }
 
 export interface ProjectWorkspaceRuntimeConfig {
   workspaceRuntime: Record<string, unknown> | null;
   desiredState: WorkspaceRuntimeDesiredState | null;
+  serviceStates?: WorkspaceRuntimeServiceStateMap | null;
+}
+
+export interface WorkspaceRuntimeControlTarget {
+  workspaceCommandId?: string | null;
+  runtimeServiceId?: string | null;
+  serviceIndex?: number | null;
 }
 
 export interface ExecutionWorkspaceCloseAction {
@@ -132,6 +161,13 @@ export interface IssueExecutionWorkspaceSettings {
   workspaceRuntime?: Record<string, unknown> | null;
 }
 
+export interface ExecutionWorkspaceSummary {
+  id: string;
+  name: string;
+  mode: Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing" | "agent_default"> | "adapter_managed" | "cloud_sandbox";
+  projectWorkspaceId: string | null;
+}
+
 export interface ExecutionWorkspace {
   id: string;
   companyId: string;
@@ -187,6 +223,7 @@ export interface WorkspaceRuntimeService {
   stoppedAt: Date | null;
   stopPolicy: Record<string, unknown> | null;
   healthStatus: "unknown" | "healthy" | "unhealthy";
+  configIndex?: number | null;
   createdAt: Date;
   updatedAt: Date;
 }

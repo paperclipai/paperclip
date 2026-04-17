@@ -37,14 +37,14 @@ describe("readProjectWorkspaceRuntimeConfig", () => {
     const result = readProjectWorkspaceRuntimeConfig({
       runtimeConfig: { desiredState: "running" },
     });
-    expect(result).toEqual({ workspaceRuntime: null, desiredState: "running" });
+    expect(result).toEqual({ workspaceRuntime: null, desiredState: "running", serviceStates: null });
   });
 
   it("returns config with desiredState='stopped' when set", () => {
     const result = readProjectWorkspaceRuntimeConfig({
       runtimeConfig: { desiredState: "stopped" },
     });
-    expect(result).toEqual({ workspaceRuntime: null, desiredState: "stopped" });
+    expect(result).toEqual({ workspaceRuntime: null, desiredState: "stopped", serviceStates: null });
   });
 
   it("normalises unknown desiredState values to null", () => {
@@ -59,7 +59,7 @@ describe("readProjectWorkspaceRuntimeConfig", () => {
     const result = readProjectWorkspaceRuntimeConfig({
       runtimeConfig: { workspaceRuntime: { port: 3000 } },
     });
-    expect(result).toEqual({ workspaceRuntime: { port: 3000 }, desiredState: null });
+    expect(result).toEqual({ workspaceRuntime: { port: 3000 }, desiredState: null, serviceStates: null });
   });
 
   it("clones the workspaceRuntime object (does not share reference)", () => {
@@ -84,7 +84,7 @@ describe("readProjectWorkspaceRuntimeConfig", () => {
     const result = readProjectWorkspaceRuntimeConfig({
       runtimeConfig: { workspaceRuntime: { a: 1 }, desiredState: "running" },
     });
-    expect(result).toEqual({ workspaceRuntime: { a: 1 }, desiredState: "running" });
+    expect(result).toEqual({ workspaceRuntime: { a: 1 }, desiredState: "running", serviceStates: null });
   });
 });
 
@@ -112,13 +112,13 @@ describe("mergeProjectWorkspaceRuntimeConfig", () => {
 
   it("merges desiredState into empty metadata", () => {
     const result = mergeProjectWorkspaceRuntimeConfig(null, { desiredState: "running" });
-    expect(result).toEqual({ runtimeConfig: { workspaceRuntime: null, desiredState: "running" } });
+    expect(result).toEqual({ runtimeConfig: { workspaceRuntime: null, desiredState: "running", serviceStates: null } });
   });
 
   it("merges workspaceRuntime into empty metadata", () => {
     const result = mergeProjectWorkspaceRuntimeConfig(null, { workspaceRuntime: { port: 8080 } });
     expect(result).toEqual({
-      runtimeConfig: { workspaceRuntime: { port: 8080 }, desiredState: null },
+      runtimeConfig: { workspaceRuntime: { port: 8080 }, desiredState: null, serviceStates: null },
     });
   });
 
@@ -128,7 +128,7 @@ describe("mergeProjectWorkspaceRuntimeConfig", () => {
       { desiredState: "stopped" },
     );
     expect(result).toEqual({
-      runtimeConfig: { desiredState: "stopped", workspaceRuntime: { port: 3000 } },
+      runtimeConfig: { desiredState: "stopped", workspaceRuntime: { port: 3000 }, serviceStates: null },
     });
   });
 
@@ -138,7 +138,7 @@ describe("mergeProjectWorkspaceRuntimeConfig", () => {
       { workspaceRuntime: { a: 2 } },
     );
     expect(result).toEqual({
-      runtimeConfig: { desiredState: "stopped", workspaceRuntime: { a: 2 } },
+      runtimeConfig: { desiredState: "stopped", workspaceRuntime: { a: 2 }, serviceStates: null },
     });
   });
 
@@ -166,7 +166,7 @@ describe("mergeProjectWorkspaceRuntimeConfig", () => {
     );
     expect(result).toEqual({
       theme: "light",
-      runtimeConfig: { desiredState: "running", workspaceRuntime: null },
+      runtimeConfig: { desiredState: "running", workspaceRuntime: null, serviceStates: null },
     });
   });
 
@@ -185,7 +185,7 @@ describe("mergeProjectWorkspaceRuntimeConfig", () => {
   it("handles undefined metadata gracefully", () => {
     const result = mergeProjectWorkspaceRuntimeConfig(undefined, { desiredState: "running" });
     expect(result).toEqual({
-      runtimeConfig: { workspaceRuntime: null, desiredState: "running" },
+      runtimeConfig: { workspaceRuntime: null, desiredState: "running", serviceStates: null },
     });
   });
 });

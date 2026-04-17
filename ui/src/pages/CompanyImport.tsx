@@ -9,13 +9,13 @@ import type {
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
 import { agentsApi } from "../api/agents";
+import { sidebarPreferencesApi } from "../api/sidebarPreferences";
 import { queryKeys } from "../lib/queryKeys";
 import { getAgentOrderStorageKey, writeAgentOrder } from "../lib/agent-order";
-import { getProjectOrderStorageKey, writeProjectOrder } from "../lib/project-order";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
@@ -346,7 +346,7 @@ function prefixedName(prefix: string | null, originalName: string): string {
   return `${prefix}-${originalName}`;
 }
 
-function applyImportedSidebarOrder(
+async function applyImportedSidebarOrder(
   preview: CompanyPortabilityPreviewResult | null,
   result: {
     company: { id: string };
@@ -381,7 +381,7 @@ function applyImportedSidebarOrder(
     writeAgentOrder(getAgentOrderStorageKey(result.company.id, userId), orderedAgentIds);
   }
   if (orderedProjectIds.length > 0) {
-    writeProjectOrder(getProjectOrderStorageKey(result.company.id, userId), orderedProjectIds);
+    await sidebarPreferencesApi.updateProjectOrder(result.company.id, { orderedIds: orderedProjectIds });
   }
 }
 
@@ -651,7 +651,7 @@ export function CompanyImport() {
     setSelectedCompanyId,
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const packageInputRef = useRef<HTMLInputElement | null>(null);
   const { data: session } = useQuery({
@@ -859,7 +859,7 @@ export function CompanyImport() {
         ?? refreshedSession?.user?.id
         ?? refreshedSession?.session?.userId
         ?? null;
-      applyImportedSidebarOrder(importPreview, result, sidebarOrderUserId);
+      await applyImportedSidebarOrder(importPreview, result, sidebarOrderUserId);
       setSelectedCompanyId(importedCompany.id);
       pushToast({
         tone: "success",

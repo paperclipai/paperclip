@@ -4,20 +4,22 @@ export type IssueFilterState = {
   statuses: string[];
   priorities: string[];
   assignees: string[];
+  creators: string[];
   labels: string[];
   projects: string[];
   workspaces: string[];
-  showRoutineExecutions: boolean;
+  hideRoutineExecutions: boolean;
 };
 
 export const defaultIssueFilterState: IssueFilterState = {
   statuses: [],
   priorities: [],
   assignees: [],
+  creators: [],
   labels: [],
   projects: [],
   workspaces: [],
-  showRoutineExecutions: false,
+  hideRoutineExecutions: false,
 };
 
 export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
@@ -41,6 +43,26 @@ export function issueFilterArraysEqual(a: string[], b: string[]): boolean {
   return sortedA.every((value, index) => value === sortedB[index]);
 }
 
+function normalizeIssueFilterValueArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+export function normalizeIssueFilterState(value: unknown): IssueFilterState {
+  if (!value || typeof value !== "object") return { ...defaultIssueFilterState };
+  const candidate = value as Partial<Record<keyof IssueFilterState, unknown>>;
+  return {
+    statuses: normalizeIssueFilterValueArray(candidate.statuses),
+    priorities: normalizeIssueFilterValueArray(candidate.priorities),
+    assignees: normalizeIssueFilterValueArray(candidate.assignees),
+    creators: normalizeIssueFilterValueArray(candidate.creators),
+    labels: normalizeIssueFilterValueArray(candidate.labels),
+    projects: normalizeIssueFilterValueArray(candidate.projects),
+    workspaces: normalizeIssueFilterValueArray(candidate.workspaces),
+    hideRoutineExecutions: candidate.hideRoutineExecutions === true,
+  };
+}
+
 export function toggleIssueFilterValue(values: string[], value: string): string[] {
   return values.includes(value) ? values.filter((existing) => existing !== value) : [...values, value];
 }
@@ -58,7 +80,7 @@ export function applyIssueFilters(
   enableRoutineVisibilityFilter = false,
 ): Issue[] {
   let result = issues;
-  if (enableRoutineVisibilityFilter && !state.showRoutineExecutions) {
+  if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) {
     result = result.filter((issue) => issue.originKind !== "routine_execution");
   }
   if (state.statuses.length > 0) result = result.filter((issue) => state.statuses.includes(issue.status));
@@ -69,6 +91,15 @@ export function applyIssueFilters(
         if (assignee === "__unassigned" && !issue.assigneeAgentId && !issue.assigneeUserId) return true;
         if (assignee === "__me" && currentUserId && issue.assigneeUserId === currentUserId) return true;
         if (issue.assigneeAgentId === assignee) return true;
+      }
+      return false;
+    });
+  }
+  if (state.creators.length > 0) {
+    result = result.filter((issue) => {
+      for (const creator of state.creators) {
+        if (creator.startsWith("agent:") && issue.createdByAgentId === creator.slice("agent:".length)) return true;
+        if (creator.startsWith("user:") && issue.createdByUserId === creator.slice("user:".length)) return true;
       }
       return false;
     });
@@ -96,9 +127,10 @@ export function countActiveIssueFilters(
   if (state.statuses.length > 0) count += 1;
   if (state.priorities.length > 0) count += 1;
   if (state.assignees.length > 0) count += 1;
+  if (state.creators.length > 0) count += 1;
   if (state.labels.length > 0) count += 1;
   if (state.projects.length > 0) count += 1;
   if (state.workspaces.length > 0) count += 1;
-  if (enableRoutineVisibilityFilter && state.showRoutineExecutions) count += 1;
+  if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) count += 1;
   return count;
 }

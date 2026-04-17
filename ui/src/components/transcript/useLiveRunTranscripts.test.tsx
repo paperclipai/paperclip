@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../api/client";
 import { useLiveRunTranscripts } from "./useLiveRunTranscripts";
 
 const { useQueryMock, logMock } = vi.hoisted(() => ({
@@ -182,6 +183,42 @@ describe("useLiveRunTranscripts", () => {
     });
 
     expect(latestIsInitialHydrating).toBe(false);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("stops retrying terminal runs whose persisted log never existed", async () => {
+    logMock.mockReset();
+    logMock.mockRejectedValue(new ApiError("Run log not found", 404, { error: "Run log not found" }));
+
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-404", status: "failed", adapterType: "codex_local" }],
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).toHaveBeenCalledTimes(1);
 
     act(() => {
       root.unmount();

@@ -17,11 +17,16 @@ import { describe, expect, it, vi } from "vitest";
 describe("Express 5 /api/auth wildcard route", () => {
   function buildApp() {
     const app = express();
-    const handler = vi.fn((_req: express.Request, res: express.Response) => {
+    let callCount = 0;
+    const handler = (_req: express.Request, res: express.Response) => {
+      callCount += 1;
       res.status(200).json({ ok: true });
-    });
+    };
     app.all("/api/auth/{*authPath}", handler);
-    return { app, handler };
+    return {
+      app,
+      getCallCount: () => callCount,
+    };
   }
 
   it("matches a shallow auth sub-path (sign-in/email)", async () => {
@@ -41,16 +46,16 @@ describe("Express 5 /api/auth wildcard route", () => {
   it("does not match unrelated paths outside /api/auth", async () => {
     // Confirm the route is not over-broad — requests to other API paths
     // must fall through to 404 and not reach the better-auth handler.
-    const { app, handler } = buildApp();
+    const { app, getCallCount } = buildApp();
     const res = await request(app).get("/api/other/endpoint");
     expect(res.status).toBe(404);
-    expect(handler).not.toHaveBeenCalled();
+    expect(getCallCount()).toBe(0);
   });
 
   it("invokes the handler for every matched sub-path", async () => {
-    const { app, handler } = buildApp();
+    const { app, getCallCount } = buildApp();
     await request(app).post("/api/auth/sign-out");
     await request(app).get("/api/auth/session");
-    expect(handler).toHaveBeenCalledTimes(2);
+    expect(getCallCount()).toBe(2);
   });
 });

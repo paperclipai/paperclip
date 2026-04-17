@@ -3,6 +3,7 @@ export const label = "Claude Code (local)";
 export const DEFAULT_CLAUDE_LOCAL_MODEL = "claude-sonnet-4-6";
 
 export const models = [
+  { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
   { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
   { id: DEFAULT_CLAUDE_LOCAL_MODEL, label: "Claude Sonnet 4.6" },
   { id: "claude-haiku-4-6", label: "Claude Haiku 4.6" },

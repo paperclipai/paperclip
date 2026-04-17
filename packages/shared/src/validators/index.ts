@@ -33,6 +33,11 @@ export {
   type UpsertIssueFeedbackVote,
 } from "./feedback.js";
 export {
+  sidebarOrderPreferenceSchema,
+  upsertSidebarOrderPreferenceSchema,
+  type UpsertSidebarOrderPreference,
+} from "./sidebar-preferences.js";
+export {
   companySkillSourceTypeSchema,
   companySkillTrustLevelSchema,
   companySkillCompatibilitySchema,

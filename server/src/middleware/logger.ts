@@ -5,6 +5,7 @@ import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
+import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 
 /** pino-http callback request type — IncomingMessage extended with Express body/params/query/route. */
 type PinoReq = IncomingMessage & {
@@ -92,6 +93,9 @@ export const logger = pino({
 export const httpLogger = pinoHttp({
   logger,
   customLogLevel(_req, res, err) {
+    if (shouldSilenceHttpSuccessLog(_req.method, _req.url, res.statusCode)) {
+      return "silent";
+    }
     if (err || res.statusCode >= 500) return "error";
     if (res.statusCode >= 400) return "warn";
     return "info";
