@@ -353,7 +353,7 @@ aws ecs create-service \
   }' \
   --load-balancers '[{
     "targetGroupArn": "'$TG_ARN'",
-    "containerName": "paperclip",
+    "containerName": "paperclip-server",
     "containerPort": 3100
   }]'
 ```
