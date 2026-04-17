@@ -1032,6 +1032,20 @@ describe("heartbeat comment wake batching", () => {
       expect(comments[0]?.body).toBe("Manual completion comment from the run.");
       expect(comments[0]?.createdByRunId).toBe(firstRun?.id);
 
+      const releasedIssue = await db
+        .select({
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+
+      expect(releasedIssue).toMatchObject({
+        checkoutRunId: null,
+        executionRunId: null,
+      });
+
       const wakeups = await db
         .select()
         .from(agentWakeupRequests)
