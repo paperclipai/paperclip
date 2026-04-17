@@ -76,6 +76,7 @@ type GatewayResponseError = Error & {
 type GatewayClientOptions = {
   url: string;
   headers: Record<string, string>;
+  paperclipUrl: string | null;
   onEvent: (frame: GatewayEventFrame) => Promise<void> | void;
   onLog: AdapterExecutionContext["onLog"];
 };
@@ -338,6 +339,7 @@ function resolveClaimedApiKeyPath(value: unknown): string {
 
 function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
   const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
+  const paperclipApiKeyOverride = nonEmpty(ctx.config.paperclipApiKey);
   const paperclipEnv: Record<string, string> = {
     ...buildPaperclipEnv(ctx.agent),
     PAPERCLIP_RUN_ID: ctx.runId,
@@ -345,6 +347,9 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
 
   if (paperclipApiUrlOverride) {
     paperclipEnv.PAPERCLIP_API_URL = paperclipApiUrlOverride;
+  }
+  if (paperclipApiKeyOverride) {
+    paperclipEnv.PAPERCLIP_API_KEY = paperclipApiKeyOverride;
   }
   if (wakePayload.taskId) paperclipEnv.PAPERCLIP_TASK_ID = wakePayload.taskId;
   if (wakePayload.wakeReason) paperclipEnv.PAPERCLIP_WAKE_REASON = wakePayload.wakeReason;
@@ -369,6 +374,7 @@ function buildWakeText(
     "PAPERCLIP_AGENT_ID",
     "PAPERCLIP_COMPANY_ID",
     "PAPERCLIP_API_URL",
+    "PAPERCLIP_API_KEY",
     "PAPERCLIP_TASK_ID",
     "PAPERCLIP_WAKE_REASON",
     "PAPERCLIP_WAKE_COMMENT_ID",
@@ -386,6 +392,7 @@ function buildWakeText(
 
   const issueIdHint = payload.taskId ?? payload.issueId ?? "";
   const apiBaseHint = paperclipEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
+  const apiKeyConfigured = Boolean(paperclipEnv.PAPERCLIP_API_KEY);
 
   const lines = [
     "Paperclip wake event for a cloud adapter.",
@@ -394,10 +401,14 @@ function buildWakeText(
     "",
     "Set these values in your run context:",
     ...envLines,
-    `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
-    "",
-    `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
-    "",
+    ...(apiKeyConfigured
+      ? []
+      : [
+          `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
+          "",
+          `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+          "",
+        ]),
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
     `issue_id=${payload.issueId ?? ""}`,
@@ -412,6 +423,12 @@ function buildWakeText(
     "- Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutating API call.",
     "- Use only /api endpoints listed below.",
     "- Do NOT call guessed endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat.",
+    "",
+    "API Access:",
+    "- If PAPERCLIP_API_URL is 127.0.0.1 or localhost, DO NOT USE CURL.",
+    "- Instead, emit a JSON-RPC request frame to stdout with method 'paperclip.proxy'.",
+    "- Example frame: {\"type\":\"req\",\"id\":\"msg-1\",\"method\":\"paperclip.proxy\",\"params\":{\"method\":\"GET\",\"path\":\"/api/agents/me\",\"headers\":{\"Authorization\":\"Bearer $PAPERCLIP_API_KEY\"}}}",
+    "- The response frame will be printed to your stdin.",
     "",
     "Workflow:",
     "1) GET /api/agents/me",
@@ -641,6 +658,11 @@ function isEventFrame(value: unknown): value is GatewayEventFrame {
   return Boolean(record && record.type === "event" && typeof record.event === "string");
 }
 
+function isRequestFrame(value: unknown): value is GatewayRequestFrame {
+  const record = asRecord(value);
+  return Boolean(record && record.type === "req" && typeof record.id === "string" && typeof record.method === "string");
+}
+
 class GatewayWsClient {
   private ws: WebSocket | null = null;
   private pending = new Map<string, PendingRequest>();
@@ -765,6 +787,63 @@ class GatewayWsClient {
     this.ws = null;
   }
 
+  private sendFrame(frame: unknown): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify(frame));
+  }
+
+  private async handleProxyRequest(frame: GatewayRequestFrame): Promise<void> {
+    const paperclipUrl = this.opts.paperclipUrl;
+    if (!paperclipUrl) {
+      this.sendFrame({
+        type: "res",
+        id: frame.id,
+        params: { status: 503, headers: {}, body: "api proxy not configured" },
+      });
+      return;
+    }
+
+    const params = asRecord(frame.params);
+    const method = (nonEmpty(params?.method) ?? "GET").toUpperCase();
+    const path = nonEmpty(params?.path) ?? "/";
+    const headerObj = asRecord(params?.headers) ?? {};
+    const bodyStr = nonEmpty(params?.body) ?? undefined;
+
+    const targetUrl = `${paperclipUrl.replace(/\/$/, "")}${path}`;
+    const fetchHeaders: Record<string, string> = {};
+    for (const [k, v] of Object.entries(headerObj)) {
+      if (typeof v === "string") fetchHeaders[k] = v;
+    }
+
+    const hasBody = bodyStr !== undefined && bodyStr.length > 0 && !["GET", "HEAD"].includes(method);
+
+    try {
+      const res = await fetch(targetUrl, {
+        method,
+        headers: fetchHeaders,
+        ...(hasBody ? { body: bodyStr } : {}),
+      });
+      const responseBody = await res.text();
+      const responseHeaders: Record<string, string> = {};
+      res.headers.forEach((value: string, key: string) => {
+        responseHeaders[key] = value;
+      });
+      this.sendFrame({
+        type: "res",
+        id: frame.id,
+        params: { status: res.status, headers: responseHeaders, body: responseBody },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      void this.opts.onLog("stderr", `[openclaw-gateway] proxy fetch failed ${method} ${path}: ${message}\n`);
+      this.sendFrame({
+        type: "res",
+        id: frame.id,
+        params: { status: 502, headers: {}, body: message },
+      });
+    }
+  }
+
   private failPending(err: Error) {
     for (const [, pending] of this.pending) {
       if (pending.timer) clearTimeout(pending.timer);
@@ -778,6 +857,12 @@ class GatewayWsClient {
     try {
       parsed = JSON.parse(raw);
     } catch {
+      return;
+    }
+
+    // Handle proxy req frames from the gateway (Peregrine → adapter)
+    if (isRequestFrame(parsed) && parsed.method === "paperclip.proxy") {
+      void this.handleProxyRequest(parsed).catch(() => {});
       return;
     }
 
@@ -852,6 +937,7 @@ async function autoApproveDevicePairing(params: {
   const client = new GatewayWsClient({
     url: params.url,
     headers: params.headers,
+    paperclipUrl: null,
     onEvent: () => {},
     onLog: params.onLog,
   });
@@ -1041,6 +1127,47 @@ function extractResultText(value: unknown): string | null {
   return nonEmpty(record.text) ?? nonEmpty(record.summary) ?? null;
 }
 
+/**
+ * Fetch a GCP OIDC ID token for service-to-service authentication.
+ *
+ * Uses Application Default Credentials (ADC). On Cloud Run this resolves via
+ * the metadata server; locally it uses GOOGLE_APPLICATION_CREDENTIALS or
+ * `gcloud auth application-default login`.
+ *
+ * Returns the raw JWT string on success, or throws on failure.
+ */
+async function fetchGcpIdToken(audience: string, impersonateServiceAccount?: string): Promise<string> {
+  const { GoogleAuth, Impersonated } = await import("google-auth-library");
+  if (impersonateServiceAccount) {
+    // Use SA impersonation so user ADC credentials aren't required to mint
+    // arbitrary-audience ID tokens (authorized_user ADC ignores the audience param).
+    const auth = new GoogleAuth();
+    const sourceClient = await auth.getClient();
+    const impersonated = new Impersonated({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sourceClient: sourceClient as any,
+      targetPrincipal: impersonateServiceAccount,
+      lifetime: 3600,
+      delegates: [],
+      targetScopes: ["https://www.googleapis.com/auth/cloud-platform"],
+    });
+    const idToken = await impersonated.fetchIdToken(audience);
+    if (!idToken) {
+      throw new Error("GCP ID token impersonation succeeded but returned an empty token");
+    }
+    return idToken;
+  }
+  const auth = new GoogleAuth();
+  const client = await auth.getIdTokenClient(audience);
+  const headers = await client.getRequestHeaders();
+  const authHeader = headers["Authorization"] ?? headers["authorization"] ?? "";
+  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!token) {
+    throw new Error("GCP ID token fetch succeeded but returned an empty token");
+  }
+  return token;
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const urlValue = asString(ctx.config.url, "").trim();
   if (!urlValue) {
@@ -1091,6 +1218,42 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     headers.authorization = toAuthorizationHeaderValue(authToken);
   }
 
+  // GCP service-to-service auth: fetch an OIDC ID token via Application Default Credentials.
+  // The audience should be the Cloud Run service URL (https://...).
+  const useGcpIdentityToken = parseBoolean(ctx.config.useGcpIdentityToken, false);
+  if (useGcpIdentityToken && headerMapHasIgnoreCase(headers, "authorization")) {
+    await ctx.onLog(
+      "stdout",
+      "[openclaw-gateway] warning: useGcpIdentityToken is true but an authorization header is already set; skipping GCP ID token fetch\n",
+    );
+  } else if (useGcpIdentityToken) {
+    // Derive the HTTP audience from the WebSocket URL (ws → http, wss → https).
+    const rawAudience = nonEmpty(ctx.config.audience);
+    const derivedAudience = rawAudience
+      ? rawAudience
+      : parsedUrl.toString().replace(/^wss?:\/\//, (m) => (m === "wss://" ? "https://" : "http://")).split("/").slice(0, 3).join("/");
+    const impersonateServiceAccount = nonEmpty(ctx.config.impersonateServiceAccount);
+    try {
+      await ctx.onLog(
+        "stdout",
+        `[openclaw-gateway] fetching GCP ID token audience=${derivedAudience}${impersonateServiceAccount ? ` impersonate=${impersonateServiceAccount}` : ""}\n`,
+      );
+      const idToken = await fetchGcpIdToken(derivedAudience, impersonateServiceAccount ?? undefined);
+      headers.authorization = `Bearer ${idToken}`;
+      await ctx.onLog("stdout", "[openclaw-gateway] GCP ID token acquired\n");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await ctx.onLog("stderr", `[openclaw-gateway] GCP ID token fetch failed: ${message}\n`);
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: `GCP ID token fetch failed: ${message}`,
+        errorCode: "openclaw_gateway_gcp_idtoken_failed",
+      };
+    }
+  }
+
   const clientId = nonEmpty(ctx.config.clientId) ?? DEFAULT_CLIENT_ID;
   const clientMode = nonEmpty(ctx.config.clientMode) ?? DEFAULT_CLIENT_MODE;
   const clientVersion = nonEmpty(ctx.config.clientVersion) ?? DEFAULT_CLIENT_VERSION;
@@ -1099,8 +1262,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const deviceFamily = nonEmpty(ctx.config.deviceFamily);
   const disableDeviceAuth = parseBoolean(ctx.config.disableDeviceAuth, false);
 
+  const enableApiProxy = parseBoolean(ctx.config.enableApiProxy, false);
+  const apiProxyPort = parseOptionalPositiveInteger(ctx.config.apiProxyPort) ?? 19998;
+
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
+
+  // Capture the real upstream Paperclip URL before we potentially override it
+  // for the LLM (used by the proxy to reach the actual Paperclip API).
+  const realPaperclipApiUrl = paperclipEnv.PAPERCLIP_API_URL ?? "http://localhost:3100";
+
+  if (enableApiProxy) {
+    // Point the LLM at the local proxy port spawned by Peregrine
+    paperclipEnv.PAPERCLIP_API_URL = `http://127.0.0.1:${apiProxyPort}`;
+  }
+
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const wakeText = buildWakeText(
@@ -1124,6 +1300,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
   const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
+
+  if (enableApiProxy) {
+    paperclipPayload.apiProxy = { port: apiProxyPort };
+  }
 
   const agentParams: Record<string, unknown> = {
     ...payloadTemplate,
@@ -1236,6 +1416,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const client = new GatewayWsClient({
       url: parsedUrl.toString(),
       headers,
+      paperclipUrl: enableApiProxy ? realPaperclipApiUrl : null,
       onEvent,
       onLog: ctx.onLog,
     });

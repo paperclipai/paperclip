@@ -21,6 +21,10 @@ Core fields:
 - authToken (string, optional): shared gateway token override
 - password (string, optional): gateway shared password, if configured
 
+GCP service-to-service auth fields (for Cloud Run / internal GCP deployments):
+- useGcpIdentityToken (boolean, optional): when true, fetch a GCP OIDC ID token via Application Default Credentials and set it as the Authorization header; mutually exclusive with authToken/password (default false)
+- audience (string, optional): OIDC audience for the ID token — typically the Cloud Run service URL (https://...); derived from url if omitted
+
 Gateway connect identity fields:
 - clientId (string, optional): gateway client id (default gateway-client)
 - clientMode (string, optional): gateway client mode (default backend)
