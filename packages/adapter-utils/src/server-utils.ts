@@ -318,8 +318,8 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
       : null;
   const allowedActions = Array.isArray(stage.allowedActions)
     ? stage.allowedActions
-        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-        .map((entry) => entry.trim())
+      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      .map((entry) => entry.trim())
     : [];
   const currentParticipant = normalizePaperclipWakeExecutionPrincipal(stage.currentParticipant);
   const returnAssignee = normalizePaperclipWakeExecutionPrincipal(stage.returnAssignee);
@@ -346,14 +346,14 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const payload = parseObject(value);
   const comments = Array.isArray(payload.comments)
     ? payload.comments
-        .map((entry) => normalizePaperclipWakeComment(entry))
-        .filter((entry): entry is PaperclipWakeComment => Boolean(entry))
+      .map((entry) => normalizePaperclipWakeComment(entry))
+      .filter((entry): entry is PaperclipWakeComment => Boolean(entry))
     : [];
   const commentWindow = parseObject(payload.commentWindow);
   const commentIds = Array.isArray(payload.commentIds)
     ? payload.commentIds
-        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-        .map((entry) => entry.trim())
+      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      .map((entry) => entry.trim())
     : [];
   const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
 
@@ -398,35 +398,35 @@ export function renderPaperclipWakePrompt(
   };
 
   const lines = resumedSession
-      ? [
-        "## Paperclip Resume Delta",
-        "",
-        "You are resuming an existing Paperclip session.",
-        "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
-        "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
-        "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
-        "",
-        `- reason: ${normalized.reason ?? "unknown"}`,
-        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
-        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
-        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
-      ]
+    ? [
+      "## Paperclip Resume Delta",
+      "",
+      "You are resuming an existing Paperclip session.",
+      "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
+      "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
+      "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+      "",
+      `- reason: ${normalized.reason ?? "unknown"}`,
+      `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+      `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
+      `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+      `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+    ]
     : [
-        "## Paperclip Wake Payload",
-        "",
-        "Treat this wake payload as the highest-priority change for the current heartbeat.",
-        "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
-        "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action.",
-        "Use this inline wake data first before refetching the issue thread.",
-        "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
-        "",
-        `- reason: ${normalized.reason ?? "unknown"}`,
-        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
-        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
-        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
-      ];
+      "## Paperclip Wake Payload",
+      "",
+      "Treat this wake payload as the highest-priority change for the current heartbeat.",
+      "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
+      "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action.",
+      "Use this inline wake data first before refetching the issue thread.",
+      "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+      "",
+      `- reason: ${normalized.reason ?? "unknown"}`,
+      `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+      `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
+      `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+      `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+    ];
 
   if (normalized.issue?.status) {
     lines.push(`- issue status: ${normalized.issue.status}`);
@@ -907,9 +907,9 @@ export function readPaperclipSkillSyncPreference(config: Record<string, unknown>
   const desiredValues = syncConfig.desiredSkills;
   const desired = Array.isArray(desiredValues)
     ? desiredValues
-        .filter((value): value is string => typeof value === "string")
-        .map((value) => value.trim())
-        .filter(Boolean)
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean)
     : [];
   return {
     explicit: Object.prototype.hasOwnProperty.call(raw, "desiredSkills"),
@@ -982,7 +982,7 @@ export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
   linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
-    fs.symlink(linkSource, linkTarget),
+    fs.symlink(linkSource, linkTarget, process.platform === "win32" ? "junction" : "dir"),
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
@@ -1125,12 +1125,12 @@ export async function runChildProcess(
         const timeout =
           opts.timeoutSec > 0
             ? setTimeout(() => {
-                timedOut = true;
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
-                setTimeout(() => {
-                  signalRunningProcess({ child, processGroupId }, "SIGKILL");
-                }, Math.max(1, opts.graceSec) * 1000);
-              }, opts.timeoutSec * 1000)
+              timedOut = true;
+              signalRunningProcess({ child, processGroupId }, "SIGTERM");
+              setTimeout(() => {
+                signalRunningProcess({ child, processGroupId }, "SIGKILL");
+              }, Math.max(1, opts.graceSec) * 1000);
+            }, opts.timeoutSec * 1000)
             : null;
 
         child.stdout?.on("data", (chunk: unknown) => {
