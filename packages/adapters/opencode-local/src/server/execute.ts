@@ -7,6 +7,7 @@ import {
   asString,
   asNumber,
   asStringArray,
+  filterDangerousExtraArgs,
   parseObject,
   buildPaperclipEnv,
   joinPromptSections,
@@ -22,6 +23,8 @@ import {
   runChildProcess,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
+  filterDangerousEnvKeys,
+  wrapUntrustedHandoff,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
@@ -172,8 +175,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (agentHome) env.AGENT_HOME = agentHome;
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
 
-  for (const [key, value] of Object.entries(envConfig)) {
-    if (typeof value === "string") env[key] = value;
+  const safeEnvConfig = filterDangerousEnvKeys(
+    Object.fromEntries(
+      Object.entries(envConfig).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    ),
+  );
+  for (const [key, value] of Object.entries(safeEnvConfig)) {
+    env[key] = value;
   }
   // Prevent OpenCode from writing an opencode.json config file into the
   // project working directory (which would pollute the git repo).  Model
@@ -208,9 +216,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const timeoutSec = asNumber(config.timeoutSec, 0);
     const graceSec = asNumber(config.graceSec, 20);
     const extraArgs = (() => {
-      const fromExtraArgs = asStringArray(config.extraArgs);
+      const fromExtraArgs = filterDangerousExtraArgs(asStringArray(config.extraArgs));
       if (fromExtraArgs.length > 0) return fromExtraArgs;
-      return asStringArray(config.args);
+      return filterDangerousExtraArgs(asStringArray(config.args));
     })();
 
     const runtimeSessionParams = parseObject(runtime.sessionParams);
@@ -281,7 +289,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
-    const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+    const sessionHandoffNote = wrapUntrustedHandoff(asString(context.paperclipSessionHandoffMarkdown, ""));
     const prompt = joinPromptSections([
       instructionsPrefix,
       renderedBootstrapPrompt,

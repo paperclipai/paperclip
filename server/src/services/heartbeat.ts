@@ -10,6 +10,7 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  companies,
   companySkills as companySkillsTable,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -2595,6 +2596,7 @@ export function heartbeatService(db: Db) {
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      model: typeof heartbeat.model === "string" && heartbeat.model.trim().length > 0 ? heartbeat.model.trim() : null,
     };
   }
 
@@ -3409,8 +3411,11 @@ export function heartbeatService(db: Db) {
       runScopedMentionedSkillKeys,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
+    const heartbeatModelOverride =
+      run.invocationSource === "timer" ? parseHeartbeatPolicy(agent).model : null;
     const runtimeConfig = {
       ...effectiveResolvedConfig,
+      ...(heartbeatModelOverride ? { model: heartbeatModelOverride } : {}),
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
@@ -5102,9 +5107,10 @@ export function heartbeatService(db: Db) {
     return runs.length;
   }
 
-  async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
+  async function cancelBudgetScopeWork(scope: BudgetEnforcementScope, reason?: string) {
+    const cancelReason = reason ?? "Cancelled due to budget pause";
     if (scope.scopeType === "agent") {
-      await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
+      await cancelActiveForAgentInternal(scope.scopeId, cancelReason);
       await cancelPendingWakeupsForBudgetScope(scope);
       return;
     }
@@ -5124,7 +5130,7 @@ export function heartbeatService(db: Db) {
         : await listProjectScopedRunIds(scope.companyId, scope.scopeId);
 
     for (const runId of runIds) {
-      await cancelRunInternal(runId, "Cancelled due to budget pause");
+      await cancelRunInternal(runId, cancelReason);
     }
 
     await cancelPendingWakeupsForBudgetScope(scope);
@@ -5327,12 +5333,18 @@ export function heartbeatService(db: Db) {
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
+      const pausedCompanyRows = await db
+        .select({ id: companies.id })
+        .from(companies)
+        .where(eq(companies.status, "paused"));
+      const pausedCompanyIds = new Set(pausedCompanyRows.map((r) => r.id));
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
 
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+        if (pausedCompanyIds.has(agent.companyId)) continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 

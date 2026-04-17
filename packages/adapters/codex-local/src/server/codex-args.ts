@@ -1,4 +1,4 @@
-import { asBoolean, asString, asStringArray } from "@paperclipai/adapter-utils/server-utils";
+import { asBoolean, asString, asStringArray, filterDangerousExtraArgs } from "@paperclipai/adapter-utils/server-utils";
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
   isCodexLocalFastModeSupported,
@@ -13,7 +13,7 @@ export type BuildCodexExecArgsResult = {
 };
 
 function readExtraArgs(config: unknown): string[] {
-  const fromExtraArgs = asStringArray(asRecord(config).extraArgs);
+  const fromExtraArgs = filterDangerousExtraArgs(asStringArray(asRecord(config).extraArgs));
   if (fromExtraArgs.length > 0) return fromExtraArgs;
   return asStringArray(asRecord(config).args);
 }
