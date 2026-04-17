@@ -1820,23 +1820,33 @@ export function issueRoutes(
       }
 
       if (!assigneeChanged && (statusChangedFromBacklog || statusChangedFromBlockedToTodo) && issue.assigneeAgentId) {
-        addWakeup(issue.assigneeAgentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_status_changed",
-          payload: {
-            issueId: issue.id,
-            mutation: "update",
-            ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: issue.id,
-            source: "issue.status_change",
-            ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
-        });
+        let hasUnresolvedBlockers = false;
+        try {
+          const relations = await svc.getRelationSummaries(issue.id);
+          hasUnresolvedBlockers = relations.blockedBy.some((blocker) => blocker.status !== "done");
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "failed to resolve blockers before status-change wakeup");
+        }
+
+        if (!hasUnresolvedBlockers) {
+          addWakeup(issue.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_status_changed",
+            payload: {
+              issueId: issue.id,
+              mutation: "update",
+              ...(interruptedRunId ? { interruptedRunId } : {}),
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: issue.id,
+              source: "issue.status_change",
+              ...(interruptedRunId ? { interruptedRunId } : {}),
+            },
+          });
+        }
       }
 
       if (commentBody && comment) {
