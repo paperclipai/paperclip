@@ -539,7 +539,7 @@ const issueListSelect = {
   description: sql<string | null>`
     CASE
       WHEN ${issues.description} IS NULL THEN NULL
-      ELSE substring(${issues.description} FROM 1 FOR ${ISSUE_LIST_DESCRIPTION_MAX_CHARS})
+      ELSE left(convert_from(convert_to(${issues.description}, 'SQL_ASCII'), 'UTF8'), ${ISSUE_LIST_DESCRIPTION_MAX_CHARS})
     END
   `,
   status: issues.status,

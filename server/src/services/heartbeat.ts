@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -412,11 +412,18 @@ const heartbeatRunListContextColumns = {
   contextWakeTriggerDetail: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeTriggerDetail'`.as("contextWakeTriggerDetail"),
 } as const;
 
+// SQL_ASCII clusters count bytes not chars in left()/length(). Round-tripping through
+// convert_to/convert_from forces UTF-8 character semantics so the cut never splits a
+// multi-byte sequence and avoids "invalid byte sequence for encoding UTF8" 500 errors.
+function utf8Trunc(expr: SQL, maxChars: number): SQL<string | null> {
+  return sql<string | null>`left(convert_from(convert_to(${expr}, 'SQL_ASCII'), 'UTF8'), ${maxChars})`;
+}
+
 const heartbeatRunListResultColumns = {
-  resultSummary: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultSummary"),
-  resultResult: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultResult"),
-  resultMessage: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultMessage"),
-  resultError: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultError"),
+  resultSummary: utf8Trunc(sql`${heartbeatRuns.resultJson} ->> 'summary'`, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS).as("resultSummary"),
+  resultResult: utf8Trunc(sql`${heartbeatRuns.resultJson} ->> 'result'`, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS).as("resultResult"),
+  resultMessage: utf8Trunc(sql`${heartbeatRuns.resultJson} ->> 'message'`, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS).as("resultMessage"),
+  resultError: utf8Trunc(sql`${heartbeatRuns.resultJson} ->> 'error'`, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS).as("resultError"),
   resultTotalCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'total_cost_usd'`.as("resultTotalCostUsd"),
   resultCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'cost_usd'`.as("resultCostUsd"),
   resultCostUsdCamel: sql<string | null>`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
@@ -429,19 +436,19 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
       then ${heartbeatRuns.resultJson}
     else jsonb_strip_nulls(
       jsonb_build_object(
-        'summary', left(${heartbeatRuns.resultJson} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'result', left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'message', left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'error', left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'stdout', left(${heartbeatRuns.resultJson} ->> 'stdout', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
-        'stderr', left(${heartbeatRuns.resultJson} ->> 'stderr', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
+        'summary', ${utf8Trunc(sql`${heartbeatRuns.resultJson} ->> 'summary'`, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS)},
+        'result', ${utf8Trunc(sql`${heartbeatRuns.resultJson} ->> 'result'`, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS)},
+        'message', ${utf8Trunc(sql`${heartbeatRuns.resultJson} ->> 'message'`, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS)},
+        'error', ${utf8Trunc(sql`${heartbeatRuns.resultJson} ->> 'error'`, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS)},
+        'stdout', ${utf8Trunc(sql`${heartbeatRuns.resultJson} ->> 'stdout'`, HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS)},
+        'stderr', ${utf8Trunc(sql`${heartbeatRuns.resultJson} ->> 'stderr'`, HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS)},
         'stdoutTruncated', case
-          when length(${heartbeatRuns.resultJson} ->> 'stdout') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
+          when char_length(convert_from(convert_to(${heartbeatRuns.resultJson} ->> 'stdout', 'SQL_ASCII'), 'UTF8')) > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
             then to_jsonb(true)
           else null
         end,
         'stderrTruncated', case
-          when length(${heartbeatRuns.resultJson} ->> 'stderr') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
+          when char_length(convert_from(convert_to(${heartbeatRuns.resultJson} ->> 'stderr', 'SQL_ASCII'), 'UTF8')) > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
             then to_jsonb(true)
           else null
         end,
