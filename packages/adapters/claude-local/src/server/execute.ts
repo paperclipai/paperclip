@@ -85,8 +85,18 @@ function isBedrockAuth(env: Record<string, string>): boolean {
   );
 }
 
+function isFoundryAuth(env: Record<string, string>): boolean {
+  return (
+    env.CLAUDE_CODE_USE_FOUNDRY === "1" ||
+    env.CLAUDE_CODE_USE_FOUNDRY === "true" ||
+    hasNonEmptyEnvValue(env, "ANTHROPIC_FOUNDRY_BASE_URL") ||
+    hasNonEmptyEnvValue(env, "ANTHROPIC_FOUNDRY_RESOURCE")
+  );
+}
+
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
   if (isBedrockAuth(env)) return "metered_api";
+  if (isFoundryAuth(env)) return "metered_api";
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
 }
 
@@ -599,7 +609,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
       provider: "anthropic",
-      biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
+      biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : isFoundryAuth(effectiveEnv) ? "azure_foundry" : "anthropic",
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),

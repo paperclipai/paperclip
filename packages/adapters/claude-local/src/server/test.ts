@@ -104,6 +104,16 @@ export async function testEnvironment(
     isNonEmpty(env.ANTHROPIC_BEDROCK_BASE_URL) ||
     isNonEmpty(process.env.ANTHROPIC_BEDROCK_BASE_URL);
 
+  const hasFoundry =
+    env.CLAUDE_CODE_USE_FOUNDRY === "1" ||
+    env.CLAUDE_CODE_USE_FOUNDRY === "true" ||
+    process.env.CLAUDE_CODE_USE_FOUNDRY === "1" ||
+    process.env.CLAUDE_CODE_USE_FOUNDRY === "true" ||
+    isNonEmpty(env.ANTHROPIC_FOUNDRY_BASE_URL) ||
+    isNonEmpty(process.env.ANTHROPIC_FOUNDRY_BASE_URL) ||
+    isNonEmpty(env.ANTHROPIC_FOUNDRY_RESOURCE) ||
+    isNonEmpty(process.env.ANTHROPIC_FOUNDRY_RESOURCE);
+
   const configApiKey = env.ANTHROPIC_API_KEY;
   const hostApiKey = process.env.ANTHROPIC_API_KEY;
   if (hasBedrock) {
@@ -119,6 +129,21 @@ export async function testEnvironment(
       message: "AWS Bedrock auth detected. Claude will use Bedrock for inference.",
       detail: `Detected in ${source}.`,
       hint: "Ensure AWS credentials (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or AWS_PROFILE) and AWS_REGION are configured.",
+    });
+  } else if (hasFoundry) {
+    const source =
+      env.CLAUDE_CODE_USE_FOUNDRY === "1" ||
+      env.CLAUDE_CODE_USE_FOUNDRY === "true" ||
+      isNonEmpty(env.ANTHROPIC_FOUNDRY_BASE_URL) ||
+      isNonEmpty(env.ANTHROPIC_FOUNDRY_RESOURCE)
+        ? "adapter config env"
+        : "server environment";
+    checks.push({
+      code: "claude_foundry_auth",
+      level: "info",
+      message: "Azure AI Foundry auth detected. Claude will use Foundry for inference.",
+      detail: `Detected in ${source}.`,
+      hint: "Ensure ANTHROPIC_FOUNDRY_API_KEY or Azure default credentials are configured.",
     });
   } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
