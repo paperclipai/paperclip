@@ -418,7 +418,7 @@ export function agentRoutes(db: Db) {
     // runs before router.param, so req.actor is populated by the time we get here.
     if (raw === "me") {
       if (req.actor?.type === "agent" && req.actor.agentId) return req.actor.agentId;
-      throw unauthorized("'me' requires agent authentication");
+      throw unauthorized("Agent authentication required");
     }
     if (isUuidLike(raw)) return raw;
 

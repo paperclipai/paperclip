@@ -671,7 +671,7 @@ describe("agent permission routes", () => {
       .send({ metadata: { lastHeartbeatNote: "ok" } });
 
     expect(res.status).toBe(401);
-    expect(res.body.error).toContain("agent authentication");
+    expect(res.body.error).toBe("Agent authentication required");
     expect(mockAgentService.update).not.toHaveBeenCalled();
   });
 
