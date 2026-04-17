@@ -502,7 +502,7 @@ describe("parseSessionCompactionPolicy", () => {
       enabled: true,
       maxSessionRuns: 25,
       maxRawInputTokens: 500_000,
-      maxSessionAgeHours: 0,
+      maxSessionAgeHours: 72,
     });
   });
 });
