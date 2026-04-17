@@ -37,7 +37,66 @@ export const executionWorkspaceCloseActionKindSchema = z.enum([
   "git_worktree_remove",
   "git_branch_delete",
   "remove_local_directory",
+  "pull_request_push",
+  "pull_request_open",
+  "pull_request_merge",
 ]);
+
+export const pullRequestMergeStrategySchema = z.enum(["merge", "squash", "rebase"]);
+
+export const pullRequestRecordStatusSchema = z.enum([
+  "requested",
+  "opened",
+  "merged",
+  "failed",
+  "skipped",
+]);
+
+export const pullRequestRequestModeSchema = z.enum(["fire_and_forget", "blocking"]);
+
+export const pullRequestPolicySchema = z.object({
+  autoOpen: z.boolean().optional(),
+  autoMerge: z.boolean().optional(),
+  mergeStrategy: pullRequestMergeStrategySchema.optional(),
+  targetBranch: z.string().min(1).optional(),
+  titleTemplate: z.string().optional(),
+  bodyTemplate: z.string().optional(),
+  draft: z.boolean().optional(),
+  requireResultBeforeArchive: z.boolean().optional(),
+  archiveTimeoutMs: z.number().int().positive().optional(),
+  extensions: z.record(z.unknown()).optional(),
+}).strict();
+
+export const executionWorkspacePullRequestRecordSchema = z.object({
+  status: pullRequestRecordStatusSchema,
+  mode: pullRequestRequestModeSchema,
+  url: z.string().optional().nullable(),
+  number: z.number().int().optional().nullable(),
+  sha: z.string().optional().nullable(),
+  mergedAt: z.string().optional().nullable(),
+  requestedAt: z.string().optional().nullable(),
+  resolvedAt: z.string().optional().nullable(),
+  error: z.string().optional().nullable(),
+  policy: pullRequestPolicySchema.optional(),
+}).strict();
+
+export const pullRequestResultRequestSchema = z.object({
+  status: pullRequestRecordStatusSchema.extract(["opened", "merged", "failed", "skipped"]),
+  url: z.string().optional(),
+  number: z.number().int().optional(),
+  sha: z.string().optional(),
+  error: z.string().optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.status === "failed" && (!value.error || value.error.trim().length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "error is required when status is failed",
+      path: ["error"],
+    });
+  }
+});
+
+export type PullRequestResultRequest = z.infer<typeof pullRequestResultRequestSchema>;
 
 export const executionWorkspaceCloseActionSchema = z.object({
   kind: executionWorkspaceCloseActionKindSchema,

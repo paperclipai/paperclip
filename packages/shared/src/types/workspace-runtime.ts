@@ -43,7 +43,55 @@ export type ExecutionWorkspaceCloseActionKind =
   | "teardown_command"
   | "git_worktree_remove"
   | "git_branch_delete"
-  | "remove_local_directory";
+  | "remove_local_directory"
+  | "pull_request_push"
+  | "pull_request_open"
+  | "pull_request_merge";
+
+export type PullRequestMergeStrategy = "merge" | "squash" | "rebase";
+
+export type PullRequestRecordStatus =
+  | "requested"
+  | "opened"
+  | "merged"
+  | "failed"
+  | "skipped";
+
+export type PullRequestRequestMode = "fire_and_forget" | "blocking";
+
+export interface PullRequestPolicy {
+  autoOpen?: boolean;
+  autoMerge?: boolean;
+  mergeStrategy?: PullRequestMergeStrategy;
+  targetBranch?: string;
+  titleTemplate?: string;
+  bodyTemplate?: string;
+  draft?: boolean;
+  requireResultBeforeArchive?: boolean;
+  archiveTimeoutMs?: number;
+  extensions?: Record<string, unknown>;
+}
+
+/**
+ * Back-compat alias for callers that previously typed
+ * `pullRequestPolicy` as `Record<string, unknown>`. Lets them continue
+ * to pass through arbitrary unknown keys without widening the strict
+ * contract on the policy itself.
+ */
+export type PullRequestPolicyLoose = PullRequestPolicy & Record<string, unknown>;
+
+export interface ExecutionWorkspacePullRequestRecord {
+  status: PullRequestRecordStatus;
+  mode: PullRequestRequestMode;
+  url?: string | null;
+  number?: number | null;
+  sha?: string | null;
+  mergedAt?: string | null;
+  requestedAt?: string | null;
+  resolvedAt?: string | null;
+  error?: string | null;
+  policy?: PullRequestPolicy;
+}
 
 export type WorkspaceRuntimeDesiredState = "running" | "stopped";
 export type WorkspaceRuntimeServiceStateMap = Record<string, WorkspaceRuntimeDesiredState>;
@@ -150,7 +198,7 @@ export interface ProjectExecutionWorkspacePolicy {
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
   branchPolicy?: Record<string, unknown> | null;
-  pullRequestPolicy?: Record<string, unknown> | null;
+  pullRequestPolicy?: PullRequestPolicy | null;
   runtimePolicy?: Record<string, unknown> | null;
   cleanupPolicy?: Record<string, unknown> | null;
 }
