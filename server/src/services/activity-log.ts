@@ -9,6 +9,7 @@ import { sanitizeRecord } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { dispatchNotification } from "./notification-dispatcher.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 
@@ -90,5 +91,49 @@ export async function logActivity(db: Db, input: LogActivityInput) {
         logger.warn({ pluginId, eventType: event.eventType, err: error }, "plugin event handler failed");
       }
     }).catch(() => {});
+  }
+
+  // Notify human when agent needs help
+  void dispatchHumanEscalation(input).catch(() => {});
+}
+
+const HELP_KEYWORDS = /\b(need(?:s)? help|blocked|stuck|cannot proceed|human (?:input|needed|required)|escalat)/i;
+
+async function dispatchHumanEscalation(input: LogActivityInput): Promise<void> {
+  const details = input.details as Record<string, unknown> | null;
+  if (!details) return;
+
+  const identifier = (details.identifier as string) ?? null;
+  const issueTitle = (details.title as string) ?? (details.issueTitle as string) ?? null;
+
+  // Trigger 1: Issue status changed to "blocked" by an agent
+  if (
+    input.action === "issue.updated" &&
+    input.actorType === "agent" &&
+    details.status === "blocked"
+  ) {
+    await dispatchNotification({
+      title: "Agent blocked — needs human input",
+      body: `An agent marked ${identifier ?? input.entityId.slice(0, 8)} as blocked.`,
+      issueIdentifier: identifier,
+      issueTitle,
+    });
+    return;
+  }
+
+  // Trigger 2: Agent comment contains help-seeking keywords
+  if (
+    input.action === "issue.comment_added" &&
+    input.actorType === "agent" &&
+    typeof details.bodySnippet === "string" &&
+    HELP_KEYWORDS.test(details.bodySnippet)
+  ) {
+    await dispatchNotification({
+      title: "Agent requesting help",
+      body: `${(details.bodySnippet as string).slice(0, 200)}`,
+      issueIdentifier: identifier,
+      issueTitle,
+    });
+    return;
   }
 }
