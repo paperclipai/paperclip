@@ -39,6 +39,7 @@ import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { RunButton, PauseResumeButton } from "../components/AgentActionButtons";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
+import { McpServersEditor, type McpServersMap } from "../components/McpServersEditor";
 import { PackageFileTree, buildFileTree } from "../components/PackageFileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
@@ -224,12 +225,13 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget";
+type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "mcp" | "runs" | "budget";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
   if (value === "configure" || value === "configuration") return "configuration";
   if (value === "skills") return "skills";
+  if (value === "mcp") return "mcp";
   if (value === "budget") return "budget";
   if (value === "runs") return value;
   return "dashboard";
@@ -745,11 +747,13 @@ export function AgentDetail() {
           ? "configuration"
           : activeView === "skills"
             ? "skills"
-            : activeView === "runs"
-              ? "runs"
-              : activeView === "budget"
-                ? "budget"
-              : "dashboard";
+            : activeView === "mcp"
+              ? "mcp"
+              : activeView === "runs"
+                ? "runs"
+                : activeView === "budget"
+                  ? "budget"
+                : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
@@ -1009,6 +1013,9 @@ export function AgentDetail() {
               { value: "dashboard", label: "Dashboard" },
               { value: "instructions", label: "Instructions" },
               { value: "skills", label: "Skills" },
+              ...(agent.adapterType === "claude_local"
+                ? [{ value: "mcp", label: "MCP Servers" }]
+                : []),
               { value: "configuration", label: "Configuration" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
@@ -1120,6 +1127,13 @@ export function AgentDetail() {
 
       {activeView === "skills" && (
         <AgentSkillsTab
+          agent={agent}
+          companyId={resolvedCompanyId ?? undefined}
+        />
+      )}
+
+      {activeView === "mcp" && agent.adapterType === "claude_local" && (
+        <McpServersTab
           agent={agent}
           companyId={resolvedCompanyId ?? undefined}
         />
@@ -2408,6 +2422,101 @@ function PromptEditorSkeleton() {
     <div className="space-y-3">
       <Skeleton className="h-10 w-full" />
       <Skeleton className="h-[420px] w-full" />
+    </div>
+  );
+}
+
+/* ---- MCP Servers Tab (claude_local only) ---- */
+
+function McpServersTab({
+  agent,
+  companyId,
+}: {
+  agent: AgentDetailRecord;
+  companyId: string | undefined;
+}) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+  const lastAgentRef = useRef(agent);
+  const [awaitingRefresh, setAwaitingRefresh] = useState(false);
+  const [localServers, setLocalServers] = useState<McpServersMap | undefined>(
+    () => (agent.adapterConfig?.mcpServers ?? undefined) as McpServersMap | undefined,
+  );
+  const [dirty, setDirty] = useState(false);
+
+  // Sync when agent data refreshes from server (after save or external change)
+  useEffect(() => {
+    if (agent !== lastAgentRef.current) {
+      lastAgentRef.current = agent;
+      setLocalServers((agent.adapterConfig?.mcpServers ?? undefined) as McpServersMap | undefined);
+      setDirty(false);
+      setAwaitingRefresh(false);
+    }
+  }, [agent]);
+
+  const updateMcp = useMutation({
+    mutationFn: (servers: McpServersMap | undefined) =>
+      agentsApi.update(
+        agent.id,
+        {
+          adapterConfig: {
+            ...agent.adapterConfig,
+            mcpServers: servers ?? null,
+          },
+        },
+        companyId,
+      ),
+    onMutate: () => setAwaitingRefresh(true),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+    },
+    onError: (err) => {
+      setAwaitingRefresh(false);
+      pushToast({
+        title: "Failed to save MCP servers",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const isSaving = updateMcp.isPending || awaitingRefresh;
+
+  const handleChange = (servers: McpServersMap | undefined) => {
+    setLocalServers(servers);
+    setDirty(true);
+  };
+
+  const handleCancel = () => {
+    setLocalServers((agent.adapterConfig?.mcpServers ?? undefined) as McpServersMap | undefined);
+    setDirty(false);
+  };
+
+  return (
+    <div className="max-w-3xl space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-medium">MCP Servers</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Configure Model Context Protocol servers that this agent can use during runs.
+            Each server provides additional tools and data sources to Claude Code via <code className="text-[11px] bg-muted px-1 rounded">--mcp-config</code>.
+          </p>
+        </div>
+      </div>
+
+      <McpServersEditor value={localServers} onChange={handleChange} />
+
+      {dirty && (
+        <div className="flex items-center gap-2 pt-1">
+          <Button size="sm" onClick={() => updateMcp.mutate(localServers)} disabled={isSaving}>
+            {isSaving ? "Saving..." : "Save changes"}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={handleCancel} disabled={isSaving}>
+            Cancel
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
