@@ -274,7 +274,36 @@ if $CHECK_ONLY; then
   exit 0
 fi
 
-# 3. Rebase master onto upstream/master
+# 3. Snapshot pre-rebase state: branches that are fully merged (ahead=0)
+# act as anchors — after master rebases onto upstream, their old SHAs become
+# stale even though the logical content is already in master. We fast-forward
+# these to the new master automatically. Branches with unique work go through
+# the normal rebase path below.
+ALL_BRANCHES=("${FEATURE_BRANCHES[@]}")
+if [[ ${#SECURITY_ACTIVE_BRANCHES[@]} -gt 0 ]]; then
+  ALL_BRANCHES+=("${SECURITY_ACTIVE_BRANCHES[@]}")
+fi
+
+ANCHOR_BRANCHES=()
+for branch in "${ALL_BRANCHES[@]}"; do
+  if ! git rev-parse --verify "$branch" &>/dev/null; then
+    continue
+  fi
+  AHEAD=$(git rev-list --count "master..$branch" 2>/dev/null || echo "0")
+  if [[ "$AHEAD" -eq 0 ]]; then
+    ANCHOR_BRANCHES+=("$branch")
+  fi
+done
+
+if [[ ${#ANCHOR_BRANCHES[@]} -gt 0 ]]; then
+  info ""
+  info "Pre-rebase: ${#ANCHOR_BRANCHES[@]} branch(es) fully merged into master (will fast-forward to new master after rebase):"
+  for b in "${ANCHOR_BRANCHES[@]}"; do
+    info "  $b"
+  done
+fi
+
+# 4. Rebase master onto upstream/master
 info ""
 info "=== Rebasing master onto upstream/master ==="
 if $DRY_RUN; then
@@ -295,11 +324,27 @@ else
   info "master rebased successfully"
 fi
 
-# 4. Combine feature branches + active security branches
-ALL_BRANCHES=("${FEATURE_BRANCHES[@]}")
-if [[ ${#SECURITY_ACTIVE_BRANCHES[@]} -gt 0 ]]; then
-  ALL_BRANCHES+=("${SECURITY_ACTIVE_BRANCHES[@]}")
+# 5. Fast-forward anchor branches to new master. Their pre-rebase content is
+# already in master under new SHAs; rebasing them would just hit conflicts
+# trying to re-apply commits that are logically already present.
+if [[ ${#ANCHOR_BRANCHES[@]} -gt 0 ]] && ! $DRY_RUN; then
+  info ""
+  info "=== Resetting ${#ANCHOR_BRANCHES[@]} anchor branch(es) to new master ==="
+  for b in "${ANCHOR_BRANCHES[@]}"; do
+    git branch -f "$b" master && info "  $b — reset to master"
+  done
 fi
+
+# 6. Rebase the remaining branches (those with unique work) onto master
+REBASE_BRANCHES=()
+for branch in "${ALL_BRANCHES[@]}"; do
+  skip=false
+  for a in "${ANCHOR_BRANCHES[@]}"; do
+    if [[ "$a" == "$branch" ]]; then skip=true; break; fi
+  done
+  $skip || REBASE_BRANCHES+=("$branch")
+done
+ALL_BRANCHES=("${REBASE_BRANCHES[@]}")
 
 # 5. Rebase each branch onto master
 info ""
