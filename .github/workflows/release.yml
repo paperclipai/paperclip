@@ -62,6 +62,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Verify dist artifacts
+        run: node scripts/verify-dist.mjs
+
   publish_canary:
     if: github.event_name == 'push'
     needs: verify_canary
@@ -150,6 +153,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Verify dist artifacts
+        run: node scripts/verify-dist.mjs
 
   preview_stable:
     if: github.event_name == 'workflow_dispatch' && inputs.dry_run

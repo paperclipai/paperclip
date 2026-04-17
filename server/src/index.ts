@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
 import { and, eq } from "drizzle-orm";
 import {
@@ -810,6 +810,17 @@ function isMainModule(metaUrl: string): boolean {
 }
 
 if (isMainModule(import.meta.url)) {
+  if (process.argv.includes("--preflight")) {
+    const thisDir = resolve(fileURLToPath(import.meta.url), "..");
+    const dbDistClient = resolve(thisDir, "../../packages/db/dist/client.js");
+    if (!existsSync(dbDistClient)) {
+      logger.error("Preflight failed: packages/db/dist/client.js is missing. Run `pnpm build` first.");
+      process.exit(1);
+    }
+    logger.info("Preflight passed — dist artifacts present.");
+    process.exit(0);
+  }
+
   void startServer().catch((err) => {
     logger.error({ err }, "Paperclip server failed to start");
     process.exit(1);
