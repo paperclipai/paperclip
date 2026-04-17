@@ -1775,9 +1775,11 @@ export function issueRoutes(
           });
         }
 
-        let mentionedIds: string[] = [];
+        let mentionedIds: string[] = req.body.mentionedAgentIds || [];
         try {
-          mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
+          if (mentionedIds.length === 0) {
+            mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
+          }
         } catch (err) {
           logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
         }
@@ -2319,7 +2321,10 @@ export function issueRoutes(
 
       let mentionedIds: string[] = [];
       try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+        mentionedIds = (req.body as any).mentionedAgentIds || [];
+        if (mentionedIds.length === 0) {
+          mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+        }
       } catch (err) {
         logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
       }

@@ -150,6 +150,7 @@ export const updateIssueSchema = createIssueSchema.partial().extend({
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  mentionedAgentIds: z.array(z.string().uuid()).optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
@@ -166,6 +167,7 @@ export const addIssueCommentSchema = z.object({
   body: z.string().min(1),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  mentionedAgentIds: z.array(z.string().uuid()).optional(),
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
