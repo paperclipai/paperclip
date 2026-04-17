@@ -118,6 +118,7 @@ export const ISSUE_STATUSES = [
   "in_review",
   "done",
   "blocked",
+  "waiting_on_human_gate",
   "cancelled",
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
@@ -128,6 +129,7 @@ export const INBOX_MINE_ISSUE_STATUSES = [
   "in_progress",
   "in_review",
   "blocked",
+  "waiting_on_human_gate",
   "done",
 ] as const;
 export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(",");
