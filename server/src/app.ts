@@ -287,10 +287,6 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
-      emailEnabled: opts.emailEnabled,
-      socialProviders: opts.socialProviders,
-      cloudSandboxEnabled: opts.cloudSandboxEnabled,
-      managedInferenceEnabled: opts.managedInferenceEnabled,
     }),
   );
   api.use("/companies", companyRoutes(db, opts.storageService));
