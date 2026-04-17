@@ -5,6 +5,7 @@ import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
+import { formatDateTime } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
@@ -17,7 +18,7 @@ import { getAdapterLabel } from "../adapters/adapter-display-registry";
 const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor"]);
 
 function dateTime(value: string) {
-  return new Date(value).toLocaleString();
+  return formatDateTime(value);
 }
 
 function readNestedString(value: unknown, path: string[]): string | null {

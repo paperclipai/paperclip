@@ -7,6 +7,7 @@ import { Link, Navigate, useParams } from "@/lib/router";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
+import { formatDateTime } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -790,7 +791,7 @@ function formatRelativeTime(isoString: string): string {
  * Format a unix timestamp (ms since epoch) to a locale string.
  */
 function formatTimestamp(epochMs: number): string {
-  return new Date(epochMs).toLocaleString();
+  return formatDateTime(new Date(epochMs));
 }
 
 /**
