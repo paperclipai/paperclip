@@ -2335,30 +2335,36 @@ export function heartbeatService(db: Db) {
     if (!agentHasPaperclipSkill) {
       let taskContext = issueContext;
       if (!taskContext) {
-        // Agent woken without a specific task — find their first todo assignment
-        const firstTodo = await db
+        // Agent woken without a specific task — find a task to resume.
+        // Prefer in_progress (mid-flight from a prior run that died or was cancelled)
+        // over todo (fresh work). in_review is reserved for reviewers/verifiers and
+        // is fetched via assignment wake, so it doesn't need to appear here.
+        const firstTask = await db
           .select()
           .from(issues)
           .where(
             and(
               eq(issues.companyId, agent.companyId),
               eq(issues.assigneeAgentId, agent.id),
-              eq(issues.status, "todo"),
+              inArray(issues.status, ["in_progress", "todo"]),
             ),
           )
-          .orderBy(asc(issues.createdAt))
+          .orderBy(
+            sql`CASE WHEN ${issues.status} = 'in_progress' THEN 0 ELSE 1 END`,
+            asc(issues.createdAt),
+          )
           .limit(1)
           .then((rows) => rows[0] ?? null);
         logger.info(
-          { agentId: agent.id, foundTask: !!firstTodo, taskId: firstTodo?.id, taskIdentifier: firstTodo?.identifier },
+          { agentId: agent.id, foundTask: !!firstTask, taskId: firstTask?.id, taskIdentifier: firstTask?.identifier, taskStatus: firstTask?.status },
           "task-injection: auto-select result",
         );
-        if (firstTodo) {
-          taskContext = firstTodo;
+        if (firstTask) {
+          taskContext = firstTask;
           // Set issueId in context AND local variable so auto-done works after run completes
-          context.issueId = firstTodo.id;
-          context.taskId = firstTodo.id;
-          issueId = firstTodo.id;
+          context.issueId = firstTask.id;
+          context.taskId = firstTask.id;
+          issueId = firstTask.id;
         }
       } else {
         logger.info(
@@ -2370,6 +2376,36 @@ export function heartbeatService(db: Db) {
         context.issueTitle = taskContext.title;
         context.issueDescription = taskContext.description ?? "";
         context.issueIdentifier = taskContext.identifier;
+      } else {
+        // No task found and no explicit issueId in context. Agents without the
+        // paperclip skill have nothing to do — their prompt template renders
+        // empty task fields, so invoking the adapter would waste a paid API call
+        // on a prompt that reduces to "your task:  — \n\n". Short-circuit to
+        // cancelled with a clear reason instead.
+        logger.info(
+          { agentId: agent.id, agentName: agent.name, runId: run.id },
+          "skipping run: no task available for agent without paperclip skill",
+        );
+        const skipped = await setRunStatus(run.id, "cancelled", {
+          finishedAt: new Date(),
+          error: "No task available for agent",
+          errorCode: "no_task",
+        });
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+          finishedAt: new Date(),
+          error: "No task available for agent",
+        });
+        if (skipped) {
+          await appendRunEvent(skipped, 1, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "info",
+            message: "run skipped: no task available",
+          });
+          await releaseIssueExecutionAndPromote(skipped);
+        }
+        await finalizeAgentStatus(run.agentId, "cancelled");
+        return;
       }
     }
 
