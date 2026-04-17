@@ -3,6 +3,8 @@ import type { Db } from "@paperclipai/db";
 import {
   createCostEventSchema,
   createFinanceEventSchema,
+  exportCostEventsSchema,
+  exportFinanceEventsSchema,
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
@@ -20,6 +22,7 @@ import {
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
+import { arrayToCSV } from "../csv-export.js";
 
 export function costRoutes(db: Db) {
   const router = Router();
@@ -328,6 +331,50 @@ export function costRoutes(db: Db) {
     );
 
     res.json(updated);
+  });
+
+  router.get("/companies/:companyId/costs/export", validate(exportCostEventsSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const format = (req.query.format as string) || "json";
+    const range = parseDateRange(req.query);
+    const limit = parseLimit(req.query);
+
+    const data = await costs.exportRaw(companyId, range, limit);
+
+    if (format === "csv") {
+      const csv = arrayToCSV(data);
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename="cost-events-${Date.now()}.csv"`);
+      res.send(csv);
+    } else {
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Content-Disposition", `attachment; filename="cost-events-${Date.now()}.json"`);
+      res.json(data);
+    }
+  });
+
+  router.get("/companies/:companyId/costs/finance-export", validate(exportFinanceEventsSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const format = (req.query.format as string) || "json";
+    const range = parseDateRange(req.query);
+    const limit = parseLimit(req.query);
+
+    const data = await finance.exportRaw(companyId, range, limit);
+
+    if (format === "csv") {
+      const csv = arrayToCSV(data);
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename="finance-events-${Date.now()}.csv"`);
+      res.send(csv);
+    } else {
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Content-Disposition", `attachment; filename="finance-events-${Date.now()}.json"`);
+      res.json(data);
+    }
   });
 
   return router;

@@ -360,5 +360,38 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .groupBy(effectiveProjectId, projects.name)
         .orderBy(desc(costCentsExpr));
     },
+
+    exportRaw: async (companyId: string, range?: CostDateRange, limit: number = 10000) => {
+      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      return db
+        .select({
+          id: costEvents.id,
+          agentId: costEvents.agentId,
+          agentName: agents.name,
+          issueId: costEvents.issueId,
+          projectId: costEvents.projectId,
+          goalId: costEvents.goalId,
+          heartbeatRunId: costEvents.heartbeatRunId,
+          billingCode: costEvents.billingCode,
+          provider: costEvents.provider,
+          biller: costEvents.biller,
+          billingType: costEvents.billingType,
+          model: costEvents.model,
+          inputTokens: costEvents.inputTokens,
+          cachedInputTokens: costEvents.cachedInputTokens,
+          outputTokens: costEvents.outputTokens,
+          costCents: costEvents.costCents,
+          occurredAt: costEvents.occurredAt,
+          createdAt: costEvents.createdAt,
+        })
+        .from(costEvents)
+        .leftJoin(agents, eq(costEvents.agentId, agents.id))
+        .where(and(...conditions))
+        .orderBy(desc(costEvents.occurredAt))
+        .limit(limit);
+    },
   };
 }

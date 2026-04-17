@@ -221,13 +221,17 @@ export {
 export {
   createCostEventSchema,
   updateBudgetSchema,
+  exportCostEventsSchema,
   type CreateCostEvent,
   type UpdateBudget,
+  type ExportCostEvents,
 } from "./cost.js";
 
 export {
   createFinanceEventSchema,
+  exportFinanceEventsSchema,
   type CreateFinanceEvent,
+  type ExportFinanceEvents,
 } from "./finance.js";
 
 export {

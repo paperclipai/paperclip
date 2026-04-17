@@ -130,5 +130,41 @@ export function financeService(db: Db) {
         .orderBy(desc(financeEvents.occurredAt), desc(financeEvents.createdAt))
         .limit(limit);
     },
+
+    exportRaw: async (companyId: string, range?: FinanceDateRange, limit: number = 10000) => {
+      const conditions = rangeConditions(companyId, range);
+      return db
+        .select({
+          id: financeEvents.id,
+          agentId: financeEvents.agentId,
+          issueId: financeEvents.issueId,
+          projectId: financeEvents.projectId,
+          goalId: financeEvents.goalId,
+          heartbeatRunId: financeEvents.heartbeatRunId,
+          costEventId: financeEvents.costEventId,
+          billingCode: financeEvents.billingCode,
+          description: financeEvents.description,
+          eventKind: financeEvents.eventKind,
+          direction: financeEvents.direction,
+          biller: financeEvents.biller,
+          provider: financeEvents.provider,
+          executionAdapterType: financeEvents.executionAdapterType,
+          pricingTier: financeEvents.pricingTier,
+          region: financeEvents.region,
+          model: financeEvents.model,
+          quantity: financeEvents.quantity,
+          unit: financeEvents.unit,
+          amountCents: financeEvents.amountCents,
+          currency: financeEvents.currency,
+          estimated: financeEvents.estimated,
+          externalInvoiceId: financeEvents.externalInvoiceId,
+          occurredAt: financeEvents.occurredAt,
+          createdAt: financeEvents.createdAt,
+        })
+        .from(financeEvents)
+        .where(and(...conditions))
+        .orderBy(desc(financeEvents.occurredAt), desc(financeEvents.createdAt))
+        .limit(limit);
+    },
   };
 }

@@ -29,3 +29,12 @@ export const updateBudgetSchema = z.object({
 });
 
 export type UpdateBudget = z.infer<typeof updateBudgetSchema>;
+
+export const exportCostEventsSchema = z.object({
+  format: z.enum(["json", "csv"]).default("json"),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  limit: z.number().int().positive().max(50000).optional().default(10000),
+});
+
+export type ExportCostEvents = z.infer<typeof exportCostEventsSchema>;
