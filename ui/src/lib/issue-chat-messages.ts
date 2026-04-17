@@ -694,16 +694,21 @@ function normalizeLiveRuns(
 function createLiveRunMessage(args: {
   run: LiveRunForIssue;
   transcript: readonly IssueChatTranscriptEntry[];
+  issueStatus?: string;
 }) {
-  const { run, transcript } = args;
+  const { run, transcript, issueStatus } = args;
   const compactedTranscript = compactIssueChatTranscript(transcript);
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText =
     run.status === "queued"
-      ? "Queued..."
+      ? issueStatus === "blocked"
+        ? "Blocked. An agent response is queued, but the issue is still waiting on an unblock."
+        : "Queued..."
       : parts.length > 0
         ? ""
-        : "Working...";
+        : issueStatus === "blocked"
+          ? "Blocked. An agent response is in progress, but the issue is still waiting on an unblock."
+          : "Working...";
 
   const content = parts;
 
@@ -734,6 +739,7 @@ export function buildIssueChatMessages(args: {
   timelineEvents: readonly IssueTimelineEvent[];
   linkedRuns: readonly IssueChatLinkedRun[];
   liveRuns: readonly LiveRunForIssue[];
+  issueStatus?: string;
   activeRun?: ActiveRunForIssue | null;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
   hasOutputForRun?: (runId: string) => boolean;
@@ -749,6 +755,7 @@ export function buildIssueChatMessages(args: {
     timelineEvents,
     linkedRuns,
     liveRuns,
+    issueStatus,
     activeRun,
     transcriptsByRunId,
     hasOutputForRun,
@@ -812,6 +819,7 @@ export function buildIssueChatMessages(args: {
       message: createLiveRunMessage({
         run,
         transcript: transcriptsByRunId?.get(run.id) ?? [],
+        issueStatus,
       }),
     });
   }
