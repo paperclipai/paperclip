@@ -11,9 +11,12 @@ import {
   agentTaskSessions,
   agentWakeupRequests,
   companySkills as companySkillsTable,
+  documents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueDocuments,
+  issueRelations,
   issues,
   projects,
   projectWorkspaces,
@@ -104,6 +107,31 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "pi_local",
 ]);
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
+const STRANDED_ISSUE_CLOSEOUT_READY_PATTERNS = [
+  /\bcloseout[- ]ready\b/iu,
+  /\breview\/closeout[- ]ready\b/iu,
+  /\bcloseout recommendation\b/iu,
+  /\bcloseout basis\b/iu,
+  /\bready for closeout\b/iu,
+];
+const STRANDED_ISSUE_COMPLETION_EVIDENCE_PATTERNS = [
+  /\bcompletion signal\b/iu,
+  /\bcompletion evidence\b/iu,
+  /\bexecution evidence already posted\b/iu,
+  /\bmanifest-backed artifact\b/iu,
+  /\b산출물과 검증은 이미 수용 기준을 충족\b/u,
+  /\b수용 기준을 충족\b/u,
+];
+const STRANDED_ISSUE_EXACT_DEFECT_PATTERNS = [
+  /\bexact defect\b/iu,
+  /\bruntime continuity defect identified\b/iu,
+  /\bworktree\/runtime defect\b/iu,
+];
+const STRANDED_ISSUE_NEGATED_EXACT_DEFECT_PATTERNS = [
+  /\bno exact [^\n.]*defect\b/iu,
+  /\bwithout an exact defect\b/iu,
+  /\bno exact runtime\/workspace defect\b/iu,
+];
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
@@ -146,6 +174,86 @@ export function extractMentionedSkillIdsFromSources(
     }
   }
   return [...mentionedIds];
+}
+
+function normalizeStrandedIssueSignalTexts(
+  sources: Array<string | null | undefined>,
+): string[] {
+  return sources
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter((value) => value.length > 0);
+}
+
+function matchesStrandedIssueSignal(
+  sources: string[],
+  patterns: RegExp[],
+): boolean {
+  return sources.some((source) => patterns.some((pattern) => pattern.test(source)));
+}
+
+function hasVerificationPacketEvidenceSignal(sources: string[]): boolean {
+  const combined = sources.join("\n");
+  return (
+    /\b(verification|revalidation|re-verification)\b/iu.test(combined) ||
+    /검증/u.test(combined)
+  ) && (/\b\d+\s+passed\b/iu.test(combined) || /\bpass\b/iu.test(combined));
+}
+
+async function getStrandedIssueRecoverySignals(
+  db: Db,
+  issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "title" | "description">,
+) {
+  const [commentRows, documentRows, blockerRows] = await Promise.all([
+    db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, issue.companyId),
+          eq(issueComments.issueId, issue.id),
+        ),
+      ),
+    db
+      .select({ body: documents.latestBody })
+      .from(issueDocuments)
+      .innerJoin(documents, eq(documents.id, issueDocuments.documentId))
+      .where(
+        and(
+          eq(issueDocuments.companyId, issue.companyId),
+          eq(issueDocuments.issueId, issue.id),
+        ),
+      ),
+    db
+      .select({ relatedIssueId: issueRelations.relatedIssueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, issue.companyId),
+          eq(issueRelations.issueId, issue.id),
+          eq(issueRelations.type, "blocks"),
+        ),
+      )
+      .limit(1),
+  ]);
+
+  const texts = normalizeStrandedIssueSignalTexts([
+    issue.title,
+    issue.description ?? "",
+    ...commentRows.map((row) => row.body),
+    ...documentRows.map((row) => row.body),
+  ]);
+  const hasExactDefectSignal =
+    matchesStrandedIssueSignal(texts, STRANDED_ISSUE_EXACT_DEFECT_PATTERNS) &&
+    !matchesStrandedIssueSignal(texts, STRANDED_ISSUE_NEGATED_EXACT_DEFECT_PATTERNS);
+
+  return {
+    hasCloseoutReadySignal: matchesStrandedIssueSignal(texts, STRANDED_ISSUE_CLOSEOUT_READY_PATTERNS),
+    hasCompletionEvidenceSignal:
+      matchesStrandedIssueSignal(texts, STRANDED_ISSUE_COMPLETION_EVIDENCE_PATTERNS) ||
+      hasVerificationPacketEvidenceSignal(texts),
+    hasExactDefectSignal,
+    hasConcreteRepairHandle: blockerRows.length > 0,
+  };
 }
 
 export function applyRunScopedMentionedSkillKeys(
@@ -3039,6 +3147,10 @@ export function heartbeatService(db: Db) {
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       const latestContext = parseObject(latestRun?.contextSnapshot);
       const latestRetryReason = readNonEmptyString(latestContext.retryReason);
+      const recoverySignals =
+        latestRetryReason === "assignment_recovery" || latestRetryReason === "issue_continuation_needed"
+          ? await getStrandedIssueRecoverySignals(db, issue)
+          : null;
 
       if (issue.status === "todo") {
         if (!latestRun || latestRun.status === "succeeded") {
@@ -3047,6 +3159,15 @@ export function heartbeatService(db: Db) {
         }
 
         if (latestRetryReason === "assignment_recovery") {
+          if (
+            recoverySignals &&
+            !recoverySignals.hasExactDefectSignal &&
+            !recoverySignals.hasConcreteRepairHandle
+          ) {
+            result.skipped += 1;
+            continue;
+          }
+
           const failureSummary = summarizeRunFailureForIssueComment(latestRun);
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -3084,6 +3205,22 @@ export function heartbeatService(db: Db) {
       }
 
       if (latestRetryReason === "issue_continuation_needed") {
+        if (
+          recoverySignals?.hasCloseoutReadySignal ||
+          recoverySignals?.hasCompletionEvidenceSignal
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+        if (
+          recoverySignals &&
+          !recoverySignals.hasExactDefectSignal &&
+          !recoverySignals.hasConcreteRepairHandle
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);
         const updated = await escalateStrandedAssignedIssue({
           issue,

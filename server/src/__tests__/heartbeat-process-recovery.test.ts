@@ -10,9 +10,12 @@ import {
   companySkills,
   companies,
   createDb,
+  documents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueDocuments,
+  issueRelations,
   issues,
 } from "@paperclipai/db";
 import {
@@ -181,7 +184,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(activityLog);
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);
+    await db.delete(issueRelations);
     await db.delete(issueComments);
+    await db.delete(issueDocuments);
+    await db.delete(documents);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -308,6 +314,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runStatus: "failed" | "timed_out" | "cancelled" | "succeeded";
     retryReason?: "assignment_recovery" | "issue_continuation_needed" | null;
     assignToUser?: boolean;
+    issueDescription?: string | null;
+    commentBodies?: string[];
+    documentBodies?: Array<{ key: string; title?: string | null; body: string }>;
+    blockerCount?: number;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -378,6 +388,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       id: issueId,
       companyId,
       title: "Recover stranded assigned work",
+      description: input.issueDescription ?? null,
       status: input.status,
       priority: "medium",
       assigneeAgentId: input.assignToUser ? null : agentId,
@@ -388,6 +399,51 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       identifier: `${issuePrefix}-1`,
       startedAt: input.status === "in_progress" ? now : null,
     });
+
+    for (const body of input.commentBodies ?? []) {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        body,
+      });
+    }
+
+    for (const [index, document] of (input.documentBodies ?? []).entries()) {
+      const documentId = randomUUID();
+      await db.insert(documents).values({
+        id: documentId,
+        companyId,
+        title: document.title ?? `Document ${index + 1}`,
+        latestBody: document.body,
+      });
+      await db.insert(issueDocuments).values({
+        companyId,
+        issueId,
+        documentId,
+        key: document.key,
+      });
+    }
+
+    for (let index = 0; index < (input.blockerCount ?? 0); index += 1) {
+      const blockerId = randomUUID();
+      await db.insert(issues).values({
+        id: blockerId,
+        companyId,
+        title: `Repair handle ${index + 1}`,
+        status: "todo",
+        priority: "medium",
+        issueNumber: index + 2,
+        identifier: `${issuePrefix}-${index + 2}`,
+      });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId,
+        relatedIssueId: blockerId,
+        type: "blocks",
+        createdByAgentId: agentId,
+      });
+    }
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
@@ -579,11 +635,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
-  it("blocks assigned todo work after the one automatic dispatch recovery was already used", async () => {
+  it("preserves assigned todo work after the automatic dispatch recovery when no defect or repair handle exists", async () => {
     const { issueId } = await seedStrandedIssueFixture({
       status: "todo",
       runStatus: "failed",
       retryReason: "assignment_recovery",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("blocks assigned todo work after the automatic dispatch recovery when a concrete repair handle already exists", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+      blockerCount: 1,
     });
     const heartbeat = heartbeatService(db);
 
@@ -628,11 +705,72 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
-  it("blocks stranded in-progress work after the continuation retry was already used", async () => {
+  it("preserves stranded in-progress work after the continuation retry when no defect or repair handle exists", async () => {
     const { issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
       retryReason: "issue_continuation_needed",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("preserves stranded in-progress work when a closeout-ready signal already exists", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      commentBodies: [
+        "## Option A Closeout Readiness\n\nTreat this issue as closeout-ready under the reduced contract.",
+      ],
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("preserves stranded in-progress work when completion evidence is already attached", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      commentBodies: [
+        "## Update\n\n검증도 보강했습니다.\n- `python -m pytest -q tests/example.py` -> `7 passed`\n- `bash -n scripts/example.sh` -> PASS",
+      ],
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("blocks stranded in-progress work after the continuation retry when a concrete repair handle already exists", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      blockerCount: 1,
     });
     const heartbeat = heartbeatService(db);
 
@@ -648,6 +786,26 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain("Latest retry failure: `process_lost` - run failed before issue advanced.");
+  });
+
+  it("blocks stranded in-progress work after the continuation retry when an exact defect is already named", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      commentBodies: [
+        "## Runtime continuity defect identified\n\n### Exact defect\n- checkoutRunId is null while the issue still looks runnable.",
+      ],
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
   });
 
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {
