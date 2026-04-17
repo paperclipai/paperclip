@@ -10,6 +10,7 @@ import {
   canStopIssueChatRun,
   getMessageCustomMetadata,
   resolveAssistantMessageFoldedState,
+  resolveIssueChatHumanAuthor,
 } from "./IssueChatThread";
 
 const { markdownEditorFocusMock } = vi.hoisted(() => ({
@@ -684,6 +685,35 @@ describe("IssueChatThread", () => {
     })).toEqual({
       anchorId: "comment-1",
       runId: "run-1",
+    });
+  });
+
+  it("uses company profile data to distinguish the current user from other humans", () => {
+    const userProfileMap = new Map([
+      ["user-1", { label: "Dotta", image: "/avatars/dotta.png" }],
+      ["user-2", { label: "Alice", image: "/avatars/alice.png" }],
+    ]);
+
+    expect(resolveIssueChatHumanAuthor({
+      authorName: "You",
+      authorUserId: "user-1",
+      currentUserId: "user-1",
+      userProfileMap,
+    })).toEqual({
+      isCurrentUser: true,
+      authorName: "Dotta",
+      avatarUrl: "/avatars/dotta.png",
+    });
+
+    expect(resolveIssueChatHumanAuthor({
+      authorName: "Alice",
+      authorUserId: "user-2",
+      currentUserId: "user-1",
+      userProfileMap,
+    })).toEqual({
+      isCurrentUser: false,
+      authorName: "Alice",
+      avatarUrl: "/avatars/alice.png",
     });
   });
 });
