@@ -404,7 +404,40 @@ function resolveConfiguredPath(value: string, baseDir: string): string {
   if (isAbsolutePath(value)) {
     return resolveHomeAwarePath(value);
   }
-  return path.resolve(baseDir, value);
+  // Relative paths must not escape the base directory via `..` traversal.
+  const resolved = path.resolve(baseDir, value);
+  const normalizedBase = path.resolve(baseDir);
+  if (!resolved.startsWith(normalizedBase + path.sep) && resolved !== normalizedBase) {
+    throw new Error(`Relative path "${value}" resolves outside base directory`);
+  }
+  return resolved;
+}
+
+const ALLOWED_WORKSPACE_COMMANDS = new Set([
+  "pnpm", "npm", "yarn", "bun", "npx",
+  "git", "make", "docker", "docker-compose", "podman",
+  "sh", "bash", "node", "tsx", "ts-node",
+  "pip", "python", "python3", "cargo", "go", "ruby", "bundle",
+  "curl", "wget",
+]);
+
+/**
+ * Validates that a user-supplied workspace command (provisionCommand,
+ * teardownCommand, runtime service command, etc.) targets a known-safe
+ * binary. Prevents RCE via arbitrary command injection — see upstream
+ * issue #883 and PR #657.
+ */
+export function validateWorkspaceCommand(command: string): void {
+  const trimmed = command.trim();
+  if (!trimmed) throw new Error("Empty command is not allowed");
+  const firstToken = trimmed.split(/\s+/)[0];
+  const binaryName = firstToken.split("/").pop() ?? firstToken;
+  if (!ALLOWED_WORKSPACE_COMMANDS.has(binaryName)) {
+    throw new Error(
+      `Command "${binaryName}" is not in the allowed commands list. ` +
+      `Allowed: ${[...ALLOWED_WORKSPACE_COMMANDS].join(", ")}`,
+    );
+  }
 }
 
 function formatCommandForDisplay(command: string, args: string[]) {
@@ -742,6 +775,7 @@ async function runWorkspaceCommand(input: {
   env: NodeJS.ProcessEnv;
   label: string;
 }) {
+  validateWorkspaceCommand(input.command);
   const shell = resolveShell();
   const proc = await executeProcess({
     command: shell,
@@ -1920,6 +1954,7 @@ async function startLocalRuntimeService(input: {
   const lifecycle = identity.lifecycle;
   const command = identity.command;
   if (!command) throw new Error(`Runtime service "${serviceName}" is missing command`);
+  validateWorkspaceCommand(command);
   const portConfig = parseObject(input.service.port);
   const envConfig = identity.envConfig;
   const envFingerprint = identity.envFingerprint;
