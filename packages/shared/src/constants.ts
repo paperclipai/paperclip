@@ -732,6 +732,9 @@ export const PLUGIN_EVENT_TYPES = [
   "approval.decided",
   "cost_event.created",
   "activity.logged",
+  "execution_workspace.pull_request_requested",
+  "execution_workspace.pull_request_timed_out",
+  "execution_workspace.pull_request_resolved",
 ] as const;
 export type PluginEventType = (typeof PLUGIN_EVENT_TYPES)[number];
 
