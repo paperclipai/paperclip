@@ -649,21 +649,14 @@ export function executionWorkspaceRoutes(db: Db) {
       cancelArchiveTimeout(initial.id);
 
       const transitionedWorkspace = locked.workspace;
-      await emitPullRequestEvent(req, transitionedWorkspace, "pull_request_resolved", {
-        workspaceId: transitionedWorkspace.id,
-        projectId: transitionedWorkspace.projectId,
-        mode: outcome.record.mode,
-        source: "consumer_result",
-        previousStatus: outcome.previousStatus,
-        nextStatus: outcome.record.status,
-        workspaceStatus: outcome.workspaceStatus,
-        record: outcome.record,
-        resolvedAt: outcome.record.resolvedAt,
-      });
 
       // Blocking mode terminal-to-archived transition: run the same
       // cleanup side effects that PATCH archive would have run if the
       // workspace had closed synchronously in fire-and-forget mode.
+      // Run BEFORE emitting the resolved event so the event's
+      // `workspaceStatus` reflects the final state — if cleanup
+      // downgrades the workspace to `cleanup_failed`, subscribers
+      // must see that, not the intermediate `archived`.
       let finalWorkspace = transitionedWorkspace;
       if (outcome.workspaceStatus === "archived" && initial.status !== "archived") {
         const sideEffects = await runArchiveSideEffects({
@@ -679,6 +672,18 @@ export function executionWorkspaceRoutes(db: Db) {
             })) ?? finalWorkspace;
         }
       }
+
+      await emitPullRequestEvent(req, finalWorkspace, "pull_request_resolved", {
+        workspaceId: finalWorkspace.id,
+        projectId: finalWorkspace.projectId,
+        mode: outcome.record.mode,
+        source: "consumer_result",
+        previousStatus: outcome.previousStatus,
+        nextStatus: outcome.record.status,
+        workspaceStatus: finalWorkspace.status,
+        record: outcome.record,
+        resolvedAt: outcome.record.resolvedAt,
+      });
 
       res.status(200).json({
         workspaceId: finalWorkspace.id,
@@ -854,9 +859,13 @@ export function executionWorkspaceRoutes(db: Db) {
       }
       workspace = archivedWorkspace;
 
+      // Pass the post-patch workspace so the cleanup helper reads
+      // teardown/cleanup commands and runtime config from the
+      // metadata actually persisted by this PATCH, not from the
+      // stale snapshot captured before we wrote the row.
       const sideEffects = await runArchiveSideEffects({
         db,
-        workspace: existing,
+        workspace: archivedWorkspace,
         closedAt,
       });
       cleanupWarnings = sideEffects.cleanupWarnings;

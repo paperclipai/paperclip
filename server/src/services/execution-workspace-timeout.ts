@@ -54,7 +54,15 @@ async function finalizeTimeout(
   workspaceId: string,
   archiveTimeoutMs: number,
 ): Promise<{ transitioned: boolean; archived: boolean }> {
-  const transitioned = await db.transaction(async (tx) => {
+  // Phase 1 (inside tx): acquire the workspace row lock so a
+  // concurrent consumer /result call cannot overwrite us. Re-read
+  // the record; if it is already terminal, exit without touching
+  // state. Otherwise, stamp the synthetic `skipped` record and move
+  // the workspace to `archived` + `closedAt`. We deliberately do NOT
+  // emit any events yet — events carry `workspaceStatus` and the
+  // final status is only known after phase 2 (cleanup) has had a
+  // chance to downgrade to `cleanup_failed`.
+  const phase1 = await db.transaction(async (tx) => {
     await tx.execute(
       sql`SELECT ${executionWorkspaces.id} FROM ${executionWorkspaces}
           WHERE ${and(eq(executionWorkspaces.companyId, companyId), eq(executionWorkspaces.id, workspaceId))}
@@ -98,54 +106,25 @@ async function finalizeTimeout(
         ),
       );
 
-    const deadlineIso = existingRecord.requestedAt
-      ? new Date(new Date(existingRecord.requestedAt).getTime() + archiveTimeoutMs).toISOString()
-      : null;
-
-    // Ordering: timed_out first, then resolved. The design doc locks
-    // this ordering so auditors can distinguish a consumer-driven
-    // close from a server-driven close even if they only see one of
-    // the two events.
-    await logActivity(db, {
-      companyId,
-      actorType: "system",
-      actorId: "server",
-      action: "execution_workspace.pull_request_timed_out",
-      entityType: "execution_workspace",
-      entityId: workspaceId,
-      details: {
-        workspaceId,
-        projectId: row.projectId,
-        record: result.record,
-        archiveTimeoutMs,
-        deadline: deadlineIso,
-        timedOutAt: timedOutAt.toISOString(),
-      },
-    });
-    await logActivity(db, {
-      companyId,
-      actorType: "system",
-      actorId: "server",
-      action: "execution_workspace.pull_request_resolved",
-      entityType: "execution_workspace",
-      entityId: workspaceId,
-      details: {
-        workspaceId,
-        projectId: row.projectId,
-        record: result.record,
-        workspaceStatus: result.workspaceStatus,
-        source: "archive_timeout",
-        previousStatus: result.previousStatus,
-        nextStatus: result.record.status,
-        resolvedAt: result.record.resolvedAt,
-      },
-    });
-    return { archived: result.workspaceStatus === "archived" };
+    return {
+      projectId: row.projectId,
+      record: result.record,
+      workspaceStatusAfterTransition: result.workspaceStatus,
+      previousStatus: result.previousStatus,
+      timedOutAt,
+      existingRequestedAt: existingRecord.requestedAt ?? null,
+    };
   });
 
-  if (!transitioned) return { transitioned: false, archived: false };
+  if (!phase1) return { transitioned: false, archived: false };
 
-  if (transitioned.archived) {
+  // Phase 2 (outside tx): run the same archive side effects PATCH
+  // archive would run (stop runtime services, detach shared-workspace
+  // issue links, run cleanup + teardown commands). If cleanup fails,
+  // downgrade the workspace to `cleanup_failed` so the events we emit
+  // in phase 3 can tell the truth.
+  let finalWorkspaceStatus = phase1.workspaceStatusAfterTransition;
+  if (phase1.workspaceStatusAfterTransition === "archived") {
     const workspaceRow = await db
       .select()
       .from(executionWorkspaces)
@@ -164,10 +143,56 @@ async function finalizeTimeout(
             updatedAt: new Date(),
           })
           .where(eq(executionWorkspaces.id, workspaceId));
+        finalWorkspaceStatus = sideEffects.status;
       }
     }
   }
-  return { transitioned: true, archived: transitioned.archived };
+
+  // Phase 3: emit events with the true final state. Ordering is
+  // preserved — `timed_out` first, `resolved` second — so auditors
+  // can tell a consumer-driven close apart from a server-driven one
+  // even if they only see one of the two events.
+  const deadlineIso = phase1.existingRequestedAt
+    ? new Date(new Date(phase1.existingRequestedAt).getTime() + archiveTimeoutMs).toISOString()
+    : null;
+  await logActivity(db, {
+    companyId,
+    actorType: "system",
+    actorId: "server",
+    action: "execution_workspace.pull_request_timed_out",
+    entityType: "execution_workspace",
+    entityId: workspaceId,
+    details: {
+      workspaceId,
+      projectId: phase1.projectId,
+      record: phase1.record,
+      archiveTimeoutMs,
+      deadline: deadlineIso,
+      timedOutAt: phase1.timedOutAt.toISOString(),
+    },
+  });
+  await logActivity(db, {
+    companyId,
+    actorType: "system",
+    actorId: "server",
+    action: "execution_workspace.pull_request_resolved",
+    entityType: "execution_workspace",
+    entityId: workspaceId,
+    details: {
+      workspaceId,
+      projectId: phase1.projectId,
+      record: phase1.record,
+      workspaceStatus: finalWorkspaceStatus,
+      source: "archive_timeout",
+      previousStatus: phase1.previousStatus,
+      nextStatus: phase1.record.status,
+      resolvedAt: phase1.record.resolvedAt,
+    },
+  });
+  return {
+    transitioned: true,
+    archived: phase1.workspaceStatusAfterTransition === "archived",
+  };
 }
 
 function scheduleAt(

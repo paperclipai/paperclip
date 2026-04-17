@@ -32,6 +32,15 @@ const mockWorkspaceOperationService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockRunArchiveSideEffects = vi.hoisted(() =>
+  vi.fn(async () => ({
+    cleanupWarnings: [] as string[],
+    cleaned: true,
+    status: "archived" as const,
+    cleanupReason: null as string | null,
+    closedAt: new Date(),
+  })),
+);
 
 function registerServiceMocks() {
   vi.doMock("../services/index.js", () => ({
@@ -50,13 +59,7 @@ function registerServiceMocks() {
   // no-failure success so route tests can exercise the terminal
   // blocking path without a real workspace.
   vi.doMock("../services/execution-workspace-archive.js", () => ({
-    runArchiveSideEffects: vi.fn(async () => ({
-      cleanupWarnings: [],
-      cleaned: true,
-      status: "archived",
-      cleanupReason: null,
-      closedAt: new Date(),
-    })),
+    runArchiveSideEffects: mockRunArchiveSideEffects,
   }));
 }
 
@@ -111,6 +114,13 @@ describe("pull-request routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerServiceMocks();
     vi.resetAllMocks();
+    mockRunArchiveSideEffects.mockImplementation(async () => ({
+      cleanupWarnings: [],
+      cleaned: true,
+      status: "archived",
+      cleanupReason: null,
+      closedAt: new Date(),
+    }));
   });
 
   it("POST /pull-request/request returns the existing record idempotently", async () => {
@@ -232,6 +242,51 @@ describe("pull-request routes", () => {
     expect((input.details as any).projectId).toBe("project-1");
     expect((input.details as any).record).toBeDefined();
     expect((input.details as any).record.status).toBe("merged");
+  });
+
+  it("POST /pull-request/result emits resolved event with final workspaceStatus (after cleanup)", async () => {
+    // Reviewer finding: the resolved event should reflect the FINAL
+    // post-cleanup state. Here the side-effects mock downgrades to
+    // cleanup_failed; the emitted event must match.
+    stubRowLockWithRecord(
+      {
+        status: "requested",
+        mode: "blocking",
+        requestedAt: "2026-01-01T00:00:00.000Z",
+      },
+      "in_review",
+    );
+    mockExecutionWorkspaceService.update.mockImplementation(async (_id, patch) => {
+      return makeWorkspace({
+        status: patch?.status ?? "in_review",
+        metadata: (patch as any).metadata,
+      });
+    });
+    // Override the default no-failure helper: simulate cleanup failure.
+    mockRunArchiveSideEffects.mockResolvedValueOnce({
+      cleanupWarnings: ["teardown command crashed"],
+      cleaned: false,
+      status: "cleanup_failed",
+      cleanupReason: "teardown command crashed",
+      closedAt: new Date(),
+    });
+
+    const res = await request(await createApp())
+      .post("/api/execution-workspaces/workspace-1/pull-request/result")
+      .send({ status: "merged", sha: "abc", url: "https://git.example.com/pr/1" });
+    expect(res.status).toBe(200);
+    // Response uses the final status, not the intermediate "archived".
+    expect(res.body.workspaceStatus).toBe("cleanup_failed");
+
+    const resolved = mockLogActivity.mock.calls.find(
+      ([, input]: [unknown, { action?: string }]) =>
+        input.action === "execution_workspace.pull_request_resolved",
+    );
+    expect(resolved).toBeDefined();
+    const [, input] = resolved as [unknown, Record<string, unknown>];
+    // Critical: the event's workspaceStatus must match the post-
+    // cleanup final state, not the intermediate archived.
+    expect((input.details as any).workspaceStatus).toBe("cleanup_failed");
   });
 
   it("POST /pull-request/result races with timeout: 409 when record is already terminal", async () => {

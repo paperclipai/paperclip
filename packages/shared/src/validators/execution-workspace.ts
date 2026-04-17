@@ -54,7 +54,20 @@ export const pullRequestRecordStatusSchema = z.enum([
 
 export const pullRequestRequestModeSchema = z.enum(["fire_and_forget", "blocking"]);
 
-export const pullRequestPolicySchema = z.object({
+const KNOWN_PULL_REQUEST_POLICY_KEYS = new Set([
+  "autoOpen",
+  "autoMerge",
+  "mergeStrategy",
+  "targetBranch",
+  "titleTemplate",
+  "bodyTemplate",
+  "draft",
+  "requireResultBeforeArchive",
+  "archiveTimeoutMs",
+  "extensions",
+]);
+
+const pullRequestPolicyStrictSchema = z.object({
   autoOpen: z.boolean().optional(),
   autoMerge: z.boolean().optional(),
   mergeStrategy: pullRequestMergeStrategySchema.optional(),
@@ -66,6 +79,47 @@ export const pullRequestPolicySchema = z.object({
   archiveTimeoutMs: z.number().int().positive().optional(),
   extensions: z.record(z.unknown()).optional(),
 }).strict();
+
+/**
+ * Strict-at-the-known-keys but forward-compatible at the top level.
+ *
+ * The design contract (docs/31-upstream-paperclip-pull-request-policy.md
+ * §1) guarantees that unknown top-level keys on `pullRequestPolicy`
+ * survive a round-trip through the parser by being moved onto
+ * `policy.extensions`. To honor that contract at the API boundary —
+ * where zod runs before the server-side parser — we preprocess the
+ * input: known keys are kept in place, everything else is merged
+ * into `extensions`. The downstream strict schema then validates
+ * that known keys have the right types without tripping on the
+ * unknowns.
+ *
+ * This keeps vendor-specific additions (e.g. a consumer carrying
+ * `gitlabApprovalRule` on its policy) working even when the server
+ * hasn't upgraded to understand them yet.
+ */
+export const pullRequestPolicySchema = z.preprocess((raw) => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const input = raw as Record<string, unknown>;
+  const known: Record<string, unknown> = {};
+  const unknowns: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (key === "extensions") continue;
+    if (KNOWN_PULL_REQUEST_POLICY_KEYS.has(key)) {
+      known[key] = value;
+    } else {
+      unknowns[key] = value;
+    }
+  }
+  const existingExt =
+    input.extensions && typeof input.extensions === "object" && !Array.isArray(input.extensions)
+      ? (input.extensions as Record<string, unknown>)
+      : {};
+  const mergedExtensions = { ...existingExt, ...unknowns };
+  if (Object.keys(mergedExtensions).length > 0) {
+    known.extensions = mergedExtensions;
+  }
+  return known;
+}, pullRequestPolicyStrictSchema);
 
 export const executionWorkspacePullRequestRecordSchema = z.object({
   status: pullRequestRecordStatusSchema,

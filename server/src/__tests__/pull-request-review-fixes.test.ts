@@ -61,18 +61,28 @@ describe("review finding #3 — skipped/failed results preserve input.error", ()
 });
 
 describe("review finding #5 — projectExecutionWorkspacePolicySchema validates pullRequestPolicy", () => {
-  it("rejects unknown top-level keys on pullRequestPolicy (strict schema)", () => {
+  it("accepts unknown top-level keys and sweeps them into extensions", () => {
     const parsed = projectExecutionWorkspacePolicySchema.safeParse({
       enabled: true,
       pullRequestPolicy: {
         autoOpen: true,
-        nonsense: "rejected",
+        gitlabApprovalRule: "main-requires-two",
+        nested: { ticket: "FOO-1" },
       },
     });
-    expect(parsed.success).toBe(false);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.pullRequestPolicy).toEqual({
+        autoOpen: true,
+        extensions: {
+          gitlabApprovalRule: "main-requires-two",
+          nested: { ticket: "FOO-1" },
+        },
+      });
+    }
   });
 
-  it("rejects an archiveTimeoutMs that is not a positive integer", () => {
+  it("still rejects an archiveTimeoutMs that is not a positive integer", () => {
     expect(
       projectExecutionWorkspacePolicySchema.safeParse({
         enabled: true,
@@ -89,6 +99,21 @@ describe("review finding #5 — projectExecutionWorkspacePolicySchema validates 
       projectExecutionWorkspacePolicySchema.safeParse({
         enabled: true,
         pullRequestPolicy: { archiveTimeoutMs: 3.5 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("still rejects wrong types on known keys", () => {
+    expect(
+      projectExecutionWorkspacePolicySchema.safeParse({
+        enabled: true,
+        pullRequestPolicy: { autoOpen: "truthy-but-not-bool" },
+      }).success,
+    ).toBe(false);
+    expect(
+      projectExecutionWorkspacePolicySchema.safeParse({
+        enabled: true,
+        pullRequestPolicy: { mergeStrategy: "nonsense" },
       }).success,
     ).toBe(false);
   });
@@ -110,17 +135,18 @@ describe("review finding #5 — projectExecutionWorkspacePolicySchema validates 
     expect(parsed.success).toBe(true);
   });
 
-  it("preserves extensions as an unknown-record bag at the API boundary", () => {
+  it("merges a pre-existing extensions bag with additional unknown top-level keys", () => {
     const parsed = projectExecutionWorkspacePolicySchema.safeParse({
       enabled: true,
       pullRequestPolicy: {
         autoOpen: true,
-        extensions: { arbitraryKey: { nested: 1 } },
+        extensions: { a: 1 },
+        otherUnknown: "x",
       },
     });
     expect(parsed.success).toBe(true);
     if (parsed.success) {
-      expect(parsed.data.pullRequestPolicy?.extensions).toEqual({ arbitraryKey: { nested: 1 } });
+      expect(parsed.data.pullRequestPolicy?.extensions).toEqual({ a: 1, otherUnknown: "x" });
     }
   });
 });
