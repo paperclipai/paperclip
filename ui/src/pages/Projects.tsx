@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
@@ -17,6 +17,7 @@ export function Projects() {
   const { selectedCompanyId } = useCompany();
   const { openNewProject } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const [showArchived, setShowArchived] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Projects" }]);
@@ -27,9 +28,10 @@ export function Projects() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const archivedCount = useMemo(() => (allProjects ?? []).filter((p) => p.archivedAt).length, [allProjects]);
   const projects = useMemo(
-    () => (allProjects ?? []).filter((p) => !p.archivedAt),
-    [allProjects],
+    () => (allProjects ?? []).filter((p) => showArchived || !p.archivedAt),
+    [allProjects, showArchived],
   );
 
   if (!selectedCompanyId) {
@@ -42,7 +44,17 @@ export function Projects() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end gap-2">
+        {archivedCount > 0 && (
+          <button
+            role="checkbox"
+            aria-checked={showArchived}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setShowArchived(!showArchived)}
+          >
+            {showArchived ? `Hide ${archivedCount} archived` : `Show ${archivedCount} archived`}
+          </button>
+        )}
         <Button size="sm" variant="outline" onClick={openNewProject}>
           <Plus className="h-4 w-4 mr-1" />
           Add Project
