@@ -475,7 +475,7 @@ export function Routines() {
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
-      (projects ?? []).map((project) => ({
+      (projects ?? []).filter((project) => !project.archivedAt).map((project) => ({
         id: project.id,
         label: project.name,
         searchText: project.description ?? "",
