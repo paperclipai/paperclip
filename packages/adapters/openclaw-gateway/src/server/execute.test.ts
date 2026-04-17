@@ -2,15 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveSessionKey } from "./execute.js";
-
-async function writeClaimedApiKeyFileForTest(claimedApiKeyPath: string, authToken: string): Promise<void> {
-  const module = await import("./execute.js");
-  return (module as unknown as { writeClaimedApiKeyFile: (p: string, t: string) => Promise<void> }).writeClaimedApiKeyFile(
-    claimedApiKeyPath,
-    authToken,
-  );
-}
+import { resolveSessionKey, writeClaimedApiKeyFile } from "./execute.js";
 
 const tempDirs: string[] = [];
 
@@ -27,9 +19,31 @@ describe("writeClaimedApiKeyFile", () => {
     tempDirs.push(tempDir);
     const targetPath = path.join(tempDir, "paperclip-claimed-api-key.json");
 
-    await writeClaimedApiKeyFileForTest(targetPath, "token-123");
+    await writeClaimedApiKeyFile(targetPath, "token-123");
 
     expect(JSON.parse(fs.readFileSync(targetPath, "utf8"))).toEqual({ token: "token-123" });
+  });
+
+  it("expands tilde-prefixed paths under the current home directory", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-openclaw-home-"));
+    tempDirs.push(tempDir);
+    const originalHome = process.env.HOME;
+    process.env.HOME = tempDir;
+
+    try {
+      const targetPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+      const expandedPath = path.join(tempDir, ".openclaw", "workspace", "paperclip-claimed-api-key.json");
+
+      await writeClaimedApiKeyFile(targetPath, "token-tilde");
+
+      expect(JSON.parse(fs.readFileSync(expandedPath, "utf8"))).toEqual({ token: "token-tilde" });
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+    }
   });
 });
 
