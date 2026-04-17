@@ -1085,6 +1085,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const headers = toStringRecord(ctx.config.headers);
   const authToken = resolveAuthToken(parseObject(ctx.config), headers);
   const password = nonEmpty(ctx.config.password);
+  const model = nonEmpty(ctx.config.model);
   const deviceToken = nonEmpty(ctx.config.deviceToken);
 
   if (authToken && !headerMapHasIgnoreCase(headers, "authorization")) {
@@ -1141,6 +1142,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   if (typeof agentParams.timeout !== "number") {
     agentParams.timeout = waitTimeoutMs;
+  }
+
+  if (model && !("model" in agentParams)) {
+    agentParams.model = model;
   }
 
   if (ctx.onMeta) {
