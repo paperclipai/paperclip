@@ -254,6 +254,7 @@ type PaperclipWakeComment = {
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
+  checkedOutByHarness: boolean;
   executionStage: PaperclipWakeExecutionStage | null;
   commentIds: string[];
   latestCommentId: string | null;
@@ -364,6 +365,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   return {
     reason: asString(payload.reason, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
+    checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     executionStage,
     commentIds,
     latestCommentId: asString(payload.latestCommentId, "").trim() || null,
@@ -433,6 +435,9 @@ export function renderPaperclipWakePrompt(
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
   }
+  if (normalized.checkedOutByHarness) {
+    lines.push("- checkout: already claimed by the harness for this run");
+  }
   if (normalized.missingCount > 0) {
     lines.push(`- omitted comments: ${normalized.missingCount}`);
   }
@@ -464,6 +469,15 @@ export function renderPaperclipWakePrompt(
         "",
       );
     }
+  }
+
+  if (normalized.checkedOutByHarness) {
+    lines.push(
+      "",
+      "The harness already checked out this issue for the current run.",
+      "Do not call `/api/issues/{id}/checkout` again unless you intentionally switch to a different task.",
+      "",
+    );
   }
 
   if (normalized.comments.length > 0) {
