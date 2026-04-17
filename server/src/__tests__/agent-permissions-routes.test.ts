@@ -617,6 +617,72 @@ describe("agent permission routes", () => {
     ]);
   });
 
+  it("includes routine execution issues in the authenticated agent inbox-lite view", async () => {
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "issue-2",
+        identifier: "PAP-911",
+        title: "Daily routine execution",
+        status: "todo",
+        priority: "medium",
+        projectId: "project-1",
+        goalId: "goal-1",
+        parentId: "parent-1",
+        updatedAt: "2026-04-09T09:03:07.119Z",
+        activeRun: {
+          id: "run-1",
+          status: "running",
+          agentId,
+          invocationSource: "assignment",
+          triggerDetail: "system",
+          startedAt: "2026-04-09T09:03:04.776Z",
+          finishedAt: null,
+          createdAt: "2026-04-09T09:02:25.540Z",
+        },
+      },
+    ]);
+
+    const app = createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await request(app).get("/api/agents/me/inbox-lite");
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
+      assigneeAgentId: agentId,
+      status: "todo,in_progress,blocked",
+      includeRoutineExecutions: true,
+    });
+    expect(res.body).toEqual([
+      {
+        id: "issue-2",
+        identifier: "PAP-911",
+        title: "Daily routine execution",
+        status: "todo",
+        priority: "medium",
+        projectId: "project-1",
+        goalId: "goal-1",
+        parentId: "parent-1",
+        updatedAt: "2026-04-09T09:03:07.119Z",
+        activeRun: {
+          id: "run-1",
+          status: "running",
+          agentId,
+          invocationSource: "assignment",
+          triggerDetail: "system",
+          startedAt: "2026-04-09T09:03:04.776Z",
+          finishedAt: null,
+          createdAt: "2026-04-09T09:02:25.540Z",
+        },
+      },
+    ]);
+  });
+
   it("rejects heartbeat cancellation outside the caller company scope", async () => {
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "run-1",
