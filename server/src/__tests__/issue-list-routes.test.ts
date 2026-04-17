@@ -102,4 +102,31 @@ describe("issue list routes", () => {
       parentId: parentIssueId,
     }));
   });
+
+  it("continues to pass through parentId on the company issues list route", async () => {
+    const parentId = "22222222-2222-4222-8222-222222222222";
+
+    const res = await request(await createApp())
+      .get("/api/companies/company-1/issues")
+      .query({ parentId });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      parentId,
+    }));
+  });
+
+  it("prefers parentId over parentIssueId when both are supplied", async () => {
+    const parentId = "33333333-3333-4333-8333-333333333333";
+    const parentIssueId = "44444444-4444-4444-8444-444444444444";
+
+    const res = await request(await createApp())
+      .get("/api/companies/company-1/issues")
+      .query({ parentId, parentIssueId });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      parentId,
+    }));
+  });
 });
