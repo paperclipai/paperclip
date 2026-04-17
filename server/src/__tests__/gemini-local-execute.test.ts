@@ -127,6 +127,147 @@ describe("gemini execute", () => {
     }
   });
 
+  it("loads companion agent instruction files next to AGENTS.md", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-instructions-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const capturePath = path.join(root, "capture.json");
+    const instructionsRoot = path.join(root, "instructions");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(instructionsRoot, { recursive: true });
+    await writeFakeGeminiCommand(commandPath);
+    await fs.writeFile(
+      path.join(instructionsRoot, "AGENTS.md"),
+      "# AGENTS\n\nPrimary guidance.\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(instructionsRoot, "SOUL.md"),
+      "# SOUL\n\nDeveloper voice and positioning.\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(instructionsRoot, "HEARTBEAT.md"),
+      "# HEARTBEAT\n\nHeartbeat checklist.\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(instructionsRoot, "TOOLS.md"),
+      "# TOOLS\n\nUse Composio MCP first.\n",
+      "utf8",
+    );
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      await execute({
+        runId: "run-instructions",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Gemini Coder",
+          adapterType: "gemini_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          instructionsFilePath: path.join(instructionsRoot, "AGENTS.md"),
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      const promptFlagIndex = capture.argv.indexOf("--prompt");
+      const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
+      expect(promptArg).toContain("Primary guidance.");
+      expect(promptArg).toContain("Developer voice and positioning.");
+      expect(promptArg).toContain("Heartbeat checklist.");
+      expect(promptArg).toContain("Use Composio MCP first.");
+      expect(promptArg).toContain("The above agent instructions were loaded from");
+      expect(promptArg.toLowerCase()).toContain("loaded from");
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("notes non-AGENTS instruction files without claiming companions were missing", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-instructions-note-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const instructionsRoot = path.join(root, "instructions");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(instructionsRoot, { recursive: true });
+    await writeFakeGeminiCommand(commandPath);
+    const instructionsFilePath = path.join(instructionsRoot, "SOUL.md");
+    await fs.writeFile(instructionsFilePath, "# SOUL\n\nPrimary guidance.\n", "utf8");
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      let commandNotes: string[] = [];
+      await execute({
+        runId: "run-instructions-note",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Gemini Coder",
+          adapterType: "gemini_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {},
+          instructionsFilePath,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          commandNotes = meta.commandNotes ?? [];
+        },
+      });
+
+      expect(commandNotes).toContain(`Loaded agent instructions from ${instructionsFilePath}`);
+      expect(commandNotes).toContain("Loaded entry instruction file SOUL.md without companion files.");
+      expect(commandNotes).not.toContain("No companion instruction files were loaded.");
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("always passes --approval-mode yolo", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-yolo-"));
     const workspace = path.join(root, "workspace");
