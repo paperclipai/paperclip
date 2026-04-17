@@ -2,13 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import type { GitStatusEntry, GitStatusResponse, ProjectFileDetail, ProjectFilesBranch, ProjectFilesBranchSyncDetail, ProjectFilesBranchSyncResult, ProjectFilesTreeEntry } from "@paperclipai/shared";
-import { AlertCircle, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Check, CheckCircle2, ChevronLeft, ChevronRight, Cloud, Copy, FilePlus2, FolderPlus, FolderTree, GitBranch, GitCommitHorizontal, GitMerge, Loader2, Minus, Plus, RefreshCw, RotateCcw, Save, Trash2, UploadCloud, XCircle } from "lucide-react";
+import { AlertCircle, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Check, CheckCircle2, ChevronLeft, ChevronRight, Cloud, Copy, FilePlus2, FolderPlus, FolderTree, GitBranch, GitCommitHorizontal, GitMerge, Loader2, Minus, Plus, RefreshCw, RotateCcw, Save, Trash2, UploadCloud, XCircle, XIcon } from "lucide-react";
 import { projectsApi } from "../api/projects";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -1109,7 +1109,7 @@ export function ProjectFilesTab({
       </div>
 
       <Dialog open={branchDialogOpen} onOpenChange={(open) => { setBranchDialogOpen(open); if (!open) setBranchSearch(""); }}>
-        <DialogContent className="sm:max-w-xl p-0 gap-0 overflow-hidden">
+        <DialogContent className="sm:max-w-xl p-0 gap-0 overflow-hidden" showCloseButton={false}>
           {/* Header */}
           <div className="flex items-center justify-between gap-3 px-4 pt-4 pb-3 border-b border-border">
             <div>
@@ -1152,6 +1152,18 @@ export function ProjectFilesTab({
                   </Tooltip>
                 </TooltipProvider>
               ) : null}
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <DialogClose asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8">
+                        <XIcon className="h-4 w-4" />
+                      </Button>
+                    </DialogClose>
+                  </TooltipTrigger>
+                  <TooltipContent sideOffset={4}>Close</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </div>
           </div>
 
