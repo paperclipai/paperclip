@@ -2336,9 +2336,12 @@ export function heartbeatService(db: Db) {
       let taskContext = issueContext;
       if (!taskContext) {
         // Agent woken without a specific task — find a task to resume.
-        // Prefer in_progress (mid-flight from a prior run that died or was cancelled)
-        // over todo (fresh work). in_review is reserved for reviewers/verifiers and
-        // is fetched via assignment wake, so it doesn't need to appear here.
+        // Covers all active statuses the agent could own:
+        //   - in_progress: mid-flight Worker task from a prior run that died
+        //   - in_review:   Reviewer/Architect verify task (assignment wake only
+        //                  fires once; later timer wakes need to find it too)
+        //   - todo:        fresh Worker work
+        // Priority: in_progress > in_review > todo.
         const firstTask = await db
           .select()
           .from(issues)
@@ -2346,11 +2349,11 @@ export function heartbeatService(db: Db) {
             and(
               eq(issues.companyId, agent.companyId),
               eq(issues.assigneeAgentId, agent.id),
-              inArray(issues.status, ["in_progress", "todo"]),
+              inArray(issues.status, ["in_progress", "in_review", "todo"]),
             ),
           )
           .orderBy(
-            sql`CASE WHEN ${issues.status} = 'in_progress' THEN 0 ELSE 1 END`,
+            sql`CASE ${issues.status} WHEN 'in_progress' THEN 0 WHEN 'in_review' THEN 1 ELSE 2 END`,
             asc(issues.createdAt),
           )
           .limit(1)
