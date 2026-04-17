@@ -33,3 +33,5 @@ export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export { localInferenceService, LOCAL_TASK_TYPES } from "./local-inference.js";
+export type { LocalInferenceConfig, LocalChatResult, LocalTaskType } from "./local-inference.js";
