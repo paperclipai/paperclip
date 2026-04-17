@@ -315,6 +315,23 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .orderBy(costEvents.provider, costEvents.biller, costEvents.billingType, costEvents.model);
     },
 
+    listEvents: async (
+      companyId: string,
+      opts: { range?: CostDateRange; agentId?: string; limit?: number } = {},
+    ) => {
+      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      if (opts.agentId) conditions.push(eq(costEvents.agentId, opts.agentId));
+      if (opts.range?.from) conditions.push(gte(costEvents.occurredAt, opts.range.from));
+      if (opts.range?.to) conditions.push(lte(costEvents.occurredAt, opts.range.to));
+
+      return db
+        .select()
+        .from(costEvents)
+        .where(and(...conditions))
+        .orderBy(desc(costEvents.occurredAt), desc(costEvents.createdAt))
+        .limit(opts.limit ?? 100);
+    },
+
     byProject: async (companyId: string, range?: CostDateRange) => {
       const issueIdAsText = sql<string>`${issues.id}::text`;
       const runProjectLinks = db

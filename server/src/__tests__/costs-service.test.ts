@@ -59,6 +59,7 @@ const mockCostService = vi.hoisted(() => ({
   byBiller: vi.fn().mockResolvedValue([]),
   windowSpend: vi.fn().mockResolvedValue([]),
   byProject: vi.fn().mockResolvedValue([]),
+  listEvents: vi.fn().mockResolvedValue([]),
 }));
 const mockFinanceService = vi.hoisted(() => ({
   createEvent: vi.fn(),
@@ -196,6 +197,43 @@ describe("cost routes", () => {
   it("accepts valid finance event list limits", async () => {
     const { parseCostLimit } = await loadCostParsers();
     expect(parseCostLimit({ limit: "25" })).toBe(25);
+  });
+
+  it("returns cost-events list with default limit", async () => {
+    mockCostService.listEvents.mockResolvedValueOnce([
+      { id: "event-1", companyId: "company-1", agentId: "agent-1", costCents: 150 },
+    ]);
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/cost-events");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      costEvents: [
+        { id: "event-1", companyId: "company-1", agentId: "agent-1", costCents: 150 },
+      ],
+    });
+    expect(mockCostService.listEvents).toHaveBeenCalledWith("company-1", {
+      range: undefined,
+      agentId: undefined,
+      limit: 100,
+    });
+  });
+
+  it("passes agentId, since, and limit through to listEvents", async () => {
+    mockCostService.listEvents.mockResolvedValueOnce([]);
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/cost-events")
+      .query({
+        agentId: "agent-42",
+        since: "2026-04-01T00:00:00.000Z",
+        limit: "25",
+      });
+    expect(res.status).toBe(200);
+    expect(mockCostService.listEvents).toHaveBeenCalledWith("company-1", {
+      range: { from: new Date("2026-04-01T00:00:00.000Z") },
+      agentId: "agent-42",
+      limit: 25,
+    });
   });
 
   it("rejects company budget updates for board users outside the company", async () => {

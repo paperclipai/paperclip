@@ -82,6 +82,20 @@ export function costRoutes(db: Db) {
     res.status(201).json(event);
   });
 
+  router.get("/companies/:companyId/cost-events", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const query = { ...req.query } as Record<string, unknown>;
+    // accept `since` as alias for `from` so callers can say ?since=...
+    if (query.since && !query.from) query.from = query.since;
+    const range = parseCostDateRange(query);
+    const limit = parseCostLimit(req.query);
+    const agentIdRaw = Array.isArray(req.query.agentId) ? req.query.agentId[0] : req.query.agentId;
+    const agentId = typeof agentIdRaw === "string" && agentIdRaw.length > 0 ? agentIdRaw : undefined;
+    const rows = await costs.listEvents(companyId, { range, agentId, limit });
+    res.json({ costEvents: rows });
+  });
+
   router.post("/companies/:companyId/finance-events", validate(createFinanceEventSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
