@@ -229,4 +229,73 @@ describe("opencode_local execute cwd selection", () => {
     expect(result.usage).toEqual({ inputTokens: 7, outputTokens: 3, cachedInputTokens: 0 });
     expect(logs.join("")).toContain("hello");
   });
+
+  it("records bound direct Ollama issues as in review for Codex peer review", async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/api/generate")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ response: "security review notes" }),
+        };
+      }
+      if (url.endsWith("/api/issues/issue-4")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => "{}",
+        };
+      }
+      throw new Error(`unexpected fetch ${url} ${init?.method ?? ""}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await execute({
+      runId: "run-4",
+      agent: {
+        id: "agent-4",
+        companyId: "company-1",
+        name: "Ollama Agent",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "opencode",
+        model: "ollama/glm-4.7:cloud",
+        cwd: "/legacy/home-root",
+        ollamaApiBaseUrl: "http://127.0.0.1:11434",
+        env: {
+          PAPERCLIP_API_URL: "http://paperclip.local",
+        },
+      },
+      context: {
+        issueId: "issue-4",
+        paperclipWorkspace: {
+          cwd: "/paperclip/fallback-workspace",
+          source: "agent_home",
+        },
+      },
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "token-4",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "http://paperclip.local/api/issues/issue-4",
+      expect.objectContaining({
+        method: "PATCH",
+        body: expect.stringContaining('"status":"in_review"'),
+      }),
+    );
+    const updateBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body ?? "{}"));
+    expect(updateBody.comment).toContain("Codex peer review");
+  });
 });

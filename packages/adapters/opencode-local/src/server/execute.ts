@@ -56,7 +56,7 @@ function resolveOpenCodeBiller(env: Record<string, string>, provider: string | n
   return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
 }
 
-async function finalizeDirectOllamaPaperclipIssue(input: {
+async function recordDirectOllamaPaperclipIssue(input: {
   context: Record<string, unknown>;
   runtimeEnv: Record<string, string>;
   runId: string;
@@ -79,8 +79,8 @@ async function finalizeDirectOllamaPaperclipIssue(input: {
         "X-Paperclip-Run-Id": input.runId,
       },
       body: JSON.stringify({
-        status: "done",
-        comment: `Ollama Cloud direct result:\n\n${input.responseText.trim().slice(0, 3000)}`,
+        status: "in_review",
+        comment: `Ollama Cloud direct result recorded for Codex peer review before completion:\n\n${input.responseText.trim().slice(0, 3000)}`,
       }),
     });
     if (!response.ok) {
@@ -406,7 +406,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await onLog("stderr", `[paperclip] Direct Ollama execution failed: ${direct.errorMessage}\n`);
       }
       if (direct.ok) {
-        await finalizeDirectOllamaPaperclipIssue({
+        await recordDirectOllamaPaperclipIssue({
           context,
           runtimeEnv,
           runId,
