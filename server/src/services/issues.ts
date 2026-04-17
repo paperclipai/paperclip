@@ -23,8 +23,15 @@ import {
   projects,
 } from "@paperclipai/db";
 import type { IssueRelationIssueSummary } from "@paperclipai/shared";
-import { extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
+import {
+  deriveAgentUrlKey,
+  extractAgentMentionIds,
+  extractProjectMentionIds,
+  isUuidLike,
+  normalizeAgentUrlKey,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
@@ -2380,19 +2387,64 @@ export function issueService(db: Db) {
       let m: RegExpExecArray | null;
       while ((m = re.exec(body)) !== null) {
         const normalized = normalizeAgentMentionToken(m[1]);
-        if (normalized) tokens.add(normalized.toLowerCase());
+        if (!normalized) continue;
+        tokens.add(normalized.toLowerCase());
+        const slugified = normalizeAgentUrlKey(normalized);
+        if (slugified) tokens.add(slugified);
       }
 
-      const explicitAgentMentionIds = extractAgentMentionIds(body);
-      if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
+      const hrefAgentRefs = extractAgentMentionIds(body);
+      if (tokens.size === 0 && hrefAgentRefs.length === 0) return [];
+
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      const resolved = new Set<string>(explicitAgentMentionIds);
+
+      const nameToId = new Map<string, string>();
+      const slugToId = new Map<string, string>();
+      const validAgentIds = new Set<string>();
       for (const agent of rows) {
-        if (tokens.has(agent.name.toLowerCase())) {
-          resolved.add(agent.id);
+        validAgentIds.add(agent.id);
+        nameToId.set(agent.name.toLowerCase(), agent.id);
+        const slug = deriveAgentUrlKey(agent.name, agent.id);
+        if (slug) slugToId.set(slug, agent.id);
+      }
+
+      const resolved = new Set<string>();
+
+      for (const token of tokens) {
+        const byName = nameToId.get(token);
+        if (byName) {
+          resolved.add(byName);
+          continue;
+        }
+        const bySlug = slugToId.get(token);
+        if (bySlug) resolved.add(bySlug);
+      }
+
+      for (const ref of hrefAgentRefs) {
+        if (isUuidLike(ref)) {
+          if (validAgentIds.has(ref)) {
+            resolved.add(ref);
+          } else {
+            logger.error(
+              { companyId, agentRef: ref },
+              "agent mention href references an unknown agent UUID",
+            );
+          }
+          continue;
+        }
+        const slug = normalizeAgentUrlKey(ref);
+        const bySlug = slug ? slugToId.get(slug) : undefined;
+        if (bySlug) {
+          resolved.add(bySlug);
+        } else {
+          logger.error(
+            { companyId, agentRef: ref },
+            "agent mention href does not resolve to a known agent (no UUID match and no slug match)",
+          );
         }
       }
+
       return [...resolved];
     },
 

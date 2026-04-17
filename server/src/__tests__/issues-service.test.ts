@@ -1573,3 +1573,106 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
     ]);
   });
 });
+
+describeEmbeddedPostgres("issueService.findMentionedAgents slug + href resolution", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-mentions-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedAgents(companyId: string, specs: Array<{ id: string; name: string }>) {
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TestCo",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values(
+      specs.map((spec) => ({
+        id: spec.id,
+        companyId,
+        name: spec.name,
+        role: "engineer",
+        status: "active" as const,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      })),
+    );
+  }
+
+  it("resolves plain-text @slug mentions via agents.urlKey", async () => {
+    const companyId = randomUUID();
+    const seniorId = randomUUID();
+    const ceoId = randomUUID();
+    await seedAgents(companyId, [
+      { id: seniorId, name: "Senior Engineer" },
+      { id: ceoId, name: "CEO" },
+    ]);
+
+    const body = "heads up @senior-engineer and @ceo — please review";
+    const ids = await svc.findMentionedAgents(companyId, body);
+
+    expect(new Set(ids)).toEqual(new Set([seniorId, ceoId]));
+  });
+
+  it("resolves markdown agent:// hrefs whose ref is a slug (not a UUID)", async () => {
+    const companyId = randomUUID();
+    const ctoId = randomUUID();
+    await seedAgents(companyId, [{ id: ctoId, name: "CTO" }]);
+
+    const body = "hello [@CTO](agent://cto) please take a look";
+    const ids = await svc.findMentionedAgents(companyId, body);
+
+    expect(ids).toEqual([ctoId]);
+  });
+
+  it("resolves markdown agent:// hrefs with a valid UUID", async () => {
+    const companyId = randomUUID();
+    const ctoId = randomUUID();
+    await seedAgents(companyId, [{ id: ctoId, name: "CTO" }]);
+
+    const body = `hello [@CTO](agent://${ctoId}) please review`;
+    const ids = await svc.findMentionedAgents(companyId, body);
+
+    expect(ids).toEqual([ctoId]);
+  });
+
+  it("does not emit a mention when the href references an unknown UUID", async () => {
+    const companyId = randomUUID();
+    const ctoId = randomUUID();
+    await seedAgents(companyId, [{ id: ctoId, name: "CTO" }]);
+
+    const unknownUuid = randomUUID();
+    const body = `stale ref [@Ghost](agent://${unknownUuid})`;
+    const ids = await svc.findMentionedAgents(companyId, body);
+
+    expect(ids).toEqual([]);
+  });
+
+  it("does not emit a mention when the href is a slug with no matching agent", async () => {
+    const companyId = randomUUID();
+    const ctoId = randomUUID();
+    await seedAgents(companyId, [{ id: ctoId, name: "CTO" }]);
+
+    const body = "typo [@notarealagent](agent://not-a-real-agent)";
+    const ids = await svc.findMentionedAgents(companyId, body);
+
+    expect(ids).toEqual([]);
+  });
+});
