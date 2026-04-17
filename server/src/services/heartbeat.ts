@@ -4862,6 +4862,68 @@ export function heartbeatService(db: Db) {
       return mergedRun;
     }
 
+    // Cross-path dedup: when a comment-mention bypass wake has an issueId,
+    // check for any queued/running run that was created via the issue execution
+    // path. Due to a TOCTOU race, the activeRuns query above may execute before
+    // a concurrent FOR UPDATE transaction commits its new run. This fresh query
+    // runs later and can catch runs that were invisible to the earlier read.
+    if (issueId) {
+      const crossPathRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .orderBy(
+          sql`case when ${heartbeatRuns.status} = 'queued' then 0 else 1 end`,
+          asc(heartbeatRuns.createdAt),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (crossPathRun) {
+        const skipForCommentFollowup =
+          crossPathRun.status === "running" && Boolean(wakeCommentId);
+
+        if (!skipForCommentFollowup) {
+          const mergedContextSnapshot = mergeCoalescedContextSnapshot(
+            crossPathRun.contextSnapshot,
+            contextSnapshot,
+          );
+          const mergedRun = await db
+            .update(heartbeatRuns)
+            .set({
+              contextSnapshot: mergedContextSnapshot,
+              updatedAt: new Date(),
+            })
+            .where(eq(heartbeatRuns.id, crossPathRun.id))
+            .returning()
+            .then((rows) => rows[0] ?? crossPathRun);
+
+          await db.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason,
+            payload,
+            status: "coalesced",
+            coalescedCount: 1,
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            runId: mergedRun.id,
+            finishedAt: new Date(),
+          });
+          return mergedRun;
+        }
+      }
+    }
+
     const wakeupRequest = await db
       .insert(agentWakeupRequests)
       .values({
