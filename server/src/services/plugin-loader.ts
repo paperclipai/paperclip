@@ -29,7 +29,7 @@ import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import type {
@@ -51,6 +51,13 @@ import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+export async function resolveVersionedModuleImportUrl(modulePath: string): Promise<string> {
+  const moduleUrl = pathToFileURL(modulePath);
+  const metadata = await stat(modulePath);
+  moduleUrl.searchParams.set("v", `${metadata.mtimeMs}-${metadata.size}`);
+  return moduleUrl.href;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -926,8 +933,10 @@ export function pluginLoader(
     let raw: unknown;
 
     try {
-      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
-      const mod = await import(manifestPath) as Record<string, unknown>;
+      // Use a versioned file URL so upgrades that rewrite dist/manifest.js on disk
+      // cannot be masked by Node's ESM module cache for the old absolute path.
+      const moduleUrl = await resolveVersionedModuleImportUrl(manifestPath);
+      const mod = await import(moduleUrl) as Record<string, unknown>;
       // The manifest may be the default export or the module itself
       raw = mod["default"] ?? mod;
     } catch (err) {
