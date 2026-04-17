@@ -22,6 +22,16 @@ export function setPluginEventBus(bus: PluginEventBus): void {
   _pluginEventBus = bus;
 }
 
+export function emitPluginEvent(event: PluginEvent): void {
+  if (!_pluginEventBus) return;
+
+  void _pluginEventBus.emit(event).then(({ errors }) => {
+    for (const { pluginId, error } of errors) {
+      logger.warn({ pluginId, eventType: event.eventType, err: error }, "plugin event handler failed");
+    }
+  }).catch(() => {});
+}
+
 export interface LogActivityInput {
   companyId: string;
   actorType: "agent" | "user" | "system";
@@ -85,10 +95,6 @@ export async function logActivity(db: Db, input: LogActivityInput) {
         runId: input.runId ?? null,
       },
     };
-    void _pluginEventBus.emit(event).then(({ errors }) => {
-      for (const { pluginId, error } of errors) {
-        logger.warn({ pluginId, eventType: event.eventType, err: error }, "plugin event handler failed");
-      }
-    }).catch(() => {});
+    emitPluginEvent(event);
   }
 }

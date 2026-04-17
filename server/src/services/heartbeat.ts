@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql } from "drizzle-orm";
@@ -40,7 +41,7 @@ import {
   HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
-import { logActivity, type LogActivityInput } from "./activity-log.js";
+import { emitPluginEvent, logActivity, type LogActivityInput } from "./activity-log.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -104,6 +105,35 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "pi_local",
 ]);
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
+
+function emitAgentRunPluginEvent(
+  run: typeof heartbeatRuns.$inferSelect,
+  eventType: "agent.run.started" | "agent.run.finished" | "agent.run.failed" | "agent.run.cancelled",
+) {
+  const publicStatus = run.status === "timed_out" ? "failed" : run.status;
+  emitPluginEvent({
+    eventId: randomUUID(),
+    eventType,
+    occurredAt: new Date().toISOString(),
+    actorType: "system",
+    actorId: "heartbeat",
+    entityId: run.id,
+    entityType: "run",
+    companyId: run.companyId,
+    payload: {
+      runId: run.id,
+      agentId: run.agentId,
+      companyId: run.companyId,
+      status: publicStatus,
+      invocationSource: run.invocationSource,
+      triggerDetail: run.triggerDetail,
+      error: run.error ?? null,
+      errorCode: run.errorCode ?? null,
+      startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
+      finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
+    },
+  });
+}
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
@@ -2153,6 +2183,14 @@ export function heartbeatService(db: Db) {
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
+
+      if (updated.status === "succeeded") {
+        emitAgentRunPluginEvent(updated, "agent.run.finished");
+      } else if (updated.status === "failed" || updated.status === "timed_out") {
+        emitAgentRunPluginEvent(updated, "agent.run.failed");
+      } else if (updated.status === "cancelled") {
+        emitAgentRunPluginEvent(updated, "agent.run.cancelled");
+      }
     }
 
     return updated;
@@ -2656,6 +2694,7 @@ export function heartbeatService(db: Db) {
         finishedAt: claimed.finishedAt ? new Date(claimed.finishedAt).toISOString() : null,
       },
     });
+    emitAgentRunPluginEvent(claimed, "agent.run.started");
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
 
