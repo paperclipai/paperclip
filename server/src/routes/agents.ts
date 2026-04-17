@@ -501,7 +501,7 @@ export function agentRoutes(db: Db) {
     const heartbeat = asRecord(asRecord(runtimeConfig)?.heartbeat) ?? {};
     return {
       enabled: parseBooleanLike(heartbeat.enabled) ?? false,
-      intervalSec: Math.max(0, parseNumberLike(heartbeat.intervalSec) ?? 0),
+      intervalSec: Math.max(0, parseNumberLike(heartbeat.intervalSec) ?? 300),
     };
   }
 
