@@ -11,7 +11,8 @@
  * - Retrieving UI slot contributions for frontend rendering
  * - Discovering and executing plugin-contributed agent tools
  *
- * All routes require board-level authentication (assertBoard middleware).
+ * All routes require board-level authentication, and sensitive instance-wide
+ * mutations such as install/upgrade require instance-admin privileges.
  *
  * @module server/routes/plugins
  * @see doc/plugins/PLUGIN_SPEC.md for the full plugin specification
@@ -610,6 +611,9 @@ export function pluginRoutes(
    * POST /api/plugins/install
    *
    * Install a plugin from npm or a local filesystem path.
+   *
+   * Instance-wide plugin installation is restricted to instance admins because
+   * the install flow fetches and inspects package contents on the host.
    *
    * Request body:
    * - packageName: npm package name or local path (required)
@@ -1499,6 +1503,9 @@ export function pluginRoutes(
    * POST /api/plugins/:pluginId/upgrade
    *
    * Upgrade a plugin to a newer version.
+   *
+   * Upgrades are restricted to instance admins because they fetch and inspect
+   * new package contents on the host before activation.
    *
    * Request body (optional):
    * - version: Target version (defaults to latest)

@@ -78,7 +78,7 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends tini curl git ca-certificates gosu \
+  && apt-get install -y --no-install-recommends tini curl git ca-certificates gosu openssh-client jq \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable

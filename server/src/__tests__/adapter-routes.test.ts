@@ -77,6 +77,75 @@ describe("adapter routes", () => {
     unregisterServerAdapter("claude_local");
   });
 
+  it("GET /api/adapters includes capabilities object for each adapter", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters");
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body.length).toBeGreaterThan(0);
+
+    // Every adapter should have a capabilities object
+    for (const adapter of res.body) {
+      expect(adapter.capabilities).toBeDefined();
+      expect(typeof adapter.capabilities.supportsInstructionsBundle).toBe("boolean");
+      expect(typeof adapter.capabilities.supportsSkills).toBe("boolean");
+      expect(typeof adapter.capabilities.supportsLocalAgentJwt).toBe("boolean");
+      expect(typeof adapter.capabilities.requiresMaterializedRuntimeSkills).toBe("boolean");
+    }
+  });
+
+  it("GET /api/adapters returns correct capabilities for built-in adapters", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters");
+    expect(res.status).toBe(200);
+
+    // codex_local has instructions bundle + skills + jwt, no materialized skills
+    // (claude_local is overridden by beforeEach, so check codex_local instead)
+    const codexLocal = res.body.find((a: any) => a.type === "codex_local");
+    expect(codexLocal).toBeDefined();
+    expect(codexLocal.capabilities).toMatchObject({
+      supportsInstructionsBundle: true,
+      supportsSkills: true,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: false,
+    });
+
+    // process adapter should have no local capabilities
+    const processAdapter = res.body.find((a: any) => a.type === "process");
+    expect(processAdapter).toBeDefined();
+    expect(processAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: false,
+      supportsSkills: false,
+      supportsLocalAgentJwt: false,
+      requiresMaterializedRuntimeSkills: false,
+    });
+
+    // cursor adapter should require materialized runtime skills
+    const cursorAdapter = res.body.find((a: any) => a.type === "cursor");
+    expect(cursorAdapter).toBeDefined();
+    expect(cursorAdapter.capabilities.requiresMaterializedRuntimeSkills).toBe(true);
+    expect(cursorAdapter.capabilities.supportsInstructionsBundle).toBe(true);
+  });
+
+  it("GET /api/adapters derives supportsSkills from listSkills/syncSkills presence", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters");
+    expect(res.status).toBe(200);
+
+    // http adapter has no listSkills/syncSkills
+    const httpAdapter = res.body.find((a: any) => a.type === "http");
+    expect(httpAdapter).toBeDefined();
+    expect(httpAdapter.capabilities.supportsSkills).toBe(false);
+
+    // codex_local has listSkills/syncSkills
+    const codexLocal = res.body.find((a: any) => a.type === "codex_local");
+    expect(codexLocal).toBeDefined();
+    expect(codexLocal.capabilities.supportsSkills).toBe(true);
+  });
+
   it("uses the active adapter when resolving config schema for a paused builtin override", async () => {
     const app = createApp();
 

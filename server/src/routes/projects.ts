@@ -14,8 +14,7 @@ import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
 import { conflict } from "../errors.js";
-import { assertCompanyAccess, hasCompanyAccess, getActorInfo } from "./authz.js";
-import { planLimits } from "../middleware/plan-limits.js";
+import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -23,12 +22,17 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForProjectWorkspace,
 } from "../services/workspace-runtime.js";
+import {
+  assertNoAgentHostWorkspaceCommandMutation,
+  collectProjectExecutionWorkspaceCommandPaths,
+  collectProjectWorkspaceCommandPaths,
+} from "./workspace-command-authz.js";
+import { assertCanManageProjectWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 
 export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
-  const limits = planLimits(db);
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
@@ -79,22 +83,29 @@ export function projectRoutes(db: Db) {
   router.get("/projects/:id", async (req, res) => {
     const id = req.params.id as string;
     const project = await svc.getById(id);
-    if (!project || !hasCompanyAccess(req, project.companyId)) {
+    if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
+    assertCompanyAccess(req, project.companyId);
     res.json(project);
   });
 
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    await limits.checkProjectLimit(companyId);
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
     };
 
     const { workspace, ...projectData } = req.body as CreateProjectPayload;
+    assertNoAgentHostWorkspaceCommandMutation(
+      req,
+      [
+        ...collectProjectExecutionWorkspaceCommandPaths(projectData.executionWorkspacePolicy),
+        ...collectProjectWorkspaceCommandPaths(workspace, "workspace"),
+      ],
+    );
     if (projectData.env !== undefined) {
       projectData.env = await secretsSvc.normalizeEnvBindingsForPersistence(
         companyId,
@@ -140,11 +151,16 @@ export function projectRoutes(db: Db) {
   router.patch("/projects/:id", validate(updateProjectSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
+    assertCompanyAccess(req, existing.companyId);
     const body = { ...req.body };
+    assertNoAgentHostWorkspaceCommandMutation(
+      req,
+      collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
+    );
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);
     }
@@ -184,10 +200,11 @@ export function projectRoutes(db: Db) {
   router.get("/projects/:id/workspaces", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
+    assertCompanyAccess(req, existing.companyId);
     const workspaces = await svc.listWorkspaces(id);
     res.json(workspaces);
   });
@@ -195,10 +212,15 @@ export function projectRoutes(db: Db) {
   router.post("/projects/:id/workspaces", validate(createProjectWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
+    assertCompanyAccess(req, existing.companyId);
+    assertNoAgentHostWorkspaceCommandMutation(
+      req,
+      collectProjectWorkspaceCommandPaths(req.body),
+    );
     const workspace = await svc.createWorkspace(id, req.body);
     if (!workspace) {
       res.status(422).json({ error: "Invalid project workspace payload" });
@@ -232,10 +254,15 @@ export function projectRoutes(db: Db) {
       const id = req.params.id as string;
       const workspaceId = req.params.workspaceId as string;
       const existing = await svc.getById(id);
-      if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+      if (!existing) {
         res.status(404).json({ error: "Project not found" });
         return;
       }
+      assertCompanyAccess(req, existing.companyId);
+      assertNoAgentHostWorkspaceCommandMutation(
+        req,
+        collectProjectWorkspaceCommandPaths(req.body),
+      );
       const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);
       if (!workspaceExists) {
         res.status(404).json({ error: "Project workspace not found" });
@@ -287,6 +314,11 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project workspace not found" });
       return;
     }
+
+    await assertCanManageProjectWorkspaceRuntimeServices(db, req, {
+      companyId: project.companyId,
+      projectWorkspaceId: workspace.id,
+    });
 
     const workspaceCwd = workspace.cwd;
     if (!workspaceCwd) {
@@ -534,10 +566,11 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const workspaceId = req.params.workspaceId as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
+    assertCompanyAccess(req, existing.companyId);
     const workspace = await svc.removeWorkspace(id, workspaceId);
     if (!workspace) {
       res.status(404).json({ error: "Project workspace not found" });
@@ -565,10 +598,11 @@ export function projectRoutes(db: Db) {
   router.delete("/projects/:id", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
+    if (!existing) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
+    assertCompanyAccess(req, existing.companyId);
     const project = await svc.remove(id);
     if (!project) {
       res.status(404).json({ error: "Project not found" });

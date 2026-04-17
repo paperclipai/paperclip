@@ -1,7 +1,10 @@
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Filter, X, User, HardDrive } from "lucide-react";
+import { Bot, Filter, HardDrive, Search, User, X } from "lucide-react";
 import { PriorityIcon } from "./PriorityIcon";
 import { StatusIcon } from "./StatusIcon";
 import {
@@ -14,6 +17,7 @@ import {
   toggleIssueFilterValue,
   type IssueFilterState,
 } from "../lib/issue-filters";
+import { formatAssigneeUserLabel } from "../lib/assignees";
 
 type AgentOption = {
   id: string;
@@ -36,6 +40,13 @@ type WorkspaceOption = {
   name: string;
 };
 
+type CreatorOption = {
+  id: string;
+  label: string;
+  kind: "agent" | "user";
+  searchText?: string;
+};
+
 export function IssueFiltersPopover({
   state,
   onChange,
@@ -48,6 +59,7 @@ export function IssueFiltersPopover({
   buttonVariant = "ghost",
   iconOnly = false,
   workspaces,
+  creators,
 }: {
   state: IssueFilterState;
   onChange: (patch: Partial<IssueFilterState>) => void;
@@ -60,7 +72,39 @@ export function IssueFiltersPopover({
   buttonVariant?: "ghost" | "outline";
   iconOnly?: boolean;
   workspaces?: WorkspaceOption[];
+  creators?: CreatorOption[];
 }) {
+  const [creatorSearch, setCreatorSearch] = useState("");
+  const creatorOptions = creators ?? [];
+  const creatorOptionById = useMemo(
+    () => new Map(creatorOptions.map((option) => [option.id, option])),
+    [creatorOptions],
+  );
+  const normalizedCreatorSearch = creatorSearch.trim().toLowerCase();
+  const visibleCreatorOptions = useMemo(() => {
+    if (!normalizedCreatorSearch) return creatorOptions;
+    return creatorOptions.filter((option) =>
+      `${option.label} ${option.searchText ?? ""}`.toLowerCase().includes(normalizedCreatorSearch),
+    );
+  }, [creatorOptions, normalizedCreatorSearch]);
+  const selectedCreatorOptions = useMemo(
+    () => state.creators.map((creatorId) => {
+      const knownOption = creatorOptionById.get(creatorId);
+      if (knownOption) return knownOption;
+      if (creatorId.startsWith("agent:")) {
+        const agentId = creatorId.slice("agent:".length);
+        return { id: creatorId, label: agentId.slice(0, 8), kind: "agent" as const };
+      }
+      const userId = creatorId.startsWith("user:") ? creatorId.slice("user:".length) : creatorId;
+      return {
+        id: creatorId,
+        label: formatAssigneeUserLabel(userId, currentUserId) ?? userId.slice(0, 5),
+        kind: "user" as const,
+      };
+    }),
+    [creatorOptionById, currentUserId, state.creators],
+  );
+
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -191,6 +235,60 @@ export function IssueFiltersPopover({
                 </div>
               </div>
 
+              {creatorOptions.length > 0 ? (
+                <div className="space-y-1">
+                  <span className="text-xs text-muted-foreground">Creator</span>
+                  {selectedCreatorOptions.length > 0 ? (
+                    <div className="flex flex-wrap gap-1">
+                      {selectedCreatorOptions.map((creator) => (
+                        <Badge key={creator.id} variant="secondary" className="gap-1 pr-1">
+                          {creator.kind === "agent" ? <Bot className="h-3 w-3" /> : <User className="h-3 w-3" />}
+                          <span>{creator.label}</span>
+                          <button
+                            type="button"
+                            className="rounded-full p-0.5 hover:bg-accent"
+                            onClick={() => onChange({ creators: state.creators.filter((value) => value !== creator.id) })}
+                            aria-label={`Remove creator ${creator.label}`}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={creatorSearch}
+                      onChange={(event) => setCreatorSearch(event.target.value)}
+                      placeholder="Search creators..."
+                      className="h-8 pl-7 text-xs"
+                    />
+                  </div>
+                  <div className="max-h-32 space-y-0.5 overflow-y-auto">
+                    {visibleCreatorOptions.length > 0 ? visibleCreatorOptions.map((creator) => {
+                      const selected = state.creators.includes(creator.id);
+                      return (
+                        <button
+                          key={creator.id}
+                          type="button"
+                          className={`flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-sm ${
+                            selected ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                          }`}
+                          onClick={() => onChange({ creators: toggleIssueFilterValue(state.creators, creator.id) })}
+                        >
+                          {creator.kind === "agent" ? <Bot className="h-3.5 w-3.5" /> : <User className="h-3.5 w-3.5" />}
+                          <span className="min-w-0 flex-1 truncate">{creator.label}</span>
+                          {selected ? <X className="h-3 w-3" /> : null}
+                        </button>
+                      );
+                    }) : (
+                      <div className="px-2 py-1 text-xs text-muted-foreground">No creators match.</div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+
               {projects && projects.length > 0 ? (
                 <div className="space-y-1">
                   <span className="text-xs text-muted-foreground">Project</span>
@@ -251,10 +349,10 @@ export function IssueFiltersPopover({
                   <span className="text-xs text-muted-foreground">Visibility</span>
                   <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
                     <Checkbox
-                      checked={state.showRoutineExecutions}
-                      onCheckedChange={(checked) => onChange({ showRoutineExecutions: checked === true })}
+                      checked={state.hideRoutineExecutions}
+                      onCheckedChange={(checked) => onChange({ hideRoutineExecutions: checked === true })}
                     />
-                    <span className="text-sm">Show routine runs</span>
+                    <span className="text-sm">Hide routine runs</span>
                   </label>
                 </div>
               ) : null}

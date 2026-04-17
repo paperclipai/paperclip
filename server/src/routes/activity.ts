@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { activityService } from "../services/activity.js";
-import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoard, assertCompanyAccess } from "./authz.js";
 import { heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 
@@ -24,7 +24,7 @@ export function activityRoutes(db: Db) {
   const issueSvc = issueService(db);
 
   async function resolveIssueByRef(rawId: string) {
-    if (/^[A-Z][A-Z0-9]*-\d+$/i.test(rawId)) {
+    if (/^[A-Z]+-\d+$/i.test(rawId)) {
       return issueSvc.getByIdentifier(rawId);
     }
     return issueSvc.getById(rawId);
@@ -59,10 +59,11 @@ export function activityRoutes(db: Db) {
   router.get("/issues/:id/activity", async (req, res) => {
     const rawId = req.params.id as string;
     const issue = await resolveIssueByRef(rawId);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
+    if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    assertCompanyAccess(req, issue.companyId);
     const result = await svc.forIssue(issue.id);
     res.json(result);
   });
@@ -70,22 +71,24 @@ export function activityRoutes(db: Db) {
   router.get("/issues/:id/runs", async (req, res) => {
     const rawId = req.params.id as string;
     const issue = await resolveIssueByRef(rawId);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
+    if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    assertCompanyAccess(req, issue.companyId);
     const result = await svc.runsForIssue(issue.companyId, issue.id);
     res.json(result);
   });
 
   router.get("/heartbeat-runs/:runId/issues", async (req, res) => {
-    assertBoard(req);
+    assertAuthenticated(req);
     const runId = req.params.runId as string;
     const run = await heartbeat.getRun(runId);
-    if (!run || !hasCompanyAccess(req, run.companyId)) {
-      res.status(404).json({ error: "Heartbeat run not found" });
+    if (!run) {
+      res.json([]);
       return;
     }
+    assertCompanyAccess(req, run.companyId);
     const result = await svc.issuesForRun(runId);
     res.json(result);
   });
