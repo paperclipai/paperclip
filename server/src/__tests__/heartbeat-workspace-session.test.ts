@@ -266,8 +266,8 @@ describe("stripWorkspaceRuntimeFromExecutionRunConfig", () => {
 });
 
 describe("shouldResetTaskSessionForWake", () => {
-  it("resets session context on assignment wake", () => {
-    expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
+  it("does not reset session context on assignment wake (focus-mode reuses the task session)", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(false);
   });
 
   it("resets session context on timer heartbeats", () => {
