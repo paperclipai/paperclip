@@ -965,8 +965,13 @@ function deriveTaskKey(
 
 /**
  * Extended task key derivation that falls back to a stable synthetic key
- * for timer/heartbeat wakes. This ensures timer wakes can resume their
- * previous session via `agentTaskSessions` instead of starting fresh.
+ * for timer/heartbeat wakes. This provides a consistent storage key so
+ * the session written at the end of a timer run is recorded under a stable
+ * identifier in `agentTaskSessions`.
+ *
+ * Note: timer wakes always start with a fresh session (see
+ * `shouldResetTaskSessionForWake`); this key is used for write-back
+ * consistency, not resumption.
  *
  * The synthetic key is only used when:
  * - No explicit task/issue key exists in the context
@@ -999,6 +1004,9 @@ export function shouldResetTaskSessionForWake(
   ) {
     return true;
   }
+
+  const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
+  if (wakeSource === "timer") return true;
   return false;
 }
 
@@ -1031,6 +1039,9 @@ function describeSessionResetReason(
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
+
+  const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
+  if (wakeSource === "timer") return "wake source is timer (fresh session per timer heartbeat)";
   return null;
 }
 
