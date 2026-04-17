@@ -219,6 +219,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   async function seedRunFixture(input?: {
     adapterType?: string;
     agentStatus?: "paused" | "idle" | "running";
+    companyStatus?: "active" | "pausing" | "paused" | "archived";
     runStatus?: "running" | "queued" | "failed";
     processPid?: number | null;
     processGroupId?: number | null;
@@ -239,6 +240,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix,
+      status: input?.companyStatus ?? "active",
       requireBoardApprovalForNewAgents: false,
     });
 
@@ -518,6 +520,26 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("marks pausing companies as paused after orphaned-run reaping drains remaining work", async () => {
+    const { companyId } = await seedRunFixture({
+      companyStatus: "pausing",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reapOrphanedRuns();
+
+    const company = await db
+      .select({ status: companies.status, pausedAt: companies.pausedAt })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    expect(company?.status).toBe("paused");
+    expect(company?.pausedAt).toBeInstanceOf(Date);
+  });
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,
@@ -551,6 +573,24 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         agentId,
       }),
     );
+  });
+
+  it("marks pausing companies as paused after run cancellation drains remaining work", async () => {
+    const { companyId, runId } = await seedRunFixture({
+      companyStatus: "pausing",
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.cancelRun(runId);
+
+    const company = await db
+      .select({ status: companies.status, pausedAt: companies.pausedAt })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    expect(company?.status).toBe("paused");
+    expect(company?.pausedAt).toBeInstanceOf(Date);
   });
 
   it("re-enqueues assigned todo work when the last issue run died and no wake remains", async () => {

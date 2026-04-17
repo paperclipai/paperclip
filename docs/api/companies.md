@@ -65,6 +65,33 @@ Company logo uploads use the normal Paperclip attachment size limit.
 
 Then set the company logo by PATCHing the returned `assetId` into `logoAssetId`.
 
+## Pause Company
+
+Gracefully pauses a company.
+
+```
+POST /api/companies/{companyId}/pause
+```
+
+Optional query parameter:
+
+- `force=true` — immediately set status to `paused` without waiting for active runs to drain.
+
+Behavior:
+
+- If there are active heartbeat runs, company status becomes `pausing`.
+- While `pausing` or `paused`, no new agent sessions or heartbeat runs are admitted.
+- Existing in-flight runs are allowed to finish.
+- When all active runs are finished, `pausing` transitions to `paused`.
+
+## Resume Company
+
+```
+POST /api/companies/{companyId}/resume
+```
+
+Resumes a paused/pausing company back to `active`.
+
 ## Archive Company
 
 ```
@@ -80,7 +107,7 @@ Archives a company. Archived companies are hidden from default listings.
 | `id` | string | Unique identifier |
 | `name` | string | Company name |
 | `description` | string | Company description |
-| `status` | string | `active`, `paused`, `archived` |
+| `status` | string | `active`, `pausing`, `paused`, `archived` |
 | `logoAssetId` | string | Optional asset id for the stored logo image |
 | `logoUrl` | string | Optional Paperclip asset content path for the stored logo image |
 | `budgetMonthlyCents` | number | Monthly budget limit |

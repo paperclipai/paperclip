@@ -17,6 +17,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  companies,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -2737,6 +2738,29 @@ export function heartbeatService(db: Db) {
     }
   }
 
+  async function checkCompanyGracefulPause(companyId: string) {
+    const company = await db
+      .select({ status: companies.status })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    if (!company || company.status !== "pausing") return;
+
+    const [{ value }] = await db
+      .select({ value: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.status, ["queued", "running"])));
+    const activeRuns = Number(value ?? 0);
+    if (activeRuns > 0) return;
+
+    await db
+      .update(companies)
+      .set({ status: "paused", pausedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(companies.id, companyId), eq(companies.status, "pausing")));
+
+    logger.info({ companyId }, "company graceful pause complete: pausing → paused");
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -2838,6 +2862,7 @@ export function heartbeatService(db: Db) {
 
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
+      await checkCompanyGracefulPause(run.companyId).catch(() => undefined);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -4099,6 +4124,7 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+      await checkCompanyGracefulPause(agent.companyId).catch(() => undefined);
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -4164,6 +4190,7 @@ export function heartbeatService(db: Db) {
       }
 
       await finalizeAgentStatus(agent.id, "failed");
+      await checkCompanyGracefulPause(agent.companyId).catch(() => undefined);
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -4198,6 +4225,7 @@ export function heartbeatService(db: Db) {
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
           await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+          await checkCompanyGracefulPause(run.companyId).catch(() => undefined);
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
@@ -4517,6 +4545,16 @@ export function heartbeatService(db: Db) {
       agent.status === "pending_approval"
     ) {
       throw conflict("Agent is not invokable in its current state", { status: agent.status });
+    }
+
+    // Block new wakeups for pausing/paused companies
+    const company = await db
+      .select({ status: companies.status })
+      .from(companies)
+      .where(eq(companies.id, agent.companyId))
+      .then((rows) => rows[0] ?? null);
+    if (company && (company.status === "pausing" || company.status === "paused")) {
+      throw conflict("Company is paused or pausing — no new runs allowed", { companyStatus: company.status });
     }
 
     const policy = parseHeartbeatPolicy(agent);
@@ -5061,6 +5099,7 @@ export function heartbeatService(db: Db) {
     runningProcesses.delete(run.id);
     await finalizeAgentStatus(run.agentId, "cancelled");
     await startNextQueuedRunForAgent(run.agentId);
+    await checkCompanyGracefulPause(run.companyId).catch(() => undefined);
     return cancelled;
   }
 
@@ -5097,6 +5136,10 @@ export function heartbeatService(db: Db) {
         });
       }
       await releaseIssueExecutionAndPromote(run);
+    }
+
+    if (runs.length > 0) {
+      await checkCompanyGracefulPause(runs[0]!.companyId).catch(() => undefined);
     }
 
     return runs.length;
@@ -5327,11 +5370,19 @@ export function heartbeatService(db: Db) {
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
+      const pausedCompanyIds = new Set(
+        (await db
+          .select({ id: companies.id })
+          .from(companies)
+          .where(inArray(companies.status, ["pausing", "paused"]))
+        ).map((c) => c.id),
+      );
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
 
       for (const agent of allAgents) {
+        if (pausedCompanyIds.has(agent.companyId)) continue;
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;

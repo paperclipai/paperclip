@@ -12,6 +12,7 @@ interface CompanyPatternIconProps {
   companyName: string;
   logoUrl?: string | null;
   brandColor?: string | null;
+  dimmed?: boolean;
   className?: string;
   logoFit?: "cover" | "contain";
 }
@@ -165,6 +166,7 @@ export function CompanyPatternIcon({
   companyName,
   logoUrl,
   brandColor,
+  dimmed = false,
   className,
   logoFit = "cover",
 }: CompanyPatternIconProps) {
@@ -183,8 +185,10 @@ export function CompanyPatternIcon({
     <div
       className={cn(
         "relative flex items-center justify-center w-11 h-11 text-base font-semibold text-white overflow-hidden",
+        dimmed && "opacity-55 grayscale saturate-0",
         className,
       )}
+      data-company-dimmed={dimmed ? "true" : "false"}
     >
       {logo ? (
         <img
