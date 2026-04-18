@@ -10,6 +10,7 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  companies,
   companySkills as companySkillsTable,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -5325,12 +5326,19 @@ export function heartbeatService(db: Db) {
     reconcileStrandedAssignedIssues,
 
     tickTimers: async (now = new Date()) => {
-      const allAgents = await db.select().from(agents);
+      // Only tick agents in ACTIVE companies. Archived/paused companies must not
+      // generate heartbeat runs — previously the scheduler ignored company status
+      // and woke agents in archived companies indefinitely.
+      const rows = await db
+        .select({ agent: agents, companyStatus: companies.status })
+        .from(agents)
+        .innerJoin(companies, eq(agents.companyId, companies.id));
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
 
-      for (const agent of allAgents) {
+      for (const { agent, companyStatus } of rows) {
+        if (companyStatus !== "active") continue;
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
