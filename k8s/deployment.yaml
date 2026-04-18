@@ -1,0 +1,190 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: paperclip
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: paperclip-nginx-config
+  namespace: paperclip
+data:
+  nginx.conf: |
+    pid /tmp/nginx.pid;
+    events {
+      worker_connections 1024;
+    }
+    http {
+      client_body_temp_path /tmp/client_temp;
+      proxy_temp_path /tmp/proxy_temp;
+      fastcgi_temp_path /tmp/fastcgi_temp;
+      uwsgi_temp_path /tmp/uwsgi_temp;
+      scgi_temp_path /tmp/scgi_temp;
+      
+      server {
+        listen 8080;
+        location / {
+          proxy_pass http://127.0.0.1:3100;
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection 'upgrade';
+          proxy_set_header Host $host;
+          proxy_cache_bypass $http_upgrade;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: paperclip-db
+  namespace: paperclip
+type: Opaque
+stringData:
+  DATABASE_URL: "postgresql://postgres:uW3qQ%3C%28Jpo9%2F%5Dq%403Os%5D%7CQP%7C5@10.10.10.63:5432/postgres-paperclp?sslmode=prefer"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: paperclip-data
+  namespace: paperclip
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: rook-cephfs-fuse
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paperclip
+  namespace: paperclip
+spec:
+  replicas: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: paperclip
+  template:
+    metadata:
+      labels:
+        app: paperclip
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      initContainers:
+      - name: clone-and-build
+        image: node:20-alpine
+        securityContext:
+          runAsUser: 0
+        command:
+        - sh
+        - -c
+        - |
+          apk add --no-cache git
+          cd /app
+          git clone https://github.com/paperclipai/paperclip.git .
+          git checkout v2026.325.0
+          npm install -g pnpm@9.15.0
+          pnpm install
+          pnpm build
+          chown -R 1000:1000 /app
+        volumeMounts:
+        - name: app
+          mountPath: /app
+      containers:
+      - name: paperclip
+        image: node:20-alpine
+        imagePullPolicy: Always
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3100"
+        - name: PAPERCLIP_MIGRATION_PROMPT
+          value: "never"
+        - name: PAPERCLIP_MIGRATION_AUTO_APPLY
+          value: "true"
+        - name: DATA_DIR
+          value: "/data"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: paperclip-db
+              key: DATABASE_URL
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: app
+          mountPath: /app
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+      - name: nginx-proxy
+        image: nginx:alpine
+        ports:
+        - containerPort: 8080
+          name: http
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 5
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: paperclip-data
+      - name: app
+        emptyDir: {}
+      - name: nginx-config
+        configMap:
+          name: paperclip-nginx-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: paperclip
+  namespace: paperclip
+spec:
+  type: ClusterIP
+  ports:
+  - port: 3100
+    targetPort: 3100
+    protocol: TCP
+    name: api
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: paperclip
