@@ -103,6 +103,15 @@ async function flush() {
   });
 }
 
+function setNativeInputValue(input: HTMLInputElement, value: string) {
+  const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+  const previous = input.value;
+  valueSetter?.call(input, value);
+  const tracker = (input as HTMLInputElement & { _valueTracker?: { setValue: (v: string) => void } })._valueTracker;
+  tracker?.setValue(previous);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function createIssue(overrides: Partial<Issue> = {}): Issue {
   return {
     id: "issue-1",
@@ -485,8 +494,9 @@ describe("IssueProperties", () => {
     expect(sourceInput).not.toBeUndefined();
 
     await act(async () => {
-      sourceInput!.value = "/workspace/docs/spec.md";
-      sourceInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      sourceInput!.focus();
+      setNativeInputValue(sourceInput!, "/workspace/docs/spec.md");
+      sourceInput!.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
       sourceInput!.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
     });
 
@@ -505,8 +515,7 @@ describe("IssueProperties", () => {
     expect(checkbox).not.toBeUndefined();
 
     await act(async () => {
-      checkbox!.checked = true;
-      checkbox!.dispatchEvent(new Event("change", { bubbles: true }));
+      checkbox!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(onUpdate).toHaveBeenCalledWith({

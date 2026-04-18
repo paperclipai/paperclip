@@ -204,6 +204,22 @@ export function IssueFiltersPopover({
 
             <div className="min-w-0 space-y-3">
               <div className="space-y-1">
+                <span className="text-xs text-muted-foreground">Owner</span>
+                <div className="max-h-32 space-y-0.5 overflow-y-auto">
+                  {(agents ?? []).map((agent) => (
+                    <label key={`owner-${agent.id}`} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                      <Checkbox
+                        checked={state.owners.includes(agent.id)}
+                        onCheckedChange={() => onChange({ owners: toggleIssueFilterValue(state.owners, agent.id) })}
+                      />
+                      <Bot className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="text-sm">{agent.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1">
                 <span className="text-xs text-muted-foreground">Assignee</span>
                 <div className="max-h-32 space-y-0.5 overflow-y-auto">
                   <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -344,9 +360,16 @@ export function IssueFiltersPopover({
                 </div>
               ) : null}
 
-              {enableRoutineVisibilityFilter ? (
-                <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Visibility</span>
+              <div className="space-y-1">
+                <span className="text-xs text-muted-foreground">Visibility</span>
+                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                  <Checkbox
+                    checked={state.needsHumanAttention}
+                    onCheckedChange={(checked) => onChange({ needsHumanAttention: checked === true })}
+                  />
+                  <span className="text-sm">Needs human attention</span>
+                </label>
+                {enableRoutineVisibilityFilter ? (
                   <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
                     <Checkbox
                       checked={state.hideRoutineExecutions}
@@ -354,8 +377,8 @@ export function IssueFiltersPopover({
                     />
                     <span className="text-sm">Hide routine runs</span>
                   </label>
-                </div>
-              ) : null}
+                ) : null}
+              </div>
             </div>
           </div>
         </div>
