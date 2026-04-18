@@ -227,6 +227,7 @@ function ProjectWorkspacesContent({
   summaries: ReturnType<typeof buildProjectWorkspaceSummaries>;
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [runtimeActionKey, setRuntimeActionKey] = useState<string | null>(null);
   const [closingWorkspace, setClosingWorkspace] = useState<{
     id: string;
@@ -245,6 +246,9 @@ function ProjectWorkspacesContent({
         return await projectsApi.controlWorkspaceRuntimeServices(projectId, input.workspaceId, input.action, companyId);
       }
       return await executionWorkspacesApi.controlRuntimeServices(input.workspaceId, input.action);
+    },
+    onError: (err) => {
+      pushToast({ title: "Runtime action failed", body: err instanceof Error ? err.message : "Something went wrong.", tone: "error" });
     },
     onSettled: () => {
       setRuntimeActionKey(null);
