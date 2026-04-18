@@ -69,9 +69,14 @@ function decodeBufferWithFallback(buf: Buffer): string {
     const decoder = new TextDecoder("utf-8", { fatal: true });
     return decoder.decode(buf);
   } catch {
-    // GBK fallback — Node.js built-in ICU supports 'gbk' natively
-    const gbkDecoder = new TextDecoder("gbk");
-    return gbkDecoder.decode(buf);
+    try {
+      // GBK fallback — Node.js built-in ICU supports 'gbk' natively
+      const gbkDecoder = new TextDecoder("gbk");
+      return gbkDecoder.decode(buf);
+    } catch {
+      // ICU doesn't know GBK (small-icu build); return lossy UTF-8 string
+      return buf.toString("utf8");
+    }
   }
 }
 export const MAX_EXCERPT_BYTES = 32 * 1024;
@@ -1112,7 +1117,6 @@ export async function runChildProcess(
 
     // Encourage child processes on Windows to output UTF-8 instead of GBK
     if (process.platform === "win32") {
-      rawMerged.LANG = "en_US.UTF-8";
       rawMerged.PYTHONIOENCODING = "utf-8";
     }
 
