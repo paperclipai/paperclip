@@ -1,6 +1,9 @@
 import net from "node:net";
 
-export function checkPort(port: number): Promise<{ available: boolean; error?: string }> {
+export function checkPort(
+  port: number,
+  host: string = "127.0.0.1",
+): Promise<{ available: boolean; error?: string }> {
   return new Promise((resolve) => {
     const server = net.createServer();
     server.once("error", (err: NodeJS.ErrnoException) => {
@@ -13,6 +16,6 @@ export function checkPort(port: number): Promise<{ available: boolean; error?: s
     server.once("listening", () => {
       server.close(() => resolve({ available: true }));
     });
-    server.listen(port, "127.0.0.1");
+    server.listen(port, host);
   });
 }
