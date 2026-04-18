@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { resolveSessionKey } from "./execute.js";
+import { resolveClaimedApiKeyPath, resolveSessionKey } from "./execute.js";
+
+describe("resolveClaimedApiKeyPath", () => {
+  it("uses an explicit claimed API key path when configured", () => {
+    expect(resolveClaimedApiKeyPath("~/custom/paperclip-claimed-api-key.json", "meridian")).toBe(
+      "~/custom/paperclip-claimed-api-key.json",
+    );
+  });
+
+  it("derives a per-agent workspace path when agentId is configured", () => {
+    expect(resolveClaimedApiKeyPath(null, "meridian")).toBe(
+      "~/.openclaw/workspace-meridian/paperclip-claimed-api-key.json",
+    );
+  });
+
+  it("falls back to the default workspace path for main", () => {
+    expect(resolveClaimedApiKeyPath(null, "main")).toBe("~/.openclaw/workspace/paperclip-claimed-api-key.json");
+  });
+});
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
