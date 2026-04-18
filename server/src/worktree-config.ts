@@ -448,6 +448,14 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
   return { repairedConfig, repairedEnv };
 }
 
+function isPortPinnedByRuntimeEnv(rawValue: string | null | undefined, selectedPort: number): boolean {
+  const normalized = nonEmpty(rawValue);
+  if (!normalized) return false;
+  const parsedPort = Number(normalized);
+  if (!Number.isInteger(parsedPort) || parsedPort <= 0) return true;
+  return parsedPort === selectedPort;
+}
+
 export function maybePersistWorktreeRuntimePorts(input: {
   serverPort: number;
   databasePort?: number | null;
@@ -465,7 +473,7 @@ export function maybePersistWorktreeRuntimePorts(input: {
   const { config, changed } = applyRuntimePortSelectionToConfig(fileConfig, {
     serverPort: input.serverPort,
     databasePort: input.databasePort,
-    allowServerPortWrite: !nonEmpty(process.env.PORT),
+    allowServerPortWrite: !isPortPinnedByRuntimeEnv(process.env.PORT, input.serverPort),
     allowDatabasePortWrite: !nonEmpty(process.env.DATABASE_URL),
   });
 
@@ -473,3 +481,4 @@ export function maybePersistWorktreeRuntimePorts(input: {
     writeConfigFile(context.configPath, config);
   }
 }
+
