@@ -2095,12 +2095,12 @@ export function issueService(db: Db) {
         conditions.push(
           order === "asc"
             ? sql<boolean>`(
-                ${issueComments.createdAt} > ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} > ${anchor.id})
+                ${issueComments.createdAt} > ${anchor.createdAt.toISOString()}
+                OR (${issueComments.createdAt} = ${anchor.createdAt.toISOString()} AND ${issueComments.id} > ${anchor.id})
               )`
             : sql<boolean>`(
-                ${issueComments.createdAt} < ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} < ${anchor.id})
+                ${issueComments.createdAt} < ${anchor.createdAt.toISOString()}
+                OR (${issueComments.createdAt} = ${anchor.createdAt.toISOString()} AND ${issueComments.id} < ${anchor.id})
               )`,
         );
       }
