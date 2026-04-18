@@ -2244,6 +2244,7 @@ export function agentRoutes(db: Db) {
       contextSnapshot: {
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
+        ...(req.body.issueId ? { issueId: req.body.issueId } : {}),
         forceFreshSession: req.body.forceFreshSession === true,
       },
     });

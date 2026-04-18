@@ -5341,6 +5341,21 @@ export function heartbeatService(db: Db) {
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
+        // Look up the agent's assigned open issues so the contextSnapshot
+        // includes the primary issueId.  Without this the agent wakes with
+        // no issue context and reports "no open issues."
+        const assignedIssues = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, agent.companyId),
+              eq(issues.assigneeAgentId, agent.id),
+              inArray(issues.status, ["todo", "in_progress", "blocked"]),
+            ),
+          )
+          .orderBy(asc(issues.createdAt));
+
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",
@@ -5351,6 +5366,10 @@ export function heartbeatService(db: Db) {
             source: "scheduler",
             reason: "interval_elapsed",
             now: now.toISOString(),
+            ...(assignedIssues[0] ? { issueId: assignedIssues[0].id } : {}),
+            ...(assignedIssues.length > 0
+              ? { assignedIssueIds: assignedIssues.map((i) => i.id) }
+              : {}),
           },
         });
         if (run) enqueued += 1;
