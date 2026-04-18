@@ -6,6 +6,7 @@ import { resolveDefaultLocalPluginDir } from "../home-paths.js";
 import { pluginLoader } from "../services/plugin-loader.js";
 
 const ORIGINAL_ENV = { ...process.env };
+const TEMP_DIRS: string[] = [];
 
 function createPluginFixture(root: string, packageName: string) {
   const pluginDir = path.join(root, packageName);
@@ -15,6 +16,7 @@ function createPluginFixture(root: string, packageName: string) {
     JSON.stringify({
       name: packageName,
       version: "1.2.3",
+      type: "module",
       paperclipPlugin: {
         manifest: "./dist/manifest.js",
       },
@@ -42,6 +44,12 @@ function createPluginFixture(root: string, packageName: string) {
 describe("plugin home-aware paths", () => {
   afterEach(() => {
     process.env = { ...ORIGINAL_ENV };
+    while (TEMP_DIRS.length > 0) {
+      const dir = TEMP_DIRS.pop();
+      if (dir) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
   });
 
   it("resolves the local plugin dir from PAPERCLIP_HOME", () => {
@@ -52,6 +60,7 @@ describe("plugin home-aware paths", () => {
 
   it("defaults plugin discovery to PAPERCLIP_HOME/plugins when configured", async () => {
     const paperclipHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-plugin-home-"));
+    TEMP_DIRS.push(paperclipHome);
     const pluginRoot = path.join(paperclipHome, "plugins");
     process.env.PAPERCLIP_HOME = paperclipHome;
     createPluginFixture(pluginRoot, "paperclip-plugin-fixture");

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockRegistry = {
   getById: vi.fn(),
   getByKey: vi.fn(),
+  getConfig: vi.fn(),
 };
 
 vi.mock("../services/plugin-registry.js", () => ({
@@ -17,20 +18,30 @@ vi.mock("../services/plugin-registry.js", () => ({
 import { pluginUiStaticRoutes } from "../routes/plugin-ui-static.js";
 
 const ORIGINAL_ENV = { ...process.env };
+const TEMP_DIRS: string[] = [];
 
 describe("pluginUiStaticRoutes PAPERCLIP_HOME fallback", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
     mockRegistry.getById.mockReset();
     mockRegistry.getByKey.mockReset();
+    mockRegistry.getConfig.mockReset();
+    mockRegistry.getConfig.mockResolvedValue(null);
   });
 
   afterEach(() => {
     process.env = { ...ORIGINAL_ENV };
+    while (TEMP_DIRS.length > 0) {
+      const dir = TEMP_DIRS.pop();
+      if (dir) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
   });
 
   it("serves plugin UI assets from PAPERCLIP_HOME/plugins when localPluginDir is omitted", async () => {
     const paperclipHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-plugin-ui-home-"));
+    TEMP_DIRS.push(paperclipHome);
     const uiDir = path.join(
       paperclipHome,
       "plugins",
