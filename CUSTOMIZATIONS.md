@@ -20,6 +20,7 @@ The LaunchAgent plist at `~/Library/LaunchAgents/com.openclaw.paperclip.plist` r
 | dev-runner-paths exists | 6fb9f642 | scripts/dev-runner-paths.mjs | (file presence) |
 | heartbeat plugin-event emit | 0a301e37, f4eeeaa8 | server/src/services/heartbeat.ts | `emitRunStatusPluginEvent` |
 | plugin-registry scope filter | SCOPE_FILTER_PATCH_V1 | server/src/services/plugin-registry.ts | `SCOPE_FILTER_PATCH_V1` |
+| agent plugin access | AGENT_PLUGIN_ACCESS_PATCH_V1 | server/src/routes/plugins.ts | `AGENT_PLUGIN_ACCESS_PATCH_V1` |
 
 Post-rebase: verify every row in the tables below is still present. Patches marked HIGH reversion risk MUST be re-guarded in the plist before Paperclip is started.
 
@@ -63,6 +64,7 @@ Post-rebase: verify every row in the tables below is still present. Patches mark
 | 0a301e37 | emit agent.run.* plugin events on run status transitions (#3) | server/src/services/heartbeat.ts, server/src/services/plugin-event-bus.ts | Wires setHeartbeatPluginEventBus + emitRunStatusPluginEvent; setRunStatus() now forwards started/finished/failed/cancelled transitions to the plugin event bus. Without this, plugins subscribed to agent.run.* lifecycle events never fire (Chief of Staff, orchestrators) | HIGH | Candidate for upstream PR |
 | f4eeeaa8 | also emit agent.run.started at the claim site (#5) | server/src/services/heartbeat.ts | queued → running claim-site uses a direct db.update bypassing setRunStatus(); without this follow-up emit, plugins only ever see terminal transitions (finished/failed/cancelled) and miss started events entirely | HIGH | Candidate for upstream PR (with 0a301e37) |
 | SCOPE_FILTER_PATCH_V1 | honor scopeKind + scopeId in plugin-registry.listEntities | server/src/services/plugin-registry.ts | Pre-patch, listEntities silently dropped the SDK's `scopeKind`/`scopeId` filters — only `pluginId`/`entityType`/`externalId` were applied. Every plugin tool that stored entities under a run/issue/project scope was leaking cross-scope data (e.g. `cos_dismiss_prefinding` would accept any `runId` and still dismiss). Patch adds conditional composition of `eq(scope_kind, …)` / `eq(scope_id, …)` plus query-time validation. Guarded by marker `SCOPE_FILTER_PATCH_V1` | HIGH | Candidate for upstream PR |
+| AGENT_PLUGIN_ACCESS_PATCH_V1 | allow agent keys to call POST /api/plugins/tools/execute | server/src/routes/plugins.ts | Pre-patch, assertBoard(req) at line 569 rejected every agent JWT with HTTP 403 "Board access required". Agents need to call plugin tools (specifically cos_* tools in the Chief of Staff plugin). Replaced assertBoard with a none-check; company scoping is enforced by the existing assertCompanyAccess(req, runContext.companyId) below. Board users pass through unchanged. Guarded by marker `AGENT_PLUGIN_ACCESS_PATCH_V1` | HIGH | Candidate for upstream PR |
 
 ### CI & Dev Experience
 

@@ -566,7 +566,16 @@ export function pluginRoutes(
    * - 502 if the plugin worker is unavailable or the RPC call fails
    */
   router.post("/plugins/tools/execute", async (req, res) => {
-    assertBoard(req);
+    // AGENT_PLUGIN_ACCESS_PATCH_V1
+    // Original assertBoard(req) blocked all agent keys — only board users could invoke plugins.
+    // Agents are a valid caller: they need to reach their own plugin tools (e.g. cos_* tools
+    // in the Chief of Staff plugin). Company scoping is handled by assertCompanyAccess(req,
+    // runContext.companyId) below — agents are restricted to their own company automatically.
+    // Board users are still allowed through unchanged.
+    if (req.actor.type === "none") {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
