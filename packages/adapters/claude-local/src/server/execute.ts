@@ -226,6 +226,12 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env.PAPERCLIP_API_KEY = authToken;
   }
 
+  // Prevent Claude Code nesting detection from blocking agent runs that are
+  // launched from within an existing Claude Code session.  Applied after
+  // envConfig overrides so user-supplied config cannot re-enable the guard.
+  env.CLAUDECODE = "";
+  env.CLAUDE_CODE_ENTRYPOINT = "";
+
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   await ensureCommandResolvable(command, cwd, runtimeEnv);
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
