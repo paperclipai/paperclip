@@ -216,6 +216,10 @@ export function IssueProperties({
   const [ownerSearch, setOwnerSearch] = useState("");
   const [collaboratorsOpen, setCollaboratorsOpen] = useState(false);
   const [collaboratorsSearch, setCollaboratorsSearch] = useState("");
+  const [handoffFromOpen, setHandoffFromOpen] = useState(false);
+  const [handoffFromSearch, setHandoffFromSearch] = useState("");
+  const [handoffToOpen, setHandoffToOpen] = useState(false);
+  const [handoffToSearch, setHandoffToSearch] = useState("");
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
   const [blockedByOpen, setBlockedByOpen] = useState(false);
@@ -334,6 +338,7 @@ export function IssueProperties({
     ? agents?.find((a) => a.id === issue.ownerAgentId)
     : null;
   const collaboratorAgentIds = missionControl?.collaboratorAgentIds ?? [];
+  const handoff = missionControl?.handoff ?? null;
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
@@ -348,6 +353,22 @@ export function IssueProperties({
     }
     return "System";
   };
+  const updateHandoff = (patch: Record<string, unknown>) => {
+    const nextHandoff = {
+      ...(handoff ?? {}),
+      ...patch,
+      timestamp: patch.timestamp ?? handoff?.timestamp ?? new Date(),
+    };
+    onUpdate({
+      missionControl: {
+        ...(missionControl ?? {}),
+        handoff: nextHandoff,
+      },
+    });
+  };
+  const filteredHandoffAgents = (search: string) => sortedAgents.filter((candidate) =>
+    candidate.name.toLowerCase().includes(search.toLowerCase()),
+  );
   const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
     onUpdate({
       executionPolicy: buildExecutionPolicy({
@@ -1268,6 +1289,74 @@ export function IssueProperties({
               blocker: value || null,
             },
           })}
+        />
+
+        <PropertyPicker
+          inline={inline}
+          label="Handoff from"
+          open={handoffFromOpen}
+          onOpenChange={(open) => {
+            setHandoffFromOpen(open);
+            if (!open) setHandoffFromSearch("");
+          }}
+          triggerContent={<span className="text-sm">{agentName(handoff?.fromAgentId ?? null) ?? "Unassigned"}</span>}
+          popoverClassName="w-72"
+        >
+          <div className="p-1 space-y-1">
+            <Input value={handoffFromSearch} onChange={(event) => setHandoffFromSearch(event.target.value)} placeholder="Search agents" className="h-8 text-sm" />
+            <button className="flex w-full items-center rounded px-2 py-1.5 text-sm hover:bg-accent" onClick={() => { updateHandoff({ fromAgentId: null }); setHandoffFromOpen(false); }}>Unassigned</button>
+            {filteredHandoffAgents(handoffFromSearch).map((agent) => (
+              <button key={agent.id} className="flex w-full items-center rounded px-2 py-1.5 text-sm hover:bg-accent" onClick={() => { updateHandoff({ fromAgentId: agent.id }); setHandoffFromOpen(false); }}>
+                {agent.name}
+              </button>
+            ))}
+          </div>
+        </PropertyPicker>
+
+        <PropertyPicker
+          inline={inline}
+          label="Handoff to"
+          open={handoffToOpen}
+          onOpenChange={(open) => {
+            setHandoffToOpen(open);
+            if (!open) setHandoffToSearch("");
+          }}
+          triggerContent={<span className="text-sm">{agentName(handoff?.toAgentId ?? null) ?? "Unassigned"}</span>}
+          popoverClassName="w-72"
+        >
+          <div className="p-1 space-y-1">
+            <Input value={handoffToSearch} onChange={(event) => setHandoffToSearch(event.target.value)} placeholder="Search agents" className="h-8 text-sm" />
+            <button className="flex w-full items-center rounded px-2 py-1.5 text-sm hover:bg-accent" onClick={() => { updateHandoff({ toAgentId: null }); setHandoffToOpen(false); }}>Unassigned</button>
+            {filteredHandoffAgents(handoffToSearch).map((agent) => (
+              <button key={agent.id} className="flex w-full items-center rounded px-2 py-1.5 text-sm hover:bg-accent" onClick={() => { updateHandoff({ toAgentId: agent.id }); setHandoffToOpen(false); }}>
+                {agent.name}
+              </button>
+            ))}
+          </div>
+        </PropertyPicker>
+
+        <MissionControlTextField
+          label="Handoff why"
+          value={handoff?.reason ?? ""}
+          placeholder="Reason for handoff"
+          multiline
+          onCommit={(value) => updateHandoff({ reason: value || null })}
+        />
+
+        <MissionControlTextField
+          label="Requested"
+          value={handoff?.requestedNextStep ?? ""}
+          placeholder="Requested next step"
+          multiline
+          onCommit={(value) => updateHandoff({ requestedNextStep: value || null })}
+        />
+
+        <MissionControlTextField
+          label="Unblock when"
+          value={handoff?.unblockCondition ?? ""}
+          placeholder="What unblocks this handoff"
+          multiline
+          onCommit={(value) => updateHandoff({ unblockCondition: value || null })}
         />
 
         <PropertyRow label="Attention">

@@ -1642,6 +1642,30 @@ export function issueRoutes(
       },
     });
 
+    const previousMissionControl = (existing.missionControl ?? null) as Record<string, unknown> | null;
+    const nextMissionControl = (issue.missionControl ?? null) as Record<string, unknown> | null;
+    const previousHandoff = previousMissionControl && typeof previousMissionControl === "object" ? previousMissionControl.handoff : undefined;
+    const nextHandoff = nextMissionControl && typeof nextMissionControl === "object" ? nextMissionControl.handoff : undefined;
+    if (JSON.stringify(previousHandoff ?? null) !== JSON.stringify(nextHandoff ?? null)) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.handoff_updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          missionControl: nextMissionControl,
+          _previous: {
+            missionControl: previousMissionControl,
+          },
+        },
+      });
+    }
+
     if (Array.isArray(req.body.blockedByIssueIds)) {
       const previousBlockedByIds = new Set((existingRelations?.blockedBy ?? []).map((relation) => relation.id));
       const nextBlockedByIds = new Set(req.body.blockedByIssueIds as string[]);

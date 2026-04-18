@@ -119,6 +119,19 @@ export const issueMissionControlMetadataSchema = z.object({
   blocker: z.string().trim().min(1).max(1000).nullable().optional(),
   collaboratorAgentIds: z.array(z.string().uuid()).optional().default([]),
   needsHumanAttention: z.boolean().optional(),
+  handoff: z.object({
+    fromAgentId: z.string().uuid().nullable().optional(),
+    toAgentId: z.string().uuid().nullable().optional(),
+    reason: z.string().trim().min(1).max(1000).nullable().optional(),
+    requestedNextStep: z.string().trim().min(1).max(1000).nullable().optional(),
+    unblockCondition: z.string().trim().min(1).max(1000).nullable().optional(),
+    timestamp: z.coerce.date(),
+    context: z.object({
+      issueId: z.string().uuid(),
+      identifier: z.string().trim().min(1).max(64).nullable(),
+      title: z.string().trim().min(1).max(500),
+    }),
+  }).nullable().optional(),
 });
 
 export const createIssueSchema = z.object({

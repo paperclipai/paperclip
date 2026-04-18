@@ -653,4 +653,66 @@ describe("IssueProperties", () => {
 
     act(() => root.unmount());
   });
+
+  it("allows editing structured handoff fields", async () => {
+    const onUpdate = vi.fn();
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "11111111-1111-4111-8111-111111111111", name: "Main" },
+      { id: "22222222-2222-4222-8222-222222222222", name: "Ork" },
+      { id: "33333333-3333-4333-8333-333333333333", name: "Stitch" },
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        missionControl: {
+          collaboratorAgentIds: [],
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const fromTrigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Unassigned"));
+    expect(fromTrigger).not.toBeUndefined();
+
+    await act(async () => {
+      fromTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const orkOption = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Ork"));
+    expect(orkOption).not.toBeUndefined();
+
+    await act(async () => {
+      orkOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate.mock.calls.some(([arg]) =>
+      (arg as { missionControl?: { handoff?: { fromAgentId?: string } } }).missionControl?.handoff?.fromAgentId ===
+      "22222222-2222-4222-8222-222222222222")).toBe(true);
+
+    onUpdate.mockClear();
+    const requested = Array.from(container.querySelectorAll("textarea"))
+      .find((input) => input.getAttribute("placeholder") === "Requested next step");
+    expect(requested).not.toBeUndefined();
+
+    await act(async () => {
+      requested!.focus();
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(requested!, "Review the orchestration draft");
+      requested!.dispatchEvent(new Event("input", { bubbles: true }));
+      requested!.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      requested!.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+    });
+
+    expect(onUpdate.mock.calls.some(([arg]) =>
+      (arg as { missionControl?: { handoff?: { requestedNextStep?: string } } }).missionControl?.handoff?.requestedNextStep ===
+      "Review the orchestration draft")).toBe(true);
+
+    act(() => root.unmount());
+  });
 });

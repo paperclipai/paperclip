@@ -179,6 +179,23 @@ export interface IssueMissionControlMetadata {
   blocker?: string | null;
   collaboratorAgentIds?: string[];
   needsHumanAttention?: boolean;
+  handoff?: IssueHandoff | null;
+}
+
+export interface IssueHandoffContext {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+}
+
+export interface IssueHandoff {
+  fromAgentId: string | null;
+  toAgentId: string | null;
+  reason: string | null;
+  requestedNextStep: string | null;
+  unblockCondition: string | null;
+  timestamp: Date;
+  context: IssueHandoffContext;
 }
 
 export interface IssueActivitySummary {

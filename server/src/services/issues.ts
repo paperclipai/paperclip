@@ -615,6 +615,7 @@ const issueListSelect = {
 function normalizeMissionControlMetadata(
   raw: Record<string, unknown> | null | undefined,
   ownerAgentId: string | null | undefined,
+  issueContext?: { issueId: string; identifier: string | null; title: string } | null,
 ): Record<string, unknown> | null | undefined {
   if (raw === undefined) return undefined;
   if (raw === null) return null;
@@ -624,9 +625,33 @@ function normalizeMissionControlMetadata(
       .filter((agentId) => agentId !== ownerAgentId)
     : [];
 
+  const handoffRaw = asRecord(raw.handoff);
+  const normalizedHandoff = handoffRaw
+    ? {
+        fromAgentId: typeof handoffRaw.fromAgentId === "string" ? handoffRaw.fromAgentId : null,
+        toAgentId: typeof handoffRaw.toAgentId === "string" ? handoffRaw.toAgentId : null,
+        reason: typeof handoffRaw.reason === "string" ? handoffRaw.reason.trim() || null : null,
+        requestedNextStep: typeof handoffRaw.requestedNextStep === "string" ? handoffRaw.requestedNextStep.trim() || null : null,
+        unblockCondition: typeof handoffRaw.unblockCondition === "string" ? handoffRaw.unblockCondition.trim() || null : null,
+        timestamp: handoffRaw.timestamp instanceof Date
+          ? handoffRaw.timestamp
+          : typeof handoffRaw.timestamp === "string" || typeof handoffRaw.timestamp === "number"
+            ? new Date(handoffRaw.timestamp)
+            : new Date(),
+        context: issueContext
+          ? {
+              issueId: issueContext.issueId,
+              identifier: issueContext.identifier,
+              title: issueContext.title,
+            }
+          : asRecord(handoffRaw.context),
+      }
+    : null;
+
   return {
     ...raw,
     collaboratorAgentIds,
+    ...(handoffRaw !== null ? { handoff: normalizedHandoff } : {}),
   };
 }
 
@@ -638,6 +663,14 @@ function summarizeIssueUpdate(details: Record<string, unknown> | null): string |
   const record = asRecord(details);
   if (!record) return null;
   const previous = asRecord(record._previous);
+  const handoff = asRecord(asRecord(record.missionControl)?.handoff);
+  const previousHandoff = asRecord(asRecord(previous?.missionControl)?.handoff);
+  if (handoff || previousHandoff) {
+    if (handoff && !previousHandoff) return "Created handoff";
+    if (!handoff && previousHandoff) return "Cleared handoff";
+    if ((handoff?.toAgentId ?? null) !== (previousHandoff?.toAgentId ?? null)) return "Updated handoff target";
+    return "Updated handoff";
+  }
   if (record.ownerAgentId !== undefined && previous?.ownerAgentId !== record.ownerAgentId) {
     return record.ownerAgentId ? "Changed owner" : "Cleared owner";
   }
@@ -673,6 +706,7 @@ function summarizeIssueActivity(action: string, details: Record<string, unknown>
   if (action === "issue.attachment_added") return "Added attachment";
   if (action === "issue.attachment_removed") return "Removed attachment";
   if (action === "issue.updated") return summarizeIssueUpdate(details);
+  if (action === "issue.handoff_updated") return summarizeIssueUpdate(details);
   return null;
 }
 
@@ -1644,6 +1678,13 @@ export function issueService(db: Db) {
       for (const collaboratorAgentId of collaboratorAgentIds) {
         await assertAssignableAgent(companyId, collaboratorAgentId);
       }
+      const createHandoff = asRecord(data.missionControl?.handoff);
+      const handoffAgentIds = [createHandoff?.fromAgentId, createHandoff?.toAgentId].filter(
+        (value): value is string => typeof value === "string" && value.length > 0,
+      );
+      for (const handoffAgentId of handoffAgentIds) {
+        await assertAssignableAgent(companyId, handoffAgentId);
+      }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
@@ -1749,12 +1790,15 @@ export function issueService(db: Db) {
 
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
+        const issueId = issueData.id ?? crypto.randomUUID();
 
         const values = {
           ...issueData,
+          id: issueId,
           missionControl: normalizeMissionControlMetadata(
             issueData.missionControl as Record<string, unknown> | null | undefined,
             issueData.ownerAgentId ?? null,
+            { issueId, identifier, title: issueData.title },
           ),
           originKind: issueData.originKind ?? "manual",
           goalId: resolveIssueGoalId({
@@ -1841,6 +1885,7 @@ export function issueService(db: Db) {
         (issueData.missionControl as Record<string, unknown> | null | undefined)
           ?? (existing.missionControl as Record<string, unknown> | null | undefined),
         issueData.ownerAgentId !== undefined ? issueData.ownerAgentId : existing.ownerAgentId,
+        { issueId: existing.id, identifier: existing.identifier, title: issueData.title ?? existing.title },
       );
 
       const patch: Partial<typeof issues.$inferInsert> = {
@@ -1874,6 +1919,13 @@ export function issueService(db: Db) {
         : [];
       for (const collaboratorAgentId of collaboratorAgentIds) {
         await assertAssignableAgent(existing.companyId, collaboratorAgentId);
+      }
+      const handoff = asRecord(nextMissionControl?.handoff);
+      const handoffAgentIds = [handoff?.fromAgentId, handoff?.toAgentId].filter(
+        (value): value is string => typeof value === "string" && value.length > 0,
+      );
+      for (const handoffAgentId of handoffAgentIds) {
+        await assertAssignableAgent(existing.companyId, handoffAgentId);
       }
       const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =
