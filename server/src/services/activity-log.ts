@@ -34,6 +34,8 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function logActivity(db: Db, input: LogActivityInput) {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
@@ -42,6 +44,19 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
+
+  // activity_log.run_id is a uuid FK referencing heartbeat_runs.id.
+  // If the caller provides a non-UUID string (or a UUID that doesn't exist in
+  // heartbeat_runs), the INSERT will fail with a FK violation and surface as an
+  // unhandled 500 on the parent request. Sanitize to null when invalid.
+  const runId = input.runId && UUID_RE.test(input.runId) ? input.runId : null;
+  if (input.runId && !runId) {
+    logger.warn(
+      { runId: input.runId, action: input.action, entityId: input.entityId },
+      "logActivity: dropping non-UUID runId to avoid FK violation on activity_log",
+    );
+  }
+
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -50,7 +65,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId,
     details: redactedDetails,
   });
 
@@ -64,7 +79,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityType: input.entityType,
       entityId: input.entityId,
       agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
+      runId,
       details: redactedDetails,
     },
   });
@@ -82,7 +97,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       payload: {
         ...redactedDetails,
         agentId: input.agentId ?? null,
-        runId: input.runId ?? null,
+        runId,
       },
     };
     void _pluginEventBus.emit(event).then(({ errors }) => {
