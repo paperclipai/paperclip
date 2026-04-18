@@ -1,0 +1,18 @@
+Paperclip {{ .Chart.AppVersion }} installed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Next steps:
+
+1. First-run bootstrap — create the initial admin user:
+     kubectl -n {{ .Release.Namespace }} exec -it {{ include "paperclip.fullname" . }}-0 -- \
+       npx paperclipai auth bootstrap-ceo \
+         --base-url {{ if .Values.ingress.enabled }}https://{{ (index .Values.ingress.hosts 0).host }}{{ else }}http://localhost:{{ .Values.service.port }}{{ end }}
+
+   The command prints a one-time invite URL. Open it in a browser and complete the sign-up.
+
+2. Port-forward for local access (or configure Ingress / cloudflared):
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "paperclip.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+
+3. Health check:
+     kubectl -n {{ .Release.Namespace }} exec {{ include "paperclip.fullname" . }}-0 -- npx paperclipai doctor
+
+See the chart README for bootstrap, upgrade, and backup details.
