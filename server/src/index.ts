@@ -621,6 +621,15 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "routine scheduler tick failed");
         });
   
+      // Enforce per-run max duration — terminates runs whose child process hangs
+      // (e.g. adapter stalled on a model API) and marks them failed with
+      // errorCode="timeout". Default 60 min. Runs alongside reapOrphanedRuns.
+      void heartbeat
+        .enforceRunTimeouts()
+        .catch((err) => {
+          logger.error({ err }, "enforceRunTimeouts failed");
+        });
+
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
       void heartbeat

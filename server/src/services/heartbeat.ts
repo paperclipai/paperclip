@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -2125,6 +2125,13 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0]);
   }
 
+  // Terminal statuses close out a run. When they fire we also advance the
+  // agent's last_heartbeat_at watermark — otherwise the heartbeat scheduler and
+  // silence watchdogs treat the agent as silent forever (it only updated on
+  // "succeeded" previously via appendRunEvent side effects that never ran for
+  // failed/cancelled/timeout paths).
+  const RUN_TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -2136,6 +2143,22 @@ export function heartbeatService(db: Db) {
       .where(eq(heartbeatRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    if (updated && RUN_TERMINAL_STATUSES.has(status)) {
+      const finishedAt = updated.finishedAt ?? new Date();
+      await db
+        .update(agents)
+        .set({ lastHeartbeatAt: finishedAt, updatedAt: new Date() })
+        .where(
+          and(
+            eq(agents.id, updated.agentId),
+            or(
+              isNull(agents.lastHeartbeatAt),
+              lt(agents.lastHeartbeatAt, finishedAt),
+            ),
+          ),
+        );
+    }
 
     if (updated) {
       publishLiveEvent({
@@ -5102,6 +5125,79 @@ export function heartbeatService(db: Db) {
     return runs.length;
   }
 
+  // Default max duration for a single heartbeat run. Agents whose underlying
+  // model adapter hangs (e.g. opencode sleeping in ep_poll) stay "running"
+  // forever without this guard. Configurable via env.
+  const DEFAULT_RUN_TIMEOUT_MS = 60 * 60 * 1000;
+
+  async function enforceRunTimeouts(opts?: { maxDurationMs?: number }) {
+    const maxDurationMs = opts?.maxDurationMs ?? DEFAULT_RUN_TIMEOUT_MS;
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - maxDurationMs);
+
+    const overdue = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.status, "running"), lt(heartbeatRuns.startedAt, cutoff)));
+
+    const timedOut: string[] = [];
+
+    for (const run of overdue) {
+      const ageMs = run.startedAt ? now.getTime() - new Date(run.startedAt).getTime() : 0;
+      const message = `Run exceeded maximum duration (${Math.round(ageMs / 60000)}m > ${Math.round(maxDurationMs / 60000)}m) -- terminated by server-side timeout`;
+
+      const running = runningProcesses.get(run.id);
+      if (running) {
+        await terminateHeartbeatRunProcess({
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs: Math.max(1, running.graceSec) * 1000,
+        });
+        runningProcesses.delete(run.id);
+      } else if (run.processPid || run.processGroupId) {
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      }
+
+      const finalized = await setRunStatus(run.id, "failed", {
+        error: message,
+        errorCode: "timeout",
+        finishedAt: now,
+      });
+      await setWakeupStatus(run.wakeupRequestId, "failed", {
+        finishedAt: now,
+        error: message,
+      });
+      if (finalized) {
+        await appendRunEvent(finalized, await nextRunEventSeq(finalized.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "error",
+          message,
+          payload: {
+            ageMs,
+            maxDurationMs,
+            ...(run.processPid ? { processPid: run.processPid } : {}),
+            ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+          },
+        });
+        await releaseIssueExecutionAndPromote(finalized);
+      }
+
+      await finalizeAgentStatus(run.agentId, "failed");
+      await startNextQueuedRunForAgent(run.agentId);
+      timedOut.push(run.id);
+    }
+
+    if (timedOut.length > 0) {
+      logger.warn({ timedOutCount: timedOut.length, runIds: timedOut, maxDurationMs }, "timed out long-running heartbeat runs");
+    }
+
+    return { timedOut: timedOut.length, runIds: timedOut };
+  }
+
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
     if (scope.scopeType === "agent") {
       await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
@@ -5320,6 +5416,8 @@ export function heartbeatService(db: Db) {
     reportRunActivity: clearDetachedRunWarning,
 
     reapOrphanedRuns,
+
+    enforceRunTimeouts,
 
     resumeQueuedRuns,
 
