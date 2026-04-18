@@ -65,7 +65,8 @@ const FREE_TEXT_PATTERNS: RedactionPattern[] = [
   {
     kind: "phone",
     regex: /(?<!\w)(?:\+?\d[\d ()-]{7,}\d)(?!\w)/g,
-    replacement: "[REDACTED_PHONE]",
+    replacement: (match: string) =>
+      match.replace(/\D/g, "").length >= 10 ? "[REDACTED_PHONE]" : match,
   },
 ];
 
@@ -84,9 +85,22 @@ function recordField(state: FeedbackRedactionState, fieldPath: string) {
 }
 
 function applyPattern(input: string, pattern: RedactionPattern) {
+  pattern.regex.lastIndex = 0;
+  if (typeof pattern.replacement === "function") {
+    const repl = pattern.replacement as (match: string, ...groups: string[]) => string;
+    let matches = 0;
+    const output = input.replace(pattern.regex, (match, ...args) => {
+      const groups = args.slice(0, -2) as string[];
+      const next = repl(match, ...groups);
+      if (next !== match) matches += 1;
+      return next;
+    });
+    pattern.regex.lastIndex = 0;
+    return { output, matches };
+  }
+
   const matches = Array.from(input.matchAll(pattern.regex)).length;
   if (matches === 0) {
-    pattern.regex.lastIndex = 0;
     return { output: input, matches: 0 };
   }
   const output = input.replace(pattern.regex, pattern.replacement as never);
