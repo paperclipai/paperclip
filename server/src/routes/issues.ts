@@ -836,6 +836,17 @@ export function issueRoutes(
     });
   });
 
+  router.get("/issues/:id/context-digest", async (req, res) => {
+    const id = req.params.id as string;
+    const digest = await svc.getContextDigest(id);
+    if (!digest) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, digest.companyId);
+    res.json(digest);
+  });
+
   router.get("/issues/:id/work-products", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -2141,10 +2152,14 @@ export function issueRoutes(
       limitRaw && Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(Math.floor(limitRaw), MAX_ISSUE_COMMENT_LIMIT)
         : null;
+    const sinceRaw = typeof req.query.since === "string" ? req.query.since.trim() : null;
+    const since = sinceRaw ? new Date(sinceRaw) : null;
+    const validSince = since && !isNaN(since.getTime()) ? since : null;
     const comments = await svc.listComments(id, {
       afterCommentId,
       order,
       limit,
+      since: validSince,
     });
     res.json(comments);
   });
