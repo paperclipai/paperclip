@@ -5,11 +5,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
   getByKey: vi.fn(),
+  upsertConfig: vi.fn(),
 }));
 
 const mockLifecycle = vi.hoisted(() => ({
   load: vi.fn(),
   upgrade: vi.fn(),
+  unload: vi.fn(),
+  enable: vi.fn(),
+  disable: vi.fn(),
 }));
 
 vi.mock("../services/plugin-registry.js", () => ({
@@ -136,6 +140,31 @@ describe("plugin install and upgrade authz", () => {
     expect(res.status).toBe(403);
     expect(mockRegistry.getById).not.toHaveBeenCalled();
     expect(mockLifecycle.upgrade).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it.each([
+    ["delete", "delete", "/api/plugins/11111111-1111-4111-8111-111111111111", undefined],
+    ["enable", "post", "/api/plugins/11111111-1111-4111-8111-111111111111/enable", {}],
+    ["disable", "post", "/api/plugins/11111111-1111-4111-8111-111111111111/disable", {}],
+    ["config", "post", "/api/plugins/11111111-1111-4111-8111-111111111111/config", { configJson: {} }],
+  ] as const)("rejects plugin %s for non-admin board users", async (_name, method, path, body) => {
+    const { app } = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const req = method === "delete" ? request(app).delete(path) : request(app).post(path).send(body);
+    const res = await req;
+
+    expect(res.status).toBe(403);
+    expect(mockRegistry.getById).not.toHaveBeenCalled();
+    expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+    expect(mockLifecycle.unload).not.toHaveBeenCalled();
+    expect(mockLifecycle.enable).not.toHaveBeenCalled();
+    expect(mockLifecycle.disable).not.toHaveBeenCalled();
   }, 20_000);
 
   it("allows instance admins to upgrade plugins", async () => {

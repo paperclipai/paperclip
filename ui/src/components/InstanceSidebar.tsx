@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
-import { Clock3, Cpu, FlaskConical, Puzzle, Settings, SlidersHorizontal } from "lucide-react";
+import { Clock3, Cpu, FlaskConical, Puzzle, Settings, Shield, SlidersHorizontal, UserRoundPen } from "lucide-react";
 import { NavLink } from "@/lib/router";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
@@ -25,7 +25,9 @@ export function InstanceSidebar() {
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
+          <SidebarNavItem to="/instance/settings/profile" label={t("profile")} icon={UserRoundPen} end />
           <SidebarNavItem to="/instance/settings/general" label={t("general")} icon={SlidersHorizontal} end />
+          <SidebarNavItem to="/instance/settings/access" label={t("access")} icon={Shield} end />
           <SidebarNavItem to="/instance/settings/heartbeats" label={t("heartbeats")} icon={Clock3} end />
           <SidebarNavItem to="/instance/settings/experimental" label={t("experimental")} icon={FlaskConical} />
           <SidebarNavItem to="/instance/settings/plugins" label={t("plugins")} icon={Puzzle} />

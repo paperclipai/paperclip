@@ -1,4 +1,3 @@
-import { useTranslation } from "react-i18next";
 import {
   Inbox,
   CircleDot,
@@ -25,9 +24,9 @@ import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 
 export function Sidebar() {
-  const { t } = useTranslation("sidebar");
   const { openNewIssue } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const inboxBadge = useInboxBadge(selectedCompanyId);
@@ -52,15 +51,7 @@ export function Sidebar() {
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
       {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
-        {selectedCompany?.brandColor && (
-          <div
-            className="w-4 h-4 rounded-sm shrink-0 ml-1"
-            style={{ backgroundColor: selectedCompany.brandColor }}
-          />
-        )}
-        <span className="flex-1 text-sm font-bold text-foreground truncate pl-1">
-          {selectedCompany?.name ?? t("selectCompany")}
-        </span>
+        <SidebarCompanyMenu />
         <Button
           variant="ghost"
           size="icon-sm"
@@ -79,12 +70,12 @@ export function Sidebar() {
             className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >
             <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">{t("newIssue")}</span>
+            <span className="truncate">New Issue</span>
           </button>
-          <SidebarNavItem to="/dashboard" label={t("dashboard")} icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
-            label={t("inbox")}
+            label="Inbox"
             icon={Inbox}
             badge={inboxBadge.inbox}
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
@@ -99,22 +90,22 @@ export function Sidebar() {
           />
         </div>
 
-        <SidebarSection label={t("sections.work")}>
-          <SidebarNavItem to="/issues" label={t("issues")} icon={CircleDot} />
-          <SidebarNavItem to="/routines" label={t("routines")} icon={Repeat} />
-          <SidebarNavItem to="/goals" label={t("goals")} icon={Target} />
+        <SidebarSection label="Work">
+          <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
+          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
+          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
         </SidebarSection>
 
         <SidebarProjects />
 
         <SidebarAgents />
 
-        <SidebarSection label={t("sections.company")}>
-          <SidebarNavItem to="/org" label={t("org")} icon={Network} />
-          <SidebarNavItem to="/skills" label={t("skills")} icon={Boxes} />
-          <SidebarNavItem to="/costs" label={t("costs")} icon={DollarSign} />
-          <SidebarNavItem to="/activity" label={t("activity")} icon={History} />
-          <SidebarNavItem to="/company/settings" label={t("settings")} icon={Settings} />
+        <SidebarSection label="Company">
+          <SidebarNavItem to="/org" label="Org" icon={Network} />
+          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
+          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
+          <SidebarNavItem to="/activity" label="Activity" icon={History} />
+          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
 
         <PluginSlotOutlet
