@@ -598,64 +598,92 @@ export async function startServer(): Promise<StartedServer> {
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
+    // Each tick runs several DB-heavy tasks. Without a mutex a slow tick
+    // (e.g. big reap on startup) can overlap with the next tick, duplicating
+    // work: the same wakeup gets enqueued twice, the same stuck run gets
+    // SIGTERMed twice, etc. Single-flight the entire tick body.
+    let tickInFlight = false;
+    let consecutiveTickSkips = 0;
     setInterval(() => {
-      void heartbeat
-        .tickTimers(new Date())
-        .then((result) => {
-          if (result.enqueued > 0) {
-            logger.info({ ...result }, "heartbeat timer tick enqueued runs");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "heartbeat timer tick failed");
-        });
+      if (tickInFlight) {
+        consecutiveTickSkips += 1;
+        if (consecutiveTickSkips === 1 || consecutiveTickSkips % 20 === 0) {
+          logger.warn({ consecutiveTickSkips }, "scheduler tick skipped — previous tick still running");
+        }
+        return;
+      }
+      consecutiveTickSkips = 0;
+      tickInFlight = true;
 
-      void routines
-        .tickScheduledTriggers(new Date())
-        .then((result) => {
-          if (result.triggered > 0) {
-            logger.info({ ...result }, "routine scheduler tick enqueued runs");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "routine scheduler tick failed");
-        });
-  
+      const tickPromises: Promise<unknown>[] = [];
+
+      tickPromises.push(
+        heartbeat
+          .tickTimers(new Date())
+          .then((result) => {
+            if (result.enqueued > 0) {
+              logger.info({ ...result }, "heartbeat timer tick enqueued runs");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "heartbeat timer tick failed");
+          }),
+      );
+
+      tickPromises.push(
+        routines
+          .tickScheduledTriggers(new Date())
+          .then((result) => {
+            if (result.triggered > 0) {
+              logger.info({ ...result }, "routine scheduler tick enqueued runs");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "routine scheduler tick failed");
+          }),
+      );
+
       // Enforce per-run max duration — terminates runs whose child process hangs
       // (e.g. adapter stalled on a model API) and marks them failed with
       // errorCode="timeout". Default 60 min. Runs alongside reapOrphanedRuns.
-      void heartbeat
-        .enforceRunTimeouts()
-        .catch((err) => {
+      tickPromises.push(
+        heartbeat.enforceRunTimeouts().catch((err) => {
           logger.error({ err }, "enforceRunTimeouts failed");
-        });
+        }),
+      );
 
       // Sync wakeup_requests whose linked run reached a terminal state but
       // weren't updated (e.g. direct DB cancels, upgrade path bugs).
-      void heartbeat
-        .reconcileStaleWakeupRequests()
-        .catch((err) => {
+      tickPromises.push(
+        heartbeat.reconcileStaleWakeupRequests().catch((err) => {
           logger.error({ err }, "reconcileStaleWakeupRequests failed");
-        });
+        }),
+      );
 
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
-      void heartbeat
-        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-        .then(() => heartbeat.resumeQueuedRuns())
-        .then(async () => {
-          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-          if (
-            reconciled.dispatchRequeued > 0 ||
-            reconciled.continuationRequeued > 0 ||
-            reconciled.escalated > 0
-          ) {
-            logger.warn({ ...reconciled }, "periodic stranded-issue reconciliation changed assigned issue state");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "periodic heartbeat recovery failed");
-        });
+      tickPromises.push(
+        heartbeat
+          .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+          .then(() => heartbeat.resumeQueuedRuns())
+          .then(async () => {
+            const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+            if (
+              reconciled.dispatchRequeued > 0 ||
+              reconciled.continuationRequeued > 0 ||
+              reconciled.escalated > 0
+            ) {
+              logger.warn({ ...reconciled }, "periodic stranded-issue reconciliation changed assigned issue state");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "periodic heartbeat recovery failed");
+          }),
+      );
+
+      void Promise.allSettled(tickPromises).finally(() => {
+        tickInFlight = false;
+      });
     }, config.heartbeatSchedulerIntervalMs);
   }
   
