@@ -611,4 +611,46 @@ describe("IssueProperties", () => {
 
     act(() => rerenderedRoot.unmount());
   });
+
+  it("shows compact activity and handoff summaries", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "22222222-2222-4222-8222-222222222222", name: "Ork" },
+      { id: "33333333-3333-4333-8333-333333333333", name: "Stitch" },
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        latestActivitySummary: {
+          kind: "activity",
+          action: "issue.blockers_updated",
+          text: "Updated blockers",
+          actorType: "agent",
+          actorId: "22222222-2222-4222-8222-222222222222",
+          agentId: "22222222-2222-4222-8222-222222222222",
+          userId: null,
+          createdAt: new Date("2026-04-06T12:06:00.000Z"),
+        },
+        latestHandoffSummary: {
+          kind: "handoff",
+          action: "issue.reviewers_updated",
+          text: "Updated reviewers",
+          actorType: "agent",
+          actorId: "33333333-3333-4333-8333-333333333333",
+          agentId: "33333333-3333-4333-8333-333333333333",
+          userId: null,
+          createdAt: new Date("2026-04-06T12:07:00.000Z"),
+        },
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Activity");
+    expect(container.textContent).toContain("Updated blockers");
+    expect(container.textContent).toContain("Handoff");
+    expect(container.textContent).toContain("Updated reviewers");
+
+    act(() => root.unmount());
+  });
 });

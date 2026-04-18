@@ -45,6 +45,9 @@ const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
 };
 
 export function issueActivityText(issue: Issue): string {
+  if (issue.latestActivitySummary?.text) {
+    return `${issue.latestActivitySummary.text} ${timeAgo(issue.latestActivitySummary.createdAt)}`;
+  }
   return `Updated ${timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt)}`;
 }
 

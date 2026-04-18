@@ -181,6 +181,17 @@ export interface IssueMissionControlMetadata {
   needsHumanAttention?: boolean;
 }
 
+export interface IssueActivitySummary {
+  kind: "handoff" | "activity";
+  action: string;
+  text: string;
+  actorType: "agent" | "user" | "system";
+  actorId: string;
+  agentId?: string | null;
+  userId?: string | null;
+  createdAt: Date;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -216,6 +227,8 @@ export interface Issue {
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   missionControl?: IssueMissionControlMetadata | null;
+  latestActivitySummary?: IssueActivitySummary | null;
+  latestHandoffSummary?: IssueActivitySummary | null;
   startedAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;

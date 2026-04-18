@@ -99,7 +99,11 @@ type IssueActiveRunRow = {
   createdAt: Date;
 };
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
-type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
+type IssueWithLabelsAndRun = IssueWithLabels & {
+  activeRun: IssueActiveRunRow | null;
+  latestActivitySummary?: IssueActivitySummary | null;
+  latestHandoffSummary?: IssueActivitySummary | null;
+};
 type IssueUserCommentStats = {
   issueId: string;
   myLastCommentAt: Date | null;
@@ -109,6 +113,25 @@ type IssueLastActivityStat = {
   issueId: string;
   latestCommentAt: Date | null;
   latestLogAt: Date | null;
+};
+type IssueActivitySummaryRow = {
+  issueId: string;
+  action: string;
+  actorType: "agent" | "user" | "system";
+  actorId: string;
+  agentId: string | null;
+  createdAt: Date;
+  details: Record<string, unknown> | null;
+};
+type IssueActivitySummary = {
+  kind: "handoff" | "activity";
+  action: string;
+  text: string;
+  actorType: "agent" | "user" | "system";
+  actorId: string;
+  agentId: string | null;
+  userId: string | null;
+  createdAt: Date;
 };
 type IssueUserContextInput = {
   createdByUserId: string | null;
@@ -135,6 +158,18 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
+const ISSUE_HANDOFF_ACTIONS = new Set([
+  "issue.checked_out",
+  "issue.released",
+  "issue.reviewers_updated",
+  "issue.approvers_updated",
+]);
+const ISSUE_NOISE_ACTIONS = new Set([
+  "issue.read_marked",
+  "issue.read_unmarked",
+  "issue.inbox_archived",
+  "issue.inbox_unarchived",
+]);
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -595,6 +630,115 @@ function normalizeMissionControlMetadata(
   };
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function summarizeIssueUpdate(details: Record<string, unknown> | null): string | null {
+  const record = asRecord(details);
+  if (!record) return null;
+  const previous = asRecord(record._previous);
+  if (record.ownerAgentId !== undefined && previous?.ownerAgentId !== record.ownerAgentId) {
+    return record.ownerAgentId ? "Changed owner" : "Cleared owner";
+  }
+  if (record.assigneeAgentId !== undefined && previous?.assigneeAgentId !== record.assigneeAgentId) {
+    return record.assigneeAgentId ? "Reassigned agent" : "Cleared agent assignee";
+  }
+  if (record.assigneeUserId !== undefined && previous?.assigneeUserId !== record.assigneeUserId) {
+    return record.assigneeUserId ? "Reassigned user" : "Cleared user assignee";
+  }
+  if (record.status !== undefined && previous?.status !== record.status) {
+    return typeof record.status === "string" ? `Changed status to ${record.status.replace(/_/g, " ")}` : "Changed status";
+  }
+  if (record.missionControl !== undefined || record.executionPolicy !== undefined || record.blockedByIssueIds !== undefined) {
+    return "Updated task details";
+  }
+  return "Updated issue";
+}
+
+function summarizeIssueActivity(action: string, details: Record<string, unknown> | null): string | null {
+  if (action === "issue.comment_added") return "Added comment";
+  if (action === "issue.blockers_updated") return "Updated blockers";
+  if (action === "issue.reviewers_updated") return "Updated reviewers";
+  if (action === "issue.approvers_updated") return "Updated approvers";
+  if (action === "issue.checked_out") return "Checked out task";
+  if (action === "issue.released") return "Released task";
+  if (action === "issue.document_created") return "Added document";
+  if (action === "issue.document_updated") return "Updated document";
+  if (action === "issue.document_restored") return "Restored document";
+  if (action === "issue.document_deleted") return "Deleted document";
+  if (action === "issue.work_product_created") return "Added work product";
+  if (action === "issue.work_product_updated") return "Updated work product";
+  if (action === "issue.work_product_deleted") return "Deleted work product";
+  if (action === "issue.attachment_added") return "Added attachment";
+  if (action === "issue.attachment_removed") return "Removed attachment";
+  if (action === "issue.updated") return summarizeIssueUpdate(details);
+  return null;
+}
+
+function toIssueActivitySummary(
+  row: IssueActivitySummaryRow,
+  kind: "handoff" | "activity",
+): IssueActivitySummary | null {
+  const text = summarizeIssueActivity(row.action, row.details);
+  if (!text) return null;
+  return {
+    kind,
+    action: row.action,
+    text,
+    actorType: row.actorType,
+    actorId: row.actorId,
+    agentId: row.agentId,
+    userId: row.actorType === "user" ? row.actorId : null,
+    createdAt: row.createdAt,
+  };
+}
+
+async function getIssueActivitySummaries(
+  db: DbReader,
+  companyId: string,
+  issueIds: string[],
+) {
+  if (issueIds.length === 0) {
+    return { latestActivityByIssueId: new Map<string, IssueActivitySummary>(), latestHandoffByIssueId: new Map<string, IssueActivitySummary>() };
+  }
+
+  const rows = await db
+    .select({
+      issueId: activityLog.entityId,
+      action: activityLog.action,
+      actorType: activityLog.actorType,
+      actorId: activityLog.actorId,
+      agentId: activityLog.agentId,
+      createdAt: activityLog.createdAt,
+      details: activityLog.details,
+    })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityType, "issue"),
+        inArray(activityLog.entityId, issueIds),
+      ),
+    )
+    .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+
+  const latestActivityByIssueId = new Map<string, IssueActivitySummary>();
+  const latestHandoffByIssueId = new Map<string, IssueActivitySummary>();
+  for (const row of rows as IssueActivitySummaryRow[]) {
+    if (!latestActivityByIssueId.has(row.issueId) && !ISSUE_NOISE_ACTIONS.has(row.action)) {
+      const summary = toIssueActivitySummary(row, "activity");
+      if (summary) latestActivityByIssueId.set(row.issueId, summary);
+    }
+    if (!latestHandoffByIssueId.has(row.issueId) && ISSUE_HANDOFF_ACTIONS.has(row.action)) {
+      const summary = toIssueActivitySummary(row, "handoff");
+      if (summary) latestHandoffByIssueId.set(row.issueId, summary);
+    }
+  }
+
+  return { latestActivityByIssueId, latestHandoffByIssueId };
+}
+
 function withActiveRuns(
   issueRows: IssueWithLabels[],
   runMap: Map<string, IssueActiveRunRow>,
@@ -608,6 +752,18 @@ function withActiveRuns(
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
 
+  async function withIssueActivitySummaries<T extends { id: string; companyId: string; updatedAt: Date }>(
+    issue: T | null,
+  ): Promise<(T & { latestActivitySummary?: IssueActivitySummary | null; latestHandoffSummary?: IssueActivitySummary | null }) | null> {
+    if (!issue) return null;
+    const { latestActivityByIssueId, latestHandoffByIssueId } = await getIssueActivitySummaries(db, issue.companyId, [issue.id]);
+    return {
+      ...issue,
+      latestActivitySummary: latestActivityByIssueId.get(issue.id) ?? null,
+      latestHandoffSummary: latestHandoffByIssueId.get(issue.id) ?? null,
+    };
+  }
+
   async function getIssueByUuid(id: string) {
     const row = await db
       .select()
@@ -616,7 +772,7 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
-    return enriched;
+    return withIssueActivitySummaries(enriched);
   }
 
   async function getIssueByIdentifier(identifier: string) {
@@ -627,7 +783,7 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
-    return enriched;
+    return withIssueActivitySummaries(enriched);
   }
 
   function redactIssueComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
@@ -1193,6 +1349,7 @@ export function issueService(db: Db) {
           return [...byIssueId.values()];
         }),
       ]);
+      const { latestActivityByIssueId, latestHandoffByIssueId } = await getIssueActivitySummaries(db, companyId, issueIds);
       const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
 
@@ -1207,6 +1364,8 @@ export function issueService(db: Db) {
           return {
             ...row,
             lastActivityAt,
+            latestActivitySummary: latestActivityByIssueId.get(row.id) ?? null,
+            latestHandoffSummary: latestHandoffByIssueId.get(row.id) ?? null,
           };
         });
       }
@@ -1223,6 +1382,8 @@ export function issueService(db: Db) {
         return {
           ...row,
           lastActivityAt,
+          latestActivitySummary: latestActivityByIssueId.get(row.id) ?? null,
+          latestHandoffSummary: latestHandoffByIssueId.get(row.id) ?? null,
           ...deriveIssueUserContext(row, contextUserId, {
             myLastCommentAt: statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
             myLastReadAt: readByIssueId.get(row.id) ?? null,

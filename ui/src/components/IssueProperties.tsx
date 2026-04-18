@@ -339,6 +339,15 @@ export function IssueProperties({
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
+  const activityActorLabel = (summary: NonNullable<Issue["latestActivitySummary"] | Issue["latestHandoffSummary"]>) => {
+    if (summary.actorType === "agent") {
+      return agentName(summary.agentId ?? summary.actorId) ?? summary.actorId.slice(0, 8);
+    }
+    if (summary.actorType === "user") {
+      return userLabel(summary.userId ?? summary.actorId) ?? "User";
+    }
+    return "System";
+  };
   const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
     onUpdate({
       executionPolicy: buildExecutionPolicy({
@@ -1441,6 +1450,22 @@ export function IssueProperties({
         <PropertyRow label="Updated">
           <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
         </PropertyRow>
+        {issue.latestActivitySummary ? (
+          <PropertyRow label="Activity">
+            <span className="text-sm">
+              {issue.latestActivitySummary.text}
+              <span className="text-muted-foreground">, {activityActorLabel(issue.latestActivitySummary)}, {timeAgo(issue.latestActivitySummary.createdAt)}</span>
+            </span>
+          </PropertyRow>
+        ) : null}
+        {issue.latestHandoffSummary ? (
+          <PropertyRow label="Handoff">
+            <span className="text-sm">
+              {issue.latestHandoffSummary.text}
+              <span className="text-muted-foreground">, {activityActorLabel(issue.latestHandoffSummary)}, {timeAgo(issue.latestHandoffSummary.createdAt)}</span>
+            </span>
+          </PropertyRow>
+        ) : null}
       </div>
     </div>
   );
