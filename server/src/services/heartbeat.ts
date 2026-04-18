@@ -1001,22 +1001,26 @@ export function deriveTaskKeyWithHeartbeatFallback(
 
 export function shouldResetTaskSessionForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
+  options?: { hasExistingTaskSession?: boolean },
 ) {
   if (contextSnapshot?.forceFreshSession === true) return true;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  if (wakeReason === "issue_assigned") {
+    // Routine-dispatched wakes create a fresh issue per fire but should
+    // reuse the existing session so agents accumulate context across runs.
+    const source = readNonEmptyString(contextSnapshot?.source);
+    if (source === "routine.dispatch") return false;
+    // Re-assignment to an agent already mid-task must not wipe the live
+    // session. Only reset for genuine first assignments (no prior row).
+    if (options?.hasExistingTaskSession) return false;
+    return true;
+  }
   if (
-    wakeReason === "issue_assigned" ||
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
     wakeReason === "execution_changes_requested"
   ) {
-    // Routine-dispatched wakes create a fresh issue per fire but should
-    // reuse the existing session so agents accumulate context across runs.
-    if (wakeReason === "issue_assigned") {
-      const source = readNonEmptyString(contextSnapshot?.source);
-      if (source === "routine.dispatch") return false;
-    }
     return true;
   }
   return false;
@@ -1043,6 +1047,7 @@ export function formatRuntimeWorkspaceWarningLog(warning: string) {
 
 function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
+  options?: { hasExistingTaskSession?: boolean },
 ) {
   if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
 
@@ -1050,6 +1055,7 @@ function describeSessionResetReason(
   if (wakeReason === "issue_assigned") {
     const source = readNonEmptyString(contextSnapshot?.source);
     if (source === "routine.dispatch") return null;
+    if (options?.hasExistingTaskSession) return null;
     return "wake reason is issue_assigned";
   }
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
@@ -3802,8 +3808,9 @@ export function heartbeatService(db: Db) {
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
-    const resetTaskSession = shouldResetTaskSessionForWake(context);
-    const sessionResetReason = describeSessionResetReason(context);
+    const hasExistingTaskSession = taskSession !== null;
+    const resetTaskSession = shouldResetTaskSessionForWake(context, { hasExistingTaskSession });
+    const sessionResetReason = describeSessionResetReason(context, { hasExistingTaskSession });
     const taskSessionForRun = resetTaskSession ? null : taskSession;
     const explicitResumeSessionParams = normalizeSessionParams(
       sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
