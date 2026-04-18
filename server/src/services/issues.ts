@@ -2020,6 +2020,12 @@ export function issueService(db: Db) {
         });
       }
 
+      // Terminal lifecycle issues must not be reopened or unassigned by release.
+      if (existing.status === "done" || existing.status === "cancelled") {
+        const [enriched] = await withIssueLabels(db, [existing]);
+        return enriched;
+      }
+
       const updated = await db
         .update(issues)
         .set({
