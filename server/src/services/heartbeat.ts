@@ -2845,7 +2845,54 @@ export function heartbeatService(db: Db) {
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
-    return { reaped: reaped.length, runIds: reaped };
+
+    // Second pass: sweep issues whose execution lock points to a terminal run.
+    // Covers cases where releaseIssueExecutionAndPromote failed silently or
+    // wasn't reached during a prior crash.
+    const staleLockedRows = await db
+      .select({
+        issueId: issues.id,
+        runId: issues.executionRunId,
+        runStatus: heartbeatRuns.status,
+      })
+      .from(issues)
+      .leftJoin(heartbeatRuns, eq(issues.executionRunId, heartbeatRuns.id))
+      .where(sql`${issues.executionRunId} IS NOT NULL`);
+
+    const sweptIssueIds: string[] = [];
+    for (const row of staleLockedRows) {
+      if (row.runStatus === "running" || row.runStatus === "queued") continue;
+
+      if (row.runId) {
+        const run = await getRun(row.runId);
+        if (run) {
+          await releaseIssueExecutionAndPromote(run);
+          sweptIssueIds.push(row.issueId);
+          continue;
+        }
+      }
+
+      // Run missing (FK cascaded) — clear lock directly
+      await db
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, row.issueId));
+      sweptIssueIds.push(row.issueId);
+    }
+
+    if (sweptIssueIds.length > 0) {
+      logger.warn(
+        { sweptCount: sweptIssueIds.length, issueIds: sweptIssueIds },
+        "swept stale execution locks on startup",
+      );
+    }
+
+    return { reaped: reaped.length, runIds: reaped, swept: sweptIssueIds.length, sweptIssueIds };
   }
 
   async function resumeQueuedRuns() {
@@ -4193,7 +4240,9 @@ export function heartbeatService(db: Db) {
             if (failedAgent) {
               await finalizeIssueCommentPolicy(failedRun, failedAgent).catch(() => undefined);
             }
-            await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
+            await releaseIssueExecutionAndPromote(failedRun).catch((err) => {
+              logger.error({ err, runId: failedRun.id }, "releaseIssueExecutionAndPromote failed in outer catch");
+            });
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
