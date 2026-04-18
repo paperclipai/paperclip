@@ -38,8 +38,21 @@ import { getDefaultCompanyGoal } from "./goals.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
+const CANCELLED_ISSUE_TRANSITION_ERROR = "Cancelled issues are terminal and cannot be reopened";
+const CANCELLED_ISSUE_TRANSITION_CODE = "issue_cancelled_terminal";
+const STATUS_REQUIRING_AC_GATE = new Set(["in_review", "done"]);
+const UNCHECKED_CHECKLIST_ITEM_REGEX = /^\s*(?:[-*+]|\d+\.)\s+\[\s\]\s*(.+?)\s*$/;
+const MARKDOWN_HEADING_REGEX = /^\s{0,3}#{1,6}\s+\S/;
+const ACCEPTANCE_CRITERIA_HEADING_REGEX = /^#{1,6}\s*AC(?:\b|\s|[:：-])/i;
 
 function assertTransition(from: string, to: string) {
+  if (from === "cancelled" && to !== "cancelled") {
+    throw conflict(CANCELLED_ISSUE_TRANSITION_ERROR, {
+      code: CANCELLED_ISSUE_TRANSITION_CODE,
+      fromStatus: from,
+      toStatus: to,
+    });
+  }
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
     throw conflict(`Unknown issue status: ${to}`);
@@ -62,6 +75,33 @@ function applyStatusSideEffects(
     patch.cancelledAt = new Date();
   }
   return patch;
+}
+
+function extractAcceptanceCriteriaSection(markdown: string): string {
+  const lines = markdown.split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => ACCEPTANCE_CRITERIA_HEADING_REGEX.test(line.trim()));
+  if (headingIndex < 0) return markdown;
+
+  const sectionLines: string[] = [];
+  for (let index = headingIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (MARKDOWN_HEADING_REGEX.test(line)) break;
+    sectionLines.push(line);
+  }
+  return sectionLines.join("\n");
+}
+
+function getUncheckedAcceptanceCriteria(description: string | null | undefined): string[] {
+  if (!description) return [];
+  const source = extractAcceptanceCriteriaSection(description);
+  const uncheckedItems: string[] = [];
+  for (const line of source.split(/\r?\n/)) {
+    const match = UNCHECKED_CHECKLIST_ITEM_REGEX.exec(line);
+    if (!match) continue;
+    const item = match[1]?.trim();
+    uncheckedItems.push(item && item.length > 0 ? item : "(unnamed checklist item)");
+  }
+  return uncheckedItems;
 }
 
 export interface IssueFilters {
@@ -956,7 +996,63 @@ export function issueService(db: Db) {
     return adopted;
   }
 
+  function normalizeIdempotencyTitle(title: string) {
+    return title.trim().toLowerCase().replace(/\s+/g, " ");
+  }
+
   return {
+    // Find an active (todo/in_progress/blocked/in_review) issue with the same
+    // (title normalized + parentId + projectId + assigneeAgentId) fingerprint
+    // created within the window. Used by the POST /issues idempotency guard
+    // (DGG-2612 / Kuromi 2026-04-19) to prevent agent double-POST storms.
+    findActiveDuplicate: async (
+      companyId: string,
+      opts: {
+        title: string;
+        parentId: string | null;
+        projectId: string | null;
+        assigneeAgentId: string | null;
+        windowMs?: number;
+      },
+    ) => {
+      const windowMs = opts.windowMs ?? 24 * 60 * 60 * 1000;
+      const since = new Date(Date.now() - windowMs);
+      const normalized = normalizeIdempotencyTitle(opts.title);
+      if (!normalized) return null;
+      const conditions: Array<ReturnType<typeof eq>> = [
+        eq(issues.companyId, companyId),
+        inArray(issues.status, ["todo", "in_progress", "blocked", "in_review"]),
+      ];
+      if (opts.parentId === null) {
+        conditions.push(isNull(issues.parentId));
+      } else {
+        conditions.push(eq(issues.parentId, opts.parentId));
+      }
+      if (opts.projectId === null) {
+        conditions.push(isNull(issues.projectId));
+      } else {
+        conditions.push(eq(issues.projectId, opts.projectId));
+      }
+      if (opts.assigneeAgentId === null) {
+        conditions.push(isNull(issues.assigneeAgentId));
+      } else {
+        conditions.push(eq(issues.assigneeAgentId, opts.assigneeAgentId));
+      }
+      const rows = await db
+        .select()
+        .from(issues)
+        .where(and(...conditions));
+      const recent = rows.filter((row) => {
+        const created = row.createdAt instanceof Date ? row.createdAt : new Date(row.createdAt);
+        return created >= since;
+      });
+      const match = recent.find(
+        (row) => normalizeIdempotencyTitle(row.title) === normalized,
+      );
+      if (!match) return null;
+      const [enriched] = await withIssueLabels(db, [match]);
+      return enriched;
+    },
     list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
@@ -1633,6 +1729,21 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+        if (STATUS_REQUIRING_AC_GATE.has(issueData.status) && issueData.status !== existing.status) {
+          const nextDescription = issueData.description !== undefined ? issueData.description : existing.description;
+          const unmetCriteria = getUncheckedAcceptanceCriteria(nextDescription);
+          if (unmetCriteria.length > 0) {
+            throw unprocessable(
+              `Cannot transition to ${issueData.status}: ${unmetCriteria.length} acceptance criteria item(s) still unchecked`,
+              {
+                code: "unchecked_acceptance_criteria",
+                targetStatus: issueData.status,
+                uncheckedCount: unmetCriteria.length,
+                unmetCriteria,
+              },
+            );
+          }
+        }
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {

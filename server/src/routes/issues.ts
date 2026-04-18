@@ -282,6 +282,63 @@ function buildExecutionStageWakeup(input: {
   return null;
 }
 
+// Idempotency-Key in-memory replay cache (DGG-2612 / Kuromi 2026-04-19).
+// Scoped by company + header value. Short-lived (10 min) to avoid stale
+// replay when callers intentionally retry after back-pressure. Restart-safe
+// only via the DB fingerprint dedupe in svc.findActiveDuplicate.
+const IDEMPOTENCY_KEY_TTL_MS = 10 * 60 * 1000;
+const IDEMPOTENCY_MAX_ENTRIES = 2048;
+type IdempotencyEntry = { issue: unknown; expiresAt: number };
+const idempotencyCache = new Map<string, IdempotencyEntry>();
+
+function idempotencyCacheKey(companyId: string, key: string) {
+  return `${companyId}::${key}`;
+}
+
+function sweepIdempotencyCache(now: number) {
+  if (idempotencyCache.size <= IDEMPOTENCY_MAX_ENTRIES) {
+    for (const [k, v] of idempotencyCache) {
+      if (v.expiresAt <= now) idempotencyCache.delete(k);
+    }
+    return;
+  }
+  // Size cap fallback: wipe expired, then oldest.
+  for (const [k, v] of idempotencyCache) {
+    if (v.expiresAt <= now) idempotencyCache.delete(k);
+  }
+  while (idempotencyCache.size > IDEMPOTENCY_MAX_ENTRIES) {
+    const oldest = idempotencyCache.keys().next().value;
+    if (oldest === undefined) break;
+    idempotencyCache.delete(oldest);
+  }
+}
+
+function lookupIdempotencyKey(companyId: string, key: string) {
+  const now = Date.now();
+  sweepIdempotencyCache(now);
+  const entry = idempotencyCache.get(idempotencyCacheKey(companyId, key));
+  if (!entry) return null;
+  if (entry.expiresAt <= now) {
+    idempotencyCache.delete(idempotencyCacheKey(companyId, key));
+    return null;
+  }
+  return entry.issue;
+}
+
+function rememberIdempotencyKey(companyId: string, key: string, issue: unknown) {
+  const now = Date.now();
+  idempotencyCache.set(idempotencyCacheKey(companyId, key), {
+    issue,
+    expiresAt: now + IDEMPOTENCY_KEY_TTL_MS,
+  });
+  sweepIdempotencyCache(now);
+}
+
+// Exported for tests only.
+export function __resetIdempotencyCacheForTests() {
+  idempotencyCache.clear();
+}
+
 export function issueRoutes(
   db: Db,
   storage: StorageService,
@@ -1336,12 +1393,57 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+
+    // Idempotency guard (Kuromi DGG-2612 / 2026-04-19).
+    // Honors Idempotency-Key request header (preferred) OR falls back to a
+    // 24h (title normalized + parentId + projectId + assigneeAgentId) active
+    // duplicate search. In both hit cases we return the existing issue with
+    // an X-Idempotent-Replay header instead of creating a second row.
+    // Env toggle: PAPERCLIP_IDEMPOTENCY_GUARD=off disables.
+    const idempotencyEnabled = process.env.PAPERCLIP_IDEMPOTENCY_GUARD !== "off";
+    const idempotencyKey = (req.get("idempotency-key") || "").trim();
+    if (idempotencyEnabled) {
+      if (idempotencyKey) {
+        const cached = lookupIdempotencyKey(companyId, idempotencyKey);
+        if (cached) {
+          res.setHeader("X-Idempotent-Replay", "key");
+          res.status(200).json(cached);
+          return;
+        }
+      }
+      if (typeof req.body.title === "string" && req.body.title.trim().length > 0) {
+        const duplicate = await svc.findActiveDuplicate(companyId, {
+          title: req.body.title,
+          parentId: req.body.parentId ?? null,
+          projectId: req.body.projectId ?? null,
+          assigneeAgentId: req.body.assigneeAgentId ?? null,
+          windowMs: 24 * 60 * 60 * 1000,
+        });
+        if (duplicate) {
+          res.setHeader("X-Idempotent-Replay", "fingerprint");
+          res.status(200).json(duplicate);
+          return;
+        }
+      }
+    }
+
     const issue = await svc.create(companyId, {
       ...req.body,
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
+
+    if (idempotencyEnabled && idempotencyKey) {
+      rememberIdempotencyKey(companyId, idempotencyKey, issue);
+    }
+
+    // Resolve names for rich notifications
+    const [assigneeAgent, project, goal] = await Promise.all([
+      issue.assigneeAgentId ? agentsSvc.getById(issue.assigneeAgentId) : null,
+      issue.projectId ? projectsSvc.getById(issue.projectId) : null,
+      issue.goalId ? goalsSvc.getById(issue.goalId) : null,
+    ]);
 
     await logActivity(db, {
       companyId,
@@ -1355,6 +1457,12 @@ export function issueRoutes(
       details: {
         title: issue.title,
         identifier: issue.identifier,
+        description: issue.description ?? undefined,
+        status: issue.status,
+        priority: issue.priority ?? undefined,
+        assigneeName: assigneeAgent?.name ?? undefined,
+        projectName: project?.name ?? undefined,
+        goalName: goal?.name ?? undefined,
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
       },
     });
@@ -1456,6 +1564,46 @@ export function issueRoutes(
     if (commentBody && effectiveReopenRequested && isClosed && updateFields.status === undefined) {
       updateFields.status = "todo";
     }
+
+    // Executor done-transition guard (Kuromi DGG-2611 / 2026-04-19).
+    // Only COO/CEO (governance) role agents — or board users — may transition an
+    // in_review issue to done. routine_execution self-close stays allowed because
+    // the runner is the implicit executor and there is no separate reviewer.
+    // Env toggle: PAPERCLIP_EXECUTOR_DONE_GUARD=off disables the guard.
+    if (
+      process.env.PAPERCLIP_EXECUTOR_DONE_GUARD !== "off" &&
+      typeof updateFields.status === "string" &&
+      updateFields.status === "done" &&
+      existing.status !== "done" &&
+      existing.originKind !== "routine_execution"
+    ) {
+      if (req.actor.type === "agent") {
+        if (!req.actor.agentId) {
+          res.status(403).json({
+            error: "Agent authentication required for done transition",
+            reason: "executor_done_forbidden",
+          });
+          return;
+        }
+        const actorAgent = await agentsSvc.getById(req.actor.agentId);
+        const governanceRole =
+          actorAgent?.role === "ceo" ||
+          actorAgent?.role === "coo" ||
+          Boolean(actorAgent?.permissions?.canCreateAgents);
+        if (!governanceRole) {
+          res.status(400).json({
+            error:
+              "Executors cannot self-transition to done — only a COO/CEO reviewer may close an in_review issue.",
+            reason: "executor_done_forbidden",
+            issueId: existing.id,
+            issueIdentifier: existing.identifier,
+            actorAgentId: req.actor.agentId,
+          });
+          return;
+        }
+      }
+    }
+
     if (req.body.executionPolicy !== undefined) {
       updateFields.executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
     }
@@ -1618,6 +1766,14 @@ export function issueRoutes(
       previous.status !== undefined &&
       issue.status === "todo";
     const reopenFromStatus = reopened ? existing.status : null;
+
+    // Resolve names for rich notifications
+    const [updatedAssigneeAgent, updatedProject, updatedGoal] = await Promise.all([
+      issue.assigneeAgentId ? agentsSvc.getById(issue.assigneeAgentId) : null,
+      issue.projectId ? projectsSvc.getById(issue.projectId) : null,
+      issue.goalId ? goalsSvc.getById(issue.goalId) : null,
+    ]);
+
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
@@ -1630,6 +1786,13 @@ export function issueRoutes(
       details: {
         ...updateFields,
         identifier: issue.identifier,
+        title: issue.title,
+        description: issue.description ?? undefined,
+        status: issue.status,
+        priority: issue.priority ?? undefined,
+        assigneeName: updatedAssigneeAgent?.name ?? undefined,
+        projectName: updatedProject?.name ?? undefined,
+        goalName: updatedGoal?.name ?? undefined,
         ...(commentBody ? { source: "comment" } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
