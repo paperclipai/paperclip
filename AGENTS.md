@@ -90,6 +90,22 @@ All agent commits to this repo must follow `doc/AGENT-GIT-WORKFLOW.md`. Key rule
 
 See `doc/AGENT-GIT-WORKFLOW.md` for branch lifecycle, PR requirements, periodic review cadence, and rollback runbook.
 
+## 5a. Fork Workflow — Upstream Search Requirement
+
+**This is a fork of `paperclipai/paperclip`.** Before filing issues touching cross-cutting concerns, search the upstream tracker (https://github.com/paperclipai/paperclip/issues) to prevent parallel implementation.
+
+**Scope gate applies to:**
+- Error/failure taxonomy
+- Database schemas
+- Agent configuration patterns
+- Platform-level abstractions
+
+**Required checklist item (in issue templates):**
+- [ ] Searched upstream tracker for related in-flight work
+- [ ] Documented keywords searched, related issues found (or "None"), and reconciliation scope
+
+See `.github/ISSUE_TEMPLATE/` for the required "Upstream Conflict Check" format.
+
 ## 6. Core Engineering Rules
 
 1. Keep changes company-scoped.
