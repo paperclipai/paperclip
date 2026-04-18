@@ -2,6 +2,201 @@
 
 Guidance for human and AI contributors working in this repository.
 
+## 0. Project Management — Plane (MANDATORY)
+
+**Every agent** (Claude Code, Codex, Antigravity, Cursor, or any future tool) **must** use Plane as the single source of truth for project management. No exceptions.
+
+### Access
+
+| Field | Value |
+|-------|-------|
+| URL | `http://plane.nexus.local` |
+| API | `http://plane.nexus.local/api/v1` |
+| Workspace | `nous` |
+| Project | **Paperclip Evolution** |
+| Project ID | `6ea59a32-3d6a-4602-81bd-0df63db085a5` |
+| Auth header | `X-Api-Key: plane_api_ab9f003cbdcb4be0bfe65fc9a59f5b61` |
+| Identifier | PEV |
+
+### Quick API reference
+
+```sh
+HDR="X-Api-Key: plane_api_ab9f003cbdcb4be0bfe65fc9a59f5b61"
+BASE="http://plane.nexus.local/api/v1/workspaces/nous/projects/6ea59a32-3d6a-4602-81bd-0df63db085a5"
+
+# List all issues
+curl -s -H "$HDR" "$BASE/issues/?per_page=100"
+
+# Get single issue
+curl -s -H "$HDR" "$BASE/issues/{issue_id}/"
+
+# Update issue state
+curl -s -X PATCH -H "$HDR" -H "Content-Type: application/json" \
+  -d '{"state": "{state_id}"}' "$BASE/issues/{issue_id}/"
+
+# Add comment to issue
+curl -s -X POST -H "$HDR" -H "Content-Type: application/json" \
+  -d '{"comment_html": "<p>Your comment</p>"}' "$BASE/issues/{issue_id}/comments/"
+
+# List cycles (sprints)
+curl -s -H "$HDR" "$BASE/cycles/"
+
+# List modules (phases)
+curl -s -H "$HDR" "$BASE/modules/"
+
+# Create issue
+curl -s -X POST -H "$HDR" -H "Content-Type: application/json" \
+  -d '{"name": "...", "priority": "high", "state": "{state_id}", "parent": "{epic_id}"}' \
+  "$BASE/issues/"
+
+# Add issue to cycle
+curl -s -X POST -H "$HDR" -H "Content-Type: application/json" \
+  -d '{"issues": ["{issue_id}"]}' "$BASE/cycles/{cycle_id}/cycle-issues/"
+
+# Add issue to module
+curl -s -X POST -H "$HDR" -H "Content-Type: application/json" \
+  -d '{"issues": ["{issue_id}"]}' "$BASE/modules/{module_id}/module-issues/"
+```
+
+### State IDs
+
+| State | ID | Group |
+|-------|----|-------|
+| Backlog | `20e43ed5-651d-4d21-9800-8591204d5ce3` | backlog |
+| Todo | `1bd18247-2025-49d1-830f-873864658341` | unstarted |
+| In Progress | `9242f915-72b6-402d-8923-118e8b5d2898` | started |
+| Done | `8ac06912-fc0f-4338-92a4-f17fa62dc7f8` | completed |
+| Cancelled | `4fc993f5-e834-4649-bd38-7910cc5669da` | cancelled |
+
+### Plane structure
+
+- **Modules** = Phases (Phase 1: Org Structure → Phase 7: Enterprise Auth)
+- **Cycles** = Sprints (Sprint 1–12, 2-week cadence)
+- **Sub-issues** = EPICs (Phase EPICs) have children (deliverables)
+- **Labels** = Feature, Tech Debt, Security, UX/UI, Plugin, Integration, Infrastructure, Documentation, Epic
+- **Priority** = urgent / high / medium / low
+
+### Estimate points (story points)
+
+Use modified Fibonacci. Set via `PATCH .../issues/{id}/` with `{"estimate_point": "<uuid>"}`.
+
+| Points | UUID | Use for |
+|--------|------|---------|
+| 2 | `6bd48d57-980f-4ea6-b494-91648b8df3ae` | Trivial — config change, small fix |
+| 3 | `3ff64c42-24a7-44cf-a24c-07ff405cdaae` | Small — single file, well-scoped |
+| 5 | `b129a237-ee97-4bfd-8e4f-8f3dea9721a7` | Medium — multi-file, service + route + test |
+| 8 | `6c48129a-b23a-416c-904b-5752de4702e8` | Large — cross-cutting, schema + service + route + UI + tests |
+
+Always assign estimate points when creating issues. EPICs don't need points.
+
+### Issue comments — agent communication
+
+Comments are the primary way agents communicate progress and hand off context.
+
+```sh
+# Post a comment
+curl -s -X POST -H "$HDR" -H "Content-Type: application/json" \
+  -d '{"comment_html": "<p>Started work. Key files: server/src/services/sla.ts</p>"}' \
+  "$BASE/issues/{issue_id}/comments/"
+
+# Threaded reply
+curl -s -X POST -H "$HDR" -H "Content-Type: application/json" \
+  -d '{"comment_html": "<p>Reply</p>", "parent": "{parent_comment_id}"}' \
+  "$BASE/issues/{issue_id}/comments/"
+
+# Read comments
+curl -s -H "$HDR" "$BASE/issues/{issue_id}/comments/"
+```
+
+**When to comment:**
+- Starting work: what you plan to do, which files you'll touch
+- Hitting a blocker: what's blocking, what unblocks it
+- Making a design decision: what you chose and why
+- Completing work: summary of changes, files modified, test results
+- Handing off: context the next agent needs to continue
+
+### Issue links — cross-references
+
+Attach PRs, docs, and external references to issues.
+
+```sh
+# Add a link
+curl -s -X POST -H "$HDR" -H "Content-Type: application/json" \
+  -d '{"title": "PR #42", "url": "https://github.com/owner/repo/pull/42"}' \
+  "$BASE/issues/{issue_id}/links/"
+
+# Remove a link
+curl -s -X DELETE -H "$HDR" "$BASE/issues/{issue_id}/links/{link_id}/"
+```
+
+**Always link:** PRs, relevant doc/plans/ files, deployment URLs, related external issues.
+
+### Issue activities — audit trail
+
+Read-only history of all changes on an issue.
+
+```sh
+curl -s -H "$HDR" "$BASE/issues/{issue_id}/activities/"
+```
+
+Returns: who changed what field, old/new values, timestamps. Useful for understanding issue history before picking up work.
+
+### Rich issue queries
+
+Use `expand` to get resolved objects instead of UUIDs:
+
+```sh
+# Get issues with full state, label, and assignee objects
+curl -s -H "$HDR" "$BASE/issues/?per_page=100&expand=state,labels,assignees"
+```
+
+### Mandatory workflow for every agent
+
+#### 1. Before starting work
+
+- Fetch current sprint's issues: `GET .../cycles/{cycle_id}/cycle-issues/`
+- Read issue description and comments to understand full context
+- Check issue activities to see if anyone else has worked on it
+- Move the issue to **In Progress**: `PATCH .../issues/{id}/ {"state": "9242f915-..."}`
+- Post a comment: what you plan to do
+
+#### 2. During work
+
+- Post progress comments on the issue (every significant milestone or decision)
+- If you discover new work, create a new issue in Plane:
+  - Assign priority and estimate points
+  - Set parent (EPIC), cycle (sprint), and module (phase)
+  - Write a self-contained description with acceptance criteria
+- If blocked, post a comment explaining what blocks and what unblocks
+- If scope changes, update the issue description
+
+#### 3. After completing work
+
+- Run verification: `pnpm -r typecheck && pnpm test:run && pnpm build`
+- Post a closing comment with:
+  - Summary of what was done
+  - Key files changed
+  - Test results (pass count)
+  - Any follow-up work needed
+- Link the PR to the issue (if applicable)
+- Move issue to **Done**: `PATCH .../issues/{id}/ {"state": "8ac06912-..."}`
+- If all children of an EPIC are Done, close the EPIC too
+
+#### 4. Planning and creating issues
+
+- New work → create issue in Plane **first**, then execute
+- Every issue must have:
+  - Self-contained description (any agent can pick it up cold)
+  - Acceptance criteria (numbered list)
+  - Priority (urgent/high/medium/low)
+  - Estimate points (2/3/5/8)
+  - Cycle (sprint) and module (phase) assignment
+  - Parent EPIC (if applicable)
+  - Labels
+  - Start and target dates
+- Reference `doc/plans/` files from descriptions for deep technical context
+- EPICs should describe the goal, scope, and acceptance criteria for the entire phase
+
 ## 1. Purpose
 
 Paperclip is a control plane for AI-agent companies.
