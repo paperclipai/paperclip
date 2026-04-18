@@ -54,6 +54,7 @@ export interface Config {
   deploymentExposure: DeploymentExposure;
   bind: BindMode;
   customBindHost: string | undefined;
+  adapterPluginsDir: string | undefined;
   host: string;
   port: number;
   allowedHostnames: string[];
@@ -189,6 +190,10 @@ export function loadConfig(): Config {
     fileConfig?.server.bind ??
     inferBindModeFromHost(configuredHost, { tailnetBindHost });
   const customBindHost = process.env.PAPERCLIP_BIND_HOST ?? fileConfig?.server.customBindHost;
+  const adapterPluginsDirRaw =
+    process.env.PAPERCLIP_ADAPTERS_DIR?.trim() ||
+    fileConfig?.server.adapterPluginsDir?.trim() ||
+    undefined;
   const authBaseUrlModeFromEnvRaw = process.env.PAPERCLIP_AUTH_BASE_URL_MODE;
   const authBaseUrlModeFromEnv =
     authBaseUrlModeFromEnvRaw &&
@@ -289,6 +294,7 @@ export function loadConfig(): Config {
     deploymentExposure,
     bind: resolvedBind.bind,
     customBindHost: resolvedBind.customBindHost,
+    adapterPluginsDir: adapterPluginsDirRaw ? resolveHomeAwarePath(adapterPluginsDirRaw) : undefined,
     host: resolvedBind.host,
     port: Number(process.env.PORT) || fileConfig?.server.port || 3100,
     allowedHostnames,

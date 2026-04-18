@@ -39,7 +39,13 @@ import {
 } from "../services/adapter-plugin-store.js";
 import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types.js";
-import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
+import {
+  loadExternalAdapterPackage,
+  getUiParserSource,
+  getOrExtractUiParserSource,
+  listRuntimeDiscoveredAdapterRecords,
+  reloadExternalAdapter,
+} from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
 import { assertBoardOrgAccess } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
@@ -196,7 +202,7 @@ export function adapterRoutes() {
 
     const registeredAdapters = listServerAdapters();
     const externalRecords = new Map(
-      listAdapterPlugins().map((r) => [r.type, r]),
+      [...listAdapterPlugins(), ...listRuntimeDiscoveredAdapterRecords()].map((r) => [r.type, r]),
     );
     const disabledSet = new Set(getDisabledAdapterTypes());
 
