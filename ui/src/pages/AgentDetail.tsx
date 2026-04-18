@@ -37,7 +37,7 @@ import { CopyText } from "../components/CopyText";
 import { EntityRow } from "../components/EntityRow";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { RunButton, PauseResumeButton } from "../components/AgentActionButtons";
+import { RunButton, PauseResumeButton, RestartButton } from "../components/AgentActionButtons";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { PackageFileTree, buildFileTree } from "../components/PackageFileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -762,13 +762,17 @@ export function AgentDetail() {
   }, [agent?.companyId, selectedCompanyId, setSelectedCompanyId]);
 
   const agentAction = useMutation({
-    mutationFn: async (action: "invoke" | "pause" | "resume" | "terminate") => {
+    mutationFn: async (action: "invoke" | "pause" | "resume" | "terminate" | "restart") => {
       if (!agentLookupRef) return Promise.reject(new Error("No agent reference"));
       switch (action) {
         case "invoke": return agentsApi.invoke(agentLookupRef, resolvedCompanyId ?? undefined);
         case "pause": return agentsApi.pause(agentLookupRef, resolvedCompanyId ?? undefined);
         case "resume": return agentsApi.resume(agentLookupRef, resolvedCompanyId ?? undefined);
         case "terminate": return agentsApi.terminate(agentLookupRef, resolvedCompanyId ?? undefined);
+        case "restart": {
+          await agentsApi.resetSession(agentLookupRef, null, resolvedCompanyId ?? undefined);
+          return agentsApi.invoke(agentLookupRef, resolvedCompanyId ?? undefined);
+        }
       }
     },
     onSuccess: (data, action) => {
@@ -783,7 +787,7 @@ export function AgentDetail() {
           queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(resolvedCompanyId, agent.id) });
         }
       }
-      if (action === "invoke" && data && typeof data === "object" && "id" in data) {
+      if ((action === "invoke" || action === "restart") && data && typeof data === "object" && "id" in data) {
         navigate(`/agents/${canonicalAgentRef}/runs/${(data as HeartbeatRun).id}`);
       }
     },
@@ -935,6 +939,14 @@ export function AgentDetail() {
             onClick={() => agentAction.mutate("invoke")}
             disabled={agentAction.isPending || isPendingApproval}
             label="Run Heartbeat"
+          />
+          <RestartButton
+            onClick={() => {
+              if (window.confirm(`Reset session and restart ${agent.name}?`)) {
+                agentAction.mutate("restart");
+              }
+            }}
+            disabled={agentAction.isPending || isPendingApproval}
           />
           <PauseResumeButton
             isPaused={agent.status === "paused"}

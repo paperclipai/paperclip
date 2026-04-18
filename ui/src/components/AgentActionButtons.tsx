@@ -1,4 +1,4 @@
-import { Pause, Play } from "lucide-react";
+import { Pause, Play, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export function RunButton({
@@ -46,6 +46,23 @@ export function PauseResumeButton({
     <Button variant="outline" size={size} onClick={onPause} disabled={disabled}>
       <Pause className="h-3.5 w-3.5 sm:mr-1" />
       <span className="hidden sm:inline">Pause</span>
+    </Button>
+  );
+}
+
+export function RestartButton({
+  onClick,
+  disabled,
+  size = "sm",
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  size?: "sm" | "default";
+}) {
+  return (
+    <Button variant="outline" size={size} onClick={onClick} disabled={disabled}>
+      <RotateCcw className="h-3.5 w-3.5 sm:mr-1" />
+      <span className="hidden sm:inline">Restart</span>
     </Button>
   );
 }
