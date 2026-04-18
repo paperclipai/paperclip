@@ -142,13 +142,14 @@ export async function testEnvironment(
         return asStringArray(config.args);
       })();
 
-      const args = ["--output-format", "stream-json", "--prompt", "Respond with hello."];
+      const helloPrompt = "Respond with hello.";
+      const args = ["--output-format", "stream-json", "--prompt", "."];
       if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
       if (approvalMode !== "default") args.push("--approval-mode", approvalMode);
       if (sandbox) {
         args.push("--sandbox");
       } else {
-        args.push("--sandbox=none");
+        args.push("--no-sandbox");
       }
       if (extraArgs.length > 0) args.push(...extraArgs);
 
@@ -159,6 +160,7 @@ export async function testEnvironment(
         {
           cwd,
           env,
+          stdin: helloPrompt,
           timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
           onLog: async () => { },

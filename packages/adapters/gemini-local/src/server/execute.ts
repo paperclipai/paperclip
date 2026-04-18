@@ -273,7 +273,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   const commandNotes = (() => {
-    const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
+    const notes: string[] = ["Prompt is piped to Gemini via stdin; --prompt triggers non-interactive (headless) mode."];
     notes.push("Added --approval-mode yolo for unattended execution.");
     if (!instructionsFilePath) return notes;
     if (instructionsPrefix.length > 0) {
@@ -336,10 +336,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (sandbox) {
       args.push("--sandbox");
     } else {
-      args.push("--sandbox=none");
+      args.push("--no-sandbox");
     }
     if (extraArgs.length > 0) args.push(...extraArgs);
-    args.push("--prompt", prompt);
+    // Prompt is piped via stdin to avoid Windows cmd.exe shell escaping issues
+    // with long prompts containing special characters. The --prompt flag with a
+    // short non-empty value triggers non-interactive (headless) mode; the CLI
+    // prepends stdin content to the --prompt value as the user message.
+    args.push("--prompt", ".");
     return args;
   };
 
@@ -352,7 +356,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         cwd,
         commandNotes,
         commandArgs: args.map((value, index) => (
-          index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
+          index === args.length - 1 ? `<prompt ${prompt.length} chars via stdin>` : value
         )),
         env: loggedEnv,
         prompt,
@@ -364,6 +368,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const proc = await runChildProcess(runId, command, args, {
       cwd,
       env,
+      stdin: prompt,
       timeoutSec,
       graceSec,
       onSpawn,
