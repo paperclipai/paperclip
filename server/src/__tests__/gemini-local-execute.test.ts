@@ -116,6 +116,7 @@ describe("gemini execute", () => {
       expect(invocationPrompt).toContain("PAPERCLIP_API_URL");
       expect(invocationPrompt).toContain("Paperclip API access note:");
       expect(invocationPrompt).toContain("run_shell_command");
+      expect(invocationPrompt).toContain("Never pipe downloaded `curl` output");
       expect(result.question).toBeNull();
     } finally {
       if (previousHome === undefined) {

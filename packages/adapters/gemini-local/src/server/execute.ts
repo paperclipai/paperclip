@@ -68,6 +68,8 @@ function renderApiAccessNote(env: Record<string, string>): string {
   return [
     "Paperclip API access note:",
     "Use run_shell_command with curl to make Paperclip API requests.",
+    "Never pipe downloaded `curl` output into `python`, `python3`, `bash`, `sh`, `node`, or any other interpreter.",
+    "If you need to inspect JSON, prefer `jq` when available, or write the response to a temporary file and read that file separately.",
     "GET example:",
     `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_URL/api/agents/me\\"" })`,
     "POST/PATCH example:",

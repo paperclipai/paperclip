@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   listPaperclipSkillEntries,
   removeMaintainerOnlySkillSymlinks,
+  renderPaperclipWakePrompt,
 } from "@paperclipai/adapter-utils/server-utils";
 
 async function makeTempDir(prefix: string): Promise<string> {
@@ -58,5 +59,37 @@ describe("paperclip skill utils", () => {
     await expect(fs.lstat(path.join(skillsHome, "release"))).rejects.toThrow();
     expect((await fs.lstat(path.join(skillsHome, "paperclip"))).isSymbolicLink()).toBe(true);
     expect((await fs.lstat(path.join(skillsHome, "release-notes"))).isSymbolicLink()).toBe(true);
+  });
+
+  it("adds shell safety guidance to wake prompts", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Fix unsafe API command generation",
+        status: "in_progress",
+        priority: "high",
+      },
+      comments: [
+        {
+          id: "comment-1",
+          issueId: "issue-1",
+          body: "Please avoid piping curl into python.",
+          bodyTruncated: false,
+          createdAt: "2026-04-07T12:00:00.000Z",
+          author: { type: "user", id: "user-1" },
+        },
+      ],
+      commentWindow: {
+        requestedCount: 1,
+        includedCount: 1,
+        missingCount: 0,
+      },
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("never pipe `curl`/`wget` output directly into `python`");
+    expect(prompt).toContain("save the response to a temporary file before reading it");
   });
 });
