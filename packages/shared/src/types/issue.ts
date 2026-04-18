@@ -7,6 +7,7 @@ import type {
   IssueNextActionType,
   IssueRecoveryDisposition,
   IssueOriginKind,
+  IssueRoutineExecutionRole,
   IssuePriority,
   IssueStallReasonCode,
   IssueStatus,
@@ -305,6 +306,8 @@ export interface Issue {
   originKind?: IssueOriginKind;
   originId?: string | null;
   originRunId?: string | null;
+  routineBoundRunId?: string | null;
+  routineIssueRole?: IssueRoutineExecutionRole | null;
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;

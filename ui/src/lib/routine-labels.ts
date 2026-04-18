@@ -1,9 +1,11 @@
 const ROUTINE_RUN_STATUS_LABELS: Record<string, string> = {
   coalesced: "Added to Active Run",
+  issue_reused: "Reused Open Issue",
 };
 
 const ROUTINE_LAST_RESULT_LABELS: Record<string, string> = {
   "Coalesced into an existing live execution issue": "Added to active run",
+  "Reused execution issue": "Reused open issue",
 };
 
 export const ROUTINE_CONCURRENCY_POLICY_LABELS: Record<string, string> = {
@@ -29,6 +31,7 @@ export function formatRoutineRunStatusLabel(status: string | null | undefined): 
 
 export function formatRoutineLastResultLabel(result: string | null | undefined): string | null {
   if (!result) return null;
+  if (result.startsWith("Reused execution issue ")) return "Reused open issue";
   return ROUTINE_LAST_RESULT_LABELS[result] ?? result;
 }
 

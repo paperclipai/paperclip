@@ -235,6 +235,9 @@ function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
     updatedAt: new Date("2026-04-01T00:00:00.000Z"),
     triggers: [],
     lastRun: null,
+    canonicalIssue: null,
+    liveIssue: null,
+    executionState: "none",
     activeIssue: null,
     ...overrides,
   };

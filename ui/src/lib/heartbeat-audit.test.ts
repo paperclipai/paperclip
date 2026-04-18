@@ -51,6 +51,9 @@ function createRoutine(overrides: Partial<RoutineListItem> = {}): RoutineListIte
     updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     triggers: [],
     lastRun: null,
+    canonicalIssue: null,
+    liveIssue: null,
+    executionState: "none",
     activeIssue: null,
     ...overrides,
   };

@@ -174,7 +174,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
-  it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
+  it("reuses the canonical execution issue when the previous routine issue is open but idle", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
     const previousIssue = await issueSvc.create(companyId, {
@@ -202,26 +202,34 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
 
     const detailBefore = await svc.getDetail(routine.id);
+    expect(detailBefore?.canonicalIssue?.id).toBe(previousIssue.id);
+    expect(detailBefore?.liveIssue).toBeNull();
     expect(detailBefore?.activeIssue).toBeNull();
+    expect(detailBefore?.executionState).toBe("idle");
 
     const run = await svc.runRoutine(routine.id, { source: "manual" });
-    expect(run.status).toBe("issue_created");
-    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+    expect(run.status).toBe("issue_reused");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+    expect(run.coalescedIntoRunId).toBeNull();
 
     const routineIssues = await db
       .select({
         id: issues.id,
         originRunId: issues.originRunId,
+        routineBoundRunId: issues.routineBoundRunId,
       })
       .from(issues)
       .where(eq(issues.originId, routine.id));
 
-    expect(routineIssues).toHaveLength(2);
-    expect(routineIssues.map((issue) => issue.id)).toContain(previousIssue.id);
-    expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+    expect(routineIssues).toHaveLength(1);
+    expect(routineIssues[0]).toMatchObject({
+      id: previousIssue.id,
+      originRunId: previousRunId,
+      routineBoundRunId: run.id,
+    });
   });
 
-  it("clears stale sibling routine locks before creating a fresh execution issue", async () => {
+  it("clears stale sibling routine locks before reusing the canonical execution issue", async () => {
     const { companyId, agentId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
     const staleExecutionRunId = randomUUID();
@@ -270,16 +278,20 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(issues.id, previousIssue.id));
 
     const run = await svc.runRoutine(routine.id, { source: "manual" });
-    expect(run.status).toBe("issue_created");
-    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+    expect(run.status).toBe("issue_reused");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
 
     const refreshedPreviousIssue = await db
-      .select({ executionRunId: issues.executionRunId })
+      .select({
+        executionRunId: issues.executionRunId,
+        routineBoundRunId: issues.routineBoundRunId,
+      })
       .from(issues)
       .where(eq(issues.id, previousIssue.id))
       .then((rows) => rows[0] ?? null);
 
-    expect(refreshedPreviousIssue?.executionRunId).toBeNull();
+    expect(refreshedPreviousIssue?.executionRunId).toBeTruthy();
+    expect(refreshedPreviousIssue?.routineBoundRunId).toBe(run.id);
   });
 
   it("wakes the assignee when a routine creates a fresh execution issue", async () => {
@@ -647,6 +659,114 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(issues.originId, routine.id));
 
     expect(routineIssues).toHaveLength(0);
+  });
+
+  it("does not complete the previous canonical run when reuse wakeup queueing fails", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture({
+      wakeup: async () => {
+        throw new Error("queue unavailable");
+      },
+    });
+    const previousRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "todo",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+      completedAt: null,
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("failed");
+    expect(run.failureReason).toContain("queue unavailable");
+    expect(run.linkedIssueId).toBeNull();
+
+    const previousRun = await db
+      .select({
+        completedAt: routineRuns.completedAt,
+      })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, previousRunId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(previousRun?.completedAt).toBeNull();
+  });
+
+  it("rejects manual runs while the routine is paused", async () => {
+    const { routine, svc } = await seedFixture();
+
+    await db
+      .update(routines)
+      .set({
+        status: "paused",
+        updatedAt: new Date("2026-03-20T12:00:00.000Z"),
+      })
+      .where(eq(routines.id, routine.id));
+
+    await expect(
+      svc.runRoutine(routine.id, { source: "manual" }),
+    ).rejects.toThrow(/paused/i);
+  });
+
+  it("cancels already-queued routine heartbeat runs when the routine is paused", async () => {
+    const { routine, svc } = await seedFixture();
+
+    const routineRun = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(routineRun.status).toBe("issue_created");
+    expect(routineRun.linkedIssueId).toBeTruthy();
+
+    const queuedHeartbeatRun = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, routine.companyId))
+      .then((rows) => rows[0] ?? null);
+    expect(queuedHeartbeatRun?.status).toBe("queued");
+
+    await svc.update(routine.id, { status: "paused" }, {});
+
+    const cancelledHeartbeatRun = await db
+      .select({
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, queuedHeartbeatRun!.id))
+      .then((rows) => rows[0] ?? null);
+    const refreshedIssue = await db
+      .select({
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, routineRun.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    const detail = await svc.getDetail(routine.id);
+
+    expect(cancelledHeartbeatRun?.status).toBe("cancelled");
+    expect(cancelledHeartbeatRun?.error).toContain("paused");
+    expect(refreshedIssue?.executionRunId).toBeNull();
+    expect(detail?.canonicalIssue?.id).toBe(routineRun.linkedIssueId);
+    expect(detail?.liveIssue).toBeNull();
+    expect(detail?.executionState).toBe("paused");
   });
 
   it("accepts standard second-precision webhook timestamps for HMAC triggers", async () => {

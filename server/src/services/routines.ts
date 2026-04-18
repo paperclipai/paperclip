@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  agentWakeupRequests,
   companySecrets,
   goals,
   heartbeatRuns,
@@ -17,6 +18,7 @@ import type {
   CreateRoutineTrigger,
   Routine,
   RoutineDetail,
+  RoutineIssueSummary,
   RoutineListItem,
   RoutineRunSummary,
   RoutineTrigger,
@@ -47,6 +49,11 @@ const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blo
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
+
+function asUuidParam(value: string) {
+  return sql`${value}::uuid`;
+}
+
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -134,6 +141,7 @@ function nextCronTickInTimeZone(expression: string, timeZone: string, after: Dat
 
 function nextResultText(status: string, issueId?: string | null) {
   if (status === "issue_created" && issueId) return `Created execution issue ${issueId}`;
+  if (status === "issue_reused" && issueId) return `Reused execution issue ${issueId}`;
   if (status === "coalesced") return "Coalesced into an existing live execution issue";
   if (status === "skipped") return "Skipped because a live execution issue already exists";
   if (status === "completed") return "Execution issue completed";
@@ -437,6 +445,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             status: row.issueStatus ?? "todo",
             priority: row.issuePriority ?? "medium",
             updatedAt: row.issueUpdatedAt ?? row.updatedAt,
+            role: null,
           }
           : null,
         trigger: row.triggerId
@@ -451,18 +460,138 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     return map;
   }
 
-  async function listLiveIssueByRoutineIds(companyId: string, routineIds: string[]) {
-    if (routineIds.length === 0) return new Map<string, RoutineListItem["activeIssue"]>();
-    const executionBoundRows = await db
-      .selectDistinctOn([issues.originId], {
-        originId: issues.originId,
+  type OpenRoutineIssueRow = {
+    id: string;
+    originId: string | null;
+    identifier: string | null;
+    title: string;
+    status: string;
+    priority: string;
+    updatedAt: Date;
+    createdAt: Date;
+    originRunId: string | null;
+    routineBoundRunId: string | null;
+    routineIssueRole: string | null;
+    executionRunId: string | null;
+    assigneeAgentId: string | null;
+  };
+
+  type RoutineExecutionView = {
+    canonicalIssue: RoutineIssueSummary | null;
+    liveIssue: RoutineIssueSummary | null;
+    activeIssue: RoutineIssueSummary | null;
+    executionState: RoutineDetail["executionState"];
+    canonicalIssueRow: OpenRoutineIssueRow | null;
+    liveIssueRow: OpenRoutineIssueRow | null;
+    rows: OpenRoutineIssueRow[];
+  };
+
+  type RoutineExecutionRepairCandidate = {
+    routineId: string;
+    companyId: string;
+    status: typeof routines.$inferSelect.status;
+    concurrencyPolicy: typeof routines.$inferSelect.concurrencyPolicy;
+    executionState: RoutineDetail["executionState"];
+    canonicalIssueId: string | null;
+    liveIssueId: string | null;
+    staleExecutionLockIssueIds: string[];
+    issueIdsToCanonicalize: string[];
+    issueIdsToParallelize: string[];
+    duplicateIssueIds: string[];
+    wakeupIdsToCancel: string[];
+    queuedRunIdsToCancel: string[];
+  };
+
+  type RoutineExecutionRepairInspection = {
+    routinesInspected: number;
+    routinesWithChanges: number;
+    staleExecutionLocks: {
+      count: number;
+      issueIds: string[];
+    };
+    canonicalRoleUpdates: {
+      count: number;
+      issueIds: string[];
+    };
+    parallelRoleUpdates: {
+      count: number;
+      issueIds: string[];
+    };
+    duplicateIssues: {
+      count: number;
+      issueIds: string[];
+    };
+    wakeupsToCancel: {
+      count: number;
+      wakeupIds: string[];
+    };
+    queuedRunsToCancel: {
+      count: number;
+      runIds: string[];
+    };
+    routines: RoutineExecutionRepairCandidate[];
+  };
+
+  type RoutineExecutionRepairSummary = {
+    routinesInspected: number;
+    routinesReconciled: number;
+    staleExecutionLocksCleared: number;
+    canonicalRolesUpdated: number;
+    parallelRolesUpdated: number;
+    duplicateIssuesSuperseded: number;
+    wakeupsCancelled: number;
+    queuedRunsCancelled: number;
+  };
+
+  function summarizeRoutineIssue(row: OpenRoutineIssueRow | null): RoutineIssueSummary | null {
+    if (!row) return null;
+    return {
+      id: row.id,
+      identifier: row.identifier,
+      title: row.title,
+      status: row.status,
+      priority: row.priority,
+      updatedAt: row.updatedAt,
+      role: row.routineIssueRole as RoutineIssueSummary["role"],
+    };
+  }
+
+  async function listOpenRoutineIssueRows(companyId: string, routineIds: string[], executor: Db = db) {
+    if (routineIds.length === 0) return [] as OpenRoutineIssueRow[];
+    return executor
+      .select({
         id: issues.id,
+        originId: issues.originId,
         identifier: issues.identifier,
         title: issues.title,
         status: issues.status,
         priority: issues.priority,
         updatedAt: issues.updatedAt,
+        createdAt: issues.createdAt,
+        originRunId: issues.originRunId,
+        routineBoundRunId: issues.routineBoundRunId,
+        routineIssueRole: issues.routineIssueRole,
+        executionRunId: issues.executionRunId,
+        assigneeAgentId: issues.assigneeAgentId,
       })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "routine_execution"),
+          inArray(issues.originId, routineIds),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt));
+  }
+
+  async function listLiveRoutineIssueIds(companyId: string, issueIds: string[], executor: Db = db) {
+    if (issueIds.length === 0) return new Set<string>();
+    const liveIssueIds = new Set<string>();
+    const executionBoundRows = await executor
+      .select({ issueId: issues.id })
       .from(issues)
       .innerJoin(
         heartbeatRuns,
@@ -474,32 +603,17 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .where(
         and(
           eq(issues.companyId, companyId),
-          eq(issues.originKind, "routine_execution"),
-          inArray(issues.originId, routineIds),
-          inArray(issues.status, OPEN_ISSUE_STATUSES),
-          isNull(issues.hiddenAt),
+          inArray(issues.id, issueIds),
         ),
-      )
-      .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
-
-    const rowsByOriginId = new Map<string, (typeof executionBoundRows)[number]>();
+      );
     for (const row of executionBoundRows) {
-      if (!row.originId) continue;
-      rowsByOriginId.set(row.originId, row);
+      liveIssueIds.add(row.issueId);
     }
 
-    const missingRoutineIds = routineIds.filter((routineId) => !rowsByOriginId.has(routineId));
-    if (missingRoutineIds.length > 0) {
-      const legacyRows = await db
-        .selectDistinctOn([issues.originId], {
-          originId: issues.originId,
-          id: issues.id,
-          identifier: issues.identifier,
-          title: issues.title,
-          status: issues.status,
-          priority: issues.priority,
-          updatedAt: issues.updatedAt,
-        })
+    const missingIssueIds = issueIds.filter((issueId) => !liveIssueIds.has(issueId));
+    if (missingIssueIds.length > 0) {
+      const legacyRows = await executor
+        .select({ issueId: issues.id })
         .from(issues)
         .innerJoin(
           heartbeatRuns,
@@ -512,31 +626,94 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         .where(
           and(
             eq(issues.companyId, companyId),
-            eq(issues.originKind, "routine_execution"),
-            inArray(issues.originId, missingRoutineIds),
-            inArray(issues.status, OPEN_ISSUE_STATUSES),
-            isNull(issues.hiddenAt),
+            inArray(issues.id, missingIssueIds),
           ),
-        )
-        .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
-
+        );
       for (const row of legacyRows) {
-        if (!row.originId) continue;
-        rowsByOriginId.set(row.originId, row);
+        liveIssueIds.add(row.issueId);
       }
     }
 
-    const map = new Map<string, RoutineListItem["activeIssue"]>();
-    for (const row of rowsByOriginId.values()) {
+    return liveIssueIds;
+  }
+
+  function pickCanonicalRoutineIssue(
+    routine: typeof routines.$inferSelect,
+    rows: OpenRoutineIssueRow[],
+    liveIssueIds: Set<string>,
+  ) {
+    if (routine.concurrencyPolicy === "always_enqueue") return null;
+    const eligibleRows = rows.filter((row) => row.routineIssueRole !== "superseded");
+    if (eligibleRows.length === 0) return rows[0] ?? null;
+    return (
+      eligibleRows.find((row) => liveIssueIds.has(row.id) && row.routineIssueRole === "canonical")
+      ?? eligibleRows.find((row) => liveIssueIds.has(row.id))
+      ?? eligibleRows.find((row) => row.routineIssueRole === "canonical")
+      ?? eligibleRows[0]
+      ?? null
+    );
+  }
+
+  function pickLiveRoutineIssue(
+    rows: OpenRoutineIssueRow[],
+    liveIssueIds: Set<string>,
+    canonicalIssue: OpenRoutineIssueRow | null,
+  ) {
+    if (canonicalIssue && liveIssueIds.has(canonicalIssue.id)) return canonicalIssue;
+    return rows.find((row) => row.routineIssueRole !== "superseded" && liveIssueIds.has(row.id)) ?? null;
+  }
+
+  function buildRoutineExecutionView(
+    routine: typeof routines.$inferSelect,
+    rows: OpenRoutineIssueRow[],
+    liveIssueIds: Set<string>,
+  ): RoutineExecutionView {
+    const canonicalIssueRow = pickCanonicalRoutineIssue(routine, rows, liveIssueIds);
+    const liveIssueRow = pickLiveRoutineIssue(rows, liveIssueIds, canonicalIssueRow);
+    const visibleOpenRows = rows.filter((row) => row.routineIssueRole !== "superseded");
+    const executionState: RoutineDetail["executionState"] =
+      routine.status !== "active" && visibleOpenRows.length > 0
+        ? "paused"
+        : liveIssueRow
+          ? "live"
+          : (canonicalIssueRow || visibleOpenRows.length > 0)
+            ? "idle"
+            : "none";
+    const canonicalIssue = summarizeRoutineIssue(canonicalIssueRow);
+    const liveIssue = summarizeRoutineIssue(liveIssueRow);
+    return {
+      canonicalIssue,
+      liveIssue,
+      activeIssue: liveIssue,
+      executionState,
+      canonicalIssueRow,
+      liveIssueRow,
+      rows,
+    };
+  }
+
+  async function listRoutineExecutionViewByRoutineIds(
+    routineRows: Array<typeof routines.$inferSelect>,
+    executor: Db = db,
+  ) {
+    const routineIds = routineRows.map((row) => row.id);
+    const issueRows = await listOpenRoutineIssueRows(routineRows[0]?.companyId ?? "", routineIds, executor);
+    const liveIssueIds = await listLiveRoutineIssueIds(
+      routineRows[0]?.companyId ?? "",
+      issueRows.map((row) => row.id),
+      executor,
+    );
+    const rowsByOriginId = new Map<string, OpenRoutineIssueRow[]>();
+    for (const row of issueRows) {
       if (!row.originId) continue;
-      map.set(row.originId, {
-        id: row.id,
-        identifier: row.identifier,
-        title: row.title,
-        status: row.status,
-        priority: row.priority,
-        updatedAt: row.updatedAt,
-      });
+      const existing = rowsByOriginId.get(row.originId);
+      if (existing) existing.push(row);
+      else rowsByOriginId.set(row.originId, [row]);
+    }
+
+    const map = new Map<string, RoutineExecutionView>();
+    for (const routine of routineRows) {
+      map.set(routine.id, buildRoutineExecutionView(routine, rowsByOriginId.get(routine.id) ?? [], liveIssueIds));
     }
     return map;
   }
@@ -575,6 +752,29 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     routine: typeof routines.$inferSelect,
     executor: Db = db,
   ) {
+    const staleIssueIds = await listStaleExecutionLockIssueIds(routine, executor);
+    if (staleIssueIds.length === 0) return;
+
+    await executor
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          inArray(issues.id, staleIssueIds),
+        ),
+      );
+  }
+
+  async function listStaleExecutionLockIssueIds(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+  ): Promise<string[]> {
     const lockedIssueRows = await executor
       .select({
         id: issues.id,
@@ -595,7 +795,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     const runIds = Array.from(
       new Set(lockedIssueRows.map((row) => row.executionRunId).filter((id): id is string => Boolean(id))),
     );
-    if (runIds.length === 0) return;
+    if (runIds.length === 0) return [];
 
     const runRows = await executor
       .select({
@@ -614,11 +814,160 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         .filter((row) => LIVE_HEARTBEAT_RUN_STATUSES.includes(row.status))
         .map((row) => row.id),
     );
-    const staleIssueIds = lockedIssueRows
+    return lockedIssueRows
       .filter((row) => row.executionRunId && !liveRunIds.has(row.executionRunId))
       .map((row) => row.id);
+  }
 
-    if (staleIssueIds.length === 0) return;
+  async function getRoutineExecutionView(routine: typeof routines.$inferSelect, executor: Db = db) {
+    return (
+      (await listRoutineExecutionViewByRoutineIds([routine], executor)).get(routine.id)
+      ?? {
+        canonicalIssue: null,
+        liveIssue: null,
+        activeIssue: null,
+        executionState: "none" as const,
+        canonicalIssueRow: null,
+        liveIssueRow: null,
+        rows: [],
+      }
+    );
+  }
+
+  async function cancelPendingWakeupsForIssueIds(
+    companyId: string,
+    issueIds: string[],
+    reason: string,
+    executor: Db = db,
+  ) {
+    const wakeupIds = await listPendingWakeupIdsForIssueIds(companyId, issueIds, executor);
+    if (wakeupIds.length === 0) return 0;
+    const now = new Date();
+    await executor
+      .update(agentWakeupRequests)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        error: reason,
+        updatedAt: now,
+      })
+      .where(inArray(agentWakeupRequests.id, wakeupIds));
+    return wakeupIds.length;
+  }
+
+  async function listPendingWakeupIdsForIssueIds(
+    companyId: string,
+    issueIds: string[],
+    executor: Db = db,
+  ) {
+    if (issueIds.length === 0) return [] as string[];
+    const wakeIssueId = sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`;
+    const wakeupRows = await executor
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          sql`${agentWakeupRequests.runId} is null`,
+          inArray(wakeIssueId, Array.from(new Set(issueIds))),
+        ),
+    );
+    return wakeupRows.map((row) => row.id);
+  }
+
+  async function listQueuedRunIdsForIssueIds(
+    companyId: string,
+    issueIds: string[],
+    executor: Db = db,
+  ) {
+    if (issueIds.length === 0) return [] as string[];
+    const uniqueIssueIds = Array.from(new Set(issueIds));
+    const boundRunIds = await executor
+      .select({ runId: issues.executionRunId })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.id, uniqueIssueIds),
+          isNotNull(issues.executionRunId),
+        ),
+      )
+      .then((rows) => Array.from(new Set(rows.map((row) => row.runId).filter((runId): runId is string => Boolean(runId)))));
+    const runIssueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+    const queuedRunRows = await executor
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "queued"),
+          boundRunIds.length > 0
+            ? or(inArray(runIssueId, uniqueIssueIds), inArray(heartbeatRuns.id, boundRunIds))
+            : inArray(runIssueId, uniqueIssueIds),
+        ),
+      );
+    return Array.from(new Set(queuedRunRows.map((row) => row.id)));
+  }
+
+  async function cancelQueuedRunsForIssueIds(
+    companyId: string,
+    issueIds: string[],
+    reason: string,
+    executor: Db = db,
+  ) {
+    const runIds = await listQueuedRunIdsForIssueIds(companyId, issueIds, executor);
+    if (runIds.length === 0) return 0;
+
+    const queuedRuns = await executor
+      .select({
+        id: heartbeatRuns.id,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.id, runIds),
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      );
+    if (queuedRuns.length === 0) return 0;
+
+    const confirmedRunIds = queuedRuns.map((row) => row.id);
+    const wakeupRequestIds = Array.from(
+      new Set(queuedRuns.map((row) => row.wakeupRequestId).filter((id): id is string => Boolean(id))),
+    );
+    const now = new Date();
+
+    if (wakeupRequestIds.length > 0) {
+      await executor
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: reason,
+          updatedAt: now,
+        })
+        .where(inArray(agentWakeupRequests.id, wakeupRequestIds));
+    }
+
+    await executor
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        error: reason,
+        errorCode: "cancelled",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.id, confirmedRunIds),
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      );
 
     await executor
       .update(issues)
@@ -626,64 +975,274 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         executionRunId: null,
         executionAgentNameKey: null,
         executionLockedAt: null,
-        updatedAt: new Date(),
+        updatedAt: now,
       })
       .where(
         and(
-          eq(issues.companyId, routine.companyId),
-          inArray(issues.id, staleIssueIds),
+          eq(issues.companyId, companyId),
+          inArray(issues.id, Array.from(new Set(issueIds))),
+          inArray(issues.executionRunId, confirmedRunIds),
         ),
       );
+
+    return confirmedRunIds.length;
   }
 
-  async function findLiveExecutionIssue(routine: typeof routines.$inferSelect, executor: Db = db) {
-    const executionBoundIssue = await executor
-      .select()
-      .from(issues)
-      .innerJoin(
-        heartbeatRuns,
-        and(
-          eq(heartbeatRuns.id, issues.executionRunId),
-          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
-        ),
-      )
-      .where(
-        and(
-          eq(issues.companyId, routine.companyId),
-          eq(issues.originKind, "routine_execution"),
-          eq(issues.originId, routine.id),
-          inArray(issues.status, OPEN_ISSUE_STATUSES),
-          isNull(issues.hiddenAt),
-        ),
-      )
-      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
-      .limit(1)
-      .then((rows) => rows[0]?.issues ?? null);
-    if (executionBoundIssue) return executionBoundIssue;
+  async function inspectRoutineExecutionRepairCandidate(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+  ): Promise<RoutineExecutionRepairCandidate> {
+    const [view, staleExecutionLockIssueIds] = await Promise.all([
+      getRoutineExecutionView(routine, executor),
+      listStaleExecutionLockIssueIds(routine, executor),
+    ]);
 
-    return executor
+    const canonicalIssueId = view.canonicalIssueRow?.id ?? null;
+    const nonCanonicalIssueIds = canonicalIssueId
+      ? view.rows.filter((row) => row.id !== canonicalIssueId).map((row) => row.id)
+      : [];
+    const issueIdsToCanonicalize =
+      view.canonicalIssueRow && view.canonicalIssueRow.routineIssueRole !== "canonical"
+        ? [view.canonicalIssueRow.id]
+        : [];
+    const issueIdsToParallelize = routine.concurrencyPolicy === "always_enqueue"
+      ? view.rows
+        .filter((row) => row.routineIssueRole == null || row.routineIssueRole === "canonical")
+        .map((row) => row.id)
+      : [];
+    const duplicateIssueIds = routine.concurrencyPolicy === "always_enqueue" ? [] : nonCanonicalIssueIds;
+    const wakeupTargetIssueIds = routine.status !== "active"
+      ? view.rows.map((row) => row.id)
+      : routine.concurrencyPolicy === "always_enqueue"
+        ? []
+        : nonCanonicalIssueIds;
+    const wakeupIdsToCancel = await listPendingWakeupIdsForIssueIds(
+      routine.companyId,
+      wakeupTargetIssueIds,
+      executor,
+    );
+    const queuedRunIdsToCancel = await listQueuedRunIdsForIssueIds(
+      routine.companyId,
+      wakeupTargetIssueIds,
+      executor,
+    );
+
+    return {
+      routineId: routine.id,
+      companyId: routine.companyId,
+      status: routine.status,
+      concurrencyPolicy: routine.concurrencyPolicy,
+      executionState: view.executionState,
+      canonicalIssueId,
+      liveIssueId: view.liveIssueRow?.id ?? null,
+      staleExecutionLockIssueIds,
+      issueIdsToCanonicalize,
+      issueIdsToParallelize,
+      duplicateIssueIds,
+      wakeupIdsToCancel,
+      queuedRunIdsToCancel,
+    };
+  }
+
+  function summarizeRoutineExecutionRepairInspection(
+    candidates: RoutineExecutionRepairCandidate[],
+  ): RoutineExecutionRepairInspection {
+    const staleExecutionLockIssueIds = candidates.flatMap((candidate) => candidate.staleExecutionLockIssueIds);
+    const issueIdsToCanonicalize = candidates.flatMap((candidate) => candidate.issueIdsToCanonicalize);
+    const issueIdsToParallelize = candidates.flatMap((candidate) => candidate.issueIdsToParallelize);
+    const duplicateIssueIds = candidates.flatMap((candidate) => candidate.duplicateIssueIds);
+    const wakeupIdsToCancel = candidates.flatMap((candidate) => candidate.wakeupIdsToCancel);
+    const queuedRunIdsToCancel = candidates.flatMap((candidate) => candidate.queuedRunIdsToCancel);
+    const changedRoutines = candidates.filter((candidate) =>
+      candidate.staleExecutionLockIssueIds.length > 0 ||
+      candidate.issueIdsToCanonicalize.length > 0 ||
+      candidate.issueIdsToParallelize.length > 0 ||
+      candidate.duplicateIssueIds.length > 0 ||
+      candidate.wakeupIdsToCancel.length > 0 ||
+      candidate.queuedRunIdsToCancel.length > 0
+    );
+
+    return {
+      routinesInspected: candidates.length,
+      routinesWithChanges: changedRoutines.length,
+      staleExecutionLocks: {
+        count: staleExecutionLockIssueIds.length,
+        issueIds: staleExecutionLockIssueIds,
+      },
+      canonicalRoleUpdates: {
+        count: issueIdsToCanonicalize.length,
+        issueIds: issueIdsToCanonicalize,
+      },
+      parallelRoleUpdates: {
+        count: issueIdsToParallelize.length,
+        issueIds: issueIdsToParallelize,
+      },
+      duplicateIssues: {
+        count: duplicateIssueIds.length,
+        issueIds: duplicateIssueIds,
+      },
+      wakeupsToCancel: {
+        count: wakeupIdsToCancel.length,
+        wakeupIds: wakeupIdsToCancel,
+      },
+      queuedRunsToCancel: {
+        count: queuedRunIdsToCancel.length,
+        runIds: queuedRunIdsToCancel,
+      },
+      routines: changedRoutines,
+    };
+  }
+
+  async function listRoutinesForExecutionRepair(
+    input: { companyId?: string | null; routineId?: string | null } = {},
+    executor: Db = db,
+  ) {
+    if (input.routineId) {
+      const routine = await executor
+        .select()
+        .from(routines)
+        .where(
+          and(
+            eq(routines.id, input.routineId),
+            input.companyId ? eq(routines.companyId, input.companyId) : undefined,
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (!routine) throw notFound("Routine not found");
+      return [routine];
+    }
+
+    const query = executor
       .select()
-      .from(issues)
-      .innerJoin(
-        heartbeatRuns,
-        and(
-          eq(heartbeatRuns.companyId, issues.companyId),
-          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${issues.id} as text)`,
-        ),
-      )
-      .where(
-        and(
-          eq(issues.companyId, routine.companyId),
-          eq(issues.originKind, "routine_execution"),
-          eq(issues.originId, routine.id),
-          inArray(issues.status, OPEN_ISSUE_STATUSES),
-          isNull(issues.hiddenAt),
-        ),
-      )
-      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
-      .limit(1)
-      .then((rows) => rows[0]?.issues ?? null);
+      .from(routines)
+      .orderBy(asc(routines.companyId), asc(routines.createdAt), asc(routines.id));
+    if (input.companyId) {
+      return query.where(eq(routines.companyId, input.companyId));
+    }
+    return query;
+  }
+
+  async function reconcileRoutineExecutionIssues(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+    options: { normalizeCanonicalRole?: boolean } = {},
+  ) {
+    const normalizeCanonicalRole = options.normalizeCanonicalRole ?? true;
+    await clearStaleExecutionLocksForRoutine(routine, executor);
+    const view = await getRoutineExecutionView(routine, executor);
+    const now = new Date();
+
+    if (routine.concurrencyPolicy === "always_enqueue") {
+      const parallelIssueIds = view.rows
+        .filter((row) => row.routineIssueRole == null || row.routineIssueRole === "canonical")
+        .map((row) => row.id);
+      if (parallelIssueIds.length > 0) {
+        await executor
+          .update(issues)
+          .set({
+            routineIssueRole: "parallel",
+            updatedAt: now,
+          })
+          .where(inArray(issues.id, parallelIssueIds));
+      }
+      if (routine.status !== "active") {
+        await cancelQueuedRunsForIssueIds(
+          routine.companyId,
+          view.rows.map((row) => row.id),
+          `Routine ${routine.id} is paused`,
+          executor,
+        );
+        await cancelPendingWakeupsForIssueIds(
+          routine.companyId,
+          view.rows.map((row) => row.id),
+          `Routine ${routine.id} is paused`,
+          executor,
+        );
+      }
+      return getRoutineExecutionView(routine, executor);
+    }
+
+    const canonicalIssue = view.canonicalIssueRow;
+    if (!canonicalIssue) {
+      if (routine.status !== "active") {
+        await cancelQueuedRunsForIssueIds(
+          routine.companyId,
+          view.rows.map((row) => row.id),
+          `Routine ${routine.id} is paused`,
+          executor,
+        );
+        await cancelPendingWakeupsForIssueIds(
+          routine.companyId,
+          view.rows.map((row) => row.id),
+          `Routine ${routine.id} is paused`,
+          executor,
+        );
+      }
+      return view;
+    }
+
+    if (normalizeCanonicalRole && canonicalIssue.routineIssueRole !== "canonical") {
+      await executor
+        .update(issues)
+        .set({
+          routineIssueRole: "canonical",
+          updatedAt: now,
+        })
+        .where(eq(issues.id, canonicalIssue.id));
+    }
+
+    const nonCanonicalIssueIds = view.rows
+      .filter((row) => row.id !== canonicalIssue.id)
+      .map((row) => row.id);
+    if (nonCanonicalIssueIds.length > 0) {
+      await cancelQueuedRunsForIssueIds(
+        routine.companyId,
+        nonCanonicalIssueIds,
+        `Routine ${routine.id} duplicate execution issue superseded`,
+        executor,
+      );
+      await cancelPendingWakeupsForIssueIds(
+        routine.companyId,
+        nonCanonicalIssueIds,
+        `Routine ${routine.id} duplicate execution issue superseded`,
+        executor,
+      );
+    }
+
+    const duplicateRows = view.rows.filter(
+      (row) => row.id !== canonicalIssue.id && row.routineIssueRole !== "superseded",
+    );
+    if (duplicateRows.length > 0) {
+      await executor
+        .update(issues)
+        .set({
+          routineIssueRole: "superseded",
+          status: "cancelled",
+          cancelledAt: now,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(inArray(issues.id, duplicateRows.map((row) => row.id)));
+    }
+
+    if (routine.status !== "active") {
+      await cancelQueuedRunsForIssueIds(
+        routine.companyId,
+        view.rows.map((row) => row.id),
+        `Routine ${routine.id} is paused`,
+        executor,
+      );
+      await cancelPendingWakeupsForIssueIds(
+        routine.companyId,
+        view.rows.map((row) => row.id),
+        `Routine ${routine.id} is paused`,
+        executor,
+      );
+    }
+
+    return getRoutineExecutionView(routine, executor);
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
@@ -696,6 +1255,106 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .where(eq(routineRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function markPreviousBoundRoutineRunCompleted(
+    issue: Pick<OpenRoutineIssueRow, "originRunId" | "routineBoundRunId">,
+    nextRunId: string,
+    completedAt: Date,
+    executor: Db = db,
+  ) {
+    const previousRunId = issue.routineBoundRunId ?? issue.originRunId;
+    if (!previousRunId || previousRunId === nextRunId) return;
+    await executor
+      .update(routineRuns)
+      .set({
+        completedAt,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(routineRuns.id, previousRunId),
+          isNull(routineRuns.completedAt),
+        ),
+      );
+  }
+
+  async function finalizeRoutineRunAsCoalesced(input: {
+    routine: typeof routines.$inferSelect;
+    trigger: typeof routineTriggers.$inferSelect | null;
+    createdRun: typeof routineRuns.$inferSelect;
+    triggeredAt: Date;
+    status: "coalesced" | "skipped";
+    issue: OpenRoutineIssueRow;
+    executor: Db;
+    nextRunAt?: Date | null;
+  }) {
+    const updated = await finalizeRun(input.createdRun.id, {
+      status: input.status,
+      linkedIssueId: input.issue.id,
+      coalescedIntoRunId: input.issue.routineBoundRunId ?? input.issue.originRunId,
+      completedAt: input.triggeredAt,
+    }, input.executor);
+    await updateRoutineTouchedState({
+      routineId: input.routine.id,
+      triggerId: input.trigger?.id ?? null,
+      triggeredAt: input.triggeredAt,
+      status: input.status,
+      issueId: input.issue.id,
+      nextRunAt: input.nextRunAt,
+    }, input.executor);
+    return updated ?? input.createdRun;
+  }
+
+  async function reuseCanonicalRoutineIssue(input: {
+    routine: typeof routines.$inferSelect;
+    trigger: typeof routineTriggers.$inferSelect | null;
+    createdRun: typeof routineRuns.$inferSelect;
+    triggeredAt: Date;
+    issue: OpenRoutineIssueRow;
+    executor: Db;
+    nextRunAt?: Date | null;
+    requestedByActorType?: "system";
+  }) {
+    await queueIssueAssignmentWakeup({
+      heartbeat,
+      issue: {
+        id: input.issue.id,
+        assigneeAgentId: input.routine.assigneeAgentId,
+        status: input.issue.status,
+      },
+      reason: "issue_assigned",
+      mutation: "routine_reuse",
+      contextSource: "routine.dispatch",
+      requestedByActorType: input.requestedByActorType,
+      rethrowOnError: true,
+    });
+
+    await input.executor
+      .update(issues)
+      .set({
+        assigneeAgentId: input.routine.assigneeAgentId,
+        routineBoundRunId: input.createdRun.id,
+        routineIssueRole: "canonical",
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, input.issue.id));
+
+    await markPreviousBoundRoutineRunCompleted(input.issue, input.createdRun.id, input.triggeredAt, input.executor);
+
+    const updated = await finalizeRun(input.createdRun.id, {
+      status: "issue_reused",
+      linkedIssueId: input.issue.id,
+    }, input.executor);
+    await updateRoutineTouchedState({
+      routineId: input.routine.id,
+      triggerId: input.trigger?.id ?? null,
+      triggeredAt: input.triggeredAt,
+      status: "issue_reused",
+      issueId: input.issue.id,
+      nextRunAt: input.nextRunAt,
+    }, input.executor);
+    return updated ?? input.createdRun;
   }
 
   async function createWebhookSecret(
@@ -740,15 +1399,13 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
   }) {
-    await clearStaleExecutionLocksForRoutine(input.routine);
-
     const resolvedVariables = resolveRoutineVariableValues(input.routine.variables ?? [], input);
     const description = interpolateRoutineTemplate(input.routine.description, resolvedVariables);
     const triggerPayload = mergeRoutineRunPayload(input.payload, resolvedVariables);
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
-        sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
+        sql`select id from ${routines} where ${routines.id} = ${asUuidParam(input.routine.id)} and ${routines.companyId} = ${asUuidParam(input.routine.companyId)} for update`,
       );
 
       if (input.idempotencyKey) {
@@ -791,24 +1448,33 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb);
-        if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
+        const executionView = await reconcileRoutineExecutionIssues(input.routine, db, {
+          normalizeCanonicalRole: false,
+        });
+        if (executionView.liveIssueRow && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          const updated = await finalizeRun(createdRun.id, {
-            status,
-            linkedIssueId: activeIssue.id,
-            coalescedIntoRunId: activeIssue.originRunId,
-            completedAt: triggeredAt,
-          }, txDb);
-          await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
+          return await finalizeRoutineRunAsCoalesced({
+            routine: input.routine,
+            trigger: input.trigger,
+            createdRun,
             triggeredAt,
             status,
-            issueId: activeIssue.id,
+            issue: executionView.liveIssueRow,
+            executor: txDb,
             nextRunAt,
-          }, txDb);
-          return updated ?? createdRun;
+          });
+        }
+        if (executionView.canonicalIssueRow && input.routine.concurrencyPolicy !== "always_enqueue") {
+          return await reuseCanonicalRoutineIssue({
+            routine: input.routine,
+            trigger: input.trigger,
+            createdRun,
+            triggeredAt,
+            issue: executionView.canonicalIssueRow,
+            executor: txDb,
+            nextRunAt,
+            requestedByActorType: input.source === "schedule" ? "system" : undefined,
+          });
         }
 
         try {
@@ -824,6 +1490,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             originKind: "routine_execution",
             originId: input.routine.id,
             originRunId: createdRun.id,
+            routineBoundRunId: createdRun.id,
+            routineIssueRole: input.routine.concurrencyPolicy === "always_enqueue" ? "parallel" : "canonical",
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
@@ -840,27 +1508,37 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb);
-          if (!existingIssue) throw error;
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          const updated = await finalizeRun(createdRun.id, {
-            status,
-            linkedIssueId: existingIssue.id,
-            coalescedIntoRunId: existingIssue.originRunId,
-            completedAt: triggeredAt,
-          }, txDb);
-          await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
-            triggeredAt,
-            status,
-            issueId: existingIssue.id,
-            nextRunAt,
-          }, txDb);
-          return updated ?? createdRun;
+          const refreshedView = await reconcileRoutineExecutionIssues(input.routine, db, {
+            normalizeCanonicalRole: false,
+          });
+          if (refreshedView.liveIssueRow) {
+            const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+            return await finalizeRoutineRunAsCoalesced({
+              routine: input.routine,
+              trigger: input.trigger,
+              createdRun,
+              triggeredAt,
+              status,
+              issue: refreshedView.liveIssueRow,
+              executor: txDb,
+              nextRunAt,
+            });
+          }
+          if (refreshedView.canonicalIssueRow) {
+            return await reuseCanonicalRoutineIssue({
+              routine: input.routine,
+              trigger: input.trigger,
+              createdRun,
+              triggeredAt,
+              issue: refreshedView.canonicalIssueRow,
+              executor: txDb,
+              nextRunAt,
+              requestedByActorType: input.source === "schedule" ? "system" : undefined,
+            });
+          }
+          throw error;
         }
 
-        // Keep the dispatch lock until the issue is linked to a queued heartbeat run.
         await queueIssueAssignmentWakeup({
           heartbeat,
           issue: createdIssue,
@@ -948,10 +1626,10 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         .where(eq(routines.companyId, companyId))
         .orderBy(desc(routines.updatedAt), asc(routines.title));
       const routineIds = rows.map((row) => row.id);
-      const [triggersByRoutine, latestRunByRoutine, activeIssueByRoutine] = await Promise.all([
+      const [triggersByRoutine, latestRunByRoutine, executionViewByRoutine] = await Promise.all([
         listTriggersForRoutineIds(companyId, routineIds),
         listLatestRunByRoutineIds(companyId, routineIds),
-        listLiveIssueByRoutineIds(companyId, routineIds),
+        listRoutineExecutionViewByRoutineIds(rows),
       ]);
       return rows.map((row) => ({
         ...row,
@@ -965,14 +1643,17 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           lastResult: trigger.lastResult,
         })),
         lastRun: latestRunByRoutine.get(row.id) ?? null,
-        activeIssue: activeIssueByRoutine.get(row.id) ?? null,
+        canonicalIssue: executionViewByRoutine.get(row.id)?.canonicalIssue ?? null,
+        liveIssue: executionViewByRoutine.get(row.id)?.liveIssue ?? null,
+        executionState: executionViewByRoutine.get(row.id)?.executionState ?? "none",
+        activeIssue: executionViewByRoutine.get(row.id)?.activeIssue ?? null,
       }));
     },
 
     getDetail: async (id: string): Promise<RoutineDetail | null> => {
       const row = await getRoutineById(id);
       if (!row) return null;
-      const [project, assignee, parentIssue, triggers, recentRuns, activeIssue] = await Promise.all([
+      const [project, assignee, parentIssueRaw, triggers, recentRuns, executionView] = await Promise.all([
         db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null),
         db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null),
         row.parentIssueId ? issueSvc.getById(row.parentIssueId) : null,
@@ -1033,6 +1714,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
                   status: run.issueStatus ?? "todo",
                   priority: run.issuePriority ?? "medium",
                   updatedAt: run.issueUpdatedAt ?? run.updatedAt,
+                  role: null,
                 }
                 : null,
               trigger: run.triggerId
@@ -1044,8 +1726,19 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
                 : null,
             })),
           ),
-        findLiveExecutionIssue(row),
+        getRoutineExecutionView(row),
       ]);
+      const parentIssue = parentIssueRaw
+        ? {
+          id: parentIssueRaw.id,
+          identifier: parentIssueRaw.identifier ?? null,
+          title: parentIssueRaw.title,
+          status: parentIssueRaw.status,
+          priority: parentIssueRaw.priority,
+          updatedAt: parentIssueRaw.updatedAt,
+          role: (parentIssueRaw.routineIssueRole ?? null) as RoutineIssueSummary["role"],
+        }
+        : null;
 
       return {
         ...row,
@@ -1054,7 +1747,10 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         parentIssue,
         triggers: triggers as RoutineTrigger[],
         recentRuns,
-        activeIssue,
+        canonicalIssue: executionView.canonicalIssue,
+        liveIssue: executionView.liveIssue,
+        executionState: executionView.executionState,
+        activeIssue: executionView.activeIssue,
       };
     },
 
@@ -1144,7 +1840,12 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         })
         .where(eq(routines.id, id))
         .returning();
-      return updated ?? null;
+      if (!updated) return null;
+      await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await reconcileRoutineExecutionIssues(updated, txDb);
+      });
+      return updated;
     },
 
     createTrigger: async (
@@ -1268,8 +1969,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     delete: async (id: string): Promise<boolean> => {
       const routine = await getRoutineById(id);
       if (!routine) return false;
-      const liveIssue = await findLiveExecutionIssue(routine);
-      if (liveIssue) {
+      const executionView = await getRoutineExecutionView(routine);
+      if (executionView.liveIssueRow) {
         throw conflict("Routine has an active execution run and cannot be deleted");
       }
       await db.delete(routines).where(eq(routines.id, id));
@@ -1312,6 +2013,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       const routine = await getRoutineById(id);
       if (!routine) throw notFound("Routine not found");
       if (routine.status === "archived") throw conflict("Routine is archived");
+      if (routine.status === "paused") throw conflict("Routine is paused");
       const trigger = input.triggerId ? await getTriggerById(input.triggerId) : null;
       if (trigger && trigger.routineId !== routine.id) throw forbidden("Trigger does not belong to routine");
       if (trigger && !trigger.enabled) throw conflict("Routine trigger is not active");
@@ -1346,6 +2048,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (!trigger) throw notFound("Routine trigger not found");
       const routine = await getRoutineById(trigger.routineId);
       if (!routine) throw notFound("Routine not found");
+      if (routine.status === "paused") throw conflict("Routine is paused");
       if (!trigger.enabled || routine.status !== "active") throw conflict("Routine trigger is not active");
 
       if (trigger.signingMode === "none") {
@@ -1476,6 +2179,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             status: row.issueStatus ?? "todo",
             priority: row.issuePriority ?? "medium",
             updatedAt: row.issueUpdatedAt ?? row.updatedAt,
+            role: null,
           }
           : null,
         trigger: row.triggerId
@@ -1486,6 +2190,83 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           }
           : null,
       }));
+    },
+
+    inspectExecutionState: async (
+      input: { companyId?: string | null; routineId?: string | null } = {},
+    ): Promise<RoutineExecutionRepairInspection> => {
+      const routineRows = await listRoutinesForExecutionRepair(input);
+      const candidates = await Promise.all(
+        routineRows.map((routine) => inspectRoutineExecutionRepairCandidate(routine)),
+      );
+      return summarizeRoutineExecutionRepairInspection(candidates);
+    },
+
+    reconcileExecutionState: async (
+      input: { companyId?: string | null; routineId?: string | null } = {},
+    ): Promise<RoutineExecutionRepairSummary> => {
+      const routineRows = await listRoutinesForExecutionRepair(input);
+      let routinesReconciled = 0;
+      let staleExecutionLocksCleared = 0;
+      let canonicalRolesUpdated = 0;
+      let parallelRolesUpdated = 0;
+      let duplicateIssuesSuperseded = 0;
+      let wakeupsCancelled = 0;
+      let queuedRunsCancelled = 0;
+
+      for (const routine of routineRows) {
+        const inspection = await db.transaction(async (tx) => {
+          const txDb = tx as unknown as Db;
+          const currentRoutine = await txDb
+            .select()
+            .from(routines)
+            .where(eq(routines.id, routine.id))
+            .then((rows) => rows[0] ?? null);
+          if (!currentRoutine) return null;
+          const currentInspection = await inspectRoutineExecutionRepairCandidate(currentRoutine, txDb);
+          if (
+            currentInspection.staleExecutionLockIssueIds.length === 0 &&
+            currentInspection.issueIdsToCanonicalize.length === 0 &&
+            currentInspection.issueIdsToParallelize.length === 0 &&
+            currentInspection.duplicateIssueIds.length === 0 &&
+            currentInspection.wakeupIdsToCancel.length === 0 &&
+            currentInspection.queuedRunIdsToCancel.length === 0
+          ) {
+            return currentInspection;
+          }
+          await reconcileRoutineExecutionIssues(currentRoutine, txDb);
+          return currentInspection;
+        });
+        if (!inspection) continue;
+
+        const changed =
+          inspection.staleExecutionLockIssueIds.length > 0 ||
+          inspection.issueIdsToCanonicalize.length > 0 ||
+          inspection.issueIdsToParallelize.length > 0 ||
+          inspection.duplicateIssueIds.length > 0 ||
+          inspection.wakeupIdsToCancel.length > 0 ||
+          inspection.queuedRunIdsToCancel.length > 0;
+        if (!changed) continue;
+
+        routinesReconciled += 1;
+        staleExecutionLocksCleared += inspection.staleExecutionLockIssueIds.length;
+        canonicalRolesUpdated += inspection.issueIdsToCanonicalize.length;
+        parallelRolesUpdated += inspection.issueIdsToParallelize.length;
+        duplicateIssuesSuperseded += inspection.duplicateIssueIds.length;
+        wakeupsCancelled += inspection.wakeupIdsToCancel.length;
+        queuedRunsCancelled += inspection.queuedRunIdsToCancel.length;
+      }
+
+      return {
+        routinesInspected: routineRows.length,
+        routinesReconciled,
+        staleExecutionLocksCleared,
+        canonicalRolesUpdated,
+        parallelRolesUpdated,
+        duplicateIssuesSuperseded,
+        wakeupsCancelled,
+        queuedRunsCancelled,
+      };
     },
 
     tickScheduledTriggers: async (now: Date = new Date()) => {
@@ -1561,19 +2342,21 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           status: issues.status,
           originKind: issues.originKind,
           originRunId: issues.originRunId,
+          routineBoundRunId: issues.routineBoundRunId,
         })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
-      if (!issue || issue.originKind !== "routine_execution" || !issue.originRunId) return null;
+      const boundRunId = issue?.routineBoundRunId ?? issue?.originRunId ?? null;
+      if (!issue || issue.originKind !== "routine_execution" || !boundRunId) return null;
       if (issue.status === "done") {
-        return finalizeRun(issue.originRunId, {
+        return finalizeRun(boundRunId, {
           status: "completed",
           completedAt: new Date(),
         });
       }
       if (issue.status === "blocked" || issue.status === "cancelled") {
-        return finalizeRun(issue.originRunId, {
+        return finalizeRun(boundRunId, {
           status: "failed",
           failureReason: `Execution issue moved to ${issue.status}`,
           completedAt: new Date(),

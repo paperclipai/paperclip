@@ -8,6 +8,9 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
+  projects,
+  routines,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -29,8 +32,11 @@ describeEmbeddedPostgres("heartbeat company-status guards", () => {
 
   afterEach(async () => {
     await db.delete(heartbeatRunEvents);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(routines);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -175,5 +181,122 @@ describeEmbeddedPostgres("heartbeat company-status guards", () => {
     expect(run?.status).toBe("cancelled");
     expect(run?.error).toContain("archived");
     expect(wakeup?.status).toBe("cancelled");
+  });
+
+  it("cancels queued runs bound to paused routine issues during queued-run recovery", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const routineId = randomUUID();
+    const issueId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Comandero",
+      issuePrefix,
+      status: "active",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "QA and Release Engineer",
+      role: "qa",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 60,
+          wakeOnDemand: true,
+        },
+      },
+      permissions: {},
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "App",
+      status: "in_progress",
+    });
+
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      projectId,
+      title: "Cart trust audit",
+      description: "Eliminate any source of doubt",
+      assigneeAgentId: agentId,
+      priority: "medium",
+      status: "paused",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+      variables: [],
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "queued",
+      runId,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId,
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Paused routine issue",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      originKind: "routine_execution",
+      originId: routineId,
+      originRunId: randomUUID(),
+      routineBoundRunId: randomUUID(),
+      routineIssueRole: "canonical",
+      executionRunId: runId,
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const [run, wakeup, issue] = await Promise.all([
+      db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0] ?? null),
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.error).toContain("Routine is paused");
+    expect(wakeup?.status).toBe("cancelled");
+    expect(issue?.executionRunId).toBeNull();
   });
 });

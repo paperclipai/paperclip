@@ -364,7 +364,8 @@ export function RoutineDetail() {
     queryFn: () => routinesApi.get(routineId!),
     enabled: !!routineId,
   });
-  const activeIssueId = routine?.activeIssue?.id;
+  const activeIssueId = routine?.liveIssue?.id ?? routine?.activeIssue?.id ?? null;
+  const canonicalIssueId = routine?.canonicalIssue?.id ?? null;
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(activeIssueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(activeIssueId!),
@@ -1259,6 +1260,11 @@ export function RoutineDetail() {
           {hasLiveRun && activeIssueId && routine && (
             <LiveRunWidget issueId={activeIssueId} companyId={routine.companyId} />
           )}
+          {!hasLiveRun && routine?.executionState === "paused" && canonicalIssueId ? (
+            <p className="text-xs text-muted-foreground">
+              Routine is paused. The canonical issue stays visible for history, but it will not be re-woken.
+            </p>
+          ) : null}
           {(routineRuns ?? []).length === 0 ? (
             <p className="text-xs text-muted-foreground">No runs yet.</p>
           ) : (

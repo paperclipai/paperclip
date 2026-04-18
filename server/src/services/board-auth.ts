@@ -50,6 +50,10 @@ function challengeStatusForRow(row: typeof cliAuthChallenges.$inferSelect): CliA
 }
 
 export function boardAuthService(db: Db) {
+  function asUuidParam(value: string) {
+    return sql`${value}::uuid`;
+  }
+
   async function resolveBoardAccess(userId: string) {
     const [user, memberships, adminRole] = await Promise.all([
       db
@@ -253,7 +257,7 @@ export function boardAuthService(db: Db) {
     const access = await resolveBoardAccess(userId);
     return db.transaction(async (tx) => {
       await tx.execute(
-        sql`select ${cliAuthChallenges.id} from ${cliAuthChallenges} where ${cliAuthChallenges.id} = ${id} for update`,
+        sql`select ${cliAuthChallenges.id} from ${cliAuthChallenges} where ${cliAuthChallenges.id} = ${asUuidParam(id)} for update`,
       );
 
       const challenge = await tx

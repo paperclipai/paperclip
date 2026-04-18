@@ -1,4 +1,9 @@
-import type { IssueOriginKind, RoutineVariableType } from "../constants.js";
+import type {
+  IssueOriginKind,
+  IssueRoutineExecutionRole,
+  RoutineExecutionState,
+  RoutineVariableType,
+} from "../constants.js";
 
 export interface RoutineProjectSummary {
   id: string;
@@ -23,6 +28,7 @@ export interface RoutineIssueSummary {
   status: string;
   priority: string;
   updatedAt: Date;
+  role: IssueRoutineExecutionRole | null;
 }
 
 export type RoutineVariableDefaultValue = string | number | boolean | null;
@@ -114,6 +120,9 @@ export interface RoutineDetail extends Routine {
   parentIssue: RoutineIssueSummary | null;
   triggers: RoutineTrigger[];
   recentRuns: RoutineRunSummary[];
+  canonicalIssue: RoutineIssueSummary | null;
+  liveIssue: RoutineIssueSummary | null;
+  executionState: RoutineExecutionState;
   activeIssue: RoutineIssueSummary | null;
 }
 
@@ -131,5 +140,8 @@ export interface RoutineExecutionIssueOrigin {
 export interface RoutineListItem extends Routine {
   triggers: Pick<RoutineTrigger, "id" | "kind" | "label" | "enabled" | "nextRunAt" | "lastFiredAt" | "lastResult">[];
   lastRun: RoutineRunSummary | null;
+  canonicalIssue: RoutineIssueSummary | null;
+  liveIssue: RoutineIssueSummary | null;
+  executionState: RoutineExecutionState;
   activeIssue: RoutineIssueSummary | null;
 }

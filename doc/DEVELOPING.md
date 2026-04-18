@@ -162,6 +162,9 @@ Manual inspection and repair is available through:
 pnpm runtime-integrity:reconcile
 pnpm runtime-integrity:reconcile -- --apply
 pnpm runtime-integrity:reconcile -- --json
+pnpm routine-execution:reconcile
+pnpm routine-execution:reconcile -- --apply
+pnpm routine-execution:reconcile -- --json
 ```
 
 The script is dry-run by default. It currently expects an explicit `DATABASE_URL` when run outside the server process against an embedded PostgreSQL instance.

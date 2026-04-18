@@ -209,6 +209,7 @@ export type {
   RoutineDetail,
   RoutineRunSummary,
   RoutineExecutionIssueOrigin,
+  RoutineIssueSummary,
   RoutineListItem,
 } from "./routine.js";
 export type {

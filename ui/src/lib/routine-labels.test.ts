@@ -17,6 +17,11 @@ describe("routine labels", () => {
     );
   });
 
+  it("shows a friendly label for reused routine trigger results", () => {
+    expect(formatRoutineRunStatusLabel("issue_reused")).toBe("Reused Open Issue");
+    expect(formatRoutineLastResultLabel("Reused execution issue ABC-123")).toBe("Reused open issue");
+  });
+
   it("shows friendly concurrency policy labels", () => {
     expect(ROUTINE_CONCURRENCY_POLICY_LABELS.coalesce_if_active).toBe("Reuse Active Run");
     expect(ROUTINE_CONCURRENCY_POLICY_DESCRIPTIONS.coalesce_if_active).toBe(

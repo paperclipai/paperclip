@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, companies, issues, projects } from "@paperclipai/db";
+import { agents, companies, issues, projects, routines } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 
@@ -12,16 +12,17 @@ export type ExecutionBlockCode =
   | "project_paused_manual"
   | "project_paused_budget"
   | "project_budget_hard_stop"
+  | "routine_paused"
   | "agent_paused_budget"
   | "agent_budget_hard_stop";
 
 export type ExecutionBlock = {
   code: ExecutionBlockCode;
-  scopeType: "company" | "agent" | "project";
+  scopeType: "company" | "agent" | "project" | "routine";
   scopeId: string;
   scopeName: string;
   message: string;
-  skipReason: "company.archived" | "company.paused" | "project.paused" | "budget.blocked";
+  skipReason: "company.archived" | "company.paused" | "project.paused" | "routine.paused" | "budget.blocked";
 };
 
 type ExecutionContext = {
@@ -128,6 +129,45 @@ export function executionGateService(db: Db) {
                 ? "Project is paused because its budget hard-stop was reached."
                 : "Project is paused and cannot start new work.",
             skipReason: project.pauseReason === "budget" ? "budget.blocked" : "project.paused",
+          };
+        }
+      }
+
+      const issueId = context?.issueId?.trim();
+      if (issueId) {
+        const routine = await db
+          .select({
+            id: routines.id,
+            title: routines.title,
+            status: routines.status,
+            companyId: routines.companyId,
+          })
+          .from(issues)
+          .innerJoin(
+            routines,
+            sql`${routines.id} = cast(${issues.originId} as uuid) and ${routines.companyId} = ${issues.companyId}`,
+          )
+          .where(
+            and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, companyId),
+              eq(issues.originKind, "routine_execution"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+
+        if (
+          routine &&
+          routine.companyId === companyId
+          && routine.status === "paused"
+        ) {
+          return {
+            code: "routine_paused",
+            scopeType: "routine",
+            scopeId: routine.id,
+            scopeName: routine.title,
+            message: "Routine is paused and cannot start new work.",
+            skipReason: "routine.paused",
           };
         }
       }
