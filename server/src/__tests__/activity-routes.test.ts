@@ -104,7 +104,8 @@ describe("activity routes", () => {
     const app = await createApp();
     const res = await request(app).get("/api/heartbeat-runs/run-2/issues");
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Heartbeat run not found");
     expect(mockActivityService.issuesForRun).not.toHaveBeenCalled();
   });
 
