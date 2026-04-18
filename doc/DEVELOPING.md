@@ -138,6 +138,24 @@ PAPERCLIP_HOME=/custom/path PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
 
 No Docker or external database is required for this mode.
 
+## Runtime Integrity Reconciliation
+
+Heartbeat recovery now runs in three steps on startup and on the periodic recovery sweep:
+
+1. reap orphaned running runs
+2. reconcile stale queued/claimed wakeups and broken `in_progress` issue ownership
+3. resume any remaining queued runs
+
+Manual inspection and repair is available through:
+
+```sh
+pnpm runtime-integrity:reconcile
+pnpm runtime-integrity:reconcile -- --apply
+pnpm runtime-integrity:reconcile -- --json
+```
+
+The script is dry-run by default. It currently expects an explicit `DATABASE_URL` when run outside the server process against an embedded PostgreSQL instance.
+
 ## Storage in Dev (Auto-Handled)
 
 For local development, the default storage provider is `local_disk`, which persists uploaded images/attachments at:

@@ -1,7 +1,7 @@
 # Agent Runtime Guide
 
 Status: User-facing guide  
-Last updated: 2026-04-16  
+Last updated: 2026-04-18  
 Audience: Operators setting up and running agents in PrivateClip
 
 ## 1. What this system does
@@ -52,7 +52,7 @@ In agent runtime settings, configure heartbeat policy:
 - `wakeOnOnDemand`: allow ping-style on-demand wakeups
 - `wakeOnAutomation`: allow system automation wakeups
 
-Archived companies do not start new work. Queued runs for archived companies should be cancelled instead of remaining queued indefinitely.
+Archived and paused companies do not start new timer work. Queued runs for archived/paused companies should be cancelled instead of remaining queued indefinitely.
 
 ## 3.3 Working directory and execution limits
 
@@ -97,6 +97,23 @@ For each heartbeat run you get:
 - full logs (stored outside core run rows, optimized for large output)
 
 In local/dev setups, full logs are stored on disk under the configured run-log path.
+
+## 5.1 Runtime integrity recovery
+
+Heartbeat recovery has a control-plane reconciliation pass before queued work resumes.
+
+That pass:
+
+- terminalizes wakeups whose linked runs already finished
+- cancels queued runs that belong to archived or paused companies
+- repairs broken `in_progress` issue ownership by either rebinding to the single live run for that issue or demoting impossible fake WIP back to `todo`
+
+Operators can inspect or run the same repair logic manually:
+
+```sh
+pnpm runtime-integrity:reconcile
+pnpm runtime-integrity:reconcile -- --apply
+```
 
 ## 6. Live updates in the UI
 

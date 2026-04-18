@@ -105,6 +105,7 @@ A lightweight scheduler/worker in the server process handles:
 
 - heartbeat trigger checks
 - stuck run detection
+- runtime integrity reconciliation for stale wakeups, paused/archived queued runs, and broken `in_progress` issue ownership
 - budget threshold checks
 
 Separate queue infrastructure is not required for V1.
@@ -454,6 +455,8 @@ All endpoints are under `/api` and return JSON.
 - `GET /companies/:companyId`
 - `PATCH /companies/:companyId`
 - `PATCH /companies/:companyId/branding`
+- `POST /companies/:companyId/pause`
+- `POST /companies/:companyId/resume`
 - `POST /companies/:companyId/archive`
 
 ## 10.2 Goals
@@ -629,9 +632,12 @@ Per-agent schedule fields in `adapter_config`:
 
 Scheduler must skip invocation when:
 
+- company is paused/archived
 - agent is paused/terminated
 - an existing run is active
 - hard budget limit has been hit
+
+Company pause/archive must also drain queued/running company-scoped work and deferred wakeups instead of leaving stale queued state behind.
 
 ## 12. Governance and Approval Flows
 
