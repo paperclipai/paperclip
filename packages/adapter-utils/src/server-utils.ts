@@ -618,6 +618,27 @@ function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
   return path.join(fallbackRoot, "System32", "cmd.exe");
 }
 
+/**
+ * Detect whether a .cmd/.bat file is a thin Node.js wrapper that simply
+ * forwards arguments to a .js script (e.g. `node "path/to/script.js" %*`).
+ * When detected, we can invoke `node` directly and skip cmd.exe entirely,
+ * avoiding metacharacter escaping issues in prompt-like arguments.
+ *
+ * Only matches strict two-line wrappers (`@echo off` + `node ... %*`) to
+ * avoid false positives on complex .cmd files with conditionals or loops.
+ */
+async function detectNodeWrapperCmd(cmdPath: string): Promise<string | null> {
+  try {
+    const content = await fs.readFile(cmdPath, "utf8");
+    const match = content.match(
+      /^\s*@echo\s+off\s*[\r\n]+\s*node\s+"?([^"\r\n]+\.js)"?\s*%\*\s*$/i,
+    );
+    return match?.[1]?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function resolveSpawnTarget(
   command: string,
   args: string[],
@@ -632,6 +653,13 @@ async function resolveSpawnTarget(
   }
 
   if (/\.(cmd|bat)$/i.test(executable)) {
+    // Bypass cmd.exe for thin npm-style node wrappers so arguments like
+    // parentheses, pipes, or ampersands reach the target script unchanged.
+    const scriptPath = await detectNodeWrapperCmd(executable);
+    if (scriptPath) {
+      return { command: "node", args: [scriptPath, ...args] };
+    }
+
     // Always use cmd.exe for .cmd/.bat wrappers. Some environments override
     // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
     const shell = resolveWindowsCmdShell(env);
