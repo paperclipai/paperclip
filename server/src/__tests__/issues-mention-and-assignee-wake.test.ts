@@ -30,6 +30,27 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
+const mockTelemetry = vi.hoisted(() => ({
+  getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  trackWakeEmissionFailure: vi.fn(),
+}));
+
+vi.mock("@paperclipai/shared/telemetry", async () => {
+  const actual =
+    await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
+      "@paperclipai/shared/telemetry",
+    );
+  return {
+    ...actual,
+    trackWakeEmissionFailure: mockTelemetry.trackWakeEmissionFailure,
+  };
+});
+
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: mockTelemetry.getTelemetryClient,
+  initTelemetry: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
@@ -183,5 +204,72 @@ describe("issue PATCH wake emission", () => {
       MENTIONED,
       expect.objectContaining({ reason: "issue_comment_mentioned" }),
     );
+  });
+});
+
+describe("issue POST /issues/:id/comments wake emission telemetry", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockTelemetry.getTelemetryClient.mockReturnValue({ track: vi.fn() });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-2",
+      issueId: ISSUE_ID,
+      companyId: "company-1",
+      body: "",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: null,
+      authorUserId: "local-board",
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockHeartbeatService.wakeup.mockImplementation(async () => undefined);
+  });
+
+  it("emits wake_emission.failed telemetry when findMentionedAgents rejects on comment create", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
+    mockIssueService.findMentionedAgents.mockRejectedValue(new Error("resolver boom"));
+
+    const res = await request(createApp())
+      .post(`/api/issues/${ISSUE_ID}/comments`)
+      .send({ body: "heads up @cto" });
+
+    expect(res.status).toBe(201);
+    await flushMicrotasks();
+
+    expect(mockTelemetry.trackWakeEmissionFailure).toHaveBeenCalledWith(
+      expect.anything(),
+      { reason: "mention_resolution_error", source: "issue.comment" },
+    );
+  });
+
+  it("emits wake_emission.failed telemetry when heartbeat.wakeup rejects on comment create", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: WORKER }));
+    mockHeartbeatService.wakeup.mockRejectedValue(new Error("wake boom"));
+
+    const res = await request(createApp())
+      .post(`/api/issues/${ISSUE_ID}/comments`)
+      .send({ body: "ping" });
+
+    expect(res.status).toBe(201);
+    await flushMicrotasks();
+
+    expect(mockTelemetry.trackWakeEmissionFailure).toHaveBeenCalledWith(
+      expect.anything(),
+      { reason: "heartbeat_wakeup_error", source: "issue.comment" },
+    );
+  });
+
+  it("does not emit wake_emission.failed telemetry when the comment wake path succeeds", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: WORKER }));
+    mockIssueService.findMentionedAgents.mockResolvedValue([]);
+
+    const res = await request(createApp())
+      .post(`/api/issues/${ISSUE_ID}/comments`)
+      .send({ body: "no mentions" });
+
+    expect(res.status).toBe(201);
+    await flushMicrotasks();
+
+    expect(mockTelemetry.trackWakeEmissionFailure).not.toHaveBeenCalled();
   });
 });
