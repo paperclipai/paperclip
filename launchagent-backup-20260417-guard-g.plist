@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.openclaw.paperclip</string>
+
+    <key>Comment</key>
+    <string>Paperclip AI Project Management</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/zsh</string>
+      <string>-c</string>
+      <string>unset CLAUDECODE; cd "/Users/openclaw/Library/Mobile Documents/com~apple~CloudDocs/FreeMyMemories/_paperclip"; NODE=/Users/openclaw/homebrew/bin/node; if ! $NODE -e "const f=require('fs').readFileSync('server/src/services/heartbeat.ts','utf8'); if(!f.includes('wakeOnComment')){process.exit(1)}" 2>/dev/null; then echo "FATAL: wakeOnComment patch (e855c890) missing from Paperclip. Rebase the freemymemories/local-customizations branch. See _paperclip/CUSTOMIZATIONS.md" &gt;&amp;2; exit 1; fi; if ! $NODE -e "const f=require('fs').readFileSync('server/src/adapters/registry.ts','utf8'); if(!f.includes('supportsLocalAgentJwt: true')){process.exit(1)}" 2>/dev/null; then echo "FATAL: supportsLocalAgentJwt patch (4ac66f9d) missing from registry.ts. Rebase the freemymemories/local-customizations branch. See _paperclip/CUSTOMIZATIONS.md" &gt;&amp;2; exit 1; fi; if ! $NODE -e "const f=require('fs').readFileSync('server/src/services/activity-log.ts','utf8'); if(!f.includes('eventType: \"activity.logged\"')){process.exit(1)}" 2>/dev/null; then echo "FATAL: activity.logged emit patch (d5573660) missing from activity-log.ts. Plugins subscribed to activity.logged will receive nothing. See _paperclip/CUSTOMIZATIONS.md" &gt;&amp;2; exit 1; fi; if ! $NODE -e "const f=require('fs').readFileSync('server/src/services/plugin-tool-dispatcher.ts','utf8'); if(!f.includes('pluginDbId?: string')){process.exit(1)}" 2>/dev/null; then echo "FATAL: pluginDbId signature patch (9527fa37) missing from plugin-tool-dispatcher.ts. Every plugin tool call will return 502. See _paperclip/CUSTOMIZATIONS.md" &gt;&amp;2; exit 1; fi; if ! $NODE -e "if(!require('fs').existsSync('scripts/dev-runner-paths.mjs')){process.exit(1)}" 2>/dev/null; then echo "FATAL: dev-runner-paths.mjs (6fb9f642) missing. tsx watch will restart on every iCloud metadata tickle. See _paperclip/CUSTOMIZATIONS.md" &gt;&amp;2; exit 1; fi; if ! $NODE -e "const f=require('fs').readFileSync('server/src/services/heartbeat.ts','utf8'); if(!f.includes('emitRunStatusPluginEvent')){process.exit(1)}" 2>/dev/null; then echo "FATAL: heartbeat plugin-event emit patch missing from heartbeat.ts. Rebase the freemymemories/local-customizations branch. See _paperclip/CUSTOMIZATIONS.md" &gt;&amp;2; exit 1; fi; export BETTER_AUTH_SECRET=b7e3da3cb84d76906bb59c76c071a55fcfcdbce59884362ee2685d43d16c3ecf; export BETTER_AUTH_BASE_URL=http://localhost:3100; /Users/openclaw/homebrew/bin/pnpm dev --tailscale-auth</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/openclaw/Library/Mobile Documents/com~apple~CloudDocs/FreeMyMemories/_paperclip</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/openclaw/.openclaw/logs/paperclip.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/openclaw/.openclaw/logs/paperclip.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>HOME</key>
+      <string>/Users/openclaw</string>
+      <key>PATH</key>
+      <string>/Users/openclaw/homebrew/bin:/Users/openclaw/.bun/bin:/Users/openclaw/.local/bin:/Users/openclaw/.npm-global/bin:/Users/openclaw/bin:/Users/openclaw/Library/pnpm:/Users/openclaw/.local/share/pnpm:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+      <key>BETTER_AUTH_SECRET</key>
+      <string>b7e3da3cb84d76906bb59c76c071a55fcfcdbce59884362ee2685d43d16c3ecf</string>
+      <key>PAPERCLIP_MIGRATION_PROMPT</key>
+      <string>never</string>
+      <key>PAPERCLIP_MIGRATION_AUTO_APPLY</key>
+      <string>true</string>
+      <key>BETTER_AUTH_BASE_URL</key>
+      <string>http://localhost:3100</string>
+      <key>PAPERCLIP_AGENT_JWT_SECRET</key>
+      <string>347a204f0f1877c91e536c5b84a294b9ba26ecceda252a056d7ae435777d6155</string>
+    </dict>
+  </dict>
+</plist>

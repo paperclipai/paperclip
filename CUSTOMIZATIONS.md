@@ -1,15 +1,15 @@
 # Paperclip Local Customizations
 
-Our fork carries 20 commits beyond upstream. Each is load-bearing; losing any could silently break a production feature. This file is the single source of truth for what we patch and why.
+Our fork carries 21 commits beyond upstream. Each is load-bearing; losing any could silently break a production feature. This file is the single source of truth for what we patch and why.
 
 **Branch:** `freemymemories/local-customizations`
 **Upstream:** `origin/master`
 **Regenerate:** `git log --pretty="%H %s" origin/master..HEAD`
-**Last verified:** 2026-04-17
+**Last verified:** 2026-04-17 (Phase G)
 
 ## LaunchAgent startup guards
 
-The LaunchAgent plist at `~/Library/LaunchAgents/com.openclaw.paperclip.plist` runs canary checks before starting Paperclip. If any guarded patch is missing, the server refuses to boot. Currently guarded (6 checks):
+The LaunchAgent plist at `~/Library/LaunchAgents/com.openclaw.paperclip.plist` runs canary checks before starting Paperclip. If any guarded patch is missing, the server refuses to boot. Currently guarded (7 checks):
 
 | Guard | Patch commit | File | Marker |
 |---|---|---|---|
@@ -19,6 +19,7 @@ The LaunchAgent plist at `~/Library/LaunchAgents/com.openclaw.paperclip.plist` r
 | pluginDbId signature | 9527fa37 | server/src/services/plugin-tool-dispatcher.ts | `pluginDbId?: string` |
 | dev-runner-paths exists | 6fb9f642 | scripts/dev-runner-paths.mjs | (file presence) |
 | heartbeat plugin-event emit | 0a301e37, f4eeeaa8 | server/src/services/heartbeat.ts | `emitRunStatusPluginEvent` |
+| plugin-registry scope filter | SCOPE_FILTER_PATCH_V1 | server/src/services/plugin-registry.ts | `SCOPE_FILTER_PATCH_V1` |
 
 Post-rebase: verify every row in the tables below is still present. Patches marked HIGH reversion risk MUST be re-guarded in the plist before Paperclip is started.
 
@@ -61,6 +62,7 @@ Post-rebase: verify every row in the tables below is still present. Patches mark
 | d5573660 | emit activity.logged for every activity_log row | server/src/services/activity-log.ts | Prior emit was gated on PLUGIN_EVENT_SET.has(input.action); no caller passes action="activity.logged" so the event was never emitted. Plugins subscribing to activity.logged (e.g. paperclip-chief-of-staff) received nothing | HIGH | Candidate for upstream PR |
 | 0a301e37 | emit agent.run.* plugin events on run status transitions (#3) | server/src/services/heartbeat.ts, server/src/services/plugin-event-bus.ts | Wires setHeartbeatPluginEventBus + emitRunStatusPluginEvent; setRunStatus() now forwards started/finished/failed/cancelled transitions to the plugin event bus. Without this, plugins subscribed to agent.run.* lifecycle events never fire (Chief of Staff, orchestrators) | HIGH | Candidate for upstream PR |
 | f4eeeaa8 | also emit agent.run.started at the claim site (#5) | server/src/services/heartbeat.ts | queued → running claim-site uses a direct db.update bypassing setRunStatus(); without this follow-up emit, plugins only ever see terminal transitions (finished/failed/cancelled) and miss started events entirely | HIGH | Candidate for upstream PR (with 0a301e37) |
+| SCOPE_FILTER_PATCH_V1 | honor scopeKind + scopeId in plugin-registry.listEntities | server/src/services/plugin-registry.ts | Pre-patch, listEntities silently dropped the SDK's `scopeKind`/`scopeId` filters — only `pluginId`/`entityType`/`externalId` were applied. Every plugin tool that stored entities under a run/issue/project scope was leaking cross-scope data (e.g. `cos_dismiss_prefinding` would accept any `runId` and still dismiss). Patch adds conditional composition of `eq(scope_kind, …)` / `eq(scope_id, …)` plus query-time validation. Guarded by marker `SCOPE_FILTER_PATCH_V1` | HIGH | Candidate for upstream PR |
 
 ### CI & Dev Experience
 
