@@ -467,4 +467,73 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+
+  it(
+    "renames account to auth_account and preserves rows when replaying migration 0058",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(`
+          INSERT INTO "user" ("id", "name", "email", "email_verified", "created_at", "updated_at")
+          VALUES ('user-1', 'User One', 'user@example.com', true, now(), now())
+        `);
+
+        await sql.unsafe(`
+          INSERT INTO "auth_account" ("id", "account_id", "provider_id", "user_id", "created_at", "updated_at")
+          VALUES ('acc-1', 'provider-account-1', 'github', 'user-1', now(), now())
+        `);
+
+        await sql.unsafe(`ALTER TABLE "auth_account" RENAME TO "account"`);
+        await sql.unsafe(
+          `ALTER TABLE "account" RENAME CONSTRAINT "auth_account_user_id_user_id_fk" TO "account_user_id_user_id_fk"`,
+        );
+
+        const authAccountHash = await migrationHash("0058_auth_account_rename.sql");
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${authAccountHash}'`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0058_auth_account_rename.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await verifySql.unsafe<{ id: string }[]>(
+          `SELECT id FROM "auth_account" WHERE id = 'acc-1'`,
+        );
+        expect(rows).toHaveLength(1);
+
+        const tableCheck = await verifySql.unsafe<{ exists: boolean }[]>(
+          `
+            SELECT EXISTS (
+              SELECT 1
+              FROM information_schema.tables
+              WHERE table_schema = 'public'
+                AND table_name = 'account'
+            ) AS exists
+          `,
+        );
+        expect(tableCheck[0]?.exists).toBe(false);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
 });
