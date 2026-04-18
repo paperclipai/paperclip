@@ -40,6 +40,53 @@ describe("gemini_local parser", () => {
     expect(parsed.errorMessage).toBe("model access denied");
   });
 
+  it("extracts assistant text from newer message events", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "message",
+        role: "assistant",
+        content: "hello",
+      }),
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+      }),
+    ].join("\n");
+
+    const parsed = parseGeminiJsonl(stdout);
+    expect(parsed.summary).toBe("hello");
+  });
+
+  it("extracts array content and questions from newer message events", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "message",
+        role: "assistant",
+        content: [
+          { type: "output_text", text: "hello from parts" },
+          {
+            type: "question",
+            prompt: "Which model?",
+            choices: [
+              { key: "pro", label: "Gemini Pro", description: "Better" },
+              { key: "flash", label: "Gemini Flash" },
+            ],
+          },
+        ],
+      }),
+    ].join("\n");
+
+    const parsed = parseGeminiJsonl(stdout);
+    expect(parsed.summary).toBe("hello from parts");
+    expect(parsed.question).toEqual({
+      prompt: "Which model?",
+      choices: [
+        { key: "pro", label: "Gemini Pro", description: "Better" },
+        { key: "flash", label: "Gemini Flash", description: undefined },
+      ],
+    });
+  });
+
   it("extracts structured questions", () => {
     const stdout = [
       JSON.stringify({
@@ -108,6 +155,32 @@ describe("gemini_local ui stdout parser", () => {
     expect(
       parseGeminiStdoutLine(
         JSON.stringify({
+          type: "message",
+          role: "assistant",
+          content: "hello from new format",
+        }),
+        ts,
+      ),
+    ).toEqual([
+      { kind: "assistant", ts, text: "hello from new format" },
+    ]);
+
+    expect(
+      parseGeminiStdoutLine(
+        JSON.stringify({
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "hello from parts" }],
+        }),
+        ts,
+      ),
+    ).toEqual([
+      { kind: "assistant", ts, text: "hello from parts" },
+    ]);
+
+    expect(
+      parseGeminiStdoutLine(
+        JSON.stringify({
           type: "result",
           subtype: "success",
           result: "Done",
@@ -161,6 +234,22 @@ describe("gemini_local cli formatter", () => {
       );
       printGeminiStreamEvent(
         JSON.stringify({
+          type: "message",
+          role: "assistant",
+          content: "hello from new format",
+        }),
+        false,
+      );
+      printGeminiStreamEvent(
+        JSON.stringify({
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "hello from parts" }],
+        }),
+        false,
+      );
+      printGeminiStreamEvent(
+        JSON.stringify({
           type: "result",
           subtype: "success",
           usage: {
@@ -183,6 +272,8 @@ describe("gemini_local cli formatter", () => {
 
     expect(joined).toContain("Gemini init");
     expect(joined).toContain("assistant: hello");
+    expect(joined).toContain("assistant: hello from new format");
+    expect(joined).toContain("assistant: hello from parts");
     expect(joined).toContain("tokens: in=10 out=5 cached=2 cost=$0.000420");
     expect(joined).toContain("error: boom");
   });
