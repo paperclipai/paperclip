@@ -66,6 +66,8 @@ function applyStatusSideEffects(
 
 export interface IssueFilters {
   status?: string;
+  departmentId?: string;
+  scopeDepartmentIds?: string[];
   assigneeAgentId?: string;
   participantAgentId?: string;
   assigneeUserId?: string;
@@ -148,6 +150,84 @@ async function getProjectDefaultGoalId(
     .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
     .then((rows) => rows[0] ?? null);
   return row?.goalId ?? null;
+}
+
+async function getProjectDepartmentId(
+  db: ProjectGoalReader,
+  companyId: string,
+  projectId: string | null | undefined,
+) {
+  if (!projectId) return null;
+  const row = await db
+    .select({ departmentId: projects.departmentId })
+    .from(projects)
+    .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!row) {
+    throw notFound("Project not found");
+  }
+  return row.departmentId ?? null;
+}
+
+async function getIssueDepartmentId(
+  db: DbReader,
+  companyId: string,
+  issueId: string | null | undefined,
+) {
+  if (!issueId) return null;
+  const row = await db
+    .select({
+      departmentId: issues.departmentId,
+      projectId: issues.projectId,
+    })
+    .from(issues)
+    .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!row) {
+    throw notFound("Parent issue not found");
+  }
+  if (row.departmentId !== null && row.departmentId !== undefined) {
+    return row.departmentId ?? null;
+  }
+  if (row.projectId) {
+    return getProjectDepartmentId(db as ProjectGoalReader, companyId, row.projectId);
+  }
+  return null;
+}
+
+async function resolveIssueDepartmentId(
+  db: DbReader,
+  companyId: string,
+  input: {
+    departmentId?: string | null;
+    projectId?: string | null;
+    parentId?: string | null;
+  },
+  existing?: {
+    departmentId?: string | null;
+    projectId?: string | null;
+    parentId?: string | null;
+  },
+) {
+  const nextProjectId = input.projectId !== undefined ? input.projectId : existing?.projectId;
+  if (nextProjectId) {
+    return getProjectDepartmentId(db as ProjectGoalReader, companyId, nextProjectId);
+  }
+
+  if (input.departmentId !== undefined) {
+    return input.departmentId ?? null;
+  }
+
+  const nextParentId = input.parentId !== undefined ? input.parentId : existing?.parentId;
+  if (nextParentId) {
+    return getIssueDepartmentId(db, companyId, nextParentId);
+  }
+
+  if (existing?.departmentId !== undefined) {
+    return existing.departmentId ?? null;
+  }
+
+  return null;
 }
 
 async function getWorkspaceInheritanceIssue(
@@ -942,6 +1022,14 @@ export function issueService(db: Db) {
         const statuses = filters.status.split(",").map((s) => s.trim());
         conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
       }
+      if (filters?.scopeDepartmentIds) {
+        const scopedDepartmentIds = [...new Set(filters.scopeDepartmentIds)].filter(Boolean);
+        if (scopedDepartmentIds.length === 0) return [];
+        conditions.push(inArray(issues.departmentId, scopedDepartmentIds));
+      }
+      if (filters?.departmentId) {
+        conditions.push(eq(issues.departmentId, filters.departmentId));
+      }
       if (filters?.assigneeAgentId) {
         conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
       }
@@ -1404,6 +1492,7 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        issueData.departmentId = await resolveIssueDepartmentId(tx, companyId, issueData);
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -1593,6 +1682,7 @@ export function issueService(db: Db) {
         ...issueData,
         updatedAt: new Date(),
       };
+      patch.departmentId = await resolveIssueDepartmentId(dbOrTx, existing.companyId, issueData, existing);
 
       const nextAssigneeAgentId =
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;

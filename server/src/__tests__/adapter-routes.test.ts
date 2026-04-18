@@ -3,7 +3,7 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
-import { setOverridePaused } from "../adapters/registry.js";
+import { setOverridePaused, waitForExternalAdapters } from "../adapters/registry.js";
 import { adapterRoutes } from "../routes/adapters.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -47,7 +47,8 @@ function createApp() {
 }
 
 describe("adapter routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await waitForExternalAdapters();
     setOverridePaused("claude_local", false);
     registerServerAdapter(overridingConfigSchemaAdapter);
   });

@@ -7,6 +7,9 @@ import {
   STORAGE_PROVIDERS,
 } from "./constants.js";
 
+const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
+const logLevelSchema = z.enum(LOG_LEVELS);
+
 export const configMetaSchema = z.object({
   version: z.literal(1),
   updatedAt: z.string(),
@@ -41,6 +44,10 @@ export const databaseConfigSchema = z.object({
 export const loggingConfigSchema = z.object({
   mode: z.enum(["file", "cloud"]),
   logDir: z.string().default("~/.paperclip/instances/default/logs"),
+  consoleLevel: logLevelSchema.default("info"),
+  fileLevel: logLevelSchema.default("debug"),
+  maxFileSizeMb: z.number().int().min(1).max(1024).default(25),
+  maxFiles: z.number().int().min(1).max(365).default(10),
 });
 
 export const serverConfigSchema = z.object({
@@ -172,6 +179,7 @@ export type PaperclipConfig = z.infer<typeof paperclipConfigSchema>;
 export type LlmConfig = z.infer<typeof llmConfigSchema>;
 export type DatabaseConfig = z.infer<typeof databaseConfigSchema>;
 export type LoggingConfig = z.infer<typeof loggingConfigSchema>;
+export type LoggingLevel = z.infer<typeof logLevelSchema>;
 export type ServerConfig = z.infer<typeof serverConfigSchema>;
 export type StorageConfig = z.infer<typeof storageConfigSchema>;
 export type StorageLocalDiskConfig = z.infer<typeof storageLocalDiskConfigSchema>;

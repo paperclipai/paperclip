@@ -7,6 +7,7 @@ function makeIssue(id: string, parentId: string | null = null): Issue {
     id,
     identifier: id.toUpperCase(),
     companyId: "company-1",
+    departmentId: null,
     projectId: null,
     projectWorkspaceId: null,
     goalId: null,

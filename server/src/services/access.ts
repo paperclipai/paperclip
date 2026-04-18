@@ -1,6 +1,8 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
+  authUsers,
   companyRolePermissions,
   companyRoles,
   companyMemberships,
@@ -25,6 +27,11 @@ type GrantInput = {
 type PermissionAccess = {
   permissionKey: PermissionKey;
   allowed: boolean;
+  companyWide: boolean;
+  departmentIds: string[];
+};
+type EffectivePermissionSummary = {
+  permissionKey: PermissionKey;
   companyWide: boolean;
   departmentIds: string[];
 };
@@ -312,6 +319,234 @@ export function accessService(db: Db) {
     }
 
     return resolved.sort((left, right) => left.permissionKey.localeCompare(right.permissionKey));
+  }
+
+  async function listMemberAccessSummaries(companyId: string) {
+    const members = await listMembers(companyId);
+    if (members.length === 0) return [];
+
+    const userIds = [...new Set(
+      members
+        .filter((member) => member.principalType === "user")
+        .map((member) => member.principalId),
+    )];
+    const agentIds = [...new Set(
+      members
+        .filter((member) => member.principalType === "agent")
+        .map((member) => member.principalId),
+    )];
+
+    const [userRows, agentRows, grantRows, assignmentRows, roles, activeDepartments] = await Promise.all([
+      userIds.length === 0
+        ? Promise.resolve([])
+        : db
+          .select({
+            id: authUsers.id,
+            name: authUsers.name,
+            email: authUsers.email,
+          })
+          .from(authUsers)
+          .where(inArray(authUsers.id, userIds)),
+      agentIds.length === 0
+        ? Promise.resolve([])
+        : db
+          .select({
+            id: agents.id,
+            name: agents.name,
+            title: agents.title,
+            status: agents.status,
+          })
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds))),
+      db
+        .select()
+        .from(principalPermissionGrants)
+        .where(eq(principalPermissionGrants.companyId, companyId)),
+      db
+        .select()
+        .from(principalRoleAssignments)
+        .where(eq(principalRoleAssignments.companyId, companyId)),
+      db
+        .select()
+        .from(companyRoles)
+        .where(eq(companyRoles.companyId, companyId)),
+      db
+        .select({
+          id: departments.id,
+          parentId: departments.parentId,
+        })
+        .from(departments)
+        .where(and(eq(departments.companyId, companyId), eq(departments.status, "active"))),
+    ]);
+
+    const roleIds = [...new Set(assignmentRows.map((assignment) => assignment.roleId))];
+    const rolePermissionRows = roleIds.length === 0
+      ? []
+      : await db
+        .select()
+        .from(companyRolePermissions)
+        .where(inArray(companyRolePermissions.roleId, roleIds));
+
+    const userById = new Map(userRows.map((row) => [row.id, row]));
+    const agentById = new Map(agentRows.map((row) => [row.id, row]));
+
+    const rolesById = new Map(
+      roles.map((role) => [
+        role.id,
+        {
+          ...role,
+          permissionKeys: rolePermissionRows
+            .filter((permission) => permission.roleId === role.id)
+            .map((permission) => permission.permissionKey as PermissionKey)
+            .sort(),
+        },
+      ]),
+    );
+
+    const grantsByPrincipal = new Map<string, typeof grantRows>();
+    for (const grant of grantRows) {
+      const key = `${grant.principalType}:${grant.principalId}`;
+      const entries = grantsByPrincipal.get(key) ?? [];
+      entries.push(grant);
+      grantsByPrincipal.set(key, entries);
+    }
+
+    const assignmentsByPrincipal = new Map<string, typeof assignmentRows>();
+    for (const assignment of assignmentRows) {
+      const key = `${assignment.principalType}:${assignment.principalId}`;
+      const entries = assignmentsByPrincipal.get(key) ?? [];
+      entries.push(assignment);
+      assignmentsByPrincipal.set(key, entries);
+    }
+
+    const childrenByParent = new Map<string, string[]>();
+    for (const department of activeDepartments) {
+      if (!department.parentId) continue;
+      const children = childrenByParent.get(department.parentId) ?? [];
+      children.push(department.id);
+      childrenByParent.set(department.parentId, children);
+    }
+
+    const scopeExpansionCache = new Map<string, string[]>();
+    async function expandScope(scope: PermissionScope): Promise<string[]> {
+      if (scope === null) return [];
+      const cacheKey = JSON.stringify(scope);
+      const cached = scopeExpansionCache.get(cacheKey);
+      if (cached) return cached;
+      if (scope.kind !== "departments") return [];
+
+      const scopedIds = new Set(scope.departmentIds);
+      if (scope.includeDescendants) {
+        const queue = [...scopedIds];
+        while (queue.length > 0) {
+          const current = queue.shift();
+          if (!current) continue;
+          for (const childId of childrenByParent.get(current) ?? []) {
+            if (scopedIds.has(childId)) continue;
+            scopedIds.add(childId);
+            queue.push(childId);
+          }
+        }
+      }
+
+      const expanded = [...scopedIds].sort((left, right) => left.localeCompare(right));
+      scopeExpansionCache.set(cacheKey, expanded);
+      return expanded;
+    }
+
+    async function resolveEffectivePermissionSummary(
+      directEntries: typeof grantRows,
+      roleAssignments: typeof assignmentRows,
+    ): Promise<EffectivePermissionSummary[]> {
+      const effective = new Map<PermissionKey, { companyWide: boolean; departmentIds: Set<string> }>();
+
+      const applyScope = async (permissionKey: PermissionKey, scope: PermissionScope) => {
+        const existing = effective.get(permissionKey) ?? { companyWide: false, departmentIds: new Set<string>() };
+        if (scope === null) {
+          existing.companyWide = true;
+          existing.departmentIds.clear();
+          effective.set(permissionKey, existing);
+          return;
+        }
+        for (const departmentId of await expandScope(scope)) {
+          existing.departmentIds.add(departmentId);
+        }
+        effective.set(permissionKey, existing);
+      };
+
+      for (const grant of directEntries) {
+        await applyScope(grant.permissionKey as PermissionKey, parsePermissionScope(grant.scope));
+      }
+
+      for (const assignment of roleAssignments) {
+        const role = rolesById.get(assignment.roleId);
+        if (!role || role.status !== "active") continue;
+        const scope = parsePermissionScope(assignment.scope);
+        for (const permissionKey of role.permissionKeys) {
+          await applyScope(permissionKey, scope);
+        }
+      }
+
+      return [...effective.entries()]
+        .map(([permissionKey, summary]) => ({
+          permissionKey,
+          companyWide: summary.companyWide,
+          departmentIds: summary.companyWide
+            ? []
+            : [...summary.departmentIds].sort((left, right) => left.localeCompare(right)),
+        }))
+        .sort((left, right) => left.permissionKey.localeCompare(right.permissionKey));
+    }
+
+    return Promise.all(
+      members.map(async (member) => {
+        const key = `${member.principalType}:${member.principalId}`;
+        const directEntries = (grantsByPrincipal.get(key) ?? []).map((grant) => ({
+          ...grant,
+          scope: parsePermissionScope(grant.scope),
+        }));
+        const roleAssignments = (assignmentsByPrincipal.get(key) ?? []).map((assignment) => ({
+          ...assignment,
+          scope: parsePermissionScope(assignment.scope),
+          role: rolesById.get(assignment.roleId) ?? null,
+        }));
+        const resolvedRoleAssignments = roleAssignments.filter((assignment): assignment is typeof roleAssignments[number] & {
+          role: NonNullable<typeof assignment.role>;
+        } => assignment.role !== null);
+        const effectivePermissions = await resolveEffectivePermissionSummary(
+          grantsByPrincipal.get(key) ?? [],
+          assignmentsByPrincipal.get(key) ?? [],
+        );
+
+        const principal = member.principalType === "user"
+          ? {
+              id: member.principalId,
+              type: member.principalType,
+              name: userById.get(member.principalId)?.name ?? member.principalId,
+              email: userById.get(member.principalId)?.email ?? null,
+              title: null,
+              status: member.status,
+              urlKey: null,
+            }
+          : {
+              id: member.principalId,
+              type: member.principalType,
+              name: agentById.get(member.principalId)?.name ?? member.principalId,
+              email: null,
+              title: agentById.get(member.principalId)?.title ?? null,
+              status: agentById.get(member.principalId)?.status ?? member.status,
+              urlKey: null,
+            };
+
+        return {
+          ...member,
+          principal,
+          directGrants: directEntries,
+          roleAssignments: resolvedRoleAssignments,
+          effectivePermissions,
+        };
+      }),
+    );
   }
 
   async function listMembers(companyId: string) {
@@ -605,6 +840,7 @@ export function accessService(db: Db) {
     evaluatePermission,
     resolveAccessibleDepartmentIds,
     resolveEffectivePermissions,
+    listMemberAccessSummaries,
     getMembership,
     ensureMembership,
     listMembers,

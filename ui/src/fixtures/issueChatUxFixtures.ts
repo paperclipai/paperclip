@@ -19,6 +19,7 @@ function createAgent(
   return {
     id,
     companyId: "company-ux",
+    departmentId: null,
     name,
     urlKey,
     role: "engineer",

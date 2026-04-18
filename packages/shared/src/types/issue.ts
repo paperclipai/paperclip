@@ -176,6 +176,7 @@ export interface IssueExecutionDecision {
 export interface Issue {
   id: string;
   companyId: string;
+  departmentId: string | null;
   projectId: string | null;
   projectWorkspaceId: string | null;
   goalId: string | null;

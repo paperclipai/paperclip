@@ -158,7 +158,15 @@ function ColorPicker({
 
 /* ── List (issues) tab content ── */
 
-function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
+function ProjectIssuesList({
+  projectId,
+  companyId,
+  departmentId,
+}: {
+  projectId: string;
+  companyId: string;
+  departmentId?: string | null;
+}) {
   const queryClient = useQueryClient();
 
   const { data: agents } = useQuery({
@@ -204,6 +212,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       error={error as Error | null}
       agents={agents}
       liveIssueIds={liveIssueIds}
+      departmentId={departmentId ?? undefined}
       projectId={projectId}
       viewStateKey={`paperclip:project-view:${projectId}`}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
@@ -879,7 +888,11 @@ export function ProjectDetail() {
       )}
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
-        <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
+        <ProjectIssuesList
+          projectId={project.id}
+          companyId={resolvedCompanyId}
+          departmentId={project.departmentId}
+        />
       )}
 
       {activeTab === "workspaces" ? (

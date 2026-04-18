@@ -163,6 +163,28 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("renders the lightweight shell before the rich editor is requested", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value=""
+          onChange={() => {}}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    const shell = container.querySelector("textarea");
+    expect(shell).not.toBeNull();
+    expect(container.querySelector("[data-testid='mdx-editor']")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("anchors the mention menu inside the visual viewport when mobile offsets are present", () => {
     expect(
       computeMentionMenuPosition(

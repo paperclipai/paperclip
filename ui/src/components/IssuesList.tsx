@@ -164,6 +164,7 @@ interface IssuesListProps {
   agents?: Agent[];
   projects?: ProjectOption[];
   liveIssueIds?: Set<string>;
+  departmentId?: string;
   projectId?: string;
   viewStateKey: string;
   issueLinkState?: unknown;
@@ -183,6 +184,7 @@ export function IssuesList({
   agents,
   projects,
   liveIssueIds,
+  departmentId,
   projectId,
   viewStateKey,
   issueLinkState,
@@ -314,6 +316,7 @@ export function IssuesList({
 
   const newIssueDefaults = useCallback((groupKey?: string) => {
     const defaults: Record<string, string> = {};
+    if (departmentId) defaults.departmentId = departmentId;
     if (projectId) defaults.projectId = projectId;
     if (groupKey) {
       if (viewState.groupBy === "status") defaults.status = groupKey;
@@ -324,7 +327,7 @@ export function IssuesList({
       }
     }
     return defaults;
-  }, [projectId, viewState.groupBy]);
+  }, [departmentId, projectId, viewState.groupBy]);
 
   const assignIssue = useCallback((issueId: string, assigneeAgentId: string | null, assigneeUserId: string | null = null) => {
     onUpdateIssue(issueId, { assigneeAgentId, assigneeUserId });

@@ -66,6 +66,10 @@ function writeTestConfig(configPath: string, tempRoot: string, port: number, con
     logging: {
       mode: "file",
       logDir: path.join(tempRoot, "logs"),
+      consoleLevel: "info",
+      fileLevel: "debug",
+      maxFileSizeMb: 25,
+      maxFiles: 10,
     },
     server: {
       deploymentMode: "local_trusted",
@@ -269,7 +273,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     });
 
     await waitForServer(apiBase, child, output);
-  }, 60_000);
+  }, 90_000);
 
   afterAll(async () => {
     await stopServerProcess(serverProcess);

@@ -92,6 +92,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     lastExternalCommentAt: null,
     isUnreadForMe: false,
     ...overrides,
+    departmentId: overrides.departmentId ?? null,
   };
 }
 

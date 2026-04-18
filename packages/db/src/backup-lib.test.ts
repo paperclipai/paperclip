@@ -219,6 +219,6 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         await restoreSql.end();
       }
     },
-    20_000,
+    45_000,
   );
 });

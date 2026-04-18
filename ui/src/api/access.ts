@@ -1,4 +1,16 @@
-import type { AgentAdapterType, CompanyMembership, JoinRequest } from "@paperclipai/shared";
+import type {
+  AgentAdapterType,
+  CreateCompanyRole,
+  CompanyMembership,
+  CompanyMembershipAccessSummary,
+  CompanyRoleWithPermissions,
+  JoinRequest,
+  PermissionGrantInput,
+  PermissionScope,
+  PrincipalRoleAssignmentDetail,
+  PrincipalType,
+  UpdateCompanyRole,
+} from "@paperclipai/shared";
 import { api } from "./client";
 
 type InviteSummary = {
@@ -130,6 +142,43 @@ export const accessApi = {
     api.get<JoinRequest[]>(`/companies/${companyId}/join-requests?status=${status}`),
   listMembers: (companyId: string) =>
     api.get<CompanyMembership[]>(`/companies/${companyId}/members`),
+  listMyEffectivePermissions: (companyId: string) =>
+    api.get<CompanyMembershipAccessSummary["effectivePermissions"]>(
+      `/companies/${companyId}/me/effective-permissions`,
+    ),
+  listMemberAccessSummary: (companyId: string) =>
+    api.get<CompanyMembershipAccessSummary[]>(`/companies/${companyId}/members/access-summary`),
+  setMemberPermissions: (
+    companyId: string,
+    memberId: string,
+    grants: PermissionGrantInput[],
+  ) => api.patch<CompanyMembership>(`/companies/${companyId}/members/${memberId}/permissions`, { grants }),
+  seedSystemRoles: (companyId: string) =>
+    api.post<CompanyRoleWithPermissions[]>(`/companies/${companyId}/roles/seed-system`, {}),
+  listRoles: (companyId: string) =>
+    api.get<CompanyRoleWithPermissions[]>(`/companies/${companyId}/roles`),
+  createRole: (companyId: string, input: CreateCompanyRole) =>
+    api.post<CompanyRoleWithPermissions>(`/companies/${companyId}/roles`, input),
+  updateRole: (companyId: string, roleId: string, input: UpdateCompanyRole) =>
+    api.patch<CompanyRoleWithPermissions>(`/companies/${companyId}/roles/${roleId}`, input),
+  archiveRole: (companyId: string, roleId: string) =>
+    api.post<CompanyRoleWithPermissions>(`/companies/${companyId}/roles/${roleId}/archive`, {}),
+  listRoleAssignments: (companyId: string, principalType: PrincipalType, principalId: string) =>
+    api.get<PrincipalRoleAssignmentDetail[]>(
+      `/companies/${companyId}/principals/${principalType}/${principalId}/role-assignments`,
+    ),
+  assignRole: (
+    companyId: string,
+    principalType: PrincipalType,
+    principalId: string,
+    input: { roleId: string; scope?: PermissionScope },
+  ) =>
+    api.post<PrincipalRoleAssignmentDetail>(
+      `/companies/${companyId}/principals/${principalType}/${principalId}/role-assignments`,
+      input,
+    ),
+  removeRoleAssignment: (companyId: string, assignmentId: string) =>
+    api.delete<PrincipalRoleAssignmentDetail>(`/companies/${companyId}/role-assignments/${assignmentId}`),
 
   approveJoinRequest: (companyId: string, requestId: string) =>
     api.post<JoinRequest>(`/companies/${companyId}/join-requests/${requestId}/approve`, {}),

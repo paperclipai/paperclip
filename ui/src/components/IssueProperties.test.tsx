@@ -12,11 +12,16 @@ const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockAccessApi = vi.hoisted(() => ({
+  listMyEffectivePermissions: vi.fn(),
+}));
+
 const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
 const mockIssuesApi = vi.hoisted(() => ({
+  list: vi.fn(),
   listLabels: vi.fn(),
 }));
 
@@ -32,6 +37,10 @@ vi.mock("../context/CompanyContext", () => ({
 
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
+}));
+
+vi.mock("../api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 vi.mock("../api/projects", () => ({
@@ -140,6 +149,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:05:00.000Z"),
     ...overrides,
+    departmentId: overrides.departmentId ?? null,
   };
 }
 
@@ -167,7 +177,15 @@ describe("IssueProperties", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
+    mockAccessApi.listMyEffectivePermissions.mockResolvedValue([
+      {
+        permissionKey: "issues:manage",
+        companyWide: true,
+        departmentIds: [],
+      },
+    ]);
     mockProjectsApi.list.mockResolvedValue([]);
+    mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
   });
@@ -198,6 +216,30 @@ describe("IssueProperties", () => {
     });
 
     expect(onAddSubIssue).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+  });
+
+  it("loads blocker options within the current issue department", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({ departmentId: "dept-1" }),
+      childIssues: [],
+      onAddSubIssue: vi.fn(),
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    const blockedByButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("No blockers"));
+    expect(blockedByButton).not.toBeUndefined();
+
+    await act(async () => {
+      blockedByButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", { departmentId: "dept-1" });
 
     act(() => root.unmount());
   });

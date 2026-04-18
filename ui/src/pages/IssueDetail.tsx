@@ -506,6 +506,7 @@ export function IssueDetail() {
       parentId: issue.id,
       parentIdentifier: issue.identifier ?? undefined,
       parentTitle: issue.title,
+      departmentId: issue.departmentId ?? undefined,
       projectId: issue.projectId ?? undefined,
       projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
       goalId: issue.goalId ?? undefined,

@@ -264,11 +264,11 @@ export function rolesService(db: Db) {
     const assignments = await db
       .select()
       .from(principalRoleAssignments)
-      .where(
-        and(
-          eq(principalRoleAssignments.companyId, companyId),
-          eq(principalRoleAssignments.principalType, principalType),
-          eq(principalRoleAssignments.principalId, principalId),
+        .where(
+          and(
+            eq(principalRoleAssignments.companyId, companyId),
+            eq(principalRoleAssignments.principalType, principalType),
+            eq(principalRoleAssignments.principalId, principalId),
         ),
       );
 
@@ -280,7 +280,31 @@ export function rolesService(db: Db) {
       ...assignment,
       scope: parsePermissionScope(assignment.scope),
       role: roleById.get(assignment.roleId) ?? null,
-    }));
+        }));
+  }
+
+  async function getRoleAssignmentById(companyId: string, assignmentId: string) {
+    const assignment = await db
+      .select()
+      .from(principalRoleAssignments)
+      .where(
+        and(
+          eq(principalRoleAssignments.companyId, companyId),
+          eq(principalRoleAssignments.id, assignmentId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!assignment) return null;
+
+    const [role] = await Promise.all([
+      getRoleById(assignment.roleId),
+    ]);
+
+    return {
+      ...assignment,
+      scope: parsePermissionScope(assignment.scope),
+      role,
+    };
   }
 
   async function assignRole(
@@ -418,6 +442,7 @@ export function rolesService(db: Db) {
     seedSystemRoles,
     listRoles,
     getRoleById,
+    getRoleAssignmentById,
     createRole,
     updateRole,
     archiveRole,

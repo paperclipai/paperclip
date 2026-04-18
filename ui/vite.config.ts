@@ -3,6 +3,16 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+function manualChunks(id: string) {
+  if (!id.includes("node_modules")) return undefined;
+
+  if (id.includes("/katex")) {
+    return "katex-vendor";
+  }
+
+  return undefined;
+}
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
@@ -19,6 +29,13 @@ export default defineConfig({
       "/api": {
         target: "http://localhost:3100",
         ws: true,
+      },
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks,
       },
     },
   },

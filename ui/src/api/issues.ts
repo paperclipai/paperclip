@@ -31,6 +31,7 @@ export const issuesApi = {
       inboxArchivedByUserId?: string;
       unreadForUserId?: string;
       labelId?: string;
+      departmentId?: string;
       executionWorkspaceId?: string;
       originKind?: string;
       originId?: string;
@@ -49,6 +50,7 @@ export const issuesApi = {
     if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
     if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
     if (filters?.labelId) params.set("labelId", filters.labelId);
+    if (filters?.departmentId) params.set("departmentId", filters.departmentId);
     if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
     if (filters?.originKind) params.set("originKind", filters.originKind);
     if (filters?.originId) params.set("originId", filters.originId);

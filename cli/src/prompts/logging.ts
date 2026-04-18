@@ -1,6 +1,6 @@
 import * as p from "@clack/prompts";
 import type { LoggingConfig } from "../config/schema.js";
-import { resolveDefaultLogsDir, resolvePaperclipInstanceId } from "../config/home.js";
+import { buildDefaultLoggingConfig, resolveDefaultLogsDir, resolvePaperclipInstanceId } from "../config/home.js";
 
 export async function promptLogging(): Promise<LoggingConfig> {
   const defaultLogDir = resolveDefaultLogsDir(resolvePaperclipInstanceId());
@@ -29,9 +29,9 @@ export async function promptLogging(): Promise<LoggingConfig> {
       process.exit(0);
     }
 
-    return { mode: "file", logDir: logDir || defaultLogDir };
+    return buildDefaultLoggingConfig(undefined, { logDir: logDir || defaultLogDir });
   }
 
   p.note("Cloud logging is coming soon. Using file-based logging for now.");
-  return { mode: "file", logDir: defaultLogDir };
+  return buildDefaultLoggingConfig(undefined, { logDir: defaultLogDir });
 }

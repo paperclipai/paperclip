@@ -114,6 +114,7 @@ export const issueExecutionStateSchema = z.object({
 });
 
 export const createIssueSchema = z.object({
+  departmentId: z.string().uuid().optional().nullable(),
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),

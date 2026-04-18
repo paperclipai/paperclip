@@ -7,6 +7,7 @@ import {
   agents,
   companies,
   createDb,
+  departments,
   executionWorkspaces,
   instanceSettings,
   issueComments,
@@ -70,6 +71,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(agents);
+    await db.delete(departments);
     await db.delete(instanceSettings);
     await db.delete(companies);
   });
@@ -328,6 +330,63 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         identifier: "PAP-1064",
       }),
     );
+  });
+
+  it("filters issues by department scope and explicit departmentId", async () => {
+    const companyId = randomUUID();
+    const engineeringId = randomUUID();
+    const financeId = randomUUID();
+    const engineeringIssueId = randomUUID();
+    const financeIssueId = randomUUID();
+    const unscopedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(departments).values([
+      { id: engineeringId, companyId, name: "Engineering", status: "active", sortOrder: 0 },
+      { id: financeId, companyId, name: "Finance", status: "active", sortOrder: 1 },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: engineeringIssueId,
+        companyId,
+        departmentId: engineeringId,
+        title: "Engineering issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: financeIssueId,
+        companyId,
+        departmentId: financeId,
+        title: "Finance issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: unscopedIssueId,
+        companyId,
+        departmentId: null,
+        title: "Unscoped issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const scoped = await svc.list(companyId, { scopeDepartmentIds: [engineeringId] });
+    const explicitDepartment = await svc.list(companyId, {
+      scopeDepartmentIds: [engineeringId, financeId],
+      departmentId: financeId,
+    });
+
+    expect(scoped.map((issue) => issue.id)).toEqual([engineeringIssueId]);
+    expect(explicitDepartment.map((issue) => issue.id)).toEqual([financeIssueId]);
   });
 
   it("returns null instead of throwing for malformed non-uuid issue refs", async () => {

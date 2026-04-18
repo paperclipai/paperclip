@@ -10,9 +10,9 @@ import { defaultSecretsConfig, promptSecrets } from "../prompts/secrets.js";
 import { defaultStorageConfig, promptStorage } from "../prompts/storage.js";
 import { promptServer } from "../prompts/server.js";
 import {
+  buildDefaultLoggingConfig,
   resolveDefaultBackupDir,
   resolveDefaultEmbeddedPostgresDir,
-  resolveDefaultLogsDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
 import { printPaperclipCliBanner } from "../utils/banner.js";
@@ -47,10 +47,7 @@ function defaultConfig(): PaperclipConfig {
         dir: resolveDefaultBackupDir(instanceId),
       },
     },
-    logging: {
-      mode: "file",
-      logDir: resolveDefaultLogsDir(instanceId),
-    },
+    logging: buildDefaultLoggingConfig(instanceId),
     server: {
       deploymentMode: "local_trusted",
       exposure: "private",

@@ -10,6 +10,7 @@ import type {
   PrincipalType,
 } from "../constants.js";
 import type { PermissionScope } from "./rbac.js";
+import type { CompanyRoleWithPermissions, PrincipalRoleAssignmentDetail } from "./rbac.js";
 
 export interface CompanyMembership {
   id: string;
@@ -20,6 +21,29 @@ export interface CompanyMembership {
   membershipRole: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface EffectivePermissionSummary {
+  permissionKey: PermissionKey;
+  companyWide: boolean;
+  departmentIds: string[];
+}
+
+export interface MembershipPrincipalSummary {
+  id: string;
+  type: PrincipalType;
+  name: string;
+  email: string | null;
+  title: string | null;
+  status: string | null;
+  urlKey: string | null;
+}
+
+export interface CompanyMembershipAccessSummary extends CompanyMembership {
+  principal: MembershipPrincipalSummary;
+  directGrants: PrincipalPermissionGrant[];
+  roleAssignments: PrincipalRoleAssignmentDetail[];
+  effectivePermissions: EffectivePermissionSummary[];
 }
 
 export interface PrincipalPermissionGrant {

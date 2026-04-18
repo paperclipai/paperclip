@@ -8,6 +8,10 @@ export interface FinanceDateRange {
   to?: Date;
 }
 
+export interface FinanceReadScope {
+  scopeDepartmentIds?: string[];
+}
+
 async function assertBelongsToCompany(
   db: Db,
   table: any,
@@ -28,16 +32,55 @@ async function assertBelongsToCompany(
 }
 
 function rangeConditions(companyId: string, range?: FinanceDateRange) {
-  const conditions: ReturnType<typeof eq>[] = [eq(financeEvents.companyId, companyId)];
+  const conditions: any[] = [eq(financeEvents.companyId, companyId)];
   if (range?.from) conditions.push(gte(financeEvents.occurredAt, range.from));
   if (range?.to) conditions.push(lte(financeEvents.occurredAt, range.to));
   return conditions;
+}
+
+function effectiveFinanceDepartmentIdSql() {
+  return sql<string | null>`coalesce(
+    (
+      select project_row.department_id
+      from ${projects} project_row
+      where project_row.id = ${financeEvents.projectId}
+      limit 1
+    ),
+    (
+      select coalesce(issue_row.department_id, issue_project.department_id)
+      from ${issues} issue_row
+      left join ${projects} issue_project on issue_project.id = issue_row.project_id
+      where issue_row.id = ${financeEvents.issueId}
+      limit 1
+    ),
+    (
+      select agent_row.department_id
+      from ${agents} agent_row
+      where agent_row.id = ${financeEvents.agentId}
+      limit 1
+    ),
+    (
+      select coalesce(cost_project.department_id, cost_issue.department_id, cost_issue_project.department_id, cost_agent.department_id)
+      from ${costEvents} cost_event_row
+      left join ${projects} cost_project on cost_project.id = cost_event_row.project_id
+      left join ${issues} cost_issue on cost_issue.id = cost_event_row.issue_id
+      left join ${projects} cost_issue_project on cost_issue_project.id = cost_issue.project_id
+      left join ${agents} cost_agent on cost_agent.id = cost_event_row.agent_id
+      where cost_event_row.id = ${financeEvents.costEventId}
+      limit 1
+    )
+  )`;
+}
+
+function scopeCondition(departmentIds: string[], departmentIdSql: ReturnType<typeof sql<string | null>>) {
+  return sql`${departmentIdSql} in (${sql.join(departmentIds.map((departmentId) => sql`${departmentId}`), sql`, `)})`;
 }
 
 export function financeService(db: Db) {
   const debitExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'debit' then ${financeEvents.amountCents} else 0 end), 0)::int`;
   const creditExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'credit' then ${financeEvents.amountCents} else 0 end), 0)::int`;
   const estimatedDebitExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'debit' and ${financeEvents.estimated} = true then ${financeEvents.amountCents} else 0 end), 0)::int`;
+  const effectiveDepartmentId = effectiveFinanceDepartmentIdSql();
 
   return {
     createEvent: async (companyId: string, data: Omit<typeof financeEvents.$inferInsert, "companyId">) => {
@@ -63,8 +106,11 @@ export function financeService(db: Db) {
       return event;
     },
 
-    summary: async (companyId: string, range?: FinanceDateRange) => {
+    summary: async (companyId: string, range?: FinanceDateRange, scope?: FinanceReadScope) => {
       const conditions = rangeConditions(companyId, range);
+      if (scope?.scopeDepartmentIds?.length) {
+        conditions.push(scopeCondition(scope.scopeDepartmentIds, effectiveDepartmentId));
+      }
       const [row] = await db
         .select({
           debitCents: debitExpr,
@@ -85,8 +131,11 @@ export function financeService(db: Db) {
       };
     },
 
-    byBiller: async (companyId: string, range?: FinanceDateRange) => {
+    byBiller: async (companyId: string, range?: FinanceDateRange, scope?: FinanceReadScope) => {
       const conditions = rangeConditions(companyId, range);
+      if (scope?.scopeDepartmentIds?.length) {
+        conditions.push(scopeCondition(scope.scopeDepartmentIds, effectiveDepartmentId));
+      }
       return db
         .select({
           biller: financeEvents.biller,
@@ -103,8 +152,11 @@ export function financeService(db: Db) {
         .orderBy(desc(sql`(${debitExpr} - ${creditExpr})::int`), financeEvents.biller);
     },
 
-    byKind: async (companyId: string, range?: FinanceDateRange) => {
+    byKind: async (companyId: string, range?: FinanceDateRange, scope?: FinanceReadScope) => {
       const conditions = rangeConditions(companyId, range);
+      if (scope?.scopeDepartmentIds?.length) {
+        conditions.push(scopeCondition(scope.scopeDepartmentIds, effectiveDepartmentId));
+      }
       return db
         .select({
           eventKind: financeEvents.eventKind,
@@ -121,8 +173,11 @@ export function financeService(db: Db) {
         .orderBy(desc(sql`(${debitExpr} - ${creditExpr})::int`), financeEvents.eventKind);
     },
 
-    list: async (companyId: string, range?: FinanceDateRange, limit: number = 100) => {
+    list: async (companyId: string, range?: FinanceDateRange, limit: number = 100, scope?: FinanceReadScope) => {
       const conditions = rangeConditions(companyId, range);
+      if (scope?.scopeDepartmentIds?.length) {
+        conditions.push(scopeCondition(scope.scopeDepartmentIds, effectiveDepartmentId));
+      }
       return db
         .select()
         .from(financeEvents)

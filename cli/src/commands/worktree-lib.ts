@@ -1,7 +1,7 @@
 import { randomInt } from "node:crypto";
 import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
-import { expandHomePrefix } from "../config/home.js";
+import { buildDefaultLoggingConfig, expandHomePrefix } from "../config/home.js";
 
 export const DEFAULT_WORKTREE_HOME = "~/.paperclip-worktrees";
 export const WORKTREE_SEED_MODES = ["minimal", "full"] as const;
@@ -208,8 +208,12 @@ export function buildWorktreeConfig(input: {
       },
     },
     logging: {
+      ...buildDefaultLoggingConfig(undefined, { logDir: paths.logDir }),
       mode: source?.logging.mode ?? "file",
-      logDir: paths.logDir,
+      consoleLevel: source?.logging.consoleLevel ?? "info",
+      fileLevel: source?.logging.fileLevel ?? "debug",
+      maxFileSizeMb: source?.logging.maxFileSizeMb ?? 25,
+      maxFiles: source?.logging.maxFiles ?? 10,
     },
     server: {
       deploymentMode: source?.server.deploymentMode ?? "local_trusted",

@@ -41,11 +41,20 @@ const mockAgentService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelBudgetScopeWork: vi.fn().mockResolvedValue(undefined),
 }));
+const mockIssueService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+const mockProjectService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+const mockScopedAccessService = vi.hoisted(() => ({
+  resolveAccessibleDepartmentIds: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
 const mockCostService = vi.hoisted(() => ({
   createEvent: vi.fn(),
-  summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
+  summary: vi.fn().mockResolvedValue({ companyId: "company-1", spendCents: 0, budgetCents: 1000, utilizationPercent: 0 }),
   byAgent: vi.fn().mockResolvedValue([]),
   byAgentModel: vi.fn().mockResolvedValue([]),
   byProvider: vi.fn().mockResolvedValue([]),
@@ -73,6 +82,10 @@ const mockBudgetService = vi.hoisted(() => ({
   resolveIncident: vi.fn(),
 }));
 
+vi.mock("../services/access.js", () => ({
+  accessService: () => mockScopedAccessService,
+}));
+
 vi.mock("../services/index.js", () => ({
   budgetService: () => mockBudgetService,
   costService: () => mockCostService,
@@ -80,7 +93,9 @@ vi.mock("../services/index.js", () => ({
   companyService: () => mockCompanyService,
   agentService: () => mockAgentService,
   heartbeatService: () => mockHeartbeatService,
+  issueService: () => mockIssueService,
   logActivity: mockLogActivity,
+  projectService: () => mockProjectService,
 }));
 
 vi.mock("../services/quota-windows.js", () => ({
@@ -113,11 +128,19 @@ function createAppWithActor(actor: any) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockScopedAccessService.resolveAccessibleDepartmentIds.mockResolvedValue({
+    companyWide: true,
+    departmentIds: [],
+  });
   mockCompanyService.update.mockResolvedValue({
     id: "company-1",
     name: "Paperclip",
     budgetMonthlyCents: 100,
     spentMonthlyCents: 0,
+  });
+  mockCompanyService.getById.mockResolvedValue({
+    id: "company-1",
+    name: "Paperclip",
   });
   mockAgentService.update.mockResolvedValue({
     id: "agent-1",
@@ -125,6 +148,11 @@ beforeEach(() => {
     name: "Budget Agent",
     budgetMonthlyCents: 100,
     spentMonthlyCents: 0,
+  });
+  mockProjectService.getById.mockResolvedValue({
+    id: "11111111-1111-4111-8111-111111111111",
+    companyId: "company-1",
+    departmentId: "dept-engineering",
   });
   mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
 });
@@ -180,7 +208,179 @@ describe("cost routes", () => {
       .get("/api/companies/company-1/costs/finance-events")
       .query({ limit: "25" });
     expect(res.status).toBe(200);
-    expect(mockFinanceService.list).toHaveBeenCalledWith("company-1", undefined, 25);
+    expect(mockFinanceService.list).toHaveBeenCalledWith("company-1", undefined, 25, undefined);
+  });
+
+  it("passes scoped department filters to cost summary reads", async () => {
+    mockScopedAccessService.resolveAccessibleDepartmentIds.mockResolvedValue({
+      companyWide: false,
+      departmentIds: ["dept-engineering"],
+    });
+
+    const app = createAppWithActor({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+    const res = await request(app).get("/api/companies/company-1/costs/summary");
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.summary).toHaveBeenCalledWith("company-1", undefined, {
+      scopeDepartmentIds: ["dept-engineering"],
+    });
+    expect(res.body).toEqual({
+      companyId: "company-1",
+      spendCents: 0,
+      budgetCents: 0,
+      utilizationPercent: 0,
+    });
+  });
+
+  it("filters budget overview rows for scoped readers", async () => {
+    mockScopedAccessService.resolveAccessibleDepartmentIds.mockResolvedValue({
+      companyWide: false,
+      departmentIds: ["dept-engineering"],
+    });
+    mockBudgetService.overview.mockResolvedValue({
+      companyId: "company-1",
+      policies: [
+        {
+          policyId: "policy-project-eng",
+          companyId: "company-1",
+          scopeType: "project",
+          scopeId: "11111111-1111-4111-8111-111111111111",
+          paused: true,
+        },
+        {
+          policyId: "policy-project-fin",
+          companyId: "company-1",
+          scopeType: "project",
+          scopeId: "22222222-2222-4222-8222-222222222222",
+          paused: false,
+        },
+        {
+          policyId: "policy-company",
+          companyId: "company-1",
+          scopeType: "company",
+          scopeId: "company-1",
+          paused: false,
+        },
+      ],
+      activeIncidents: [
+        {
+          id: "incident-eng",
+          companyId: "company-1",
+          scopeType: "project",
+          scopeId: "11111111-1111-4111-8111-111111111111",
+          approvalStatus: "pending",
+        },
+        {
+          id: "incident-fin",
+          companyId: "company-1",
+          scopeType: "project",
+          scopeId: "22222222-2222-4222-8222-222222222222",
+          approvalStatus: "pending",
+        },
+      ],
+      pausedAgentCount: 0,
+      pausedProjectCount: 0,
+      pendingApprovalCount: 0,
+    });
+    mockProjectService.getById.mockImplementation(async (projectId: string) => {
+      if (projectId === "11111111-1111-4111-8111-111111111111") {
+        return { id: "11111111-1111-4111-8111-111111111111", companyId: "company-1", departmentId: "dept-engineering" };
+      }
+      if (projectId === "22222222-2222-4222-8222-222222222222") {
+        return { id: "22222222-2222-4222-8222-222222222222", companyId: "company-1", departmentId: "dept-finance" };
+      }
+      return null;
+    });
+
+    const app = createAppWithActor({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+    const res = await request(app).get("/api/companies/company-1/budgets/overview");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      companyId: "company-1",
+      policies: [
+        {
+          policyId: "policy-project-eng",
+          companyId: "company-1",
+          scopeType: "project",
+          scopeId: "11111111-1111-4111-8111-111111111111",
+          paused: true,
+        },
+      ],
+      activeIncidents: [
+        {
+          id: "incident-eng",
+          companyId: "company-1",
+          scopeType: "project",
+          scopeId: "11111111-1111-4111-8111-111111111111",
+          approvalStatus: "pending",
+        },
+      ],
+      pausedAgentCount: 0,
+      pausedProjectCount: 1,
+      pendingApprovalCount: 1,
+    });
+  });
+
+  it("blocks quota window reads for department-scoped users", async () => {
+    mockScopedAccessService.resolveAccessibleDepartmentIds.mockResolvedValue({
+      companyWide: false,
+      departmentIds: ["dept-engineering"],
+    });
+
+    const app = createAppWithActor({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+    const res = await request(app).get("/api/companies/company-1/costs/quota-windows");
+
+    expect(res.status).toBe(403);
+    expect(mockFetchAllQuotaWindows).not.toHaveBeenCalled();
+  });
+
+  it("blocks project budget policy updates outside the managed department scope", async () => {
+    mockScopedAccessService.resolveAccessibleDepartmentIds.mockResolvedValue({
+      companyWide: false,
+      departmentIds: ["dept-engineering"],
+    });
+    mockProjectService.getById.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      departmentId: "dept-finance",
+    });
+
+    const app = createAppWithActor({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+    const res = await request(app)
+      .post("/api/companies/company-1/budgets/policies")
+      .send({
+        scopeType: "project",
+        scopeId: "22222222-2222-4222-8222-222222222222",
+        amount: 2500,
+      });
+
+    expect(res.status).toBe(403);
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
   });
 
   it("rejects company budget updates for board users outside the company", async () => {
@@ -214,6 +414,36 @@ describe("cost routes", () => {
       source: "session",
       isInstanceAdmin: false,
       companyIds: ["company-2"],
+    });
+
+    const res = await request(app)
+      .patch("/api/agents/agent-1/budgets")
+      .send({ budgetMonthlyCents: 2500 });
+
+    expect(res.status).toBe(403);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent budget updates outside the board actor department scope", async () => {
+    mockScopedAccessService.resolveAccessibleDepartmentIds.mockResolvedValue({
+      companyWide: false,
+      departmentIds: ["dept-engineering"],
+    });
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      name: "Budget Agent",
+      departmentId: "dept-finance",
+      budgetMonthlyCents: 100,
+      spentMonthlyCents: 0,
+    });
+
+    const app = createAppWithActor({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
     });
 
     const res = await request(app)

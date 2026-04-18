@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, sanitizeRecord } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactEventPayload,
+  sanitizeLogValue,
+  sanitizeRecord,
+} from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -61,6 +66,20 @@ describe("redaction", () => {
     expect(redactEventPayload({ password: "hunter2", safe: "value" })).toEqual({
       password: REDACTED_EVENT_VALUE,
       safe: "value",
+    });
+  });
+
+  it("sanitizes arbitrary nested values for request logging", () => {
+    expect(
+      sanitizeLogValue({
+        authorization: "Bearer top-secret",
+        nested: [{ accessToken: "token-value" }],
+        sessionJwt: "aaa.bbb.ccc",
+      }),
+    ).toEqual({
+      authorization: REDACTED_EVENT_VALUE,
+      nested: [{ accessToken: REDACTED_EVENT_VALUE }],
+      sessionJwt: REDACTED_EVENT_VALUE,
     });
   });
 });

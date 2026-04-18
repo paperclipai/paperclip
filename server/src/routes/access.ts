@@ -2888,6 +2888,53 @@ export function accessRoutes(
     res.json(members);
   });
 
+  router.get("/companies/:companyId/me/effective-permissions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    if (req.actor.isInstanceAdmin || isLocalImplicit(req)) {
+      res.json(
+        PERMISSION_KEYS.map((permissionKey) => ({
+          permissionKey,
+          companyWide: true,
+          departmentIds: [],
+        })),
+      );
+      return;
+    }
+
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) throw forbidden("Agent authentication required");
+      const permissions = await access.resolveEffectivePermissions(
+        companyId,
+        "agent",
+        req.actor.agentId,
+      );
+      res.json(permissions);
+      return;
+    }
+
+    if (req.actor.type === "board") {
+      if (!req.actor.userId) throw unauthorized();
+      const permissions = await access.resolveEffectivePermissions(
+        companyId,
+        "user",
+        req.actor.userId,
+      );
+      res.json(permissions);
+      return;
+    }
+
+    throw unauthorized();
+  });
+
+  router.get("/companies/:companyId/members/access-summary", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    const members = await access.listMemberAccessSummaries(companyId);
+    res.json(members);
+  });
+
   router.patch(
     "/companies/:companyId/members/:memberId/permissions",
     validate(updateMemberPermissionsSchema),
@@ -2910,7 +2957,7 @@ export function accessRoutes(
     "/companies/:companyId/roles/seed-system",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      await assertCompanyPermission(req, companyId, "roles:manage");
       const seeded = await roles.seedSystemRoles(companyId);
       await logActivity(db, {
         companyId,
@@ -2927,7 +2974,7 @@ export function accessRoutes(
 
   router.get("/companies/:companyId/roles", async (req, res) => {
     const companyId = req.params.companyId as string;
-    await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    await assertCompanyPermission(req, companyId, "roles:view");
     const roleList = await roles.listRoles(companyId);
     res.json(roleList);
   });
@@ -2937,7 +2984,7 @@ export function accessRoutes(
     validate(createCompanyRoleSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      await assertCompanyPermission(req, companyId, "roles:manage");
       const created = await roles.createRole(companyId, req.body);
       if (!created) throw conflict("Role could not be created");
       await logActivity(db, {
@@ -2959,7 +3006,7 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const roleId = req.params.roleId as string;
-      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      await assertCompanyPermission(req, companyId, "roles:manage");
       const existing = await roles.getRoleById(roleId);
       if (!existing || existing.companyId !== companyId) throw notFound("Role not found");
       const updated = await roles.updateRole(roleId, req.body);
@@ -2982,7 +3029,7 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const roleId = req.params.roleId as string;
-      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      await assertCompanyPermission(req, companyId, "roles:manage");
       const existing = await roles.getRoleById(roleId);
       if (!existing || existing.companyId !== companyId) throw notFound("Role not found");
       const archived = await roles.archiveRole(roleId);
@@ -3005,7 +3052,7 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       const principalType = parsePrincipalType(req.params.principalType as string);
       const principalId = req.params.principalId as string;
-      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      await assertCompanyPermission(req, companyId, "roles:view");
       const assignments = await roles.listRoleAssignments(companyId, principalType, principalId);
       res.json(assignments);
     }
@@ -3027,6 +3074,7 @@ export function accessRoutes(
         req.body.scope ?? null,
         req.actor.userId ?? null,
       );
+      const assignmentDetail = await roles.getRoleAssignmentById(companyId, assignment.id);
       await logActivity(db, {
         companyId,
         actorType: "user",
@@ -3041,7 +3089,7 @@ export function accessRoutes(
           scope: assignment.scope,
         },
       });
-      res.status(201).json(assignment);
+      res.status(201).json(assignmentDetail ?? assignment);
     }
   );
 
@@ -3051,6 +3099,7 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       const assignmentId = req.params.assignmentId as string;
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const existing = await roles.getRoleAssignmentById(companyId, assignmentId);
       const removed = await roles.removeRoleAssignment(companyId, assignmentId);
       await logActivity(db, {
         companyId,
@@ -3065,7 +3114,7 @@ export function accessRoutes(
           roleId: removed.roleId,
         },
       });
-      res.json(removed);
+      res.json(existing ?? removed);
     }
   );
 

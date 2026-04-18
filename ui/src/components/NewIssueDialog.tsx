@@ -4,6 +4,8 @@ import { pickTextColorForSolidBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { accessApi } from "../api/access";
+import { departmentsApi } from "../api/departments";
 import { issuesApi } from "../api/issues";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
@@ -11,6 +13,13 @@ import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  canUseDepartment,
+  defaultScopedDepartmentId,
+  filterAgentsForDepartmentContext,
+  filterByPermissionScope,
+  findEffectivePermission,
+} from "../lib/effective-permissions";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { buildExecutionPolicy } from "../lib/issue-execution-policy";
@@ -68,6 +77,7 @@ interface IssueDraft {
   description: string;
   status: string;
   priority: string;
+  departmentId: string;
   assigneeValue: string;
   reviewerValue: string;
   approverValue: string;
@@ -291,6 +301,7 @@ export function NewIssueDialog() {
   const [showReviewerRow, setShowReviewerRow] = useState(false);
   const [showApproverRow, setShowApproverRow] = useState(false);
   const [participantMenuOpen, setParticipantMenuOpen] = useState(false);
+  const [departmentId, setDepartmentId] = useState("");
   const [projectId, setProjectId] = useState("");
   const [projectWorkspaceId, setProjectWorkspaceId] = useState("");
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
@@ -335,6 +346,16 @@ export function NewIssueDialog() {
     queryFn: () => projectsApi.list(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
+  const { data: departments = [], isPending: departmentsPending } = useQuery({
+    queryKey: queryKeys.departments.list(effectiveCompanyId!),
+    queryFn: () => departmentsApi.list(effectiveCompanyId!),
+    enabled: !!effectiveCompanyId && newIssueOpen,
+  });
+  const { data: myEffectivePermissions, isPending: permissionsPending } = useQuery({
+    queryKey: queryKeys.access.myEffectivePermissions(effectiveCompanyId!),
+    queryFn: () => accessApi.listMyEffectivePermissions(effectiveCompanyId!),
+    enabled: !!effectiveCompanyId && newIssueOpen,
+  });
   const { data: reusableExecutionWorkspaces } = useQuery({
     queryKey: queryKeys.executionWorkspaces.list(effectiveCompanyId!, {
       projectId,
@@ -360,6 +381,7 @@ export function NewIssueDialog() {
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const effectivePermissions = myEffectivePermissions ?? [];
   const activeProjects = useMemo(
     () => (projects ?? []).filter((p) => !p.archivedAt),
     [projects],
@@ -373,17 +395,51 @@ export function NewIssueDialog() {
   const selectedAssignee = useMemo(() => parseAssigneeValue(assigneeValue), [assigneeValue]);
   const selectedAssigneeAgentId = selectedAssignee.assigneeAgentId;
   const selectedAssigneeUserId = selectedAssignee.assigneeUserId;
-
-  const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId)?.adapterType ?? null;
+  const issueManagePermission = useMemo(
+    () => findEffectivePermission(effectivePermissions, "issues:manage"),
+    [effectivePermissions],
+  );
+  const manageableDepartments = useMemo(
+    () => departments.filter((department) => canUseDepartment(issueManagePermission, department.id)),
+    [departments, issueManagePermission],
+  );
+  const fallbackScopedDepartmentId = useMemo(
+    () => defaultScopedDepartmentId(issueManagePermission, manageableDepartments.map((department) => department.id)),
+    [issueManagePermission, manageableDepartments],
+  );
+  const orgViewPermission = useMemo(
+    () => findEffectivePermission(effectivePermissions, "org:view"),
+    [effectivePermissions],
+  );
+  const selectedProjectDepartmentId = orderedProjects.find((project) => project.id === projectId)?.departmentId ?? null;
+  const participantAgentIds = useMemo(
+    () =>
+      [
+        selectedAssigneeAgentId,
+        parseAssigneeValue(reviewerValue).assigneeAgentId,
+        parseAssigneeValue(approverValue).assigneeAgentId,
+      ].filter((value): value is string => Boolean(value)),
+    [approverValue, reviewerValue, selectedAssigneeAgentId],
+  );
+  const visibleAgents = useMemo(
+    () =>
+      filterAgentsForDepartmentContext(
+        (agents ?? []).filter((agent) => agent.status !== "terminated" || participantAgentIds.includes(agent.id)),
+        orgViewPermission,
+        selectedProjectDepartmentId ?? departmentId ?? null,
+        { preserveIds: participantAgentIds },
+      ).sort((left, right) => left.name.localeCompare(right.name)),
+    [agents, departmentId, orgViewPermission, participantAgentIds, selectedProjectDepartmentId],
+  );
+  const assigneeAdapterType = visibleAgents.find((agent) => agent.id === selectedAssigneeAgentId)?.adapterType
+    ?? (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId)?.adapterType
+    ?? null;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
   const mentionOptions = useMemo<MentionOption[]>(() => {
     const options: MentionOption[] = [];
-    const activeAgents = [...(agents ?? [])]
-      .filter((agent) => agent.status !== "terminated")
-      .sort((a, b) => a.name.localeCompare(b.name));
-    for (const agent of activeAgents) {
+    for (const agent of visibleAgents) {
       options.push({
         id: `agent:${agent.id}`,
         name: agent.name,
@@ -392,7 +448,10 @@ export function NewIssueDialog() {
         agentIcon: agent.icon,
       });
     }
-    for (const project of orderedProjects) {
+    const mentionProjects = issueManagePermission
+      ? filterByPermissionScope(orderedProjects, issueManagePermission)
+      : orderedProjects;
+    for (const project of mentionProjects) {
       options.push({
         id: `project:${project.id}`,
         name: project.name,
@@ -402,7 +461,7 @@ export function NewIssueDialog() {
       });
     }
     return options;
-  }, [agents, orderedProjects]);
+  }, [issueManagePermission, orderedProjects, visibleAgents]);
 
   const { data: assigneeAdapterModels } = useQuery({
     queryKey:
@@ -493,6 +552,7 @@ export function NewIssueDialog() {
       description,
       status,
       priority,
+      departmentId,
       assigneeValue,
       reviewerValue,
       approverValue,
@@ -509,6 +569,7 @@ export function NewIssueDialog() {
     description,
     status,
     priority,
+    departmentId,
     assigneeValue,
     reviewerValue,
     approverValue,
@@ -522,6 +583,13 @@ export function NewIssueDialog() {
     newIssueOpen,
     scheduleSave,
   ]);
+
+  const resolveDialogDepartmentId = useCallback((nextProjectId: string, preferredDepartmentId?: string | null) => {
+    const projectDepartmentId = orderedProjects.find((project) => project.id === nextProjectId)?.departmentId ?? "";
+    if (projectDepartmentId) return projectDepartmentId;
+    if (preferredDepartmentId) return preferredDepartmentId;
+    return fallbackScopedDepartmentId;
+  }, [fallbackScopedDepartmentId, orderedProjects]);
 
   // Restore draft or apply defaults when dialog opens
   useEffect(() => {
@@ -542,6 +610,7 @@ export function NewIssueDialog() {
       setDescription(newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
+      setDepartmentId(resolveDialogDepartmentId(defaultProjectId, newIssueDefaults.departmentId));
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceId);
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
@@ -558,6 +627,7 @@ export function NewIssueDialog() {
       setPriority(newIssueDefaults.priority ?? "");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      setDepartmentId(resolveDialogDepartmentId(defaultProjectId, newIssueDefaults.departmentId));
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
@@ -578,6 +648,12 @@ export function NewIssueDialog() {
       setDescription(draft.description);
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
+      setDepartmentId(
+        resolveDialogDepartmentId(
+          restoredProjectId,
+          newIssueDefaults.departmentId ?? draft.departmentId,
+        ),
+      );
       setAssigneeValue(
         newIssueDefaults.assigneeAgentId || newIssueDefaults.assigneeUserId
           ? assigneeValueFromSelection(newIssueDefaults)
@@ -603,6 +679,7 @@ export function NewIssueDialog() {
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
+      setDepartmentId(resolveDialogDepartmentId(defaultProjectId, newIssueDefaults.departmentId));
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
@@ -617,7 +694,12 @@ export function NewIssueDialog() {
       setSelectedExecutionWorkspaceId("");
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     }
-  }, [newIssueOpen, newIssueDefaults, orderedProjects]);
+  }, [newIssueOpen, newIssueDefaults, orderedProjects, resolveDialogDepartmentId]);
+
+  useEffect(() => {
+    if (!newIssueOpen || projectId || departmentId || !fallbackScopedDepartmentId) return;
+    setDepartmentId(fallbackScopedDepartmentId);
+  }, [departmentId, fallbackScopedDepartmentId, newIssueOpen, projectId]);
 
   useEffect(() => {
     if (!supportsAssigneeOverrides) {
@@ -651,11 +733,13 @@ export function NewIssueDialog() {
     setDescription("");
     setStatus("todo");
     setPriority("");
+    setDepartmentId("");
     setAssigneeValue("");
     setReviewerValue("");
     setApproverValue("");
     setShowReviewerRow(false);
     setShowApproverRow(false);
+    setDepartmentId("");
     setProjectId("");
     setProjectWorkspaceId("");
     setAssigneeOptionsOpen(false);
@@ -697,7 +781,13 @@ export function NewIssueDialog() {
   }
 
   function handleSubmit() {
-    if (!effectiveCompanyId || !title.trim() || createIssue.isPending) return;
+    if (
+      !effectiveCompanyId
+      || !title.trim()
+      || createIssue.isPending
+      || scopedDepartmentBootstrapPending
+      || departmentValidationMessage
+    ) return;
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       modelOverride: assigneeModelOverride,
@@ -730,6 +820,7 @@ export function NewIssueDialog() {
       description: description.trim() || undefined,
       status,
       priority: priority || "medium",
+      ...(resolvedDepartmentId ? { departmentId: resolvedDepartmentId } : {}),
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
       ...(newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
@@ -820,9 +911,12 @@ export function NewIssueDialog() {
   const currentStatus = statuses.find((s) => s.value === status) ?? statuses[1]!;
   const currentPriority = priorities.find((p) => p.value === priority);
   const currentAssignee = selectedAssigneeAgentId
-    ? (agents ?? []).find((a) => a.id === selectedAssigneeAgentId)
+    ? visibleAgents.find((agent) => agent.id === selectedAssigneeAgentId)
+      ?? (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId)
     : null;
   const currentProject = orderedProjects.find((project) => project.id === projectId);
+  const currentDepartmentId = currentProject?.departmentId ?? departmentId;
+  const currentDepartment = departments.find((department) => department.id === currentDepartmentId) ?? null;
   const currentProjectExecutionWorkspacePolicy =
     experimentalSettings?.enableIsolatedWorkspaces === true
       ? currentProject?.executionWorkspacePolicy ?? null
@@ -869,7 +963,7 @@ export function NewIssueDialog() {
     () => [
       ...currentUserAssigneeOption(currentUserId),
       ...sortAgentsByRecency(
-        (agents ?? []).filter((agent) => agent.status !== "terminated"),
+        visibleAgents,
         recentAssigneeIds,
       ).map((agent) => ({
         id: assigneeValueFromSelection({ assigneeAgentId: agent.id }),
@@ -877,28 +971,70 @@ export function NewIssueDialog() {
         searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
       })),
     ],
-    [agents, currentUserId, recentAssigneeIds],
+    [currentUserId, recentAssigneeIds, visibleAgents],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
-      orderedProjects.map((project) => ({
+      (issueManagePermission ? filterByPermissionScope(orderedProjects, issueManagePermission) : orderedProjects).map((project) => ({
         id: project.id,
         label: project.name,
         searchText: project.description ?? "",
       })),
-    [orderedProjects],
+    [issueManagePermission, orderedProjects],
+  );
+  const departmentOptions = useMemo<InlineEntityOption[]>(
+    () => {
+      const source =
+        issueManagePermission && !issueManagePermission.companyWide
+          ? manageableDepartments
+          : departments;
+      return source.map((department) => ({
+        id: department.id,
+        label: department.name,
+        searchText: department.description ?? "",
+      }));
+    },
+    [departments, issueManagePermission, manageableDepartments],
   );
   const savedDraft = loadDraft();
   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
   const createIssueErrorMessage =
     createIssue.error instanceof Error ? createIssue.error.message : "Failed to create issue. Try again.";
+  const resolvedDepartmentId = currentProject?.departmentId ?? (departmentId || fallbackScopedDepartmentId);
+  const scopedDepartmentBootstrapPending = Boolean(
+    effectiveCompanyId
+      && newIssueOpen
+      && (
+        permissionsPending
+        || (
+          issueManagePermission
+          && !issueManagePermission.companyWide
+          && departmentsPending
+        )
+      ),
+  );
+  const departmentSelectionRequired = Boolean(
+    issueManagePermission && !issueManagePermission.companyWide && !currentProject?.departmentId,
+  );
+  const canManageSelectedDepartment =
+    !issueManagePermission || canUseDepartment(issueManagePermission, resolvedDepartmentId || null);
+  const departmentValidationMessage = currentProject && currentProject.departmentId == null && departmentSelectionRequired
+    ? "Scoped issue managers need a project inside a managed department or an explicit department without a project."
+    : departmentSelectionRequired && !resolvedDepartmentId
+      ? "Select a department to create this issue."
+      : !canManageSelectedDepartment
+        ? "You do not have issue manage access for the selected department."
+        : null;
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
   const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
 
   const handleProjectChange = useCallback((nextProjectId: string) => {
     setProjectId(nextProjectId);
     const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
+    if (nextProjectId && nextProject) {
+      setDepartmentId(nextProject.departmentId ?? "");
+    }
     executionWorkspaceDefaultProjectId.current = nextProjectId || null;
     setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
     setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
@@ -1325,6 +1461,37 @@ export function NewIssueDialog() {
               />
             </div>
           )}
+
+          {departments.length > 0 && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
+              <span className="w-6 shrink-0 text-center text-[11px] font-medium uppercase">Dpt</span>
+              {currentProject ? (
+                <span className="inline-flex min-w-0 items-center rounded-md border border-border bg-muted/40 px-2 py-1 text-sm font-medium text-foreground">
+                  <span className="truncate">{currentDepartment?.name ?? "Company-wide"}</span>
+                </span>
+              ) : (
+                <InlineEntitySelector
+                  value={departmentId}
+                  options={departmentOptions}
+                  placeholder="Department"
+                  disablePortal
+                  noneLabel="No department"
+                  searchPlaceholder="Search departments..."
+                  emptyMessage="No departments found."
+                  onChange={setDepartmentId}
+                  onConfirm={() => {
+                    descriptionEditorRef.current?.focus();
+                  }}
+                />
+              )}
+            </div>
+          )}
+
+          {departmentValidationMessage ? (
+            <div className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+              {departmentValidationMessage}
+            </div>
+          ) : null}
         </div>
 
         {isSubIssueMode ? (
@@ -1679,7 +1846,12 @@ export function NewIssueDialog() {
             <Button
               size="sm"
               className="min-w-[8.5rem] disabled:opacity-100"
-              disabled={!title.trim() || createIssue.isPending}
+              disabled={
+                !title.trim()
+                || createIssue.isPending
+                || scopedDepartmentBootstrapPending
+                || Boolean(departmentValidationMessage)
+              }
               onClick={handleSubmit}
               aria-busy={createIssue.isPending}
             >

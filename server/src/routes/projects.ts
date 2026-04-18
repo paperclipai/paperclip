@@ -12,12 +12,14 @@ import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
 import { conflict } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { scopedCompanyAuthz } from "./scoped-company-authz.js";
 import { startRuntimeServicesForWorkspaceControl, stopRuntimeServicesForProjectWorkspace } from "../services/workspace-runtime.js";
 import { getTelemetryClient } from "../telemetry.js";
 
 export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
+  const scopedAuthz = scopedCompanyAuthz(db);
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
@@ -49,6 +51,20 @@ export function projectRoutes(db: Db) {
     return resolved.project?.id ?? rawId;
   }
 
+  async function assertCanAccessProject(
+    req: Request,
+    project: { companyId: string; departmentId?: string | null },
+  ) {
+    await scopedAuthz.assertScopedPermission(req, project.companyId, "projects:view", project.departmentId ?? null);
+  }
+
+  async function assertCanManageProject(
+    req: Request,
+    project: { companyId: string; departmentId?: string | null },
+  ) {
+    await scopedAuthz.assertScopedPermission(req, project.companyId, "projects:manage", project.departmentId ?? null);
+  }
+
   router.param("id", async (req, _res, next, rawId) => {
     try {
       req.params.id = await normalizeProjectReference(req, rawId);
@@ -60,8 +76,11 @@ export function projectRoutes(db: Db) {
 
   router.get("/companies/:companyId/projects", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
+    const scope = await scopedAuthz.resolveScopedPermission(req, companyId, "projects:view");
+    const result = await svc.list(companyId, {
+      departmentId: typeof req.query.departmentId === "string" ? req.query.departmentId : undefined,
+      scopeDepartmentIds: scope.companyWide ? undefined : scope.departmentIds,
+    });
     res.json(result);
   });
 
@@ -72,13 +91,16 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, project.companyId);
+    await assertCanAccessProject(req, project);
     res.json(project);
   });
 
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const targetDepartmentId =
+      req.body.departmentId !== undefined ? req.body.departmentId ?? null : null;
+    await scopedAuthz.assertScopedPermission(req, companyId, "projects:manage", targetDepartmentId);
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
     };
@@ -133,7 +155,12 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    const targetDepartmentId =
+      req.body.departmentId !== undefined ? req.body.departmentId ?? null : existing.departmentId ?? null;
+    await assertCanManageProject(req, existing);
+    if (targetDepartmentId !== (existing.departmentId ?? null)) {
+      await scopedAuthz.assertScopedPermission(req, existing.companyId, "projects:manage", targetDepartmentId);
+    }
     const body = { ...req.body };
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);
@@ -178,7 +205,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCanAccessProject(req, existing);
     const workspaces = await svc.listWorkspaces(id);
     res.json(workspaces);
   });
@@ -190,7 +217,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCanManageProject(req, existing);
     const workspace = await svc.createWorkspace(id, req.body);
     if (!workspace) {
       res.status(422).json({ error: "Invalid project workspace payload" });
@@ -228,7 +255,7 @@ export function projectRoutes(db: Db) {
         res.status(404).json({ error: "Project not found" });
         return;
       }
-      assertCompanyAccess(req, existing.companyId);
+      await assertCanManageProject(req, existing);
       const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);
       if (!workspaceExists) {
         res.status(404).json({ error: "Project workspace not found" });
@@ -273,7 +300,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, project.companyId);
+    await assertCanManageProject(req, project);
 
     const workspace = project.workspaces.find((entry) => entry.id === workspaceId) ?? null;
     if (!workspace) {
@@ -406,7 +433,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCanManageProject(req, existing);
     const workspace = await svc.removeWorkspace(id, workspaceId);
     if (!workspace) {
       res.status(404).json({ error: "Project workspace not found" });
@@ -438,7 +465,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCanManageProject(req, existing);
     const project = await svc.remove(id);
     if (!project) {
       res.status(404).json({ error: "Project not found" });

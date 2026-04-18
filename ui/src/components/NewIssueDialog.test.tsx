@@ -47,6 +47,14 @@ const mockExecutionWorkspacesApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockAccessApi = vi.hoisted(() => ({
+  listMyEffectivePermissions: vi.fn(),
+}));
+
+const mockDepartmentsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
@@ -86,6 +94,14 @@ vi.mock("../api/issues", () => ({
 
 vi.mock("../api/execution-workspaces", () => ({
   executionWorkspacesApi: mockExecutionWorkspacesApi,
+}));
+
+vi.mock("../api/access", () => ({
+  accessApi: mockAccessApi,
+}));
+
+vi.mock("../api/departments", () => ({
+  departmentsApi: mockDepartmentsApi,
 }));
 
 vi.mock("../api/projects", () => ({
@@ -140,17 +156,25 @@ vi.mock("./MarkdownEditor", async () => {
   return {
     MarkdownEditor: React.forwardRef<
       { focus: () => void },
-      { value: string; onChange?: (value: string) => void; placeholder?: string }
-    >(function MarkdownEditorMock({ value, onChange, placeholder }, ref) {
+      {
+        value: string;
+        onChange?: (value: string) => void;
+        placeholder?: string;
+        mentions?: Array<{ id: string; name: string }>;
+      }
+    >(function MarkdownEditorMock({ value, onChange, placeholder, mentions }, ref) {
       React.useImperativeHandle(ref, () => ({
         focus: () => undefined,
       }));
       return (
-        <textarea
-          aria-label={placeholder ?? "Description"}
-          value={value}
-          onChange={(event) => onChange?.(event.target.value)}
-        />
+        <div>
+          <textarea
+            aria-label={placeholder ?? "Description"}
+            value={value}
+            onChange={(event) => onChange?.(event.target.value)}
+          />
+          <div data-testid="issue-mentions">{(mentions ?? []).map((mention) => mention.name).join("|")}</div>
+        </div>
       );
     }),
   };
@@ -163,14 +187,18 @@ vi.mock("./InlineEntitySelector", async () => {
       HTMLButtonElement,
       {
         value: string;
+        options?: Array<{ id: string; label: string }>;
         placeholder?: string;
         renderTriggerValue?: (option: { id: string; label: string } | null) => ReactNode;
       }
-    >(function InlineEntitySelectorMock({ value, placeholder, renderTriggerValue }, ref) {
+    >(function InlineEntitySelectorMock({ value, options, placeholder, renderTriggerValue }, ref) {
       return (
-        <button ref={ref} type="button">
-          {(renderTriggerValue?.(value ? { id: value, label: value } : null) ?? value) || placeholder}
-        </button>
+        <div>
+          <button ref={ref} type="button">
+            {(renderTriggerValue?.(value ? { id: value, label: value } : null) ?? value) || placeholder}
+          </button>
+          <div data-testid="inline-options">{(options ?? []).map((option) => option.label).join("|")}</div>
+        </div>
       );
     }),
   };
@@ -236,6 +264,14 @@ async function waitForAssertion(assertion: () => void, attempts = 20) {
   throw lastError instanceof Error ? lastError : new Error("Assertion did not pass in time");
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 function renderDialog(container: HTMLDivElement) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -260,6 +296,7 @@ describe("NewIssueDialog", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    window.localStorage.clear();
     dialogState.newIssueOpen = true;
     dialogState.newIssueDefaults = {};
     dialogState.closeNewIssue.mockReset();
@@ -268,6 +305,14 @@ describe("NewIssueDialog", () => {
     mockIssuesApi.upsertDocument.mockReset();
     mockIssuesApi.uploadAttachment.mockReset();
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
+    mockAccessApi.listMyEffectivePermissions.mockResolvedValue([
+      {
+        permissionKey: "issues:manage",
+        companyWide: true,
+        departmentIds: [],
+      },
+    ]);
+    mockDepartmentsApi.list.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([
       {
         id: "project-1",
@@ -290,6 +335,7 @@ describe("NewIssueDialog", () => {
   });
 
   afterEach(() => {
+    window.localStorage.clear();
     document.body.innerHTML = "";
   });
 
@@ -450,6 +496,185 @@ describe("NewIssueDialog", () => {
 
     expect(container.textContent).toContain("will no longer use the parent issue workspace");
     expect(container.textContent).toContain("Parent workspace");
+
+    act(() => root.unmount());
+  });
+
+  it("requires a department when issue manage access is department-scoped", async () => {
+    mockAccessApi.listMyEffectivePermissions.mockResolvedValue([
+      {
+        permissionKey: "issues:manage",
+        companyWide: false,
+        departmentIds: ["dept-1", "dept-2"],
+      },
+    ]);
+    mockDepartmentsApi.list.mockResolvedValue([
+      { id: "dept-1", companyId: "company-1", name: "Engineering", description: null, parentId: null, status: "active", sortOrder: 0, createdAt: "", updatedAt: "" },
+      { id: "dept-2", companyId: "company-1", name: "Finance", description: null, parentId: null, status: "active", sortOrder: 1, createdAt: "", updatedAt: "" },
+    ]);
+    dialogState.newIssueDefaults = {
+      title: "Scoped issue",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    await waitForAssertion(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(true);
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("includes the selected department in the create payload", async () => {
+    mockAccessApi.listMyEffectivePermissions.mockResolvedValue([
+      {
+        permissionKey: "issues:manage",
+        companyWide: false,
+        departmentIds: ["dept-1"],
+      },
+    ]);
+    mockDepartmentsApi.list.mockResolvedValue([
+      { id: "dept-1", companyId: "company-1", name: "Engineering", description: null, parentId: null, status: "active", sortOrder: 0, createdAt: "", updatedAt: "" },
+    ]);
+    dialogState.newIssueDefaults = {
+      title: "Scoped issue",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+    await waitForAssertion(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Scoped issue",
+        departmentId: "dept-1",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("keeps submit disabled while scoped permissions are still loading", async () => {
+    const permissions = createDeferred<Array<{
+      permissionKey: string;
+      companyWide: boolean;
+      departmentIds: string[];
+    }>>();
+    mockAccessApi.listMyEffectivePermissions.mockReturnValue(permissions.promise);
+    mockDepartmentsApi.list.mockResolvedValue([
+      { id: "dept-1", companyId: "company-1", name: "Engineering", description: null, parentId: null, status: "active", sortOrder: 0, createdAt: "", updatedAt: "" },
+    ]);
+    dialogState.newIssueDefaults = {
+      title: "Scoped issue",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+    expect(submitButton?.hasAttribute("disabled")).toBe(true);
+
+    await act(async () => {
+      permissions.resolve([
+        {
+          permissionKey: "issues:manage",
+          companyWide: false,
+          departmentIds: ["dept-1"],
+        },
+      ]);
+    });
+
+    await waitForAssertion(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("filters assignee and project candidates to the active scoped department", async () => {
+    mockAccessApi.listMyEffectivePermissions.mockResolvedValue([
+      {
+        permissionKey: "issues:manage",
+        companyWide: false,
+        departmentIds: ["dept-1"],
+      },
+      {
+        permissionKey: "org:view",
+        companyWide: false,
+        departmentIds: ["dept-1"],
+      },
+    ]);
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Engineering Roadmap",
+        description: null,
+        departmentId: "dept-1",
+        archivedAt: null,
+        color: "#445566",
+      },
+      {
+        id: "project-2",
+        name: "Finance Close",
+        description: null,
+        departmentId: "dept-2",
+        archivedAt: null,
+        color: "#667788",
+      },
+    ]);
+    mockDepartmentsApi.list.mockResolvedValue([
+      { id: "dept-1", companyId: "company-1", name: "Engineering", description: null, parentId: null, status: "active", sortOrder: 0, createdAt: "", updatedAt: "" },
+      { id: "dept-2", companyId: "company-1", name: "Finance", description: null, parentId: null, status: "active", sortOrder: 1, createdAt: "", updatedAt: "" },
+    ]);
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        companyId: "company-1",
+        departmentId: "dept-1",
+        name: "Eng Agent",
+        role: "engineer",
+        title: null,
+        status: "active",
+        icon: "bot",
+      },
+      {
+        id: "agent-2",
+        companyId: "company-1",
+        departmentId: "dept-2",
+        name: "Finance Agent",
+        role: "engineer",
+        title: null,
+        status: "active",
+        icon: "bot",
+      },
+    ]);
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Eng Agent");
+      expect(container.textContent).toContain("Engineering Roadmap");
+      expect(container.textContent).not.toContain("Finance Agent");
+      expect(container.textContent).not.toContain("Finance Close");
+    });
 
     act(() => root.unmount());
   });

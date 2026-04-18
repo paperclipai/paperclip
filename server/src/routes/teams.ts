@@ -4,7 +4,8 @@ import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { teamService } from "../services/teams.js";
 import { logActivity } from "../services/activity-log.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { getActorInfo } from "./authz.js";
+import { scopedCompanyAuthz } from "./scoped-company-authz.js";
 
 const createTeamSchema = z.object({
   name: z.string().min(1).max(100),
@@ -27,12 +28,17 @@ const addMemberSchema = z.object({
 export function teamRoutes(db: Db) {
   const router = Router();
   const svc = teamService(db);
+  const scopedAuthz = scopedCompanyAuthz(db);
 
   router.get("/companies/:companyId/teams", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    const scope = await scopedAuthz.resolveScopedPermission(req, companyId, "teams:view");
     const result = await svc.list(companyId);
-    res.json(result);
+    res.json(
+      scope.companyWide
+        ? result
+        : result.filter((team) => team.departmentId && scope.departmentIds.includes(team.departmentId)),
+    );
   });
 
   router.get("/teams/:id", async (req, res) => {
@@ -41,7 +47,7 @@ export function teamRoutes(db: Db) {
       res.status(404).json({ error: "Team not found" });
       return;
     }
-    assertCompanyAccess(req, team.companyId);
+    await scopedAuthz.assertScopedPermission(req, team.companyId, "teams:view", team.departmentId);
     res.json(team);
   });
 
@@ -50,7 +56,7 @@ export function teamRoutes(db: Db) {
     validate(createTeamSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await scopedAuthz.assertScopedPermission(req, companyId, "teams:manage", req.body.departmentId ?? null);
 
       const team = await svc.create(companyId, req.body);
 
@@ -78,7 +84,10 @@ export function teamRoutes(db: Db) {
         res.status(404).json({ error: "Team not found" });
         return;
       }
-      assertCompanyAccess(req, team.companyId);
+      await scopedAuthz.assertScopedPermission(req, team.companyId, "teams:manage", team.departmentId);
+      if (req.body.departmentId !== undefined) {
+        await scopedAuthz.assertScopedPermission(req, team.companyId, "teams:manage", req.body.departmentId);
+      }
 
       const updated = await svc.update(team.id, req.body);
 
@@ -103,7 +112,7 @@ export function teamRoutes(db: Db) {
       res.status(404).json({ error: "Team not found" });
       return;
     }
-    assertCompanyAccess(req, team.companyId);
+    await scopedAuthz.assertScopedPermission(req, team.companyId, "teams:manage", team.departmentId);
 
     const archived = await svc.archive(team.id);
 
@@ -127,7 +136,7 @@ export function teamRoutes(db: Db) {
       res.status(404).json({ error: "Team not found" });
       return;
     }
-    assertCompanyAccess(req, team.companyId);
+    await scopedAuthz.assertScopedPermission(req, team.companyId, "teams:view", team.departmentId);
     const members = await svc.listMembers(team.id);
     res.json(members);
   });
@@ -141,7 +150,7 @@ export function teamRoutes(db: Db) {
         res.status(404).json({ error: "Team not found" });
         return;
       }
-      assertCompanyAccess(req, team.companyId);
+      await scopedAuthz.assertScopedPermission(req, team.companyId, "teams:manage", team.departmentId);
 
       const membership = await svc.addMember(team.id, team.companyId, req.body);
 
@@ -166,7 +175,7 @@ export function teamRoutes(db: Db) {
       res.status(404).json({ error: "Team not found" });
       return;
     }
-    assertCompanyAccess(req, team.companyId);
+    await scopedAuthz.assertScopedPermission(req, team.companyId, "teams:manage", team.departmentId);
 
     await svc.removeMember(team.id, req.params.principalType as string, req.params.principalId as string);
 

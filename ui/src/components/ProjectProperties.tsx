@@ -4,11 +4,18 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
 import { StatusBadge } from "./StatusBadge";
 import { cn, formatDate } from "../lib/utils";
+import { accessApi } from "../api/access";
+import { agentsApi } from "../api/agents";
 import { goalsApi } from "../api/goals";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { secretsApi } from "../api/secrets";
 import { useCompany } from "../context/CompanyContext";
+import {
+  filterAgentsForDepartmentContext,
+  filterGoalsForDepartmentContext,
+  findEffectivePermission,
+} from "../lib/effective-permissions";
 import { queryKeys } from "../lib/queryKeys";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 import { Separator } from "@/components/ui/separator";
@@ -243,6 +250,16 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const { data: myEffectivePermissions = [] } = useQuery({
+    queryKey: queryKeys.access.myEffectivePermissions(selectedCompanyId!),
+    queryFn: () => accessApi.listMyEffectivePermissions(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -269,15 +286,24 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     : project.goalId
       ? [project.goalId]
       : [];
+  const orgViewPermission = findEffectivePermission(myEffectivePermissions, "org:view");
+  const visibleAgents = filterAgentsForDepartmentContext(
+    (agents ?? []).filter((agent) => agent.status !== "terminated"),
+    orgViewPermission,
+    project.departmentId ?? null,
+  );
+  const scopedGoals = filterGoalsForDepartmentContext(allGoals ?? [], visibleAgents, project.departmentId ?? null, {
+    preserveIds: linkedGoalIds,
+  });
 
   const linkedGoals = project.goals.length > 0
     ? project.goals
     : linkedGoalIds.map((id) => ({
         id,
-        title: allGoals?.find((g) => g.id === id)?.title ?? id.slice(0, 8),
+        title: scopedGoals.find((goal) => goal.id === id)?.title ?? allGoals?.find((goal) => goal.id === id)?.title ?? id.slice(0, 8),
       }));
 
-  const availableGoals = (allGoals ?? []).filter((g) => !linkedGoalIds.includes(g.id));
+  const availableGoals = scopedGoals.filter((goal) => !linkedGoalIds.includes(goal.id));
   const workspaces = project.workspaces ?? [];
   const codebase = project.codebase;
   const primaryCodebaseWorkspace = project.primaryWorkspace ?? null;

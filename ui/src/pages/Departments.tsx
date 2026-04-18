@@ -17,6 +17,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Building2, ChevronRight, ChevronDown, Plus, Users, FolderTree } from "lucide-react";
 import { useEffect } from "react";
 
@@ -88,6 +89,11 @@ export function Departments() {
   const [showNewDialog, setShowNewDialog] = useState(false);
   const [newName, setNewName] = useState("");
   const [newDescription, setNewDescription] = useState("");
+  const [newParentId, setNewParentId] = useState<string | null>(null);
+  const [showNewTeamDialog, setShowNewTeamDialog] = useState(false);
+  const [newTeamName, setNewTeamName] = useState("");
+  const [newTeamDescription, setNewTeamDescription] = useState("");
+  const [newTeamDepartmentId, setNewTeamDepartmentId] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Departments" }]);
@@ -105,18 +111,41 @@ export function Departments() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: flatDepartments } = useQuery({
+    queryKey: queryKeys.departments.list(selectedCompanyId!),
+    queryFn: () => departmentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; description?: string }) =>
+    mutationFn: (data: { name: string; description?: string; parentId?: string | null }) =>
       departmentsApi.create(selectedCompanyId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.departments.tree(selectedCompanyId!) });
       setShowNewDialog(false);
       setNewName("");
       setNewDescription("");
+      setNewParentId(null);
       pushToast({ title: "Department created", tone: "success" });
     },
     onError: (err: Error) => {
       pushToast({ title: "Failed to create department", body: err.message, tone: "error" });
+    },
+  });
+
+  const createTeamMutation = useMutation({
+    mutationFn: (data: { name: string; description?: string; departmentId?: string | null }) =>
+      teamsApi.create(selectedCompanyId!, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.teams.list(selectedCompanyId!) });
+      setShowNewTeamDialog(false);
+      setNewTeamName("");
+      setNewTeamDescription("");
+      setNewTeamDepartmentId(null);
+      pushToast({ title: "Team created", tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to create team", body: err.message, tone: "error" });
     },
   });
 
@@ -175,15 +204,21 @@ export function Departments() {
         </div>
       )}
 
-      {hasTeams && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            <Users className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-base font-semibold">Teams</h2>
-            <Badge variant="secondary" className="text-xs">{teams.length}</Badge>
+      <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Users className="h-5 w-5 text-muted-foreground" />
+              <h2 className="text-base font-semibold">Teams</h2>
+              {hasTeams && <Badge variant="secondary" className="text-xs">{teams!.length}</Badge>}
+            </div>
+            <Button size="sm" variant="outline" onClick={() => setShowNewTeamDialog(true)}>
+              <Plus className="h-4 w-4 mr-1" />
+              New Team
+            </Button>
           </div>
+      {hasTeams ? (
           <div className="rounded-lg border border-border bg-card divide-y divide-border">
-            {teams.map((team: Team) => (
+            {teams!.map((team: Team) => (
               <Link
                 key={team.id}
                 to={`/teams/${team.id}`}
@@ -197,8 +232,12 @@ export function Departments() {
               </Link>
             ))}
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+            No teams yet. Create a team to group members across departments.
+          </div>
+        )}
+      </div>
 
       <Dialog open={showNewDialog} onOpenChange={setShowNewDialog}>
         <DialogContent>
@@ -211,6 +250,7 @@ export function Departments() {
               createMutation.mutate({
                 name: newName,
                 description: newDescription || undefined,
+                parentId: newParentId || undefined,
               });
             }}
             className="space-y-4"
@@ -233,12 +273,96 @@ export function Departments() {
                 rows={2}
               />
             </div>
+            {flatDepartments && flatDepartments.length > 0 && (
+              <div>
+                <label className="text-sm font-medium">Parent Department</label>
+                <Select
+                  value={newParentId ?? "__none__"}
+                  onValueChange={(v) => setNewParentId(v === "__none__" ? null : v)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="None (root level)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">None (root level)</SelectItem>
+                    {flatDepartments.map((d) => (
+                      <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setShowNewDialog(false)}>
                 Cancel
               </Button>
               <Button type="submit" disabled={!newName.trim() || createMutation.isPending}>
                 {createMutation.isPending ? "Creating..." : "Create"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showNewTeamDialog} onOpenChange={setShowNewTeamDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New Team</DialogTitle>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              createTeamMutation.mutate({
+                name: newTeamName,
+                description: newTeamDescription || undefined,
+                departmentId: newTeamDepartmentId || undefined,
+              });
+            }}
+            className="space-y-4"
+          >
+            <div>
+              <label className="text-sm font-medium">Name</label>
+              <Input
+                value={newTeamName}
+                onChange={(e) => setNewTeamName(e.target.value)}
+                placeholder="e.g. Platform Squad"
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium">Description</label>
+              <Textarea
+                value={newTeamDescription}
+                onChange={(e) => setNewTeamDescription(e.target.value)}
+                placeholder="Optional description"
+                rows={2}
+              />
+            </div>
+            {flatDepartments && flatDepartments.length > 0 && (
+              <div>
+                <label className="text-sm font-medium">Department</label>
+                <Select
+                  value={newTeamDepartmentId ?? "__none__"}
+                  onValueChange={(v) => setNewTeamDepartmentId(v === "__none__" ? null : v)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="None" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">None</SelectItem>
+                    {flatDepartments.map((d) => (
+                      <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setShowNewTeamDialog(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={!newTeamName.trim() || createTeamMutation.isPending}>
+                {createTeamMutation.isPending ? "Creating..." : "Create"}
               </Button>
             </DialogFooter>
           </form>

@@ -399,8 +399,23 @@ async function ensureSinglePrimaryWorkspace(
 
 export function projectService(db: Db) {
   return {
-    list: async (companyId: string): Promise<ProjectWithGoals[]> => {
-      const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
+    list: async (
+      companyId: string,
+      filters?: {
+        departmentId?: string;
+        scopeDepartmentIds?: string[];
+      },
+    ): Promise<ProjectWithGoals[]> => {
+      const conditions = [eq(projects.companyId, companyId)];
+      if (filters?.scopeDepartmentIds) {
+        const scopedDepartmentIds = [...new Set(filters.scopeDepartmentIds)].filter(Boolean);
+        if (scopedDepartmentIds.length === 0) return [];
+        conditions.push(inArray(projects.departmentId, scopedDepartmentIds));
+      }
+      if (filters?.departmentId) {
+        conditions.push(eq(projects.departmentId, filters.departmentId));
+      }
+      const rows = await db.select().from(projects).where(and(...conditions));
       const withGoals = await attachGoals(db, rows);
       return attachWorkspaces(db, withGoals);
     },

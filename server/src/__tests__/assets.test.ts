@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import { MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
+import { errorHandler } from "../middleware/index.js";
 import { assetRoutes } from "../routes/assets.js";
 import type { StorageService } from "../storage/types.js";
 
@@ -64,17 +65,24 @@ function createStorageService(contentType = "image/png"): StorageService {
   };
 }
 
-function createApp(storage: ReturnType<typeof createStorageService>) {
+function createApp(
+  storage: ReturnType<typeof createStorageService>,
+  actor: Record<string, unknown> = {},
+) {
   const app = express();
   app.use((req, _res, next) => {
     req.actor = {
       type: "board",
       source: "local_implicit",
       userId: "user-1",
+      companyIds: ["company-1"],
+      isInstanceAdmin: false,
+      ...actor,
     };
     next();
   });
   app.use("/api", assetRoutes({} as any, storage));
+  app.use(errorHandler);
   return app;
 }
 
@@ -131,6 +139,24 @@ describe("POST /api/companies/:companyId/assets/images", () => {
       contentType: "text/plain",
       body: expect.any(Buffer),
     });
+  });
+
+  it("rejects image uploads outside the board actor company scope", async () => {
+    const png = createStorageService("image/png");
+    const app = createApp(png, {
+      source: "session",
+      companyIds: ["company-1"],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-2/assets/images")
+      .field("namespace", "goals")
+      .attach("file", Buffer.from("png"), "logo.png");
+
+    expect(res.status).toBe(403);
+    expect(png.putFile).not.toHaveBeenCalled();
+    expect(createAssetMock).not.toHaveBeenCalled();
   });
 });
 
@@ -245,6 +271,24 @@ describe("POST /api/companies/:companyId/logo", () => {
 
     expect(res.status).toBe(422);
     expect(res.body.error).toBe("SVG could not be sanitized");
+    expect(createAssetMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects logo uploads for agent keys targeting another company", async () => {
+    const png = createStorageService("image/png");
+    const app = createApp(png, {
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      userId: undefined,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-2/logo")
+      .attach("file", Buffer.from("png"), "logo.png");
+
+    expect(res.status).toBe(403);
+    expect(png.putFile).not.toHaveBeenCalled();
     expect(createAssetMock).not.toHaveBeenCalled();
   });
 });

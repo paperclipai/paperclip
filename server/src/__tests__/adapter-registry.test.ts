@@ -9,7 +9,7 @@ import {
   requireServerAdapter,
   unregisterServerAdapter,
 } from "../adapters/index.js";
-import { setOverridePaused } from "../adapters/registry.js";
+import { setOverridePaused, waitForExternalAdapters } from "../adapters/registry.js";
 
 const externalAdapter: ServerAdapterModule = {
   type: "external_test",
@@ -29,7 +29,8 @@ const externalAdapter: ServerAdapterModule = {
 };
 
 describe("server adapter registry", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await waitForExternalAdapters();
     unregisterServerAdapter("external_test");
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);

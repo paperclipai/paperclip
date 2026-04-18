@@ -5,6 +5,7 @@ import { agentRoutes } from "../routes/agents.js";
 import { errorHandler } from "../middleware/index.js";
 import type { ServerAdapterModule } from "../adapters/index.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
+import { waitForExternalAdapters } from "../adapters/registry.js";
 
 const mockAgentService = vi.hoisted(() => ({
   create: vi.fn(),
@@ -112,7 +113,8 @@ function createApp() {
 }
 
 describe("agent routes adapter validation", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await waitForExternalAdapters();
     vi.clearAllMocks();
     unregisterServerAdapter("external_test");
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);

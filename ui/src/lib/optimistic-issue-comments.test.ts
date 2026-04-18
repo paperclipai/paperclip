@@ -129,6 +129,7 @@ describe("optimistic issue comments", () => {
       {
         id: "issue-1",
         companyId: "company-1",
+        departmentId: null,
         projectId: null,
         projectWorkspaceId: null,
         goalId: null,

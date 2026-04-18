@@ -48,6 +48,10 @@ function writeTestConfig(configPath: string, tempRoot: string, connectionString:
     logging: {
       mode: "file" as const,
       logDir: path.join(tempRoot, "logs"),
+      consoleLevel: "info" as const,
+      fileLevel: "debug" as const,
+      maxFileSizeMb: 25,
+      maxFiles: 10,
     },
     server: {
       deploymentMode: "local_trusted" as const,

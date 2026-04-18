@@ -158,4 +158,75 @@ describeEmbeddedPostgres("agentService.orgByDepartmentForCompany", () => {
     expect(unassigned.roots[0]?.id).toBe(unassignedId);
     expect(unassigned.roots[0]?.reports).toHaveLength(0);
   });
+
+  it("filters org trees to the requested department scope", async () => {
+    const companyId = randomUUID();
+    const engineeringId = randomUUID();
+    const financeId = randomUUID();
+    const engineeringLeadId = randomUUID();
+    const financeLeadId = randomUUID();
+    const unassignedId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "ORG02",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(departments).values([
+      { id: engineeringId, companyId, name: "Engineering", status: "active", sortOrder: 0 },
+      { id: financeId, companyId, name: "Finance", status: "active", sortOrder: 1 },
+    ]);
+
+    await db.insert(agents).values([
+      {
+        id: engineeringLeadId,
+        companyId,
+        departmentId: engineeringId,
+        name: "Engineering Lead",
+        role: "ceo",
+        status: "active",
+        reportsTo: null,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: financeLeadId,
+        companyId,
+        departmentId: financeId,
+        name: "Finance Lead",
+        role: "manager",
+        status: "active",
+        reportsTo: engineeringLeadId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: unassignedId,
+        companyId,
+        departmentId: null,
+        name: "Floating Agent",
+        role: "engineer",
+        status: "active",
+        reportsTo: financeLeadId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const tree = await svc.orgForCompany(companyId, { departmentIds: [financeId] }) as unknown as OrgNodeLike[];
+    const grouped = await svc.orgByDepartmentForCompany(companyId, { departmentIds: [financeId] }) as unknown as DepartmentGroupLike[];
+
+    expect(tree.map((node) => node.id)).toEqual([financeLeadId]);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]?.department?.name).toBe("Finance");
+    expect(grouped[0]?.roots[0]?.id).toBe(financeLeadId);
+  });
 });

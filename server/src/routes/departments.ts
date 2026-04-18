@@ -4,7 +4,8 @@ import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { departmentService } from "../services/departments.js";
 import { logActivity } from "../services/activity-log.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { getActorInfo } from "./authz.js";
+import { scopedCompanyAuthz } from "./scoped-company-authz.js";
 
 const createDepartmentSchema = z.object({
   name: z.string().min(1).max(100),
@@ -29,21 +30,45 @@ const addMemberSchema = z.object({
 export function departmentRoutes(db: Db) {
   const router = Router();
   const svc = departmentService(db);
+  const scopedAuthz = scopedCompanyAuthz(db);
+
+  function filterDepartmentTree<T extends { id: string; children: T[] }>(
+    nodes: T[],
+    allowedIds: Set<string>,
+  ): T[] {
+    const filtered: T[] = [];
+    for (const node of nodes) {
+      const children = filterDepartmentTree(node.children, allowedIds);
+      if (!allowedIds.has(node.id)) {
+        filtered.push(...children);
+        continue;
+      }
+      filtered.push({
+        ...node,
+        children,
+      });
+    }
+    return filtered;
+  }
 
   // List departments (flat)
   router.get("/companies/:companyId/departments", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    const scope = await scopedAuthz.resolveScopedPermission(req, companyId, "departments:view");
     const result = await svc.list(companyId);
-    res.json(result);
+    res.json(scope.companyWide ? result : result.filter((department) => scope.departmentIds.includes(department.id)));
   });
 
   // Department tree (nested with member counts)
   router.get("/companies/:companyId/departments/tree", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    const scope = await scopedAuthz.resolveScopedPermission(req, companyId, "departments:view");
     const result = await svc.tree(companyId);
-    res.json(result);
+    if (scope.companyWide) {
+      res.json(result);
+      return;
+    }
+    res.json(filterDepartmentTree(result, new Set(scope.departmentIds)));
   });
 
   // Get department by ID
@@ -53,7 +78,7 @@ export function departmentRoutes(db: Db) {
       res.status(404).json({ error: "Department not found" });
       return;
     }
-    assertCompanyAccess(req, dept.companyId);
+    await scopedAuthz.assertScopedPermission(req, dept.companyId, "departments:view", dept.id);
     res.json(dept);
   });
 
@@ -63,7 +88,20 @@ export function departmentRoutes(db: Db) {
     validate(createDepartmentSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      if (req.body.parentId) {
+        const parent = await svc.getById(req.body.parentId);
+        if (!parent || parent.companyId !== companyId) {
+          res.status(404).json({ error: "Parent department not found" });
+          return;
+        }
+        await scopedAuthz.assertScopedPermission(req, companyId, "departments:manage", parent.id);
+      } else {
+        const scope = await scopedAuthz.resolveScopedPermission(req, companyId, "departments:manage");
+        if (!scope.companyWide) {
+          res.status(403).json({ error: "Company-wide departments:manage is required to create top-level departments" });
+          return;
+        }
+      }
 
       const dept = await svc.create(companyId, req.body);
 
@@ -92,7 +130,21 @@ export function departmentRoutes(db: Db) {
         res.status(404).json({ error: "Department not found" });
         return;
       }
-      assertCompanyAccess(req, dept.companyId);
+      await scopedAuthz.assertScopedPermission(req, dept.companyId, "departments:manage", dept.id);
+      if (req.body.parentId !== undefined && req.body.parentId !== null) {
+        const parent = await svc.getById(req.body.parentId);
+        if (!parent || parent.companyId !== dept.companyId) {
+          res.status(404).json({ error: "Parent department not found" });
+          return;
+        }
+        await scopedAuthz.assertScopedPermission(req, dept.companyId, "departments:manage", parent.id);
+      } else if (req.body.parentId === null) {
+        const scope = await scopedAuthz.resolveScopedPermission(req, dept.companyId, "departments:manage");
+        if (!scope.companyWide) {
+          res.status(403).json({ error: "Company-wide departments:manage is required to move a department to the root" });
+          return;
+        }
+      }
 
       const updated = await svc.update(dept.id, req.body);
 
@@ -118,7 +170,7 @@ export function departmentRoutes(db: Db) {
       res.status(404).json({ error: "Department not found" });
       return;
     }
-    assertCompanyAccess(req, dept.companyId);
+    await scopedAuthz.assertScopedPermission(req, dept.companyId, "departments:manage", dept.id);
 
     const archived = await svc.archive(dept.id);
 
@@ -143,7 +195,7 @@ export function departmentRoutes(db: Db) {
       res.status(404).json({ error: "Department not found" });
       return;
     }
-    assertCompanyAccess(req, dept.companyId);
+    await scopedAuthz.assertScopedPermission(req, dept.companyId, "departments:view", dept.id);
     const members = await svc.listMembers(dept.id);
     res.json(members);
   });
@@ -158,7 +210,7 @@ export function departmentRoutes(db: Db) {
         res.status(404).json({ error: "Department not found" });
         return;
       }
-      assertCompanyAccess(req, dept.companyId);
+      await scopedAuthz.assertScopedPermission(req, dept.companyId, "departments:manage", dept.id);
 
       const membership = await svc.addMember(dept.id, dept.companyId, req.body);
 
@@ -184,7 +236,7 @@ export function departmentRoutes(db: Db) {
       res.status(404).json({ error: "Department not found" });
       return;
     }
-    assertCompanyAccess(req, dept.companyId);
+    await scopedAuthz.assertScopedPermission(req, dept.companyId, "departments:manage", dept.id);
 
     await svc.removeMember(dept.id, req.params.principalType as string, req.params.principalId as string);
 

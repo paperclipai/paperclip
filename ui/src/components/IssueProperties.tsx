@@ -3,12 +3,18 @@ import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  filterAgentsForDepartmentContext,
+  filterByPermissionScope,
+  findEffectivePermission,
+} from "../lib/effective-permissions";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { formatAssigneeUserLabel } from "../lib/assignees";
@@ -187,21 +193,47 @@ export function IssueProperties({
     queryFn: () => agentsApi.list(companyId!),
     enabled: !!companyId,
   });
+  const { data: myEffectivePermissions = [] } = useQuery({
+    queryKey: queryKeys.access.myEffectivePermissions(companyId!),
+    queryFn: () => accessApi.listMyEffectivePermissions(companyId!),
+    enabled: !!companyId,
+  });
 
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(companyId!),
     queryFn: () => projectsApi.list(companyId!),
     enabled: !!companyId,
   });
+  const issueManagePermission = useMemo(
+    () => findEffectivePermission(myEffectivePermissions, "issues:manage"),
+    [myEffectivePermissions],
+  );
+  const orgViewPermission = useMemo(
+    () => findEffectivePermission(myEffectivePermissions, "org:view"),
+    [myEffectivePermissions],
+  );
   const activeProjects = useMemo(
     () => (projects ?? []).filter((p) => !p.archivedAt || p.id === issue.projectId),
     [projects, issue.projectId],
   );
+  const manageableProjects = useMemo(() => {
+    if (!issueManagePermission) return activeProjects;
+    const scopedProjects = filterByPermissionScope(activeProjects, issueManagePermission);
+    if (!issue.projectId || scopedProjects.some((project) => project.id === issue.projectId)) {
+      return scopedProjects;
+    }
+    const currentProject = activeProjects.find((project) => project.id === issue.projectId);
+    return currentProject ? [currentProject, ...scopedProjects] : scopedProjects;
+  }, [activeProjects, issue.projectId, issueManagePermission]);
   const { orderedProjects } = useProjectOrder({
-    projects: activeProjects,
+    projects: manageableProjects,
     companyId,
     userId: currentUserId,
   });
+  const currentProject = issue.projectId
+    ? (projects ?? []).find((project) => project.id === issue.projectId) ?? null
+    : null;
+  const issueDepartmentContextId = issue.departmentId ?? currentProject?.departmentId ?? null;
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(companyId!),
@@ -210,8 +242,8 @@ export function IssueProperties({
   });
 
   const { data: allIssues } = useQuery({
-    queryKey: queryKeys.issues.list(companyId!),
-    queryFn: () => issuesApi.list(companyId!),
+    queryKey: [...queryKeys.issues.list(companyId!), "blocked-by", issueDepartmentContextId ?? "__all__"],
+    queryFn: () => issuesApi.list(companyId!, issueDepartmentContextId ? { departmentId: issueDepartmentContextId } : undefined),
     enabled: !!companyId && blockedByOpen,
   });
 
@@ -241,37 +273,57 @@ export function IssueProperties({
     onUpdate({ labelIds: next });
   };
 
-  const agentName = (id: string | null) => {
-    if (!id || !agents) return null;
-    const agent = agents.find((a) => a.id === id);
-    return agent?.name ?? id.slice(0, 8);
-  };
-
   const projectName = (id: string | null) => {
     if (!id) return id?.slice(0, 8) ?? "None";
-    const project = orderedProjects.find((p) => p.id === id);
+    const project = (projects ?? []).find((p) => p.id === id);
     return project?.name ?? id.slice(0, 8);
   };
-  const currentProject = issue.projectId
-    ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
-    : null;
   const projectLink = (id: string | null) => {
     if (!id) return null;
     const project = projects?.find((p) => p.id === id) ?? null;
     return project ? projectUrl(project) : `/projects/${id}`;
   };
 
+  const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
+  const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
+  const visibleAgentIds = useMemo(
+    () =>
+      [
+        issue.assigneeAgentId,
+        ...reviewerValues
+          .map((value) => value.startsWith("agent:") ? value.slice("agent:".length) : null)
+          .filter((value): value is string => Boolean(value)),
+        ...approverValues
+          .map((value) => value.startsWith("agent:") ? value.slice("agent:".length) : null)
+          .filter((value): value is string => Boolean(value)),
+      ].filter((value): value is string => Boolean(value)),
+    [approverValues, issue.assigneeAgentId, reviewerValues],
+  );
+  const scopedAgents = useMemo(
+    () =>
+      filterAgentsForDepartmentContext(
+        (agents ?? []).filter((agent) => agent.status !== "terminated" || visibleAgentIds.includes(agent.id)),
+        orgViewPermission,
+        issueDepartmentContextId,
+        { preserveIds: visibleAgentIds },
+      ),
+    [agents, issueDepartmentContextId, orgViewPermission, visibleAgentIds],
+  );
+  const agentName = (id: string | null) => {
+    if (!id) return null;
+    const agent = scopedAgents.find((candidate) => candidate.id === id) ?? agents?.find((candidate) => candidate.id === id);
+    return agent?.name ?? id.slice(0, 8);
+  };
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [assigneeOpen]);
   const sortedAgents = useMemo(
-    () => sortAgentsByRecency((agents ?? []).filter((a) => a.status !== "terminated"), recentAssigneeIds),
-    [agents, recentAssigneeIds],
+    () => sortAgentsByRecency(scopedAgents, recentAssigneeIds),
+    [recentAssigneeIds, scopedAgents],
   );
 
   const assignee = issue.assigneeAgentId
-    ? agents?.find((a) => a.id === issue.assigneeAgentId)
+    ? scopedAgents.find((agent) => agent.id === issue.assigneeAgentId)
+      ?? agents?.find((agent) => agent.id === issue.assigneeAgentId)
     : null;
-  const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
-  const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);

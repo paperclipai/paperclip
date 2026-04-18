@@ -239,6 +239,7 @@ describe("heartbeat comment wake batching", () => {
   }, 45_000);
 
   afterAll(async () => {
+    await (db as { $client?: { end?: () => Promise<void> } })?.$client?.end?.();
     await instance?.stop();
     if (dataDir) {
       fs.rmSync(dataDir, { recursive: true, force: true });

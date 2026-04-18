@@ -55,6 +55,7 @@ export interface ProjectCodebase {
 export interface Project {
   id: string;
   companyId: string;
+  departmentId: string | null;
   urlKey: string;
   /** @deprecated Use goalIds / goals instead */
   goalId: string | null;

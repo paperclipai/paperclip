@@ -31,7 +31,12 @@ const mockPino = vi.hoisted(() => {
 // Mock fs so the module-level mkdirSync call is a no-op in tests.
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, mkdirSync: vi.fn() };
+  return {
+    ...actual,
+    mkdirSync: vi.fn(),
+    readdirSync: vi.fn(() => []),
+    unlinkSync: vi.fn(),
+  };
 });
 
 vi.mock("pino", () => ({

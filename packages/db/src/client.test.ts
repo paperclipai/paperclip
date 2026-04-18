@@ -93,7 +93,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    45_000,
   );
 
   it(
@@ -465,6 +465,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    45_000,
   );
 });

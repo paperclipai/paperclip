@@ -62,6 +62,10 @@ function buildSourceConfig(): PaperclipConfig {
     logging: {
       mode: "file",
       logDir: "/tmp/main/logs",
+      consoleLevel: "info",
+      fileLevel: "debug",
+      maxFileSizeMb: 25,
+      maxFiles: 10,
     },
     server: {
       deploymentMode: "authenticated",
@@ -377,6 +381,10 @@ describe("worktree helpers", () => {
             logging: {
               mode: "file",
               logDir: path.join(siblingInstanceRoot, "logs"),
+              consoleLevel: "info",
+              fileLevel: "debug",
+              maxFileSizeMb: 25,
+              maxFiles: 10,
             },
             server: {
               deploymentMode: "authenticated",

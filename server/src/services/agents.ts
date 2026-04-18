@@ -191,9 +191,10 @@ export function agentService(db: Db) {
   function buildOrgForest(
     rows: Array<Record<string, unknown> & { id: string; reportsTo: string | null }>,
   ): Array<Record<string, unknown>> {
+    const rowIds = new Set(rows.map((row) => row.id));
     const byManager = new Map<string | null, Array<Record<string, unknown> & { id: string; reportsTo: string | null }>>();
     for (const row of rows) {
-      const key = row.reportsTo ?? null;
+      const key = row.reportsTo && rowIds.has(row.reportsTo) ? row.reportsTo : null;
       const group = byManager.get(key) ?? [];
       group.push(row);
       byManager.set(key, group);
@@ -653,25 +654,45 @@ export function agentService(db: Db) {
       return rows[0] ?? null;
     },
 
-    orgForCompany: async (companyId: string) => {
+    orgForCompany: async (companyId: string, options?: { departmentIds?: string[] }) => {
+      const departmentIds = options?.departmentIds?.length ? [...new Set(options.departmentIds)] : null;
       const rows = await db
         .select()
         .from(agents)
-        .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
+        .where(
+          and(
+            eq(agents.companyId, companyId),
+            ne(agents.status, "terminated"),
+            ...(departmentIds ? [inArray(agents.departmentId, departmentIds)] : []),
+          ),
+        );
       const normalizedRows = rows.map(normalizeAgentRow);
       return buildOrgForest(normalizedRows);
     },
 
-    orgByDepartmentForCompany: async (companyId: string) => {
+    orgByDepartmentForCompany: async (companyId: string, options?: { departmentIds?: string[] }) => {
+      const departmentIds = options?.departmentIds?.length ? [...new Set(options.departmentIds)] : null;
       const [rows, departmentRows] = await Promise.all([
         db
           .select()
           .from(agents)
-          .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated"))),
+          .where(
+            and(
+              eq(agents.companyId, companyId),
+              ne(agents.status, "terminated"),
+              ...(departmentIds ? [inArray(agents.departmentId, departmentIds)] : []),
+            ),
+          ),
         db
           .select({ id: departments.id, name: departments.name })
           .from(departments)
-          .where(and(eq(departments.companyId, companyId), eq(departments.status, "active"))),
+          .where(
+            and(
+              eq(departments.companyId, companyId),
+              eq(departments.status, "active"),
+              ...(departmentIds ? [inArray(departments.id, departmentIds)] : []),
+            ),
+          ),
       ]);
       const normalizedRows = rows.map(normalizeAgentRow);
       const departmentById = new Map(departmentRows.map((row) => [row.id, row]));

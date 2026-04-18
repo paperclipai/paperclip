@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * Regression test for https://github.com/paperclipai/paperclip/issues/2898
@@ -15,6 +15,18 @@ import { describe, expect, it, vi } from "vitest";
  * shallow and deep auth sub-paths.
  */
 describe("Express 5 /api/auth wildcard route", () => {
+  beforeEach(() => {
+    // This regression test should not inherit fake timers or stale spies from
+    // prior files running in the same worker.
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
   function buildApp() {
     const app = express();
     const handler = vi.fn((_req: express.Request, res: express.Response) => {
@@ -49,8 +61,11 @@ describe("Express 5 /api/auth wildcard route", () => {
 
   it("invokes the handler for every matched sub-path", async () => {
     const { app, handler } = buildApp();
-    await request(app).post("/api/auth/sign-out");
-    await request(app).get("/api/auth/session");
+    const signOut = await request(app).post("/api/auth/sign-out");
+    const session = await request(app).get("/api/auth/session");
+
+    expect(signOut.status).toBe(200);
+    expect(session.status).toBe(200);
     expect(handler).toHaveBeenCalledTimes(2);
   });
 });

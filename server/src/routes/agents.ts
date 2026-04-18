@@ -46,6 +46,7 @@ import {
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import { scopedCompanyAuthz } from "./scoped-company-authz.js";
 import {
   detectAdapterModel,
   findActiveServerAdapter,
@@ -95,6 +96,7 @@ export function agentRoutes(db: Db) {
   const router = Router();
   const svc = agentService(db);
   const access = accessService(db);
+  const scopedAuthz = scopedCompanyAuthz(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
   const heartbeat = heartbeatService(db);
@@ -1042,23 +1044,32 @@ export function agentRoutes(db: Db) {
 
   router.get("/companies/:companyId/org", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    const scope = await scopedAuthz.resolveScopedPermission(req, companyId, "org:view");
     if (req.query.groupBy === "department") {
-      const groups = await svc.orgByDepartmentForCompany(companyId);
+      const groups = await svc.orgByDepartmentForCompany(
+        companyId,
+        scope.companyWide ? undefined : { departmentIds: scope.departmentIds },
+      );
       const leanGroups = groups.map((group) => toLeanOrgGroup(group as Record<string, unknown>));
       res.json(leanGroups);
       return;
     }
-    const tree = await svc.orgForCompany(companyId);
+    const tree = await svc.orgForCompany(
+      companyId,
+      scope.companyWide ? undefined : { departmentIds: scope.departmentIds },
+    );
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
     res.json(leanTree);
   });
 
   router.get("/companies/:companyId/org.svg", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    const scope = await scopedAuthz.resolveScopedPermission(req, companyId, "org:view");
     const style = (ORG_CHART_STYLES.includes(req.query.style as OrgChartStyle) ? req.query.style : "warmth") as OrgChartStyle;
-    const tree = await svc.orgForCompany(companyId);
+    const tree = await svc.orgForCompany(
+      companyId,
+      scope.companyWide ? undefined : { departmentIds: scope.departmentIds },
+    );
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
     const svg = renderOrgChartSvg(leanTree as unknown as OrgNode[], style);
     res.setHeader("Content-Type", "image/svg+xml");
@@ -1068,9 +1079,12 @@ export function agentRoutes(db: Db) {
 
   router.get("/companies/:companyId/org.png", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    const scope = await scopedAuthz.resolveScopedPermission(req, companyId, "org:view");
     const style = (ORG_CHART_STYLES.includes(req.query.style as OrgChartStyle) ? req.query.style : "warmth") as OrgChartStyle;
-    const tree = await svc.orgForCompany(companyId);
+    const tree = await svc.orgForCompany(
+      companyId,
+      scope.companyWide ? undefined : { departmentIds: scope.departmentIds },
+    );
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
     const png = await renderOrgChartPng(leanTree as unknown as OrgNode[], style);
     res.setHeader("Content-Type", "image/png");

@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useCallback } from "react";
+import { useEffect, useMemo, useCallback, useState } from "react";
 import { useLocation, useSearchParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
+import { departmentsApi } from "../api/departments";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
@@ -11,6 +12,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CircleDot } from "lucide-react";
 
 export function Issues() {
@@ -22,6 +24,7 @@ export function Issues() {
 
   const initialSearch = searchParams.get("q") ?? "";
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
+  const [departmentId, setDepartmentId] = useState<string | undefined>(searchParams.get("departmentId") ?? undefined);
   const handleSearchChange = useCallback((search: string) => {
     const trimmedSearch = search.trim();
     const currentSearch = new URLSearchParams(window.location.search).get("q") ?? "";
@@ -38,6 +41,22 @@ export function Issues() {
     window.history.replaceState(window.history.state, "", nextUrl);
   }, []);
 
+  const handleDepartmentChange = useCallback((nextDepartmentId: string) => {
+    setDepartmentId(nextDepartmentId === "__all__" ? undefined : nextDepartmentId);
+    const url = new URL(window.location.href);
+    if (nextDepartmentId === "__all__") {
+      url.searchParams.delete("departmentId");
+    } else {
+      url.searchParams.set("departmentId", nextDepartmentId);
+    }
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, "", nextUrl);
+  }, []);
+
+  useEffect(() => {
+    setDepartmentId(searchParams.get("departmentId") ?? undefined);
+  }, [searchParams]);
+
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
@@ -47,6 +66,12 @@ export function Issues() {
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: departments = [] } = useQuery({
+    queryKey: queryKeys.departments.list(selectedCompanyId!),
+    queryFn: () => departmentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -80,8 +105,14 @@ export function Issues() {
   }, [setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({
-    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "participant-agent", participantAgentId ?? "__all__"],
-    queryFn: () => issuesApi.list(selectedCompanyId!, { participantAgentId }),
+    queryKey: [
+      ...queryKeys.issues.list(selectedCompanyId!),
+      "participant-agent",
+      participantAgentId ?? "__all__",
+      "department",
+      departmentId ?? "__all__",
+    ],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { participantAgentId, departmentId }),
     enabled: !!selectedCompanyId,
   });
 
@@ -98,20 +129,42 @@ export function Issues() {
   }
 
   return (
-    <IssuesList
-      issues={issues ?? []}
-      isLoading={isLoading}
-      error={error as Error | null}
-      agents={agents}
-      projects={projects}
-      liveIssueIds={liveIssueIds}
-      viewStateKey="paperclip:issues-view"
-      issueLinkState={issueLinkState}
-      initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
-      initialSearch={initialSearch}
-      onSearchChange={handleSearchChange}
-      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId ? { participantAgentId } : undefined}
-    />
+    <div className="space-y-4">
+      <div className="flex justify-end">
+        <Select value={departmentId ?? "__all__"} onValueChange={handleDepartmentChange}>
+          <SelectTrigger className="w-full max-w-xs">
+            <SelectValue placeholder="All accessible departments" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All accessible departments</SelectItem>
+            {departments.map((department) => (
+              <SelectItem key={department.id} value={department.id}>
+                {department.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <IssuesList
+        issues={issues ?? []}
+        isLoading={isLoading}
+        error={error as Error | null}
+        agents={agents}
+        projects={projects}
+        liveIssueIds={liveIssueIds}
+        departmentId={departmentId}
+        viewStateKey="paperclip:issues-view"
+        issueLinkState={issueLinkState}
+        initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
+        initialSearch={initialSearch}
+        onSearchChange={handleSearchChange}
+        onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+        searchFilters={{
+          ...(participantAgentId ? { participantAgentId } : {}),
+          ...(departmentId ? { departmentId } : {}),
+        }}
+      />
+    </div>
   );
 }

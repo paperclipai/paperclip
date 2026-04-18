@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "@/lib/router";
+import { Link, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type CompanyMembership } from "@paperclipai/shared";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
-import { departmentsApi, type DepartmentMembership } from "../api/departments";
+import { departmentsApi, type DepartmentMembership, type DepartmentTreeNode } from "../api/departments";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
@@ -22,7 +22,25 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Archive, ArrowLeft, Building2, Pencil, Plus, Trash2, Users } from "lucide-react";
+import { Archive, ArrowLeft, Building2, ChevronRight, Pencil, Plus, Trash2, Users } from "lucide-react";
+
+function findInTree(nodes: DepartmentTreeNode[], id: string): DepartmentTreeNode | null {
+  for (const n of nodes) {
+    if (n.id === id) return n;
+    const found = findInTree(n.children, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+function findParent(nodes: DepartmentTreeNode[], childId: string): DepartmentTreeNode | null {
+  for (const n of nodes) {
+    if (n.children.some((c) => c.id === childId)) return n;
+    const found = findParent(n.children, childId);
+    if (found) return found;
+  }
+  return null;
+}
 
 export function DepartmentDetail() {
   const { departmentId } = useParams<{ departmentId: string }>();
@@ -51,6 +69,12 @@ export function DepartmentDetail() {
     queryKey: queryKeys.departments.members(departmentId!),
     queryFn: () => departmentsApi.listMembers(departmentId!),
     enabled: !!departmentId,
+  });
+
+  const { data: tree } = useQuery({
+    queryKey: queryKeys.departments.tree(resolvedCompanyId!),
+    queryFn: () => departmentsApi.tree(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
   });
 
   const { data: agents = [] } = useQuery({
@@ -180,10 +204,23 @@ export function DepartmentDetail() {
   const selectorIsLoading = memberPrincipalType === "user" && companyMembersQuery.isLoading;
   const selectorHasFallback = memberPrincipalType === "user" && Boolean(companyMembersQuery.error);
 
+  const parentDept = tree ? findParent(tree, departmentId!) : null;
+  const currentNode = tree ? findInTree(tree, departmentId!) : null;
+  const childDepts = currentNode?.children ?? [];
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div className="space-y-2 min-w-0">
+          {parentDept && (
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              <Link to="/departments" className="hover:underline">Departments</Link>
+              <ChevronRight className="h-3 w-3" />
+              <Link to={`/departments/${parentDept.id}`} className="hover:underline">{parentDept.name}</Link>
+              <ChevronRight className="h-3 w-3" />
+              <span>{department.name}</span>
+            </div>
+          )}
           <div className="flex items-center gap-2 min-w-0">
             <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={() => navigate("/departments")}>
               <ArrowLeft className="h-4 w-4" />
@@ -277,6 +314,34 @@ export function DepartmentDetail() {
           </div>
         )}
       </div>
+
+      {childDepts.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Building2 className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">Sub-departments</h2>
+            <Badge variant="secondary" className="text-xs">{childDepts.length}</Badge>
+          </div>
+          <div className="rounded-lg border border-border bg-card divide-y divide-border">
+            {childDepts.map((child) => (
+              <Link
+                key={child.id}
+                to={`/departments/${child.id}`}
+                className="flex items-center gap-3 px-4 py-3 hover:bg-accent/50 transition-colors"
+              >
+                <Building2 className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-medium">{child.name}</span>
+                {child.memberCount > 0 && (
+                  <Badge variant="secondary" className="text-xs ml-auto">
+                    <Users className="h-3 w-3 mr-1" />
+                    {child.memberCount}
+                  </Badge>
+                )}
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       <Dialog open={editing} onOpenChange={setEditing}>
         <DialogContent>

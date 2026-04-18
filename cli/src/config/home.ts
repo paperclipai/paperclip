@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import type { LoggingConfig } from "./schema.js";
 
 const DEFAULT_INSTANCE_ID = "default";
 const INSTANCE_ID_RE = /^[a-zA-Z0-9_-]+$/;
@@ -43,6 +44,21 @@ export function resolveDefaultEmbeddedPostgresDir(instanceId?: string): string {
 
 export function resolveDefaultLogsDir(instanceId?: string): string {
   return path.resolve(resolvePaperclipInstanceRoot(instanceId), "logs");
+}
+
+export function buildDefaultLoggingConfig(
+  instanceId?: string,
+  overrides: Partial<LoggingConfig> = {},
+): LoggingConfig {
+  return {
+    mode: "file",
+    logDir: resolveDefaultLogsDir(instanceId),
+    consoleLevel: "info",
+    fileLevel: "debug",
+    maxFileSizeMb: 25,
+    maxFiles: 10,
+    ...overrides,
+  };
 }
 
 export function resolveDefaultSecretsKeyFilePath(instanceId?: string): string {

@@ -9,11 +9,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
-function sanitizeValue(value: unknown): unknown {
+export function sanitizeLogValue(value: unknown): unknown {
   if (value === null || value === undefined) return value;
-  if (Array.isArray(value)) return value.map(sanitizeValue);
+  if (typeof value === "string" && JWT_VALUE_RE.test(value)) {
+    return REDACTED_EVENT_VALUE;
+  }
+  if (Array.isArray(value)) return value.map(sanitizeLogValue);
   if (isSecretRefBinding(value)) return value;
-  if (isPlainBinding(value)) return { type: "plain", value: sanitizeValue(value.value) };
+  if (isPlainBinding(value)) return { type: "plain", value: sanitizeLogValue(value.value) };
   if (!isPlainObject(value)) return value;
   return sanitizeRecord(value);
 }
@@ -33,7 +36,7 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
   for (const [key, value] of Object.entries(record)) {
     if (SECRET_PAYLOAD_KEY_RE.test(key)) {
       if (isSecretRefBinding(value)) {
-        redacted[key] = sanitizeValue(value);
+        redacted[key] = sanitizeLogValue(value);
         continue;
       }
       if (isPlainBinding(value)) {
@@ -47,7 +50,7 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
     }
-    redacted[key] = sanitizeValue(value);
+    redacted[key] = sanitizeLogValue(value);
   }
   return redacted;
 }

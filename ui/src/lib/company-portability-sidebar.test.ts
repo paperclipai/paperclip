@@ -10,6 +10,7 @@ function makeAgent(id: string, name: string): Agent {
   return {
     id,
     companyId: "company-1",
+    departmentId: null,
     name,
     role: "engineer",
     title: null,
@@ -37,6 +38,7 @@ function makeProject(id: string, name: string): Project {
   return {
     id,
     companyId: "company-1",
+    departmentId: null,
     goalId: null,
     urlKey: name.toLowerCase(),
     name,

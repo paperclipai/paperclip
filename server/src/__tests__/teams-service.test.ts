@@ -111,4 +111,115 @@ describeEmbeddedPostgres("teamService", () => {
     expect(membership.principalId).toBe(agentId);
     expect(membership.role).toBe("lead");
   });
+
+  it("creates a team with department", async () => {
+    const companyId = await insertCompany();
+    const dept = await departmentsSvc.create(companyId, { name: "Engineering" });
+    const team = await teamsSvc.create(companyId, { name: "Backend", departmentId: dept.id });
+
+    expect(team.name).toBe("Backend");
+    expect(team.companyId).toBe(companyId);
+    expect(team.departmentId).toBe(dept.id);
+    expect(team.status).toBe("active");
+  });
+
+  it("creates a team without department", async () => {
+    const companyId = await insertCompany();
+    const team = await teamsSvc.create(companyId, { name: "Standalone Team" });
+
+    expect(team.name).toBe("Standalone Team");
+    expect(team.companyId).toBe(companyId);
+    expect(team.departmentId).toBeNull();
+    expect(team.status).toBe("active");
+  });
+
+  it("rejects duplicate team names within the same company", async () => {
+    const companyId = await insertCompany();
+    await teamsSvc.create(companyId, { name: "Alpha" });
+
+    await expect(teamsSvc.create(companyId, { name: "Alpha" })).rejects.toThrow(/already exists/i);
+  });
+
+  it("updates team name and department", async () => {
+    const companyId = await insertCompany();
+    const deptA = await departmentsSvc.create(companyId, { name: "Dept A" });
+    const deptB = await departmentsSvc.create(companyId, { name: "Dept B" });
+    const team = await teamsSvc.create(companyId, { name: "Old Team", departmentId: deptA.id });
+
+    const updated = await teamsSvc.update(team.id, { name: "New Team", departmentId: deptB.id });
+
+    expect(updated.name).toBe("New Team");
+    expect(updated.departmentId).toBe(deptB.id);
+  });
+
+  it("archives a team", async () => {
+    const companyId = await insertCompany();
+    const team = await teamsSvc.create(companyId, { name: "Temp Team" });
+
+    const archived = await teamsSvc.archive(team.id);
+
+    expect(archived.status).toBe("archived");
+  });
+
+  it("removes a team member", async () => {
+    const companyId = await insertCompany();
+    const dept = await departmentsSvc.create(companyId, { name: "Support" });
+    const team = await teamsSvc.create(companyId, { name: "Tier 2", departmentId: dept.id });
+    const agentId = randomUUID();
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      departmentId: dept.id,
+      name: "Agent Support",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await teamsSvc.addMember(team.id, companyId, { principalType: "agent", principalId: agentId });
+    await teamsSvc.removeMember(team.id, "agent", agentId);
+
+    const members = await teamsSvc.listMembers(team.id);
+    expect(members).toHaveLength(0);
+  });
+
+  it("rejects duplicate team membership", async () => {
+    const companyId = await insertCompany();
+    const dept = await departmentsSvc.create(companyId, { name: "Sales" });
+    const team = await teamsSvc.create(companyId, { name: "Outbound", departmentId: dept.id });
+    const agentId = randomUUID();
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      departmentId: dept.id,
+      name: "Agent Sales",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await teamsSvc.addMember(team.id, companyId, { principalType: "agent", principalId: agentId });
+
+    await expect(
+      teamsSvc.addMember(team.id, companyId, { principalType: "agent", principalId: agentId }),
+    ).rejects.toThrow(/already a member/i);
+  });
+
+  it("lists teams for a company", async () => {
+    const companyId = await insertCompany();
+    await teamsSvc.create(companyId, { name: "Team One" });
+    await teamsSvc.create(companyId, { name: "Team Two" });
+
+    const all = await teamsSvc.list(companyId);
+
+    expect(all).toHaveLength(2);
+  });
 });

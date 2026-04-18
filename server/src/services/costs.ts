@@ -1,12 +1,16 @@
 import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
+import { activityLog, agents, companies, costEvents, goals, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 
 export interface CostDateRange {
   from?: Date;
   to?: Date;
+}
+
+export interface CostReadScope {
+  scopeDepartmentIds?: string[];
 }
 
 const METERED_BILLING_TYPE = "metered_api";
@@ -43,10 +47,65 @@ async function getMonthlySpendTotal(
   return Number(row?.total ?? 0);
 }
 
+function effectiveCostDepartmentIdSql() {
+  return sql<string | null>`coalesce(
+    (
+      select project_row.department_id
+      from ${projects} project_row
+      where project_row.id = ${costEvents.projectId}
+      limit 1
+    ),
+    (
+      select coalesce(issue_row.department_id, issue_project.department_id)
+      from ${issues} issue_row
+      left join ${projects} issue_project on issue_project.id = issue_row.project_id
+      where issue_row.id = ${costEvents.issueId}
+      limit 1
+    ),
+    (
+      select agent_row.department_id
+      from ${agents} agent_row
+      where agent_row.id = ${costEvents.agentId}
+      limit 1
+    )
+  )`;
+}
+
+function scopeCondition(departmentIds: string[], departmentIdSql: ReturnType<typeof sql<string | null>>) {
+  return sql`${departmentIdSql} in (${sql.join(departmentIds.map((departmentId) => sql`${departmentId}`), sql`, `)})`;
+}
+
+async function assertBelongsToCompany(
+  db: Db,
+  table: any,
+  id: string,
+  companyId: string,
+  label: string,
+) {
+  const row = await db
+    .select()
+    .from(table)
+    .where(eq(table.id, id))
+    .then((rows) => rows[0] ?? null);
+
+  if (!row) throw notFound(`${label} not found`);
+  if ((row as unknown as { companyId: string }).companyId !== companyId) {
+    throw unprocessable(`${label} does not belong to company`);
+  }
+}
+
 export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
+  const effectiveDepartmentId = effectiveCostDepartmentIdSql();
   return {
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
+      if (data.issueId) await assertBelongsToCompany(db, issues, data.issueId, companyId, "Issue");
+      if (data.projectId) await assertBelongsToCompany(db, projects, data.projectId, companyId, "Project");
+      if (data.goalId) await assertBelongsToCompany(db, goals, data.goalId, companyId, "Goal");
+      if (data.heartbeatRunId) {
+        await assertBelongsToCompany(db, heartbeatRuns, data.heartbeatRunId, companyId, "Heartbeat run");
+      }
+
       const agent = await db
         .select()
         .from(agents)
@@ -96,7 +155,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return event;
     },
 
-    summary: async (companyId: string, range?: CostDateRange) => {
+    summary: async (companyId: string, range?: CostDateRange, scope?: CostReadScope) => {
       const company = await db
         .select()
         .from(companies)
@@ -105,9 +164,12 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
       if (!company) throw notFound("Company not found");
 
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      const conditions: any[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      if (scope?.scopeDepartmentIds?.length) {
+        conditions.push(scopeCondition(scope.scopeDepartmentIds, effectiveDepartmentId));
+      }
 
       const [{ total }] = await db
         .select({
@@ -130,10 +192,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       };
     },
 
-    byAgent: async (companyId: string, range?: CostDateRange) => {
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+    byAgent: async (companyId: string, range?: CostDateRange, scope?: CostReadScope) => {
+      const conditions: any[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      if (scope?.scopeDepartmentIds?.length) {
+        conditions.push(scopeCondition(scope.scopeDepartmentIds, effectiveDepartmentId));
+      }
 
       return db
         .select({
@@ -162,10 +227,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
     },
 
-    byProvider: async (companyId: string, range?: CostDateRange) => {
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+    byProvider: async (companyId: string, range?: CostDateRange, scope?: CostReadScope) => {
+      const conditions: any[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      if (scope?.scopeDepartmentIds?.length) {
+        conditions.push(scopeCondition(scope.scopeDepartmentIds, effectiveDepartmentId));
+      }
 
       return db
         .select({
@@ -194,10 +262,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
     },
 
-    byBiller: async (companyId: string, range?: CostDateRange) => {
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+    byBiller: async (companyId: string, range?: CostDateRange, scope?: CostReadScope) => {
+      const conditions: any[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      if (scope?.scopeDepartmentIds?.length) {
+        conditions.push(scopeCondition(scope.scopeDepartmentIds, effectiveDepartmentId));
+      }
 
       return db
         .select({
@@ -230,7 +301,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
      * last 5 hours, last 24 hours, last 7 days.
      * purely internal consumption data, no external rate-limit sources.
      */
-    windowSpend: async (companyId: string) => {
+    windowSpend: async (companyId: string, scope?: CostReadScope) => {
       const windows = [
         { label: "5h", hours: 5 },
         { label: "24h", hours: 24 },
@@ -254,6 +325,9 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
               and(
                 eq(costEvents.companyId, companyId),
                 gte(costEvents.occurredAt, since),
+                ...(scope?.scopeDepartmentIds?.length
+                  ? [scopeCondition(scope.scopeDepartmentIds, effectiveDepartmentId)]
+                  : []),
               ),
             )
             .groupBy(costEvents.provider)
@@ -275,10 +349,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return results.flat();
     },
 
-    byAgentModel: async (companyId: string, range?: CostDateRange) => {
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+    byAgentModel: async (companyId: string, range?: CostDateRange, scope?: CostReadScope) => {
+      const conditions: any[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      if (scope?.scopeDepartmentIds?.length) {
+        conditions.push(scopeCondition(scope.scopeDepartmentIds, effectiveDepartmentId));
+      }
 
       // single query: group by agent + provider + model.
       // the (companyId, agentId, occurredAt) composite index covers this well.
@@ -311,7 +388,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .orderBy(costEvents.provider, costEvents.biller, costEvents.billingType, costEvents.model);
     },
 
-    byProject: async (companyId: string, range?: CostDateRange) => {
+    byProject: async (companyId: string, range?: CostDateRange, scope?: CostReadScope) => {
       const issueIdAsText = sql<string>`${issues.id}::text`;
       const runProjectLinks = db
         .selectDistinctOn([activityLog.runId, issues.projectId], {
@@ -338,9 +415,12 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .as("run_project_links");
 
       const effectiveProjectId = sql<string | null>`coalesce(${costEvents.projectId}, ${runProjectLinks.projectId})`;
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      const conditions: any[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      if (scope?.scopeDepartmentIds?.length) {
+        conditions.push(scopeCondition(scope.scopeDepartmentIds, sql<string | null>`${projects.departmentId}`));
+      }
 
       const costCentsExpr = sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`;
 

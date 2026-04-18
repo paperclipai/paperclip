@@ -79,6 +79,7 @@ describe("CommentThread", () => {
     const agent: Agent = {
       id: "agent-1",
       companyId: "company-1",
+      departmentId: null,
       name: "CodexCoder",
       urlKey: "codexcoder",
       role: "engineer",
@@ -169,6 +170,7 @@ describe("CommentThread", () => {
     const agent: Agent = {
       id: "agent-1",
       companyId: "company-1",
+      departmentId: null,
       name: "CodexCoder",
       urlKey: "codexcoder",
       role: "engineer",

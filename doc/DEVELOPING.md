@@ -133,6 +133,27 @@ Configure storage provider/settings:
 pnpm paperclipai configure --section storage
 ```
 
+## Server Logs
+
+Paperclip writes server logs under the instance log directory:
+
+- `~/.paperclip/instances/default/logs`
+
+The active file target is date-scoped as `server-YYYY-MM-DD.log`. File retention and levels are configurable in `config.json` under `logging`:
+
+- `logging.consoleLevel`
+- `logging.fileLevel`
+- `logging.maxFileSizeMb`
+- `logging.maxFiles`
+
+Environment overrides are also available:
+
+- `PAPERCLIP_LOG_LEVEL`
+- `PAPERCLIP_LOG_CONSOLE_LEVEL`
+- `PAPERCLIP_LOG_FILE_LEVEL`
+- `PAPERCLIP_LOG_MAX_FILE_SIZE_MB`
+- `PAPERCLIP_LOG_MAX_FILES`
+
 ## Default Agent Workspaces
 
 When a local agent run has no resolved project/session workspace, Paperclip falls back to an agent home workspace under the instance root:

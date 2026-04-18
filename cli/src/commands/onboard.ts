@@ -24,11 +24,11 @@ import { defaultSecretsConfig } from "../prompts/secrets.js";
 import { defaultStorageConfig, promptStorage } from "../prompts/storage.js";
 import { promptServer } from "../prompts/server.js";
 import {
+  buildDefaultLoggingConfig,
   describeLocalInstancePaths,
   expandHomePrefix,
   resolveDefaultBackupDir,
   resolveDefaultEmbeddedPostgresDir,
-  resolveDefaultLogsDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
 import { bootstrapCeoInvite } from "./auth-bootstrap-ceo.js";
@@ -176,10 +176,7 @@ function quickstartDefaultsFromEnv(): {
         dir: resolvePathFromEnv(process.env.PAPERCLIP_DB_BACKUP_DIR) ?? resolveDefaultBackupDir(instanceId),
       },
     },
-    logging: {
-      mode: "file",
-      logDir: resolveDefaultLogsDir(instanceId),
-    },
+    logging: buildDefaultLoggingConfig(instanceId),
     server: {
       deploymentMode,
       exposure: deploymentExposure,

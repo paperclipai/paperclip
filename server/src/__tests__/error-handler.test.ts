@@ -2,14 +2,15 @@ import type { NextFunction, Request, Response } from "express";
 import { describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 
 function makeReq(): Request {
   return {
     method: "GET",
     originalUrl: "/api/test",
-    body: { a: 1 },
-    params: { id: "123" },
-    query: { q: "x" },
+    body: { apiKey: "secret-value", a: 1 },
+    params: { id: "123", claimSecret: "pcp_secret" },
+    query: { q: "x", password: "hunter2" },
   } as unknown as Request;
 }
 
@@ -35,6 +36,18 @@ describe("errorHandler", () => {
     expect(res.json).toHaveBeenCalledWith({ error: "Internal server error" });
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("boom");
+    expect(res.__errorContext?.reqBody).toEqual({
+      apiKey: REDACTED_EVENT_VALUE,
+      a: 1,
+    });
+    expect(res.__errorContext?.reqParams).toEqual({
+      id: "123",
+      claimSecret: REDACTED_EVENT_VALUE,
+    });
+    expect(res.__errorContext?.reqQuery).toEqual({
+      q: "x",
+      password: REDACTED_EVENT_VALUE,
+    });
   });
 
   it("attaches HttpError instances for 500 responses", () => {

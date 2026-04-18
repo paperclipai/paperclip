@@ -1,12 +1,21 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { accessApi } from "../api/access";
+import { departmentsApi } from "../api/departments";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import { goalsApi } from "../api/goals";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  canUseDepartment,
+  defaultScopedDepartmentId,
+  filterAgentsForDepartmentContext,
+  filterGoalsForDepartmentContext,
+  findEffectivePermission,
+} from "../lib/effective-permissions";
 import {
   Dialog,
   DialogContent,
@@ -46,11 +55,12 @@ const projectStatuses = [
 ];
 
 export function NewProjectDialog() {
-  const { newProjectOpen, closeNewProject } = useDialog();
+  const { newProjectOpen, newProjectDefaults, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [departmentId, setDepartmentId] = useState("");
   const [status, setStatus] = useState("planned");
   const [goalIds, setGoalIds] = useState<string[]>([]);
   const [targetDate, setTargetDate] = useState("");
@@ -68,6 +78,17 @@ export function NewProjectDialog() {
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && newProjectOpen,
   });
+  const { data: departments = [], isPending: departmentsPending } = useQuery({
+    queryKey: queryKeys.departments.list(selectedCompanyId!),
+    queryFn: () => departmentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && newProjectOpen,
+  });
+  const { data: myEffectivePermissions, isPending: permissionsPending } = useQuery({
+    queryKey: queryKeys.access.myEffectivePermissions(selectedCompanyId!),
+    queryFn: () => accessApi.listMyEffectivePermissions(selectedCompanyId!),
+    enabled: !!selectedCompanyId && newProjectOpen,
+  });
+  const effectivePermissions = myEffectivePermissions ?? [];
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -75,22 +96,68 @@ export function NewProjectDialog() {
     enabled: !!selectedCompanyId && newProjectOpen,
   });
 
-  const mentionOptions = useMemo<MentionOption[]>(() => {
-    const options: MentionOption[] = [];
-    const activeAgents = [...(agents ?? [])]
-      .filter((agent) => agent.status !== "terminated")
-      .sort((a, b) => a.name.localeCompare(b.name));
-    for (const agent of activeAgents) {
-      options.push({
+  const projectsManagePermission = useMemo(
+    () => findEffectivePermission(effectivePermissions, "projects:manage"),
+    [effectivePermissions],
+  );
+  const orgViewPermission = useMemo(
+    () => findEffectivePermission(effectivePermissions, "org:view"),
+    [effectivePermissions],
+  );
+  const manageableDepartments = useMemo(
+    () => departments.filter((department) => canUseDepartment(projectsManagePermission, department.id)),
+    [departments, projectsManagePermission],
+  );
+  const fallbackDepartmentId = useMemo(
+    () => defaultScopedDepartmentId(projectsManagePermission, manageableDepartments.map((department) => department.id)),
+    [manageableDepartments, projectsManagePermission],
+  );
+  const resolvedDepartmentId = departmentId || fallbackDepartmentId;
+  const scopedDepartmentBootstrapPending = Boolean(
+    selectedCompanyId
+      && newProjectOpen
+      && (
+        permissionsPending
+        || (
+          projectsManagePermission
+          && !projectsManagePermission.companyWide
+          && departmentsPending
+        )
+      ),
+  );
+  const departmentSelectionRequired = Boolean(projectsManagePermission && !projectsManagePermission.companyWide);
+  const canManageSelectedDepartment =
+    !projectsManagePermission || canUseDepartment(projectsManagePermission, resolvedDepartmentId || null);
+  const departmentValidationMessage = departmentSelectionRequired && !resolvedDepartmentId
+    ? "Select a department to create this project."
+    : !canManageSelectedDepartment
+      ? "You do not have project manage access for the selected department."
+      : null;
+  const visibleAgents = useMemo(
+    () =>
+      filterAgentsForDepartmentContext(
+        (agents ?? []).filter((agent) => agent.status !== "terminated"),
+        orgViewPermission,
+        departmentId || null,
+      ).sort((left, right) => left.name.localeCompare(right.name)),
+    [agents, departmentId, orgViewPermission],
+  );
+  const mentionOptions = useMemo<MentionOption[]>(
+    () =>
+      visibleAgents.map((agent) => ({
         id: `agent:${agent.id}`,
         name: agent.name,
         kind: "agent",
         agentId: agent.id,
         agentIcon: agent.icon,
-      });
-    }
-    return options;
-  }, [agents]);
+      })),
+    [visibleAgents],
+  );
+
+  useEffect(() => {
+    if (!newProjectOpen) return;
+    setDepartmentId(newProjectDefaults.departmentId ?? fallbackDepartmentId);
+  }, [fallbackDepartmentId, newProjectDefaults.departmentId, newProjectOpen]);
 
   const createProject = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
@@ -107,6 +174,7 @@ export function NewProjectDialog() {
   function reset() {
     setName("");
     setDescription("");
+    setDepartmentId("");
     setStatus("planned");
     setGoalIds([]);
     setTargetDate("");
@@ -147,7 +215,12 @@ export function NewProjectDialog() {
   };
 
   async function handleSubmit() {
-    if (!selectedCompanyId || !name.trim()) return;
+    if (
+      !selectedCompanyId
+      || !name.trim()
+      || scopedDepartmentBootstrapPending
+      || departmentValidationMessage
+    ) return;
     const localPath = workspaceLocalPath.trim();
     const repoUrl = workspaceRepoUrl.trim();
 
@@ -166,6 +239,7 @@ export function NewProjectDialog() {
       const created = await createProject.mutateAsync({
         name: name.trim(),
         description: description.trim() || undefined,
+        ...(resolvedDepartmentId ? { departmentId: resolvedDepartmentId } : {}),
         status,
         color: PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)],
         ...(goalIds.length > 0 ? { goalIds } : {}),
@@ -199,8 +273,15 @@ export function NewProjectDialog() {
     }
   }
 
-  const selectedGoals = (goals ?? []).filter((g) => goalIds.includes(g.id));
-  const availableGoals = (goals ?? []).filter((g) => !goalIds.includes(g.id));
+  const scopedGoals = useMemo(
+    () =>
+      filterGoalsForDepartmentContext(goals ?? [], visibleAgents, departmentId || null, {
+        preserveIds: goalIds,
+      }),
+    [departmentId, goalIds, goals, visibleAgents],
+  );
+  const selectedGoals = scopedGoals.filter((goal) => goalIds.includes(goal.id));
+  const availableGoals = scopedGoals.filter((goal) => !goalIds.includes(goal.id));
 
   return (
     <Dialog
@@ -283,6 +364,32 @@ export function NewProjectDialog() {
         </div>
 
         <div className="px-4 pt-3 pb-3 space-y-3 border-t border-border">
+          {departments.length > 0 && (
+            <div>
+              <div className="mb-1 flex items-center gap-1.5">
+                <label className="block text-xs text-muted-foreground">Department</label>
+                <span className="text-xs text-muted-foreground/50">
+                  {departmentSelectionRequired ? "required" : "optional"}
+                </span>
+              </div>
+              <select
+                className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
+                value={departmentId || "__none__"}
+                onChange={(event) => setDepartmentId(event.target.value === "__none__" ? "" : event.target.value)}
+              >
+                <option value="__none__">No department</option>
+                {(projectsManagePermission && !projectsManagePermission.companyWide ? manageableDepartments : departments).map((department) => (
+                  <option key={department.id} value={department.id}>
+                    {department.name}
+                  </option>
+                ))}
+              </select>
+              {departmentValidationMessage ? (
+                <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{departmentValidationMessage}</p>
+              ) : null}
+            </div>
+          )}
+
           <div>
             <div className="mb-1 flex items-center gap-1.5">
               <label className="block text-xs text-muted-foreground">Repo URL</label>
@@ -437,7 +544,12 @@ export function NewProjectDialog() {
           )}
           <Button
             size="sm"
-            disabled={!name.trim() || createProject.isPending}
+            disabled={
+              !name.trim()
+              || createProject.isPending
+              || scopedDepartmentBootstrapPending
+              || Boolean(departmentValidationMessage)
+            }
             onClick={handleSubmit}
           >
             {createProject.isPending ? "Creating…" : "Create project"}

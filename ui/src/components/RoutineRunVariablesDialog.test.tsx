@@ -48,6 +48,7 @@ function createProject(): Project {
   return {
     id: "project-1",
     companyId: "company-1",
+    departmentId: null,
     urlKey: "workspace-project",
     goalId: null,
     goalIds: [],

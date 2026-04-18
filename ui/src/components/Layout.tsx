@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, type ComponentType, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Moon, Settings, Sun } from "lucide-react";
 import { Link, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
@@ -8,10 +8,6 @@ import { InstanceSidebar } from "./InstanceSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
-import { NewIssueDialog } from "./NewIssueDialog";
-import { NewProjectDialog } from "./NewProjectDialog";
-import { NewGoalDialog } from "./NewGoalDialog";
-import { NewAgentDialog } from "./NewAgentDialog";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
@@ -39,6 +35,21 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip
 
 const INSTANCE_SETTINGS_MEMORY_KEY = "paperclip.lastInstanceSettingsPath";
 
+function lazyNamedDialog<TModule extends Record<string, ComponentType<any>>, TKey extends keyof TModule>(
+  loader: () => Promise<TModule>,
+  exportName: TKey,
+) {
+  return lazy(async () => {
+    const module = await loader();
+    return { default: module[exportName] as ComponentType<any> };
+  });
+}
+
+const NewIssueDialog = lazyNamedDialog(() => import("./NewIssueDialog"), "NewIssueDialog");
+const NewProjectDialog = lazyNamedDialog(() => import("./NewProjectDialog"), "NewProjectDialog");
+const NewGoalDialog = lazyNamedDialog(() => import("./NewGoalDialog"), "NewGoalDialog");
+const NewAgentDialog = lazyNamedDialog(() => import("./NewAgentDialog"), "NewAgentDialog");
+
 function readRememberedInstanceSettingsPath(): string {
   if (typeof window === "undefined") return DEFAULT_INSTANCE_SETTINGS_PATH;
   try {
@@ -50,7 +61,14 @@ function readRememberedInstanceSettingsPath(): string {
 
 export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
-  const { openNewIssue, openOnboarding } = useDialog();
+  const {
+    newIssueOpen,
+    newProjectOpen,
+    newGoalOpen,
+    newAgentOpen,
+    openNewIssue,
+    openOnboarding,
+  } = useDialog();
   const { togglePanelVisible } = usePanel();
   const {
     companies,
@@ -439,10 +457,12 @@ export function Layout() {
       </div>
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />
-      <NewIssueDialog />
-      <NewProjectDialog />
-      <NewGoalDialog />
-      <NewAgentDialog />
+      <Suspense fallback={null}>
+        {newIssueOpen ? <NewIssueDialog /> : null}
+        {newProjectOpen ? <NewProjectDialog /> : null}
+        {newGoalOpen ? <NewGoalDialog /> : null}
+        {newAgentOpen ? <NewAgentDialog /> : null}
+      </Suspense>
       <ToastViewport />
       </div>
     </GeneralSettingsProvider>

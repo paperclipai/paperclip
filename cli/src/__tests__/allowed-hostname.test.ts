@@ -31,6 +31,10 @@ function writeBaseConfig(configPath: string) {
     logging: {
       mode: "file",
       logDir: "/tmp/paperclip-logs",
+      consoleLevel: "info",
+      fileLevel: "debug",
+      maxFileSizeMb: 25,
+      maxFiles: 10,
     },
     server: {
       deploymentMode: "authenticated",

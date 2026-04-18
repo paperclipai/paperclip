@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
 import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
+import { sanitizeLogValue } from "../redaction.js";
 
 export interface ErrorContext {
   error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
@@ -23,9 +24,9 @@ function attachErrorContext(
     error: payload,
     method: req.method,
     url: req.originalUrl,
-    reqBody: req.body,
-    reqParams: req.params,
-    reqQuery: req.query,
+    reqBody: sanitizeLogValue(req.body),
+    reqParams: sanitizeLogValue(req.params),
+    reqQuery: sanitizeLogValue(req.query),
   } satisfies ErrorContext;
   if (rawError) {
     (res as any).err = rawError;
@@ -43,7 +44,12 @@ export function errorHandler(
       attachErrorContext(
         req,
         res,
-        { message: err.message, stack: err.stack, name: err.name, details: err.details },
+        {
+          message: err.message,
+          stack: err.stack,
+          name: err.name,
+          details: sanitizeLogValue(err.details),
+        },
         err,
       );
       const tc = getTelemetryClient();

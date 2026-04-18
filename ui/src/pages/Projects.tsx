@@ -1,5 +1,7 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useCallback, useState } from "react";
+import { useSearchParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
+import { departmentsApi } from "../api/departments";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
@@ -11,20 +13,44 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { formatDate, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Hexagon, Plus } from "lucide-react";
 
 export function Projects() {
   const { selectedCompanyId } = useCompany();
   const { openNewProject } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const [searchParams] = useSearchParams();
+  const [departmentId, setDepartmentId] = useState<string | undefined>(searchParams.get("departmentId") ?? undefined);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Projects" }]);
   }, [setBreadcrumbs]);
 
+  const handleDepartmentChange = useCallback((nextDepartmentId: string) => {
+    setDepartmentId(nextDepartmentId === "__all__" ? undefined : nextDepartmentId);
+    const url = new URL(window.location.href);
+    if (nextDepartmentId === "__all__") {
+      url.searchParams.delete("departmentId");
+    } else {
+      url.searchParams.set("departmentId", nextDepartmentId);
+    }
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, "", nextUrl);
+  }, []);
+
+  useEffect(() => {
+    setDepartmentId(searchParams.get("departmentId") ?? undefined);
+  }, [searchParams]);
+
   const { data: allProjects, isLoading, error } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.projects.list(selectedCompanyId!), "department", departmentId ?? "__all__"],
+    queryFn: () => projectsApi.list(selectedCompanyId!, { departmentId }),
+    enabled: !!selectedCompanyId,
+  });
+  const { data: departments = [] } = useQuery({
+    queryKey: queryKeys.departments.list(selectedCompanyId!),
+    queryFn: () => departmentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const projects = useMemo(
@@ -43,7 +69,20 @@ export function Projects() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-end">
-        <Button size="sm" variant="outline" onClick={openNewProject}>
+        <Select value={departmentId ?? "__all__"} onValueChange={handleDepartmentChange}>
+          <SelectTrigger className="mr-2 w-full max-w-xs">
+            <SelectValue placeholder="All accessible departments" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All accessible departments</SelectItem>
+            {departments.map((department) => (
+              <SelectItem key={department.id} value={department.id}>
+                {department.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button size="sm" variant="outline" onClick={() => openNewProject({ departmentId })}>
           <Plus className="h-4 w-4 mr-1" />
           Add Project
         </Button>
@@ -56,7 +95,7 @@ export function Projects() {
           icon={Hexagon}
           message="No projects yet."
           action="Add Project"
-          onAction={openNewProject}
+          onAction={() => openNewProject({ departmentId })}
         />
       )}
 
