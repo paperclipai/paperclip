@@ -31,7 +31,7 @@ export function FinanceBillerCard({ row }: FinanceBillerCardProps) {
           </div>
           <div className="border border-border p-3">
             <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">credits</div>
-            <div className="mt-1 font-medium tabular-nums">{formatCents(row.creditCents)}</div>
+            <div className="mt-1 font-medium tabular-nums text-emerald-600 dark:text-emerald-400">{formatCents(row.creditCents)}</div>
           </div>
           <div className="border border-border p-3">
             <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">estimated</div>

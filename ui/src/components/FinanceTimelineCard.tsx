@@ -57,7 +57,7 @@ export function FinanceTimelineCard({
                   )}
                 </div>
                 <div className="text-right tabular-nums">
-                  <div className="text-sm font-semibold">{formatCents(row.amountCents)}</div>
+                  <div className={`text-sm font-semibold ${row.direction === "credit" ? "text-emerald-600 dark:text-emerald-400" : ""}`}>{formatCents(row.amountCents)}</div>
                   <div className="text-xs text-muted-foreground">{row.currency}</div>
                   {row.estimated ? <div className="text-[11px] uppercase tracking-[0.12em] text-amber-600">estimated</div> : null}
                 </div>
