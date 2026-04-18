@@ -455,7 +455,14 @@ export function IssueProperties({
     onUpdate({
       missionControl: {
         ...(missionControl ?? {}),
-        workflowState: null,
+        workflowState: {
+          kind: "resumed",
+          enteredAt: new Date(),
+          resumedFrom:
+            workflowState?.kind && workflowState.kind !== "resumed"
+              ? workflowState.kind
+              : workflowState?.resumedFrom ?? "handed_off",
+        },
       },
     });
   };
@@ -1402,7 +1409,7 @@ export function IssueProperties({
             >
               Mark blocked on upstream
             </button>
-            {workflowState ? (
+            {workflowState && workflowState.kind !== "resumed" ? (
               <button
                 type="button"
                 className={OPERATOR_CONTROL_BUTTON_CLASS}

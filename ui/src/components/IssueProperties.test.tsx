@@ -664,7 +664,10 @@ describe("IssueProperties", () => {
       missionControl: {
         collaboratorAgentIds: [],
         needsHumanAttention: true,
-        workflowState: null,
+        workflowState: expect.objectContaining({
+          kind: "resumed",
+          resumedFrom: "waiting_on_human",
+        }),
       },
     });
 

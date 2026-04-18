@@ -57,4 +57,42 @@ describe("activity formatting", () => {
     expect(formatActivityVerb("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers on");
     expect(formatIssueActivityAction("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers");
   });
+
+  it("formats mission-control workflow transitions on issue updates", () => {
+    const waitingDetails = {
+      missionControl: {
+        workflowState: {
+          kind: "waiting_on_human",
+          enteredAt: "2026-04-18T10:00:00.000Z",
+        },
+      },
+      _previous: {
+        missionControl: {
+          workflowState: null,
+        },
+      },
+    };
+    expect(formatIssueActivityAction("issue.updated", waitingDetails)).toBe("marked the issue waiting on human");
+
+    const resumedDetails = {
+      missionControl: {
+        workflowState: {
+          kind: "resumed",
+          enteredAt: "2026-04-18T11:00:00.000Z",
+          resumedFrom: "blocked_on_upstream",
+        },
+      },
+      _previous: {
+        missionControl: {
+          workflowState: {
+            kind: "blocked_on_upstream",
+            enteredAt: "2026-04-18T10:00:00.000Z",
+          },
+        },
+      },
+    };
+    expect(formatIssueActivityAction("issue.updated", resumedDetails)).toBe(
+      "marked the issue resumed from blocked on upstream",
+    );
+  });
 });

@@ -17,7 +17,7 @@ This feature is only done when:
 - Branch: `feat/mission-control-customization-lane`
 - Implementation owner: `ork`
 - Product/orchestration owner: `main`
-- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, and the first operator controls in `IssueProperties` are now in place; remaining gap is broader control coverage plus verification on summaries/history
+- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, and the first operator controls in `IssueProperties` are now in place; `Resume` now records the existing `resumed` workflow state instead of clearing context, and the current control set has focused summary/history verification; remaining gap is broader control coverage plus the rest of the operational views
 
 ## Checklist
 
@@ -54,7 +54,7 @@ This feature is only done when:
 - [ ] Escalate
 - [x] Resume
 - [ ] Close loop / resolve handoff
-- [ ] Verify control actions update summaries/state correctly
+- [x] Verify control actions update summaries/state correctly
 
 ### 4. Ownership and operational views
 - [ ] View/filter for work owned by Main
@@ -100,12 +100,12 @@ This feature is only done when:
 
 ## Current recommended next slice
 - Finish the remaining operator controls: reassign owner cleanly, escalate, close loop / resolve handoff
-- Add focused verification that control actions keep summaries/history/state legible
 - Then ownership and operational views for blocked/stalled/recent-handoff work
+- After that, verify history remains high-signal and compact under more real multi-agent usage
 
 ## Current blockers
 - No hard blocker right now
-- Main remaining gap is the rest of the control actions plus summary/history verification and operational views on top of the workflow-state foundation
+- Main remaining gap is the rest of the control actions plus operational views and broader history verification on top of the workflow-state foundation
 
 ## Update rule for Ork
 When meaningful progress lands, Ork should update this checklist with:

@@ -698,6 +698,62 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     );
   });
 
+  it("derives compact latest activity summaries for workflow-state updates", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Resume the task",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "user-1",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      createdAt: new Date("2026-04-18T11:00:00.000Z"),
+      details: {
+        missionControl: {
+          workflowState: {
+            kind: "resumed",
+            enteredAt: "2026-04-18T11:00:00.000Z",
+            resumedFrom: "waiting_on_human",
+          },
+        },
+        _previous: {
+          missionControl: {
+            workflowState: {
+              kind: "waiting_on_human",
+              enteredAt: "2026-04-18T10:00:00.000Z",
+            },
+          },
+        },
+      },
+    });
+
+    const [result] = await svc.list(companyId, {});
+
+    expect(result?.latestActivitySummary).toMatchObject({
+      text: "Marked resumed from waiting on human",
+      action: "issue.updated",
+      actorType: "user",
+      actorId: "user-1",
+    });
+  });
+
   it("trims list payload fields that can grow large on issue index routes", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
