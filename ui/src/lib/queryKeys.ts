@@ -120,6 +120,28 @@ export const queryKeys = {
     providers: (companyId: string) => ["secret-providers", companyId] as const,
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
+  channelWorkbench: {
+    overview: (companyId: string, scenario: string) =>
+      ["channel-workbench", companyId, "overview", scenario] as const,
+    nextActions: (companyId: string, scenario: string) =>
+      ["channel-workbench", companyId, "next-actions", scenario] as const,
+    sourceDocuments: (companyId: string, scenario: string) =>
+      ["channel-workbench", companyId, "source-documents", scenario] as const,
+    specEditor: (companyId: string, scenario: string) =>
+      ["channel-workbench", companyId, "spec-editor", scenario] as const,
+    roleView: (companyId: string, scenario: string) =>
+      ["channel-workbench", companyId, "role-view", scenario] as const,
+    gateResult: (companyId: string, scenario: string) =>
+      ["channel-workbench", companyId, "gate-result", scenario] as const,
+    issueLedger: (companyId: string, scenario: string) =>
+      ["channel-workbench", companyId, "issue-ledger", scenario] as const,
+    snapshotExport: (companyId: string, scenario: string) =>
+      ["channel-workbench", companyId, "snapshot-export", scenario] as const,
+    evidenceDod: (companyId: string, scenario: string) =>
+      ["channel-workbench", companyId, "evidence-dod", scenario] as const,
+    activity: (companyId: string, caseId: string) =>
+      ["channel-workbench", companyId, "activity", caseId] as const,
+  },
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
