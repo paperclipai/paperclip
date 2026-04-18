@@ -520,6 +520,10 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
 }
 
+export function shouldRejectWakeupForAgentStatus(status: string | null | undefined) {
+  return status === "terminated" || status === "pending_approval";
+}
+
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
   const previous = startLocksByAgent.get(agentId) ?? Promise.resolve();
   const run = previous.then(fn);
@@ -4511,11 +4515,7 @@ export function heartbeatService(db: Db) {
       });
     }
 
-    if (
-      agent.status === "paused" ||
-      agent.status === "terminated" ||
-      agent.status === "pending_approval"
-    ) {
+    if (shouldRejectWakeupForAgentStatus(agent.status)) {
       throw conflict("Agent is not invokable in its current state", { status: agent.status });
     }
 

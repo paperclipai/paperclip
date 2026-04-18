@@ -548,9 +548,82 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       mockTelemetryClient,
       expect.objectContaining({
         agentRole: "engineer",
-        agentId,
-      }),
+      agentId,
+    }),
     );
+  });
+
+  it("queues wakeups for paused agents instead of rejecting them", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Paused Agent",
+      role: "engineer",
+      status: "paused",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Paused wakeup",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+    });
+
+    expect(run).not.toBeNull();
+    expect(run?.status).toBe("queued");
+
+    const persistedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persistedRun?.status).toBe("queued");
+
+    const wakeupRequest = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, run!.wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(wakeupRequest).toMatchObject({
+      status: "queued",
+      runId: run?.id,
+    });
   });
 
   it("re-enqueues assigned todo work when the last issue run died and no wake remains", async () => {
