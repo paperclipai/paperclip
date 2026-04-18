@@ -985,6 +985,26 @@ export function deriveTaskKeyWithHeartbeatFallback(
   return null;
 }
 
+export function recoverTimerWakeTaskScope(input: {
+  currentTaskKey: string | null;
+  lastRunContextSnapshot: Record<string, unknown> | null | undefined;
+}) {
+  // Timer wakes inherit the last real task scope so they resume the same
+  // saved session instead of falling back to the synthetic heartbeat bucket.
+  if (input.currentTaskKey !== null && input.currentTaskKey !== HEARTBEAT_TASK_KEY) return null;
+
+  const recoveredTaskKey = deriveTaskKey(input.lastRunContextSnapshot, null);
+  if (!recoveredTaskKey || recoveredTaskKey === HEARTBEAT_TASK_KEY) return null;
+
+  return {
+    taskKey: recoveredTaskKey,
+    issueId: readNonEmptyString(input.lastRunContextSnapshot?.issueId),
+    taskId:
+      readNonEmptyString(input.lastRunContextSnapshot?.taskId) ??
+      readNonEmptyString(input.lastRunContextSnapshot?.issueId),
+  };
+}
+
 export function shouldResetTaskSessionForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -4440,7 +4460,7 @@ export function heartbeatService(db: Db) {
     const {
       contextSnapshot: enrichedContextSnapshot,
       issueIdFromPayload,
-      taskKey,
+      taskKey: initialTaskKey,
       wakeCommentId,
     } = enrichWakeContextSnapshot({
       contextSnapshot,
@@ -4450,9 +4470,34 @@ export function heartbeatService(db: Db) {
       payload,
     });
     let issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+    let taskKey = initialTaskKey;
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
+    if (source === "timer") {
+      const runtimeState = await getRuntimeState(agent.id);
+      const lastRunId = readNonEmptyString(runtimeState?.lastRunId);
+      const lastRun = lastRunId ? await getRun(lastRunId) : null;
+      const recoveredTaskScope = recoverTimerWakeTaskScope({
+        currentTaskKey: taskKey,
+        lastRunContextSnapshot: lastRun ? parseObject(lastRun.contextSnapshot) : null,
+      });
+      if (recoveredTaskScope) {
+        taskKey = recoveredTaskScope.taskKey;
+        if (!readNonEmptyString(enrichedContextSnapshot.issueId) && recoveredTaskScope.issueId) {
+          enrichedContextSnapshot.issueId = recoveredTaskScope.issueId;
+        }
+        if (!readNonEmptyString(enrichedContextSnapshot.taskId) && recoveredTaskScope.taskId) {
+          enrichedContextSnapshot.taskId = recoveredTaskScope.taskId;
+        }
+        if (!readNonEmptyString(enrichedContextSnapshot.taskKey)) {
+          enrichedContextSnapshot.taskKey = recoveredTaskScope.taskKey;
+        }
+        issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
+      }
+    }
+
     const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
     if (explicitResumeSession) {
       enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;

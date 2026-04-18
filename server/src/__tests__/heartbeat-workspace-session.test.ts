@@ -13,6 +13,7 @@ import {
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
+  recoverTimerWakeTaskScope,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -330,6 +331,51 @@ describe("deriveTaskKeyWithHeartbeatFallback", () => {
 
   it("returns null for empty context", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({}, null)).toBeNull();
+  });
+});
+
+describe("recoverTimerWakeTaskScope", () => {
+  it("recovers the last run issue scope for timer wakes that only have heartbeat context", () => {
+    expect(
+      recoverTimerWakeTaskScope({
+        currentTaskKey: "__heartbeat__",
+        lastRunContextSnapshot: {
+          issueId: "issue-123",
+          taskId: "issue-123",
+        },
+      }),
+    ).toEqual({
+      taskKey: "issue-123",
+      issueId: "issue-123",
+      taskId: "issue-123",
+    });
+  });
+
+  it("leaves non-heartbeat wakes unchanged", () => {
+    expect(
+      recoverTimerWakeTaskScope({
+        currentTaskKey: "issue-123",
+        lastRunContextSnapshot: {
+          issueId: "issue-123",
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("recovers null task keys from scheduler timer wakes", () => {
+    expect(
+      recoverTimerWakeTaskScope({
+        currentTaskKey: null,
+        lastRunContextSnapshot: {
+          issueId: "issue-456",
+          taskId: "issue-456",
+        },
+      }),
+    ).toEqual({
+      taskKey: "issue-456",
+      issueId: "issue-456",
+      taskId: "issue-456",
+    });
   });
 });
 
