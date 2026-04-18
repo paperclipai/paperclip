@@ -173,6 +173,13 @@ export const portabilityManifestSchema = z.object({
   projects: z.array(portabilityProjectManifestEntrySchema).default([]),
   issues: z.array(portabilityIssueManifestEntrySchema).default([]),
   envInputs: z.array(portabilityEnvInputSchema).default([]),
+  secrets: z.array(z.object({
+    name: z.string().min(1),
+    provider: z.string().min(1),
+    description: z.string().nullable(),
+    latestVersion: z.number().int().nonnegative(),
+    currentValue: z.string(),
+  })).optional(),
 });
 
 export const portabilitySourceSchema = z.discriminatedUnion("type", [
@@ -215,6 +222,7 @@ export const companyPortabilityExportSchema = z.object({
   selectedFiles: z.array(z.string().min(1)).optional(),
   expandReferencedSkills: z.boolean().optional(),
   sidebarOrder: portabilitySidebarOrderSchema.partial().optional(),
+  includeSecrets: z.boolean().optional(),
 });
 
 export type CompanyPortabilityExport = z.infer<typeof companyPortabilityExportSchema>;
