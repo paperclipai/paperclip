@@ -8,6 +8,7 @@ import type {
   Project,
   Issue,
   IssueComment,
+  IssueDocument,
   Agent,
   Goal,
 } from "@paperclipai/shared";
@@ -73,6 +74,8 @@ export interface TestHarness {
   activity: Array<{ message: string; entityType?: string; entityId?: string; metadata?: Record<string, unknown> }>;
   metrics: Array<{ name: string; value: number; tags?: Record<string, string> }>;
   telemetry: Array<{ eventName: string; dimensions?: Record<string, string | number | boolean> }>;
+  dbQueries: Array<{ sql: string; params?: unknown[] }>;
+  dbExecutes: Array<{ sql: string; params?: unknown[] }>;
 }
 
 type EventRegistration = {
@@ -135,6 +138,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const activity: TestHarness["activity"] = [];
   const metrics: TestHarness["metrics"] = [];
   const telemetry: TestHarness["telemetry"] = [];
+  const dbQueries: TestHarness["dbQueries"] = [];
+  const dbExecutes: TestHarness["dbExecutes"] = [];
 
   const state = new Map<string, unknown>();
   const entities = new Map<string, PluginEntityRecord>();
@@ -144,6 +149,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const issues = new Map<string, Issue>();
   const blockedByIssueIds = new Map<string, string[]>();
   const issueComments = new Map<string, IssueComment[]>();
+  const issueDocuments = new Map<string, IssueDocument>();
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
   const projectWorkspaces = new Map<string, PluginWorkspace[]>();
@@ -235,12 +241,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     },
     db: {
       namespace: manifest.database ? `test_${manifest.id.replace(/[^a-z0-9_]+/g, "_")}` : "",
-      async query() {
+      async query(sql, params) {
         requireCapability(manifest, capabilitySet, "database.namespace.read");
+        dbQueries.push({ sql, params });
         return [];
       },
-      async execute() {
+      async execute(sql, params) {
         requireCapability(manifest, capabilitySet, "database.namespace.write");
+        dbExecutes.push({ sql, params });
         return { rowCount: 0 };
       },
     },
@@ -543,12 +551,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         async list(issueId, companyId) {
           requireCapability(manifest, capabilitySet, "issue.documents.read");
           if (!isInCompany(issues.get(issueId), companyId)) return [];
-          return [];
+          return [...issueDocuments.values()]
+            .filter((document) => document.issueId === issueId && document.companyId === companyId)
+            .map(({ body: _body, ...summary }) => summary);
         },
-        async get(issueId, _key, companyId) {
+        async get(issueId, key, companyId) {
           requireCapability(manifest, capabilitySet, "issue.documents.read");
           if (!isInCompany(issues.get(issueId), companyId)) return null;
-          return null;
+          return issueDocuments.get(`${issueId}|${key}`) ?? null;
         },
         async upsert(input) {
           requireCapability(manifest, capabilitySet, "issue.documents.write");
@@ -556,7 +566,27 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           if (!isInCompany(parentIssue, input.companyId)) {
             throw new Error(`Issue not found: ${input.issueId}`);
           }
-          throw new Error("documents.upsert is not implemented in test context");
+          const now = new Date();
+          const existing = issueDocuments.get(`${input.issueId}|${input.key}`);
+          const document: IssueDocument = {
+            id: existing?.id ?? randomUUID(),
+            companyId: input.companyId,
+            issueId: input.issueId,
+            key: input.key,
+            title: input.title ?? existing?.title ?? null,
+            format: "markdown",
+            latestRevisionId: randomUUID(),
+            latestRevisionNumber: (existing?.latestRevisionNumber ?? 0) + 1,
+            createdByAgentId: existing?.createdByAgentId ?? null,
+            createdByUserId: existing?.createdByUserId ?? null,
+            updatedByAgentId: null,
+            updatedByUserId: null,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+            body: input.body,
+          };
+          issueDocuments.set(`${input.issueId}|${input.key}`, document);
+          return document;
         },
         async delete(issueId, _key, companyId) {
           requireCapability(manifest, capabilitySet, "issue.documents.write");
@@ -564,6 +594,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           if (!isInCompany(parentIssue, companyId)) {
             throw new Error(`Issue not found: ${issueId}`);
           }
+          issueDocuments.delete(`${issueId}|${_key}`);
         },
       },
       relations: {
@@ -952,6 +983,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     activity,
     metrics,
     telemetry,
+    dbQueries,
+    dbExecutes,
   };
 
   return harness;

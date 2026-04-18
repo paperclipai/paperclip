@@ -427,9 +427,6 @@ export type {
   PluginJobRecord,
   PluginJobRunRecord,
   PluginWebhookDeliveryRecord,
-  PluginApiRouteAuthMode,
-  PluginApiRouteCheckoutPolicy,
-  PluginApiRouteMethod,
   QuotaWindow,
   ProviderQuotaResult,
 } from "./types/index.js";

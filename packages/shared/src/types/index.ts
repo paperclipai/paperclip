@@ -262,7 +262,4 @@ export type {
   PluginDatabaseMigrationStatus,
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
-  PluginApiRouteAuthMode,
-  PluginApiRouteCheckoutPolicy,
-  PluginApiRouteMethod,
 } from "./plugin.js";

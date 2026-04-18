@@ -33,9 +33,6 @@ export type {
   PluginDatabaseMigrationStatus,
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
-  PluginApiRouteAuthMode,
-  PluginApiRouteCheckoutPolicy,
-  PluginApiRouteMethod,
 } from "../constants.js";
 
 // ---------------------------------------------------------------------------
