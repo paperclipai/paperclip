@@ -70,8 +70,53 @@ export function matchesContentType(contentType: string, allowedPatterns: string[
   });
 }
 
-export function normalizeContentType(contentType: string | null | undefined): string {
-  const normalized = (contentType ?? "").trim().toLowerCase();
+export function inferContentTypeFromExtension(filename: string): string | null {
+  const ext = filename.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "md":
+    case "markdown":
+      return "text/markdown";
+    case "json":
+      return "application/json";
+    case "txt":
+      return "text/plain";
+    case "csv":
+      return "text/csv";
+    case "html":
+    case "htm":
+      return "text/html";
+    case "pdf":
+      return "application/pdf";
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    default:
+      return null;
+  }
+}
+
+export function normalizeContentType(
+  contentType: string | null | undefined,
+  filename?: string,
+): string {
+  let normalized = (contentType ?? "").trim().toLowerCase();
+
+  if (
+    filename &&
+    (!normalized || normalized === DEFAULT_ATTACHMENT_CONTENT_TYPE)
+  ) {
+    const inferred = inferContentTypeFromExtension(filename);
+    if (inferred) {
+      normalized = inferred;
+    }
+  }
+
   return normalized || DEFAULT_ATTACHMENT_CONTENT_TYPE;
 }
 
