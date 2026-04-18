@@ -86,7 +86,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
 }));
 
-function createCompany(status: "active" | "paused") {
+function createCompany(status: "active" | "paused" | "archived") {
   const now = new Date("2026-04-11T12:00:00.000Z");
   return {
     id: "company-1",
@@ -180,6 +180,43 @@ describe("company pause/resume routes", () => {
         companyId: "company-1",
         action: "company.paused",
         details: { cancelledRunCount: 2, cancelledWakeupCount: 3 },
+      }),
+    );
+  });
+
+  it("archives a company and cancels queued, running, and deferred company work", async () => {
+    const archived = createCompany("archived");
+    mockCompanyService.archive.mockResolvedValue(archived);
+    mockHeartbeatService.cancelExecutionScopeWork.mockResolvedValue({
+      cancelledRunCount: 4,
+      cancelledWakeupCount: 6,
+    });
+
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const response = await request(app).post("/api/companies/company-1/archive").send({});
+
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe("archived");
+    expect(mockCompanyService.archive).toHaveBeenCalledWith("company-1");
+    expect(mockHeartbeatService.cancelExecutionScopeWork).toHaveBeenCalledWith(
+      {
+        companyId: "company-1",
+        scopeType: "company",
+        scopeId: "company-1",
+      },
+      "Cancelled due to company archive",
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "company.archived",
+        details: { cancelledRunCount: 4, cancelledWakeupCount: 6 },
       }),
     );
   });

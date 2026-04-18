@@ -119,8 +119,37 @@ describeEmbeddedPostgres("heartbeat company-status guards", () => {
       .select()
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
 
     expect(runs).toHaveLength(0);
+    expect(wakeups).toHaveLength(0);
+  });
+
+  it("does not queue timer work or skip rows for paused companies", async () => {
+    const { companyId, agentId } = await seedAgent({
+      companyStatus: "paused",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.tickTimers(new Date(Date.now() + 120_000));
+
+    expect(result.enqueued).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+
+    expect(runs).toHaveLength(0);
+    expect(wakeups).toHaveLength(0);
   });
 
   it("cancels archived-company queued runs during queued-run recovery", async () => {

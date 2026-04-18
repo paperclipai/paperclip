@@ -83,6 +83,7 @@ import {
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
 import { resolveHermesRuntimeConfig } from "./hermes-config.js";
+import { runtimeIntegrityService } from "./runtime-integrity.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -1975,6 +1976,7 @@ function resolveNextSessionState(input: {
 }
 
 export function heartbeatService(db: Db) {
+  const runtimeIntegrity = runtimeIntegrityService(db);
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -7642,15 +7644,23 @@ export function heartbeatService(db: Db) {
 
     reapOrphanedRuns,
 
+    reconcileRuntimeIntegrity: (now?: Date) => runtimeIntegrity.reconcileAll(now),
+
     resumeQueuedRuns,
 
     tickTimers: async (now = new Date()) => {
-      const allAgents = await db.select().from(agents);
+      const allAgents = await db
+        .select({
+          agent: agents,
+          companyStatus: companies.status,
+        })
+        .from(agents)
+        .innerJoin(companies, eq(companies.id, agents.companyId));
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
 
-      for (const agent of allAgents) {
+      for (const { agent, companyStatus } of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
@@ -7659,6 +7669,10 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+        if (companyStatus === "archived" || companyStatus === "paused") {
+          skipped += 1;
+          continue;
+        }
         // Timer heartbeats are periodic nudges, not catch-up jobs. Keep at most
         // one outstanding timer run per agent so downtime or long executions do
         // not accumulate an unbounded queued backlog.

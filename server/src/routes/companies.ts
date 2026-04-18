@@ -508,6 +508,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
+    const cancellation = await heartbeat.cancelExecutionScopeWork(
+      {
+        companyId,
+        scopeType: "company",
+        scopeId: companyId,
+      },
+      "Cancelled due to company archive",
+    );
     await logActivity(db, {
       companyId,
       actorType: "user",
@@ -515,6 +523,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       action: "company.archived",
       entityType: "company",
       entityId: companyId,
+      details: cancellation,
     });
     res.json(company);
   });

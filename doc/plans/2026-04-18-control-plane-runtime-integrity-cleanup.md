@@ -1,5 +1,7 @@
 # Control Plane Runtime Integrity Cleanup Implementation Plan
 
+Status: implemented
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stop the control plane from creating or preserving stale runtime state so queue views, company pause/archive behavior, and issue execution ownership all reflect live reality.
@@ -236,3 +238,20 @@ Expected: no rows
 - Do not change adapter retry policy in this slice.
 - Do not rebalance specialist concurrency in this slice.
 - Do not redesign blocked-issue presentation in this slice unless a post-cleanup audit shows a still-live product bug.
+
+## Implementation Summary
+
+- `tickTimers()` now skips paused and archived companies before enqueue and keeps at most one outstanding timer wake per agent.
+- Company archive now reuses scope cancellation so queued/running runs and deferred wakeups are drained consistently.
+- Startup and periodic heartbeat recovery now run `reconcileRuntimeIntegrity()` before `resumeQueuedRuns()`.
+- `runtimeIntegrityService` reconciles stale wakeups, queued runs blocked by company status, and broken `in_progress` issue ownership.
+- `pnpm runtime-integrity:reconcile` provides dry-run/apply access to the same repair logic from `server/scripts/reconcile-heartbeat-runtime-state.ts`.
+
+## Verification Snapshot
+
+- `pnpm --filter @paperclipai/server typecheck`
+- `pnpm exec vitest run server/src/__tests__/company-pause-resume-route.test.ts`
+- `pnpm exec vitest run server/src/__tests__/runtime-integrity.test.ts`
+- `pnpm exec vitest run server/src/__tests__/heartbeat-company-status.test.ts`
+
+Note: embedded-Postgres-backed suites skip automatically on hosts where the embedded test database cannot initialize.
