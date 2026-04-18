@@ -887,3 +887,99 @@ const server = await startPluginDevServer({ rootDir: process.cwd() });
 Dev server endpoints:
 - `GET /__paperclip__/health` returns `{ ok, rootDir, uiDir }`
 - `GET /__paperclip__/events` streams `reload` SSE events on UI build changes
+
+## Publishing your plugin to npm
+
+npm-packaged installation is the supported path for distributing plugins to others. Local-path installs are a development convenience only.
+
+### 1. Prepare `package.json`
+
+Your plugin's `package.json` needs three things before publishing:
+
+```json
+{
+  "name": "@acme/my-plugin",
+  "version": "0.1.0",
+  "files": ["dist/"],
+  "scripts": {
+    "prepublishOnly": "pnpm run build"
+  }
+}
+```
+
+- **`files`** — limits the published package to the built `dist/` output. Source files, `node_modules`, and `.paperclip-sdk/` tarballs are excluded automatically.
+- **`prepublishOnly`** — runs `pnpm build` before every `npm publish` so `dist/` is always current.
+- Remove `"private": true` if present — it blocks publishing.
+
+The `paperclipPlugin` field must also point into `dist/`:
+
+```json
+{
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  }
+}
+```
+
+### 2. Keep versions in sync
+
+The version in `package.json` and the `version` field in `src/manifest.ts` should always match:
+
+```ts
+const manifest: PaperclipPluginManifestV1 = {
+  id: "acme.my-plugin",
+  version: "0.1.0",   // keep in sync with package.json
+  // ...
+};
+```
+
+### 3. Publish
+
+Plugins scaffolded with `create-paperclip-plugin` include a `scripts/publish.mjs` release helper that handles all of this in one command:
+
+```bash
+pnpm release                    # patch bump (0.1.0 → 0.1.1) + publish
+pnpm release -- --bump minor    # minor bump
+pnpm release -- --bump major    # major bump
+pnpm release -- --version 2.0.0 # explicit version
+pnpm release -- --dry-run       # preview without publishing
+```
+
+The helper bumps both `package.json` and `src/manifest.ts` atomically, blocks publish if local `file:` SDK dependencies are present, and delegates to `npm publish --access public`.
+
+To publish manually without the helper:
+
+```bash
+npm login
+npm publish --access public   # --access public is required for scoped packages
+```
+
+`prepublishOnly` runs `pnpm build` automatically — no need to build first.
+
+### 4. Install into Paperclip by package name
+
+Once published, install the plugin by passing the npm package name:
+
+```bash
+curl -X POST http://127.0.0.1:3100/api/plugins/install \
+  -H "Content-Type: application/json" \
+  -d '{"packageName":"@acme/my-plugin"}'
+```
+
+The host fetches the package from the registry, resolves `paperclipPlugin.manifest`, and starts the worker.
+
+### SDK dependency
+
+If your plugin was scaffolded with a local `file:` reference to the SDK (visible in `.paperclip-sdk/`), switch the dependency to the published npm version before publishing:
+
+```json
+{
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "^1.0.0"
+  }
+}
+```
+
+Remove the `.paperclip-sdk/` directory and `pnpm.overrides` entry for `@paperclipai/shared` once you are on published versions.
