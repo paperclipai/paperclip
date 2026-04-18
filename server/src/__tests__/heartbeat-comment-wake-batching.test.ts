@@ -979,6 +979,221 @@ describe("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 120_000);
+  // POI-166 CTO fix: audit log must be emitted even when a non-comment deferred wake is
+  // also promoted in the same heartbeat cycle (mixed cycle). The original code emitted the
+  // audit only inside `if (!promotedRun)` — the new code emits unconditionally before that guard.
+  //
+  // Mixed-cycle mechanics:
+  //   - Same-agent comment wakes → DEFERRED (follows up after active run)
+  //   - Same-agent non-comment wakes → COALESCED into active run (not deferred)
+  //   - Different-agent wakes for the same issue → always DEFERRED
+  //
+  // So the realistic mixed cycle uses TWO agents:
+  //   Wake A (agentA): stale comment wake on the done issue → terminal skip
+  //   Wake B (agentB): non-comment mention-style wake on the same done issue → promoted
+  //
+  // Both land in the deferred queue. When agentA's run ends, promoteDeferredWakesOnRunEnd
+  // iterates them: skips Wake A (terminal), promotes Wake B.
+  // promotedRun is non-null, so the old code silently dropped the audit log.
+  it("emits audit log in mixed cycle: terminal comment wake skipped + non-comment wake promoted in same tick", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentAId = randomUUID();
+    const agentBId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values([
+        {
+          id: agentAId,
+          companyId,
+          name: "Agent A",
+          role: "engineer",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: { "x-openclaw-token": "gateway-token" },
+            payloadTemplate: { message: "wake now" },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: agentBId,
+          companyId,
+          name: "Agent B",
+          role: "engineer",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: { "x-openclaw-token": "gateway-token" },
+            payloadTemplate: { message: "wake now" },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Mixed cycle: terminal comment skip + different-agent promotion",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentAId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      // Step 1: wake agentA — creates the active run that causes subsequent wakes to defer.
+      const firstComment = await db
+        .insert(issueComments)
+        .values({ companyId, issueId, authorUserId: "user-1", body: "Initial comment" })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const firstRun = await heartbeat.wakeup(agentAId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId: firstComment!.id },
+        contextSnapshot: { issueId, taskId: issueId, commentId: firstComment!.id, wakeReason: "issue_commented" },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(firstRun).not.toBeNull();
+
+      await waitFor(async () => {
+        const run = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id)).then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
+
+      // Step 2: Wake A — agentA stale comment wake while agentA is busy → DEFERRED.
+      // Same-agent + comment + running → deferred_issue_execution path.
+      const staleComment = await db
+        .insert(issueComments)
+        .values({ companyId, issueId, authorUserId: "user-1", body: "Stale follow-up on about-to-be-done issue" })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const commentWakeResult = await heartbeat.wakeup(agentAId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId: staleComment!.id },
+        contextSnapshot: { issueId, taskId: issueId, commentId: staleComment!.id, wakeReason: "issue_commented" },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(commentWakeResult).toBeNull();
+
+      // Step 3: Wake B — agentB mention-style wake while agentA is busy → DEFERRED.
+      // Different agent → always deferred_issue_execution, regardless of comment vs. non-comment.
+      const mentionComment = await db
+        .insert(issueComments)
+        .values({ companyId, issueId, authorUserId: "user-1", body: "@Agent B please review when done" })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const agentBWakeResult = await heartbeat.wakeup(agentBId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_reassigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_reassigned" },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+      expect(agentBWakeResult).toBeNull();
+
+      // Confirm at least 2 deferred wakes exist (Wake A for agentA, Wake B for agentB).
+      await waitFor(async () => {
+        const deferred = await db.select().from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+        return deferred.length >= 2;
+      });
+
+      // Step 4: mark issue done before the run finishes (terminal state established).
+      await db.update(issues).set({
+        status: "done",
+        completedAt: new Date(),
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      }).where(eq(issues.id, issueId));
+
+      // Step 5: release agentA's run → promoteDeferredWakesOnRunEnd fires:
+      //   while(true) iteration 1: Wake A (comment, earlier requestedAt) on done issue → skip → continue
+      //   while(true) iteration 2: Wake B (agentB, no comment IDs) → NOT skipped → promoted
+      //   Returns { run: newRun (agentB), skippedTerminalWakes: [Wake A info] }
+      //   promotedRun is non-null → old code silently dropped the audit, new code emits it.
+      gateway.releaseFirstWait();
+
+      // Wait for agentB's promoted run to appear.
+      await waitFor(async () => {
+        const runs = await db.select().from(heartbeatRuns)
+          .where(eq(heartbeatRuns.companyId, companyId));
+        return runs.length === 2;
+      }, 90_000);
+
+      const allRuns = await db.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId)).orderBy(asc(heartbeatRuns.createdAt));
+      expect(allRuns).toHaveLength(2);
+      // Second run belongs to agentB (the promoted non-comment wake).
+      expect(allRuns[1]?.agentId).toBe(agentBId);
+
+      // Wake A (agentA comment) must be marked failed with the terminal-skip error.
+      const failedWake = await db.select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentAId), eq(agentWakeupRequests.status, "failed")))
+        .then((rows) => rows[0] ?? null);
+      expect(failedWake).toMatchObject({ status: "failed", error: "deferred_comment_wake_terminal_skipped" });
+
+      // Issue must still be done (no silent reopen).
+      const finalIssue = await db.select({ status: issues.status }).from(issues)
+        .where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      expect(finalIssue?.status).toBe("done");
+
+      // THE CRITICAL ASSERTION: audit log must exist EVEN THOUGH promotedRun !== null.
+      // Before the fix, this log was silently dropped because it was inside `if (!promotedRun)`.
+      await waitFor(async () => {
+        const skipLog = await db.select().from(activityLog)
+          .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.wake_ignored_terminal")))
+          .then((rows) => rows[0] ?? null);
+        return Boolean(skipLog);
+      }, 15_000);
+
+      const skipLog = await db.select().from(activityLog)
+        .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.wake_ignored_terminal")))
+        .then((rows) => rows[0] ?? null);
+
+      expect(skipLog).toMatchObject({
+        action: "issue.wake_ignored_terminal",
+        actorId: "heartbeat",
+        entityId: issueId,
+        details: expect.objectContaining({ source: "deferred_comment_wake_terminal_skipped" }),
+      });
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
   it("treats the automatic run summary as fallback-only when the run already posted a comment", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();

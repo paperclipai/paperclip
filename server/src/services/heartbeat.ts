@@ -4251,14 +4251,14 @@ export function heartbeatService(db: Db) {
           .where(eq(issues.id, issue.id));
       }
 
-      let terminalSkipWake: {
+      const terminalSkipWakes: Array<{
         companyId: string;
         issueId: string;
         issueStatus: string;
         identifier: string | null;
         agentId: string;
         runId: string;
-      } | null = null;
+      }> = [];
 
       while (true) {
         const deferred = await tx
@@ -4275,7 +4275,7 @@ export function heartbeatService(db: Db) {
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
-        if (!deferred) return terminalSkipWake ? { run: null, skippedTerminalWake: terminalSkipWake } : null;
+        if (!deferred) return terminalSkipWakes.length > 0 ? { run: null, skippedTerminalWakes: terminalSkipWakes } : null;
 
         const deferredAgent = await tx
           .select()
@@ -4322,14 +4322,14 @@ export function heartbeatService(db: Db) {
               updatedAt: new Date(),
             })
             .where(eq(agentWakeupRequests.id, deferred.id));
-          terminalSkipWake = {
+          terminalSkipWakes.push({
             companyId: issue.companyId,
             issueId: issue.id,
             issueStatus: issue.status,
             identifier: issue.identifier,
             agentId: deferred.agentId,
             runId: run.id,
-          };
+          });
           continue;
         }
 
@@ -4396,32 +4396,39 @@ export function heartbeatService(db: Db) {
 
         return {
           run: newRun,
-          skippedTerminalWake: terminalSkipWake,
+          skippedTerminalWakes: terminalSkipWakes,
         };
       }
     });
 
+    // Emit one audit entry per skipped terminal wake — unconditionally, before checking
+    // whether a run was also promoted in the same cycle (mixed cycle: terminal skip on
+    // iteration N, non-comment promotion on iteration N+1 → promotedRun is non-null but
+    // the skip still happened and must be logged).
+    const skips =
+      promotionResult && "skippedTerminalWakes" in promotionResult
+        ? promotionResult.skippedTerminalWakes
+        : [];
+    for (const skip of skips) {
+      await logActivity(db, {
+        companyId: skip.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        agentId: skip.agentId,
+        runId: skip.runId,
+        action: "issue.wake_ignored_terminal",
+        entityType: "issue",
+        entityId: skip.issueId,
+        details: {
+          source: "deferred_comment_wake_terminal_skipped",
+          status: skip.issueStatus,
+          identifier: skip.identifier,
+        },
+      });
+    }
+
     const promotedRun = promotionResult?.run ?? null;
     if (!promotedRun) {
-      // Log an audit entry when a deferred wake was silently dropped for a terminal issue.
-      if (promotionResult && "skippedTerminalWake" in promotionResult && promotionResult.skippedTerminalWake) {
-        const skip = promotionResult.skippedTerminalWake;
-        await logActivity(db, {
-          companyId: skip.companyId,
-          actorType: "system",
-          actorId: "heartbeat",
-          agentId: skip.agentId,
-          runId: skip.runId,
-          action: "issue.wake_ignored_terminal",
-          entityType: "issue",
-          entityId: skip.issueId,
-          details: {
-            source: "deferred_comment_wake_terminal_skipped",
-            status: skip.issueStatus,
-            identifier: skip.identifier,
-          },
-        });
-      }
       return;
     }
 
