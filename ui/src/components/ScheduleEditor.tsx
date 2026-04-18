@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
@@ -146,6 +147,30 @@ function ordinalSuffix(n: number): string {
 
 export { describeSchedule };
 
+function CustomCronInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const trimmed = value.trim();
+  const fieldCount = trimmed.length > 0 ? trimmed.split(/\s+/).length : 0;
+  const isInvalid = trimmed.length > 0 && fieldCount !== 5;
+  const errorId = "custom-cron-error";
+  return (
+    <div className="space-y-1.5">
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="0 10 * * *"
+        className={cn("font-mono text-sm", isInvalid && "border-destructive")}
+        aria-invalid={isInvalid}
+        aria-describedby={isInvalid ? errorId : undefined}
+      />
+      {isInvalid ? (
+        <p id={errorId} className="text-xs text-destructive">Expected 5 fields but got {fieldCount}. Format: minute hour day-of-month month day-of-week</p>
+      ) : (
+        <p className="text-xs text-muted-foreground">Five fields: minute hour day-of-month month day-of-week</p>
+      )}
+    </div>
+  );
+}
+
 export function ScheduleEditor({
   value,
   onChange,
@@ -208,20 +233,7 @@ export function ScheduleEditor({
       </Select>
 
       {preset === "custom" ? (
-        <div className="space-y-1.5">
-          <Input
-            value={customCron}
-            onChange={(e) => {
-              setCustomCron(e.target.value);
-              emitChange("custom", hour, minute, dayOfWeek, dayOfMonth, e.target.value);
-            }}
-            placeholder="0 10 * * *"
-            className="font-mono text-sm"
-          />
-          <p className="text-xs text-muted-foreground">
-            Five fields: minute hour day-of-month month day-of-week
-          </p>
-        </div>
+        <CustomCronInput value={customCron} onChange={(v) => { setCustomCron(v); const f = v.trim(); if (f.length === 0 || f.split(/\s+/).length === 5) { emitChange("custom", hour, minute, dayOfWeek, dayOfMonth, v); } }} />
       ) : (
         <div className="flex flex-wrap items-center gap-2">
           {preset !== "every_minute" && preset !== "every_hour" && (
