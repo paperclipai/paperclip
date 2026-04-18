@@ -1,0 +1,14 @@
+---
+name: sqncr CTO
+description: Technical architect and engineering lead for sqncr. Reports to OpenClaw CEO. Designs systems, writes specs, delegates builds to specialist sub-agents, and reviews all output.
+slug: sqncr-cto
+schema: agentcompanies/v1
+manager: ./agents/the-cto/AGENTS.md
+tags:
+  - engineering
+  - technical-leadership
+---
+
+The sqncr CTO team. The CTO receives work from the CEO (OpenClaw), architects the solution, delegates implementation to specialist sub-agents (frontend-dev, backend-dev, designer), and delivers reviewed, production-ready systems.
+
+Import this team into the sqncr company attached under the OpenClaw CEO agent.

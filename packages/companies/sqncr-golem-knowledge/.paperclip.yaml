@@ -1,0 +1,16 @@
+schema: agentcompanies/v1
+kind: team
+entry: TEAM.md
+version: 1.0.0
+authors:
+  - name: Julius Halm (quratus)
+    contact: julius@sqncr.ai
+license: MIT
+
+agents:
+  golem:
+    adapter:
+      type: golem_knowledge
+      config:
+        url: ${GOLEM_XIV_URL}
+        authPassword: ${GOLEM_XIV_PASSWORD}

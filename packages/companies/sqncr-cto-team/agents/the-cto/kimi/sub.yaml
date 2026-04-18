@@ -1,0 +1,15 @@
+version: 1
+agent:
+  extend: ./agent.yaml
+  system_prompt_args:
+    ROLE_ADDITIONAL: |
+      You are running as a subagent. All user messages are from the main CTO agent.
+      The main agent cannot see your context — only your final message.
+      Provide a full summary of what you built, changed, or verified at the end.
+      If you wrote or modified files, list every path in the summary.
+  exclude_tools:
+    - "kimi_cli.tools.multiagent:Task"
+    - "kimi_cli.tools.todo:SetTodoList"
+    - "kimi_cli.tools.plan:ExitPlanMode"
+    - "kimi_cli.tools.plan.enter:EnterPlanMode"
+  subagents:
