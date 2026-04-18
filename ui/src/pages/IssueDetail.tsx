@@ -63,6 +63,7 @@ import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuesList } from "../components/IssuesList";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
+import { IssueCostStrip } from "../components/IssueCostStrip";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -2382,6 +2383,12 @@ export function IssueDetail() {
           onSave={(title) => updateIssue.mutateAsync({ title })}
           as="h2"
           className="text-xl font-bold"
+        />
+
+        <IssueCostStrip
+          companyId={issue.companyId}
+          issueId={issue.id}
+          issueIdentifier={issue.identifier ?? null}
         />
 
         <InlineEditor
