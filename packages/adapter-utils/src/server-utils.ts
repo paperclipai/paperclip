@@ -1161,12 +1161,12 @@ export async function runChildProcess(
             : null;
 
         child.stdout?.on("data", (chunk: unknown) => {
+          const rawBuf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
           if (useBufferCapture && stdoutBufBytes < MAX_CAPTURE_BYTES) {
-            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-            stdoutBufs.push(buf.subarray(0, MAX_CAPTURE_BYTES - stdoutBufBytes));
-            stdoutBufBytes += buf.length;
+            stdoutBufs.push(rawBuf.subarray(0, MAX_CAPTURE_BYTES - stdoutBufBytes));
+            stdoutBufBytes += rawBuf.length;
           }
-          const text = String(chunk);
+          const text = useBufferCapture ? rawBuf.toString("utf8") : String(chunk);
           stdout = appendWithCap(stdout, text);
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
@@ -1174,12 +1174,12 @@ export async function runChildProcess(
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
+          const rawBuf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
           if (useBufferCapture && stderrBufBytes < MAX_CAPTURE_BYTES) {
-            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-            stderrBufs.push(buf.subarray(0, MAX_CAPTURE_BYTES - stderrBufBytes));
-            stderrBufBytes += buf.length;
+            stderrBufs.push(rawBuf.subarray(0, MAX_CAPTURE_BYTES - stderrBufBytes));
+            stderrBufBytes += rawBuf.length;
           }
-          const text = String(chunk);
+          const text = useBufferCapture ? rawBuf.toString("utf8") : String(chunk);
           stderr = appendWithCap(stderr, text);
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
