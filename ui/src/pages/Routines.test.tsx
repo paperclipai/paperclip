@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { Routines, buildRoutineGroups } from "./Routines";
 
 let currentSearch = "";
@@ -295,6 +295,17 @@ async function flush() {
 
 describe("Routines page", () => {
   let container: HTMLDivElement;
+
+  beforeAll(() => {
+    vi.stubGlobal("localStorage", {
+      getItem: vi.fn(),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+      clear: vi.fn(), 
+      length: 0,
+      key: vi.fn(),
+    });
+  });
 
   beforeEach(() => {
     container = document.createElement("div");
