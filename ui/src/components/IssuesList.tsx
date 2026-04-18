@@ -767,8 +767,8 @@ export function IssuesList({
             workspaces={isolatedWorkspacesEnabled ? workspaceOptions : undefined}
           />
 
-          {/* Sort (list view only) */}
-          {viewState.viewMode === "list" && (
+          {/* Sort */}
+          {(
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
@@ -783,7 +783,9 @@ export function IssuesList({
                     ["title", "Title"],
                     ["created", "Created"],
                     ["updated", "Updated"],
-                  ] as const).map(([field, label]) => (
+                  ] as const)
+                  .filter(([field]) => viewState.viewMode === "board" ? field !== "status" : true)
+                  .map(([field, label]) => (
                     <button
                       key={field}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
