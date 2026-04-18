@@ -535,6 +535,64 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.status(201).json(issue);
   });
 
+  // PR-Gate: extract GitHub PR URLs from a text body
+  function extractPrUrls(text: string): { repo: string; number: number }[] {
+    const matches = text.matchAll(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/g);
+    const result: { repo: string; number: number }[] = [];
+    for (const m of matches) {
+      result.push({ repo: m[1] as string, number: Number(m[2]) });
+    }
+    return result;
+  }
+
+  // PR-Gate: check GitHub PR state via API (no auth token needed for public repos; uses GH_TOKEN env if set)
+  async function getPrState(repo: string, prNumber: number): Promise<"OPEN" | "MERGED" | "CLOSED" | null> {
+    try {
+      const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
+      const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const url = `https://api.github.com/repos/${repo}/pulls/${prNumber}`;
+      const resp = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+      if (!resp.ok) return null;
+      const data = await resp.json() as { state: string; merged: boolean; merged_at: string | null };
+      if (data.merged || data.merged_at) return "MERGED";
+      return data.state === "open" ? "OPEN" : "CLOSED";
+    } catch {
+      return null;
+    }
+  }
+
+  // PR-Gate: for a CLOSED (unmerged) PR, check if its commits are already present in the default branch.
+  // Uses GitHub compare API: if default branch is ahead of or identical to the PR head, the content is in main.
+  async function isPrCommitsInDefaultBranch(repo: string, prNumber: number): Promise<boolean> {
+    try {
+      const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
+      const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      // Get PR head SHA and base branch
+      const prUrl = `https://api.github.com/repos/${repo}/pulls/${prNumber}`;
+      const prResp = await fetch(prUrl, { headers, signal: AbortSignal.timeout(8000) });
+      if (!prResp.ok) return false;
+      const prData = await prResp.json() as { head: { sha: string }; base: { repo: { default_branch: string } } };
+      const headSha = prData.head.sha;
+      const defaultBranch = prData.base.repo.default_branch ?? "main";
+
+      // Compare: {pr_head}...{default_branch} — if default branch is ahead or identical, pr_head is in default branch
+      const compareUrl = `https://api.github.com/repos/${repo}/compare/${headSha}...${defaultBranch}`;
+      const compareResp = await fetch(compareUrl, { headers, signal: AbortSignal.timeout(8000) });
+      if (!compareResp.ok) return false;
+      const compareData = await compareResp.json() as { status: string; behind_by: number };
+      // status "ahead" means default_branch has commits beyond pr_head (pr_head is an ancestor = in main)
+      // status "identical" means they are the same commit
+      // status "behind" means pr_head is ahead of default_branch (content NOT in main)
+      // status "diverged" means branches diverged (content NOT in main via this path)
+      return compareData.status === "ahead" || compareData.status === "identical";
+    } catch {
+      return false;
+    }
+  }
+
   router.patch("/issues/:id", validate(updateIssueSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
@@ -543,6 +601,52 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+
+    // PR-Gate: block transition to 'done' if any linked PR is not yet merged
+    if (req.body.status === "done" && existing.status !== "done") {
+      const comments = await svc.listComments(id, { afterCommentId: null, order: "asc", limit: 500 });
+      const allText = comments.map((c: { body: string }) => c.body).join("\n") + "\n" + (existing.description ?? "");
+      const prRefs = extractPrUrls(allText);
+      // Deduplicate by repo+number
+      const seen = new Set<string>();
+      const unique = prRefs.filter((p) => {
+        const key = `${p.repo}#${p.number}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      if (unique.length > 0) {
+        const states = await Promise.all(unique.map(async (p) => ({ ...p, state: await getPrState(p.repo, p.number) })));
+        // For CLOSED PRs, check if their commits are already present in the default branch (e.g. landed via another PR).
+        // If so, treat them as effectively merged — they should not block the done transition.
+        const notMergedRaw = states.filter((s) => s.state === "OPEN" || s.state === "CLOSED");
+        const notMerged = (
+          await Promise.all(
+            notMergedRaw.map(async (s) => {
+              if (s.state === "CLOSED") {
+                const inMain = await isPrCommitsInDefaultBranch(s.repo, s.number);
+                if (inMain) {
+                  logger.info({ repo: s.repo, pr: s.number }, "PR-Gate: CLOSED PR commits found in default branch — treating as merged");
+                  return null;
+                }
+              }
+              return s;
+            }),
+          )
+        ).filter((s): s is NonNullable<typeof s> => s !== null);
+        if (notMerged.length > 0) {
+          const prList = notMerged.map((s) => `https://github.com/${s.repo}/pull/${s.number} (${s.state ?? "unknown"})`).join(", ");
+          res.status(422).json({
+            error: "PR_NOT_MERGED",
+            message: `Cannot mark issue as done: the following PR(s) are not yet merged: ${prList}. Merge all PRs before closing the issue.`,
+            unmergedPrs: notMerged.map((s) => ({ url: `https://github.com/${s.repo}/pull/${s.number}`, state: s.state })),
+          });
+          logger.warn({ issueId: id, notMerged }, "PR-Gate blocked done transition — unmerged PRs detected");
+          return;
+        }
+      }
+    }
+
     const assigneeWillChange =
       (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
       (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
