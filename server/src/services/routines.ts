@@ -777,13 +777,15 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         try {
           // Workflow template invoke branch
           if (input.routine.workflowTemplateId) {
+            const wfTemplate = await workflowSvc.get(input.routine.workflowTemplateId);
+            if (!wfTemplate) throw new Error(`Workflow template ${input.routine.workflowTemplateId} not found`);
             const invokeInput = (input.routine.workflowInvokeInput ?? {}) as Record<string, unknown>;
             const context = typeof invokeInput.context === "string"
               ? interpolateRoutineTemplate(invokeInput.context, allVariables) ?? invokeInput.context
               : undefined;
             const result = await workflowSvc.invoke(
               input.routine.companyId,
-              input.routine.workflowTemplateId,
+              wfTemplate,
               {
                 context: context ?? null,
                 defaultAssigneeAgentId: (invokeInput.defaultAssigneeAgentId as string) ?? assigneeAgentId ?? null,

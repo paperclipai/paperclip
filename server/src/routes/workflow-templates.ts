@@ -145,7 +145,7 @@ export function workflowTemplateRoutes(db: Db) {
       assertCompanyAccess(req, existing.companyId);
 
       const actor = getActorInfo(req);
-      const result = await svc.invoke(existing.companyId, id, req.body, {
+      const result = await svc.invoke(existing.companyId, existing, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });

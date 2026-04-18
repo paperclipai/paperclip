@@ -124,7 +124,10 @@ export function WorkflowDetail() {
             variant="ghost"
             size="icon-sm"
             className="text-destructive"
-            onClick={() => deleteMutation.mutate()}
+            onClick={() => {
+              if (!window.confirm("Delete this workflow template? Linked routines will be detached.")) return;
+              deleteMutation.mutate();
+            }}
           >
             <Trash2 className="h-4 w-4" />
           </Button>

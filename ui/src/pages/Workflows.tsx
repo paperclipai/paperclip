@@ -168,7 +168,10 @@ export function Workflows() {
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           className="text-destructive"
-                          onClick={() => deleteMutation.mutate(t.id)}
+                          onClick={() => {
+                            if (!window.confirm("Delete this workflow template? Linked routines will be detached.")) return;
+                            deleteMutation.mutate(t.id);
+                          }}
                         >
                           <Trash2 className="mr-2 h-4 w-4" />
                           Delete

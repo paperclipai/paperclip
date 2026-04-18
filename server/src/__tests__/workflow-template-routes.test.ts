@@ -293,7 +293,7 @@ describe("workflow template routes", () => {
     expect(res.body.createdIssues).toHaveLength(2);
     expect(mockWorkflowTemplateService.invoke).toHaveBeenCalledWith(
       COMPANY_ID,
-      TEMPLATE_ID,
+      existing,
       expect.objectContaining({ context: "Hiring a new QA agent" }),
       { agentId: null, userId: "user-1" },
     );

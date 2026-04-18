@@ -44,9 +44,8 @@ interface NodeDraft {
   _metaOpen?: boolean;
 }
 
-let nextId = 1;
 function genTempId() {
-  return `$node_${nextId++}`;
+  return `$node_${Math.random().toString(36).slice(2, 7)}`;
 }
 
 export function WorkflowEdit() {

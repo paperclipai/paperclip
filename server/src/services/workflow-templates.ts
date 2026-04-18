@@ -129,18 +129,11 @@ export function workflowTemplateService(db: Db) {
 
     invoke: async (
       companyId: string,
-      templateId: string,
+      existingTemplate: WorkflowTemplate,
       input: WorkflowInvokeInput,
       actor: { agentId?: string | null; userId?: string | null },
     ): Promise<WorkflowInvokeResponse> => {
-      const rows = await db
-        .select()
-        .from(workflowTemplates)
-        .where(and(eq(workflowTemplates.id, templateId), eq(workflowTemplates.companyId, companyId)));
-
-      const template = (rows[0] as unknown as WorkflowTemplate) ?? null;
-
-      if (!template) throw notFound("Workflow template not found");
+      const template = existingTemplate;
 
       const nodes: WorkflowTemplateNode[] = template.nodes;
       validateDAG(nodes);
