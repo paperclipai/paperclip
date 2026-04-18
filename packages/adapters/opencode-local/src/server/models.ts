@@ -20,6 +20,12 @@ function resolveOpenCodeCommand(input: unknown): string {
 }
 
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
+/**
+ * Track the highest model count ever seen per cache key.
+ * Used to detect partial/truncated discovery results from concurrent calls
+ * where some providers fail to respond, so we avoid caching bad results.
+ */
+const discoveryHighWaterMark = new Map<string, number>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
 
@@ -162,7 +168,21 @@ export async function discoverOpenCodeModelsCached(input: {
   if (cached && cached.expiresAt > now) return cached.models;
 
   const models = await discoverOpenCodeModels({ command, cwd, env });
-  discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
+
+  // Guard against caching partial/truncated results from concurrent calls.
+  // When multiple agents trigger simultaneously, `opencode models` can return
+  // incomplete output (e.g., only some providers respond). If we see significantly
+  // fewer models than a previous successful discovery, skip caching so we don't
+  // poison subsequent lookups for the entire TTL window.
+  const highWater = discoveryHighWaterMark.get(key) ?? 0;
+  if (models.length > highWater) {
+    discoveryHighWaterMark.set(key, models.length);
+  }
+  const looksPartial = highWater > 0 && models.length < highWater * 0.5;
+  if (!looksPartial) {
+    discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
+  }
+
   return models;
 }
 
@@ -188,9 +208,30 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   }
 
   if (!models.some((entry) => entry.id === model)) {
-    const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
+    // The cached result may be partial (truncated provider list from a concurrent call).
+    // Retry once with a fresh (uncached) discovery before failing.
+    const freshModels = await discoverOpenCodeModels({
+      command: input.command,
+      cwd: input.cwd,
+      env: input.env,
+    });
+    if (freshModels.some((entry) => entry.id === model)) {
+      // Fresh discovery found the model — update the cache with this better result.
+      const command = resolveOpenCodeCommand(input.command);
+      const cwd = asString(input.cwd, process.cwd());
+      const env = normalizeEnv(input.env);
+      const key = discoveryCacheKey(command, cwd, env);
+      discoveryCache.set(key, { expiresAt: Date.now() + MODELS_CACHE_TTL_MS, models: freshModels });
+      const highWater = discoveryHighWaterMark.get(key) ?? 0;
+      if (freshModels.length > highWater) {
+        discoveryHighWaterMark.set(key, freshModels.length);
+      }
+      return freshModels;
+    }
+
+    const sample = freshModels.slice(0, 12).map((entry) => entry.id).join(", ");
     throw new Error(
-      `Configured OpenCode model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
+      `Configured OpenCode model is unavailable: ${model}. Available models: ${sample}${freshModels.length > 12 ? ", ..." : ""}`,
     );
   }
 
@@ -207,4 +248,5 @@ export async function listOpenCodeModels(): Promise<AdapterModel[]> {
 
 export function resetOpenCodeModelsCacheForTests() {
   discoveryCache.clear();
+  discoveryHighWaterMark.clear();
 }
