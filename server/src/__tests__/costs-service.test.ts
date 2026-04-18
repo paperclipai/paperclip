@@ -235,7 +235,8 @@ describe("cost routes", () => {
       .patch("/api/agents/agent-1/budgets")
       .send({ budgetMonthlyCents: 2500 });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Agent not found");
     expect(mockAgentService.update).not.toHaveBeenCalled();
   });
 });

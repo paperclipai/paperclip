@@ -181,8 +181,8 @@ describe("agent cross-tenant route authorization", () => {
 
     const res = await request(app).post(`/api/agents/${agentId}/pause`).send({});
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toContain("User does not have access to this company");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Agent not found");
     expect(mockAgentService.getById).toHaveBeenCalledWith(agentId);
     expect(mockAgentService.pause).not.toHaveBeenCalled();
     expect(mockHeartbeatService.cancelActiveForAgent).not.toHaveBeenCalled();
@@ -199,8 +199,8 @@ describe("agent cross-tenant route authorization", () => {
 
     const res = await request(app).get(`/api/agents/${agentId}/keys`);
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toContain("User does not have access to this company");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Agent not found");
     expect(mockAgentService.getById).toHaveBeenCalledWith(agentId);
     expect(mockAgentService.listKeys).not.toHaveBeenCalled();
   });
@@ -218,8 +218,8 @@ describe("agent cross-tenant route authorization", () => {
       .post(`/api/agents/${agentId}/keys`)
       .send({ name: "exploit" });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toContain("User does not have access to this company");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Agent not found");
     expect(mockAgentService.getById).toHaveBeenCalledWith(agentId);
     expect(mockAgentService.createApiKey).not.toHaveBeenCalled();
   });
@@ -235,8 +235,8 @@ describe("agent cross-tenant route authorization", () => {
 
     const res = await request(app).delete(`/api/agents/${agentId}/keys/${keyId}`);
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toContain("User does not have access to this company");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Agent not found");
     expect(mockAgentService.getById).toHaveBeenCalledWith(agentId);
     expect(mockAgentService.getKeyById).not.toHaveBeenCalled();
     expect(mockAgentService.revokeKey).not.toHaveBeenCalled();
