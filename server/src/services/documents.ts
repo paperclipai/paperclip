@@ -1,7 +1,7 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
-import { issueDocumentKeySchema } from "@paperclipai/shared";
+import { issueDocumentKeySchema, type IssueDocument, type IssueDocumentSummary } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 function normalizeDocumentKey(key: string) {
@@ -25,34 +25,34 @@ export function extractLegacyPlanBody(description: string | null | undefined) {
   return body ? body : null;
 }
 
-function mapIssueDocumentRow(
-  row: {
-    id: string;
-    companyId: string;
-    issueId: string;
-    key: string;
-    title: string | null;
-    format: string;
-    latestBody: string;
-    latestRevisionId: string | null;
-    latestRevisionNumber: number;
-    createdByAgentId: string | null;
-    createdByUserId: string | null;
-    updatedByAgentId: string | null;
-    updatedByUserId: string | null;
-    createdAt: Date;
-    updatedAt: Date;
-  },
-  includeBody: boolean,
-) {
-  return {
+type IssueDocumentRow = {
+  id: string;
+  companyId: string;
+  issueId: string;
+  key: string;
+  title: string | null;
+  format: string;
+  latestBody: string;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+function mapIssueDocumentRow(row: IssueDocumentRow, includeBody: true): IssueDocument;
+function mapIssueDocumentRow(row: IssueDocumentRow, includeBody: false): IssueDocumentSummary;
+function mapIssueDocumentRow(row: IssueDocumentRow, includeBody: boolean): IssueDocument | IssueDocumentSummary {
+  const mapped = {
     id: row.id,
     companyId: row.companyId,
     issueId: row.issueId,
     key: row.key,
     title: row.title,
-    format: row.format,
-    ...(includeBody ? { body: row.latestBody } : {}),
+    format: row.format as IssueDocumentSummary["format"],
     latestRevisionId: row.latestRevisionId ?? null,
     latestRevisionNumber: row.latestRevisionNumber,
     createdByAgentId: row.createdByAgentId,
@@ -62,6 +62,7 @@ function mapIssueDocumentRow(
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+  return includeBody ? { ...mapped, body: row.latestBody } : mapped;
 }
 
 const issueDocumentSelect = {

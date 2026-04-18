@@ -60,7 +60,7 @@ export function parseAllowedTypes(raw: string | undefined): string[] {
  * patterns ("image/*", "application/vnd.openxmlformats-officedocument.*").
  */
 export function matchesContentType(contentType: string, allowedPatterns: string[]): boolean {
-  const ct = contentType.toLowerCase();
+  const ct = normalizeContentType(contentType);
   return allowedPatterns.some((pattern) => {
     if (pattern === "*") return true;
     if (pattern.endsWith("/*") || pattern.endsWith(".*")) {
@@ -71,7 +71,8 @@ export function matchesContentType(contentType: string, allowedPatterns: string[
 }
 
 export function normalizeContentType(contentType: string | null | undefined): string {
-  const normalized = (contentType ?? "").trim().toLowerCase();
+  const [baseMediaType] = (contentType ?? "").split(";", 1);
+  const normalized = (baseMediaType ?? "").trim().toLowerCase();
   return normalized || DEFAULT_ATTACHMENT_CONTENT_TYPE;
 }
 

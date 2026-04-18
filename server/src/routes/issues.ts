@@ -67,6 +67,7 @@ import {
 } from "../services/issue-execution-policy.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const MARKDOWN_CONTENT_TYPE = "text/markdown; charset=utf-8";
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -91,6 +92,48 @@ type ExecutionStageWakeContext = {
   lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
   allowedActions: string[];
 };
+type IssueAssetManifestItem = {
+  kind: "document" | "attachment" | "work_product";
+  id: string;
+  title: string;
+  contentType: string | null;
+  byteSize: number | null;
+  previewable: boolean;
+  previewUrl: string | null;
+  downloadUrl: string | null;
+  reviewState: string | null;
+  isPrimary: boolean | null;
+  [key: string]: unknown;
+};
+
+function sanitizeDownloadFilename(input: string | null | undefined, fallback = "download") {
+  const raw = input && input.trim().length > 0 ? input : fallback;
+  const sanitized = raw
+    .replace(/[\x00-\x1F\x7F"\\\/;]+/g, "_")
+    .replace(/[^\x20-\x7E]+/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\.+$/, "");
+  const fallbackSanitized = fallback
+    .replace(/[\x00-\x1F\x7F"\\\/;]+/g, "_")
+    .replace(/[^\x20-\x7E]+/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\.+$/, "");
+  return (sanitized || fallbackSanitized || "download").slice(0, 180);
+}
+
+function contentDisposition(disposition: "inline" | "attachment", filename: string | null | undefined) {
+  return `${disposition}; filename="${sanitizeDownloadFilename(filename, "attachment")}"`;
+}
+
+function encodeApiPathSegment(segment: string) {
+  return encodeURIComponent(segment);
+}
+
+function isPreviewableAttachmentContentType(contentType: string) {
+  return contentType !== SVG_CONTENT_TYPE && isInlineAttachmentContentType(contentType);
+}
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
@@ -325,6 +368,85 @@ export function issueRoutes(
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
+  }
+
+  function buildIssueAssetsManifest(input: {
+    issue: { id: string; identifier: string | null };
+    documents: Awaited<ReturnType<ReturnType<typeof documentService>["listIssueDocuments"]>>;
+    attachments: Awaited<ReturnType<ReturnType<typeof issueService>["listAttachments"]>>;
+    workProducts: Awaited<ReturnType<ReturnType<typeof workProductService>["listForIssue"]>>;
+  }) {
+    const issuePathId = encodeApiPathSegment(input.issue.id);
+    const documentAssets: IssueAssetManifestItem[] = input.documents.map((doc) => {
+      const key = encodeApiPathSegment(doc.key);
+      return {
+        kind: "document",
+        id: doc.id,
+        key: doc.key,
+        title: doc.title ?? doc.key,
+        contentType: MARKDOWN_CONTENT_TYPE,
+        byteSize: Buffer.byteLength(doc.body, "utf8"),
+        previewable: true,
+        previewUrl: `/api/issues/${issuePathId}/documents/${key}`,
+        downloadUrl: `/api/issues/${issuePathId}/documents/${key}/export`,
+        reviewState: null,
+        isPrimary: null,
+        latestRevisionId: doc.latestRevisionId,
+        latestRevisionNumber: doc.latestRevisionNumber,
+        updatedAt: doc.updatedAt,
+      };
+    });
+    const attachmentAssets: IssueAssetManifestItem[] = input.attachments.map((attachment) => {
+      const contentType = normalizeContentType(attachment.contentType);
+      const previewable = isPreviewableAttachmentContentType(contentType);
+      const contentPath = `/api/attachments/${encodeApiPathSegment(attachment.id)}/content`;
+      return {
+        kind: "attachment",
+        id: attachment.id,
+        title: attachment.originalFilename ?? "attachment",
+        contentType,
+        byteSize: attachment.byteSize,
+        previewable,
+        previewUrl: previewable ? contentPath : null,
+        downloadUrl: `${contentPath}?download=1`,
+        reviewState: null,
+        isPrimary: null,
+        createdAt: attachment.createdAt,
+        updatedAt: attachment.updatedAt,
+      };
+    });
+    const workProductAssets: IssueAssetManifestItem[] = input.workProducts.map((product) => {
+      const url = product.url && product.url.trim().length > 0 ? product.url : null;
+      return {
+        kind: "work_product",
+        id: product.id,
+        title: product.title,
+        contentType: null,
+        byteSize: null,
+        previewable: Boolean(url),
+        previewUrl: url,
+        downloadUrl: product.type === "artifact" || product.type === "document" ? url : null,
+        reviewState: product.reviewState,
+        isPrimary: product.isPrimary,
+        type: product.type,
+        provider: product.provider,
+        status: product.status,
+        healthStatus: product.healthStatus,
+        updatedAt: product.updatedAt,
+      };
+    });
+
+    return {
+      issue: {
+        id: input.issue.id,
+        identifier: input.issue.identifier,
+      },
+      assets: [...documentAssets, ...attachmentAssets, ...workProductAssets],
+      workspace: {
+        status: "unavailable",
+        reason: "workspace_browsing_disabled",
+      },
+    };
   }
 
   function parseDateQuery(value: unknown, field: string) {
@@ -836,6 +958,23 @@ export function issueRoutes(
     });
   });
 
+  router.get("/issues/:id/assets", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const [documents, attachments, workProducts] = await Promise.all([
+      documentsSvc.listIssueDocuments(issue.id),
+      svc.listAttachments(issue.id),
+      workProductsSvc.listForIssue(issue.id),
+    ]);
+    res.json(buildIssueAssetsManifest({ issue, documents, attachments, workProducts }));
+  });
+
   router.get("/issues/:id/work-products", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -879,6 +1018,34 @@ export function issueRoutes(
       return;
     }
     res.json(doc);
+  });
+
+  router.get("/issues/:id/documents/:key/export", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) {
+      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      return;
+    }
+    const doc = await documentsSvc.getIssueDocumentByKey(issue.id, keyParsed.data);
+    if (!doc) {
+      res.status(404).json({ error: "Document not found" });
+      return;
+    }
+    const body = doc.body;
+    const filename = `${issue.identifier ?? issue.id}-${doc.key}.md`;
+    res.setHeader("Content-Type", MARKDOWN_CONTENT_TYPE);
+    res.setHeader("Content-Length", String(Buffer.byteLength(body, "utf8")));
+    res.setHeader("Cache-Control", "private, max-age=60");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Disposition", contentDisposition("attachment", filename));
+    res.send(body);
   });
 
   router.put("/issues/:id/documents/:key", validate(upsertIssueDocumentSchema), async (req, res) => {
@@ -2743,8 +2910,11 @@ export function issueRoutes(
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
     }
     const filename = attachment.originalFilename ?? "attachment";
-    const disposition = isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
-    res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
+    const disposition =
+      parseBooleanQuery(req.query.download) || !isPreviewableAttachmentContentType(responseContentType)
+        ? "attachment"
+        : "inline";
+    res.setHeader("Content-Disposition", contentDisposition(disposition, filename));
 
     object.stream.on("error", (err) => {
       next(err);
