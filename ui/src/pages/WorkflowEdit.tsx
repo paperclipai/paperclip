@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@/lib/router";
-import { ArrowLeft, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react";
 import { workflowTemplatesApi } from "../api/workflow-templates";
+import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -10,7 +11,9 @@ import { queryKeys } from "../lib/queryKeys";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import type { WorkflowTemplateNode, IssueExecutionPolicy } from "@paperclipai/shared";
+import { WorkflowDAGView } from "../components/WorkflowDAGView";
+import type { IssueExecutionPolicy, IssuePriority } from "@paperclipai/shared";
+import { ISSUE_PRIORITIES } from "@paperclipai/shared";
 
 interface NodeDraft {
   tempId: string;
@@ -19,6 +22,9 @@ interface NodeDraft {
   blockedByTempIds: string[];
   parentTempId: string | null;
   executionPolicy?: IssueExecutionPolicy | null;
+  defaultAssigneeAgentId?: string | null;
+  defaultPriority?: IssuePriority | null;
+  _metaOpen?: boolean;
 }
 
 let nextId = 1;
@@ -39,6 +45,12 @@ export function WorkflowEdit() {
     queryKey: queryKeys.workflowTemplates.detail(id ?? ""),
     queryFn: () => workflowTemplatesApi.get(id!),
     enabled: !isNew && !!id,
+  });
+
+  const { data: agents = [] } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
   });
 
   const [name, setName] = useState("");
@@ -66,6 +78,8 @@ export function WorkflowEdit() {
           blockedByTempIds: n.blockedByTempIds ?? [],
           parentTempId: n.parentTempId ?? null,
           executionPolicy: n.executionPolicy ?? null,
+          defaultAssigneeAgentId: n.defaultAssigneeAgentId ?? null,
+          defaultPriority: n.defaultPriority ?? null,
         })),
       );
     }
@@ -122,6 +136,8 @@ export function WorkflowEdit() {
         blockedByTempIds: n.blockedByTempIds,
         parentTempId: n.parentTempId || undefined,
         executionPolicy: n.executionPolicy || undefined,
+        defaultAssigneeAgentId: n.defaultAssigneeAgentId || undefined,
+        defaultPriority: n.defaultPriority || undefined,
       })),
     };
     saveMutation.mutate(payload);
@@ -160,6 +176,20 @@ export function WorkflowEdit() {
           />
         </div>
       </div>
+
+      {/* DAG preview */}
+      {nodes.length > 0 && (
+        <WorkflowDAGView
+          nodes={nodes.map((n) => ({
+            tempId: n.tempId,
+            title: n.title || "Untitled",
+            description: n.description || undefined,
+            blockedByTempIds: n.blockedByTempIds,
+            parentTempId: n.parentTempId,
+          }))}
+          minHeight={Math.min(350, Math.max(180, nodes.length * 50))}
+        />
+      )}
 
       {/* Node editor */}
       <div>
@@ -222,6 +252,75 @@ export function WorkflowEdit() {
                       placeholder="Optional parent"
                     />
                   </div>
+                </div>
+
+                {/* Collapsible metadata */}
+                <div className="border-t border-border pt-1">
+                  <button
+                    type="button"
+                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors py-1"
+                    onClick={() => updateNode(i, { _metaOpen: !node._metaOpen })}
+                  >
+                    {node._metaOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                    Issue defaults
+                    {(node.defaultAssigneeAgentId || node.defaultPriority || node.executionPolicy) && (
+                      <span className="ml-1 w-1.5 h-1.5 rounded-full bg-primary" />
+                    )}
+                  </button>
+                  {node._metaOpen && (
+                    <div className="mt-1.5 space-y-2 rounded-md border border-border bg-muted/20 p-3">
+                      <div className="flex gap-3">
+                        <div className="flex-1">
+                          <label className="text-xs text-muted-foreground">Default assignee</label>
+                          <select
+                            className="mt-0.5 w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm"
+                            value={node.defaultAssigneeAgentId ?? ""}
+                            onChange={(e) => updateNode(i, { defaultAssigneeAgentId: e.target.value || null })}
+                          >
+                            <option value="">None (use invoke default)</option>
+                            {agents.map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {a.icon ? `${a.icon} ` : ""}{a.name} — {a.title ?? a.role}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="w-36">
+                          <label className="text-xs text-muted-foreground">Priority</label>
+                          <select
+                            className="mt-0.5 w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm capitalize"
+                            value={node.defaultPriority ?? ""}
+                            onChange={(e) => updateNode(i, { defaultPriority: (e.target.value || null) as IssuePriority | null })}
+                          >
+                            <option value="">Default (medium)</option>
+                            {ISSUE_PRIORITIES.map((p) => (
+                              <option key={p} value={p} className="capitalize">{p}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground">Execution policy (JSON, optional)</label>
+                        <input
+                          className="mt-0.5 w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm font-mono"
+                          value={node.executionPolicy ? JSON.stringify(node.executionPolicy) : ""}
+                          onChange={(e) => {
+                            if (!e.target.value) {
+                              updateNode(i, { executionPolicy: null });
+                              return;
+                            }
+                            try {
+                              const parsed = JSON.parse(e.target.value);
+                              updateNode(i, { executionPolicy: parsed });
+                            } catch {
+                              // Let user keep typing
+                            }
+                          }}
+                          placeholder='e.g. {"autoAssign":true}'
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>

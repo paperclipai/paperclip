@@ -7,6 +7,8 @@ export interface WorkflowTemplateNode {
   blockedByTempIds: string[];
   parentTempId?: string | null;
   executionPolicy?: IssueExecutionPolicy | null;
+  defaultAssigneeAgentId?: string | null;
+  defaultPriority?: "critical" | "high" | "medium" | "low" | null;
 }
 
 export interface WorkflowTemplate {

@@ -10,6 +10,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { WorkflowDAGView } from "../components/WorkflowDAGView";
 import type { WorkflowTemplateNode, WorkflowInvokeResponse } from "@paperclipai/shared";
 
 export function WorkflowDetail() {
@@ -90,6 +91,9 @@ export function WorkflowDetail() {
           </Button>
         </div>
       </div>
+
+      {/* DAG visualization */}
+      <WorkflowDAGView nodes={template.nodes} minHeight={Math.min(400, Math.max(200, template.nodes.length * 60))} />
 
       {/* Node list */}
       <div>

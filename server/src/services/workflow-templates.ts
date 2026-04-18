@@ -172,8 +172,8 @@ export function workflowTemplateService(db: Db) {
             title: node.title,
             description,
             status: "backlog", // temporary, will be set to todo/blocked below
-            priority: overrides?.priority ?? "medium",
-            assigneeAgentId: overrides?.assigneeAgentId ?? input.defaultAssigneeAgentId ?? null,
+            priority: overrides?.priority ?? node.defaultPriority ?? "medium",
+            assigneeAgentId: overrides?.assigneeAgentId ?? node.defaultAssigneeAgentId ?? input.defaultAssigneeAgentId ?? null,
             assigneeUserId: overrides?.assigneeUserId ?? null,
             projectId: overrides?.projectId ?? input.projectId ?? null,
             goalId: overrides?.goalId ?? input.goalId ?? null,

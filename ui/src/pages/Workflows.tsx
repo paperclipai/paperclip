@@ -167,9 +167,10 @@ export function Workflows() {
         <CreateWorkflowTemplateDialog
           companyId={selectedCompanyId!}
           onClose={() => setShowCreate(false)}
-          onCreated={() => {
+          onCreated={(id) => {
             setShowCreate(false);
             queryClient.invalidateQueries({ queryKey: queryKeys.workflowTemplates.list(selectedCompanyId!) });
+            navigate(`/workflows/${id}/edit`);
           }}
         />
       )}
@@ -184,7 +185,7 @@ function CreateWorkflowTemplateDialog({
 }: {
   companyId: string;
   onClose: () => void;
-  onCreated: () => void;
+  onCreated: (id: string) => void;
 }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -193,9 +194,9 @@ function CreateWorkflowTemplateDialog({
   const createMutation = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       workflowTemplatesApi.create(companyId, data),
-    onSuccess: () => {
+    onSuccess: (result) => {
       pushToast({ title: "Template created" });
-      onCreated();
+      onCreated(result.id);
     },
   });
 

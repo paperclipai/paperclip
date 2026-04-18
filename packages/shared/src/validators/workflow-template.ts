@@ -9,6 +9,8 @@ const workflowTemplateNodeSchema = z.object({
   blockedByTempIds: z.array(z.string().trim().min(1).max(100)).default([]),
   parentTempId: z.string().trim().min(1).max(100).optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
+  defaultAssigneeAgentId: z.string().uuid().optional().nullable(),
+  defaultPriority: z.enum(ISSUE_PRIORITIES).optional().nullable(),
 });
 
 export const createWorkflowTemplateSchema = z.object({
