@@ -67,3 +67,5 @@ export { departments } from "./departments.js";
 export { teams } from "./teams.js";
 export { departmentMemberships } from "./department_memberships.js";
 export { teamMemberships } from "./team_memberships.js";
+export { slaPolicies } from "./sla_policies.js";
+export { slaPolicyRules } from "./sla_policy_rules.js";

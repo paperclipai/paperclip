@@ -206,6 +206,8 @@ function createIssue(): Issue {
     completedAt: null,
     cancelledAt: null,
     hiddenAt: null,
+    dueDate: null,
+    slaAutoSet: false,
     labels: [],
     labelIds: [],
     planDocument: createIssueDocument(),

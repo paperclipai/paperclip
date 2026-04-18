@@ -183,6 +183,13 @@ export type {
   CompanyRoleWithPermissions,
   PrincipalRoleAssignmentDetail,
 } from "./rbac.js";
+export type {
+  SlaStatus,
+  SlaPolicy,
+  SlaPolicyRule,
+  SlaPolicyWithRules,
+  IssueSlaInfo,
+} from "./sla.js";
 export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
 export type {
   CompanyPortabilityInclude,

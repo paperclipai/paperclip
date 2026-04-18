@@ -7,6 +7,7 @@ import {
   timestamp,
   integer,
   jsonb,
+  boolean,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -59,6 +60,8 @@ export const issues = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),
+    dueDate: timestamp("due_date", { withTimezone: true }),
+    slaAutoSet: boolean("sla_auto_set").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -83,6 +86,12 @@ export const issues = pgTable(
     titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
     identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),
     descriptionSearchIdx: index("issues_description_search_idx").using("gin", table.description.op("gin_trgm_ops")),
+    dueDateIdx: index("issues_due_date_idx")
+      .on(table.dueDate)
+      .where(sql`${table.dueDate} is not null`),
+    overdueIdx: index("issues_overdue_idx")
+      .on(table.dueDate, table.status)
+      .where(sql`${table.dueDate} is not null and ${table.status} not in ('done', 'cancelled')`),
     openRoutineExecutionIdx: uniqueIndex("issues_open_routine_execution_uq")
       .on(table.companyId, table.originKind, table.originId)
       .where(

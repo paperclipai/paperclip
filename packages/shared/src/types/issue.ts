@@ -9,6 +9,7 @@ import type {
 } from "../constants.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
+import type { IssueSlaInfo } from "./sla.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
 
@@ -211,6 +212,9 @@ export interface Issue {
   completedAt: Date | null;
   cancelledAt: Date | null;
   hiddenAt: Date | null;
+  dueDate: Date | null;
+  slaAutoSet: boolean;
+  slaInfo?: IssueSlaInfo | null;
   labelIds?: string[];
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];

@@ -383,6 +383,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           completedAt: null,
           cancelledAt: null,
           hiddenAt: null,
+          dueDate: null,
+          slaAutoSet: false,
           createdAt: now,
           updatedAt: now,
         };
