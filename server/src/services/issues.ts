@@ -39,10 +39,17 @@ import { getDefaultCompanyGoal } from "./goals.js";
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 
-function assertTransition(from: string, to: string) {
+const TERMINAL_STATUSES = new Set(["done", "cancelled"]);
+
+function assertTransition(from: string, to: string, allowTerminalReopen = false) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
     throw conflict(`Unknown issue status: ${to}`);
+  }
+  if (TERMINAL_STATUSES.has(from) && !TERMINAL_STATUSES.has(to) && !allowTerminalReopen) {
+    throw unprocessable(
+      `Cannot reopen a terminal issue (status="${from}") without explicit allowTerminalReopen`,
+    );
   }
 }
 
@@ -1607,6 +1614,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        allowTerminalReopen?: boolean;
       },
       dbOrTx: any = db,
     ) => {
@@ -1622,6 +1630,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        allowTerminalReopen,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -1632,7 +1641,7 @@ export function issueService(db: Db) {
       }
 
       if (issueData.status) {
-        assertTransition(existing.status, issueData.status);
+        assertTransition(existing.status, issueData.status, allowTerminalReopen);
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
