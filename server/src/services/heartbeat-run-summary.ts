@@ -79,10 +79,16 @@ export function buildHeartbeatRunIssueComment(
     return null;
   }
 
-  return (
+  const summary =
     readCommentText(resultJson.summary)
     ?? readCommentText(resultJson.result)
-    ?? readCommentText(resultJson.message)
-    ?? null
-  );
+    ?? readCommentText(resultJson.message);
+  if (summary) return summary;
+
+  const stdout = readCommentText(resultJson.stdout);
+  const stderr = readCommentText(resultJson.stderr);
+  if (stdout && stderr) return `stdout:\n${stdout}\n\nstderr:\n${stderr}`;
+  if (stdout) return stdout;
+  if (stderr) return stderr;
+  return null;
 }

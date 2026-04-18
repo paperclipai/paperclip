@@ -46,6 +46,7 @@ vi.mock("../services/index.js", () => ({
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
   feedbackService: () => mockFeedbackService,
+  heartbeatService: () => ({ drainActiveRunExecutions: vi.fn().mockResolvedValue(0) }),
   logActivity: mockLogActivity,
 }));
 

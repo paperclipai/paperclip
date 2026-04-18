@@ -35,6 +35,9 @@ vi.mock("../services/index.js", () => ({
     getFeedbackTraceById: vi.fn(),
     saveIssueVote: vi.fn(),
   }),
+  heartbeatService: () => ({
+    drainActiveRunExecutions: vi.fn().mockResolvedValue(0),
+  }),
   logActivity: vi.fn(),
 }));
 
