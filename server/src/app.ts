@@ -127,6 +127,15 @@ export async function createApp(
 ) {
   const app = express();
 
+  app.use(express.urlencoded({
+    extended: false,
+    // Slack slash commands and interactivity post as application/x-www-form-urlencoded.
+    // Preserve the exact raw bytes for HMAC verification before parsing.
+    limit: "10mb",
+    verify: (req, _res, buf) => {
+      (req as unknown as { rawBody: Buffer }).rawBody = buf;
+    },
+  }));
   app.use(express.json({
     // Company import/export payloads can inline full portable packages.
     limit: "10mb",
