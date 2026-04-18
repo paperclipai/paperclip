@@ -62,6 +62,14 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         throw unprocessable("Agent does not belong to company");
       }
 
+      // Set costCents to 0 for subscription billing types to avoid
+      // displaying virtual "what if we paid API" costs in the dashboard
+      // when the user is actually on a flat-rate subscription.
+      const isSubscriptionBilling = SUBSCRIPTION_BILLING_TYPES.includes(
+        data.billingType as (typeof SUBSCRIPTION_BILLING_TYPES)[number],
+      );
+      const costCents = isSubscriptionBilling ? 0 : data.costCents;
+
       const event = await db
         .insert(costEvents)
         .values({
@@ -70,6 +78,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           biller: data.biller ?? data.provider,
           billingType: data.billingType ?? "unknown",
           cachedInputTokens: data.cachedInputTokens ?? 0,
+          costCents,
         })
         .returning()
         .then((rows) => rows[0]);
