@@ -1,9 +1,11 @@
 import type { ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
+import { Archive } from "lucide-react";
 import { Link } from "@/lib/router";
-import { X } from "lucide-react";
 import { createIssueDetailPath, rememberIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { cn } from "../lib/utils";
+import { InboxRowActionButton } from "./InboxRowActionButton";
+import { InboxUnreadIndicator } from "./InboxUnreadIndicator";
 import { StatusIcon } from "./StatusIcon";
 
 type UnreadState = "hidden" | "visible" | "fading";
@@ -20,7 +22,6 @@ interface IssueRowProps {
   trailingMeta?: ReactNode;
   titleSuffix?: ReactNode;
   unreadState?: UnreadState | null;
-  onMarkRead?: () => void;
   onArchive?: () => void;
   archiveDisabled?: boolean;
   className?: string;
@@ -38,7 +39,6 @@ export function IssueRow({
   trailingMeta,
   titleSuffix,
   unreadState = null,
-  onMarkRead,
   onArchive,
   archiveDisabled,
   className,
@@ -46,7 +46,6 @@ export function IssueRow({
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const showUnreadSlot = unreadState !== null;
-  const showUnreadDot = unreadState === "visible" || unreadState === "fading";
   const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
 
   return (
@@ -101,60 +100,26 @@ export function IssueRow({
         </span>
       ) : null}
       {showUnreadSlot ? (
-        <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center self-center">
-          {showUnreadDot ? (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onMarkRead?.();
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onMarkRead?.();
-                }
-              }}
-              className={cn(
-                "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
-                selected ? "hover:bg-muted/80" : "hover:bg-blue-500/20",
-              )}
-              aria-label="Mark as read"
-            >
-              <span
-                className={cn(
-                  "block h-2 w-2 rounded-full transition-opacity duration-300",
-                  selected ? "bg-muted-foreground/70" : "bg-blue-600 dark:bg-blue-400",
-                  unreadState === "fading" ? "opacity-0" : "opacity-100",
-                )}
-              />
-            </button>
-          ) : onArchive ? (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onArchive();
-              }}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter" && event.key !== " ") return;
-                event.preventDefault();
-                event.stopPropagation();
-                onArchive();
-              }}
-              disabled={archiveDisabled}
-              className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-              aria-label="Dismiss from inbox"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          ) : (
-            <span className="inline-flex h-4 w-4" aria-hidden="true" />
-          )}
-        </span>
+        <InboxUnreadIndicator state={unreadState} selected={selected} />
+      ) : null}
+      {onArchive ? (
+        <InboxRowActionButton
+          label="Archive"
+          icon={<Archive className="h-3.5 w-3.5" />}
+          disabled={archiveDisabled}
+          selected={selected}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onArchive();
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            event.stopPropagation();
+            onArchive();
+          }}
+        />
       ) : null}
     </Link>
   );

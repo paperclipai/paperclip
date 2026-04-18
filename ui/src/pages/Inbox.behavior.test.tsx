@@ -423,6 +423,70 @@ describe("Inbox retry behavior", () => {
     });
   });
 
+  it("shows retry feedback immediately for unread failed runs", async () => {
+    mockAgentsApi.wakeup.mockImplementation(
+      () =>
+        new Promise(() => {
+          // Keep the retry pending so the inbox can show its optimistic state.
+        }),
+    );
+
+    const { root } = renderInbox(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Retry");
+    });
+
+    const retryButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Retry"),
+    );
+    expect(retryButton).toBeTruthy();
+
+    await act(async () => {
+      retryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Retrying…");
+    expect(container.textContent).not.toContain("No unread updates.");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps unread failed runs visible when retry fails", async () => {
+    mockAgentsApi.wakeup.mockRejectedValue(new Error("Retry failed"));
+
+    const { root } = renderInbox(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Retry");
+    });
+
+    const retryButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Retry"),
+    );
+    expect(retryButton).toBeTruthy();
+
+    await act(async () => {
+      retryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Retry failed");
+      expect(container.textContent).toContain("Retry");
+    });
+
+    expect(container.textContent).not.toContain("No unread updates.");
+    expect(container.textContent).toContain("QA and Release Engineer");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("hides read failed runs from the unread tab", async () => {
     window.localStorage.setItem("paperclip:inbox:read-items", JSON.stringify(["run:run-1"]));
     const { root } = renderInbox(container);

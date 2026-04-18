@@ -20,7 +20,6 @@ import {
   getNeedsActionWorkItems,
   getRecentTouchedIssues,
   getUnreadTouchedIssues,
-  isMineInboxTab,
   loadInboxIssueColumns,
   loadLastInboxTab,
   normalizeInboxIssueColumns,
@@ -30,6 +29,7 @@ import {
   saveInboxIssueColumns,
   saveLastInboxTab,
   shouldShowInboxSection,
+  supportsInboxRowActions,
 } from "./inbox";
 
 const storage = new Map<string, string>();
@@ -147,6 +147,7 @@ function makeRun(id: string, status: HeartbeatRun["status"], createdAt: string, 
     contextSnapshot: null,
     startedAt: new Date(createdAt),
     finishedAt: null,
+    lastActivityAt: new Date(createdAt),
     createdAt: new Date(createdAt),
     updatedAt: new Date(createdAt),
   };
@@ -450,6 +451,33 @@ describe("inbox helpers", () => {
     expect(result.inbox).toBe(2);
   });
 
+  it("hides failed runs that are still auto-recovering", () => {
+    const scheduled = makeRun("run-scheduled", "failed", "2026-03-11T02:00:00.000Z");
+    scheduled.retryState = "scheduled";
+    scheduled.retryAttempt = 1;
+
+    const retrying = makeRun("run-retrying", "failed", "2026-03-11T03:00:00.000Z", "agent-2");
+    retrying.retryState = "retrying";
+    retrying.retryAttempt = 1;
+
+    const exhausted = makeRun("run-exhausted", "failed", "2026-03-11T04:00:00.000Z", "agent-3");
+    exhausted.retryState = "exhausted";
+    exhausted.retryAttempt = 1;
+
+    const result = computeInboxBadgeData({
+      approvals: [],
+      joinRequests: [],
+      dashboard,
+      heartbeatRuns: [scheduled, retrying, exhausted],
+      mineIssues: [],
+      dismissed: new Set<string>(),
+      readItems: new Set<string>(),
+    });
+
+    expect(result.failedRuns).toBe(1);
+    expect(result.inbox).toBe(2);
+  });
+
   it("excludes read non-issue rows from the unread badge count", () => {
     const result = computeInboxBadgeData({
       approvals: [makeApproval("pending")],
@@ -471,6 +499,28 @@ describe("inbox helpers", () => {
       failedRuns: 1,
       joinRequests: 1,
       mineIssues: 1,
+      alerts: 1,
+    });
+  });
+
+  it("counts retried failed runs as unread while retry feedback is pinned", () => {
+    const result = computeInboxBadgeData({
+      approvals: [],
+      joinRequests: [],
+      dashboard,
+      heartbeatRuns: [makeRun("run-latest", "failed", "2026-03-11T00:00:00.000Z")],
+      mineIssues: [],
+      dismissed: new Set<string>(),
+      readItems: new Set<string>(["run:run-latest"]),
+      retryFeedbackRunIds: new Set<string>(["run-latest"]),
+    });
+
+    expect(result).toEqual({
+      inbox: 2,
+      approvals: 0,
+      failedRuns: 1,
+      joinRequests: 0,
+      mineIssues: 0,
       alerts: 1,
     });
   });
@@ -853,11 +903,11 @@ describe("inbox helpers", () => {
     expect(loadLastInboxTab()).toBe("mine");
   });
 
-  it("enables swipe archive only on the mine tab", () => {
-    expect(isMineInboxTab("mine")).toBe(true);
-    expect(isMineInboxTab("recent")).toBe(false);
-    expect(isMineInboxTab("unread")).toBe(false);
-    expect(isMineInboxTab("all")).toBe(false);
+  it("enables explicit inbox row actions on needs-action and unread tabs", () => {
+    expect(supportsInboxRowActions("mine")).toBe(true);
+    expect(supportsInboxRowActions("recent")).toBe(false);
+    expect(supportsInboxRowActions("unread")).toBe(true);
+    expect(supportsInboxRowActions("all")).toBe(false);
   });
 
   it("anchors Mine selection to the first available inbox row", () => {

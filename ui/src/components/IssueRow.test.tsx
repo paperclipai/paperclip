@@ -88,20 +88,19 @@ describe("IssueRow", () => {
     });
   });
 
-  it("neutralizes selected status and unread dot accents", () => {
+  it("renders unread as a passive indicator and neutralizes selected accents", () => {
     const root = createRoot(container);
 
     act(() => {
       root.render(<IssueRow issue={createIssue()} selected unreadState="visible" />);
     });
 
-    const markReadButton = container.querySelector('button[aria-label="Mark as read"]');
-    const unreadDot = markReadButton?.querySelector("span");
+    const unreadIndicator = container.querySelector("[data-inbox-unread-indicator]");
+    const unreadDot = unreadIndicator?.querySelector('span[aria-hidden="true"]');
     const statusIcon = container.querySelector('span[class*="border-muted-foreground"]');
 
-    expect(markReadButton).not.toBeNull();
-    expect(markReadButton?.className).toContain("hover:bg-muted/80");
-    expect(markReadButton?.className).not.toContain("hover:bg-blue-500/20");
+    expect(container.querySelector('button[aria-label="Mark as read"]')).toBeNull();
+    expect(unreadIndicator).not.toBeNull();
     expect(unreadDot).not.toBeNull();
     expect(unreadDot?.className).toContain("bg-muted-foreground/70");
     expect(unreadDot?.className).not.toContain("bg-blue-600");
@@ -167,6 +166,30 @@ describe("IssueRow", () => {
 
     const titleEl = container.querySelector(".line-clamp-2, .truncate");
     expect(titleEl?.textContent).toContain("Inbox item");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows a visible Archive action when inbox archive is available", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue()}
+          unreadState="hidden"
+          onArchive={() => {}}
+        />,
+      );
+    });
+
+    const archiveButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Archive"),
+    );
+
+    expect(archiveButton).toBeTruthy();
 
     act(() => {
       root.unmount();

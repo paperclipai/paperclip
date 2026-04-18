@@ -3,10 +3,16 @@
 import { act } from "react";
 import type { ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
-import type { Issue } from "@paperclipai/shared";
+import type { Approval, Issue, JoinRequest } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueBoardStateSummary } from "../components/IssueBoardStateSummary";
-import { FailedRunInboxRow, InboxIssueMetaLeading, InboxIssueTrailingColumns } from "./Inbox";
+import {
+  ApprovalInboxRow,
+  FailedRunInboxRow,
+  InboxIssueMetaLeading,
+  InboxIssueTrailingColumns,
+  JoinRequestInboxRow,
+} from "./Inbox";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, className, ...props }: ComponentProps<"a">) => (
@@ -117,6 +123,7 @@ describe("FailedRunInboxRow", () => {
       contextSnapshot: null,
       startedAt: new Date("2026-03-11T00:00:00.000Z"),
       finishedAt: null,
+      lastActivityAt: new Date("2026-03-11T00:00:00.000Z"),
       createdAt: new Date("2026-03-11T00:00:00.000Z"),
       updatedAt: new Date("2026-03-11T00:00:00.000Z"),
     } as const;
@@ -188,6 +195,7 @@ describe("FailedRunInboxRow", () => {
       contextSnapshot: null,
       startedAt: new Date("2026-03-11T00:00:00.000Z"),
       finishedAt: null,
+      lastActivityAt: new Date("2026-03-11T00:00:00.000Z"),
       createdAt: new Date("2026-03-11T00:00:00.000Z"),
       updatedAt: new Date("2026-03-11T00:00:00.000Z"),
     } as const;
@@ -207,6 +215,537 @@ describe("FailedRunInboxRow", () => {
     });
 
     expect(container.textContent).toContain("model access denied");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows a visible Dismiss action when inbox dismissal is available", () => {
+    const root = createRoot(container);
+    const run = {
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      invocationSource: "assignment",
+      triggerDetail: null,
+      status: "failed",
+      error: "boom",
+      wakeupRequestId: null,
+      exitCode: null,
+      signal: null,
+      usageJson: null,
+      resultJson: null,
+      sessionIdBefore: null,
+      sessionIdAfter: null,
+      logStore: null,
+      logRef: null,
+      logBytes: null,
+      logSha256: null,
+      logCompressed: false,
+      errorCode: null,
+      externalRunId: null,
+      processPid: null,
+      processStartedAt: null,
+      retryOfRunId: null,
+      retryGroupId: null,
+      retryAttempt: 0,
+      retryState: "none",
+      retryClass: null,
+      retryScheduledFor: null,
+      retryExhaustedAt: null,
+      retryBlockedReason: null,
+      retryLastDecision: null,
+      retryPolicyJson: null,
+      processLossRetryCount: 0,
+      stdoutExcerpt: null,
+      stderrExcerpt: null,
+      contextSnapshot: null,
+      startedAt: new Date("2026-03-11T00:00:00.000Z"),
+      finishedAt: null,
+      lastActivityAt: new Date("2026-03-11T00:00:00.000Z"),
+      createdAt: new Date("2026-03-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    } as const;
+
+    act(() => {
+      root.render(
+        <FailedRunInboxRow
+          run={run}
+          issueById={new Map()}
+          agentName="Agent"
+          issueLinkState={null}
+          onDismiss={() => {}}
+          onRetry={() => {}}
+          isRetrying={false}
+          unreadState="hidden"
+          onArchive={() => {}}
+        />,
+      );
+    });
+
+    const dismissButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Dismiss"),
+    );
+
+    expect(dismissButton).toBeTruthy();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders unread as a passive indicator instead of a mark-read button", () => {
+    const root = createRoot(container);
+    const run = {
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      invocationSource: "assignment",
+      triggerDetail: null,
+      status: "failed",
+      error: "boom",
+      wakeupRequestId: null,
+      exitCode: null,
+      signal: null,
+      usageJson: null,
+      resultJson: null,
+      sessionIdBefore: null,
+      sessionIdAfter: null,
+      logStore: null,
+      logRef: null,
+      logBytes: null,
+      logSha256: null,
+      logCompressed: false,
+      errorCode: null,
+      externalRunId: null,
+      processPid: null,
+      processStartedAt: null,
+      retryOfRunId: null,
+      retryGroupId: null,
+      retryAttempt: 0,
+      retryState: "none",
+      retryClass: null,
+      retryScheduledFor: null,
+      retryExhaustedAt: null,
+      retryBlockedReason: null,
+      retryLastDecision: null,
+      retryPolicyJson: null,
+      processLossRetryCount: 0,
+      stdoutExcerpt: null,
+      stderrExcerpt: null,
+      contextSnapshot: null,
+      startedAt: new Date("2026-03-11T00:00:00.000Z"),
+      finishedAt: null,
+      lastActivityAt: new Date("2026-03-11T00:00:00.000Z"),
+      createdAt: new Date("2026-03-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    } as const;
+
+    act(() => {
+      root.render(
+        <FailedRunInboxRow
+          run={run}
+          issueById={new Map()}
+          agentName="Agent"
+          issueLinkState={null}
+          onDismiss={() => {}}
+          onRetry={() => {}}
+          isRetrying={false}
+          unreadState="visible"
+          selected
+        />,
+      );
+    });
+
+    const unreadIndicator = container.querySelector("[data-inbox-unread-indicator]");
+    const unreadDot = unreadIndicator?.querySelector('span[aria-hidden="true"]');
+
+    expect(container.querySelector('button[aria-label="Mark as read"]')).toBeNull();
+    expect(unreadIndicator).not.toBeNull();
+    expect(unreadDot).not.toBeNull();
+    expect(unreadDot?.className).toContain("bg-muted-foreground/70");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("marks unread failed runs as read when the row link is opened", () => {
+    const root = createRoot(container);
+    const onMarkRead = vi.fn();
+    const run = {
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      invocationSource: "assignment",
+      triggerDetail: null,
+      status: "failed",
+      error: "boom",
+      wakeupRequestId: null,
+      exitCode: null,
+      signal: null,
+      usageJson: null,
+      resultJson: null,
+      sessionIdBefore: null,
+      sessionIdAfter: null,
+      logStore: null,
+      logRef: null,
+      logBytes: null,
+      logSha256: null,
+      logCompressed: false,
+      errorCode: null,
+      externalRunId: null,
+      processPid: null,
+      processStartedAt: null,
+      retryOfRunId: null,
+      retryGroupId: null,
+      retryAttempt: 0,
+      retryState: "none",
+      retryClass: null,
+      retryScheduledFor: null,
+      retryExhaustedAt: null,
+      retryBlockedReason: null,
+      retryLastDecision: null,
+      retryPolicyJson: null,
+      processLossRetryCount: 0,
+      stdoutExcerpt: null,
+      stderrExcerpt: null,
+      contextSnapshot: null,
+      startedAt: new Date("2026-03-11T00:00:00.000Z"),
+      finishedAt: null,
+      lastActivityAt: new Date("2026-03-11T00:00:00.000Z"),
+      createdAt: new Date("2026-03-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    } as const;
+
+    act(() => {
+      root.render(
+        <FailedRunInboxRow
+          run={run}
+          issueById={new Map()}
+          agentName="Agent"
+          issueLinkState={null}
+          onDismiss={() => {}}
+          onRetry={() => {}}
+          isRetrying={false}
+          unreadState="visible"
+          onMarkRead={onMarkRead}
+        />,
+      );
+    });
+
+    const link = container.querySelector("a");
+    expect(link).not.toBeNull();
+
+    act(() => {
+      link?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onMarkRead).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("marks unread failed runs as read before retrying", () => {
+    const root = createRoot(container);
+    const onMarkRead = vi.fn();
+    const onRetry = vi.fn();
+    const run = {
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      invocationSource: "assignment",
+      triggerDetail: null,
+      status: "failed",
+      error: "boom",
+      wakeupRequestId: null,
+      exitCode: null,
+      signal: null,
+      usageJson: null,
+      resultJson: null,
+      sessionIdBefore: null,
+      sessionIdAfter: null,
+      logStore: null,
+      logRef: null,
+      logBytes: null,
+      logSha256: null,
+      logCompressed: false,
+      errorCode: null,
+      externalRunId: null,
+      processPid: null,
+      processStartedAt: null,
+      retryOfRunId: null,
+      retryGroupId: null,
+      retryAttempt: 0,
+      retryState: "none",
+      retryClass: null,
+      retryScheduledFor: null,
+      retryExhaustedAt: null,
+      retryBlockedReason: null,
+      retryLastDecision: null,
+      retryPolicyJson: null,
+      processLossRetryCount: 0,
+      stdoutExcerpt: null,
+      stderrExcerpt: null,
+      contextSnapshot: null,
+      startedAt: new Date("2026-03-11T00:00:00.000Z"),
+      finishedAt: null,
+      lastActivityAt: new Date("2026-03-11T00:00:00.000Z"),
+      createdAt: new Date("2026-03-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    } as const;
+
+    act(() => {
+      root.render(
+        <FailedRunInboxRow
+          run={run}
+          issueById={new Map()}
+          agentName="Agent"
+          issueLinkState={null}
+          onDismiss={() => {}}
+          onRetry={onRetry}
+          isRetrying={false}
+          unreadState="visible"
+          onMarkRead={onMarkRead}
+        />,
+      );
+    });
+
+    const retryButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Retry"),
+    );
+
+    expect(retryButton).toBeTruthy();
+
+    act(() => {
+      retryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onMarkRead).toHaveBeenCalledTimes(1);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("marks unread failed runs as read before dismissing", () => {
+    const root = createRoot(container);
+    const onMarkRead = vi.fn();
+    const onArchive = vi.fn();
+    const run = {
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      invocationSource: "assignment",
+      triggerDetail: null,
+      status: "failed",
+      error: "boom",
+      wakeupRequestId: null,
+      exitCode: null,
+      signal: null,
+      usageJson: null,
+      resultJson: null,
+      sessionIdBefore: null,
+      sessionIdAfter: null,
+      logStore: null,
+      logRef: null,
+      logBytes: null,
+      logSha256: null,
+      logCompressed: false,
+      errorCode: null,
+      externalRunId: null,
+      processPid: null,
+      processStartedAt: null,
+      retryOfRunId: null,
+      retryGroupId: null,
+      retryAttempt: 0,
+      retryState: "none",
+      retryClass: null,
+      retryScheduledFor: null,
+      retryExhaustedAt: null,
+      retryBlockedReason: null,
+      retryLastDecision: null,
+      retryPolicyJson: null,
+      processLossRetryCount: 0,
+      stdoutExcerpt: null,
+      stderrExcerpt: null,
+      contextSnapshot: null,
+      startedAt: new Date("2026-03-11T00:00:00.000Z"),
+      finishedAt: null,
+      lastActivityAt: new Date("2026-03-11T00:00:00.000Z"),
+      createdAt: new Date("2026-03-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    } as const;
+
+    act(() => {
+      root.render(
+        <FailedRunInboxRow
+          run={run}
+          issueById={new Map()}
+          agentName="Agent"
+          issueLinkState={null}
+          onDismiss={() => {}}
+          onRetry={() => {}}
+          isRetrying={false}
+          unreadState="visible"
+          onMarkRead={onMarkRead}
+          onArchive={onArchive}
+        />,
+      );
+    });
+
+    const dismissButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Dismiss"),
+    );
+
+    expect(dismissButton).toBeTruthy();
+
+    act(() => {
+      dismissButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onMarkRead).toHaveBeenCalledTimes(1);
+    expect(onArchive).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+});
+
+describe("ApprovalInboxRow", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    container.remove();
+  });
+
+  it("marks unread approvals as read before approving", () => {
+    const root = createRoot(container);
+    const onMarkRead = vi.fn();
+    const onApprove = vi.fn();
+    const approval: Approval = {
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      requestedByAgentId: null,
+      requestedByUserId: null,
+      status: "pending",
+      payload: { role: "qa" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-03-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    };
+
+    act(() => {
+      root.render(
+        <ApprovalInboxRow
+          approval={approval}
+          requesterName="Agent"
+          onApprove={onApprove}
+          onReject={() => {}}
+          isPending={false}
+          unreadState="visible"
+          onMarkRead={onMarkRead}
+        />,
+      );
+    });
+
+    const approveButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Approve"),
+    );
+
+    expect(approveButton).toBeTruthy();
+
+    act(() => {
+      approveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onMarkRead).toHaveBeenCalledTimes(1);
+    expect(onApprove).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+});
+
+describe("JoinRequestInboxRow", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    container.remove();
+  });
+
+  it("marks unread join requests as read before approving", () => {
+    const root = createRoot(container);
+    const onMarkRead = vi.fn();
+    const onApprove = vi.fn();
+    const joinRequest: JoinRequest = {
+      id: "join-1",
+      inviteId: "invite-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "pending_approval",
+      requestIp: "127.0.0.1",
+      requestingUserId: null,
+      requestEmailSnapshot: null,
+      agentName: null,
+      adapterType: null,
+      capabilities: null,
+      agentDefaultsPayload: null,
+      claimSecretExpiresAt: null,
+      claimSecretConsumedAt: null,
+      createdAgentId: null,
+      approvedByUserId: null,
+      approvedAt: null,
+      rejectedByUserId: null,
+      rejectedAt: null,
+      createdAt: new Date("2026-03-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    };
+
+    act(() => {
+      root.render(
+        <JoinRequestInboxRow
+          joinRequest={joinRequest}
+          onApprove={onApprove}
+          onReject={() => {}}
+          isPending={false}
+          unreadState="visible"
+          onMarkRead={onMarkRead}
+        />,
+      );
+    });
+
+    const approveButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Approve"),
+    );
+
+    expect(approveButton).toBeTruthy();
+
+    act(() => {
+      approveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onMarkRead).toHaveBeenCalledTimes(1);
+    expect(onApprove).toHaveBeenCalledTimes(1);
 
     act(() => {
       root.unmount();

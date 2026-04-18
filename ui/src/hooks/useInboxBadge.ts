@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { accessApi } from "../api/access";
@@ -16,6 +16,20 @@ import {
   saveReadInboxItems,
   READ_ITEMS_KEY,
 } from "../lib/inbox";
+
+const retryFeedbackRunListeners = new Set<() => void>();
+let retryFeedbackRunIdsStore = new Set<string>();
+
+function cloneRetryFeedbackRunIds() {
+  return new Set(retryFeedbackRunIdsStore);
+}
+
+function publishRetryFeedbackRunIds(next: Set<string>) {
+  retryFeedbackRunIdsStore = next;
+  for (const listener of retryFeedbackRunListeners) {
+    listener();
+  }
+}
 
 export function useDismissedInboxItems() {
   const [dismissed, setDismissed] = useState<Set<string>>(loadDismissedInboxItems);
@@ -74,9 +88,38 @@ export function useReadInboxItems() {
   return { readItems, markRead, markUnread };
 }
 
+export function useRetryFeedbackRunIds() {
+  const [retryFeedbackRunIds, setRetryFeedbackRunIds] = useState<Set<string>>(cloneRetryFeedbackRunIds);
+
+  useEffect(() => {
+    const handleChange = () => {
+      setRetryFeedbackRunIds(cloneRetryFeedbackRunIds());
+    };
+    retryFeedbackRunListeners.add(handleChange);
+    return () => retryFeedbackRunListeners.delete(handleChange);
+  }, []);
+
+  const pinRun = useCallback((runId: string) => {
+    if (retryFeedbackRunIdsStore.has(runId)) return;
+    const next = cloneRetryFeedbackRunIds();
+    next.add(runId);
+    publishRetryFeedbackRunIds(next);
+  }, []);
+
+  const clearRun = useCallback((runId: string) => {
+    if (!retryFeedbackRunIdsStore.has(runId)) return;
+    const next = cloneRetryFeedbackRunIds();
+    next.delete(runId);
+    publishRetryFeedbackRunIds(next);
+  }, []);
+
+  return { retryFeedbackRunIds, pinRun, clearRun };
+}
+
 export function useInboxBadge(companyId: string | null | undefined) {
   const { dismissed } = useDismissedInboxItems();
   const { readItems } = useReadInboxItems();
+  const { retryFeedbackRunIds } = useRetryFeedbackRunIds();
 
   const { data: approvals = [] } = useQuery({
     queryKey: queryKeys.approvals.list(companyId!),
@@ -132,7 +175,8 @@ export function useInboxBadge(companyId: string | null | undefined) {
         mineIssues: touchedIssues,
         dismissed,
         readItems,
+        retryFeedbackRunIds,
       }),
-    [approvals, joinRequests, dashboard, heartbeatRuns, touchedIssues, dismissed, readItems],
+    [approvals, joinRequests, dashboard, heartbeatRuns, touchedIssues, dismissed, readItems, retryFeedbackRunIds],
   );
 }

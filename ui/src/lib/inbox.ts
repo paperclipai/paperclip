@@ -177,8 +177,8 @@ export function saveLastInboxTab(tab: InboxTab) {
   }
 }
 
-export function isMineInboxTab(tab: InboxTab): boolean {
-  return tab === "mine";
+export function supportsInboxRowActions(tab: InboxTab): boolean {
+  return tab === "mine" || tab === "unread";
 }
 
 export function resolveInboxSelectionIndex(
@@ -214,7 +214,10 @@ export function getLatestFailedRunsByAgent(runs: HeartbeatRun[]): HeartbeatRun[]
     }
   }
 
-  return Array.from(latestByAgent.values()).filter((run) => FAILED_RUN_STATUSES.has(run.status));
+  return Array.from(latestByAgent.values()).filter((run) => {
+    if (!FAILED_RUN_STATUSES.has(run.status)) return false;
+    return run.retryState !== "scheduled" && run.retryState !== "retrying";
+  });
 }
 
 export function normalizeTimestamp(value: string | Date | null | undefined): number {
@@ -422,6 +425,7 @@ export function computeInboxBadgeData({
   mineIssues,
   dismissed,
   readItems,
+  retryFeedbackRunIds,
 }: {
   approvals: Approval[];
   joinRequests: JoinRequest[];
@@ -430,6 +434,7 @@ export function computeInboxBadgeData({
   mineIssues: Issue[];
   dismissed: Set<string>;
   readItems: Set<string>;
+  retryFeedbackRunIds?: Set<string>;
 }): InboxBadgeData {
   const visibleApprovals = approvals.filter(
     (approval) =>
@@ -446,7 +451,7 @@ export function computeInboxBadgeData({
   );
   const failedRuns = visibleFailedRuns.length;
   const unreadFailedRuns = visibleFailedRuns.filter(
-    (run) => !readItems.has(`run:${run.id}`),
+    (run) => retryFeedbackRunIds?.has(run.id) || !readItems.has(`run:${run.id}`),
   ).length;
 
   const visibleJoinRequestItems = joinRequests.filter(
