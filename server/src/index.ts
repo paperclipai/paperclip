@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
 import { and, eq } from "drizzle-orm";
 import {
+  acquireEmbeddedPostgresBootstrapLock,
   createDb,
   ensurePostgresDatabase,
   formatEmbeddedPostgresError,
@@ -15,6 +16,7 @@ import {
   inspectMigrations,
   applyPendingMigrations,
   createEmbeddedPostgresLogBuffer,
+  readEmbeddedPostmasterInfo,
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
@@ -322,114 +324,108 @@ export async function startServer(): Promise<StartedServer> {
     const clusterVersionFile = resolve(dataDir, "PG_VERSION");
     const clusterAlreadyInitialized = existsSync(clusterVersionFile);
     const postmasterPidFile = resolve(dataDir, "postmaster.pid");
-    const isPidRunning = (pid: number): boolean => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-  
-    const getRunningPid = (): number | null => {
-      if (!existsSync(postmasterPidFile)) return null;
-      try {
-        const pidLine = readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim();
-        const pid = Number(pidLine);
-        if (!Number.isInteger(pid) || pid <= 0) return null;
-        if (!isPidRunning(pid)) return null;
-        return pid;
-      } catch {
-        return null;
-      }
-    };
-  
-    const runningPid = getRunningPid();
-    if (runningPid) {
-      logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
-    } else {
-      const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
-      try {
-        const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
-        if (
-          typeof actualDataDir !== "string" ||
-          resolve(actualDataDir) !== resolve(dataDir)
-        ) {
-          throw new Error("reachable postgres does not use the expected embedded data directory");
-        }
-        await ensurePostgresDatabase(configuredAdminConnectionString, "paperclip");
-        logger.warn(
-          `Embedded PostgreSQL appears to already be reachable without a pid file; reusing existing server on configured port ${configuredPort}`,
-        );
-      } catch {
-        const detectedPort = await detectPort(configuredPort);
-        if (detectedPort !== configuredPort) {
-          logger.warn(`Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`);
-        }
-        port = detectedPort;
-        logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
-        embeddedPostgres = new EmbeddedPostgres({
-          databaseDir: dataDir,
-          user: "paperclip",
-          password: "paperclip",
-          port,
-          persistent: true,
-          initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
-          onLog: appendEmbeddedPostgresLog,
-          onError: appendEmbeddedPostgresLog,
-        });
-
-        if (!clusterAlreadyInitialized) {
-          try {
-            await embeddedPostgres.initialise();
-          } catch (err) {
-            logEmbeddedPostgresFailure("initialise", err);
-            throw formatEmbeddedPostgresError(err, {
-              fallbackMessage: `Failed to initialize embedded PostgreSQL cluster in ${dataDir} on port ${port}`,
-              recentLogs: logBuffer.getRecentLogs(),
-            });
-          }
-        } else {
-          logger.info(`Embedded PostgreSQL cluster already exists (${clusterVersionFile}); skipping init`);
-        }
-
-        if (existsSync(postmasterPidFile)) {
-          logger.warn("Removing stale embedded PostgreSQL lock file");
-          rmSync(postmasterPidFile, { force: true });
-        }
+    const running = readEmbeddedPostmasterInfo(postmasterPidFile);
+    let releaseBootstrapLock: (() => Promise<void>) | null = null;
+    try {
+      if (running.pid) {
+        port = running.port ?? port;
+        logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${running.pid}, port=${port})`);
+      } else {
+        const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
         try {
-          await embeddedPostgres.start();
-        } catch (err) {
-          logEmbeddedPostgresFailure("start", err);
-          throw formatEmbeddedPostgresError(err, {
-            fallbackMessage: `Failed to start embedded PostgreSQL on port ${port}`,
-            recentLogs: logBuffer.getRecentLogs(),
-          });
+          const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
+          if (
+            typeof actualDataDir !== "string" ||
+            resolve(actualDataDir) !== resolve(dataDir)
+          ) {
+            throw new Error("reachable postgres does not use the expected embedded data directory");
+          }
+          await ensurePostgresDatabase(configuredAdminConnectionString, "paperclip");
+          logger.warn(
+            `Embedded PostgreSQL appears to already be reachable without a pid file; reusing existing server on configured port ${configuredPort}`,
+          );
+        } catch {
+          releaseBootstrapLock = await acquireEmbeddedPostgresBootstrapLock({ dataDir });
+          const lockedRunning = readEmbeddedPostmasterInfo(postmasterPidFile);
+          if (lockedRunning.pid) {
+            port = lockedRunning.port ?? configuredPort;
+            logger.warn(
+              `Embedded PostgreSQL became available during bootstrap wait; reusing existing process (pid=${lockedRunning.pid}, port=${port})`,
+            );
+          } else {
+            const detectedPort = await detectPort(configuredPort);
+            if (detectedPort !== configuredPort) {
+              logger.warn(`Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`);
+            }
+            port = detectedPort;
+            logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
+            embeddedPostgres = new EmbeddedPostgres({
+              databaseDir: dataDir,
+              user: "paperclip",
+              password: "paperclip",
+              port,
+              persistent: true,
+              initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+              onLog: appendEmbeddedPostgresLog,
+              onError: appendEmbeddedPostgresLog,
+            });
+
+            const clusterInitializedUnderLock = existsSync(clusterVersionFile);
+            if (!clusterInitializedUnderLock) {
+              try {
+                await embeddedPostgres.initialise();
+              } catch (err) {
+                logEmbeddedPostgresFailure("initialise", err);
+                throw formatEmbeddedPostgresError(err, {
+                  fallbackMessage: `Failed to initialize embedded PostgreSQL cluster in ${dataDir} on port ${port}`,
+                  recentLogs: logBuffer.getRecentLogs(),
+                });
+              }
+            } else {
+              logger.info(`Embedded PostgreSQL cluster already exists (${clusterVersionFile}); skipping init`);
+            }
+
+            if (existsSync(postmasterPidFile)) {
+              logger.warn("Removing stale embedded PostgreSQL lock file");
+              rmSync(postmasterPidFile, { force: true });
+            }
+            try {
+              await embeddedPostgres.start();
+            } catch (err) {
+              logEmbeddedPostgresFailure("start", err);
+              throw formatEmbeddedPostgresError(err, {
+                fallbackMessage: `Failed to start embedded PostgreSQL on port ${port}`,
+                recentLogs: logBuffer.getRecentLogs(),
+              });
+            }
+            embeddedPostgresStartedByThisProcess = true;
+          }
         }
-        embeddedPostgresStartedByThisProcess = true;
       }
+    
+      const embeddedAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+      const dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "paperclip");
+      if (dbStatus === "created") {
+        logger.info("Created embedded PostgreSQL database: paperclip");
+      }
+    
+      const embeddedConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+      const shouldAutoApplyFirstRunMigrations = !existsSync(clusterVersionFile) || !clusterAlreadyInitialized || dbStatus === "created";
+      if (shouldAutoApplyFirstRunMigrations) {
+        logger.info("Detected first-run embedded PostgreSQL setup; applying pending migrations automatically");
+      }
+      migrationSummary = await ensureMigrations(embeddedConnectionString, "Embedded PostgreSQL", {
+        autoApply: shouldAutoApplyFirstRunMigrations,
+      });
+    
+      db = createDb(embeddedConnectionString);
+      logger.info("Embedded PostgreSQL ready");
+      activeDatabaseConnectionString = embeddedConnectionString;
+      resolvedEmbeddedPostgresPort = port;
+      startupDbInfo = { mode: "embedded-postgres", dataDir, port };
+    } finally {
+      await releaseBootstrapLock?.();
     }
-  
-    const embeddedAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-    const dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "paperclip");
-    if (dbStatus === "created") {
-      logger.info("Created embedded PostgreSQL database: paperclip");
-    }
-  
-    const embeddedConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
-    const shouldAutoApplyFirstRunMigrations = !clusterAlreadyInitialized || dbStatus === "created";
-    if (shouldAutoApplyFirstRunMigrations) {
-      logger.info("Detected first-run embedded PostgreSQL setup; applying pending migrations automatically");
-    }
-    migrationSummary = await ensureMigrations(embeddedConnectionString, "Embedded PostgreSQL", {
-      autoApply: shouldAutoApplyFirstRunMigrations,
-    });
-  
-    db = createDb(embeddedConnectionString);
-    logger.info("Embedded PostgreSQL ready");
-    activeDatabaseConnectionString = embeddedConnectionString;
-    resolvedEmbeddedPostgresPort = port;
-    startupDbInfo = { mode: "embedded-postgres", dataDir, port };
   }
   
   if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {

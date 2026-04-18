@@ -8,6 +8,7 @@ import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
+import { createRawWebhookBodyParser } from "./middleware/raw-webhook-body.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -126,14 +127,23 @@ export async function createApp(
   },
 ) {
   const app = express();
-
-  app.use(express.json({
+  const jsonBodyParser = express.json({
     // Company import/export payloads can inline full portable packages.
     limit: "10mb",
     verify: (req, _res, buf) => {
       (req as unknown as { rawBody: Buffer }).rawBody = buf;
     },
-  }));
+  });
+
+  app.use("/api/plugins/:pluginId/webhooks/:endpointKey", createRawWebhookBodyParser());
+  app.use("/api/routine-triggers/public/:publicId/fire", createRawWebhookBodyParser());
+  app.use((req, res, next) => {
+    if ((req as unknown as { rawBodyParsed?: boolean }).rawBodyParsed) {
+      next();
+      return;
+    }
+    jsonBodyParser(req, res, next);
+  });
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,

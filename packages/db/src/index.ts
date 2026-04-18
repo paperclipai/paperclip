@@ -30,5 +30,10 @@ export {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
+export {
+  acquireEmbeddedPostgresBootstrapLock,
+  readEmbeddedPostmasterInfo,
+  type EmbeddedPostgresBootstrapLockOptions,
+} from "./embedded-postgres-bootstrap-lock.js";
 export { issueRelations } from "./schema/issue_relations.js";
 export * from "./schema/index.js";
