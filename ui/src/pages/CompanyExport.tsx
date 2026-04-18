@@ -965,6 +965,9 @@ export function CompanyExport() {
               <label htmlFor="include-secrets" className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors">
                 Include secrets
               </label>
+              {includeSecrets && (
+                <span className="text-xs text-amber-500">(secrets exported as plaintext)</span>
+              )}
             </div>
           </div>
           <Button
