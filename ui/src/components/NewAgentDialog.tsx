@@ -9,6 +9,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import {
   Dialog,
   DialogContent,
+  DialogTitle,
+  DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -113,6 +115,8 @@ export function NewAgentDialog() {
         showCloseButton={false}
         className="sm:max-w-md p-0 gap-0 overflow-hidden"
       >
+        <DialogTitle className="sr-only">Add Agent</DialogTitle>
+        <DialogDescription className="sr-only">Add a new agent to your company.</DialogDescription>
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
           <span className="text-sm text-muted-foreground">Add a new agent</span>
