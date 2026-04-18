@@ -64,6 +64,34 @@ function applyStatusSideEffects(
   return patch;
 }
 
+/**
+ * Pure close-gate check: when a company has `requireProofDocumentOnClose` enabled,
+ * transitioning an issue to `done` requires at least one issue document to be
+ * attached before the close is allowed. Returns a human-readable violation
+ * message when the gate should block, or `null` when the transition may proceed.
+ *
+ * The gate intentionally does NOT filter by document key so that any proof
+ * convention (e.g. `plan`, `pine-parser-semantic-proof`, `tra13-execution-proof`)
+ * counts, as long as a real issueDocument row exists. Proof-reconciliation
+ * tooling writes an issueDocument before advancing status, so proof-backed
+ * closures continue to work end-to-end.
+ */
+export function computeCloseGateViolation(params: {
+  fromStatus: string;
+  toStatus: string | undefined;
+  requireProofDocumentOnClose: boolean;
+  attachedDocumentCount: number;
+}): string | null {
+  if (!params.toStatus) return null;
+  if (params.toStatus !== "done") return null;
+  if (params.fromStatus === "done") return null;
+  if (!params.requireProofDocumentOnClose) return null;
+  if (params.attachedDocumentCount > 0) return null;
+  return (
+    "Cannot close issue: company requires at least one issue document (proof) to be attached before status can move to done."
+  );
+}
+
 export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
@@ -1713,6 +1741,28 @@ export function issueService(db: Db) {
           projectGoalId: nextProjectGoalId,
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
+
+        if (issueData.status === "done" && existing.status !== "done") {
+          const companyRow = await tx
+            .select({ requireProofDocumentOnClose: companies.requireProofDocumentOnClose })
+            .from(companies)
+            .where(eq(companies.id, existing.companyId))
+            .then((rows: Array<{ requireProofDocumentOnClose: boolean }>) => rows[0] ?? null);
+          if (companyRow?.requireProofDocumentOnClose) {
+            const documentRows = await tx
+              .select({ id: issueDocuments.id })
+              .from(issueDocuments)
+              .where(eq(issueDocuments.issueId, id));
+            const violation = computeCloseGateViolation({
+              fromStatus: existing.status,
+              toStatus: issueData.status,
+              requireProofDocumentOnClose: companyRow.requireProofDocumentOnClose,
+              attachedDocumentCount: documentRows.length,
+            });
+            if (violation) throw conflict(violation);
+          }
+        }
+
         const updated = await tx
           .update(issues)
           .set(patch)
