@@ -30,6 +30,7 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
+  detectGeminiQuotaExhausted,
   isGeminiTurnLimitResult,
   isGeminiUnknownSessionError,
   parseGeminiJsonl,
@@ -67,14 +68,53 @@ function renderApiAccessNote(env: Record<string, string>): string {
   if (!hasNonEmptyEnvValue(env, "PAPERCLIP_API_URL") || !hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY")) return "";
   return [
     "Paperclip API access note:",
-    "Use run_shell_command with curl to make Paperclip API requests.",
+    "IMPORTANT: Gemini CLI does not pass environment variables to run_shell_command.",
+    "Before making ANY Paperclip API call, you MUST first source the env file:",
+    `  run_shell_command({ command: "source .paperclip-env && curl -s -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_URL/api/agents/me\\"" })`,
+    "Always prefix your curl commands with 'source .paperclip-env &&'.",
     "GET example:",
-    `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_URL/api/agents/me\\"" })`,
+    `  run_shell_command({ command: "source .paperclip-env && curl -s -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_URL/api/agents/me\\"" })`,
     "POST/PATCH example:",
-    `  run_shell_command({ command: "curl -s -X POST -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\\" -d '{...}' \\"$PAPERCLIP_API_URL/api/issues/{id}/checkout\\"" })`,
+    `  run_shell_command({ command: "source .paperclip-env && curl -s -X POST -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\\" -d '{...}' \\"$PAPERCLIP_API_URL/api/issues/{id}/checkout\\"" })`,
     "",
     "",
   ].join("\n");
+}
+
+/**
+ * Write a `.paperclip-env` file in the working directory so that Gemini CLI
+ * agents can `source` it before making API calls. Gemini CLI's run_shell_command
+ * does not inherit parent process environment variables, so this file bridges
+ * the gap by making PAPERCLIP_* vars available via explicit sourcing.
+ */
+export async function writePaperclipEnvFile(cwd: string, env: Record<string, string>): Promise<void> {
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(env).sort(([a], [b]) => a.localeCompare(b))) {
+    if (key.startsWith("PAPERCLIP_") || key === "AGENT_HOME") {
+      lines.push(`export ${key}=${JSON.stringify(value)}`);
+    }
+  }
+  if (lines.length === 0) return;
+  const envFilePath = path.join(cwd, ".paperclip-env");
+  await fs.writeFile(envFilePath, lines.join("\n") + "\n", "utf8");
+}
+
+/**
+ * Parse a quota reset delay string like "15h5m10s" into seconds.
+ * Returns null if no parseable duration is found.
+ */
+export function parseQuotaResetDelaySec(stderr: string): number | null {
+  const match = stderr.match(/reset\s+after\s+([\dhms]+)/i);
+  if (!match) return null;
+  const duration = match[1];
+  let totalSec = 0;
+  const hours = duration.match(/(\d+)h/);
+  const minutes = duration.match(/(\d+)m/);
+  const seconds = duration.match(/(\d+)s/);
+  if (hours) totalSec += parseInt(hours[1], 10) * 3600;
+  if (minutes) totalSec += parseInt(minutes[1], 10) * 60;
+  if (seconds) totalSec += parseInt(seconds[1], 10);
+  return totalSec > 0 ? totalSec : null;
 }
 
 function geminiSkillsHome(): string {
@@ -224,6 +264,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const billingType = resolveGeminiBillingType(effectiveEnv);
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
+  await writePaperclipEnvFile(cwd, env);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
@@ -394,6 +435,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
     });
+    const quotaMeta = detectGeminiQuotaExhausted({
+      parsed: attempt.parsed.resultEvent,
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+    });
 
     if (attempt.proc.timedOut) {
       return {
@@ -437,7 +483,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: attempt.proc.signal,
       timedOut: false,
       errorMessage: (attempt.proc.exitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-      errorCode: (attempt.proc.exitCode ?? 0) !== 0 && authMeta.requiresAuth ? "gemini_auth_required" : null,
+      errorCode: (attempt.proc.exitCode ?? 0) !== 0
+        ? (quotaMeta.exhausted
+          ? "quota_exhausted"
+          : authMeta.requiresAuth
+            ? "gemini_auth_required"
+            : null)
+        : null,
+      errorMeta: quotaMeta.exhausted
+        ? { retryAfterSec: parseQuotaResetDelaySec(attempt.proc.stderr) }
+        : undefined,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,

@@ -4099,6 +4099,34 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // Schedule automatic retry for quota exhaustion errors
+      if (outcome === "failed" && adapterResult.errorCode === "quota_exhausted") {
+        const retryAfterSec = (adapterResult.errorMeta as Record<string, unknown>)?.retryAfterSec;
+        const delaySec = typeof retryAfterSec === "number" && retryAfterSec > 0
+          ? Math.min(retryAfterSec + 60, 86400) // add 60s buffer, cap at 24h
+          : 3600; // default: retry after 1 hour
+        const retryAt = new Date(Date.now() + delaySec * 1000);
+        logger.info(
+          { runId, agentId: agent.id, delaySec, retryAt: retryAt.toISOString() },
+          "quota exhausted — scheduling automatic retry",
+        );
+        setTimeout(async () => {
+          try {
+            const currentAgent = await getAgent(agent.id);
+            if (currentAgent && currentAgent.status !== "paused" && currentAgent.status !== "terminated") {
+              await enqueueWakeup(agent.id, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: `quota_retry (delayed ${delaySec}s after quota exhaustion)`,
+              });
+              logger.info({ agentId: agent.id }, "quota retry heartbeat invoked");
+            }
+          } catch (retryErr) {
+            logger.warn({ err: retryErr, agentId: agent.id }, "failed to invoke quota retry heartbeat");
+          }
+        }, delaySec * 1000);
+      }
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
