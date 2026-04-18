@@ -25,7 +25,7 @@
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -823,6 +823,22 @@ export function pluginLoader(
       // npm install
       const spec = version ? `${packageName}@${version}` : packageName!;
 
+      // Auto-create .npmrc for GitHub Packages if env vars are set
+      await mkdir(targetInstallDir, { recursive: true });
+      const ghToken = process.env.GITHUB_PACKAGES_TOKEN;
+      const ghScopes = process.env.GITHUB_PACKAGES_SCOPES;
+      if (ghToken && ghScopes) {
+        const npmrcPath = path.join(targetInstallDir, ".npmrc");
+        const lines = [
+          "//npm.pkg.github.com/:_authToken=" + ghToken,
+          ...ghScopes.split(",").map((s) => s.trim()).filter(Boolean).map(
+            (scope) => `${scope.startsWith("@") ? scope : "@" + scope}:registry=https://npm.pkg.github.com`,
+          ),
+          "prefer-online=true",
+        ];
+        await writeFile(npmrcPath, lines.join("\n") + "\n", "utf-8");
+        log.info({ npmrcPath, scopes: ghScopes }, "plugin-loader: wrote .npmrc for GitHub Packages");
+      }
       log.info(
         { spec, installDir: targetInstallDir },
         "plugin-loader: fetching plugin from npm",
