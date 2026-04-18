@@ -438,7 +438,7 @@ export function IssueProperties({
     });
   };
   const applyOperatorControl = (
-    action: "mark_waiting" | "mark_blocked_on_upstream" | "resume" | "resolve_handoff" | "reassign_owner"
+    action: "mark_waiting" | "mark_blocked_on_upstream" | "escalate" | "resume" | "resolve_handoff" | "reassign_owner"
   ) => {
     if (action === "reassign_owner") {
       if (!handoff?.toAgentId || handoff.toAgentId === issue.ownerAgentId) return;
@@ -469,6 +469,16 @@ export function IssueProperties({
             kind: "blocked_on_upstream",
             enteredAt: new Date(),
           },
+        },
+      });
+      return;
+    }
+
+    if (action === "escalate") {
+      onUpdate({
+        missionControl: {
+          ...(missionControl ?? {}),
+          needsHumanAttention: true,
         },
       });
       return;
@@ -1441,6 +1451,13 @@ export function IssueProperties({
               onClick={() => applyOperatorControl("mark_blocked_on_upstream")}
             >
               Mark blocked on upstream
+            </button>
+            <button
+              type="button"
+              className={OPERATOR_CONTROL_BUTTON_CLASS}
+              onClick={() => applyOperatorControl("escalate")}
+            >
+              Escalate
             </button>
             {handoff?.toAgentId && handoff.toAgentId !== issue.ownerAgentId ? (
               <button

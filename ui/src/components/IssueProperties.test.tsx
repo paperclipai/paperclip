@@ -674,6 +674,80 @@ describe("IssueProperties", () => {
     act(() => resumedRoot.unmount());
   });
 
+  it("offers an escalate control that only raises needs-human-attention", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        missionControl: {
+          collaboratorAgentIds: [],
+          needsHumanAttention: false,
+          workflowState: {
+            kind: "blocked_on_upstream",
+            enteredAt: new Date("2026-04-06T12:00:00.000Z"),
+            resumedFrom: null,
+          },
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const escalateButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Escalate"));
+    expect(escalateButton).not.toBeUndefined();
+
+    await act(async () => {
+      escalateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      missionControl: {
+        collaboratorAgentIds: [],
+        needsHumanAttention: true,
+        workflowState: {
+          kind: "blocked_on_upstream",
+          enteredAt: new Date("2026-04-06T12:00:00.000Z"),
+          resumedFrom: null,
+        },
+      },
+    });
+
+    onUpdate.mockClear();
+    act(() => root.unmount());
+
+    const noWorkflowRoot = renderProperties(container, {
+      issue: createIssue({
+        missionControl: {
+          collaboratorAgentIds: [],
+          needsHumanAttention: false,
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const noWorkflowEscalateButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Escalate"));
+    expect(noWorkflowEscalateButton).not.toBeUndefined();
+
+    await act(async () => {
+      noWorkflowEscalateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      missionControl: {
+        collaboratorAgentIds: [],
+        needsHumanAttention: true,
+      },
+    });
+
+    act(() => noWorkflowRoot.unmount());
+  });
+
   it("offers a resolve handoff control that clears handoff state cleanly", async () => {
     const onUpdate = vi.fn();
     const root = renderProperties(container, {

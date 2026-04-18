@@ -17,7 +17,7 @@ This feature is only done when:
 - Branch: `feat/mission-control-customization-lane`
 - Implementation owner: `ork`
 - Product/orchestration owner: `main`
-- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, and the first operator controls in `IssueProperties` are now in place; `Resume` now records the existing `resumed` workflow state instead of clearing context, `Resolve handoff` now clears active handoff state through the same issue update surface and keeps handoff/history wording legible, and `Reassign owner` now promotes the active handoff target through the same owner/mission-control plumbing so ownership stays clean. The remaining gap is escalate plus the rest of the operational views
+- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, and the first operator controls in `IssueProperties` are now in place; `Resume` now records the existing `resumed` workflow state instead of clearing context, `Resolve handoff` now clears active handoff state through the same issue update surface and keeps handoff/history wording legible, `Reassign owner` now promotes the active handoff target through the same owner/mission-control plumbing so ownership stays clean, and `Escalate` now raises `needsHumanAttention` through the same minimal mission-control payload while preserving any existing workflow state. The remaining gap is the operational views plus broader history/use validation
 
 ## Checklist
 
@@ -51,7 +51,7 @@ This feature is only done when:
 - [x] Reassign owner cleanly
 - [x] Mark waiting
 - [x] Mark blocked on upstream
-- [ ] Escalate
+- [x] Escalate
 - [x] Resume
 - [x] Close loop / resolve handoff
 - [x] Verify control actions update summaries/state correctly
@@ -99,13 +99,12 @@ This feature is only done when:
 - [ ] Decide whether to open PR / merge / continue iteration
 
 ## Current recommended next slice
-- Finish the remaining operator control: escalate
-- Then ownership and operational views for blocked/stalled/recent-handoff work
+- Ownership and operational views for blocked/stalled/recent-handoff work
 - After that, verify history remains high-signal and compact under more real multi-agent usage
 
 ## Current blockers
 - No hard blocker right now
-- Main remaining gap is the last control action (`escalate`) plus operational views and broader history verification on top of the workflow-state foundation
+- Main remaining gap is operational views and broader history verification on top of the workflow-state foundation
 
 ## Update rule for Ork
 When meaningful progress lands, Ork should update this checklist with:
