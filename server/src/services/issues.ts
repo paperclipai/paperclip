@@ -2092,15 +2092,24 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!anchor) return [];
+        // postgres.js refuses to bind a JS Date directly inside a raw sql``
+        // template (crashes with "argument must be of type string or Buffer")
+        // when the param type cannot be inferred from the surrounding SQL.
+        // Coerce to an ISO string and cast to timestamptz so Postgres receives
+        // a proper timestamp.
+        const anchorCreatedAtIso =
+          anchor.createdAt instanceof Date
+            ? anchor.createdAt.toISOString()
+            : String(anchor.createdAt);
         conditions.push(
           order === "asc"
             ? sql<boolean>`(
-                ${issueComments.createdAt} > ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} > ${anchor.id})
+                ${issueComments.createdAt} > ${anchorCreatedAtIso}::timestamptz
+                OR (${issueComments.createdAt} = ${anchorCreatedAtIso}::timestamptz AND ${issueComments.id} > ${anchor.id})
               )`
             : sql<boolean>`(
-                ${issueComments.createdAt} < ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} < ${anchor.id})
+                ${issueComments.createdAt} < ${anchorCreatedAtIso}::timestamptz
+                OR (${issueComments.createdAt} = ${anchorCreatedAtIso}::timestamptz AND ${issueComments.id} < ${anchor.id})
               )`,
         );
       }

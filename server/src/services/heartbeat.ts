@@ -5377,7 +5377,19 @@ export function heartbeatService(db: Db) {
       const run = typeof runOrLookup === "string" ? await getRunLogAccess(runOrLookup) : runOrLookup;
       const runId = typeof runOrLookup === "string" ? runOrLookup : runOrLookup.id;
       if (!run) throw notFound("Heartbeat run not found");
-      if (!run.logStore || !run.logRef) throw notFound("Run log not found");
+      // If the run exists but no log has been captured yet (e.g. queued or
+      // cancelled-before-start), return an empty success response instead of
+      // 404. Prevents UI log-pollers from hammering the endpoint retrying
+      // on runs that will never have a log.
+      if (!run.logStore || !run.logRef) {
+        return {
+          runId,
+          store: null,
+          logRef: null,
+          content: "",
+          nextOffset: opts?.offset ?? 0,
+        };
+      }
 
       const result = await runLogStore.read(
         {
