@@ -2152,9 +2152,15 @@ export function companySkillService(db: Db) {
       const sourceKind = asString(getSkillMeta(skill).sourceKind);
       let source = normalizeSkillDirectory(skill);
       if (!source) {
-        source = options.materializeMissing === false
-          ? resolveRuntimeSkillMaterializedPath(companyId, skill)
-          : await materializeRuntimeSkillFiles(companyId, skill).catch(() => null);
+        const cachedPath = resolveRuntimeSkillMaterializedPath(companyId, skill);
+        const cachedStat = await fs.stat(cachedPath).catch(() => null);
+        if (cachedStat?.isDirectory()) {
+          source = cachedPath;
+        } else if (options.materializeMissing === false) {
+          source = cachedPath;
+        } else {
+          source = await materializeRuntimeSkillFiles(companyId, skill).catch(() => null);
+        }
       }
       if (!source) continue;
 
