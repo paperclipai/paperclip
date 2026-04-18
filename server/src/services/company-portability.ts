@@ -566,7 +566,7 @@ type AgentLike = {
 };
 
 type EnvInputRecord = {
-  type: "secret_ref" | "plain";
+  type?: "secret_ref" | "plain";
   kind: "secret" | "plain";
   requirement: "required" | "optional";
   default?: string | null;
@@ -2251,6 +2251,8 @@ function buildEnvInputMap(inputs: CompanyPortabilityEnvInput[]) {
     if (input.secretName) {
       entry.secretName = input.secretName;
       entry.type = "secret_ref";
+    } else {
+      entry.type = "plain";
     }
     if (input.secretProvider) entry.secretProvider = input.secretProvider;
     env[input.key] = entry;
@@ -4438,13 +4440,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           if (agent) {
             const adapterConfig = agent.adapterConfig as Record<string, unknown>;
             const env = adapterConfig.env as Record<string, unknown> | undefined;
+            let mutated = false;
             if (env && typeof env[envInput.key] === "object" && env[envInput.key] !== null) {
               const binding = env[envInput.key] as Record<string, unknown>;
-              if (binding.type === "secret_ref") {
+              if (binding.type === "secret_ref" && binding.secretId !== newSecretId) {
                 binding.secretId = newSecretId;
+                mutated = true;
               }
             }
-            await agents.update(agentId, { adapterConfig });
+            if (mutated) await agents.update(agentId, { adapterConfig });
           }
         }
       } else if (envInput.projectSlug) {
@@ -4453,13 +4457,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           const project = await projects.getById(projectId);
           if (project && project.env && typeof project.env === "object") {
             const env = project.env as Record<string, unknown>;
+            let mutated = false;
             if (typeof env[envInput.key] === "object" && env[envInput.key] !== null) {
               const binding = env[envInput.key] as Record<string, unknown>;
-              if (binding.type === "secret_ref") {
+              if (binding.type === "secret_ref" && binding.secretId !== newSecretId) {
                 binding.secretId = newSecretId;
+                mutated = true;
               }
             }
-            await projects.update(projectId, { env: env as import("@paperclipai/shared").AgentEnvConfig });
+            if (mutated) await projects.update(projectId, { env: env as import("@paperclipai/shared").AgentEnvConfig });
           }
         }
       }
@@ -4480,25 +4486,27 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         if (!agent) continue;
         const adapterConfig = agent.adapterConfig as Record<string, unknown>;
         const env = (adapterConfig.env as Record<string, unknown>) ?? {};
-        if (!env[envInput.key]) {
-          if (envInput.kind === "plain") {
-            env[envInput.key] = { type: "plain", value: envInput.defaultValue ?? "" };
-          }
+        let mutated = false;
+        if (!env[envInput.key] && envInput.kind === "plain") {
+          env[envInput.key] = { type: "plain", value: envInput.defaultValue ?? "" };
+          mutated = true;
         }
-        adapterConfig.env = env;
-        await agents.update(agentId, { adapterConfig });
+        if (mutated) {
+          adapterConfig.env = env;
+          await agents.update(agentId, { adapterConfig });
+        }
       } else if (envInput.projectSlug) {
         const projectId = importedSlugToProjectId.get(envInput.projectSlug);
         if (!projectId) continue;
         const project = await projects.getById(projectId);
         if (!project) continue;
         const env = (project.env as Record<string, unknown>) ?? {};
-        if (!env[envInput.key]) {
-          if (envInput.kind === "plain") {
-            env[envInput.key] = { type: "plain", value: envInput.defaultValue ?? "" };
-          }
+        let mutated = false;
+        if (!env[envInput.key] && envInput.kind === "plain") {
+          env[envInput.key] = { type: "plain", value: envInput.defaultValue ?? "" };
+          mutated = true;
         }
-        await projects.update(projectId, { env: env as import("@paperclipai/shared").AgentEnvConfig });
+        if (mutated) await projects.update(projectId, { env: env as import("@paperclipai/shared").AgentEnvConfig });
       }
     }
 

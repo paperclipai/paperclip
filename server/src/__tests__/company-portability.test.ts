@@ -14,6 +14,7 @@ const companySvc = {
 
 const agentSvc = {
   list: vi.fn(),
+  getById: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
 };
@@ -27,6 +28,7 @@ const accessSvc = {
 
 const projectSvc = {
   list: vi.fn(),
+  getById: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   createWorkspace: vi.fn(),
@@ -1172,9 +1174,9 @@ describe("company portability", () => {
         requirement: "optional",
         defaultValue: "",
         portability: "portable",
-        secretName: "anthropic-api-key",
-        secretProvider: "local_encrypted",
-        type: "secret_ref",
+        secretName: null,
+        secretProvider: null,
+        type: "plain",
       },
       {
         key: "GH_TOKEN",
@@ -1185,12 +1187,9 @@ describe("company portability", () => {
         requirement: "optional",
         defaultValue: "",
         portability: "portable",
-<<<<<<< HEAD
-=======
-        secretName: "gh-token",
-        secretName: "gh-token",
-        secretProvider: "local_encrypted",
-        type: "secret_ref",
+        secretName: null,
+        secretProvider: null,
+        type: "plain",
       },
     ]);
   });
@@ -1314,6 +1313,9 @@ describe("company portability", () => {
       requirement: "optional",
       defaultValue: "",
       portability: "portable",
+      secretName: null,
+      secretProvider: null,
+      type: "plain",
     });
   });
 
