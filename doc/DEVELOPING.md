@@ -149,6 +149,8 @@ The server will automatically use embedded PostgreSQL and persist data at:
 
 - `~/.paperclip/instances/default/db`
 
+If startup was interrupted and that DB directory exists but is empty, Paperclip now removes the empty directory automatically and retries initialization. A non-empty directory without PostgreSQL cluster files is still treated as a manual cleanup case.
+
 Override home and instance:
 
 ```sh
