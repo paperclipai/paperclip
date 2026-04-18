@@ -2000,6 +2000,15 @@ export function agentRoutes(db: Db) {
           rawEffectiveAdapterConfig,
         );
       }
+      // Strip keys explicitly set to null so they revert to adapter defaults
+      // (e.g. model: null → remove model → applyCreateDefaultsByAdapterType fills default)
+      if (requestedAdapterConfig) {
+        for (const [k, v] of Object.entries(rawEffectiveAdapterConfig)) {
+          if (v === null && requestedAdapterConfig[k] === null) {
+            delete rawEffectiveAdapterConfig[k];
+          }
+        }
+      }
       const effectiveAdapterConfig = applyCreateDefaultsByAdapterType(
         requestedAdapterType,
         rawEffectiveAdapterConfig,
