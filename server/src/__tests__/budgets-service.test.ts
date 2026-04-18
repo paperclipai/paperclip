@@ -151,6 +151,161 @@ describe("budgetService", () => {
     });
   });
 
+  it("fires onAutoPaused with scope and details when a hard incident is newly created", async () => {
+    const policy = {
+      id: "policy-1",
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-1",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      [policy],
+      [{ total: 200 }],
+      [],
+      [{
+        companyId: "company-1",
+        name: "Budget Agent",
+        status: "running",
+        pauseReason: null,
+      }],
+    ]);
+
+    dbStub.queueInsert([{
+      id: "approval-1",
+      companyId: "company-1",
+      status: "pending",
+    }]);
+    dbStub.queueInsert([{
+      id: "incident-42",
+      companyId: "company-1",
+      policyId: "policy-1",
+      approvalId: "approval-1",
+    }]);
+    dbStub.queueUpdate([]);
+
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const onAutoPaused = vi.fn().mockResolvedValue(undefined);
+
+    const service = budgetService(dbStub.db as any, { cancelWorkForScope, onAutoPaused });
+    await service.evaluateCostEvent({
+      companyId: "company-1",
+      agentId: "agent-1",
+      projectId: null,
+    } as any);
+
+    expect(onAutoPaused).toHaveBeenCalledTimes(1);
+    expect(onAutoPaused).toHaveBeenCalledWith(
+      { companyId: "company-1", scopeType: "agent", scopeId: "agent-1" },
+      expect.objectContaining({
+        policyId: "policy-1",
+        scopeName: "Budget Agent",
+        metric: "billed_cents",
+        windowKind: "calendar_month_utc",
+        amountLimit: 100,
+        amountObserved: 200,
+        incidentId: "incident-42",
+      }),
+    );
+  });
+
+  it("does not re-fire onAutoPaused when a hard incident already exists for the same window", async () => {
+    const policy = {
+      id: "policy-1",
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-1",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+    };
+
+    // existing open hard incident → createIncidentIfNeeded returns created=false
+    const dbStub = createDbStub([
+      [policy],
+      [{ total: 200 }],
+      [{
+        id: "incident-existing",
+        companyId: "company-1",
+        policyId: "policy-1",
+        thresholdType: "hard",
+        status: "open",
+        approvalId: "approval-existing",
+      }],
+    ]);
+    dbStub.queueUpdate([]);
+
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const onAutoPaused = vi.fn().mockResolvedValue(undefined);
+
+    const service = budgetService(dbStub.db as any, { cancelWorkForScope, onAutoPaused });
+    await service.evaluateCostEvent({
+      companyId: "company-1",
+      agentId: "agent-1",
+      projectId: null,
+    } as any);
+
+    expect(onAutoPaused).not.toHaveBeenCalled();
+  });
+
+  it("swallows onAutoPaused errors without breaking budget enforcement", async () => {
+    const policy = {
+      id: "policy-1",
+      companyId: "company-1",
+      scopeType: "agent",
+      scopeId: "agent-1",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      [policy],
+      [{ total: 200 }],
+      [],
+      [{
+        companyId: "company-1",
+        name: "Budget Agent",
+        status: "running",
+        pauseReason: null,
+      }],
+    ]);
+
+    dbStub.queueInsert([{ id: "approval-1", companyId: "company-1", status: "pending" }]);
+    dbStub.queueInsert([{ id: "incident-1", companyId: "company-1", policyId: "policy-1", approvalId: "approval-1" }]);
+    dbStub.queueUpdate([]);
+
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const onAutoPaused = vi.fn().mockRejectedValue(new Error("telegram down"));
+
+    const service = budgetService(dbStub.db as any, { cancelWorkForScope, onAutoPaused });
+    await expect(
+      service.evaluateCostEvent({ companyId: "company-1", agentId: "agent-1", projectId: null } as any),
+    ).resolves.not.toThrow();
+
+    expect(onAutoPaused).toHaveBeenCalledTimes(1);
+    expect(cancelWorkForScope).toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "budget.auto_pause_alert_failed" }),
+    );
+  });
+
   it("blocks new work when an agent hard-stop remains exceeded even if the agent is not paused yet", async () => {
     const agentPolicy = {
       id: "policy-agent-1",
