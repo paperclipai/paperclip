@@ -17,6 +17,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  routineRuns,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -92,6 +93,8 @@ const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const ACTIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
+const ISSUE_EXECUTION_LOCKABLE_STATUSES = ["backlog", "todo", "in_progress", "in_review"] as const;
+const ROUTINE_EXECUTION_SUCCESS_COMPLETABLE_STATUSES = new Set<string>(ISSUE_EXECUTION_LOCKABLE_STATUSES);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -2495,6 +2498,7 @@ export function heartbeatService(db: Db) {
           and(
             eq(issues.id, claimedIssueId),
             eq(issues.companyId, claimed.companyId),
+            inArray(issues.status, [...ISSUE_EXECUTION_LOCKABLE_STATUSES]),
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
           ),
         );
@@ -4033,6 +4037,8 @@ export function heartbeatService(db: Db) {
           identifier: issues.identifier,
           status: issues.status,
           executionRunId: issues.executionRunId,
+          originKind: issues.originKind,
+          originRunId: issues.originRunId,
         })
         .from(issues)
         .where(
@@ -4045,6 +4051,71 @@ export function heartbeatService(db: Db) {
 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
+
+      let completedRoutineActivity: LogActivityInput | null = null;
+      if (
+        run.status === "succeeded" &&
+        issue.originKind === "routine_execution" &&
+        issue.originRunId &&
+        ROUTINE_EXECUTION_SUCCESS_COMPLETABLE_STATUSES.has(issue.status)
+      ) {
+        const previousStatus = issue.status;
+        const now = new Date();
+        // A routine execution issue is the dispatch artifact for one heartbeat.
+        // If the heartbeat succeeds and the agent did not explicitly move it,
+        // close the artifact instead of leaving stale open monitoring noise.
+        const completedIssue = await tx
+          .update(issues)
+          .set({
+            status: "done",
+            completedAt: now,
+            checkoutRunId: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, issue.id),
+              eq(issues.originKind, "routine_execution"),
+              eq(issues.originRunId, issue.originRunId),
+              inArray(issues.status, [...ISSUE_EXECUTION_LOCKABLE_STATUSES]),
+            ),
+          )
+          .returning({ id: issues.id });
+        if (completedIssue.length > 0) {
+          await tx
+            .update(routineRuns)
+            .set({
+              status: "completed",
+              failureReason: null,
+              completedAt: now,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(routineRuns.id, issue.originRunId),
+                inArray(routineRuns.status, ["received", "issue_created"]),
+              ),
+            );
+          issue = { ...issue, status: "done" };
+          completedRoutineActivity = {
+            companyId: issue.companyId,
+            actorType: "system",
+            actorId: "heartbeat",
+            agentId: run.agentId,
+            runId: run.id,
+            action: "issue.updated",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              status: "done",
+              previousStatus,
+              source: "heartbeat.routine_execution_success",
+              routineRunId: issue.originRunId,
+            },
+          };
+        }
+      }
 
       if (issue.executionRunId === run.id) {
         await tx
@@ -4073,7 +4144,13 @@ export function heartbeatService(db: Db) {
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
-        if (!deferred) return null;
+        if (!deferred) {
+          return {
+            run: null,
+            reopenedActivity: null,
+            completedRoutineActivity,
+          };
+        }
 
         const deferredAgent = await tx
           .select()
@@ -4104,8 +4181,25 @@ export function heartbeatService(db: Db) {
         const deferredContextSeed = parseObject(deferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
         const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
+        const isClosedRoutineExecution =
+          issue.originKind === "routine_execution" &&
+          !ROUTINE_EXECUTION_SUCCESS_COMPLETABLE_STATUSES.has(issue.status);
+        if (isClosedRoutineExecution) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "skipped",
+              finishedAt: new Date(),
+              error: "Deferred wake was not promoted because the routine execution issue is no longer open",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
         const shouldReopenDeferredCommentWake =
-          deferredCommentIds.length > 0 && (issue.status === "done" || issue.status === "cancelled");
+          issue.originKind !== "routine_execution" &&
+          deferredCommentIds.length > 0 &&
+          (issue.status === "done" || issue.status === "cancelled");
         let reopenedActivity: LogActivityInput | null = null;
 
         if (shouldReopenDeferredCommentWake) {
@@ -4207,21 +4301,25 @@ export function heartbeatService(db: Db) {
             executionLockedAt: now,
             updatedAt: now,
           })
-          .where(eq(issues.id, issue.id));
+          .where(and(eq(issues.id, issue.id), inArray(issues.status, [...ISSUE_EXECUTION_LOCKABLE_STATUSES])));
 
         return {
           run: newRun,
           reopenedActivity,
+          completedRoutineActivity,
         };
       }
     });
 
-    const promotedRun = promotionResult?.run ?? null;
-    if (!promotedRun) return;
-
+    if (promotionResult?.completedRoutineActivity) {
+      await logActivity(db, promotionResult.completedRoutineActivity);
+    }
     if (promotionResult?.reopenedActivity) {
       await logActivity(db, promotionResult.reopenedActivity);
     }
+
+    const promotedRun = promotionResult?.run ?? null;
+    if (!promotedRun) return;
 
     publishLiveEvent({
       companyId: promotedRun.companyId,
@@ -4433,7 +4531,7 @@ export function heartbeatService(db: Db) {
                 executionLockedAt: new Date(),
                 updatedAt: new Date(),
               })
-              .where(eq(issues.id, issue.id));
+              .where(and(eq(issues.id, issue.id), inArray(issues.status, [...ISSUE_EXECUTION_LOCKABLE_STATUSES])));
           }
         }
 

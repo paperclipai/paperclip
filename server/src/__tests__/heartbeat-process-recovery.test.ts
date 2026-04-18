@@ -14,6 +14,8 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  routineRuns,
+  routines,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -22,6 +24,16 @@ import {
 import { runningProcesses } from "../adapters/index.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
+const mockAdapterExecute = vi.hoisted(() =>
+  vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    errorMessage: null,
+    provider: "test",
+    model: "test-model",
+  })),
+);
 
 vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
@@ -37,25 +49,26 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   };
 });
 
+vi.mock("../services/company-skills.ts", () => ({
+  companySkillService: () => ({
+    listRuntimeSkillEntries: vi.fn(async () => []),
+  }),
+}));
+
 vi.mock("../adapters/index.ts", async () => {
   const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
   return {
     ...actual,
     getServerAdapter: vi.fn(() => ({
       supportsLocalAgentJwt: false,
-      execute: vi.fn(async () => ({
-        exitCode: 0,
-        signal: null,
-        timedOut: false,
-        errorMessage: null,
-        provider: "test",
-        model: "test-model",
-      })),
+      execute: mockAdapterExecute,
     })),
   };
 });
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { issueService } from "../services/issues.ts";
+import { routineService } from "../services/routines.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -102,6 +115,52 @@ async function waitForRunToSettle(
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return heartbeat.getRun(runId);
+}
+
+async function waitForAgentRunsToSettle(
+  db: ReturnType<typeof createDb>,
+  agentId: string,
+  expectedRunCount: number,
+  timeoutMs = 3_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    if (runs.length >= expectedRunCount && runs.every((run) => run.status !== "queued" && run.status !== "running")) {
+      return runs;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+}
+
+async function waitForIssueExecutionLock(
+  db: ReturnType<typeof createDb>,
+  issueId: string,
+  timeoutMs = 3_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    if (issue?.executionRunId && issue.status === "in_progress") return issue;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+}
+
+async function waitForIssueStatus(
+  db: ReturnType<typeof createDb>,
+  issueId: string,
+  status: typeof issues.$inferSelect.status,
+  timeoutMs = 3_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    if (issue?.status === status) return issue;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
 }
 
 async function spawnOrphanedProcessGroup() {
@@ -157,6 +216,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      provider: "test",
+      model: "test-model",
+    }));
     runningProcesses.clear();
     for (const child of childProcesses) {
       child.kill("SIGKILL");
@@ -182,6 +249,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);
     await db.delete(issueComments);
+    await db.delete(routineRuns);
+    await db.delete(routines);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -392,6 +461,75 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
+  async function seedRoutineExecutionIssueFixture(input?: {
+    issueStatus?: "todo" | "in_progress" | "blocked" | "cancelled";
+  }) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const routineId = randomUUID();
+    const routineRunId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Daily cleanup",
+      description: "Clean stale artifacts",
+      assigneeAgentId: agentId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Daily cleanup",
+      description: "Clean stale artifacts",
+      status: input?.issueStatus ?? "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      originKind: "routine_execution",
+      originId: routineId,
+      originRunId: routineRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: routineRunId,
+      companyId,
+      routineId,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-19T00:00:00.000Z"),
+      linkedIssueId: issueId,
+    });
+
+    return { agentId, issueId, routineRunId };
+  }
+
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
@@ -550,6 +688,221 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         agentRole: "engineer",
       }),
     );
+  });
+
+  it("closes open routine execution issues when their heartbeat run succeeds", async () => {
+    const { agentId, issueId, routineRunId } = await seedRoutineExecutionIssueFixture({
+      issueStatus: "todo",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "routine_execution",
+      payload: { issueId },
+      contextSnapshot: { issueId, source: "routine.dispatch" },
+    });
+    expect(run?.id).toBeTruthy();
+    const settledRun = run ? await waitForRunToSettle(heartbeat, run.id) : null;
+    expect(settledRun?.status).toBe("succeeded");
+
+    const issue = await waitForIssueStatus(db, issueId, "done");
+    expect(issue?.status).toBe("done");
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+    expect(issue?.completedAt).toBeInstanceOf(Date);
+
+    const routineRun = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.id, routineRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(routineRun?.status).toBe("completed");
+    expect(routineRun?.completedAt).toBeInstanceOf(Date);
+  });
+
+  it("does not auto-close cancelled routine execution issues after a succeeding heartbeat", async () => {
+    const { agentId, issueId, routineRunId } = await seedRoutineExecutionIssueFixture({
+      issueStatus: "cancelled",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "routine_execution",
+      payload: { issueId },
+      contextSnapshot: { issueId, source: "routine.dispatch" },
+    });
+    expect(run?.id).toBeTruthy();
+    const settledRun = run ? await waitForRunToSettle(heartbeat, run.id) : null;
+    expect(settledRun?.status).toBe("succeeded");
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("cancelled");
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.completedAt).toBeNull();
+
+    const routineRun = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.id, routineRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(routineRun?.status).toBe("issue_created");
+    expect(routineRun?.completedAt).toBeNull();
+  });
+
+  it("preserves routine execution cancellation while the heartbeat run is active", async () => {
+    let releaseAdapter!: () => void;
+    const adapterReleased = new Promise<void>((resolve) => {
+      releaseAdapter = resolve;
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await adapterReleased;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const { agentId, issueId, routineRunId } = await seedRoutineExecutionIssueFixture({
+      issueStatus: "todo",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "routine_execution",
+      payload: { issueId },
+      contextSnapshot: { issueId, source: "routine.dispatch" },
+    });
+    expect(run?.id).toBeTruthy();
+
+    const activeIssue = await waitForIssueExecutionLock(db, issueId);
+    expect(activeIssue?.status).toBe("in_progress");
+    expect(activeIssue?.executionRunId).toBe(run?.id);
+
+    await issueService(db).update(issueId, { status: "cancelled" });
+    await routineService(db).syncRunStatusForIssue(issueId);
+
+    releaseAdapter();
+    const settledRun = run ? await waitForRunToSettle(heartbeat, run.id) : null;
+    expect(settledRun?.status).toBe("succeeded");
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("cancelled");
+    expect(issue?.completedAt).toBeNull();
+    expect(issue?.cancelledAt).toBeInstanceOf(Date);
+    expect(issue?.executionRunId).toBeNull();
+
+    const routineRun = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.id, routineRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(routineRun?.status).toBe("failed");
+    expect(routineRun?.failureReason).toBe("Execution issue moved to cancelled");
+    expect(routineRun?.completedAt).toBeInstanceOf(Date);
+  });
+
+  it("does not promote deferred comment wakes after a routine execution is cancelled", async () => {
+    let releaseAdapter!: () => void;
+    const adapterReleased = new Promise<void>((resolve) => {
+      releaseAdapter = resolve;
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await adapterReleased;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const { agentId, issueId, routineRunId } = await seedRoutineExecutionIssueFixture({
+      issueStatus: "todo",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "routine_execution",
+      payload: { issueId },
+      contextSnapshot: { issueId, source: "routine.dispatch" },
+    });
+    expect(run?.id).toBeTruthy();
+
+    const activeIssue = await waitForIssueExecutionLock(db, issueId);
+    expect(activeIssue?.status).toBe("in_progress");
+    expect(activeIssue?.executionRunId).toBe(run?.id);
+
+    const comment = await db
+      .insert(issueComments)
+      .values({
+        companyId: activeIssue!.companyId,
+        issueId,
+        authorAgentId: agentId,
+        body: "Follow-up while routine execution is running",
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    const deferredRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId: comment.id },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        commentId: comment.id,
+        wakeReason: "issue_commented",
+      },
+      requestedByActorType: "agent",
+      requestedByActorId: agentId,
+    });
+    expect(deferredRun).toBeNull();
+
+    await issueService(db).update(issueId, { status: "cancelled" });
+    await routineService(db).syncRunStatusForIssue(issueId);
+
+    releaseAdapter();
+    const settledRun = run ? await waitForRunToSettle(heartbeat, run.id) : null;
+    expect(settledRun?.status).toBe("succeeded");
+    const runs = await waitForAgentRunsToSettle(db, agentId, 1);
+    expect(runs).toHaveLength(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("cancelled");
+    expect(issue?.completedAt).toBeNull();
+    expect(issue?.cancelledAt).toBeInstanceOf(Date);
+    expect(issue?.executionRunId).toBeNull();
+
+    const deferred = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows.find((row) => row.reason === "issue_execution_deferred"));
+    expect(deferred?.status).toBe("skipped");
+
+    const routineRun = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.id, routineRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(routineRun?.status).toBe("failed");
+    expect(routineRun?.failureReason).toBe("Execution issue moved to cancelled");
+    expect(routineRun?.completedAt).toBeInstanceOf(Date);
   });
 
   it("re-enqueues assigned todo work when the last issue run died and no wake remains", async () => {
