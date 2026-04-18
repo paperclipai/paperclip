@@ -765,7 +765,12 @@ describe("IssueProperties", () => {
       ownerOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(onUpdate).toHaveBeenCalledWith({ ownerAgentId: "22222222-2222-4222-8222-222222222222" });
+    expect(onUpdate).toHaveBeenCalledWith({
+      ownerAgentId: "22222222-2222-4222-8222-222222222222",
+      missionControl: {
+        collaboratorAgentIds: [],
+      },
+    });
 
     onUpdate.mockClear();
     act(() => root.unmount());
@@ -807,6 +812,61 @@ describe("IssueProperties", () => {
     });
 
     act(() => rerenderedRoot.unmount());
+  });
+
+  it("reassigns the owner to the active handoff target and removes duplicate collaborator ownership", async () => {
+    const onUpdate = vi.fn();
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "11111111-1111-4111-8111-111111111111", name: "Main" },
+      { id: "22222222-2222-4222-8222-222222222222", name: "Ork" },
+      { id: "33333333-3333-4333-8333-333333333333", name: "Stitch" },
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        ownerAgentId: "11111111-1111-4111-8111-111111111111",
+        missionControl: {
+          collaboratorAgentIds: [
+            "22222222-2222-4222-8222-222222222222",
+            "33333333-3333-4333-8333-333333333333",
+          ],
+          handoff: {
+            fromAgentId: "11111111-1111-4111-8111-111111111111",
+            toAgentId: "22222222-2222-4222-8222-222222222222",
+            reason: "Need Ork to take over implementation",
+            requestedNextStep: "Finish the patch",
+            unblockCondition: "Patch merged",
+            timestamp: new Date("2026-04-06T12:00:00.000Z"),
+            context: {
+              issueId: "issue-1",
+              identifier: "PAP-1",
+              title: "Parent issue",
+            },
+          },
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const reassignOwnerButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Reassign owner to Ork"));
+    expect(reassignOwnerButton).not.toBeUndefined();
+
+    await act(async () => {
+      reassignOwnerButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      ownerAgentId: "22222222-2222-4222-8222-222222222222",
+      missionControl: expect.objectContaining({
+        collaboratorAgentIds: ["33333333-3333-4333-8333-333333333333"],
+      }),
+    });
+
+    act(() => root.unmount());
   });
 
   it("shows compact activity and handoff summaries", async () => {

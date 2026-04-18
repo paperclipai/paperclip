@@ -399,6 +399,16 @@ export function IssueProperties({
       },
     });
   };
+  const updateOwner = (ownerAgentId: string | null) => {
+    const nextCollaboratorAgentIds = collaboratorAgentIds.filter((agentId) => agentId !== ownerAgentId);
+    onUpdate({
+      ownerAgentId,
+      missionControl: {
+        ...(missionControl ?? {}),
+        collaboratorAgentIds: nextCollaboratorAgentIds,
+      },
+    });
+  };
   const setWorkflowState = (kind: IssueMissionControlWorkflowStateKind | null) => {
     onUpdate({
       missionControl: {
@@ -427,7 +437,15 @@ export function IssueProperties({
       },
     });
   };
-  const applyOperatorControl = (action: "mark_waiting" | "mark_blocked_on_upstream" | "resume" | "resolve_handoff") => {
+  const applyOperatorControl = (
+    action: "mark_waiting" | "mark_blocked_on_upstream" | "resume" | "resolve_handoff" | "reassign_owner"
+  ) => {
+    if (action === "reassign_owner") {
+      if (!handoff?.toAgentId || handoff.toAgentId === issue.ownerAgentId) return;
+      updateOwner(handoff.toAgentId);
+      return;
+    }
+
     if (action === "mark_waiting") {
       onUpdate({
         missionControl: {
@@ -693,7 +711,7 @@ export function IssueProperties({
             !issue.ownerAgentId && "bg-accent",
           )}
           onClick={() => {
-            onUpdate({ ownerAgentId: null });
+            updateOwner(null);
             setOwnerOpen(false);
           }}
         >
@@ -712,7 +730,7 @@ export function IssueProperties({
                 issue.ownerAgentId === a.id && "bg-accent",
               )}
               onClick={() => {
-                onUpdate({ ownerAgentId: a.id });
+                updateOwner(a.id);
                 setOwnerOpen(false);
               }}
             >
@@ -1424,6 +1442,15 @@ export function IssueProperties({
             >
               Mark blocked on upstream
             </button>
+            {handoff?.toAgentId && handoff.toAgentId !== issue.ownerAgentId ? (
+              <button
+                type="button"
+                className={OPERATOR_CONTROL_BUTTON_CLASS}
+                onClick={() => applyOperatorControl("reassign_owner")}
+              >
+                Reassign owner to {agentName(handoff.toAgentId) ?? "handoff target"}
+              </button>
+            ) : null}
             {workflowState && workflowState.kind !== "resumed" ? (
               <button
                 type="button"
