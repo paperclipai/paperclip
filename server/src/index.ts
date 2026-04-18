@@ -639,6 +639,12 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
+
+      void heartbeat
+        .sweepExpiredCheckouts()
+        .catch((err) => {
+          logger.error({ err }, "periodic checkout TTL sweep failed");
+        });
     }, config.heartbeatSchedulerIntervalMs);
   }
   

@@ -2848,6 +2848,111 @@ export function heartbeatService(db: Db) {
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  async function sweepExpiredCheckouts() {
+    const now = new Date();
+    const floorMs = 30 * 60 * 1000;
+    const defaultTtlMs = 2 * 60 * 60 * 1000;
+
+    const candidates = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          sql`${issues.checkoutRunId} is not null`,
+          sql`${issues.executionLockedAt} < ${new Date(now.getTime() - floorMs)}`,
+        ),
+      );
+
+    let expired = 0;
+    const expiredIssueIds: string[] = [];
+
+    for (const issue of candidates) {
+      if (!issue.assigneeAgentId || !issue.executionLockedAt) continue;
+
+      const agent = await getAgent(issue.assigneeAgentId);
+      if (!agent) continue;
+
+      const policy = parseHeartbeatPolicy(agent);
+      const ttlMs = Math.max(
+        floorMs,
+        policy.intervalSec > 0 ? 4 * policy.intervalSec * 1000 : defaultTtlMs,
+      );
+      const lockedAt = new Date(issue.executionLockedAt).getTime();
+      if (now.getTime() - lockedAt < ttlMs) continue;
+
+      const released = await db
+        .update(issues)
+        .set({
+          checkoutRunId: null,
+          executionRunId: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.id, issue.id),
+            eq(issues.checkoutRunId, issue.checkoutRunId!),
+          ),
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+
+      if (!released) continue;
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: issue.assigneeAgentId,
+        runId: null,
+        action: "issue.checkout_auto_expired",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          expiredCheckoutRunId: issue.checkoutRunId,
+          ttlMs,
+        },
+      });
+
+      const ttlHours = (ttlMs / (60 * 60 * 1000)).toFixed(1);
+      await issuesSvc.addComment(
+        issue.id,
+        `Checkout auto-expired after ${ttlHours}h TTL. The execution lock held by run \`${issue.checkoutRunId}\` ` +
+          `has been released. The assignee has been notified to resume work.`,
+        {},
+      );
+
+      await enqueueWakeup(issue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "checkout_auto_expired",
+        contextSnapshot: { issueId: issue.id },
+        requestedByActorType: "system",
+        requestedByActorId: "checkout_ttl_sweep",
+      });
+
+      expired += 1;
+      expiredIssueIds.push(issue.id);
+    }
+
+    if (expired > 0) {
+      logger.warn(
+        { expiredCount: expired, issueIds: expiredIssueIds },
+        "swept expired checkout locks",
+      );
+    }
+    return { expired, issueIds: expiredIssueIds };
+  }
+
   async function resumeQueuedRuns() {
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
@@ -5320,6 +5425,8 @@ export function heartbeatService(db: Db) {
     reportRunActivity: clearDetachedRunWarning,
 
     reapOrphanedRuns,
+
+    sweepExpiredCheckouts,
 
     resumeQueuedRuns,
 
