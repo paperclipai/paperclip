@@ -59,6 +59,21 @@ function signalRunningProcess(
 
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Decode a Buffer as UTF-8, falling back to GBK on Windows if UTF-8 fails.
+ * This handles the case where child processes on Chinese Windows output GBK-encoded text.
+ */
+function decodeBufferWithFallback(buf: Buffer): string {
+  try {
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    return decoder.decode(buf);
+  } catch {
+    // GBK fallback — Node.js built-in ICU supports 'gbk' natively
+    const gbkDecoder = new TextDecoder("gbk");
+    return gbkDecoder.decode(buf);
+  }
+}
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
@@ -1095,6 +1110,12 @@ export async function runChildProcess(
       delete rawMerged[key];
     }
 
+    // Encourage child processes on Windows to output UTF-8 instead of GBK
+    if (process.platform === "win32") {
+      rawMerged.LANG = "en_US.UTF-8";
+      rawMerged.PYTHONIOENCODING = "utf-8";
+    }
+
     const mergedEnv = ensurePathInEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
       .then((target) => {
@@ -1120,6 +1141,10 @@ export async function runChildProcess(
         let timedOut = false;
         let stdout = "";
         let stderr = "";
+        // On Windows, collect raw Buffers for GBK→UTF-8 fallback decoding
+        const useBufferCapture = process.platform === "win32";
+        const stdoutBufs: Buffer[] = [];
+        const stderrBufs: Buffer[] = [];
         let logChain: Promise<void> = Promise.resolve();
 
         const timeout =
@@ -1134,6 +1159,9 @@ export async function runChildProcess(
             : null;
 
         child.stdout?.on("data", (chunk: unknown) => {
+          if (useBufferCapture) {
+            stdoutBufs.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+          }
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
           logChain = logChain
@@ -1142,6 +1170,9 @@ export async function runChildProcess(
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
+          if (useBufferCapture) {
+            stderrBufs.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+          }
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
           logChain = logChain
@@ -1174,12 +1205,23 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           runningProcesses.delete(runId);
           void logChain.finally(() => {
+            // On Windows, re-decode stdout/stderr with GBK fallback if UTF-8 fails
+            let finalStdout = stdout;
+            let finalStderr = stderr;
+            if (useBufferCapture) {
+              if (stdoutBufs.length > 0) {
+                finalStdout = decodeBufferWithFallback(Buffer.concat(stdoutBufs));
+              }
+              if (stderrBufs.length > 0) {
+                finalStderr = decodeBufferWithFallback(Buffer.concat(stderrBufs));
+              }
+            }
             resolve({
               exitCode: code,
               signal,
               timedOut,
-              stdout,
-              stderr,
+              stdout: finalStdout,
+              stderr: finalStderr,
               pid: child.pid ?? null,
               startedAt,
             });

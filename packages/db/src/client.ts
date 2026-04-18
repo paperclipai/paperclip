@@ -47,6 +47,8 @@ export type MigrationState =
 
 export function createDb(url: string) {
   const sql = postgres(url);
+  // Ensure the connection uses UTF-8 encoding (critical on Windows with GBK locale)
+  sql`SET client_encoding = 'UTF8'`.execute().catch(() => {});
   return drizzlePg(sql, { schema });
 }
 
