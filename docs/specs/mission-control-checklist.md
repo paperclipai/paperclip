@@ -17,7 +17,7 @@ This feature is only done when:
 - Branch: `feat/mission-control-customization-lane`
 - Implementation owner: `ork`
 - Product/orchestration owner: `main`
-- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, and the first operator controls in `IssueProperties` are now in place; `Resume` now records the existing `resumed` workflow state instead of clearing context, `Resolve handoff` now clears active handoff state through the same issue update surface and keeps handoff/history wording legible, `Reassign owner` now promotes the active handoff target through the same owner/mission-control plumbing so ownership stays clean, and `Escalate` now raises `needsHumanAttention` through the same minimal mission-control payload while preserving any existing workflow state. The remaining gap is the operational views plus broader history/use validation
+- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, the first operator controls in `IssueProperties`, and the first operational inbox views are now in place; `Resume` now records the existing `resumed` workflow state instead of clearing context, `Resolve handoff` now clears active handoff state through the same issue update surface and keeps handoff/history wording legible, `Reassign owner` now promotes the active handoff target through the same owner/mission-control plumbing so ownership stays clean, `Escalate` now raises `needsHumanAttention` through the same minimal mission-control payload while preserving any existing workflow state, and `Inbox` now exposes practical operational view chips for the broader operator queue, Main/Ork/Stitch/Personal OS owner slices when those agents exist, needs-human, blocked/waiting, and recent handoffs by reusing the existing issue filter/view plumbing. The remaining gap is broader history/use validation
 
 ## Checklist
 
@@ -57,13 +57,13 @@ This feature is only done when:
 - [x] Verify control actions update summaries/state correctly
 
 ### 4. Ownership and operational views
-- [ ] View/filter for work owned by Main
-- [ ] View/filter for work owned by Ork
-- [ ] View/filter for work owned by Stitch
-- [ ] View/filter for work owned by Personal OS
-- [ ] View/filter for needs-human-attention
-- [ ] View/filter for blocked/stalled work
-- [ ] View/filter for recent handoffs
+- [x] View/filter for work owned by Main
+- [x] View/filter for work owned by Ork
+- [x] View/filter for work owned by Stitch
+- [x] View/filter for work owned by Personal OS
+- [x] View/filter for needs-human-attention
+- [x] View/filter for blocked/stalled work
+- [x] View/filter for recent handoffs
 
 ### 5. Task history / orchestration context
 - [ ] Durable history for meaningful handoffs and state changes
@@ -99,12 +99,12 @@ This feature is only done when:
 - [ ] Decide whether to open PR / merge / continue iteration
 
 ## Current recommended next slice
-- Ownership and operational views for blocked/stalled/recent-handoff work
-- After that, verify history remains high-signal and compact under more real multi-agent usage
+- Durable task history and latest meaningful actor/update summaries under real multi-agent usage
+- After that, validate the new operational views against real Main/Ork/Stitch/Personal OS workflows and make sure the queue stays high-signal
 
 ## Current blockers
 - No hard blocker right now
-- Main remaining gap is operational views and broader history verification on top of the workflow-state foundation
+- Main remaining gap is broader history verification and real-use validation on top of the workflow-state and operational-view foundation
 
 ## Update rule for Ork
 When meaningful progress lands, Ork should update this checklist with:

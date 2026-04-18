@@ -369,6 +369,20 @@ export function IssueFiltersPopover({
                   />
                   <span className="text-sm">Needs human attention</span>
                 </label>
+                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                  <Checkbox
+                    checked={state.blockedOrWaiting}
+                    onCheckedChange={(checked) => onChange({ blockedOrWaiting: checked === true })}
+                  />
+                  <span className="text-sm">Blocked or waiting</span>
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                  <Checkbox
+                    checked={state.recentHandoffs}
+                    onCheckedChange={(checked) => onChange({ recentHandoffs: checked === true })}
+                  />
+                  <span className="text-sm">Recent handoffs</span>
+                </label>
                 {enableRoutineVisibilityFilter ? (
                   <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
                     <Checkbox
