@@ -4,6 +4,8 @@ export const DEFAULT_CURSOR_LOCAL_MODEL = "auto";
 
 const CURSOR_FALLBACK_MODEL_IDS = [
   "auto",
+  "composer-2",
+  "composer-2-fast",
   "composer-1.5",
   "composer-1",
   "gpt-5.3-codex-low",
@@ -29,6 +31,8 @@ const CURSOR_FALLBACK_MODEL_IDS = [
   "gpt-5.2-high",
   "gpt-5.1-high",
   "gpt-5.1-codex-mini",
+  "opus-4.7",
+  "opus-4.7-thinking",
   "opus-4.6-thinking",
   "opus-4.6",
   "opus-4.5",
@@ -40,6 +44,8 @@ const CURSOR_FALLBACK_MODEL_IDS = [
   "gemini-3.1-pro",
   "gemini-3-pro",
   "gemini-3-flash",
+  "gemini-2.5-flash",
+  "grok-4-20-thinking",
   "grok",
   "kimi-k2.5",
 ];
@@ -66,7 +72,7 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Cursor model id (for example auto or gpt-5.3-codex)
 - mode (string, optional): Cursor execution mode passed as --mode (plan|ask). Leave unset for normal autonomous runs.
-- command (string, optional): defaults to "agent"
+- command (string, optional): defaults to auto-detecting "cursor-agent" then "agent" on PATH
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
 

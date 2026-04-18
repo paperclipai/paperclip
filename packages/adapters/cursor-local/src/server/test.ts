@@ -18,6 +18,7 @@ import path from "node:path";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl } from "./parse.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
+import { resolveCursorDefaultCommand } from "../shared/command.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -38,9 +39,9 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function commandLooksLike(command: string, expected: string): boolean {
+function commandLooksLike(command: string, ...expected: string[]): boolean {
   const base = path.basename(command).toLowerCase();
-  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
+  return expected.some((e) => base === e || base === `${e}.cmd` || base === `${e}.exe`);
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
@@ -94,7 +95,7 @@ export async function testEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const command = asString(config.command, "agent");
+  const configuredCommand = asString(config.command, "").trim();
   const cwd = asString(config.cwd, process.cwd());
 
   try {
@@ -119,6 +120,7 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const command = configuredCommand || await resolveCursorDefaultCommand(cwd, runtimeEnv);
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);
     checks.push({
@@ -170,13 +172,13 @@ export async function testEnvironment(
   const canRunProbe =
     checks.every((check) => check.code !== "cursor_cwd_invalid" && check.code !== "cursor_command_unresolvable");
   if (canRunProbe) {
-    if (!commandLooksLike(command, "agent")) {
+    if (!commandLooksLike(command, "agent", "cursor-agent")) {
       checks.push({
         code: "cursor_hello_probe_skipped_custom_command",
         level: "info",
-        message: "Skipped hello probe because command is not `agent`.",
+        message: "Skipped hello probe because command is not `agent` or `cursor-agent`.",
         detail: command,
-        hint: "Use the `agent` CLI command to run the automatic installation and auth probe.",
+        hint: "Use the `agent` or `cursor-agent` CLI command to run the automatic installation and auth probe.",
       });
     } else {
       const model = asString(config.model, DEFAULT_CURSOR_LOCAL_MODEL).trim();
