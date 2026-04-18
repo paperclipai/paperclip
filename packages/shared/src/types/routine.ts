@@ -50,6 +50,8 @@ export interface Routine {
   concurrencyPolicy: string;
   catchUpPolicy: string;
   variables: RoutineVariable[];
+  workflowTemplateId: string | null;
+  workflowInvokeInput: Record<string, unknown> | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   updatedByAgentId: string | null;

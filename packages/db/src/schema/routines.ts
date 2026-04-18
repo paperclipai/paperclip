@@ -15,6 +15,7 @@ import { companySecrets } from "./company_secrets.js";
 import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
+import { workflowTemplates } from "./workflow_templates.js";
 import type { RoutineVariable } from "@paperclipai/shared";
 
 export const routines = pgTable(
@@ -33,6 +34,8 @@ export const routines = pgTable(
     concurrencyPolicy: text("concurrency_policy").notNull().default("coalesce_if_active"),
     catchUpPolicy: text("catch_up_policy").notNull().default("skip_missed"),
     variables: jsonb("variables").$type<RoutineVariable[]>().notNull().default([]),
+    workflowTemplateId: uuid("workflow_template_id").references(() => workflowTemplates.id, { onDelete: "set null" }),
+    workflowInvokeInput: jsonb("workflow_invoke_input").$type<Record<string, unknown>>(),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     updatedByAgentId: uuid("updated_by_agent_id").references(() => agents.id, { onDelete: "set null" }),

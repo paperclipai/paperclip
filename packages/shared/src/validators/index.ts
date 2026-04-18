@@ -233,6 +233,15 @@ export {
 } from "./routine.js";
 
 export {
+  createWorkflowTemplateSchema,
+  updateWorkflowTemplateSchema,
+  workflowInvokeInputSchema,
+  type CreateWorkflowTemplate,
+  type UpdateWorkflowTemplate,
+  type WorkflowInvokeInput,
+} from "./workflow-template.js";
+
+export {
   createCostEventSchema,
   updateBudgetSchema,
   type CreateCostEvent,

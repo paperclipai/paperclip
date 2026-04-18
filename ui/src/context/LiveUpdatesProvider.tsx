@@ -714,6 +714,11 @@ function invalidateActivityQueries(
     return;
   }
 
+  if (entityType === "workflow_template") {
+    queryClient.invalidateQueries({ queryKey: ["workflow-templates"] });
+    return;
+  }
+
   if (entityType === "company") {
     queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
   }
