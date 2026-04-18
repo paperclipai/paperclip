@@ -1,24 +1,346 @@
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 820298072e79f19d056416b1cce416ecd59f91e0..3e5e378069cb021c9d573a28cc7542190babe567 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -24,5 +24,6 @@ export declare const models: {
+ /**
+  * Documentation shown in the Paperclip UI when configuring a Hermes agent.
+  */
++export declare function listModels(): Promise<{ id: string; label: string }[]>;
+ export declare const agentConfigurationDoc = "# Hermes Agent Configuration\n\nHermes Agent is a full-featured AI agent by Nous Research with 30+ native\ntools, persistent memory, session persistence, skills, and MCP support.\n\n## Prerequisites\n\n- Python 3.10+ installed\n- Hermes Agent installed: `pip install hermes-agent`\n- At least one LLM API key configured in ~/.hermes/.env\n\n## Core Configuration\n\n| Field | Type | Default | Description |\n|-------|------|---------|-------------|\n| model | string | (Hermes configured default) | Optional explicit model in provider/model format. Leave blank to use Hermes's configured default model. |\n| provider | string | (auto) | API provider: auto, openrouter, nous, openai-codex, zai, kimi-coding, minimax, minimax-cn. Usually not needed \u2014 Hermes auto-detects from model name. |\n| timeoutSec | number | 300 | Execution timeout in seconds |\n| graceSec | number | 10 | Grace period after SIGTERM before SIGKILL |\n\n## Tool Configuration\n\n| Field | Type | Default | Description |\n|-------|------|---------|-------------|\n| toolsets | string | (all) | Comma-separated toolsets to enable (e.g. \"terminal,file,web\") |\n\n## Session & Workspace\n\n| Field | Type | Default | Description |\n|-------|------|---------|-------------|\n| persistSession | boolean | true | Resume sessions across heartbeats |\n| worktreeMode | boolean | false | Use git worktree for isolated changes |\n| checkpoints | boolean | false | Enable filesystem checkpoints |\n\n## Advanced\n\n| Field | Type | Default | Description |\n|-------|------|---------|-------------|\n| hermesCommand | string | hermes | Path to hermes CLI binary |\n| verbose | boolean | false | Enable verbose output |\n| extraArgs | string[] | [] | Additional CLI arguments |\n| env | object | {} | Extra environment variables |\n| promptTemplate | string | (default) | Custom prompt template with {{variable}} placeholders |\n\n## Available Template Variables\n\n- `{{agentId}}` \u2014 Paperclip agent ID\n- `{{agentName}}` \u2014 Agent display name\n- `{{companyId}}` \u2014 Paperclip company ID\n- `{{companyName}}` \u2014 Company display name\n- `{{runId}}` \u2014 Current heartbeat run ID\n- `{{taskId}}` \u2014 Current task/issue ID (if assigned)\n- `{{taskTitle}}` \u2014 Task title (if assigned)\n- `{{taskBody}}` \u2014 Task description (if assigned)\n- `{{projectName}}` \u2014 Project name (if scoped to a project)\n";
+ //# sourceMappingURL=index.d.ts.map
+\ No newline at end of file
+diff --git a/dist/index.js b/dist/index.js
+index d6afd5d43617e6ce96b1247ade584532f2385144..2d1373b3bcd55b3f8505c210d492ae15d68861f1 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -8,6 +8,9 @@
+  *
+  * @packageDocumentation
+  */
++import { readFile } from "node:fs/promises";
++import { join } from "node:path";
++import { homedir } from "node:os";
+ import { ADAPTER_TYPE, ADAPTER_LABEL } from "./shared/constants.js";
+ export const type = ADAPTER_TYPE;
+ export const label = ADAPTER_LABEL;
+@@ -19,6 +22,90 @@ export const label = ADAPTER_LABEL;
+  * since Hermes availability depends on the user's local configuration.
+  */
+ export const models = [];
++/**
++ * Probe an OpenAI-compatible /v1/models endpoint and return sorted model entries.
++ * Returns an empty array on any error so callers can fall back gracefully.
++ */
++async function fetchOpenAIModels(baseUrl, apiKey) {
++    try {
++        const url = baseUrl.replace(/\/$/, "") + "/models";
++        const headers = { "Content-Type": "application/json" };
++        if (apiKey)
++            headers["Authorization"] = `Bearer ${apiKey}`;
++        const res = await fetch(url, { headers, signal: AbortSignal.timeout(5000) });
++        if (!res.ok)
++            return [];
++        const data = (await res.json());
++        const items = Array.isArray(data?.data) ? data.data : [];
++        return items
++            .filter((m) => typeof m?.id === "string")
++            .map((m) => ({ id: m.id, label: m.id }))
++            .sort((a, b) => a.id.localeCompare(b.id));
++    }
++    catch {
++        return [];
++    }
++}
++/**
++ * List all models available from the user's Hermes config.
++ *
++ * Reads `~/.hermes/config.yaml` (or `$HERMES_HOME/config.yaml`), extracts
++ * unique `base_url` + `api_key` pairs from the `custom_providers` list and
++ * `providers` map, probes each endpoint's `/v1/models` in parallel, and
++ * returns the deduplicated, sorted result.
++ *
++ * Falls back gracefully to an empty list if the config is missing or any
++ * endpoint is unreachable.
++ */
++export async function listModels() {
++    const hermesHome = process.env["HERMES_HOME"] ?? join(homedir(), ".hermes");
++    const configPath = join(hermesHome, "config.yaml");
++    let content;
++    try {
++        content = await readFile(configPath, "utf-8");
++    }
++    catch {
++        return [];
++    }
++    // Extract unique (base_url, api_key) pairs via lightweight regex parsing.
++    // Covers both the `custom_providers:` list and the `providers:` map.
++    const endpoints = new Map(); // url -> api_key
++    // custom_providers: list of {name, base_url, model, api_key?}
++    const cpSection = content.match(/^custom_providers:\s*\n((?:[ \t]+-[^\n]*\n(?:[ \t][^\n]*\n)*)*)/m)?.[1] ?? "";
++    for (const block of cpSection.split(/(?=^\s+-\s)/m).filter(Boolean)) {
++        const url = (block.match(/base_url:\s*(\S+)/) ?? block.match(/url:\s*(\S+)/))?.[1]?.trim();
++        const key = block.match(/api_key:\s*(\S+)/)?.[1]?.trim() ?? "";
++        if (url) {
++            // Add URL, or upgrade an existing keyless entry with a key we now have
++            if (!endpoints.has(url) || (!endpoints.get(url) && key))
++                endpoints.set(url, key);
++        }
++    }
++    // providers: map of name -> {api, api_key, default_model}
++    const provSection = content.match(/^providers:\s*\n((?:[ \t][^\n]*\n)*)/m)?.[1] ?? "";
++    const apiMatches = [...provSection.matchAll(/^\s+api:\s*(\S+)/gm)];
++    const keyMatches = [...provSection.matchAll(/^\s+api_key:\s*(\S+)/gm)];
++    for (let i = 0; i < apiMatches.length; i++) {
++        const url = apiMatches[i]?.[1]?.trim();
++        const key = keyMatches[i]?.[1]?.trim() ?? "";
++        if (url && (!endpoints.has(url) || (!endpoints.get(url) && key)))
++            endpoints.set(url, key);
++    }
++    if (endpoints.size === 0)
++        return [];
++    const fetched = await Promise.all([...endpoints.entries()].map(([url, key]) => fetchOpenAIModels(url, key)));
++    const seen = new Set();
++    const results = [];
++    for (const batch of fetched) {
++        for (const m of batch) {
++            if (!seen.has(m.id)) {
++                seen.add(m.id);
++                results.push(m);
++            }
++        }
++    }
++    return results.sort((a, b) => a.id.localeCompare(b.id));
++}
+ /**
+  * Documentation shown in the Paperclip UI when configuring a Hermes agent.
+  */
+diff --git a/dist/server/detect-model.js b/dist/server/detect-model.js
+index f566623b5996e6effcd9e4ab6d5c9ee547612a83..3ef72177c921c046465bb50792d685e91c1e8089 100644
+--- a/dist/server/detect-model.js
++++ b/dist/server/detect-model.js
+@@ -1,17 +1,32 @@
+ /**
+- * Detect the current model from the user's Hermes config.
++ * Detect the current model and provider from the user's Hermes config.
+  *
+- * Reads ~/.hermes/config.yaml and extracts the default model
+- * and provider settings.
++ * Reads ~/.hermes/config.yaml and extracts the default model,
++ * provider, base_url, and api_mode settings.
++ *
++ * Also provides provider resolution logic that merges explicit config,
++ * Hermes config detection, and model-name prefix inference.
+  */
+ import { readFile } from "node:fs/promises";
+ import { join } from "node:path";
+ import { homedir } from "node:os";
++import { VALID_PROVIDERS } from "../shared/constants.js";
++// Inline prefix hints (MODEL_PREFIX_PROVIDER_HINTS not available in this package version)
++const MODEL_PREFIX_PROVIDER_HINTS = [
++    ["gpt-", "openai"],
++    ["o1-", "openai"],
++    ["o3-", "openai"],
++    ["claude-", "anthropic"],
++    ["glm-", "zai"],
++    ["moonshot-", "kimi-coding"],
++    ["mistral-", "openrouter"],
++    ["gemini-", "openrouter"],
++];
+ /**
+- * Read the Hermes config file and extract the default model.
++ * Read the Hermes config file and extract the default model config.
+  */
+ export async function detectModel(configPath) {
+-    const filePath = configPath ?? join(homedir(), ".hermes", "config.yaml");
++    const filePath = configPath ?? join(process.env["HERMES_HOME"] ?? join(homedir(), ".hermes"), "config.yaml");
+     let content;
+     try {
+         content = await readFile(filePath, "utf-8");
+@@ -22,13 +37,15 @@ export async function detectModel(configPath) {
+     return parseModelFromConfig(content);
+ }
+ /**
+- * Parse model.default and model.provider from raw YAML content.
+- * Uses simple regex parsing to avoid a YAML dependency.
++ * Parse model.default, model.provider, model.base_url, and model.api_mode
++ * from raw YAML content. Uses simple regex parsing to avoid a YAML dependency.
+  */
+ export function parseModelFromConfig(content) {
+     const lines = content.split("\n");
+     let model = "";
+     let provider = "";
++    let baseUrl = "";
++    let apiMode = "";
+     let inModelSection = false;
+     let modelSectionIndent = 0;
+     for (const line of lines) {
+@@ -53,11 +70,74 @@ export function parseModelFromConfig(content) {
+                     model = val;
+                 if (key === "provider")
+                     provider = val;
++                if (key === "base_url")
++                    baseUrl = val;
++                if (key === "api_mode")
++                    apiMode = val;
+             }
+         }
+     }
+     if (!model)
+         return null;
+-    return { model, provider, source: "config" };
++    return { model, provider, baseUrl, apiMode, source: "config" };
++}
++/**
++ * Infer a provider from the model name using prefix-based hints.
++ *
++ * For example:
++ *   "gpt-5.4"       → "copilot"
++ *   "claude-sonnet-4" → "anthropic"
++ *   "glm-5-turbo"   → "zai"
++ *
++ * Returns undefined if no hint matches (caller should fall back to "auto").
++ */
++export function inferProviderFromModel(model) {
++    const lower = model.toLowerCase();
++    // Strip provider/ prefix if present (e.g. "anthropic/claude-sonnet-4")
++    const bareName = lower.includes("/") ? lower.split("/").pop() : lower;
++    for (const [prefix, hint] of MODEL_PREFIX_PROVIDER_HINTS) {
++        if (bareName.startsWith(prefix)) {
++            return hint;
++        }
++    }
++    return undefined;
++}
++/**
++ * Resolve the correct provider for a model, using a priority chain:
++ *
++ *   1. Explicit provider from adapterConfig (highest priority — user override)
++ *   2. Provider from Hermes config file — ONLY if the config model matches
++ *      the requested model (otherwise the config provider is for a different model)
++ *   3. Provider inferred from model name prefix
++ *   4. "auto" (let Hermes figure it out — lowest priority)
++ *
++ * Always returns a valid provider string.
++ * The `resolvedFrom` field indicates which source was used, useful for logging.
++ */
++export function resolveProvider(options) {
++    const { explicitProvider, detectedProvider, detectedModel, model } = options;
++    // 1. Explicit provider from adapterConfig — user override, always wins
++    if (explicitProvider && VALID_PROVIDERS.includes(explicitProvider)) {
++        return { provider: explicitProvider, resolvedFrom: "adapterConfig" };
++    }
++    // 2. Provider from Hermes config file — but ONLY if the config model matches
++    //    the requested model. Otherwise the config provider is for a different model
++    //    and would cause exactly the kind of routing bug we're fixing.
++    if (detectedProvider &&
++        detectedModel &&
++        VALID_PROVIDERS.includes(detectedProvider) &&
++        // Config model matches requested model (exact or case-insensitive)
++        detectedModel.toLowerCase() === model?.toLowerCase()) {
++        return { provider: detectedProvider, resolvedFrom: "hermesConfig" };
++    }
++    // 3. Infer from model name prefix
++    if (model) {
++        const inferred = inferProviderFromModel(model);
++        if (inferred) {
++            return { provider: inferred, resolvedFrom: "modelInference" };
++        }
++    }
++    // 4. Let Hermes auto-detect
++    return { provider: "auto", resolvedFrom: "auto" };
+ }
+ //# sourceMappingURL=detect-model.js.map
+\ No newline at end of file
 diff --git a/dist/server/execute.js b/dist/server/execute.js
+index 93cddf8243271f5fb3ab101617f9114257e41328..25f3bf8eac83e2a01be812cc1432431edfc2b7ce 100644
 --- a/dist/server/execute.js
 +++ b/dist/server/execute.js
-@@ -45,6 +45,9 @@
-   Agent ID: {{agentId}}
-   Company ID: {{companyId}}
-   API Base: {{paperclipApiUrl}}
-+  API Key: available as env var $PAPERCLIP_API_KEY
-+
-+IMPORTANT: ALL curl calls to the Paperclip API MUST include: -H "Authorization: Bearer $PAPERCLIP_API_KEY"
-
- {{#taskId}}
- ## Assigned Task
-@@ -302,6 +305,10 @@
+@@ -58,18 +58,18 @@ Title: {{taskTitle}}
+ 
+ 1. Work on the task using your tools
+ 2. When done, mark the issue as completed:
+-   \`curl -s -X PATCH "{{paperclipApiUrl}}/issues/{{taskId}}" -H "Content-Type: application/json" -d '{"status":"done"}'\`
++   \`curl -s -X PATCH "{{paperclipApiUrl}}/issues/{{taskId}}" {{authHeader}} -H "Content-Type: application/json" -d '{"status":"done"}'\`
+ 3. Post a completion comment on the issue summarizing what you did:
+-   \`curl -s -X POST "{{paperclipApiUrl}}/issues/{{taskId}}/comments" -H "Content-Type: application/json" -d '{"body":"DONE: <your summary here>"}'\`
++   \`curl -s -X POST "{{paperclipApiUrl}}/issues/{{taskId}}/comments" {{authHeader}} -H "Content-Type: application/json" -d '{"body":"DONE: <your summary here>"}'\`
+ 4. If this issue has a parent (check the issue body or comments for references like TRA-XX), post a brief notification on the parent issue so the parent owner knows:
+-   \`curl -s -X POST "{{paperclipApiUrl}}/issues/PARENT_ISSUE_ID/comments" -H "Content-Type: application/json" -d '{"body":"{{agentName}} completed {{taskId}}. Summary: <brief>"}'\`
++   \`curl -s -X POST "{{paperclipApiUrl}}/issues/PARENT_ISSUE_ID/comments" {{authHeader}} -H "Content-Type: application/json" -d '{"body":"{{agentName}} completed {{taskId}}. Summary: <brief>"}'\`
+ {{/taskId}}
+ 
+ {{#commentId}}
+ ## Comment on This Issue
+ 
+ Someone commented. Read it:
+-   \`curl -s "{{paperclipApiUrl}}/issues/{{taskId}}/comments/{{commentId}}" | python3 -m json.tool\`
++   \`curl -s "{{paperclipApiUrl}}/issues/{{taskId}}/comments/{{commentId}}" {{authHeader}} | python3 -m json.tool\`
+ 
+ Address the comment, POST a reply if needed, then continue working.
+ {{/commentId}}
+@@ -78,17 +78,17 @@ Address the comment, POST a reply if needed, then continue working.
+ ## Heartbeat Wake — Check for Work
+ 
+ 1. List ALL open issues assigned to you (todo, backlog, in_progress):
+-   \`curl -s "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"status\"]:>12} {i[\"priority\"]:>6} {i[\"title\"]}') for i in issues if i['status'] not in ('done','cancelled')]" \`
++   \`curl -s "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}" {{authHeader}} | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"status\"]:>12} {i[\"priority\"]:>6} {i[\"title\"]}') for i in issues if i['status'] not in ('done','cancelled')]" \`
+ 
+ 2. If issues found, pick the highest priority one that is not done/cancelled and work on it:
+-   - Read the issue details: \`curl -s "{{paperclipApiUrl}}/issues/ISSUE_ID"\`
++   - Read the issue details: \`curl -s "{{paperclipApiUrl}}/issues/ISSUE_ID" {{authHeader}}\`
+    - Do the work in the project directory: {{projectName}}
+    - When done, mark complete and post a comment (see Workflow steps 2-4 above)
+ 
+ 3. If no issues assigned to you, check for unassigned issues:
+-   \`curl -s "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"title\"]}') for i in issues if not i.get('assigneeAgentId')]" \`
++   \`curl -s "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog" {{authHeader}} | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"title\"]}') for i in issues if not i.get('assigneeAgentId')]" \`
+    If you find a relevant issue, assign it to yourself:
+-   \`curl -s -X PATCH "{{paperclipApiUrl}}/issues/ISSUE_ID" -H "Content-Type: application/json" -d '{"assigneeAgentId":"{{agentId}}","status":"todo"}'\`
++   \`curl -s -X PATCH "{{paperclipApiUrl}}/issues/ISSUE_ID" {{authHeader}} -H "Content-Type: application/json" -d '{"assigneeAgentId":"{{agentId}}","status":"todo"}'\`
+ 
+ 4. If truly nothing to do, report briefly what you checked.
+ {{/noTask}}`;
+@@ -110,6 +110,12 @@ function buildPrompt(ctx, config) {
+     if (!paperclipApiUrl.endsWith("/api")) {
+         paperclipApiUrl = paperclipApiUrl.replace(/\/+$/, "") + "/api";
+     }
++    // Build auth header for curl commands — uses PAPERCLIP_API_KEY env var
++    // which is injected from ctx.authToken during execute()
++    const authToken = ctx.authToken || process.env.PAPERCLIP_API_KEY || "";
++    const authHeader = authToken
++        ? `-H "Authorization: Bearer ${authToken}"`
++        : "";
+     const vars = {
+         agentId: ctx.agent?.id || "",
+         agentName,
+@@ -123,6 +129,7 @@ function buildPrompt(ctx, config) {
+         wakeReason,
+         projectName,
+         paperclipApiUrl,
++        authHeader,
+     };
+     // Handle conditional sections: {{#key}}...{{/key}}
+     let rendered = template;
+@@ -298,12 +305,20 @@ export async function execute(ctx) {
+     const taskId = cfgString(ctx.config?.taskId);
+     if (taskId)
+         env.PAPERCLIP_TASK_ID = taskId;
++    // Inject auth token as PAPERCLIP_API_KEY so the agent can authenticate
++    // with the Paperclip API in authenticated deployment mode.
++    // Follows the same pattern as claude-local adapter.
++    if (ctx.authToken) {
++        env.PAPERCLIP_API_KEY = ctx.authToken;
++    }
+     const userEnv = config.env;
      if (userEnv && typeof userEnv === "object") {
          Object.assign(env, userEnv);
      }
-+    // Inject the run-scoped JWT so Hermes can authenticate to the Paperclip API
-+    if (ctx.authToken && !env.PAPERCLIP_API_KEY) {
-+        env.PAPERCLIP_API_KEY = ctx.authToken;
-+    }
      // ── Resolve working directory ──────────────────────────────────────────
-     const cwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+-    const cwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
++    // Use instructionsRootPath as fallback cwd so hermes reads the agent's own
++    // AGENTS.md instead of whatever AGENTS.md lives in the server's WorkingDirectory.
++    const cwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || cfgString(config.instructionsRootPath) || ".";
      try {
+         await ensureAbsoluteDirectory(cwd);
+     }
