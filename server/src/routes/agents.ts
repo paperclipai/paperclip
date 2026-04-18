@@ -2075,24 +2075,69 @@ export function agentRoutes(db: Db) {
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
-    if (!(await getAccessibleAgent(req, res, id))) {
+
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
       return;
     }
+
+    const isSelfResume =
+      req.actor.type === "agent" && req.actor.agentId === id;
+
+    if (req.actor.type === "agent" && !isSelfResume) {
+      throw forbidden(
+        "Agents may only resume themselves; resuming peers requires board access",
+      );
+    }
+
+    if (isSelfResume) {
+      assertCompanyAccess(req, existing.companyId);
+      if (
+        existing.status !== "paused" ||
+        existing.pauseReason !== "budget"
+      ) {
+        throw forbidden(
+          "Self-resume is only allowed for budget-paused agents",
+        );
+      }
+      const underBudget =
+        existing.budgetMonthlyCents > 0 &&
+        existing.spentMonthlyCents < existing.budgetMonthlyCents;
+      if (!underBudget) {
+        throw forbidden(
+          "Self-resume blocked: monthly spend is at or above budget",
+        );
+      }
+    } else {
+      await assertBoardCanManageAgentsForCompany(req, existing.companyId);
+    }
+
     const agent = await svc.resume(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
 
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
       action: "agent.resumed",
       entityType: "agent",
       entityId: agent.id,
+      details: isSelfResume
+        ? {
+            selfResume: true,
+            pauseReason: "budget",
+            budgetMonthlyCents: existing.budgetMonthlyCents,
+            spentMonthlyCents: existing.spentMonthlyCents,
+          }
+        : null,
     });
 
     res.json(agent);

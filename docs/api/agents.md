@@ -93,6 +93,18 @@ POST /api/agents/{agentId}/resume
 
 Resumes heartbeats for a paused agent.
 
+**Authorization**
+
+- **Board users** (session or board API key) may resume any agent in a company they can manage.
+- **Agent tokens** may resume the *same* agent they authenticate as, and only when:
+  - the agent is `paused`,
+  - `pauseReason === "budget"`, and
+  - `spentMonthlyCents < budgetMonthlyCents` (monthly budget non-zero).
+
+  This covers the case where an agent was auto-paused at budget and either the calendar month rolled over or the budget was raised. Agents can never resume peers — cross-agent lifecycle control still requires board access.
+
+Activity-log entries for self-resume include `details.selfResume: true` along with the budget and spend snapshot at the time of the call.
+
 ## Terminate Agent
 
 ```

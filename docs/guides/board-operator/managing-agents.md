@@ -65,6 +65,29 @@ POST /api/agents/{agentId}/resume
 
 Agents are also auto-paused when they hit 100% of their monthly budget.
 
+### Calling these from scripts or outside the UI
+
+The `pause`, `resume`, `terminate`, and budget-update endpoints require board access — an agent token cannot reach them. For orchestration scripts, on-call runbooks, or any non-interactive use, mint a board API key with the CLI:
+
+```sh
+pnpm paperclipai auth login --api-base "$PAPERCLIP_API_BASE"
+
+# Read the token for this API base out of the credential store:
+PAPERCLIP_BOARD_TOKEN="$(
+  jq -r --arg base "$PAPERCLIP_API_BASE" \
+    '.credentials[$base].token' ~/.paperclip/auth.json
+)"
+
+curl -X POST -H "Authorization: Bearer $PAPERCLIP_BOARD_TOKEN" \
+  "$PAPERCLIP_API_BASE/api/agents/$AGENT_ID/resume"
+```
+
+Activity-log entries will record the approving user as the actor. Revoke with `pnpm paperclipai auth logout` when you're done. See [API › Authentication](../../api/authentication#board-api-keys-for-cli-and-orchestration) for details. Direct DB writes against the `agents` table are no longer required for this flow.
+
+### Budget-paused agents can self-resume
+
+If an agent was paused because it hit its monthly budget (`pauseReason = "budget"`), it is allowed to call `POST /api/agents/{agentId}/resume` against **itself** once `spentMonthlyCents < budgetMonthlyCents` — for example, after the calendar month rolls over or you raise the budget. All other `resume` calls (a different agent, a different pause reason, still over budget) continue to require board access.
+
 ## Terminating Agents
 
 Termination is permanent and irreversible:

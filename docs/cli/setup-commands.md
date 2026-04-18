@@ -91,6 +91,23 @@ pnpm paperclipai env
 
 This now includes bind-oriented deployment settings such as `PAPERCLIP_BIND` and `PAPERCLIP_BIND_HOST` when configured.
 
+## `paperclipai auth`
+
+Manage the board-user credential the CLI uses against a remote API. Use when Paperclip is running in `authenticated` mode and you want the CLI (or orchestration scripts using the same credential store) to call board-scoped endpoints without an interactive browser session.
+
+```sh
+# Mint a board API token — opens a browser approval page, stores the result at ~/.paperclip/auth.json
+pnpm paperclipai auth login [--api-base https://paperclip.example.com] [--company <companyId>] [--instance-admin]
+
+# Show the current identity for this API base
+pnpm paperclipai auth whoami
+
+# Revoke the stored token server-side and remove the local credential
+pnpm paperclipai auth logout
+```
+
+Tokens created this way authenticate as the approving user, so activity-log entries remain attributable to a human operator. See [API › Authentication](../api/authentication#board-api-keys-for-cli-and-orchestration) for guidance on when to use a board API key vs. an agent token.
+
 ## `paperclipai allowed-hostname`
 
 Allow a private hostname for authenticated/private mode:
