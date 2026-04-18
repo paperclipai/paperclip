@@ -294,6 +294,43 @@ secrets (the workflow needs the current key to reach the VPS on steps 2 and 5).
 On first-time setup, manually add the initial key to the VPS and set the GitHub secret,
 then all future rotations are fully automated.
 
+### Break-glass SSH key rotation (when the workflow can't reach the VPS)
+
+If `rotate-vps-ssh-key.yml` fails at its "Verify old key access" step — meaning the current
+`VULTR_SSH_PRIVATE_KEY` secret no longer pairs with any entry in VPS `authorized_keys` —
+the automated workflow cannot run. This happened on 2026-04-18 (see issue #311) when the
+VPS `authorized_keys` was pruned to only the `alfred@paperclip` key, leaving GHA without
+any valid identity. Recover manually from an instance admin's laptop:
+
+1. **Generate a fresh ed25519 keypair in a temp directory** (do not pollute `~/.ssh/`):
+   ```bash
+   mkdir -p /tmp/deploy-keygen && cd /tmp/deploy-keygen
+   ssh-keygen -t ed25519 -N "" -C "deploy@github-actions-viraforge-paperclip" -f ./id_ed25519
+   ```
+2. **SSH to the VPS using the documented break-glass access** (Vultr control panel, or
+   operator-held password if available) and append the new public key to `authorized_keys`
+   without removing any existing entries:
+   ```bash
+   PUB=$(cat /tmp/deploy-keygen/id_ed25519.pub)
+   ssh root@<VPS_HOST> "echo '$PUB' >> /root/.ssh/authorized_keys"
+   ```
+3. **Verify the new key authenticates** before updating the GHA secret:
+   ```bash
+   ssh -i /tmp/deploy-keygen/id_ed25519 -o PasswordAuthentication=no root@<VPS_HOST> 'echo OK'
+   ```
+4. **Update the GHA secret** with the new private key:
+   ```bash
+   gh secret set VULTR_SSH_PRIVATE_KEY --repo Viraforge/paperclip < /tmp/deploy-keygen/id_ed25519
+   ```
+5. **Wipe the local keypair** — no need to keep it:
+   ```bash
+   rm -rf /tmp/deploy-keygen
+   ```
+6. **Validate end-to-end** by pushing a tiny commit to `master` and watching `Deploy Vultr`.
+   The `Verify SSH access` step should succeed with the new key.
+
+After this, future rotations can use the normal `rotate-vps-ssh-key.yml` workflow again.
+
 ### nginx Config Management (Vultr VPS)
 
 The source of truth for the VPS nginx configuration is `deploy/nginx/vps-edge.conf` in this repo.

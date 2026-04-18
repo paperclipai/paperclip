@@ -244,7 +244,8 @@ docker exec paperclip-server-1 bash -c '
   The concurrency guard (`cancel-in-progress: false`) ensures rapid merges queue safely — each deploy waits for the previous one to complete.
 - **Deploy auto-trigger status (2026-04-18)**: The `workflow_run` bridge from `merge-automation.yml` → `deploy-vultr.yml` (added in `bd4e3c4b`) fires reliably — verified on PR #309 and #310 merges. Prior "DEPLOY AUTO-TRIGGER BROKEN" note from 2026-04-13 is resolved. Note: a separate SSH deploy-key rotation was required on 2026-04-18 to restore the `Verify SSH access` step (tracked in #311).
 - **`docker.yml` is tags-only**: The general Docker workflow only triggers on version tags (`v*`) and manual dispatch. It does NOT build on push to master — `deploy-vultr.yml` handles production image builds with `Dockerfile.vps`.
-- **Drift check validates deploy health**: `deploy-drift-check.yml` runs on a schedule. With auto-deploy enabled, a failing drift check means the deploy workflow FAILED, not that someone forgot to deploy. Investigate the failed deploy run.
+- **Drift check validates deploy health**: `deploy-drift-check.yml` runs every 6h and compares `origin/master` SHA with the SHA deployed on the VPS. Since PR #314 (2026-04-18), a drift-check failure auto-opens a GitHub issue titled `ops: Deploy drift alert — master ahead of prod` (and auto-closes it on the next successful run). If you see that issue, investigate the most recent `deploy-vultr.yml` failure. Do not disable or suppress the drift check — it caught us when the Apr 14–18 SSH breakage left prod 4 days behind master silently.
+- **Merge-automation handles "clean status" race**: Since PR #314 (2026-04-18), `merge-automation.yml` detects when a PR's `mergeable_state` is already `clean` (all checks passed before the bot could arm auto-merge — happens on fast PRs like docs-only changes) and direct-merges via REST instead of the GraphQL `enablePullRequestAutoMerge` call. Previously, the workflow errored with `UNPROCESSABLE / "Pull request is in clean status"` and required a manual merge.
 - **Lockfile changes must go through `refresh-lockfile.yml`**: Never commit `pnpm-lock.yaml` manually in a PR — `pr-policy` will block it. The correct path when the lockfile is stale:
   1. Trigger the workflow: `gh workflow run refresh-lockfile.yml --repo Viraforge/paperclip --ref master`
   2. The workflow pushes the updated lockfile to branch `chore/refresh-lockfile` but **cannot create the PR** (GitHub Actions lacks PR creation permission in this repo).
@@ -278,6 +279,25 @@ docker exec paperclip-server-1 bash -c '
 - New SSH sessions from external tooling may time out during banner exchange when the VPS is under heavy load, even while an already-open interactive SSH session still works
 - The container image does not include the `ps` utility; `docker exec ... ps` failing is not itself an app failure
 - URL: http://64.176.199.162:3100
+
+## Server log redaction
+
+Pino redact paths (`server/src/middleware/logger.ts`) strip credentials before they reach `server.log`, BetterStack, or the log aggregator. As of PR #314 (2026-04-18) the covered paths are:
+
+- Request headers: `authorization` (+ `Authorization` casing), `cookie` (+ `Cookie`), `x-api-key`, `x-paperclip-api-key`
+- Request body (captured on 4xx+ responses via `customProps`): `password`, `token`, `secret`, `apiKey`, `api_key`, `sessionToken`, `refreshToken`, `privateKey`, `private_key`, `clientSecret`, `client_secret`, `newPassword`, `currentPassword`
+- Nested auth shapes: `credentials.password`, `credentials.token`, `auth.password`, `auth.token`, `user.password`
+
+If you add a route that accepts a new credential field, **extend the redact list in `server/src/middleware/logger.ts`**. Test with a standalone pino instance before shipping:
+
+```bash
+cd server && node --input-type=module -e "
+import pino from 'pino';
+const logger = pino({ redact: ['reqBody.newField'] });
+logger.warn({ reqBody: { newField: 'SECRET-MARKER' } }, 'probe');
+" | grep -c SECRET-MARKER
+# Expect: 0
+```
 
 ## Production deployment policy (GitHub-only)
 
