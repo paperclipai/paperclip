@@ -29,6 +29,7 @@
     "noCompanySelected": "No company selected.",
     "sections": {
       "general": "General",
+      "access": "Access",
       "appearance": "Appearance",
       "hiring": "Hiring",
       "feedbackSharing": "Feedback Sharing",
