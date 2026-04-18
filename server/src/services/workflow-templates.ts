@@ -211,7 +211,7 @@ export function workflowTemplateService(db: Db) {
         }
 
         // Step 3: Build response
-        const rootNode = nodes.find((n: WorkflowTemplateNode) => !n.parentTempId);
+        const rootNode = nodes.find((n: WorkflowTemplateNode) => !n.parentTempId && n.blockedByTempIds.length === 0);
         const rootIssueId = rootNode
           ? tempIdToIssue.get(rootNode.tempId)!.id
           : tempIdToIssue.values().next().value!.id;
@@ -225,7 +225,7 @@ export function workflowTemplateService(db: Db) {
             issueId: issue.id,
             title: issue.title,
             status: (hasBlockers ? "blocked" : "todo") as "todo" | "blocked",
-            assigneeAgentId: overrides?.assigneeAgentId ?? input.defaultAssigneeAgentId ?? null,
+            assigneeAgentId: overrides?.assigneeAgentId ?? node.defaultAssigneeAgentId ?? input.defaultAssigneeAgentId ?? null,
           };
         });
 
