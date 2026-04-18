@@ -3031,6 +3031,13 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
+      // Coordination/ambient issues are not execution-backed — skip auto-block entirely.
+      const policyMode = readNonEmptyString(parseObject(issue.executionPolicy).mode);
+      if (policyMode === "coordination") {
+        result.skipped += 1;
+        continue;
+      }
+
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;

@@ -141,7 +141,7 @@ export type IssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export const ISSUE_RELATION_TYPES = ["blocks"] as const;
 export type IssueRelationType = (typeof ISSUE_RELATION_TYPES)[number];
 
-export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
+export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto", "coordination"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
 
 export const ISSUE_EXECUTION_STAGE_TYPES = ["review", "approval"] as const;

@@ -212,6 +212,19 @@ Recovery rule:
 
 This is an active-work continuity recovery.
 
+### 8.3 Coordination/ambient issue exemption
+
+Some issues exist as persistent ambient surfaces rather than bounded execution tasks — communication threads, plan document homes, program umbrella tickets. These are never execution-backed, so losing the execution path is expected and correct.
+
+Set `executionPolicy.mode = "coordination"` on such issues to exempt them from auto-block recovery entirely. The reconciler will skip them without queuing recovery wakes or flipping the status to `blocked`.
+
+Rules:
+- The issue must have `executionPolicy: { mode: "coordination" }` stored on it (set via the normal issue create/update API).
+- Coordination issues are still assignable to agents. Agents can check them out and post comments — they just won't be auto-blocked when the checkout run ends and no new run is active.
+- All other status transitions (manual updates, comment-triggered wakes, operator edits) continue to work normally.
+
+Typical candidates: driver-sync threads, sprint milestone trackers, CEO-inbox umbrella tickets, plan document homes.
+
 ## 9. Startup and Periodic Reconciliation
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.
