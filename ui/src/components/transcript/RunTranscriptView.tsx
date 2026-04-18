@@ -315,7 +315,12 @@ function parseSystemActivity(text: string): { activityId?: string; name: string;
 
 function shouldHideNiceModeStderr(text: string): boolean {
   const normalized = compactWhitespace(text).toLowerCase();
-  return normalized.startsWith("[paperclip] skipping saved session resume");
+  if (!normalized.startsWith("[paperclip]")) return false;
+  // Keep actual errors/warnings visible; strip file paths before checking for error
+  // keywords to avoid false positives from keywords in path segments (e.g. /error-handler/).
+  const withoutPaths = normalized.replace(/\/\S+/g, '');
+  if (/\b(error|fatal|panic|exception|warning)\b/.test(withoutPaths)) return false;
+  return true;
 }
 
 function groupCommandBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
