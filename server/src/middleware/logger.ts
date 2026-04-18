@@ -29,7 +29,13 @@ const sharedOpts = {
 
 export const logger = pino({
   level: "debug",
-  redact: ["req.headers.authorization"],
+  redact: [
+    "req.headers.authorization",
+    "reqBody.password",
+    "reqBody.currentPassword",
+    "reqBody.newPassword",
+    "reqBody.confirmPassword",
+  ],
 }, pino.transport({
   targets: [
     {
@@ -44,6 +50,22 @@ export const logger = pino({
     },
   ],
 }));
+
+const SENSITIVE_BODY_FIELDS = new Set([
+  "password",
+  "currentPassword",
+  "newPassword",
+  "confirmPassword",
+]);
+
+function sanitizeBody(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return body;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+    result[key] = SENSITIVE_BODY_FIELDS.has(key) ? "[REDACTED]" : value;
+  }
+  return result;
+}
 
 export const httpLogger = pinoHttp({
   logger,
@@ -69,7 +91,7 @@ export const httpLogger = pinoHttp({
       if (ctx) {
         return {
           errorContext: ctx.error,
-          reqBody: ctx.reqBody,
+          reqBody: sanitizeBody(ctx.reqBody),
           reqParams: ctx.reqParams,
           reqQuery: ctx.reqQuery,
         };
@@ -77,7 +99,7 @@ export const httpLogger = pinoHttp({
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = body;
+        props.reqBody = sanitizeBody(body);
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
         props.reqParams = params;
