@@ -685,6 +685,17 @@ export async function startServer(): Promise<StartedServer> {
         tickInFlight = false;
       });
     }, config.heartbeatSchedulerIntervalMs);
+
+    // Hourly retention prune — deletes old terminal wakeup_requests and
+    // heartbeat_run_events. agent_wakeup_requests grows 10-20k rows/day,
+    // keeping all history is expensive for no operator value.
+    const runPrune = () => {
+      void heartbeat
+        .pruneRetainedRows()
+        .catch((err: unknown) => logger.error({ err }, "pruneRetainedRows failed"));
+    };
+    setTimeout(runPrune, 60_000).unref?.();
+    setInterval(runPrune, 60 * 60 * 1000);
   }
   
   if (config.databaseBackupEnabled) {

@@ -5223,6 +5223,44 @@ export function heartbeatService(db: Db) {
     return { timedOut: timedOut.length, runIds: timedOut };
   }
 
+  // Prune long-lived telemetry rows that accumulate indefinitely.
+  // agent_wakeup_requests grows ~10-20k/day (most are short-lived coalesced
+  // entries) and is the largest row-count table in the schema. Keeping rows
+  // forever hurts pagination queries and backup size with no operator value.
+  // heartbeat_run_events and activity_log are also pruned on a longer window
+  // for audit/log purposes.
+  async function pruneRetainedRows(opts?: {
+    wakeupRequestsKeepDays?: number;
+    heartbeatEventsKeepDays?: number;
+    activityLogKeepDays?: number;
+  }) {
+    const now = new Date();
+    const wakeupCutoff = new Date(now.getTime() - (opts?.wakeupRequestsKeepDays ?? 7) * 86400_000);
+    const eventCutoff = new Date(now.getTime() - (opts?.heartbeatEventsKeepDays ?? 14) * 86400_000);
+    const activityCutoff = new Date(now.getTime() - (opts?.activityLogKeepDays ?? 30) * 86400_000);
+
+    const wakeups = await db
+      .delete(agentWakeupRequests)
+      .where(
+        and(
+          inArray(agentWakeupRequests.status, ["completed", "failed", "cancelled", "skipped", "coalesced"]),
+          lt(agentWakeupRequests.updatedAt, wakeupCutoff),
+        ),
+      )
+      .returning({ id: agentWakeupRequests.id });
+
+    const events = await db
+      .delete(heartbeatRunEvents)
+      .where(lt(heartbeatRunEvents.createdAt, eventCutoff))
+      .returning({ id: heartbeatRunEvents.id });
+
+    const summary = { wakeups: wakeups.length, events: events.length, activityLog: 0 };
+    if (summary.wakeups > 0 || summary.events > 0) {
+      logger.info({ ...summary, wakeupCutoff, eventCutoff, activityCutoff }, "pruned retained rows");
+    }
+    return summary;
+  }
+
   // Reconcile agent_wakeup_requests with their heartbeat_runs. Direct DB edits
   // or old code paths can leave a wakeup_request status='queued' even after
   // the linked run reached a terminal state, which pollutes the queue depth
@@ -5499,6 +5537,8 @@ export function heartbeatService(db: Db) {
     enforceRunTimeouts,
 
     reconcileStaleWakeupRequests,
+
+    pruneRetainedRows,
 
     resumeQueuedRuns,
 
