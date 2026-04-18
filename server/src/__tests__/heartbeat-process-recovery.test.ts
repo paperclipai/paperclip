@@ -452,6 +452,85 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("reaps a leaked in-memory run when the recorded local pid is dead", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+    // Simulate the leak: child process died without running the completion
+    // handler, so runningProcesses still believes the run is active. Under
+    // the old guard this would short-circuit the reaper forever.
+    runningProcesses.set(runId, {} as never);
+    expect(runningProcesses.has(runId)).toBe(true);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    expect(runningProcesses.has(runId)).toBe(false);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const failedRun = runs.find((row) => row.id === runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "reaps a leaked in-memory run after the real local child is SIGKILLed",
+    async () => {
+      const child = spawnAliveProcess();
+      childProcesses.add(child);
+      expect(child.pid).toBeTypeOf("number");
+      const childPid = child.pid!;
+
+      const { agentId, runId, issueId } = await seedRunFixture({
+        adapterType: "claude_local",
+        processPid: childPid,
+      });
+      runningProcesses.set(runId, {} as never);
+
+      child.kill("SIGKILL");
+      expect(await waitForPidExit(childPid, 2_000)).toBe(true);
+
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reapOrphanedRuns();
+
+      expect(result.reaped).toBe(1);
+      expect(result.runIds).toEqual([runId]);
+      expect(runningProcesses.has(runId)).toBe(false);
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      const failedRun = runs.find((row) => row.id === runId);
+      expect(failedRun?.status).toBe("failed");
+      expect(failedRun?.errorCode).toBe("process_lost");
+
+      // Queue must drain: the retry run should be queued and wired onto the issue.
+      const retryRun = runs.find((row) => row.id !== runId);
+      expect(retryRun?.status).toBe("queued");
+
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+    },
+  );
+
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
     const orphan = await spawnOrphanedProcessGroup();
     cleanupPids.add(orphan.descendantPid);
