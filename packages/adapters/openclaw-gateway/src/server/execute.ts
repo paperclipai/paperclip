@@ -129,6 +129,11 @@ function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
   return "issue";
 }
 
+function extractAgentPrefix(sessionKey: string | null): string {
+  const match = sessionKey?.match(/^(agent:[^:]+:)/);
+  return match ? match[1] : "";
+}
+
 function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   configuredSessionKey: string | null;
@@ -136,8 +141,9 @@ function resolveSessionKey(input: {
   issueId: string | null;
 }): string {
   const fallback = input.configuredSessionKey ?? "paperclip";
-  if (input.strategy === "run") return `paperclip:run:${input.runId}`;
-  if (input.strategy === "issue" && input.issueId) return `paperclip:issue:${input.issueId}`;
+  const prefix = extractAgentPrefix(fallback);
+  if (input.strategy === "run") return `${prefix}paperclip:run:${input.runId}`;
+  if (input.strategy === "issue" && input.issueId) return `${prefix}paperclip:issue:${input.issueId}`;
   return fallback;
 }
 

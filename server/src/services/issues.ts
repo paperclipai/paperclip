@@ -1121,6 +1121,31 @@ export function issueService(db: Db) {
         }
       }
 
+      // Zombie checkout lock adoption: if checkoutRunId points to a terminal/missing run,
+      // forcibly adopt the lock regardless of current assigneeAgentId.
+      // This handles zombie locks where the assigneeAgentId may have been cleared or changed
+      // but the stale checkoutRunId is still blocking new wakes.
+      if (
+        checkoutRunId &&
+        current.checkoutRunId &&
+        current.checkoutRunId !== checkoutRunId
+      ) {
+        const stale = await isTerminalOrMissingHeartbeatRun(current.checkoutRunId);
+        if (stale) {
+          const adopted = await adoptStaleCheckoutRun({
+            issueId: id,
+            actorAgentId: agentId,
+            actorRunId: checkoutRunId,
+            expectedCheckoutRunId: current.checkoutRunId,
+          });
+          if (adopted) {
+            const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]!);
+            const [enriched] = await withIssueLabels(db, [row]);
+            return enriched;
+          }
+        }
+      }
+
       // If this run already owns it and it's in_progress, return it (no self-409)
       if (
         current.assigneeAgentId === agentId &&

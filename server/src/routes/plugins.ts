@@ -75,6 +75,55 @@ type PluginUiContribution = {
   launchers: PluginLauncherDeclaration[];
 };
 
+/**
+ * Transient Postgres error messages emitted while the embedded database is
+ * either stopping or starting. During `tsx watch` reloads (e.g. when the
+ * source tree is touched by iCloud sync), the embedded Postgres is restarted
+ * alongside the server, so in-flight HTTP requests can observe one of these
+ * errors for a short window (~5-15s). Callers should retry rather than
+ * surface a 5xx to the operator.
+ */
+const TRANSIENT_PG_LIFECYCLE_REGEX =
+  /database system is (shutting down|starting up|not yet accepting connections)|ECONNREFUSED|Connection terminated unexpectedly|terminating connection due to administrator command/i;
+
+function isTransientPgLifecycleError(err: unknown): boolean {
+  if (!err) return false;
+  const message = err instanceof Error ? err.message : String(err);
+  if (TRANSIENT_PG_LIFECYCLE_REGEX.test(message)) return true;
+  const code = (err as { code?: unknown } | null)?.code;
+  // Postgres class 57 "Operator Intervention" + startup/shutdown SQLSTATEs
+  if (code === "57P01" || code === "57P02" || code === "57P03" || code === "ECONNREFUSED") {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Retry an async operation when it fails with a transient Postgres lifecycle
+ * error. Uses exponential backoff capped at 3 attempts (0s, 5s, 10s waits
+ * between retries). Non-transient errors are rethrown immediately.
+ */
+async function retryOnTransientPgError<T>(
+  op: () => Promise<T>,
+  opts: { maxAttempts?: number; baseDelayMs?: number; onRetry?: (attempt: number, err: unknown) => void } = {},
+): Promise<T> {
+  const maxAttempts = opts.maxAttempts ?? 3;
+  const baseDelayMs = opts.baseDelayMs ?? 5_000;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await op();
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientPgLifecycleError(err) || attempt === maxAttempts) throw err;
+      opts.onRetry?.(attempt, err);
+      const delay = baseDelayMs * Math.pow(2, attempt - 1);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
 /** Request body for POST /api/plugins/install */
 interface PluginInstallRequest {
   /** npm package name (e.g., @paperclip/plugin-linear) or local path */
@@ -638,34 +687,62 @@ export function pluginRoutes(
         ? { localPath: trimmedPackage }
         : { packageName: trimmedPackage, version: version?.trim() };
 
-      const discovered = await loader.installPlugin(installOptions);
+      // Wrap the DB-touching portion of install in a retry loop so transient
+      // embedded-Postgres restarts (tsx watch file-change reloads, iCloud sync
+      // touching source files) don't surface as 5xx to the operator.
+      const result = await retryOnTransientPgError(
+        async () => {
+          const discovered = await loader.installPlugin(installOptions);
+          if (!discovered.manifest) {
+            return { kind: "missing-manifest" as const };
+          }
+          const existingPlugin = await registry.getByKey(discovered.manifest.id);
+          if (!existingPlugin) {
+            return { kind: "not-in-registry" as const };
+          }
+          await lifecycle.load(existingPlugin.id);
+          const updated = await registry.getById(existingPlugin.id);
+          return { kind: "ok" as const, discovered, existingPlugin, updated };
+        },
+        {
+          onRetry: (attempt, err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[plugins/install] transient Postgres lifecycle error on attempt ${attempt} — retrying: ${message}`,
+            );
+          },
+        },
+      );
 
-      if (!discovered.manifest) {
+      if (result.kind === "missing-manifest") {
         res.status(500).json({ error: "Plugin installed but manifest is missing" });
         return;
       }
-
-      // Transition to ready state
-      const existingPlugin = await registry.getByKey(discovered.manifest.id);
-      if (existingPlugin) {
-        await lifecycle.load(existingPlugin.id);
-        const updated = await registry.getById(existingPlugin.id);
-        await logPluginMutationActivity(req, "plugin.installed", existingPlugin.id, {
-          pluginId: existingPlugin.id,
-          pluginKey: existingPlugin.pluginKey,
-          packageName: updated?.packageName ?? existingPlugin.packageName,
-          version: updated?.version ?? existingPlugin.version,
-          source: isLocalPath ? "local_path" : "npm",
-        });
-        publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: existingPlugin.id, action: "installed" } });
-        res.json(updated);
-      } else {
-        // This shouldn't happen since installPlugin already registers in the DB
+      if (result.kind === "not-in-registry") {
         res.status(500).json({ error: "Plugin installed but not found in registry" });
+        return;
       }
+
+      const { existingPlugin, updated } = result;
+      await logPluginMutationActivity(req, "plugin.installed", existingPlugin.id, {
+        pluginId: existingPlugin.id,
+        pluginKey: existingPlugin.pluginKey,
+        packageName: updated?.packageName ?? existingPlugin.packageName,
+        version: updated?.version ?? existingPlugin.version,
+        source: isLocalPath ? "local_path" : "npm",
+      });
+      publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: existingPlugin.id, action: "installed" } });
+      res.json(updated);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      res.status(400).json({ error: message });
+      // If we exhausted retries on a transient DB lifecycle error, surface 503
+      // so clients know to retry; otherwise 400 (client/install error).
+      if (isTransientPgLifecycleError(err)) {
+        res.status(503).json({ error: `Database temporarily unavailable: ${message}` });
+      } else {
+        res.status(400).json({ error: message });
+      }
     }
   });
 

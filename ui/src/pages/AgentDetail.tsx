@@ -1474,8 +1474,10 @@ function ConfigurationTab({
 
   const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
   const canAssignTasks = Boolean(agent.access?.canAssignTasks);
+  const canReassignAny = Boolean(agent.access?.grants?.some((g) => g.permissionKey === "tasks:reassign_any"));
   const taskAssignSource = agent.access?.taskAssignSource ?? "none";
   const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
+  const reassignAnyLocked = agent.role === "ceo" || canCreateAgents;
   const taskAssignHint =
     taskAssignSource === "ceo_role"
       ? "Enabled automatically for CEO agents."
@@ -1565,6 +1567,43 @@ function ConfigurationTab({
                 className={cn(
                   "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
                   canAssignTasks ? "translate-x-4.5" : "translate-x-0.5",
+                )}
+              />
+            </button>
+          </div>
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <div className="space-y-1">
+              <div>Can reassign any task</div>
+              <p className="text-xs text-muted-foreground">
+                {reassignAnyLocked
+                  ? "Enabled automatically for CEO agents."
+                  : canReassignAny
+                    ? "Enabled — agent can reassign issues it does not currently own (pipeline management)."
+                    : "Disabled — agent can only reassign issues it currently owns."}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              data-slot="toggle"
+              aria-checked={canReassignAny}
+              className={cn(
+                "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50",
+                canReassignAny ? "bg-green-600" : "bg-muted",
+              )}
+              onClick={() =>
+                updatePermissions.mutate({
+                  canCreateAgents,
+                  canAssignTasks,
+                  canReassignAny: !canReassignAny,
+                })
+              }
+              disabled={updatePermissions.isPending || reassignAnyLocked}
+            >
+              <span
+                className={cn(
+                  "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                  canReassignAny ? "translate-x-4.5" : "translate-x-0.5",
                 )}
               />
             </button>

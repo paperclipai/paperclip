@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -5,6 +6,8 @@ import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType } from "@paperclipai/shared";
+import type { PluginEvent } from "@paperclipai/plugin-sdk";
+import type { PluginEventBus } from "./plugin-event-bus.js";
 import {
   agents,
   agentRuntimeState,
@@ -57,6 +60,96 @@ import {
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
+
+let _pluginEventBus: PluginEventBus | null = null;
+
+/**
+ * Wire the plugin event bus so agent-run domain events are forwarded to plugins.
+ * Called once at app startup. Kept module-scoped (not instance-scoped) because
+ * `heartbeatService()` is a factory that may be invoked more than once in tests.
+ */
+export function setHeartbeatPluginEventBus(bus: PluginEventBus | null): void {
+  if (_pluginEventBus && bus) {
+    logger.warn("setHeartbeatPluginEventBus called more than once, replacing existing bus");
+  }
+  _pluginEventBus = bus;
+}
+
+/** Map heartbeat_runs.status → plugin event type. Returns null if no mapping. */
+export function mapRunStatusToPluginEvent(status: string): PluginEvent["eventType"] | null {
+  switch (status) {
+    case "running":
+      return "agent.run.started";
+    case "finished":
+      return "agent.run.finished";
+    case "failed":
+      return "agent.run.failed";
+    case "cancelled":
+      return "agent.run.cancelled";
+    default:
+      return null;
+  }
+}
+
+/** Fields from a heartbeat_runs row we need to emit the plugin event. */
+export interface HeartbeatRunForPluginEvent {
+  id: string;
+  companyId: string;
+  agentId: string;
+  status: string;
+  startedAt: Date | string | null;
+  finishedAt: Date | string | null;
+  error: string | null;
+  errorCode: string | null;
+}
+
+/**
+ * Build and emit an `agent.run.*` plugin event for a run-status transition.
+ * Exported for direct unit testing; called internally by `setRunStatus()`.
+ * Fire-and-forget: returns void and logs (not rethrows) emit failures.
+ */
+export function emitRunStatusPluginEvent(
+  bus: PluginEventBus | null,
+  run: HeartbeatRunForPluginEvent,
+): void {
+  const eventType = mapRunStatusToPluginEvent(run.status);
+  if (!eventType || !bus) return;
+  const finishedAtIso = run.finishedAt ? new Date(run.finishedAt).toISOString() : null;
+  const startedAtIso = run.startedAt ? new Date(run.startedAt).toISOString() : null;
+  const occurredAtIso = eventType === "agent.run.started"
+    ? (startedAtIso ?? new Date().toISOString())
+    : (finishedAtIso ?? startedAtIso ?? new Date().toISOString());
+  const event: PluginEvent = {
+    eventId: randomUUID(),
+    eventType,
+    occurredAt: occurredAtIso,
+    entityId: run.id,
+    entityType: "agent_run",
+    companyId: run.companyId,
+    payload: {
+      runId: run.id,
+      agentId: run.agentId,
+      status: run.status,
+      startedAt: startedAtIso,
+      finishedAt: finishedAtIso,
+      error: run.error ?? null,
+      errorCode: run.errorCode ?? null,
+    },
+  };
+  void bus
+    .emit(event)
+    .then(({ errors }) => {
+      for (const { pluginId, error } of errors) {
+        logger.warn(
+          { pluginId, eventType: event.eventType, runId: run.id, err: error },
+          "plugin event handler failed",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.warn({ err, runId: run.id }, "plugin event emit failed");
+    });
+}
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -1389,6 +1482,12 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
+      // Plugin event bus: fire-and-forget emit for agent-run lifecycle transitions.
+      // Only emit on transitions to the four observable states (running/finished/
+      // failed/cancelled) — intermediate states like "pending" are skipped so
+      // plugins see a clean lifecycle. tag: heartbeat-plugin-event-emit
+      emitRunStatusPluginEvent(_pluginEventBus, updated);
+
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -2053,7 +2152,7 @@ export function heartbeatService(db: Db) {
       agent,
       context,
       previousSessionParams,
-      { useProjectWorkspace: executionWorkspaceMode !== "agent_default" },
+      { useProjectWorkspace: false },
     );
     const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
       agentConfig: config,

@@ -1420,6 +1420,8 @@ export function agentRoutes(db: Db) {
 
     const effectiveCanAssignTasks =
       agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
+    const effectiveCanReassignAny =
+      agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || Boolean(req.body.canReassignAny);
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     await access.setPrincipalPermission(
       agent.companyId,
@@ -1427,6 +1429,14 @@ export function agentRoutes(db: Db) {
       agent.id,
       "tasks:assign",
       effectiveCanAssignTasks,
+      req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+    );
+    await access.setPrincipalPermission(
+      agent.companyId,
+      "agent",
+      agent.id,
+      "tasks:reassign_any",
+      effectiveCanReassignAny,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
 
@@ -1443,6 +1453,7 @@ export function agentRoutes(db: Db) {
       details: {
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
         canAssignTasks: effectiveCanAssignTasks,
+        canReassignAny: effectiveCanReassignAny,
       },
     });
 

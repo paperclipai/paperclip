@@ -29,6 +29,14 @@ jobs:
             exit 1
           fi
 
+      - name: Check for uncommitted changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "ERROR: uncommitted changes detected in PR branch"
+            git status
+            exit 1
+          fi
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:

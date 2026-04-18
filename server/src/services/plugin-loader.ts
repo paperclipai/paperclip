@@ -1812,7 +1812,12 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       const toolDeclarations = manifest.tools ?? [];
       if (toolDeclarations.length > 0) {
-        toolDispatcher.registerPluginTools(pluginKey, manifest);
+        // Pass pluginId (DB UUID) as the third arg — without it, the tool
+        // registry's pluginDbId defaults to pluginKey (manifest string),
+        // which breaks `workerManager.isRunning(dbId)` downstream because
+        // workers are keyed by DB UUID. Before this fix, every
+        // POST /api/plugins/tools/execute call returned 502.
+        toolDispatcher.registerPluginTools(pluginKey, manifest, pluginId);
         registered.tools = toolDeclarations.length;
 
         log.info(

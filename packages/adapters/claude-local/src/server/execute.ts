@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { PROVIDER_ENDPOINTS, isThirdPartyModel, resolveProviderLabel } from "../index.js";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -333,6 +334,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     graceSec,
     extraArgs,
   } = runtimeConfig;
+
+  // Auto-inject provider env vars for third-party models (e.g., MiniMax)
+  const isThirdParty = model ? isThirdPartyModel(model) : false;
+  const providerLabel = isThirdParty ? resolveProviderLabel(model) : "anthropic";
+  if (isThirdParty) {
+    const providerUrl = PROVIDER_ENDPOINTS[model];
+    if (providerUrl && !env.ANTHROPIC_BASE_URL) {
+      env.ANTHROPIC_BASE_URL = providerUrl;
+    }
+    if (!env.ANTHROPIC_MODEL) env.ANTHROPIC_MODEL = model;
+    if (!env.ANTHROPIC_DEFAULT_SONNET_MODEL) env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
+    if (!env.ANTHROPIC_DEFAULT_OPUS_MODEL) env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
+    if (!env.ANTHROPIC_DEFAULT_HAIKU_MODEL) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
+    if (!env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+    if (!env.API_TIMEOUT_MS) env.API_TIMEOUT_MS = "3000000";
+  }
+
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -340,6 +358,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const skillsDir = await buildSkillsDir(config);
+
+  // Check for workspace-local skills directory (agent-specific skills)
+  // Skills must be in <workspace>/.claude/skills/ for Claude Code to discover them
+  const workspaceClaudeSkillsDir = path.join(cwd, ".claude", "skills");
+  let hasWorkspaceSkills = false;
+  try {
+    const stat = await fs.stat(workspaceClaudeSkillsDir);
+    hasWorkspaceSkills = stat.isDirectory();
+  } catch {
+    // Directory doesn't exist, that's fine
+  }
 
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
@@ -405,6 +434,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const buildClaudeArgs = (resumeSessionId: string | null) => {
     const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+    args.push("--setting-sources", "user,project,local"); // Load CLAUDE.md from workspace
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
     if (chrome) args.push("--chrome");
@@ -415,6 +445,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
     }
     args.push("--add-dir", skillsDir);
+    if (hasWorkspaceSkills) {
+      // Add workspace root so Claude Code finds <cwd>/.claude/skills/
+      args.push("--add-dir", cwd);
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
@@ -554,8 +588,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
-      provider: "anthropic",
-      biller: "anthropic",
+      provider: providerLabel,
+      biller: providerLabel,
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
