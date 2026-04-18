@@ -9,7 +9,9 @@ import {
 } from "@paperclipai/shared";
 import { LogOut, SlidersHorizontal } from "lucide-react";
 import { authApi } from "@/api/auth";
+import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { ModeBadge } from "@/components/access/ModeBadge";
 import { Button } from "../components/ui/button";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -43,6 +45,11 @@ export function InstanceGeneralSettings() {
   const generalQuery = useQuery({
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
+  });
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
   });
 
   const updateGeneralMutation = useMutation({
@@ -92,6 +99,39 @@ export function InstanceGeneralSettings() {
           {actionError}
         </div>
       )}
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold">Deployment and auth</h2>
+            <ModeBadge
+              deploymentMode={healthQuery.data?.deploymentMode}
+              deploymentExposure={healthQuery.data?.deploymentExposure}
+            />
+          </div>
+          <div className="text-sm text-muted-foreground">
+            {healthQuery.data?.deploymentMode === "local_trusted"
+              ? "Local trusted mode is optimized for a local operator. Browser requests run as local board context and no sign-in is required."
+              : healthQuery.data?.deploymentExposure === "public"
+                ? "Authenticated public mode requires sign-in for board access and is intended for public URLs."
+                : "Authenticated private mode requires sign-in and is intended for LAN, VPN, or other private-network deployments."}
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <StatusBox
+              label="Auth readiness"
+              value={healthQuery.data?.authReady ? "Ready" : "Not ready"}
+            />
+            <StatusBox
+              label="Bootstrap status"
+              value={healthQuery.data?.bootstrapStatus === "bootstrap_pending" ? "Setup required" : "Ready"}
+            />
+            <StatusBox
+              label="Bootstrap invite"
+              value={healthQuery.data?.bootstrapInviteActive ? "Active" : "None"}
+            />
+          </div>
+        </div>
+      </section>
 
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
@@ -327,6 +367,15 @@ export function InstanceGeneralSettings() {
           </Button>
         </div>
       </section>
+    </div>
+  );
+}
+
+function StatusBox({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-border bg-background px-3 py-3">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-2 text-sm font-medium">{value}</div>
     </div>
   );
 }

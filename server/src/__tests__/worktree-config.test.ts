@@ -206,6 +206,113 @@ describe("worktree config repair", () => {
     expect(repairedConfig.database.embeddedPostgresPort).toBe(54331);
   });
 
+  it("does not persist transient runtime home overrides over repo-local worktree env", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-runtime-override-"));
+    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const transientHome = path.join(tempRoot, "tests", "e2e", ".tmp", "multiuser-authenticated");
+    const worktreeRoot = path.join(tempRoot, "PAP-989-multi-user-implementation-using-plan-from-pap-958");
+    const paperclipDir = path.join(worktreeRoot, ".paperclip");
+    const configPath = path.join(paperclipDir, "config.json");
+    const envPath = path.join(paperclipDir, ".env");
+    const instanceId = "pap-989-multi-user-implementation-using-plan-from-pap-958";
+    const stableInstanceRoot = path.join(isolatedHome, "instances", instanceId);
+
+    await fs.mkdir(paperclipDir, { recursive: true });
+    await fs.writeFile(
+      configPath,
+      JSON.stringify(
+        {
+          ...buildLegacyConfig(transientHome),
+          database: {
+            mode: "embedded-postgres",
+            embeddedPostgresDataDir: path.join(transientHome, "instances", instanceId, "db"),
+            embeddedPostgresPort: 54334,
+            backup: {
+              enabled: true,
+              intervalMinutes: 60,
+              retentionDays: 30,
+              dir: path.join(transientHome, "instances", instanceId, "data", "backups"),
+            },
+          },
+          logging: {
+            mode: "file",
+            logDir: path.join(transientHome, "instances", instanceId, "logs"),
+          },
+          server: {
+            deploymentMode: "local_trusted",
+            exposure: "private",
+            host: "127.0.0.1",
+            port: 3104,
+            allowedHostnames: [],
+            serveUi: true,
+          },
+          storage: {
+            provider: "local_disk",
+            localDisk: {
+              baseDir: path.join(transientHome, "instances", instanceId, "data", "storage"),
+            },
+            s3: {
+              bucket: "paperclip",
+              region: "us-east-1",
+              prefix: "",
+              forcePathStyle: false,
+            },
+          },
+          secrets: {
+            provider: "local_encrypted",
+            strictMode: false,
+            localEncrypted: {
+              keyFilePath: path.join(transientHome, "instances", instanceId, "secrets", "master.key"),
+            },
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      envPath,
+      [
+        "# Paperclip environment variables",
+        `PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`,
+        `PAPERCLIP_INSTANCE_ID=${JSON.stringify(instanceId)}`,
+        `PAPERCLIP_CONFIG=${JSON.stringify(configPath)}`,
+        `PAPERCLIP_CONTEXT=${JSON.stringify(path.join(isolatedHome, "context.json"))}`,
+        'PAPERCLIP_IN_WORKTREE="true"',
+        'PAPERCLIP_WORKTREE_NAME="PAP-989-multi-user-implementation-using-plan-from-pap-958"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.chdir(worktreeRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-989-multi-user-implementation-using-plan-from-pap-958";
+    process.env.PAPERCLIP_HOME = transientHome;
+    process.env.PAPERCLIP_INSTANCE_ID = instanceId;
+    process.env.PAPERCLIP_CONFIG = configPath;
+
+    const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
+    const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+    const repairedEnv = await fs.readFile(envPath, "utf8");
+
+    expect(result).toEqual({
+      repairedConfig: true,
+      repairedEnv: false,
+    });
+    expect(repairedConfig.database.embeddedPostgresDataDir).toBe(path.join(stableInstanceRoot, "db"));
+    expect(repairedConfig.database.backup.dir).toBe(path.join(stableInstanceRoot, "data", "backups"));
+    expect(repairedConfig.logging.logDir).toBe(path.join(stableInstanceRoot, "logs"));
+    expect(repairedConfig.storage.localDisk.baseDir).toBe(path.join(stableInstanceRoot, "data", "storage"));
+    expect(repairedConfig.secrets.localEncrypted.keyFilePath).toBe(
+      path.join(stableInstanceRoot, "secrets", "master.key"),
+    );
+    expect(repairedEnv).toContain(`PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`);
+    expect(repairedEnv).not.toContain(`PAPERCLIP_HOME=${JSON.stringify(transientHome)}`);
+    expect(process.env.PAPERCLIP_HOME).toBe(isolatedHome);
+  });
+
   it("rebalances duplicate ports for already isolated worktree configs", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-rebalance-"));
     const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");

@@ -1,5 +1,7 @@
 import type {
   AgentAdapterType,
+  CompanyStatus,
+  HumanCompanyMembershipRole,
   InstanceUserRole,
   InviteJoinType,
   InviteType,
@@ -33,6 +35,30 @@ export interface PrincipalPermissionGrant {
   updatedAt: Date;
 }
 
+export interface AccessUserProfile {
+  id: string;
+  email: string | null;
+  name: string | null;
+  image: string | null;
+}
+
+export interface CompanyMemberRecord extends CompanyMembership {
+  principalType: "user";
+  membershipRole: HumanCompanyMembershipRole | null;
+  user: AccessUserProfile | null;
+  grants: PrincipalPermissionGrant[];
+}
+
+export interface CompanyMembersResponse {
+  members: CompanyMemberRecord[];
+  access: {
+    currentUserRole: HumanCompanyMembershipRole | null;
+    canManageMembers: boolean;
+    canInviteUsers: boolean;
+    canApproveJoinRequests: boolean;
+  };
+}
+
 export interface Invite {
   id: string;
   companyId: string | null;
@@ -46,6 +72,22 @@ export interface Invite {
   acceptedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export type InviteState = "active" | "revoked" | "accepted" | "expired";
+
+export interface CompanyInviteRecord extends Invite {
+  companyName: string | null;
+  humanRole: HumanCompanyMembershipRole | null;
+  inviteMessage: string | null;
+  state: InviteState;
+  invitedByUser: AccessUserProfile | null;
+  relatedJoinRequestId: string | null;
+}
+
+export interface CompanyInviteListResponse {
+  invites: CompanyInviteRecord[];
+  nextOffset: number | null;
 }
 
 export interface JoinRequest {
@@ -72,10 +114,48 @@ export interface JoinRequest {
   updatedAt: Date;
 }
 
+export interface JoinRequestInviteSummary {
+  id: string;
+  inviteType: InviteType;
+  allowedJoinTypes: InviteJoinType;
+  humanRole: HumanCompanyMembershipRole | null;
+  inviteMessage: string | null;
+  createdAt: Date;
+  expiresAt: Date;
+  revokedAt: Date | null;
+  acceptedAt: Date | null;
+  invitedByUser: AccessUserProfile | null;
+}
+
+export interface JoinRequestRecord extends JoinRequest {
+  requesterUser: AccessUserProfile | null;
+  approvedByUser: AccessUserProfile | null;
+  rejectedByUser: AccessUserProfile | null;
+  invite: JoinRequestInviteSummary | null;
+}
+
 export interface InstanceUserRoleGrant {
   id: string;
   userId: string;
   role: InstanceUserRole;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface AdminUserDirectoryEntry extends AccessUserProfile {
+  isInstanceAdmin: boolean;
+  activeCompanyMembershipCount: number;
+}
+
+export interface UserCompanyAccessEntry extends CompanyMembership {
+  principalType: "user";
+  companyName: string | null;
+  companyStatus: CompanyStatus | null;
+}
+
+export interface UserCompanyAccessResponse {
+  user: (AccessUserProfile & {
+    isInstanceAdmin: boolean;
+  }) | null;
+  companyAccess: UserCompanyAccessEntry[];
 }
