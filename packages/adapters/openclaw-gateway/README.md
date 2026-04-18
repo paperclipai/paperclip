@@ -43,6 +43,31 @@ The adapter supports the same session routing model as HTTP OpenClaw mode:
 
 Resolved session key is sent as `agent.sessionKey`.
 
+## Required OpenClaw Gateway Config (for custom session keys)
+
+If you use this adapter with per-issue/per-run session keys, your OpenClaw gateway must allow request-provided session keys.
+
+In `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "hooks": {
+    "allowRequestSessionKey": true,
+    "allowedSessionKeyPrefixes": ["agent:", "hook:"]
+  }
+}
+```
+
+Why this is required:
+
+- `allowRequestSessionKey` defaults to `false`; when false, gateway ignores adapter-provided `sessionKey` and falls back to `defaultSessionKey`.
+- `allowedSessionKeyPrefixes` is the allowlist applied when `allowRequestSessionKey=true`.
+- If `defaultSessionKey` is set, its prefix must also be present in `allowedSessionKeyPrefixes` (for example `hook:`), or gateway startup validation can fail.
+
+Without this configuration, routing can appear to work while session isolation is broken because all runs share the default session key.
+
+See also: issue #2293.
+
 ## Payload Mapping
 
 The agent request is built as:
@@ -70,3 +95,14 @@ Structured gateway event logs use:
 - `[openclaw-gateway:event] run=<id> stream=<stream> data=<json>` for `event agent` frames
 
 UI/CLI parsers consume these lines to render transcript updates.
+
+
+## Common Misconfiguration Signals
+
+Symptoms of missing gateway session-key config include:
+
+- runs always land in the same default session
+- cross-task context bleeding between otherwise unrelated issues
+- errors like `agent "X" does not match session key agent "main"` when agent/session prefixes diverge
+
+When this happens, verify the `hooks.allowRequestSessionKey` and `hooks.allowedSessionKeyPrefixes` values first.
