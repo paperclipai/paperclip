@@ -2090,6 +2090,8 @@ export function issueRoutes(
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
 
+    const terminalReleaseNoOp = existing.status === "done" || existing.status === "cancelled";
+
     const released = await svc.release(
       id,
       req.actor.type === "agent" ? req.actor.agentId : undefined,
@@ -2101,16 +2103,18 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId: released.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.released",
-      entityType: "issue",
-      entityId: released.id,
-    });
+    if (!terminalReleaseNoOp) {
+      await logActivity(db, {
+        companyId: released.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.released",
+        entityType: "issue",
+        entityId: released.id,
+      });
+    }
 
     res.json(released);
   });
