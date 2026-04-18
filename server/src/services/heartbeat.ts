@@ -4239,6 +4239,32 @@ export function heartbeatService(db: Db) {
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
 
+      // Process-adapter lifecycle completion gate (LIF-30).
+      // For deterministic script-backed agents (adapterType === "process"),
+      // the heartbeat run IS the task lifecycle: there is no follow-up LLM
+      // turn that will mark the issue done. When the run succeeds and the
+      // issue is still open, transition it to "done" here. Scoped strictly
+      // to adapterType === "process" per the CEO grant (non-negotiable #2).
+      if (run.status === "succeeded" && issue.status !== "done" && issue.status !== "cancelled") {
+        const runAgent = await tx
+          .select({ adapterType: agents.adapterType })
+          .from(agents)
+          .where(eq(agents.id, run.agentId))
+          .then((rows) => rows[0] ?? null);
+        if (runAgent?.adapterType === "process") {
+          const doneAt = new Date();
+          await tx
+            .update(issues)
+            .set({
+              status: "done",
+              completedAt: doneAt,
+              updatedAt: doneAt,
+            })
+            .where(eq(issues.id, issue.id));
+          issue = { ...issue, status: "done" };
+        }
+      }
+
       if (issue.executionRunId === run.id) {
         await tx
           .update(issues)

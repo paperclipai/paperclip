@@ -253,7 +253,10 @@ describeEmbeddedPostgres("heartbeat process-adapter done lifecycle", () => {
   });
 
   it("does NOT transition when process run failed", async () => {
-    vi.mocked(getServerAdapter).mockReturnValueOnce({
+    // executeRun calls getServerAdapter twice per run (once for session codec
+    // lookup, once for adapter invocation), so stub both calls to the
+    // failing-exit adapter for this test.
+    const failingAdapter = {
       supportsLocalAgentJwt: false,
       execute: vi.fn(async () => ({
         exitCode: 1,
@@ -263,7 +266,10 @@ describeEmbeddedPostgres("heartbeat process-adapter done lifecycle", () => {
         provider: "test",
         model: "test-model",
       })),
-    } as unknown as ReturnType<typeof getServerAdapter>);
+    } as unknown as ReturnType<typeof getServerAdapter>;
+    vi.mocked(getServerAdapter)
+      .mockReturnValueOnce(failingAdapter)
+      .mockReturnValueOnce(failingAdapter);
 
     const { runId, issueId } = await seedRunFixture({ adapterType: "process" });
     const heartbeat = heartbeatService(db);
