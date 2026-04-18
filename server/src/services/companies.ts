@@ -29,6 +29,10 @@ import {
   companySkills,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import {
+  type ManagedCompanyHomeCleanupResult,
+  removeManagedCompanyHome,
+} from "./company-home.js";
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
@@ -257,8 +261,8 @@ export function companyService(db: Db) {
         return enrichCompany(hydrated);
       }),
 
-    remove: (id: string) =>
-      db.transaction(async (tx) => {
+    remove: async (id: string) => {
+      const removed = await db.transaction(async (tx) => {
         // Delete from child tables in dependency order
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
@@ -290,7 +294,26 @@ export function companyService(db: Db) {
           .where(eq(companies.id, id))
           .returning();
         return rows[0] ?? null;
-      }),
+      });
+      if (removed) {
+        let companyHomeCleanup: ManagedCompanyHomeCleanupResult;
+        try {
+          companyHomeCleanup = await removeManagedCompanyHome(id);
+        } catch (error) {
+          companyHomeCleanup = {
+            path: null,
+            removed: false,
+            status: "failed",
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+        return {
+          ...removed,
+          companyHomeCleanup,
+        };
+      }
+      return removed;
+    },
 
     stats: () =>
       Promise.all([

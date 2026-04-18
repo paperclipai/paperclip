@@ -163,6 +163,8 @@ export {
 
 export type {
   Company,
+  DeleteCompanyResult,
+  ManagedCompanyHomeCleanupResult,
   FeedbackVote,
   FeedbackDataSharingPreference,
   FeedbackTargetType,

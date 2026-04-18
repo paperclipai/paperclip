@@ -1,4 +1,4 @@
-export type { Company } from "./company.js";
+export type { Company, DeleteCompanyResult, ManagedCompanyHomeCleanupResult } from "./company.js";
 export type {
   FeedbackVote,
   FeedbackDataSharingPreference,

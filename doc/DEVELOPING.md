@@ -183,6 +183,40 @@ For `codex_local`, Paperclip also manages a per-company Codex home under the ins
 
 If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
 
+## Managed Company Homes
+
+Paperclip treats `~/.paperclip/instances/<instance-id>/companies/<company-id>/` as managed, derived runtime state for one live company. Adapter homes, prompt caches, and managed agent instruction bundles may be materialized under that directory.
+
+Lifecycle:
+
+- Archiving a company preserves the managed company home.
+- Deleting a company removes its database rows and then recursively removes only that company's managed home directory.
+- If database deletion succeeds but managed-home cleanup fails, the delete API still reports `ok: true` and includes a `companyHomeCleanup` warning/result. The company is deleted; the stale derived directory should be handled with the manual audit/backup flow below.
+- Cleanup is constrained to the configured instance `companies/` root and refuses unsafe company path segments.
+- Existing orphaned company homes should be audited and backed up before manual removal.
+
+Operator-safe orphan audit:
+
+```sh
+curl -fsS http://localhost:3100/api/companies | jq -r '.[].id' | sort > /tmp/paperclip-live-companies.txt
+find ~/.paperclip/instances/default/companies -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort > /tmp/paperclip-fs-companies.txt
+comm -23 /tmp/paperclip-fs-companies.txt /tmp/paperclip-live-companies.txt
+```
+
+Before removing any orphan listed by the audit, take a filesystem backup:
+
+```sh
+tar -C ~/.paperclip/instances/default -czf ~/paperclip-company-homes-backup-$(date +%Y%m%d-%H%M%S).tgz companies
+```
+
+Then remove only reviewed orphan ids, never active company ids:
+
+```sh
+while read -r company_id; do
+  rm -rf -- ~/.paperclip/instances/default/companies/"$company_id"
+done < /tmp/reviewed-paperclip-orphan-companies.txt
+```
+
 ## Worktree-local Instances
 
 When developing from multiple git worktrees, do not point two Paperclip servers at the same embedded PostgreSQL data directory.

@@ -22,3 +22,16 @@ export interface Company {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export interface ManagedCompanyHomeCleanupResult {
+  path: string | null;
+  removed: boolean;
+  status: "removed" | "missing" | "failed";
+  error?: string;
+}
+
+export interface DeleteCompanyResult {
+  ok: true;
+  companyHomeCleanup: ManagedCompanyHomeCleanupResult;
+  warning?: string;
+}

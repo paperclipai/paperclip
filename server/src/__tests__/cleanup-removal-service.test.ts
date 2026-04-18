@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -32,6 +35,8 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("cleanup removal services", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const originalPaperclipHome = process.env.PAPERCLIP_HOME;
+  const originalPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-cleanup-removal-");
@@ -39,6 +44,11 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   }, 20_000);
 
   afterEach(async () => {
+    if (originalPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = originalPaperclipHome;
+    if (originalPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+    else process.env.PAPERCLIP_INSTANCE_ID = originalPaperclipInstanceId;
+
     await db.delete(activityLog);
     await db.delete(issueReadStates);
     await db.delete(issueComments);
@@ -180,9 +190,91 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     const removed = await companyService(db).remove(companyId);
 
     expect(removed?.id).toBe(companyId);
+    expect(removed?.companyHomeCleanup).toMatchObject({
+      removed: false,
+      status: "missing",
+    });
     await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueReadStates).where(eq(issueReadStates.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("removes the deleted company's managed company-home directory only", async () => {
+    const { companyId, issueId } = await seedFixture();
+    const activeCompanyId = randomUUID();
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-company-home-cleanup-"));
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "cleanup-test";
+
+    const companiesRoot = path.join(paperclipHome, "instances", "cleanup-test", "companies");
+    const deletedCompanyHome = path.join(companiesRoot, companyId);
+    const activeCompanyHome = path.join(companiesRoot, activeCompanyId);
+    await fs.mkdir(path.join(deletedCompanyHome, "codex-home", "sessions"), { recursive: true });
+    await fs.mkdir(path.join(deletedCompanyHome, "agents", "agent-1", "instructions"), { recursive: true });
+    await fs.writeFile(path.join(deletedCompanyHome, "codex-home", "sessions", "session.jsonl"), "{}\n", "utf8");
+    await fs.writeFile(path.join(deletedCompanyHome, "agents", "agent-1", "instructions", "AGENTS.md"), "# Agent\n", "utf8");
+    await fs.mkdir(activeCompanyHome, { recursive: true });
+    await fs.writeFile(path.join(activeCompanyHome, "keep.txt"), "active\n", "utf8");
+
+    try {
+      const removed = await companyService(db).remove(companyId);
+
+      expect(removed?.id).toBe(companyId);
+      expect(removed?.companyHomeCleanup).toMatchObject({
+        path: deletedCompanyHome,
+        removed: true,
+        status: "removed",
+      });
+      await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
+      await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toHaveLength(0);
+      await expect(fs.lstat(deletedCompanyHome)).rejects.toThrow();
+      await expect(fs.readFile(path.join(activeCompanyHome, "keep.txt"), "utf8")).resolves.toBe("active\n");
+    } finally {
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps deletion idempotent when managed company-home cleanup fails", async () => {
+    const { companyId, issueId } = await seedFixture();
+    const activeCompanyId = randomUUID();
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-company-home-cleanup-failure-"));
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "cleanup-test";
+
+    const companiesRoot = path.join(paperclipHome, "instances", "cleanup-test", "companies");
+    const deletedCompanyHome = path.join(companiesRoot, companyId);
+    const activeCompanyHome = path.join(companiesRoot, activeCompanyId);
+    await fs.mkdir(path.join(deletedCompanyHome, "codex-home"), { recursive: true });
+    await fs.writeFile(path.join(deletedCompanyHome, "codex-home", "session.jsonl"), "{}\n", "utf8");
+    await fs.mkdir(activeCompanyHome, { recursive: true });
+    await fs.writeFile(path.join(activeCompanyHome, "keep.txt"), "active\n", "utf8");
+
+    const originalRm = fs.rm.bind(fs);
+    const rmSpy = vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
+      if (target === deletedCompanyHome) {
+        throw new Error("simulated cleanup failure");
+      }
+      return originalRm(target, options);
+    });
+
+    try {
+      const removed = await companyService(db).remove(companyId);
+
+      expect(removed?.id).toBe(companyId);
+      expect(removed?.companyHomeCleanup).toMatchObject({
+        path: deletedCompanyHome,
+        removed: false,
+        status: "failed",
+        error: "simulated cleanup failure",
+      });
+      await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
+      await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toHaveLength(0);
+      await expect(fs.readFile(path.join(deletedCompanyHome, "codex-home", "session.jsonl"), "utf8")).resolves.toBe("{}\n");
+      await expect(fs.readFile(path.join(activeCompanyHome, "keep.txt"), "utf8")).resolves.toBe("active\n");
+    } finally {
+      rmSpy.mockRestore();
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+    }
   });
 });

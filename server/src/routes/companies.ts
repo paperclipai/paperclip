@@ -406,7 +406,13 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      companyHomeCleanup: company.companyHomeCleanup,
+      ...(company.companyHomeCleanup.status === "failed"
+        ? { warning: "Company was deleted, but managed company-home cleanup failed." }
+        : {}),
+    });
   });
 
   return router;

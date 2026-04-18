@@ -62,6 +62,14 @@ export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "workspaces", trimmed);
 }
 
+export function resolveManagedCompanyHomeDir(companyId: string): string {
+  const trimmed = companyId.trim();
+  if (!PATH_SEGMENT_RE.test(trimmed)) {
+    throw new Error(`Invalid company id for company home path '${companyId}'.`);
+  }
+  return path.resolve(resolvePaperclipInstanceRoot(), "companies", trimmed);
+}
+
 function sanitizeFriendlyPathSegment(value: string | null | undefined, fallback = "_default"): string {
   const trimmed = value?.trim() ?? "";
   if (!trimmed) return fallback;

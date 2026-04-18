@@ -1,5 +1,6 @@
 import type {
   Company,
+  DeleteCompanyResult,
   CompanyPortabilityExportRequest,
   CompanyPortabilityExportPreviewResult,
   CompanyPortabilityExportResult,
@@ -42,7 +43,7 @@ export const companiesApi = {
   updateBranding: (companyId: string, data: UpdateCompanyBranding) =>
     api.patch<Company>(`/companies/${companyId}/branding`, data),
   archive: (companyId: string) => api.post<Company>(`/companies/${companyId}/archive`, {}),
-  remove: (companyId: string) => api.delete<{ ok: true }>(`/companies/${companyId}`),
+  remove: (companyId: string) => api.delete<DeleteCompanyResult>(`/companies/${companyId}`),
   exportBundle: (
     companyId: string,
     data: CompanyPortabilityExportRequest,
