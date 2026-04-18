@@ -1,0 +1,57 @@
+{
+  "sidebar": {
+    "selectCompany": "회사 선택",
+    "newIssue": "새 이슈",
+    "dashboard": "대시보드",
+    "inbox": "받은함",
+    "sections": {
+      "work": "업무",
+      "company": "회사",
+      "projects": "프로젝트",
+      "agents": "에이전트"
+    },
+    "issues": "이슈",
+    "routines": "루틴",
+    "routinesBadge": "베타",
+    "goals": "목표",
+    "org": "조직도",
+    "skills": "스킬",
+    "costs": "비용",
+    "activity": "활동",
+    "settings": "설정",
+    "newProject": "새 프로젝트",
+    "newAgent": "새 에이전트",
+    "projectPausedByBudget": "예산으로 프로젝트가 일시 중지됨",
+    "agentPausedByBudget": "예산으로 에이전트가 일시 중지됨",
+    "liveCount": "{{count}}개 실행 중"
+  },
+  "topbar": {
+    "documentation": "문서",
+    "instanceSettings": "인스턴스 설정",
+    "switchToDarkMode": "다크 모드로 전환",
+    "switchToLightMode": "라이트 모드로 전환",
+    "addCompany": "회사 추가"
+  },
+  "pages": {
+    "dashboard": "대시보드",
+    "inbox": "받은함",
+    "issues": "이슈",
+    "goals": "목표",
+    "routines": "루틴",
+    "org": "조직도",
+    "orgChart": "조직도",
+    "skills": "스킬",
+    "costs": "비용",
+    "activity": "활동",
+    "settings": "설정"
+  },
+  "goals": {
+    "emptyTitle": "아직 등록된 목표가 없습니다.",
+    "addGoal": "목표 추가"
+  },
+  "language": {
+    "label": "언어",
+    "en": "English",
+    "ko": "한국어"
+  }
+}

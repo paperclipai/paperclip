@@ -1,0 +1,203 @@
+{
+  "issueDetail": {
+    "breadcrumb": "Issues",
+    "fallbackTitle": "Issue",
+    "loading": "Loading...",
+    "properties": "Properties",
+    "noProject": "No project",
+    "hiddenBanner": "This issue is hidden",
+    "descriptionPlaceholder": "Add a description...",
+    "me": "Me",
+    "badges": {
+      "live": "Live",
+      "routine": "Routine"
+    },
+    "actions": {
+      "copyAsMarkdown": "Copy issue as markdown",
+      "showProperties": "Show properties",
+      "hideIssue": "Hide this Issue"
+    },
+    "attachments": {
+      "heading": "Attachments",
+      "uploading": "Uploading...",
+      "uploadLong": "Upload attachment",
+      "uploadShort": "Upload",
+      "delete": "Delete attachment",
+      "imageAlt": "attachment"
+    },
+    "tabs": {
+      "comments": "Comments",
+      "subIssues": "Sub-issues",
+      "activity": "Activity"
+    },
+    "empty": {
+      "subIssues": "No sub-issues.",
+      "activity": "No activity yet."
+    },
+    "costSummary": {
+      "heading": "Cost Summary",
+      "empty": "No cost data yet.",
+      "tokens": "Tokens",
+      "breakdown": "in {{in}}, out {{out}}",
+      "breakdownWithCached": "in {{in}}, out {{out}}, cached {{cached}}"
+    },
+    "linkedApprovals": "Linked Approvals ({{count}})",
+    "toasts": {
+      "copied": "Copied to clipboard"
+    },
+    "errors": {
+      "uploadFailed": "Upload failed",
+      "documentImportFailed": "Document import failed",
+      "deleteFailed": "Delete failed"
+    },
+    "actor": {
+      "system": "System",
+      "board": "Board",
+      "unknown": "Unknown"
+    },
+    "activity": {
+      "issue.created": "created the issue",
+      "issue.updated": "updated the issue",
+      "issue.checked_out": "checked out the issue",
+      "issue.released": "released the issue",
+      "issue.comment_added": "added a comment",
+      "issue.attachment_added": "added an attachment",
+      "issue.attachment_removed": "removed an attachment",
+      "issue.document_created": "created a document",
+      "issue.document_updated": "updated a document",
+      "issue.document_deleted": "deleted a document",
+      "issue.deleted": "deleted the issue",
+      "agent.created": "created an agent",
+      "agent.updated": "updated the agent",
+      "agent.paused": "paused the agent",
+      "agent.resumed": "resumed the agent",
+      "agent.terminated": "terminated the agent",
+      "heartbeat.invoked": "invoked a heartbeat",
+      "heartbeat.cancelled": "cancelled a heartbeat",
+      "approval.created": "requested approval",
+      "approval.approved": "approved",
+      "approval.rejected": "rejected",
+      "statusChangedFromTo": "changed the status from {{from}} to {{to}}",
+      "statusChangedTo": "changed the status to {{to}}",
+      "priorityChangedFromTo": "changed the priority from {{from}} to {{to}}",
+      "priorityChangedTo": "changed the priority to {{to}}",
+      "assigned": "assigned the issue",
+      "unassigned": "unassigned the issue",
+      "titleUpdated": "updated the title",
+      "descriptionUpdated": "updated the description",
+      "documentAction": "{{label}} {{key}}{{title}}"
+    }
+  },
+  "routineDetail": {
+    "breadcrumb": "Routines",
+    "selectCompany": "Select a company to view routines.",
+    "notFound": "Routine not found",
+    "titlePlaceholder": "Routine title",
+    "instructionsPlaceholder": "Add instructions...",
+    "unsavedChanges": "Unsaved changes",
+    "automation": {
+      "archived": "Archived",
+      "active": "Active",
+      "paused": "Paused",
+      "pauseAria": "Pause automatic triggers",
+      "enableAria": "Enable automatic triggers"
+    },
+    "actions": {
+      "save": "Save",
+      "saveRoutine": "Save routine"
+    },
+    "assignment": {
+      "for": "For",
+      "in": "in",
+      "assigneePlaceholder": "Assignee",
+      "noAssignee": "No assignee",
+      "searchAssignees": "Search assignees...",
+      "noAssigneesFound": "No assignees found.",
+      "projectPlaceholder": "Project",
+      "noProject": "No project",
+      "searchProjects": "Search projects...",
+      "noProjectsFound": "No projects found."
+    },
+    "secret": {
+      "createdTitle": "Webhook trigger created",
+      "rotatedTitle": "Webhook secret rotated",
+      "warning": "Save this now. Paperclip will not show the secret value again.",
+      "webhookUrlLabel": "Webhook URL",
+      "webhookSecretLabel": "Webhook secret",
+      "url": "URL",
+      "secret": "Secret"
+    },
+    "advanced": {
+      "heading": "Advanced delivery settings",
+      "concurrency": "Concurrency",
+      "catchUp": "Catch-up"
+    },
+    "tabs": {
+      "triggers": "Triggers",
+      "runs": "Runs",
+      "activity": "Activity"
+    },
+    "addTrigger": {
+      "heading": "Add trigger",
+      "kind": "Kind",
+      "comingSoon": " — COMING SOON",
+      "add": "Add trigger",
+      "adding": "Adding..."
+    },
+    "triggerEditor": {
+      "next": "Next: {{time}}",
+      "webhook": "Webhook",
+      "api": "API",
+      "label": "Label",
+      "schedule": "Schedule",
+      "signingMode": "Signing mode",
+      "replayWindow": "Replay window (seconds)",
+      "last": "Last: {{result}}",
+      "rotateSecret": "Rotate secret"
+    },
+    "empty": {
+      "triggers": "No triggers configured yet.",
+      "runs": "No runs yet.",
+      "activity": "No activity yet."
+    },
+    "toasts": {
+      "copied": "{{label}} copied",
+      "copyFailed": "Failed to copy {{label}}",
+      "clipboardDenied": "Clipboard access was denied.",
+      "saveFailed": "Failed to save routine",
+      "saveFailedBody": "Paperclip could not save the routine.",
+      "runStarted": "Routine run started",
+      "runFailed": "Routine run failed",
+      "runFailedBody": "Paperclip could not start the routine run.",
+      "saved": "Routine saved",
+      "automationPaused": "Automation paused.",
+      "automationEnabled": "Automation enabled.",
+      "updateFailed": "Failed to update routine",
+      "updateFailedBody": "Paperclip could not update the routine.",
+      "addTriggerFailed": "Failed to add trigger",
+      "addTriggerFailedBody": "Paperclip could not create the trigger.",
+      "updateTriggerFailed": "Failed to update trigger",
+      "updateTriggerFailedBody": "Paperclip could not update the trigger.",
+      "deleteTriggerFailed": "Failed to delete trigger",
+      "deleteTriggerFailedBody": "Paperclip could not delete the trigger.",
+      "rotateSecretFailed": "Failed to rotate webhook secret",
+      "rotateSecretFailedBody": "Paperclip could not rotate the webhook secret."
+    }
+  },
+  "goalDetail": {
+    "breadcrumb": "Goals",
+    "fallbackTitle": "Goal",
+    "descriptionPlaceholder": "Add a description...",
+    "tabs": {
+      "subGoals": "Sub-Goals ({{count}})",
+      "projects": "Projects ({{count}})"
+    },
+    "actions": {
+      "subGoal": "Sub Goal"
+    },
+    "empty": {
+      "subGoals": "No sub-goals.",
+      "projects": "No linked projects."
+    }
+  }
+}

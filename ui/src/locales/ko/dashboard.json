@@ -1,0 +1,101 @@
+{
+  "dashboard": {
+    "welcomeMessage": "Paperclip에 오신 것을 환영합니다. 첫 회사와 에이전트를 설정하여 시작하세요.",
+    "getStarted": "시작하기",
+    "selectCompany": "대시보드를 보려면 회사를 생성하거나 선택하세요.",
+    "noAgents": "에이전트가 없습니다.",
+    "createOneHere": "여기서 생성하기",
+    "activeBudgetIncidents_one": "활성 예산 사고 {{count}}건",
+    "activeBudgetIncidents_other": "활성 예산 사고 {{count}}건",
+    "budgetIncidentDetail": "{{agents}}개 에이전트 일시 중지 · {{projects}}개 프로젝트 일시 중지 · {{approvals}}건 예산 승인 대기",
+    "openBudgets": "예산 열기",
+    "agentsEnabled": "활성 에이전트",
+    "agentsBreakdown": "{{running}}개 실행 중, {{paused}}개 일시 중지, {{errors}}개 오류",
+    "tasksInProgress": "진행 중 작업",
+    "tasksBreakdown": "{{open}}개 열림, {{blocked}}개 차단됨",
+    "monthSpend": "이번 달 지출",
+    "monthSpendUtilization": "예산 {{budget}} 중 {{percent}}%",
+    "unlimitedBudget": "무제한 예산",
+    "pendingApprovals": "승인 대기",
+    "budgetOverridesAwaiting": "예산 초과 {{count}}건이 이사회 검토 대기 중",
+    "awaitingBoardReview": "이사회 검토 대기 중",
+    "charts": {
+      "runActivity": "실행 활동",
+      "last14Days": "지난 14일",
+      "issuesByPriority": "우선순위별 이슈",
+      "issuesByStatus": "상태별 이슈",
+      "successRate": "성공률"
+    },
+    "recentActivity": "최근 활동",
+    "recentTasks": "최근 작업",
+    "noTasks": "아직 작업이 없습니다."
+  },
+  "inbox": {
+    "runExitedWithError": "실행이 오류로 종료되었습니다.",
+    "markAsRead": "읽음으로 표시",
+    "dismissFromInbox": "받은함에서 해제",
+    "failedRunWithAgent": "실행 실패 — {{agent}}",
+    "failedRun": "실행 실패",
+    "retrying": "재시도 중…",
+    "retry": "재시도",
+    "dismiss": "해제",
+    "requestedBy": "{{name}} 요청",
+    "updatedTime": "업데이트 {{time}}",
+    "approve": "승인",
+    "reject": "거부",
+    "humanJoinRequest": "사람 참여 요청",
+    "agentJoinRequest": "에이전트 참여 요청",
+    "agentJoinRequestWithName": "에이전트 참여 요청: {{name}}",
+    "requestedFromIp": "{{ip}}에서 {{time}}에 요청",
+    "adapterLabel": "어댑터: {{adapter}}",
+    "failedToApprove": "승인에 실패했습니다",
+    "failedToReject": "거부에 실패했습니다",
+    "failedToApproveJoinRequest": "참여 요청 승인에 실패했습니다",
+    "failedToRejectJoinRequest": "참여 요청 거부에 실패했습니다",
+    "tabs": {
+      "mine": "내 항목",
+      "recent": "최근",
+      "unread": "안 읽음",
+      "all": "전체"
+    },
+    "markingAllRead": "표시 중…",
+    "markAllAsRead": "모두 읽음으로 표시",
+    "categoryPlaceholder": "카테고리",
+    "approvalStatusPlaceholder": "승인 상태",
+    "category": {
+      "everything": "모든 카테고리",
+      "issuesITouched": "최근 내 이슈",
+      "joinRequests": "참여 요청",
+      "approvals": "승인",
+      "failedRuns": "실패한 실행",
+      "alerts": "알림"
+    },
+    "approvalStatus": {
+      "all": "모든 승인 상태",
+      "actionable": "조치 필요",
+      "resolved": "해결됨"
+    },
+    "empty": {
+      "mine": "받은함이 비었습니다.",
+      "unread": "새 받은함 항목이 없습니다.",
+      "recent": "최근 받은함 항목이 없습니다.",
+      "filtered": "이 필터에 맞는 받은함 항목이 없습니다."
+    },
+    "live": "실행 중",
+    "alerts": "알림",
+    "agentHasErrors_one": "에이전트 {{count}}개에 오류가 있습니다",
+    "agentHasErrors_other": "에이전트 {{count}}개에 오류가 있습니다",
+    "agentErrorsPrefix": "{{count}}",
+    "agentErrorsSuffix_one": "개 에이전트 오류",
+    "agentErrorsSuffix_other": "개 에이전트 오류",
+    "budgetAtUtilization": "이번 달 예산 사용률 {{percent}}%",
+    "commentedAgo": "{{time}} 전 댓글",
+    "updatedAgo": "{{time}} 전 업데이트"
+  },
+  "activity": {
+    "selectCompany": "활동을 보려면 회사를 선택하세요.",
+    "filterByType": "유형별 필터",
+    "allTypes": "모든 유형",
+    "empty": "활동 내역이 없습니다."
+  }
+}

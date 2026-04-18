@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -62,29 +63,36 @@ type CommentReassignment = {
   assigneeUserId: string | null;
 };
 
-const ACTION_LABELS: Record<string, string> = {
-  "issue.created": "created the issue",
-  "issue.updated": "updated the issue",
-  "issue.checked_out": "checked out the issue",
-  "issue.released": "released the issue",
-  "issue.comment_added": "added a comment",
-  "issue.attachment_added": "added an attachment",
-  "issue.attachment_removed": "removed an attachment",
-  "issue.document_created": "created a document",
-  "issue.document_updated": "updated a document",
-  "issue.document_deleted": "deleted a document",
-  "issue.deleted": "deleted the issue",
-  "agent.created": "created an agent",
-  "agent.updated": "updated the agent",
-  "agent.paused": "paused the agent",
-  "agent.resumed": "resumed the agent",
-  "agent.terminated": "terminated the agent",
-  "heartbeat.invoked": "invoked a heartbeat",
-  "heartbeat.cancelled": "cancelled a heartbeat",
-  "approval.created": "requested approval",
-  "approval.approved": "approved",
-  "approval.rejected": "rejected",
-};
+type TFn = (key: string, options?: Record<string, unknown>) => string;
+
+const ACTION_KEYS = new Set([
+  "issue.created",
+  "issue.updated",
+  "issue.checked_out",
+  "issue.released",
+  "issue.comment_added",
+  "issue.attachment_added",
+  "issue.attachment_removed",
+  "issue.document_created",
+  "issue.document_updated",
+  "issue.document_deleted",
+  "issue.deleted",
+  "agent.created",
+  "agent.updated",
+  "agent.paused",
+  "agent.resumed",
+  "agent.terminated",
+  "heartbeat.invoked",
+  "heartbeat.cancelled",
+  "approval.created",
+  "approval.approved",
+  "approval.rejected",
+]);
+
+function actionLabel(t: TFn, action: string): string {
+  if (ACTION_KEYS.has(action)) return t(`issueDetail.activity.${action}`);
+  return action.replace(/[._]/g, " ");
+}
 
 function humanizeValue(value: unknown): string {
   if (typeof value !== "string") return String(value ?? "none");
@@ -140,7 +148,7 @@ function titleizeFilename(input: string) {
     .join(" ");
 }
 
-function formatAction(action: string, details?: Record<string, unknown> | null): string {
+function formatAction(t: TFn, action: string, details?: Record<string, unknown> | null): string {
   if (action === "issue.updated" && details) {
     const previous = (details._previous ?? {}) as Record<string, unknown>;
     const parts: string[] = [];
@@ -149,27 +157,27 @@ function formatAction(action: string, details?: Record<string, unknown> | null):
       const from = previous.status;
       parts.push(
         from
-          ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
-          : `changed the status to ${humanizeValue(details.status)}`
+          ? t("issueDetail.activity.statusChangedFromTo", { from: humanizeValue(from), to: humanizeValue(details.status) })
+          : t("issueDetail.activity.statusChangedTo", { to: humanizeValue(details.status) }),
       );
     }
     if (details.priority !== undefined) {
       const from = previous.priority;
       parts.push(
         from
-          ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
-          : `changed the priority to ${humanizeValue(details.priority)}`
+          ? t("issueDetail.activity.priorityChangedFromTo", { from: humanizeValue(from), to: humanizeValue(details.priority) })
+          : t("issueDetail.activity.priorityChangedTo", { to: humanizeValue(details.priority) }),
       );
     }
     if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
       parts.push(
         details.assigneeAgentId || details.assigneeUserId
-          ? "assigned the issue"
-          : "unassigned the issue",
+          ? t("issueDetail.activity.assigned")
+          : t("issueDetail.activity.unassigned"),
       );
     }
-    if (details.title !== undefined) parts.push("updated the title");
-    if (details.description !== undefined) parts.push("updated the description");
+    if (details.title !== undefined) parts.push(t("issueDetail.activity.titleUpdated"));
+    if (details.description !== undefined) parts.push(t("issueDetail.activity.descriptionUpdated"));
 
     if (parts.length > 0) return parts.join(", ");
   }
@@ -179,23 +187,24 @@ function formatAction(action: string, details?: Record<string, unknown> | null):
   ) {
     const key = typeof details.key === "string" ? details.key : "document";
     const title = typeof details.title === "string" && details.title ? ` (${details.title})` : "";
-    return `${ACTION_LABELS[action] ?? action} ${key}${title}`;
+    return t("issueDetail.activity.documentAction", { label: actionLabel(t, action), key, title });
   }
-  return ACTION_LABELS[action] ?? action.replace(/[._]/g, " ");
+  return actionLabel(t, action);
 }
 
-function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<string, Agent> }) {
+function ActorIdentity({ evt, agentMap, t }: { evt: ActivityEvent; agentMap: Map<string, Agent>; t: TFn }) {
   const id = evt.actorId;
   if (evt.actorType === "agent") {
     const agent = agentMap.get(id);
     return <Identity name={agent?.name ?? id.slice(0, 8)} size="sm" />;
   }
-  if (evt.actorType === "system") return <Identity name="System" size="sm" />;
-  if (evt.actorType === "user") return <Identity name="Board" size="sm" />;
-  return <Identity name={id || "Unknown"} size="sm" />;
+  if (evt.actorType === "system") return <Identity name={t("issueDetail.actor.system")} size="sm" />;
+  if (evt.actorType === "user") return <Identity name={t("issueDetail.actor.board")} size="sm" />;
+  return <Identity name={id || t("issueDetail.actor.unknown")} size="sm" />;
 }
 
 export function IssueDetail() {
+  const { t } = useTranslation();
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
@@ -270,8 +279,8 @@ export function IssueDetail() {
 
   const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(location.state) ?? { label: "Issues", href: "/issues" },
-    [location.state],
+    () => readIssueDetailBreadcrumb(location.state) ?? { label: t("issueDetail.breadcrumb"), href: "/issues" },
+    [location.state, t],
   );
 
   // Filter out runs already shown by the live widget to avoid duplication
@@ -375,10 +384,10 @@ export function IssueDetail() {
       options.push({ id: `agent:${agent.id}`, label: agent.name });
     }
     if (currentUserId) {
-      options.push({ id: `user:${currentUserId}`, label: "Me" });
+      options.push({ id: `user:${currentUserId}`, label: t("issueDetail.me") });
     }
     return options;
-  }, [agents, currentUserId]);
+  }, [agents, currentUserId, t]);
 
   const actualAssigneeValue = useMemo(
     () => assigneeValueFromSelection(issue ?? {}),
@@ -530,7 +539,7 @@ export function IssueDetail() {
       invalidateIssue();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Upload failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issueDetail.errors.uploadFailed"));
     },
   });
 
@@ -554,7 +563,7 @@ export function IssueDetail() {
       invalidateIssue();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Document import failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issueDetail.errors.documentImportFailed"));
     },
   });
 
@@ -566,12 +575,12 @@ export function IssueDetail() {
       invalidateIssue();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Delete failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issueDetail.errors.deleteFailed"));
     },
   });
 
   useEffect(() => {
-    const titleLabel = issue?.title ?? issueId ?? "Issue";
+    const titleLabel = issue?.title ?? issueId ?? t("issueDetail.fallbackTitle");
     setBreadcrumbs([
       sourceBreadcrumb,
       { label: hasLiveRuns ? `🔵 ${titleLabel}` : titleLabel },
@@ -613,11 +622,11 @@ export function IssueDetail() {
     const md = `# ${issue.identifier}: ${title}\n\n${body}`.trimEnd();
     await navigator.clipboard.writeText(md);
     setCopied(true);
-    pushToast({ title: "Copied to clipboard", tone: "success" });
+    pushToast({ title: t("issueDetail.toasts.copied"), tone: "success" });
     setTimeout(() => setCopied(false), 2000);
   };
 
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading...</p>;
+  if (isLoading) return <p className="text-sm text-muted-foreground">{t("issueDetail.loading")}</p>;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!issue) return null;
 
@@ -676,10 +685,10 @@ export function IssueDetail() {
         )}
       >
         <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-        {uploadAttachment.isPending || importMarkdownDocument.isPending ? "Uploading..." : (
+        {uploadAttachment.isPending || importMarkdownDocument.isPending ? t("issueDetail.attachments.uploading") : (
           <>
-            <span className="hidden sm:inline">Upload attachment</span>
-            <span className="sm:hidden">Upload</span>
+            <span className="hidden sm:inline">{t("issueDetail.attachments.uploadLong")}</span>
+            <span className="sm:hidden">{t("issueDetail.attachments.uploadShort")}</span>
           </>
         )}
       </Button>
@@ -712,7 +721,7 @@ export function IssueDetail() {
       {issue.hiddenAt && (
         <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <EyeOff className="h-4 w-4 shrink-0" />
-          This issue is hidden
+          {t("issueDetail.hiddenBanner")}
         </div>
       )}
 
@@ -734,7 +743,7 @@ export function IssueDetail() {
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400" />
               </span>
-              Live
+              {t("issueDetail.badges.live")}
             </span>
           )}
 
@@ -744,7 +753,7 @@ export function IssueDetail() {
               className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 border border-violet-500/30 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0 hover:bg-violet-500/20 transition-colors"
             >
               <Repeat className="h-3 w-3" />
-              Routine
+              {t("issueDetail.badges.routine")}
             </Link>
           )}
 
@@ -759,7 +768,7 @@ export function IssueDetail() {
           ) : (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
               <Hexagon className="h-3 w-3 shrink-0" />
-              No project
+              {t("issueDetail.noProject")}
             </span>
           )}
 
@@ -789,7 +798,7 @@ export function IssueDetail() {
               variant="ghost"
               size="icon-xs"
               onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
+              title={t("issueDetail.actions.copyAsMarkdown")}
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
@@ -797,7 +806,7 @@ export function IssueDetail() {
               variant="ghost"
               size="icon-xs"
               onClick={() => setMobilePropsOpen(true)}
-              title="Properties"
+              title={t("issueDetail.properties")}
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -808,7 +817,7 @@ export function IssueDetail() {
               variant="ghost"
               size="icon-xs"
               onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
+              title={t("issueDetail.actions.copyAsMarkdown")}
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
@@ -820,7 +829,7 @@ export function IssueDetail() {
                 panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
               )}
               onClick={() => setPanelVisible(true)}
-              title="Show properties"
+              title={t("issueDetail.actions.showProperties")}
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -843,7 +852,7 @@ export function IssueDetail() {
                 }}
               >
                 <EyeOff className="h-3 w-3" />
-                Hide this Issue
+                {t("issueDetail.actions.hideIssue")}
               </button>
             </PopoverContent>
             </Popover>
@@ -862,7 +871,7 @@ export function IssueDetail() {
           onSave={(description) => updateIssue.mutateAsync({ description })}
           as="p"
           className="text-[15px] leading-7 text-foreground"
-          placeholder="Add a description..."
+          placeholder={t("issueDetail.descriptionPlaceholder")}
           multiline
           mentions={mentionOptions}
           imageUploadHandler={async (file) => {
@@ -944,7 +953,7 @@ export function IssueDetail() {
         onDrop={(evt) => void handleAttachmentDrop(evt)}
       >
         <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
+          <h3 className="text-sm font-medium text-muted-foreground">{t("issueDetail.attachments.heading")}</h3>
           {attachmentUploadButton}
         </div>
 
@@ -970,7 +979,7 @@ export function IssueDetail() {
                   className="text-muted-foreground hover:text-destructive"
                   onClick={() => deleteAttachment.mutate(attachment.id)}
                   disabled={deleteAttachment.isPending}
-                  title="Delete attachment"
+                  title={t("issueDetail.attachments.delete")}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -982,7 +991,7 @@ export function IssueDetail() {
                 <a href={attachment.contentPath} target="_blank" rel="noreferrer">
                   <img
                     src={attachment.contentPath}
-                    alt={attachment.originalFilename ?? "attachment"}
+                    alt={attachment.originalFilename ?? t("issueDetail.attachments.imageAlt")}
                     className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10"
                     loading="lazy"
                   />
@@ -1006,15 +1015,15 @@ export function IssueDetail() {
         <TabsList variant="line" className="w-full justify-start gap-1">
           <TabsTrigger value="comments" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
-            Comments
+            {t("issueDetail.tabs.comments")}
           </TabsTrigger>
           <TabsTrigger value="subissues" className="gap-1.5">
             <ListTree className="h-3.5 w-3.5" />
-            Sub-issues
+            {t("issueDetail.tabs.subIssues")}
           </TabsTrigger>
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
-            Activity
+            {t("issueDetail.tabs.activity")}
           </TabsTrigger>
           {issuePluginTabItems.map((item) => (
             <TabsTrigger key={item.value} value={item.value}>
@@ -1057,7 +1066,7 @@ export function IssueDetail() {
 
         <TabsContent value="subissues">
           {childIssues.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No sub-issues.</p>
+            <p className="text-xs text-muted-foreground">{t("issueDetail.empty.subIssues")}</p>
           ) : (
             <div className="border border-border rounded-lg divide-y divide-border">
               {childIssues.map((child) => (
@@ -1090,9 +1099,9 @@ export function IssueDetail() {
         <TabsContent value="activity">
           {linkedRuns && linkedRuns.length > 0 && (
             <div className="mb-3 px-3 py-2 rounded-lg border border-border">
-              <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
+              <div className="text-sm font-medium text-muted-foreground mb-1">{t("issueDetail.costSummary.heading")}</div>
               {!issueCostSummary.hasCost && !issueCostSummary.hasTokens ? (
-                <div className="text-xs text-muted-foreground">No cost data yet.</div>
+                <div className="text-xs text-muted-foreground">{t("issueDetail.costSummary.empty")}</div>
               ) : (
                 <div className="flex flex-wrap gap-3 text-xs text-muted-foreground tabular-nums">
                   {issueCostSummary.hasCost && (
@@ -1102,10 +1111,10 @@ export function IssueDetail() {
                   )}
                   {issueCostSummary.hasTokens && (
                     <span>
-                      Tokens {formatTokens(issueCostSummary.totalTokens)}
+                      {t("issueDetail.costSummary.tokens")} {formatTokens(issueCostSummary.totalTokens)}
                       {issueCostSummary.cached > 0
-                        ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
-                        : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
+                        ? ` (${t("issueDetail.costSummary.breakdownWithCached", { in: formatTokens(issueCostSummary.input), out: formatTokens(issueCostSummary.output), cached: formatTokens(issueCostSummary.cached) })})`
+                        : ` (${t("issueDetail.costSummary.breakdown", { in: formatTokens(issueCostSummary.input), out: formatTokens(issueCostSummary.output) })})`}
                     </span>
                   )}
                 </div>
@@ -1113,13 +1122,13 @@ export function IssueDetail() {
             </div>
           )}
           {!activity || activity.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No activity yet.</p>
+            <p className="text-xs text-muted-foreground">{t("issueDetail.empty.activity")}</p>
           ) : (
             <div className="space-y-1.5">
               {activity.slice(0, 20).map((evt) => (
                 <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <ActorIdentity evt={evt} agentMap={agentMap} />
-                  <span>{formatAction(evt.action, evt.details)}</span>
+                  <ActorIdentity evt={evt} agentMap={agentMap} t={t} />
+                  <span>{formatAction(t, evt.action, evt.details)}</span>
                   <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
                 </div>
               ))}
@@ -1151,7 +1160,7 @@ export function IssueDetail() {
         >
           <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
             <span className="text-sm font-medium text-muted-foreground">
-              Linked Approvals ({linkedApprovals.length})
+              {t("issueDetail.linkedApprovals", { count: linkedApprovals.length })}
             </span>
             <ChevronDown
               className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.approvals && "rotate-180")}
@@ -1185,7 +1194,7 @@ export function IssueDetail() {
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
         <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
           <SheetHeader>
-            <SheetTitle className="text-sm">Properties</SheetTitle>
+            <SheetTitle className="text-sm">{t("issueDetail.properties")}</SheetTitle>
           </SheetHeader>
           <ScrollArea className="flex-1 overflow-y-auto">
             <div className="px-4 pb-4">

@@ -1,0 +1,57 @@
+{
+  "sidebar": {
+    "selectCompany": "Select company",
+    "newIssue": "New Issue",
+    "dashboard": "Dashboard",
+    "inbox": "Inbox",
+    "sections": {
+      "work": "Work",
+      "company": "Company",
+      "projects": "Projects",
+      "agents": "Agents"
+    },
+    "issues": "Issues",
+    "routines": "Routines",
+    "routinesBadge": "Beta",
+    "goals": "Goals",
+    "org": "Org",
+    "skills": "Skills",
+    "costs": "Costs",
+    "activity": "Activity",
+    "settings": "Settings",
+    "newProject": "New project",
+    "newAgent": "New agent",
+    "projectPausedByBudget": "Project paused by budget",
+    "agentPausedByBudget": "Agent paused by budget",
+    "liveCount": "{{count}} live"
+  },
+  "topbar": {
+    "documentation": "Documentation",
+    "instanceSettings": "Instance settings",
+    "switchToDarkMode": "Switch to dark mode",
+    "switchToLightMode": "Switch to light mode",
+    "addCompany": "Add company"
+  },
+  "pages": {
+    "dashboard": "Dashboard",
+    "inbox": "Inbox",
+    "issues": "Issues",
+    "goals": "Goals",
+    "routines": "Routines",
+    "org": "Org",
+    "orgChart": "Org Chart",
+    "skills": "Skills",
+    "costs": "Costs",
+    "activity": "Activity",
+    "settings": "Settings"
+  },
+  "goals": {
+    "emptyTitle": "No goals yet.",
+    "addGoal": "Add Goal"
+  },
+  "language": {
+    "label": "Language",
+    "en": "English",
+    "ko": "한국어"
+  }
+}

@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { ChevronRight, Plus } from "lucide-react";
 import {
   DndContext,
@@ -39,6 +40,7 @@ function SortableProjectItem({
   project,
   projectSidebarSlots,
   setSidebarOpen,
+  pausedByBudgetTitle,
 }: {
   activeProjectRef: string | null;
   companyId: string | null;
@@ -47,6 +49,7 @@ function SortableProjectItem({
   project: Project;
   projectSidebarSlots: ProjectSidebarSlot[];
   setSidebarOpen: (open: boolean) => void;
+  pausedByBudgetTitle: string;
 }) {
   const {
     attributes,
@@ -89,7 +92,7 @@ function SortableProjectItem({
             style={{ backgroundColor: project.color ?? "#6366f1" }}
           />
           <span className="flex-1 truncate">{project.name}</span>
-          {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
+          {project.pauseReason === "budget" ? <BudgetSidebarMarker title={pausedByBudgetTitle} /> : null}
         </NavLink>
         {projectSidebarSlots.length > 0 && (
           <div className="ml-5 flex flex-col gap-0.5">
@@ -116,6 +119,7 @@ function SortableProjectItem({
 }
 
 export function SidebarProjects() {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(true);
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialog();
@@ -185,7 +189,7 @@ export function SidebarProjects() {
               )}
             />
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Projects
+              {t("sidebar.sections.projects")}
             </span>
           </CollapsibleTrigger>
           <button
@@ -194,7 +198,7 @@ export function SidebarProjects() {
               openNewProject();
             }}
             className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
-            aria-label="New project"
+            aria-label={t("sidebar.newProject")}
           >
             <Plus className="h-3 w-3" />
           </button>
@@ -222,6 +226,7 @@ export function SidebarProjects() {
                   project={project}
                   projectSidebarSlots={projectSidebarSlots}
                   setSidebarOpen={setSidebarOpen}
+                  pausedByBudgetTitle={t("sidebar.projectPausedByBudget")}
                 />
               ))}
             </div>

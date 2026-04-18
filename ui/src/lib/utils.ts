@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import i18n from "../i18n";
 import { deriveAgentUrlKey, deriveProjectUrlKey } from "@paperclipai/shared";
 import type { BillingType, FinanceDirection, FinanceEventKind } from "@paperclipai/shared";
 
@@ -41,6 +42,63 @@ export function relativeTime(date: Date | string): string {
   const diffDay = Math.round(diffHr / 24);
   if (diffDay < 30) return `${diffDay}d ago`;
   return formatDate(date);
+}
+
+export function relativeTimeKo(date: Date | string): string {
+  const now = Date.now();
+  const then = new Date(date).getTime();
+  const diffSec = Math.round((now - then) / 1000);
+  if (diffSec < 60) return "방금 전";
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}분 전`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}시간 전`;
+  const diffDay = Math.round(diffHr / 24);
+  if (diffDay < 30) return `${diffDay}일 전`;
+  return formatDate(date);
+}
+
+export function isLangKo(): boolean {
+  return (i18n.language ?? "").toLowerCase().startsWith("ko");
+}
+
+const AGENT_ROLE_KO_MAP: Record<string, string> = {
+  ceo: "대표",
+  cto: "기술총괄",
+  cfo: "재무총괄",
+  coo: "운영총괄",
+  cmo: "마케팅총괄",
+  marketer: "마케터",
+  marketing: "마케팅",
+  operator: "운영자",
+  operations: "운영",
+  strategist: "전략가",
+  strategy: "전략",
+  engineer: "엔지니어",
+  engineering: "엔지니어링",
+  developer: "개발자",
+  designer: "디자이너",
+  design: "디자인",
+  product: "프로덕트",
+  product_manager: "프로덕트 매니저",
+  pm: "프로젝트 매니저",
+  legal: "법무",
+  finance: "재무",
+  sales: "영업",
+  support: "고객 지원",
+  hr: "인사",
+  recruiter: "리크루터",
+  analyst: "애널리스트",
+  researcher: "리서처",
+  writer: "작가",
+  editor: "에디터",
+  "vp_of_engineering": "엔지니어링 부사장",
+};
+
+/** Returns a Korean translation for a known agent role/title, or null if unknown. */
+export function agentRoleKo(nameOrRole: string): string | null {
+  const key = nameOrRole.trim().toLowerCase().replaceAll(/\s+/g, "_").replaceAll(/-+/g, "_");
+  return AGENT_ROLE_KO_MAP[key] ?? null;
 }
 
 export function formatTokens(n: number): string {

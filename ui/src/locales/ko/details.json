@@ -1,0 +1,203 @@
+{
+  "issueDetail": {
+    "breadcrumb": "이슈",
+    "fallbackTitle": "이슈",
+    "loading": "불러오는 중...",
+    "properties": "속성",
+    "noProject": "프로젝트 없음",
+    "hiddenBanner": "이 이슈는 숨겨져 있습니다",
+    "descriptionPlaceholder": "설명을 추가하세요...",
+    "me": "나",
+    "badges": {
+      "live": "실행 중",
+      "routine": "루틴"
+    },
+    "actions": {
+      "copyAsMarkdown": "이슈를 마크다운으로 복사",
+      "showProperties": "속성 표시",
+      "hideIssue": "이 이슈 숨기기"
+    },
+    "attachments": {
+      "heading": "첨부 파일",
+      "uploading": "업로드 중...",
+      "uploadLong": "첨부 파일 업로드",
+      "uploadShort": "업로드",
+      "delete": "첨부 파일 삭제",
+      "imageAlt": "첨부 파일"
+    },
+    "tabs": {
+      "comments": "댓글",
+      "subIssues": "하위 이슈",
+      "activity": "활동"
+    },
+    "empty": {
+      "subIssues": "하위 이슈가 없습니다.",
+      "activity": "활동 내역이 없습니다."
+    },
+    "costSummary": {
+      "heading": "비용 요약",
+      "empty": "아직 비용 데이터가 없습니다.",
+      "tokens": "토큰",
+      "breakdown": "입력 {{in}}, 출력 {{out}}",
+      "breakdownWithCached": "입력 {{in}}, 출력 {{out}}, 캐시 {{cached}}"
+    },
+    "linkedApprovals": "연결된 승인 ({{count}})",
+    "toasts": {
+      "copied": "클립보드에 복사됨"
+    },
+    "errors": {
+      "uploadFailed": "업로드에 실패했습니다",
+      "documentImportFailed": "문서 가져오기에 실패했습니다",
+      "deleteFailed": "삭제에 실패했습니다"
+    },
+    "actor": {
+      "system": "시스템",
+      "board": "보드",
+      "unknown": "알 수 없음"
+    },
+    "activity": {
+      "issue.created": "이슈를 생성했습니다",
+      "issue.updated": "이슈를 수정했습니다",
+      "issue.checked_out": "이슈를 체크아웃했습니다",
+      "issue.released": "이슈를 반납했습니다",
+      "issue.comment_added": "댓글을 작성했습니다",
+      "issue.attachment_added": "첨부 파일을 추가했습니다",
+      "issue.attachment_removed": "첨부 파일을 제거했습니다",
+      "issue.document_created": "문서를 생성했습니다",
+      "issue.document_updated": "문서를 수정했습니다",
+      "issue.document_deleted": "문서를 삭제했습니다",
+      "issue.deleted": "이슈를 삭제했습니다",
+      "agent.created": "에이전트를 생성했습니다",
+      "agent.updated": "에이전트를 수정했습니다",
+      "agent.paused": "에이전트를 일시 중지했습니다",
+      "agent.resumed": "에이전트를 재개했습니다",
+      "agent.terminated": "에이전트를 종료했습니다",
+      "heartbeat.invoked": "하트비트를 호출했습니다",
+      "heartbeat.cancelled": "하트비트를 취소했습니다",
+      "approval.created": "승인을 요청했습니다",
+      "approval.approved": "승인했습니다",
+      "approval.rejected": "거부했습니다",
+      "statusChangedFromTo": "상태를 {{from}}에서 {{to}}(으)로 변경했습니다",
+      "statusChangedTo": "상태를 {{to}}(으)로 변경했습니다",
+      "priorityChangedFromTo": "우선순위를 {{from}}에서 {{to}}(으)로 변경했습니다",
+      "priorityChangedTo": "우선순위를 {{to}}(으)로 변경했습니다",
+      "assigned": "이슈를 할당했습니다",
+      "unassigned": "이슈 할당을 해제했습니다",
+      "titleUpdated": "제목을 수정했습니다",
+      "descriptionUpdated": "설명을 수정했습니다",
+      "documentAction": "{{label}} {{key}}{{title}}"
+    }
+  },
+  "routineDetail": {
+    "breadcrumb": "루틴",
+    "selectCompany": "루틴을 보려면 회사를 선택하세요.",
+    "notFound": "루틴을 찾을 수 없습니다",
+    "titlePlaceholder": "루틴 제목",
+    "instructionsPlaceholder": "지시사항을 추가하세요...",
+    "unsavedChanges": "저장되지 않은 변경사항",
+    "automation": {
+      "archived": "보관됨",
+      "active": "활성",
+      "paused": "일시 중지됨",
+      "pauseAria": "자동 트리거 일시 중지",
+      "enableAria": "자동 트리거 활성화"
+    },
+    "actions": {
+      "save": "저장",
+      "saveRoutine": "루틴 저장"
+    },
+    "assignment": {
+      "for": "담당",
+      "in": "프로젝트",
+      "assigneePlaceholder": "담당자",
+      "noAssignee": "담당자 없음",
+      "searchAssignees": "담당자 검색...",
+      "noAssigneesFound": "담당자를 찾을 수 없습니다.",
+      "projectPlaceholder": "프로젝트",
+      "noProject": "프로젝트 없음",
+      "searchProjects": "프로젝트 검색...",
+      "noProjectsFound": "프로젝트를 찾을 수 없습니다."
+    },
+    "secret": {
+      "createdTitle": "웹훅 트리거가 생성되었습니다",
+      "rotatedTitle": "웹훅 시크릿이 교체되었습니다",
+      "warning": "지금 저장하세요. Paperclip은 시크릿 값을 다시 표시하지 않습니다.",
+      "webhookUrlLabel": "웹훅 URL",
+      "webhookSecretLabel": "웹훅 시크릿",
+      "url": "URL",
+      "secret": "시크릿"
+    },
+    "advanced": {
+      "heading": "고급 전달 설정",
+      "concurrency": "동시 실행",
+      "catchUp": "이월 처리"
+    },
+    "tabs": {
+      "triggers": "트리거",
+      "runs": "실행",
+      "activity": "활동"
+    },
+    "addTrigger": {
+      "heading": "트리거 추가",
+      "kind": "종류",
+      "comingSoon": " — 준비 중",
+      "add": "트리거 추가",
+      "adding": "추가 중..."
+    },
+    "triggerEditor": {
+      "next": "다음: {{time}}",
+      "webhook": "웹훅",
+      "api": "API",
+      "label": "라벨",
+      "schedule": "스케줄",
+      "signingMode": "서명 모드",
+      "replayWindow": "재전송 윈도우 (초)",
+      "last": "마지막: {{result}}",
+      "rotateSecret": "시크릿 교체"
+    },
+    "empty": {
+      "triggers": "구성된 트리거가 없습니다.",
+      "runs": "실행 내역이 없습니다.",
+      "activity": "활동 내역이 없습니다."
+    },
+    "toasts": {
+      "copied": "{{label}} 복사됨",
+      "copyFailed": "{{label}} 복사에 실패했습니다",
+      "clipboardDenied": "클립보드 접근이 거부되었습니다.",
+      "saveFailed": "루틴 저장에 실패했습니다",
+      "saveFailedBody": "Paperclip이 루틴을 저장하지 못했습니다.",
+      "runStarted": "루틴 실행이 시작되었습니다",
+      "runFailed": "루틴 실행에 실패했습니다",
+      "runFailedBody": "Paperclip이 루틴 실행을 시작하지 못했습니다.",
+      "saved": "루틴이 저장되었습니다",
+      "automationPaused": "자동화가 일시 중지되었습니다.",
+      "automationEnabled": "자동화가 활성화되었습니다.",
+      "updateFailed": "루틴 업데이트에 실패했습니다",
+      "updateFailedBody": "Paperclip이 루틴을 업데이트하지 못했습니다.",
+      "addTriggerFailed": "트리거 추가에 실패했습니다",
+      "addTriggerFailedBody": "Paperclip이 트리거를 생성하지 못했습니다.",
+      "updateTriggerFailed": "트리거 업데이트에 실패했습니다",
+      "updateTriggerFailedBody": "Paperclip이 트리거를 업데이트하지 못했습니다.",
+      "deleteTriggerFailed": "트리거 삭제에 실패했습니다",
+      "deleteTriggerFailedBody": "Paperclip이 트리거를 삭제하지 못했습니다.",
+      "rotateSecretFailed": "웹훅 시크릿 교체에 실패했습니다",
+      "rotateSecretFailedBody": "Paperclip이 웹훅 시크릿을 교체하지 못했습니다."
+    }
+  },
+  "goalDetail": {
+    "breadcrumb": "목표",
+    "fallbackTitle": "목표",
+    "descriptionPlaceholder": "설명을 추가하세요...",
+    "tabs": {
+      "subGoals": "하위 목표 ({{count}})",
+      "projects": "프로젝트 ({{count}})"
+    },
+    "actions": {
+      "subGoal": "하위 목표"
+    },
+    "empty": {
+      "subGoals": "하위 목표가 없습니다.",
+      "projects": "연결된 프로젝트가 없습니다."
+    }
+  }
+}

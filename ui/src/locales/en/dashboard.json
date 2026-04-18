@@ -1,0 +1,101 @@
+{
+  "dashboard": {
+    "welcomeMessage": "Welcome to Paperclip. Set up your first company and agent to get started.",
+    "getStarted": "Get Started",
+    "selectCompany": "Create or select a company to view the dashboard.",
+    "noAgents": "You have no agents.",
+    "createOneHere": "Create one here",
+    "activeBudgetIncidents_one": "{{count}} active budget incident",
+    "activeBudgetIncidents_other": "{{count}} active budget incidents",
+    "budgetIncidentDetail": "{{agents}} agents paused · {{projects}} projects paused · {{approvals}} pending budget approvals",
+    "openBudgets": "Open budgets",
+    "agentsEnabled": "Agents Enabled",
+    "agentsBreakdown": "{{running}} running, {{paused}} paused, {{errors}} errors",
+    "tasksInProgress": "Tasks In Progress",
+    "tasksBreakdown": "{{open}} open, {{blocked}} blocked",
+    "monthSpend": "Month Spend",
+    "monthSpendUtilization": "{{percent}}% of {{budget}} budget",
+    "unlimitedBudget": "Unlimited budget",
+    "pendingApprovals": "Pending Approvals",
+    "budgetOverridesAwaiting": "{{count}} budget overrides awaiting board review",
+    "awaitingBoardReview": "Awaiting board review",
+    "charts": {
+      "runActivity": "Run Activity",
+      "last14Days": "Last 14 days",
+      "issuesByPriority": "Issues by Priority",
+      "issuesByStatus": "Issues by Status",
+      "successRate": "Success Rate"
+    },
+    "recentActivity": "Recent Activity",
+    "recentTasks": "Recent Tasks",
+    "noTasks": "No tasks yet."
+  },
+  "inbox": {
+    "runExitedWithError": "Run exited with an error.",
+    "markAsRead": "Mark as read",
+    "dismissFromInbox": "Dismiss from inbox",
+    "failedRunWithAgent": "Failed run — {{agent}}",
+    "failedRun": "Failed run",
+    "retrying": "Retrying…",
+    "retry": "Retry",
+    "dismiss": "Dismiss",
+    "requestedBy": "requested by {{name}}",
+    "updatedTime": "updated {{time}}",
+    "approve": "Approve",
+    "reject": "Reject",
+    "humanJoinRequest": "Human join request",
+    "agentJoinRequest": "Agent join request",
+    "agentJoinRequestWithName": "Agent join request: {{name}}",
+    "requestedFromIp": "requested {{time}} from {{ip}}",
+    "adapterLabel": "adapter: {{adapter}}",
+    "failedToApprove": "Failed to approve",
+    "failedToReject": "Failed to reject",
+    "failedToApproveJoinRequest": "Failed to approve join request",
+    "failedToRejectJoinRequest": "Failed to reject join request",
+    "tabs": {
+      "mine": "Mine",
+      "recent": "Recent",
+      "unread": "Unread",
+      "all": "All"
+    },
+    "markingAllRead": "Marking…",
+    "markAllAsRead": "Mark all as read",
+    "categoryPlaceholder": "Category",
+    "approvalStatusPlaceholder": "Approval status",
+    "category": {
+      "everything": "All categories",
+      "issuesITouched": "My recent issues",
+      "joinRequests": "Join requests",
+      "approvals": "Approvals",
+      "failedRuns": "Failed runs",
+      "alerts": "Alerts"
+    },
+    "approvalStatus": {
+      "all": "All approval statuses",
+      "actionable": "Needs action",
+      "resolved": "Resolved"
+    },
+    "empty": {
+      "mine": "Inbox zero.",
+      "unread": "No new inbox items.",
+      "recent": "No recent inbox items.",
+      "filtered": "No inbox items match these filters."
+    },
+    "live": "Live",
+    "alerts": "Alerts",
+    "agentHasErrors_one": "{{count}} agent has errors",
+    "agentHasErrors_other": "{{count}} agents have errors",
+    "agentErrorsPrefix": "{{count}}",
+    "agentErrorsSuffix_one": "agent has errors",
+    "agentErrorsSuffix_other": "agents have errors",
+    "budgetAtUtilization": "Budget at {{percent}}% utilization this month",
+    "commentedAgo": "commented {{time}}",
+    "updatedAgo": "updated {{time}}"
+  },
+  "activity": {
+    "selectCompany": "Select a company to view activity.",
+    "filterByType": "Filter by type",
+    "allTypes": "All types",
+    "empty": "No activity yet."
+  }
+}

@@ -1,0 +1,282 @@
+{
+  "projects": {
+    "breadcrumb": "프로젝트",
+    "selectCompany": "프로젝트를 보려면 회사를 선택하세요.",
+    "addProject": "프로젝트 추가",
+    "empty": "아직 프로젝트가 없습니다."
+  },
+  "companies": {
+    "breadcrumb": "회사",
+    "newCompany": "새 회사",
+    "loading": "회사를 불러오는 중...",
+    "rename": "이름 변경",
+    "deleteCompany": "회사 삭제",
+    "agent": "에이전트",
+    "agents": "에이전트",
+    "issue": "이슈",
+    "issues": "이슈",
+    "unlimitedBudget": "무제한",
+    "created": "{{time}}에 생성",
+    "deleteConfirm": "이 회사를 삭제하시겠습니까?",
+    "cancel": "취소",
+    "delete": "삭제",
+    "deleting": "삭제 중..."
+  },
+  "companySettings": {
+    "breadcrumb": "설정",
+    "companyFallback": "회사",
+    "heading": "회사 설정",
+    "noCompanySelected": "선택된 회사가 없습니다.",
+    "sections": {
+      "general": "일반",
+      "appearance": "외관",
+      "hiring": "채용",
+      "invites": "초대",
+      "companyPackages": "회사 패키지",
+      "dangerZone": "위험 구역"
+    },
+    "fields": {
+      "companyName": "회사 이름",
+      "companyNameHint": "앱 전체에 표시됩니다.",
+      "description": "설명",
+      "descriptionHint": "회사에 대한 간단한 요약입니다.",
+      "descriptionPlaceholder": "선택적 설명",
+      "logo": "로고",
+      "logoHint": "PNG, JPEG, WEBP, GIF 또는 SVG 로고 이미지를 업로드하세요.",
+      "brandColor": "브랜드 색상",
+      "brandColorHint": "회사 아이콘의 색조를 설정합니다. 비워 두면 자동 생성됩니다.",
+      "brandColorPlaceholder": "자동",
+      "requireBoardApproval": "신규 채용에 이사회 승인 필요",
+      "requireBoardApprovalHint": "신규 에이전트 채용은 이사회 승인 전까지 대기 상태로 유지됩니다."
+    },
+    "actions": {
+      "removing": "제거 중...",
+      "removeLogo": "로고 제거",
+      "clear": "지우기",
+      "saving": "저장 중...",
+      "saveChanges": "변경사항 저장",
+      "export": "내보내기",
+      "import": "가져오기"
+    },
+    "status": {
+      "saved": "저장됨",
+      "uploadingLogo": "로고 업로드 중..."
+    },
+    "errors": {
+      "failedToCreateInvite": "초대 생성 실패",
+      "logoUploadFailed": "로고 업로드 실패",
+      "failedToSave": "저장 실패",
+      "failedToArchive": "회사 보관 실패"
+    },
+    "invites": {
+      "description": "OpenClaw 에이전트 초대 스니펫을 생성합니다.",
+      "hint": "단기간 유효한 OpenClaw 에이전트 초대를 생성하고 복사 가능한 프롬프트를 렌더링합니다.",
+      "generating": "생성 중...",
+      "generateInvite": "OpenClaw 초대 프롬프트 생성",
+      "invitePromptLabel": "OpenClaw 초대 프롬프트",
+      "copied": "복사됨",
+      "copiedSnippet": "스니펫 복사됨",
+      "copySnippet": "스니펫 복사"
+    },
+    "packages": {
+      "movedPrefix": "가져오기 및 내보내기는",
+      "orgChartLink": "조직도",
+      "movedSuffix": "헤더에서 접근할 수 있는 전용 페이지로 이동되었습니다."
+    },
+    "danger": {
+      "archiveDescription": "이 회사를 보관하여 사이드바에서 숨깁니다. 데이터베이스에 유지됩니다.",
+      "archiveConfirm": "\"{{name}}\" 회사를 보관하시겠습니까? 사이드바에서 숨겨집니다.",
+      "archiving": "보관 중...",
+      "alreadyArchived": "이미 보관됨",
+      "archiveCompany": "회사 보관"
+    }
+  },
+  "companySkills": {
+    "breadcrumb": "스킬",
+    "breadcrumbDetail": "상세",
+    "heading": "스킬",
+    "availableCount": "{{count}}개 사용 가능",
+    "filterPlaceholder": "스킬 필터",
+    "sourcePlaceholder": "경로, GitHub URL 또는 skills.sh 명령 붙여넣기",
+    "add": "추가",
+    "emptyFilter": "필터와 일치하는 스킬이 없습니다.",
+    "selectSkill": "스킬을 선택하여 파일을 확인하세요.",
+    "selectCompany": "스킬을 관리할 회사를 선택하세요.",
+    "selectFile": "확인할 파일을 선택하세요.",
+    "stopEditing": "편집 중지",
+    "edit": "편집",
+    "untracked": "추적되지 않음",
+    "tracking": "{{ref}} 추적 중",
+    "upToDate": "최신 상태",
+    "editable": "편집 가능",
+    "readOnly": "읽기 전용",
+    "noAgentsAttached": "연결된 에이전트 없음",
+    "collapseSkill": "{{name}} 접기",
+    "expandSkill": "{{name}} 펼치기",
+    "sourceLabelFolder": "폴더",
+    "sourceLabelCatalog": "카탈로그",
+    "managedLabel": {
+      "skillsSh": "skills.sh 관리",
+      "github": "GitHub 관리",
+      "url": "URL 관리",
+      "local": "폴더 관리",
+      "paperclip": "Paperclip 관리",
+      "catalog": "카탈로그 관리"
+    },
+    "scanSummary": {
+      "found": "{{count}}개 발견",
+      "imported": "{{count}}개 가져옴",
+      "updated": "{{count}}개 업데이트",
+      "conflicts": "{{count}}개 충돌",
+      "skipped": "{{count}}개 건너뜀",
+      "template_one": "워크스페이스 {{workspaces}}개에서 {{summary}}.",
+      "template_other": "워크스페이스 {{workspaces}}개에서 {{summary}}."
+    },
+    "labels": {
+      "source": "소스",
+      "pin": "핀",
+      "key": "키",
+      "mode": "모드",
+      "usedBy": "사용처"
+    },
+    "actions": {
+      "checkForUpdates": "업데이트 확인",
+      "installUpdate": "업데이트 설치",
+      "installUpdateWithPin": "업데이트 설치 {{pin}}",
+      "view": "보기",
+      "code": "코드",
+      "cancel": "취소",
+      "save": "저장",
+      "saving": "저장 중..."
+    },
+    "newSkill": {
+      "namePlaceholder": "스킬 이름",
+      "slugPlaceholder": "optional-shortname",
+      "descriptionPlaceholder": "간단한 설명",
+      "cancel": "취소",
+      "create": "스킬 생성",
+      "creating": "생성 중..."
+    },
+    "addSource": {
+      "title": "스킬 소스 추가",
+      "description": "로컬 경로, GitHub URL 또는 `skills.sh` 명령을 먼저 입력란에 붙여넣으세요.",
+      "browseSkillsSh": "skills.sh 탐색",
+      "browseSkillsShHint": "설치 명령을 찾아 여기에 붙여넣으세요.",
+      "searchGithub": "GitHub 검색",
+      "searchGithubHint": "`SKILL.md`가 포함된 저장소를 찾아 저장소 URL을 여기에 붙여넣으세요."
+    },
+    "scan": {
+      "scanTitle": "프로젝트 작업공간에서 스킬 스캔",
+      "scanning": "프로젝트 작업공간에서 스킬 스캔 중...",
+      "refreshing": "스킬 목록 새로고침 중..."
+    },
+    "toasts": {
+      "copiedPath": "작업공간 경로 복사됨",
+      "importedTitle": "스킬 가져옴",
+      "importedBody_one": "스킬 {{count}}개 추가됨.",
+      "importedBody_other": "스킬 {{count}}개 추가됨.",
+      "importedBody": "스킬 {{count}}개 추가됨.",
+      "importWarningsTitle": "가져오기 경고",
+      "importFailedTitle": "스킬 가져오기 실패",
+      "importFailedBody": "스킬 소스 가져오기에 실패했습니다.",
+      "createdTitle": "스킬 생성됨",
+      "createdBody": "{{name}}이(가) Paperclip 작업공간에서 편집 가능합니다.",
+      "createFailedTitle": "스킬 생성 실패",
+      "createFailedBody": "스킬 생성에 실패했습니다.",
+      "scanCompleteTitle": "프로젝트 스킬 스캔 완료",
+      "scanConflictsTitle": "스킬 충돌 발견",
+      "scanWarningsTitle": "스캔 경고",
+      "scanFailedTitle": "프로젝트 스킬 스캔 실패",
+      "scanFailedBody": "프로젝트 작업공간 스캔에 실패했습니다.",
+      "savedTitle": "스킬 저장됨",
+      "saveFailedTitle": "저장 실패",
+      "saveFailedBody": "스킬 파일 저장에 실패했습니다.",
+      "updatedTitle": "스킬 업데이트됨",
+      "pinnedTo": "{{pin}}에 고정됨",
+      "updateFailedTitle": "업데이트 실패",
+      "updateFailedBody": "스킬 업데이트 설치에 실패했습니다."
+    }
+  },
+  "projectDetail": {
+    "breadcrumb": "프로젝트",
+    "defaultName": "프로젝트",
+    "changeColor": "프로젝트 색상 변경",
+    "selectColor": "{{color}} 색상 선택",
+    "pausedByBudget": "예산 하드 스톱으로 일시 중지",
+    "tabs": {
+      "issues": "이슈",
+      "overview": "개요",
+      "configuration": "구성",
+      "budget": "예산"
+    },
+    "overview": {
+      "descriptionPlaceholder": "설명 추가...",
+      "status": "상태",
+      "targetDate": "목표일"
+    },
+    "toasts": {
+      "archived": "\"{{name}}\"이(가) 보관되었습니다",
+      "unarchived": "\"{{name}}\"이(가) 보관 해제되었습니다",
+      "archiveFailed": "프로젝트 보관 실패",
+      "unarchiveFailed": "프로젝트 보관 해제 실패"
+    }
+  },
+  "companyImport": {
+    "breadcrumb": "가져오기",
+    "orgChart": "조직도",
+    "selectCompany": "가져올 회사를 선택하세요.",
+    "importSource": "가져오기 소스",
+    "importSourceHint": "GitHub 저장소를 선택하거나 로컬 Paperclip zip 패키지를 업로드하세요.",
+    "chooseZip": "zip 선택",
+    "importPreview": "가져오기 미리보기",
+    "packageFiles": "패키지 파일",
+    "previewing": "미리보기 중...",
+    "previewImport": "가져오기 미리보기",
+    "importing": "가져오는 중...",
+    "importFiles_one": "{{count}}개 파일 가져오기",
+    "importFiles_other": "{{count}}개 파일 가져오기",
+    "importFiles": "{{count}}개 파일 가져오기",
+    "filesSelected": "{{selected}} / {{total}}개 파일 선택됨",
+    "conflictCount": "충돌 {{count}}개",
+    "errorCount": "오류 {{count}}개",
+    "sourceModes": {
+      "github": "GitHub 저장소",
+      "local": "로컬 zip"
+    },
+    "targetModes": {
+      "new": "새 회사 생성",
+      "existing": "기존 회사: {{name}}"
+    },
+    "collisionStrategies": {
+      "rename": "충돌 시 이름 변경",
+      "skip": "충돌 시 건너뛰기",
+      "replace": "기존 항목 교체"
+    },
+    "fields": {
+      "githubUrl": "GitHub URL",
+      "githubUrlHint": "COMPANY.md의 저장소 트리 경로 또는 blob URL (예: github.com/owner/repo/tree/main/company).",
+      "target": "대상",
+      "targetHint": "이 회사로 가져오거나 새 회사를 생성합니다.",
+      "newCompanyName": "새 회사 이름",
+      "newCompanyNameHint": "선택적 재정의. 비워 두면 패키지 이름을 사용합니다.",
+      "newCompanyNamePlaceholder": "가져온 회사",
+      "collisionStrategy": "충돌 전략",
+      "collisionStrategyHint": "이사회 가져오기는 일치하는 회사 콘텐츠를 이름 변경, 건너뛰기 또는 교체할 수 있습니다."
+    }
+  },
+  "companyExport": {
+    "breadcrumb": "내보내기",
+    "orgChart": "조직도",
+    "companyFallback": "회사",
+    "selectCompany": "내보낼 회사를 선택하세요.",
+    "loading": "내보내기 데이터 불러오는 중...",
+    "companyExportTitle": "{{name}} 내보내기",
+    "filesSelected": "{{selected}} / {{total}}개 파일 선택됨",
+    "warningCount": "경고 {{count}}개",
+    "buildingExport": "내보내기 빌드 중...",
+    "exportFiles": "{{count}}개 파일 내보내기",
+    "packageFiles": "패키지 파일",
+    "searchFiles": "파일 검색...",
+    "showMoreIssues": "더 많은 이슈 표시 ({{total}}개 중 {{visible}}개)"
+  }
+}

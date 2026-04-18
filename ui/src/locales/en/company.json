@@ -1,0 +1,282 @@
+{
+  "projects": {
+    "breadcrumb": "Projects",
+    "selectCompany": "Select a company to view projects.",
+    "addProject": "Add Project",
+    "empty": "No projects yet."
+  },
+  "companies": {
+    "breadcrumb": "Companies",
+    "newCompany": "New Company",
+    "loading": "Loading companies...",
+    "rename": "Rename",
+    "deleteCompany": "Delete company",
+    "agent": "agent",
+    "agents": "agents",
+    "issue": "issue",
+    "issues": "issues",
+    "unlimitedBudget": "unlimited",
+    "created": "Created {{time}}",
+    "deleteConfirm": "Are you sure you want to delete this company?",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "deleting": "Deleting..."
+  },
+  "companySettings": {
+    "breadcrumb": "Settings",
+    "companyFallback": "Company",
+    "heading": "Company Settings",
+    "noCompanySelected": "No company selected.",
+    "sections": {
+      "general": "General",
+      "appearance": "Appearance",
+      "hiring": "Hiring",
+      "invites": "Invites",
+      "companyPackages": "Company Packages",
+      "dangerZone": "Danger Zone"
+    },
+    "fields": {
+      "companyName": "Company name",
+      "companyNameHint": "Displayed throughout the app.",
+      "description": "Description",
+      "descriptionHint": "Short summary of the company.",
+      "descriptionPlaceholder": "Optional description",
+      "logo": "Logo",
+      "logoHint": "Upload a PNG, JPEG, WEBP, GIF, or SVG logo image.",
+      "brandColor": "Brand color",
+      "brandColorHint": "Sets the hue for the company icon. Leave empty for auto-generated color.",
+      "brandColorPlaceholder": "Auto",
+      "requireBoardApproval": "Require board approval for new hires",
+      "requireBoardApprovalHint": "New agent hires stay pending until approved by board."
+    },
+    "actions": {
+      "removing": "Removing...",
+      "removeLogo": "Remove logo",
+      "clear": "Clear",
+      "saving": "Saving...",
+      "saveChanges": "Save changes",
+      "export": "Export",
+      "import": "Import"
+    },
+    "status": {
+      "saved": "Saved",
+      "uploadingLogo": "Uploading logo..."
+    },
+    "errors": {
+      "failedToCreateInvite": "Failed to create invite",
+      "logoUploadFailed": "Logo upload failed",
+      "failedToSave": "Failed to save",
+      "failedToArchive": "Failed to archive company"
+    },
+    "invites": {
+      "description": "Generate an OpenClaw agent invite snippet.",
+      "hint": "Creates a short-lived OpenClaw agent invite and renders a copy-ready prompt.",
+      "generating": "Generating...",
+      "generateInvite": "Generate OpenClaw Invite Prompt",
+      "invitePromptLabel": "OpenClaw Invite Prompt",
+      "copied": "Copied",
+      "copiedSnippet": "Copied snippet",
+      "copySnippet": "Copy snippet"
+    },
+    "packages": {
+      "movedPrefix": "Import and export have moved to dedicated pages accessible from the",
+      "orgChartLink": "Org Chart",
+      "movedSuffix": "header."
+    },
+    "danger": {
+      "archiveDescription": "Archive this company to hide it from the sidebar. This persists in the database.",
+      "archiveConfirm": "Archive company \"{{name}}\"? It will be hidden from the sidebar.",
+      "archiving": "Archiving...",
+      "alreadyArchived": "Already archived",
+      "archiveCompany": "Archive company"
+    }
+  },
+  "companySkills": {
+    "breadcrumb": "Skills",
+    "breadcrumbDetail": "Detail",
+    "heading": "Skills",
+    "availableCount": "{{count}} available",
+    "filterPlaceholder": "Filter skills",
+    "sourcePlaceholder": "Paste path, GitHub URL, or skills.sh command",
+    "add": "Add",
+    "emptyFilter": "No skills match this filter.",
+    "selectSkill": "Select a skill to inspect its files.",
+    "selectCompany": "Select a company to manage skills.",
+    "selectFile": "Select a file to inspect.",
+    "stopEditing": "Stop editing",
+    "edit": "Edit",
+    "untracked": "untracked",
+    "tracking": "tracking {{ref}}",
+    "upToDate": "Up to date",
+    "editable": "Editable",
+    "readOnly": "Read only",
+    "noAgentsAttached": "No agents attached",
+    "collapseSkill": "Collapse {{name}}",
+    "expandSkill": "Expand {{name}}",
+    "sourceLabelFolder": "Folder",
+    "sourceLabelCatalog": "Catalog",
+    "managedLabel": {
+      "skillsSh": "skills.sh managed",
+      "github": "GitHub managed",
+      "url": "URL managed",
+      "local": "Folder managed",
+      "paperclip": "Paperclip managed",
+      "catalog": "Catalog managed"
+    },
+    "scanSummary": {
+      "found": "{{count}} found",
+      "imported": "{{count}} imported",
+      "updated": "{{count}} updated",
+      "conflicts": "{{count}} conflicts",
+      "skipped": "{{count}} skipped",
+      "template_one": "{{summary}} across {{workspaces}} workspace.",
+      "template_other": "{{summary}} across {{workspaces}} workspaces."
+    },
+    "labels": {
+      "source": "Source",
+      "pin": "Pin",
+      "key": "Key",
+      "mode": "Mode",
+      "usedBy": "Used by"
+    },
+    "actions": {
+      "checkForUpdates": "Check for updates",
+      "installUpdate": "Install update",
+      "installUpdateWithPin": "Install update {{pin}}",
+      "view": "View",
+      "code": "Code",
+      "cancel": "Cancel",
+      "save": "Save",
+      "saving": "Saving..."
+    },
+    "newSkill": {
+      "namePlaceholder": "Skill name",
+      "slugPlaceholder": "optional-shortname",
+      "descriptionPlaceholder": "Short description",
+      "cancel": "Cancel",
+      "create": "Create skill",
+      "creating": "Creating..."
+    },
+    "addSource": {
+      "title": "Add a skill source",
+      "description": "Paste a local path, GitHub URL, or `skills.sh` command into the field first.",
+      "browseSkillsSh": "Browse skills.sh",
+      "browseSkillsShHint": "Find install commands and paste one here.",
+      "searchGithub": "Search GitHub",
+      "searchGithubHint": "Look for repositories with `SKILL.md`, then paste the repo URL here."
+    },
+    "scan": {
+      "scanTitle": "Scan project workspaces for skills",
+      "scanning": "Scanning project workspaces for skills...",
+      "refreshing": "Refreshing skills list..."
+    },
+    "toasts": {
+      "copiedPath": "Copied path to workspace",
+      "importedTitle": "Skills imported",
+      "importedBody_one": "{{count}} skill added.",
+      "importedBody_other": "{{count}} skills added.",
+      "importedBody": "{{count}} skills added.",
+      "importWarningsTitle": "Import warnings",
+      "importFailedTitle": "Skill import failed",
+      "importFailedBody": "Failed to import skill source.",
+      "createdTitle": "Skill created",
+      "createdBody": "{{name}} is now editable in the Paperclip workspace.",
+      "createFailedTitle": "Skill creation failed",
+      "createFailedBody": "Failed to create skill.",
+      "scanCompleteTitle": "Project skill scan complete",
+      "scanConflictsTitle": "Skill conflicts found",
+      "scanWarningsTitle": "Scan warnings",
+      "scanFailedTitle": "Project skill scan failed",
+      "scanFailedBody": "Failed to scan project workspaces.",
+      "savedTitle": "Skill saved",
+      "saveFailedTitle": "Save failed",
+      "saveFailedBody": "Failed to save skill file.",
+      "updatedTitle": "Skill updated",
+      "pinnedTo": "Pinned to {{pin}}",
+      "updateFailedTitle": "Update failed",
+      "updateFailedBody": "Failed to install skill update."
+    }
+  },
+  "projectDetail": {
+    "breadcrumb": "Projects",
+    "defaultName": "Project",
+    "changeColor": "Change project color",
+    "selectColor": "Select color {{color}}",
+    "pausedByBudget": "Paused by budget hard stop",
+    "tabs": {
+      "issues": "Issues",
+      "overview": "Overview",
+      "configuration": "Configuration",
+      "budget": "Budget"
+    },
+    "overview": {
+      "descriptionPlaceholder": "Add a description...",
+      "status": "Status",
+      "targetDate": "Target Date"
+    },
+    "toasts": {
+      "archived": "\"{{name}}\" has been archived",
+      "unarchived": "\"{{name}}\" has been unarchived",
+      "archiveFailed": "Failed to archive project",
+      "unarchiveFailed": "Failed to unarchive project"
+    }
+  },
+  "companyImport": {
+    "breadcrumb": "Import",
+    "orgChart": "Org Chart",
+    "selectCompany": "Select a company to import into.",
+    "importSource": "Import source",
+    "importSourceHint": "Choose a GitHub repo or upload a local Paperclip zip package.",
+    "chooseZip": "Choose zip",
+    "importPreview": "Import preview",
+    "packageFiles": "Package files",
+    "previewing": "Previewing...",
+    "previewImport": "Preview import",
+    "importing": "Importing...",
+    "importFiles_one": "Import {{count}} file",
+    "importFiles_other": "Import {{count}} files",
+    "importFiles": "Import {{count}} files",
+    "filesSelected": "{{selected}} / {{total}} files selected",
+    "conflictCount": "{{count}} conflicts",
+    "errorCount": "{{count}} errors",
+    "sourceModes": {
+      "github": "GitHub repo",
+      "local": "Local zip"
+    },
+    "targetModes": {
+      "new": "Create new company",
+      "existing": "Existing company: {{name}}"
+    },
+    "collisionStrategies": {
+      "rename": "Rename on conflict",
+      "skip": "Skip on conflict",
+      "replace": "Replace existing"
+    },
+    "fields": {
+      "githubUrl": "GitHub URL",
+      "githubUrlHint": "Repo tree path or blob URL to COMPANY.md (e.g. github.com/owner/repo/tree/main/company).",
+      "target": "Target",
+      "targetHint": "Import into this company or create a new one.",
+      "newCompanyName": "New company name",
+      "newCompanyNameHint": "Optional override. Leave blank to use the package name.",
+      "newCompanyNamePlaceholder": "Imported Company",
+      "collisionStrategy": "Collision strategy",
+      "collisionStrategyHint": "Board imports can rename, skip, or replace matching company content."
+    }
+  },
+  "companyExport": {
+    "breadcrumb": "Export",
+    "orgChart": "Org Chart",
+    "companyFallback": "Company",
+    "selectCompany": "Select a company to export.",
+    "loading": "Loading export data...",
+    "companyExportTitle": "{{name}} export",
+    "filesSelected": "{{selected}} / {{total}} files selected",
+    "warningCount": "{{count}} warnings",
+    "buildingExport": "Building export...",
+    "exportFiles": "Export {{count}} files",
+    "packageFiles": "Package files",
+    "searchFiles": "Search files...",
+    "showMoreIssues": "Show more issues ({{visible}} of {{total}})"
+  }
+}

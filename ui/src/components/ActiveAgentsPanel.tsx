@@ -6,7 +6,7 @@ import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import type { TranscriptEntry } from "../adapters";
 import { queryKeys } from "../lib/queryKeys";
-import { cn, relativeTime } from "../lib/utils";
+import { agentRoleKo, cn, isLangKo, relativeTime, relativeTimeKo } from "../lib/utils";
 import { ExternalLink } from "lucide-react";
 import { Identity } from "./Identity";
 import { RunTranscriptView } from "./transcript/RunTranscriptView";
@@ -53,10 +53,20 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
     <div>
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
         Agents
+        {isLangKo() && (
+          <span className="ml-2 normal-case tracking-normal text-[11px] font-normal text-muted-foreground/80">
+            (에이전트 · 회사에서 실행 중이거나 최근에 실행된 에이전트)
+          </span>
+        )}
       </h3>
       {runs.length === 0 ? (
         <div className="rounded-xl border border-border p-4">
-          <p className="text-sm text-muted-foreground">No recent agent runs.</p>
+          <p className="text-sm text-muted-foreground">
+            No recent agent runs.
+            {isLangKo() && (
+              <span className="ml-1 text-muted-foreground/80">(최근 실행된 에이전트가 없습니다.)</span>
+            )}
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
@@ -109,9 +119,23 @@ function AgentRunCard({
                 <span className="inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground/35" />
               )}
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
+              {isLangKo() && agentRoleKo(run.agentName) && (
+                <span className="text-[10px] text-muted-foreground/80">
+                  ({agentRoleKo(run.agentName)})
+                </span>
+              )}
             </div>
-            <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+            <div className="mt-2 flex flex-col gap-0.5 text-[11px] text-muted-foreground">
               <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
+              {isLangKo() && (
+                <span className="text-[10px] text-muted-foreground/80">
+                  {isActive
+                    ? "지금 실행 중"
+                    : run.finishedAt
+                      ? `${relativeTimeKo(run.finishedAt)} 완료`
+                      : `${relativeTimeKo(run.createdAt)} 시작`}
+                </span>
+              )}
             </div>
           </div>
 
@@ -148,7 +172,13 @@ function AgentRunCard({
           streaming={isActive}
           collapseStdout
           thinkingClassName="!text-[10px] !leading-4"
-          emptyMessage={hasOutput ? "Waiting for transcript parsing..." : isActive ? "Waiting for output..." : "No transcript captured."}
+          emptyMessage={
+            hasOutput
+              ? `Waiting for transcript parsing...${isLangKo() ? " (트랜스크립트 파싱 대기 중)" : ""}`
+              : isActive
+                ? `Waiting for output...${isLangKo() ? " (출력 대기 중)" : ""}`
+                : `No transcript captured.${isLangKo() ? " (수집된 트랜스크립트 없음)" : ""}`
+          }
         />
       </div>
     </div>

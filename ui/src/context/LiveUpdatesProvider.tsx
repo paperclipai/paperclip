@@ -1,5 +1,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import type { Agent, Issue, LiveEvent } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
@@ -49,15 +51,16 @@ function resolveActorLabel(
   companyId: string,
   actorType: string | null,
   actorId: string | null,
+  t: TFunction,
 ): string {
   if (actorType === "agent" && actorId) {
-    return resolveAgentName(queryClient, companyId, actorId) ?? `Agent ${shortId(actorId)}`;
+    return resolveAgentName(queryClient, companyId, actorId) ?? t("liveToasts.actor.agent", { id: shortId(actorId) });
   }
-  if (actorType === "system") return "System";
+  if (actorType === "system") return t("liveToasts.actor.system");
   if (actorType === "user" && actorId) {
-    return "Board";
+    return t("liveToasts.actor.board");
   }
-  return "Someone";
+  return t("liveToasts.actor.someone");
 }
 
 interface IssueToastContext {
@@ -112,6 +115,7 @@ function resolveIssueToastContext(
   companyId: string,
   issueId: string,
   details: Record<string, unknown> | null,
+  t: TFunction,
 ): IssueToastContext {
   const issueRefs = resolveIssueQueryRefs(queryClient, companyId, issueId, details);
   const detailIssue = issueRefs
@@ -125,7 +129,7 @@ function resolveIssueToastContext(
     readString(details?.identifier) ??
     readString(details?.issueIdentifier) ??
     cachedIssue?.identifier ??
-    `Issue ${shortId(issueId)}`;
+    t("liveToasts.issueRef", { id: shortId(issueId) });
   const title =
     readString(details?.title) ??
     readString(details?.issueTitle) ??
@@ -247,22 +251,22 @@ const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.co
 const AGENT_TOAST_STATUSES = new Set(["running", "error"]);
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled"]);
 
-function describeIssueUpdate(details: Record<string, unknown> | null): string | null {
+function describeIssueUpdate(details: Record<string, unknown> | null, t: TFunction): string | null {
   if (!details) return null;
   const changes: string[] = [];
-  if (typeof details.status === "string") changes.push(`status -> ${details.status.replace(/_/g, " ")}`);
-  if (typeof details.priority === "string") changes.push(`priority -> ${details.priority}`);
+  if (typeof details.status === "string") changes.push(t("liveToasts.changes.status", { value: details.status.replace(/_/g, " ") }));
+  if (typeof details.priority === "string") changes.push(t("liveToasts.changes.priority", { value: details.priority }));
   if (typeof details.assigneeAgentId === "string" || typeof details.assigneeUserId === "string") {
-    changes.push("reassigned");
+    changes.push(t("liveToasts.changes.reassigned"));
   } else if (details.assigneeAgentId === null || details.assigneeUserId === null) {
-    changes.push("unassigned");
+    changes.push(t("liveToasts.changes.unassigned"));
   }
   if (details.reopened === true) {
     const from = readString(details.reopenedFrom);
-    changes.push(from ? `reopened from ${from.replace(/_/g, " ")}` : "reopened");
+    changes.push(from ? t("liveToasts.changes.reopenedFrom", { value: from.replace(/_/g, " ") }) : t("liveToasts.changes.reopened"));
   }
-  if (typeof details.title === "string") changes.push("title changed");
-  if (typeof details.description === "string") changes.push("description changed");
+  if (typeof details.title === "string") changes.push(t("liveToasts.changes.titleChanged"));
+  if (typeof details.description === "string") changes.push(t("liveToasts.changes.descriptionChanged"));
   if (changes.length > 0) return changes.join(", ");
   return null;
 }
@@ -272,6 +276,7 @@ function buildActivityToast(
   companyId: string,
   payload: Record<string, unknown>,
   currentActor: { userId: string | null; agentId: string | null },
+  t: TFunction,
 ): ToastInput | null {
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
@@ -284,29 +289,30 @@ function buildActivityToast(
     return null;
   }
 
-  const issue = resolveIssueToastContext(queryClient, companyId, entityId, details);
-  const actor = resolveActorLabel(queryClient, companyId, actorType, actorId);
+  const issue = resolveIssueToastContext(queryClient, companyId, entityId, details, t);
+  const actor = resolveActorLabel(queryClient, companyId, actorType, actorId, t);
   const isSelfActivity =
     (actorType === "user" && !!currentActor.userId && actorId === currentActor.userId) ||
     (actorType === "agent" && !!currentActor.agentId && actorId === currentActor.agentId);
   if (isSelfActivity) return null;
 
+  const viewAction = { label: t("liveToasts.activity.view", { ref: issue.ref }), href: issue.href };
+
   if (action === "issue.created") {
     return {
-      title: `${actor} created ${issue.ref}`,
+      title: t("liveToasts.activity.created", { actor, ref: issue.ref }),
       body: issue.title ? truncate(issue.title, 96) : undefined,
       tone: "success",
-      action: { label: `View ${issue.ref}`, href: issue.href },
+      action: viewAction,
       dedupeKey: `activity:${action}:${entityId}`,
     };
   }
 
   if (action === "issue.updated") {
     if (readString(details?.source) === "comment") {
-      // Comment-driven updates emit a paired comment event; show one combined toast on the comment event.
       return null;
     }
-    const changeDesc = describeIssueUpdate(details);
+    const changeDesc = describeIssueUpdate(details, t);
     const body = changeDesc
       ? issue.title
         ? `${truncate(issue.title, 64)} - ${changeDesc}`
@@ -315,10 +321,10 @@ function buildActivityToast(
         ? truncate(issue.title, 96)
         : issue.label;
     return {
-      title: `${actor} updated ${issue.ref}`,
+      title: t("liveToasts.activity.updated", { actor, ref: issue.ref }),
       body: truncate(body, 100),
       tone: "info",
-      action: { label: `View ${issue.ref}`, href: issue.href },
+      action: viewAction,
       dedupeKey: `activity:${action}:${entityId}`,
     };
   }
@@ -330,14 +336,14 @@ function buildActivityToast(
   const reopenedFrom = readString(details?.reopenedFrom);
   const reopenedLabel = reopened
     ? reopenedFrom
-      ? `reopened from ${reopenedFrom.replace(/_/g, " ")}`
-      : "reopened"
+      ? t("liveToasts.changes.reopenedFrom", { value: reopenedFrom.replace(/_/g, " ") })
+      : t("liveToasts.changes.reopened")
     : null;
   const title = reopened
-    ? `${actor} reopened and commented on ${issue.ref}`
+    ? t("liveToasts.activity.reopenedCommented", { actor, ref: issue.ref })
     : updated
-      ? `${actor} commented and updated ${issue.ref}`
-      : `${actor} commented on ${issue.ref}`;
+      ? t("liveToasts.activity.commentedUpdated", { actor, ref: issue.ref })
+      : t("liveToasts.activity.commented", { actor, ref: issue.ref });
   const body = bodySnippet
     ? reopenedLabel
       ? `${reopenedLabel} - ${bodySnippet.replace(/^#+\s*/m, "").replace(/\n/g, " ")}`
@@ -351,13 +357,14 @@ function buildActivityToast(
     title,
     body: body ? truncate(body, 96) : undefined,
     tone: "info",
-    action: { label: `View ${issue.ref}`, href: issue.href },
+    action: viewAction,
     dedupeKey: `activity:${action}:${entityId}:${commentId ?? "na"}`,
   };
 }
 
 function buildJoinRequestToast(
   payload: Record<string, unknown>,
+  t: TFunction,
 ): ToastInput | null {
   const entityType = readString(payload.entityType);
   const action = readString(payload.action);
@@ -368,13 +375,13 @@ function buildJoinRequestToast(
   if (action !== "join.requested" && action !== "join.request_replayed") return null;
 
   const requestType = readString(details?.requestType);
-  const label = requestType === "agent" ? "Agent" : "Someone";
+  const label = requestType === "agent" ? t("liveToasts.joinRequest.agent") : t("liveToasts.joinRequest.someone");
 
   return {
-    title: `${label} wants to join`,
-    body: "A new join request is waiting for approval.",
+    title: t("liveToasts.joinRequest.title", { label }),
+    body: t("liveToasts.joinRequest.body"),
     tone: "info",
-    action: { label: "View inbox", href: "/inbox/mine" },
+    action: { label: t("liveToasts.joinRequest.action"), href: "/inbox/mine" },
     dedupeKey: `join-request:${entityId}`,
   };
 }
@@ -384,17 +391,18 @@ function buildAgentStatusToast(
   nameOf: (id: string) => string | null,
   queryClient: QueryClient,
   companyId: string,
+  t: TFunction,
 ): ToastInput | null {
   const agentId = readString(payload.agentId);
   const status = readString(payload.status);
   if (!agentId || !status || !AGENT_TOAST_STATUSES.has(status)) return null;
 
   const tone = status === "error" ? "error" : "info";
-  const name = nameOf(agentId) ?? `Agent ${shortId(agentId)}`;
+  const name = nameOf(agentId) ?? t("liveToasts.actor.agent", { id: shortId(agentId) });
   const title =
     status === "running"
-      ? `${name} started`
-      : `${name} errored`;
+      ? t("liveToasts.agentStatus.started", { name })
+      : t("liveToasts.agentStatus.errored", { name });
 
   const agents = queryClient.getQueryData<Agent[]>(queryKeys.agents.list(companyId));
   const agent = agents?.find((a) => a.id === agentId);
@@ -404,7 +412,7 @@ function buildAgentStatusToast(
     title,
     body,
     tone,
-    action: { label: "View agent", href: `/agents/${agentId}` },
+    action: { label: t("liveToasts.agentStatus.action"), href: `/agents/${agentId}` },
     dedupeKey: `agent-status:${agentId}:${status}`,
   };
 }
@@ -412,6 +420,7 @@ function buildAgentStatusToast(
 function buildRunStatusToast(
   payload: Record<string, unknown>,
   nameOf: (id: string) => string | null,
+  t: TFunction,
 ): ToastInput | null {
   const runId = readString(payload.runId);
   const agentId = readString(payload.agentId);
@@ -420,20 +429,20 @@ function buildRunStatusToast(
 
   const error = readString(payload.error);
   const triggerDetail = readString(payload.triggerDetail);
-  const name = nameOf(agentId) ?? `Agent ${shortId(agentId)}`;
+  const name = nameOf(agentId) ?? t("liveToasts.actor.agent", { id: shortId(agentId) });
   const tone = status === "succeeded" ? "success" : status === "cancelled" ? "warn" : "error";
   const statusLabel =
-    status === "succeeded" ? "succeeded"
-      : status === "failed" ? "failed"
-        : status === "timed_out" ? "timed out"
-          : "cancelled";
-  const title = `${name} run ${statusLabel}`;
+    status === "succeeded" ? t("liveToasts.runStatus.status.succeeded")
+      : status === "failed" ? t("liveToasts.runStatus.status.failed")
+        : status === "timed_out" ? t("liveToasts.runStatus.status.timed_out")
+          : t("liveToasts.runStatus.status.cancelled");
+  const title = t("liveToasts.runStatus.title", { name, status: statusLabel });
 
   let body: string | undefined;
   if (error) {
     body = truncate(error, 100);
   } else if (triggerDetail) {
-    body = `Trigger: ${triggerDetail}`;
+    body = t("liveToasts.runStatus.triggerPrefix", { detail: triggerDetail });
   }
 
   return {
@@ -441,7 +450,7 @@ function buildRunStatusToast(
     body,
     tone,
     ttlMs: status === "succeeded" ? 5000 : 7000,
-    action: { label: "View run", href: `/agents/${agentId}/runs/${runId}` },
+    action: { label: t("liveToasts.runStatus.action"), href: `/agents/${agentId}/runs/${runId}` },
     dedupeKey: `run-status:${runId}:${status}`,
   };
 }
@@ -594,6 +603,7 @@ function handleLiveEvent(
   pushToast: (toast: ToastInput) => string | null,
   gate: ToastGate,
   currentActor: { userId: string | null; agentId: string | null },
+  t: TFunction,
 ) {
   if (event.companyId !== expectedCompanyId) return;
 
@@ -606,7 +616,7 @@ function handleLiveEvent(
   if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
     if (event.type === "heartbeat.run.status") {
-      const toast = buildRunStatusToast(payload, nameOf);
+      const toast = buildRunStatusToast(payload, nameOf, t);
       if (
         toast &&
         !shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload)
@@ -627,7 +637,7 @@ function handleLiveEvent(
     queryClient.invalidateQueries({ queryKey: queryKeys.org(expectedCompanyId) });
     const agentId = readString(payload.agentId);
     if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
-    const toast = buildAgentStatusToast(payload, nameOf, queryClient, expectedCompanyId);
+    const toast = buildAgentStatusToast(payload, nameOf, queryClient, expectedCompanyId, t);
     if (
       toast &&
       !shouldSuppressAgentStatusToastForVisibleIssue(queryClient, pathname, payload)
@@ -641,8 +651,8 @@ function handleLiveEvent(
     invalidateActivityQueries(queryClient, expectedCompanyId, payload);
     const action = readString(payload.action);
     const toast =
-      buildActivityToast(queryClient, expectedCompanyId, payload, currentActor) ??
-      buildJoinRequestToast(payload);
+      buildActivityToast(queryClient, expectedCompanyId, payload, currentActor, t) ??
+      buildJoinRequestToast(payload, t);
     if (
       toast &&
       !shouldSuppressActivityToastForVisibleIssue(queryClient, pathname, payload)
@@ -664,6 +674,11 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const location = useLocation();
+  const { t } = useTranslation();
+  const tRef = useRef(t);
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
   const pathnameRef = useRef(location.pathname);
   const { data: session } = useQuery({
@@ -724,7 +739,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           handleLiveEvent(queryClient, selectedCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
             userId: currentUserId,
             agentId: null,
-          });
+          }, tRef.current);
         } catch {
           // Ignore non-JSON payloads.
         }
