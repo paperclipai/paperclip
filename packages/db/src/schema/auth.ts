@@ -21,7 +21,7 @@ export const authSessions = pgTable("session", {
   userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
 });
 
-export const authAccounts = pgTable("account", {
+export const authAccounts = pgTable("auth_account", {
   id: text("id").primaryKey(),
   accountId: text("account_id").notNull(),
   providerId: text("provider_id").notNull(),
