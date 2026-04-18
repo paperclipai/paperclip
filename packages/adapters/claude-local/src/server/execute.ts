@@ -90,6 +90,28 @@ function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscri
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
 }
 
+function renderPaperclipRuntimeNote(env: Record<string, string>): string {
+  const paperclipKeys = Object.keys(env)
+    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .sort();
+  if (paperclipKeys.length === 0) return "";
+  const lines = [
+    "Paperclip runtime note:",
+    `The following PAPERCLIP_* environment variables are available in this run: ${paperclipKeys.join(", ")}`,
+    "Do not assume these variables are missing without checking your shell environment.",
+  ];
+  if (hasNonEmptyEnvValue(env, "PAPERCLIP_API_URL") && hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY")) {
+    lines.push(
+      "",
+      "Paperclip API authentication:",
+      "Always include -H \"Authorization: Bearer $PAPERCLIP_API_KEY\" on every Paperclip API call (curl to $PAPERCLIP_API_URL).",
+      "For POST/PATCH requests, also include -H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\" so the server can attribute the action to this run.",
+    );
+  }
+  lines.push("", "");
+  return lines.join("\n");
+}
+
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
   const { runId, agent, config, context, authToken } = input;
 
@@ -411,10 +433,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const runtimeNote = renderPaperclipRuntimeNote(env);
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
+    runtimeNote,
     renderedPrompt,
   ]);
   const promptMetrics = {
