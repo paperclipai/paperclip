@@ -5,6 +5,11 @@ set -e
 PUID=${USER_UID:-1000}
 PGID=${USER_GID:-1000}
 
+# If already running as the target user, skip privilege management and gosu
+if [ "$(id -u)" = "$PUID" ]; then
+    exec "$@"
+fi
+
 # Adjust the node user's UID/GID if they differ from the runtime request
 # and fix volume ownership only when a remap is needed
 changed=0
