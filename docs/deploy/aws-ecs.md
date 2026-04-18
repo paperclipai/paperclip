@@ -85,6 +85,11 @@ aws ec2 authorize-security-group-ingress \
   --group-id $ALB_SG \
   --protocol tcp --port 443 --cidr 0.0.0.0/0
 
+# Also open port 80 so the ALB can accept HTTP and redirect to HTTPS
+aws ec2 authorize-security-group-ingress \
+  --group-id $ALB_SG \
+  --protocol tcp --port 80 --cidr 0.0.0.0/0
+
 # ECS task security group — inbound from ALB only
 ECS_SG=$(aws ec2 create-security-group \
   --group-name paperclip-ecs \
@@ -125,6 +130,13 @@ aws ec2 authorize-security-group-ingress \
 ## 4. Create RDS Postgres Instance
 
 ```bash
+# Custom VPCs don't come with a default DB subnet group — create one
+# that spans our two subnets so RDS can place the instance.
+aws rds create-db-subnet-group \
+  --db-subnet-group-name paperclip-db-subnet \
+  --db-subnet-group-description "Paperclip RDS subnets" \
+  --subnet-ids $SUBNET_1 $SUBNET_2
+
 aws rds create-db-instance \
   --db-instance-identifier paperclip-db \
   --db-instance-class db.t4g.micro \
@@ -135,6 +147,7 @@ aws rds create-db-instance \
   --allocated-storage 20 \
   --storage-type gp3 \
   --vpc-security-group-ids $RDS_SG \
+  --db-subnet-group-name paperclip-db-subnet \
   --no-publicly-accessible \
   --backup-retention-period 7 \
   --no-multi-az \
@@ -325,6 +338,14 @@ LISTENER_ARN=$(aws elbv2 create-listener \
   --certificates CertificateArn=$CERT_ARN \
   --default-actions Type=forward,TargetGroupArn=$TG_ARN \
   --query 'Listeners[0].ListenerArn' --output text)
+
+# HTTP listener — redirect all :80 traffic to :443
+HTTP_LISTENER_ARN=$(aws elbv2 create-listener \
+  --load-balancer-arn $ALB_ARN \
+  --protocol HTTP \
+  --port 80 \
+  --default-actions Type=redirect,RedirectConfig='{Protocol=HTTPS,Port=443,StatusCode=HTTP_301}' \
+  --query 'Listeners[0].ListenerArn' --output text)
 ```
 
 Point your DNS to the ALB:
@@ -472,6 +493,7 @@ aws ecs delete-service --cluster paperclip --service paperclip-server --force
 aws ecs delete-cluster --cluster paperclip
 
 # 2. ALB and ACM cert
+aws elbv2 delete-listener --listener-arn $HTTP_LISTENER_ARN
 aws elbv2 delete-listener --listener-arn $LISTENER_ARN
 aws elbv2 delete-target-group --target-group-arn $TG_ARN
 aws elbv2 delete-load-balancer --load-balancer-arn $ALB_ARN
@@ -481,13 +503,21 @@ aws acm delete-certificate --certificate-arn $CERT_ARN
 aws rds delete-db-instance \
   --db-instance-identifier paperclip-db \
   --final-db-snapshot-identifier paperclip-db-final
+aws rds wait db-instance-deleted --db-instance-identifier paperclip-db
+aws rds delete-db-subnet-group --db-subnet-group-name paperclip-db-subnet
 
 # 4. EFS (mount targets must be deleted first)
 for MT in $(aws efs describe-mount-targets --file-system-id $EFS_ID --query 'MountTargets[*].MountTargetId' --output text); do
   aws efs delete-mount-target --mount-target-id $MT
 done
+# Mount-target deletion is async; poll until none remain before deleting
+# the filesystem, otherwise delete-file-system fails with FileSystemInUse.
 echo "Waiting for mount targets to delete..."
-sleep 30
+while aws efs describe-mount-targets \
+  --file-system-id $EFS_ID \
+  --query 'MountTargets[0].MountTargetId' --output text 2>/dev/null | grep -q 'fsmt-'; do
+  sleep 5
+done
 aws efs delete-file-system --file-system-id $EFS_ID
 
 # 5. Secrets
