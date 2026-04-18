@@ -166,12 +166,47 @@ export async function discoverOpenCodeModelsCached(input: {
   return models;
 }
 
+export type ResolveOpenCodeModelResult = {
+  models: AdapterModel[];
+  // Effective model to use — either the requested one (if available) or a
+  // fallback sibling chosen when the requested model is unavailable.
+  resolvedModel: string;
+  usedFallback: boolean;
+  fallbackReason?: string;
+};
+
+// Pick a sibling model in the same provider family when the requested model
+// is unavailable. Priority: same provider + same base name; same provider,
+// any model; any available model. Shortest id wins within each tier
+// (usually the canonical variant).
+function chooseOpenCodeFallback(requested: string, models: AdapterModel[]): AdapterModel | null {
+  if (models.length === 0) return null;
+  const slash = requested.indexOf("/");
+  const requestedProvider = slash >= 0 ? requested.slice(0, slash) : "";
+  const requestedModelId = slash >= 0 ? requested.slice(slash + 1) : requested;
+  const baseName = requestedModelId.toLowerCase().replace(/[.\-_][0-9].*$/, "");
+  const sameProvider = models.filter((m) => m.id.startsWith(requestedProvider + "/"));
+  if (sameProvider.length > 0 && baseName) {
+    const sameFamily = sameProvider.filter((m) => {
+      const idAfterSlash = m.id.slice(m.id.indexOf("/") + 1).toLowerCase();
+      return idAfterSlash.startsWith(baseName);
+    });
+    if (sameFamily.length > 0) {
+      return sameFamily.slice().sort((a, b) => a.id.length - b.id.length)[0];
+    }
+  }
+  if (sameProvider.length > 0) {
+    return sameProvider.slice().sort((a, b) => a.id.length - b.id.length)[0];
+  }
+  return models.slice().sort((a, b) => a.id.length - b.id.length)[0];
+}
+
 export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   model?: unknown;
   command?: unknown;
   cwd?: unknown;
   env?: unknown;
-}): Promise<AdapterModel[]> {
+}): Promise<ResolveOpenCodeModelResult> {
   const model = asString(input.model, "").trim();
   if (!model) {
     throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
@@ -187,14 +222,24 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     throw new Error("OpenCode returned no models. Run `opencode models` and verify provider auth.");
   }
 
-  if (!models.some((entry) => entry.id === model)) {
+  if (models.some((entry) => entry.id === model)) {
+    return { models, resolvedModel: model, usedFallback: false };
+  }
+
+  const fallback = chooseOpenCodeFallback(model, models);
+  if (!fallback) {
     const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
     throw new Error(
-      `Configured OpenCode model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
+      `Configured OpenCode model is unavailable and no fallback was found: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
     );
   }
 
-  return models;
+  return {
+    models,
+    resolvedModel: fallback.id,
+    usedFallback: true,
+    fallbackReason: `Configured model "${model}" unavailable; falling back to "${fallback.id}"`,
+  };
 }
 
 export async function listOpenCodeModels(): Promise<AdapterModel[]> {

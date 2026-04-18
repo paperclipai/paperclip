@@ -198,12 +198,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resolvedCommand,
     });
 
-    await ensureOpenCodeModelConfiguredAndAvailable({
+    const modelResolution = await ensureOpenCodeModelConfiguredAndAvailable({
       model,
       command,
       cwd,
       env: runtimeEnv,
     });
+    if (modelResolution.usedFallback && modelResolution.fallbackReason) {
+      await onLog("stdout", `[paperclip] ${modelResolution.fallbackReason}.\n`);
+    }
+    const effectiveModel = modelResolution.resolvedModel;
 
     const timeoutSec = asNumber(config.timeoutSec, 0);
     const graceSec = asNumber(config.graceSec, 20);
@@ -301,7 +305,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const buildArgs = (resumeSessionId: string | null) => {
       const args = ["run", "--format", "json"];
       if (resumeSessionId) args.push("--session", resumeSessionId);
-      if (model) args.push("--model", model);
+      if (effectiveModel) args.push("--model", effectiveModel);
       if (variant) args.push("--variant", variant);
       if (extraArgs.length > 0) args.push(...extraArgs);
       return args;
