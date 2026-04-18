@@ -1095,6 +1095,12 @@ export async function runChildProcess(
       delete rawMerged[key];
     }
 
+    // Disable io_uring in spawned processes to prevent D-state zombie processes
+    // on Linux kernel 6.8 where io_uring cleanup can hang indefinitely after SIGKILL.
+    // Without this, killed claude processes accumulate as unkillable D-state zombies,
+    // fill swap, and cause Paperclip to deadlock treating them as alive.
+    rawMerged["UV_USE_IO_URING"] = "0";
+
     const mergedEnv = ensurePathInEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
       .then((target) => {

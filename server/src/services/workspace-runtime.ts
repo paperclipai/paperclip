@@ -479,7 +479,8 @@ async function executeProcess(input: {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: input.env ?? process.env,
+      // Disable io_uring to prevent D-state zombie processes on Linux kernel 6.8.
+      env: { ...(input.env ?? process.env), UV_USE_IO_URING: "0" },
     });
     const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
@@ -2037,7 +2038,8 @@ async function startLocalRuntimeService(input: {
   const shell = resolveShell();
   const child = spawn(shell, ["-lc", command], {
     cwd: serviceCwd,
-    env,
+    // Disable io_uring to prevent D-state zombie processes on Linux kernel 6.8.
+    env: { ...env, UV_USE_IO_URING: "0" },
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });

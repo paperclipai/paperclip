@@ -614,6 +614,8 @@ export function createPluginWorkerHandle(
       PAPERCLIP_PLUGIN_ID: pluginId,
       NODE_ENV: process.env.NODE_ENV ?? "production",
       TZ: process.env.TZ ?? "UTC",
+      // Disable io_uring to prevent D-state zombie processes on Linux kernel 6.8.
+      UV_USE_IO_URING: "0",
     };
 
     const child = fork(options.entrypointPath, [], {
