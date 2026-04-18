@@ -1,7 +1,7 @@
 import { callChatCompletion, streamChatCompletion, ChatMessage } from "./llm-client.js";
 import { dispatchTool } from "./tool-executor.js";
 import { PAPERCLIP_TOOLS } from "./tools.js";
-import type { PaperclipContext } from "./paperclip-tools.js";
+import { executePaperclipTool, type PaperclipContext } from "./paperclip-tools.js";
 
 interface ExecutionContext {
   runId: string;
@@ -126,6 +126,61 @@ async function logEvent(
   await onLog("stdout", JSON.stringify(event) + "\n");
 }
 
+interface PostRunGuardParams {
+  checkedOutIssues: Set<string>;
+  updatedIssues: Set<string>;
+  finalSummary: string;
+  paperclipCtx: PaperclipContext;
+  onLog: ExecutionContext["onLog"];
+}
+
+/**
+ * Ensures every issue the LLM checked out received a terminal status update.
+ *
+ * Small local LLMs sometimes complete the work and add a comment but forget
+ * to call paperclip_update_issue with a terminal status, leaving the issue
+ * stuck in_progress. This guard catches that and makes the final call on the
+ * LLM's behalf with status="blocked" so a human is prompted to review.
+ */
+async function runPostRunGuard(params: PostRunGuardParams): Promise<void> {
+  const { checkedOutIssues, updatedIssues, finalSummary, paperclipCtx, onLog } = params;
+
+  const unclosed = Array.from(checkedOutIssues).filter((id) => !updatedIssues.has(id));
+  if (unclosed.length === 0) return;
+
+  for (const issueId of unclosed) {
+    const comment = [
+      "**Adapter post-run guard triggered:**",
+      "",
+      "The LLM finished its heartbeat without calling `paperclip_update_issue` with a terminal status.",
+      "This adapter has auto-closed the issue as `blocked` so it does not stay stuck in `in_progress`.",
+      "",
+      "Please review the preceding comments and tool activity to decide whether the work is actually complete.",
+      "",
+      finalSummary ? `**LLM final message:** ${finalSummary.slice(0, 500)}` : "",
+    ].filter(Boolean).join("\n");
+
+    await logEvent(onLog, {
+      kind: "system",
+      text: `Post-run guard: auto-closing ${issueId} as blocked (LLM did not update status).`,
+    });
+
+    const result = await executePaperclipTool(
+      "paperclip_update_issue",
+      { issueId, status: "blocked", comment },
+      paperclipCtx,
+    );
+
+    await logEvent(onLog, {
+      kind: "tool_result",
+      toolUseId: "post-run-guard",
+      toolName: "paperclip_update_issue",
+      content: result.content,
+      isError: result.isError,
+    });
+  }
+}
+
 export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
   const config = ctx.config;
   const url = asString(config.url, "http://localhost:1234");
@@ -162,6 +217,11 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let finalSummary = "";
+
+  // Post-run guard: track checked-out issues and their final status updates
+  const checkedOutIssues = new Set<string>();
+  const updatedIssues = new Set<string>();
+  const TERMINAL_STATUSES = new Set(["done", "blocked", "cancelled", "in_review"]);
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
     let response;
@@ -215,6 +275,15 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
         }
       }
 
+      // Post-run guard: ensure every checked-out issue got a terminal status update
+      await runPostRunGuard({
+        checkedOutIssues,
+        updatedIssues,
+        finalSummary,
+        paperclipCtx,
+        onLog: ctx.onLog,
+      });
+
       return {
         exitCode: 0,
         signal: null,
@@ -248,6 +317,20 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
         cwd,
         paperclipCtx,
       });
+
+      // Track checkout and terminal-status updates for the post-run guard
+      if (!result.isError) {
+        if (toolCall.function.name === "paperclip_checkout_issue") {
+          const issueId = typeof args.issueId === "string" ? args.issueId : "";
+          if (issueId) checkedOutIssues.add(issueId);
+        } else if (toolCall.function.name === "paperclip_update_issue") {
+          const issueId = typeof args.issueId === "string" ? args.issueId : "";
+          const status = typeof args.status === "string" ? args.status : "";
+          if (issueId && TERMINAL_STATUSES.has(status)) {
+            updatedIssues.add(issueId);
+          }
+        }
+      }
 
       await logEvent(ctx.onLog, {
         kind: "tool_result",

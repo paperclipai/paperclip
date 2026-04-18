@@ -134,3 +134,143 @@ describe("execute (agent loop)", () => {
     expect(result.errorCode).toBe("no_model");
   });
 });
+
+describe("execute (post-run guard)", () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+
+  it("auto-closes checked-out issue as blocked when LLM forgets status update", async () => {
+    const streamBody = 'data: {"choices":[{"delta":{"content":"Done"}}]}\n\ndata: [DONE]\n\n';
+    const mockStream = new ReadableStream({
+      start(c) { c.enqueue(new TextEncoder().encode(streamBody)); c.close(); },
+    });
+
+    const fetchMock = vi.fn()
+      // LLM turn 1: checkout issue
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_1",
+                type: "function",
+                function: { name: "paperclip_checkout_issue", arguments: '{"issueId":"issue-1"}' },
+              }],
+            },
+          }],
+        }),
+      })
+      // Tool execution: checkout succeeds
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      // LLM turn 2: just a comment, no status update
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_2",
+                type: "function",
+                function: { name: "paperclip_add_comment", arguments: '{"issueId":"issue-1","body":"did the work"}' },
+              }],
+            },
+          }],
+        }),
+      })
+      // Tool execution: comment succeeds
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      // LLM turn 3: final text answer (no tool calls)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { role: "assistant", content: "All done!" } }],
+        }),
+      })
+      // Streaming final answer
+      .mockResolvedValueOnce({ ok: true, body: mockStream })
+      // POST-RUN GUARD: auto-call paperclip_update_issue
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.exitCode).toBe(0);
+
+    // Verify the post-run guard made an auto-update call
+    const lastCall = fetchMock.mock.calls[fetchMock.mock.calls.length - 1];
+    expect(lastCall[0]).toContain("/api/issues/issue-1");
+    expect(lastCall[1].method).toBe("PATCH");
+    const body = JSON.parse(lastCall[1].body);
+    expect(body.status).toBe("blocked");
+    expect(body.comment).toContain("post-run guard");
+  });
+
+  it("does NOT trigger guard when LLM properly calls paperclip_update_issue", async () => {
+    const streamBody = 'data: {"choices":[{"delta":{"content":"Done"}}]}\n\ndata: [DONE]\n\n';
+    const mockStream = new ReadableStream({
+      start(c) { c.enqueue(new TextEncoder().encode(streamBody)); c.close(); },
+    });
+
+    const fetchMock = vi.fn()
+      // LLM turn 1: checkout
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_1",
+                type: "function",
+                function: { name: "paperclip_checkout_issue", arguments: '{"issueId":"issue-1"}' },
+              }],
+            },
+          }],
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      // LLM turn 2: update issue to done
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_2",
+                type: "function",
+                function: { name: "paperclip_update_issue", arguments: '{"issueId":"issue-1","status":"done","comment":"ok"}' },
+              }],
+            },
+          }],
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      // LLM turn 3: final text
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { role: "assistant", content: "Task done" } }],
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, body: mockStream });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.exitCode).toBe(0);
+
+    // Total fetch calls should be 6 (3 LLM turns + 2 tool calls + 1 stream), NOT 7 (no guard)
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+});
