@@ -135,7 +135,7 @@ export async function testEnvironment(
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
       const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
       const sandbox = asBoolean(config.sandbox, false);
-      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 10));
+      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 20));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -192,6 +192,7 @@ export async function testEnvironment(
           code: "gemini_hello_probe_timed_out",
           level: "warn",
           message: "Gemini hello probe timed out.",
+          ...(detail ? { detail } : {}),
           hint: "Retry the probe. If this persists, verify Gemini can run `Respond with hello.` from this directory manually.",
         });
       } else if ((probe.exitCode ?? 1) === 0) {
