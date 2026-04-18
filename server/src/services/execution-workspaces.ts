@@ -399,7 +399,10 @@ export function executionWorkspaceService(db: Db) {
     }
     if (filters?.issueId) conditions.push(eq(executionWorkspaces.sourceIssueId, filters.issueId));
     if (filters?.status) {
-      const statuses = filters.status.split(",").map((value) => value.trim()).filter(Boolean);
+      // Accept string, comma-separated string, or array (repeated query params).
+      const statuses = (Array.isArray(filters.status) ? filters.status : String(filters.status).split(","))
+        .map((value) => String(value).trim())
+        .filter(Boolean);
       if (statuses.length === 1) conditions.push(eq(executionWorkspaces.status, statuses[0]!));
       else if (statuses.length > 1) conditions.push(inArray(executionWorkspaces.status, statuses));
     }

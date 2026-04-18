@@ -986,8 +986,17 @@ export function issueService(db: Db) {
         )
       `;
       if (filters?.status) {
-        const statuses = filters.status.split(",").map((s) => s.trim());
-        conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
+        // Accept "todo", "todo,in_progress", or ["todo", "in_progress"]
+        // (Express parses ?status=a&status=b as an array).
+        const rawStatus = filters.status;
+        const statuses = (Array.isArray(rawStatus) ? rawStatus : String(rawStatus).split(","))
+          .map((s) => String(s).trim())
+          .filter(Boolean);
+        if (statuses.length === 1) {
+          conditions.push(eq(issues.status, statuses[0]));
+        } else if (statuses.length > 1) {
+          conditions.push(inArray(issues.status, statuses));
+        }
       }
       if (filters?.assigneeAgentId) {
         conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
@@ -1211,7 +1220,10 @@ export function issueService(db: Db) {
         unreadForUserCondition(companyId, userId),
       ];
       if (status) {
-        const statuses = status.split(",").map((s) => s.trim()).filter(Boolean);
+        // Accept string "a", "a,b", or array ["a","b"] (repeated query param).
+        const statuses = (Array.isArray(status) ? status : String(status).split(","))
+          .map((s) => String(s).trim())
+          .filter(Boolean);
         if (statuses.length === 1) {
           conditions.push(eq(issues.status, statuses[0]));
         } else if (statuses.length > 1) {
