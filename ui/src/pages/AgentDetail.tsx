@@ -21,6 +21,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { copyAgentId } from "../lib/agent-copy";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
@@ -622,6 +623,7 @@ export function AgentDetail() {
     runId?: string;
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { pushToast } = useToastActions();
   const { closePanel } = usePanel();
   const { openNewIssue } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -968,8 +970,8 @@ export function AgentDetail() {
             <PopoverContent className="w-44 p-1" align="end">
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                onClick={() => {
-                  navigator.clipboard.writeText(agent.id);
+                onClick={async () => {
+                  await copyAgentId(agent.id, pushToast);
                   setMoreOpen(false);
                 }}
               >

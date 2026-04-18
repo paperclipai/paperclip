@@ -3,11 +3,12 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import { createApp } from "../app.js";
+import { cleanupSpaFixture, createSpaFixture, type SpaFixture } from "../test-support/spa-fixture.js";
 
 const repoRoot = path.resolve(__dirname, "../../..");
 const uiDistDir = path.join(repoRoot, "ui", "dist");
-const uiIndexPath = path.join(uiDistDir, "index.html");
 const uiIndexHtml = "<!doctype html><html><body>paperclip-spa</body></html>";
+let spaFixture: SpaFixture;
 
 const storageService = {
   provider: "local" as const,
@@ -26,12 +27,11 @@ const storageService = {
 };
 
 beforeAll(() => {
-  fs.mkdirSync(uiDistDir, { recursive: true });
-  fs.writeFileSync(uiIndexPath, uiIndexHtml, "utf8");
+  spaFixture = createSpaFixture(uiDistDir, uiIndexHtml);
 });
 
 afterAll(() => {
-  fs.rmSync(uiDistDir, { recursive: true, force: true });
+  cleanupSpaFixture(spaFixture);
 });
 
 describe("SPA fallback", () => {
