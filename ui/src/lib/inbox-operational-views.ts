@@ -1,3 +1,4 @@
+import type { Issue } from "@paperclipai/shared";
 import type { IssueFilterState } from "./issue-filters";
 
 type AgentOption = {
@@ -40,6 +41,20 @@ export function getMissionControlOwnerAgents(agents: AgentOption[] | undefined):
   return MISSION_CONTROL_OWNER_NAMES.flatMap((name) => {
     const matched = byName.get(name.toLowerCase());
     return matched ? [matched] : [];
+  });
+}
+
+export function filterOperationalQueueIssues(
+  issues: Issue[],
+  ownerAgents: AgentOption[],
+): Issue[] {
+  const missionControlOwnerIds = new Set(ownerAgents.map((agent) => agent.id));
+  return issues.filter((issue) => {
+    if (issue.ownerAgentId && missionControlOwnerIds.has(issue.ownerAgentId)) return true;
+    if (issue.missionControl?.needsHumanAttention === true) return true;
+    if (issue.missionControl?.handoff != null) return true;
+    const workflowStateKind = issue.missionControl?.workflowState?.kind ?? null;
+    return workflowStateKind === "waiting_on_human" || workflowStateKind === "blocked_on_upstream";
   });
 }
 

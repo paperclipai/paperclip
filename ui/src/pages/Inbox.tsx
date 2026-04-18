@@ -145,6 +145,7 @@ import {
 } from "../lib/inbox";
 import {
   buildInboxOperationalViews,
+  filterOperationalQueueIssues,
   getActiveInboxOperationalViewKey,
 } from "../lib/inbox-operational-views";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
@@ -918,18 +919,29 @@ export function Inbox() {
     () => buildInboxOperationalViews(agents, issueFilters.hideRoutineExecutions),
     [agents, issueFilters.hideRoutineExecutions],
   );
+  const missionControlOwnerAgents = useMemo(
+    () => operationalViews.filter((view) => view.key.startsWith("owner:")).map((view) => ({
+      id: view.key.slice("owner:".length),
+      name: view.label,
+    })),
+    [operationalViews],
+  );
   const activeOperationalViewKey = useMemo(
     () => getActiveInboxOperationalViewKey(issueFilters, operationalViews),
     [issueFilters, operationalViews],
   );
   const visibleOperationalQueueIssues = useMemo(
-    () => applyIssueFilters(
-      [...(issues ?? [])].sort(sortIssuesByMostRecentActivity).slice(0, 100),
-      issueFilters,
-      currentUserId,
-      true,
-    ),
-    [currentUserId, issueFilters, issues],
+    () => {
+      const filtered = applyIssueFilters(
+        [...(issues ?? [])].sort(sortIssuesByMostRecentActivity).slice(0, 100),
+        issueFilters,
+        currentUserId,
+        true,
+      );
+      if (activeOperationalViewKey !== "operator_queue") return filtered;
+      return filterOperationalQueueIssues(filtered, missionControlOwnerAgents);
+    },
+    [activeOperationalViewKey, currentUserId, issueFilters, issues, missionControlOwnerAgents],
   );
   const issuesToRender = useMemo(
     () => {

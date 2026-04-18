@@ -17,7 +17,7 @@ This feature is only done when:
 - Branch: `feat/mission-control-customization-lane`
 - Implementation owner: `ork`
 - Product/orchestration owner: `main`
-- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, the first operator controls in `IssueProperties`, and the first operational inbox views are now in place; `Resume` now records the existing `resumed` workflow state instead of clearing context, `Resolve handoff` now clears active handoff state through the same issue update surface and keeps handoff/history wording legible, `Reassign owner` now promotes the active handoff target through the same owner/mission-control plumbing so ownership stays clean, `Escalate` now raises `needsHumanAttention` through the same minimal mission-control payload while preserving any existing workflow state, `Inbox` now exposes practical operational view chips for the broader operator queue, Main/Ork/Stitch/Personal OS owner slices when those agents exist, needs-human, blocked/waiting, and recent handoffs by reusing the existing issue filter/view plumbing, the latest handoff-summary lane now treats structured `issue.handoff_updated` activity as the durable handoff/history source instead of letting reviewer/approver churn masquerade as mission-control handoffs, and the latest activity-summary lane now ignores generic `issue.comment_added` churn so neither run-linked transcript comments nor plain manual operational comments overwrite fresher mission-control workflow-state updates. The remaining gap is broader history/use validation on top of the summary-noise cleanup
+- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, the first operator controls in `IssueProperties`, and the first operational inbox views are now in place; `Resume` now records the existing `resumed` workflow state instead of clearing context, `Resolve handoff` now clears active handoff state through the same issue update surface and keeps handoff/history wording legible, `Reassign owner` now promotes the active handoff target through the same owner/mission-control plumbing so ownership stays clean, `Escalate` now raises `needsHumanAttention` through the same minimal mission-control payload while preserving any existing workflow state, `Inbox` now exposes practical operational view chips for the broader operator queue, Main/Ork/Stitch/Personal OS owner slices when those agents exist, needs-human, blocked/waiting, and recent handoffs by reusing the existing issue filter/view plumbing, the operator queue now stays high-signal in mixed inbox batches by limiting that view to mission-control ownership/attention/handoff/workflow lanes instead of every open issue, the latest handoff-summary lane now treats structured `issue.handoff_updated` activity as the durable handoff/history source instead of letting reviewer/approver churn masquerade as mission-control handoffs, and the latest activity-summary lane now ignores generic `issue.comment_added` churn so neither run-linked transcript comments nor plain manual operational comments overwrite fresher mission-control workflow-state updates. The remaining gap is broader history/use validation on top of the summary-noise cleanup
 
 ## Checklist
 
@@ -64,6 +64,7 @@ This feature is only done when:
 - [x] View/filter for needs-human-attention
 - [x] View/filter for blocked/stalled work
 - [x] View/filter for recent handoffs
+- [x] Validate the operator queue against mixed Main/Ork/Stitch/Personal OS workflow fixtures so generic open-issue noise stays out
 
 ### 5. Task history / orchestration context
 - [x] Durable history for meaningful handoffs and state changes
@@ -99,8 +100,8 @@ This feature is only done when:
 - [ ] Decide whether to open PR / merge / continue iteration
 
 ## Current recommended next slice
-- Validate the new operational views against real Main/Ork/Stitch/Personal OS workflows and make sure the queue stays high-signal
-- After that, verify history remains compact/high-signal against real mission-control runs instead of only targeted fixtures
+- Verify history remains compact/high-signal against real mission-control runs instead of only targeted fixtures
+- After that, move into OpenClaw integration glue for how Main/Ork/Stitch/Personal OS publish structured task updates and handoffs
 
 ## Current blockers
 - No hard blocker for this slice
