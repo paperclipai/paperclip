@@ -20,6 +20,7 @@ import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import { copyRoleTemplateToWorkspace } from "./role-templates.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -403,6 +404,14 @@ export function agentService(db: Db) {
         .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions })
         .returning()
         .then((rows) => rows[0]);
+
+      // Copy role templates to agent workspace
+      try {
+        await copyRoleTemplateToWorkspace(created.id, role);
+      } catch (err) {
+        // Template copying is non-fatal, just log the error
+        console.warn(`Failed to copy role templates for agent ${created.id}:`, err);
+      }
 
       return normalizeAgentRow(created);
     },
