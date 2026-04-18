@@ -30,6 +30,7 @@ import type {
 import type { ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
+import type { PluginEventBus } from "./plugin-event-bus.js";
 import {
   createPluginToolRegistry,
   type PluginToolRegistry,
@@ -74,6 +75,8 @@ export interface PluginToolDispatcherOptions {
   lifecycleManager?: PluginLifecycleManager;
   /** Database connection for looking up plugin records. */
   db?: Db;
+  /** Event bus for emitting tool execution events to plugin subscribers. */
+  eventBus?: PluginEventBus;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,11 +225,11 @@ export interface PluginToolDispatcher {
 export function createPluginToolDispatcher(
   options: PluginToolDispatcherOptions = {},
 ): PluginToolDispatcher {
-  const { workerManager, lifecycleManager, db } = options;
+  const { workerManager, lifecycleManager, db, eventBus } = options;
   const log = logger.child({ service: "plugin-tool-dispatcher" });
 
   // Create the underlying tool registry, backed by the worker manager
-  const registry = createPluginToolRegistry(workerManager);
+  const registry = createPluginToolRegistry(workerManager, eventBus);
 
   // Track lifecycle event listeners so we can remove them on teardown
   let enabledListener: ((payload: { pluginId: string; pluginKey: string }) => void) | null = null;

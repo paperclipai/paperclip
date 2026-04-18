@@ -25,6 +25,8 @@ import type {
 } from "@paperclipai/shared";
 import type { ToolRunContext, ToolResult, ExecuteToolParams } from "@paperclipai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { PluginEventBus } from "./plugin-event-bus.js";
+import { randomUUID } from "node:crypto";
 import { logger } from "../middleware/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -226,6 +228,7 @@ export interface PluginToolRegistry {
  */
 export function createPluginToolRegistry(
   workerManager?: PluginWorkerManager,
+  eventBus?: PluginEventBus,
 ): PluginToolRegistry {
   const log = logger.child({ service: "plugin-tool-registry" });
 
@@ -422,7 +425,85 @@ export function createPluginToolRegistry(
         runContext,
       };
 
-      const result = await workerManager.call(dbId, "executeTool", rpcParams);
+      const callId = randomUUID();
+      const actorId = runContext.agentId ?? runContext.runId ?? "unknown";
+      const actorType = runContext.agentId ? "agent" : "system";
+
+      // Emit pre-execute event (fire-and-forget, never blocks execution)
+      if (eventBus) {
+        eventBus.emit({
+          eventId: randomUUID(),
+          eventType: "agent.tool.pre_execute",
+          occurredAt: new Date().toISOString(),
+          companyId: runContext.companyId,
+          actorId,
+          actorType,
+          payload: {
+            callId,
+            pluginId,
+            toolName,
+            namespacedName,
+            agentId: runContext.agentId ?? null,
+            runId: runContext.runId,
+            projectId: runContext.projectId,
+          },
+        }).catch((err) => log.warn({ err, toolName }, "failed to emit agent.tool.pre_execute"));
+      }
+
+      let result: ToolResult;
+      try {
+        result = await workerManager.call(dbId, "executeTool", rpcParams);
+      } catch (err) {
+        if (eventBus) {
+          eventBus.emit({
+            eventId: randomUUID(),
+            eventType: "agent.tool.post_execute",
+            occurredAt: new Date().toISOString(),
+            companyId: runContext.companyId,
+            actorId,
+            actorType,
+            payload: {
+              callId,
+              pluginId,
+              toolName,
+              namespacedName,
+              agentId: runContext.agentId ?? null,
+              runId: runContext.runId,
+              projectId: runContext.projectId,
+              success: false,
+              hasContent: false,
+              hasError: true,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          }).catch((e) => log.warn({ err: e, toolName }, "failed to emit agent.tool.post_execute"));
+        }
+        throw err;
+      }
+
+      // Emit post-execute event (fire-and-forget)
+      if (eventBus) {
+        eventBus.emit({
+          eventId: randomUUID(),
+          eventType: "agent.tool.post_execute",
+          occurredAt: new Date().toISOString(),
+          companyId: runContext.companyId,
+          actorId,
+          actorType,
+          payload: {
+            callId,
+            pluginId,
+            toolName,
+            namespacedName,
+            agentId: runContext.agentId ?? null,
+            runId: runContext.runId,
+            projectId: runContext.projectId,
+            success: true,
+            hasContent: !!result.content,
+            hasError: !!result.error,
+            error: result.error ?? null,
+          },
+        }).catch((e) => log.warn({ err: e, toolName }, "failed to emit agent.tool.post_execute"));
+      }
 
       log.debug(
         {
