@@ -79,6 +79,7 @@ export interface Agent {
   pausedAt: Date | null;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
+  lastActivityAt: Date | null;
   metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
