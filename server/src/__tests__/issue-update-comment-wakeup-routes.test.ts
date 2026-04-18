@@ -207,6 +207,105 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  it("normalizes board handoffs into a single agent assignee when moving backlog work into todo", async () => {
+    const existing = makeIssue({ status: "backlog" });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...existing,
+      ...patch,
+      status: "todo",
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+    }));
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "todo",
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      existing.id,
+      expect.objectContaining({
+        status: "todo",
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        source: "assignment",
+        reason: "issue_assigned",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          mutation: "update",
+        }),
+      }),
+    );
+  });
+
+  it("wakes the existing agent when backlog work becomes todo without a lane change", async () => {
+    const existing = makeIssue({
+      status: "backlog",
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+    });
+    const updated = { ...existing, status: "todo" };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_status_changed",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          mutation: "update",
+        }),
+      }),
+    );
+  });
+
+  it("keeps repeated todo resyncs idempotent once the agent lane is already set", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "todo",
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      existing.id,
+      expect.objectContaining({
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("wakes the assignee on comment-only issue updates", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,
