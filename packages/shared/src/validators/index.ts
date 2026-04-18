@@ -152,6 +152,7 @@ export {
   type CreateIssueLabel,
   type UpdateIssue,
   type IssueMissionControlMetadata,
+  type IssueMissionControlWorkflowState,
   type IssueExecutionWorkspaceSettings,
   type CheckoutIssue,
   type AddIssueComment,

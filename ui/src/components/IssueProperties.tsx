@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueMissionControlWorkflowStateKind } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
@@ -72,6 +72,29 @@ function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePo
   if (defaultMode === "isolated_workspace" || defaultMode === "operator_branch") return defaultMode;
   if (defaultMode === "adapter_default") return "agent_default";
   return "shared_workspace";
+}
+
+const MISSION_CONTROL_WORKFLOW_OPTIONS: Array<{
+  kind: IssueMissionControlWorkflowStateKind;
+  label: string;
+}> = [
+  { kind: "waiting_on_human", label: "Waiting on human" },
+  { kind: "blocked_on_upstream", label: "Blocked on upstream" },
+  { kind: "handed_off", label: "Handed off" },
+  { kind: "resumed", label: "Resumed" },
+];
+
+const RESUMED_FROM_OPTIONS: Array<{
+  kind: Exclude<IssueMissionControlWorkflowStateKind, "resumed">;
+  label: string;
+}> = [
+  { kind: "waiting_on_human", label: "Waiting on human" },
+  { kind: "blocked_on_upstream", label: "Blocked on upstream" },
+  { kind: "handed_off", label: "Handed off" },
+];
+
+function workflowStateLabel(kind: IssueMissionControlWorkflowStateKind | null | undefined) {
+  return MISSION_CONTROL_WORKFLOW_OPTIONS.find((option) => option.kind === kind)?.label ?? "No workflow state";
 }
 
 interface IssuePropertiesProps {
@@ -216,6 +239,8 @@ export function IssueProperties({
   const [ownerSearch, setOwnerSearch] = useState("");
   const [collaboratorsOpen, setCollaboratorsOpen] = useState(false);
   const [collaboratorsSearch, setCollaboratorsSearch] = useState("");
+  const [workflowStateOpen, setWorkflowStateOpen] = useState(false);
+  const [resumedFromOpen, setResumedFromOpen] = useState(false);
   const [handoffFromOpen, setHandoffFromOpen] = useState(false);
   const [handoffFromSearch, setHandoffFromSearch] = useState("");
   const [handoffToOpen, setHandoffToOpen] = useState(false);
@@ -338,6 +363,7 @@ export function IssueProperties({
     ? agents?.find((a) => a.id === issue.ownerAgentId)
     : null;
   const collaboratorAgentIds = missionControl?.collaboratorAgentIds ?? [];
+  const workflowState = missionControl?.workflowState ?? null;
   const handoff = missionControl?.handoff ?? null;
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
@@ -363,6 +389,34 @@ export function IssueProperties({
       missionControl: {
         ...(missionControl ?? {}),
         handoff: nextHandoff,
+      },
+    });
+  };
+  const setWorkflowState = (kind: IssueMissionControlWorkflowStateKind | null) => {
+    onUpdate({
+      missionControl: {
+        ...(missionControl ?? {}),
+        workflowState: kind
+          ? {
+              kind,
+              enteredAt: new Date(),
+              ...(kind === "resumed"
+                ? { resumedFrom: workflowState?.resumedFrom ?? "handed_off" }
+                : {}),
+            }
+          : null,
+      },
+    });
+  };
+  const setWorkflowResumedFrom = (kind: Exclude<IssueMissionControlWorkflowStateKind, "resumed">) => {
+    onUpdate({
+      missionControl: {
+        ...(missionControl ?? {}),
+        workflowState: {
+          kind: "resumed",
+          enteredAt: workflowState?.enteredAt ?? new Date(),
+          resumedFrom: kind,
+        },
       },
     });
   };
@@ -1253,6 +1307,74 @@ export function IssueProperties({
         >
           {blockedByContent}
         </PropertyPicker>
+
+        <PropertyPicker
+          inline={inline}
+          label="Workflow"
+          open={workflowStateOpen}
+          onOpenChange={setWorkflowStateOpen}
+          triggerContent={<span className={cn("text-sm", !workflowState && "text-muted-foreground")}>{workflowStateLabel(workflowState?.kind)}</span>}
+          popoverClassName="w-64"
+        >
+          <div className="space-y-1 p-1">
+            <button
+              className={cn(
+                "flex w-full items-center rounded px-2 py-1.5 text-sm hover:bg-accent",
+                !workflowState && "bg-accent",
+              )}
+              onClick={() => {
+                setWorkflowState(null);
+                setWorkflowStateOpen(false);
+              }}
+            >
+              No workflow state
+            </button>
+            {MISSION_CONTROL_WORKFLOW_OPTIONS.map((option) => (
+              <button
+                key={option.kind}
+                className={cn(
+                  "flex w-full items-center rounded px-2 py-1.5 text-sm hover:bg-accent",
+                  workflowState?.kind === option.kind && "bg-accent",
+                )}
+                onClick={() => {
+                  setWorkflowState(option.kind);
+                  setWorkflowStateOpen(false);
+                }}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </PropertyPicker>
+
+        {workflowState?.kind === "resumed" ? (
+          <PropertyPicker
+            inline={inline}
+            label="Resumed from"
+            open={resumedFromOpen}
+            onOpenChange={setResumedFromOpen}
+            triggerContent={<span className="text-sm">{workflowStateLabel(workflowState.resumedFrom ?? null)}</span>}
+            popoverClassName="w-64"
+          >
+            <div className="space-y-1 p-1">
+              {RESUMED_FROM_OPTIONS.map((option) => (
+                <button
+                  key={option.kind}
+                  className={cn(
+                    "flex w-full items-center rounded px-2 py-1.5 text-sm hover:bg-accent",
+                    workflowState.resumedFrom === option.kind && "bg-accent",
+                  )}
+                  onClick={() => {
+                    setWorkflowResumedFrom(option.kind);
+                    setResumedFromOpen(false);
+                  }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </PropertyPicker>
+        ) : null}
 
         <MissionControlTextField
           label="Source"

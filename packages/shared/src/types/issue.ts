@@ -1,4 +1,5 @@
 import type {
+  IssueMissionControlWorkflowStateKind,
   IssueExecutionDecisionOutcome,
   IssueExecutionPolicyMode,
   IssueExecutionStageType,
@@ -179,7 +180,14 @@ export interface IssueMissionControlMetadata {
   blocker?: string | null;
   collaboratorAgentIds?: string[];
   needsHumanAttention?: boolean;
+  workflowState?: IssueMissionControlWorkflowState | null;
   handoff?: IssueHandoff | null;
+}
+
+export interface IssueMissionControlWorkflowState {
+  kind: IssueMissionControlWorkflowStateKind;
+  enteredAt: Date;
+  resumedFrom?: Exclude<IssueMissionControlWorkflowStateKind, "resumed"> | null;
 }
 
 export interface IssueHandoffContext {

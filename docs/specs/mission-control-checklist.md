@@ -9,6 +9,7 @@ Lock the full Paperclip mission-control feature into an explicit tracked checkli
 This feature is only done when:
 - Paperclip can represent multi-agent ownership, collaboration, handoffs, waiting/blocking, and human-attention cleanly
 - Main/Ork/Stitch/Personal OS orchestration can map into Paperclip without relying on transcript archaeology
+- OpenClaw agents actually delegate by specialty instead of loosely overlapping, for example Personal OS routes product/build implementation work to Main/Ork/Stitch rather than trying to own it
 - Telegram-visible summaries can emerge from structured state instead of manual retelling
 - the implementation is verified well enough to start using on real tracked work
 
@@ -16,7 +17,7 @@ This feature is only done when:
 - Branch: `feat/mission-control-customization-lane`
 - Implementation owner: `ork`
 - Product/orchestration owner: `main`
-- Current state: foundational metadata, ownership, filters, visibility primitives, and structured handoffs are now in place; next slice is task/control-plane state modeling
+- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, and explicit workflow-state modeling are now in place; next slice is operator control actions on top of those states
 
 ## Checklist
 
@@ -39,12 +40,12 @@ This feature is only done when:
 - [x] Add tests/typechecks for handoff shape and usage
 
 ### 2. Task/control-plane state model
-- [ ] Decide and implement orchestration-specific states or equivalent conventions
-- [ ] Support waiting-on-human
-- [ ] Support blocked-on-upstream
-- [ ] Support handed-off / resumed flows
-- [ ] Make state transitions legible in UI/API
-- [ ] Add verification for state transitions
+- [x] Decide and implement orchestration-specific states or equivalent conventions
+- [x] Support waiting-on-human
+- [x] Support blocked-on-upstream
+- [x] Support handed-off / resumed flows
+- [x] Make state transitions legible in UI/API
+- [x] Add verification for state transitions
 
 ### 3. Operator control actions
 - [ ] Reassign owner cleanly
@@ -69,12 +70,17 @@ This feature is only done when:
 - [ ] Avoid transcript-noise creep in summaries
 - [ ] Verify history remains high-signal and compact
 
-### 6. OpenClaw integration glue
+### 6. OpenClaw integration glue and delegation rules
 - [ ] Define how Main creates/updates Paperclip tasks
 - [ ] Define how Ork/Stitch/Personal OS publish structured handoffs
 - [ ] Define identity mapping between OpenClaw agents and Paperclip ownership fields
 - [ ] Define when work stays in chat vs becomes a tracked Paperclip task
 - [ ] Define how task status sync should work
+- [ ] Define specialty-based routing rules across Main, Ork, Stitch, and Personal OS
+- [ ] Ensure Personal OS defers product/build implementation work to Main/Ork/Stitch instead of owning it directly
+- [ ] Ensure Main remains the coordination surface while Ork owns engineering execution and Stitch owns design/product-specialist work
+- [ ] Define delegation triggers and handoff rules so cross-agent routing happens predictably instead of ad hoc
+- [ ] Verify delegation behavior with at least one real cross-agent scenario
 
 ### 7. Telegram emergence and behavior
 - [ ] Map Paperclip structured state to Telegram summary output
@@ -92,12 +98,12 @@ This feature is only done when:
 - [ ] Decide whether to open PR / merge / continue iteration
 
 ## Current recommended next slice
-- Task/control-plane state model for waiting-on-human, blocked-on-upstream, handed-off, and resumed flows
-- Then operator actions that drive those states cleanly
+- Operator control actions that drive workflow states cleanly
+- Then ownership and operational views for blocked/stalled/recent-handoff work
 
 ## Current blockers
 - No hard blocker right now
-- Main remaining gap is workflow/state modeling rather than raw metadata plumbing
+- Main remaining gap is control actions and operational views on top of the workflow-state foundation
 
 ## Update rule for Ork
 When meaningful progress lands, Ork should update this checklist with:

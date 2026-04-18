@@ -164,6 +164,12 @@ const ISSUE_HANDOFF_ACTIONS = new Set([
   "issue.reviewers_updated",
   "issue.approvers_updated",
 ]);
+const ISSUE_MISSION_CONTROL_WORKFLOW_STATE_KINDS = new Set([
+  "waiting_on_human",
+  "blocked_on_upstream",
+  "handed_off",
+  "resumed",
+]);
 const ISSUE_NOISE_ACTIONS = new Set([
   "issue.read_marked",
   "issue.read_unmarked",
@@ -173,6 +179,47 @@ const ISSUE_NOISE_ACTIONS = new Set([
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
+}
+
+function formatMissionControlWorkflowStateLabel(kind: string | null | undefined): string {
+  if (!kind) return "workflow state";
+  switch (kind) {
+    case "waiting_on_human":
+      return "waiting on human";
+    case "blocked_on_upstream":
+      return "blocked on upstream";
+    case "handed_off":
+      return "handed off";
+    case "resumed":
+      return "resumed";
+    default:
+      return kind.replace(/_/g, " ");
+  }
+}
+
+function summarizeMissionControlWorkflowStateChange(
+  nextWorkflowState: Record<string, unknown> | null,
+  previousWorkflowState: Record<string, unknown> | null,
+): string | null {
+  const nextKind = typeof nextWorkflowState?.kind === "string" ? nextWorkflowState.kind : null;
+  const previousKind = typeof previousWorkflowState?.kind === "string" ? previousWorkflowState.kind : null;
+  const nextResumedFrom = typeof nextWorkflowState?.resumedFrom === "string" ? nextWorkflowState.resumedFrom : null;
+  const previousResumedFrom =
+    typeof previousWorkflowState?.resumedFrom === "string" ? previousWorkflowState.resumedFrom : null;
+
+  if (!nextKind && !previousKind) return null;
+  if (!nextKind && previousKind) return "Cleared workflow state";
+  if (
+    nextKind === previousKind &&
+    nextResumedFrom === previousResumedFrom
+  ) {
+    return "Updated workflow state";
+  }
+  if (nextKind === "resumed") {
+    const resumedFromLabel = formatMissionControlWorkflowStateLabel(nextResumedFrom);
+    return nextResumedFrom ? `Marked resumed from ${resumedFromLabel}` : "Marked resumed";
+  }
+  return `Marked ${formatMissionControlWorkflowStateLabel(nextKind)}`;
 }
 
 async function getProjectDefaultGoalId(
@@ -626,6 +673,22 @@ function normalizeMissionControlMetadata(
     : [];
 
   const handoffRaw = asRecord(raw.handoff);
+  const workflowStateRaw = asRecord(raw.workflowState);
+  const normalizedWorkflowState = workflowStateRaw
+    && typeof workflowStateRaw.kind === "string"
+    && ISSUE_MISSION_CONTROL_WORKFLOW_STATE_KINDS.has(workflowStateRaw.kind)
+    ? {
+        kind: workflowStateRaw.kind,
+        enteredAt: workflowStateRaw.enteredAt instanceof Date
+          ? workflowStateRaw.enteredAt
+          : typeof workflowStateRaw.enteredAt === "string" || typeof workflowStateRaw.enteredAt === "number"
+            ? new Date(workflowStateRaw.enteredAt)
+            : new Date(),
+        resumedFrom: workflowStateRaw.kind === "resumed" && typeof workflowStateRaw.resumedFrom === "string"
+          ? workflowStateRaw.resumedFrom
+          : null,
+      }
+    : null;
   const normalizedHandoff = handoffRaw
     ? {
         fromAgentId: typeof handoffRaw.fromAgentId === "string" ? handoffRaw.fromAgentId : null,
@@ -651,6 +714,7 @@ function normalizeMissionControlMetadata(
   return {
     ...raw,
     collaboratorAgentIds,
+    ...(workflowStateRaw !== null ? { workflowState: normalizedWorkflowState } : {}),
     ...(handoffRaw !== null ? { handoff: normalizedHandoff } : {}),
   };
 }
@@ -663,6 +727,12 @@ function summarizeIssueUpdate(details: Record<string, unknown> | null): string |
   const record = asRecord(details);
   if (!record) return null;
   const previous = asRecord(record._previous);
+  const workflowState = asRecord(asRecord(record.missionControl)?.workflowState);
+  const previousWorkflowState = asRecord(asRecord(previous?.missionControl)?.workflowState);
+  const workflowStateSummary = summarizeMissionControlWorkflowStateChange(workflowState, previousWorkflowState);
+  if (workflowStateSummary) {
+    return workflowStateSummary;
+  }
   const handoff = asRecord(asRecord(record.missionControl)?.handoff);
   const previousHandoff = asRecord(asRecord(previous?.missionControl)?.handoff);
   if (handoff || previousHandoff) {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  ISSUE_MISSION_CONTROL_WORKFLOW_STATE_KINDS,
   ISSUE_EXECUTION_DECISION_OUTCOMES,
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
@@ -113,12 +114,38 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
 });
 
+const issueMissionControlWorkflowStateSchema = z.object({
+  kind: z.enum(ISSUE_MISSION_CONTROL_WORKFLOW_STATE_KINDS),
+  enteredAt: z.coerce.date(),
+  resumedFrom: z.enum(["waiting_on_human", "blocked_on_upstream", "handed_off"]).nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (value.kind === "resumed") {
+    if (!value.resumedFrom) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Resumed workflow state requires resumedFrom",
+        path: ["resumedFrom"],
+      });
+    }
+    return;
+  }
+
+  if (value.resumedFrom) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Only resumed workflow state can set resumedFrom",
+      path: ["resumedFrom"],
+    });
+  }
+});
+
 export const issueMissionControlMetadataSchema = z.object({
   sourceOfTruthPath: z.string().trim().min(1).max(500).nullable().optional(),
   nextStep: z.string().trim().min(1).max(500).nullable().optional(),
   blocker: z.string().trim().min(1).max(1000).nullable().optional(),
   collaboratorAgentIds: z.array(z.string().uuid()).optional().default([]),
   needsHumanAttention: z.boolean().optional(),
+  workflowState: issueMissionControlWorkflowStateSchema.nullable().optional(),
   handoff: z.object({
     fromAgentId: z.string().uuid().nullable().optional(),
     toAgentId: z.string().uuid().nullable().optional(),
@@ -179,6 +206,7 @@ export const updateIssueSchema = createIssueSchema.partial().extend({
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
 export type IssueMissionControlMetadata = z.infer<typeof issueMissionControlMetadataSchema>;
+export type IssueMissionControlWorkflowState = z.infer<typeof issueMissionControlWorkflowStateSchema>;
 
 export const checkoutIssueSchema = z.object({
   agentId: z.string().uuid(),

@@ -531,6 +531,51 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("allows editing mission-control workflow state", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        missionControl: {
+          collaboratorAgentIds: [],
+          needsHumanAttention: false,
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const workflowTrigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("No workflow state"));
+    expect(workflowTrigger).not.toBeUndefined();
+
+    await act(async () => {
+      workflowTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const waitingOption = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Waiting on human"));
+    expect(waitingOption).not.toBeUndefined();
+
+    await act(async () => {
+      waitingOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      missionControl: expect.objectContaining({
+        collaboratorAgentIds: [],
+        needsHumanAttention: false,
+        workflowState: expect.objectContaining({
+          kind: "waiting_on_human",
+        }),
+      }),
+    });
+
+    act(() => root.unmount());
+  });
+
   it("allows setting an owner and collaborator agents", async () => {
     const onUpdate = vi.fn();
     mockAgentsApi.list.mockResolvedValue([

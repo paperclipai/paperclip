@@ -122,6 +122,15 @@ export const ISSUE_STATUSES = [
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 
+export const ISSUE_MISSION_CONTROL_WORKFLOW_STATE_KINDS = [
+  "waiting_on_human",
+  "blocked_on_upstream",
+  "handed_off",
+  "resumed",
+] as const;
+export type IssueMissionControlWorkflowStateKind =
+  (typeof ISSUE_MISSION_CONTROL_WORKFLOW_STATE_KINDS)[number];
+
 export const INBOX_MINE_ISSUE_STATUSES = [
   "backlog",
   "todo",
