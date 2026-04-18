@@ -3189,6 +3189,31 @@ export function heartbeatService(db: Db) {
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
 
+      // Enforce a minimum cooldown between consecutive runs to prevent
+      // rapid-fire cascades from issue_execution_promoted wakeups.
+      // See: https://github.com/paperclipai/paperclip/issues/1241
+      const MIN_RUN_COOLDOWN_SEC = 60;
+      const cooldownSec = policy.intervalSec > 0
+        ? Math.min(policy.intervalSec, MIN_RUN_COOLDOWN_SEC)
+        : MIN_RUN_COOLDOWN_SEC;
+
+      const [lastFinishedRow] = await db
+        .select({ finishedAt: heartbeatRuns.finishedAt })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.agentId, agentId),
+          sql`${heartbeatRuns.status} <> 'queued'`,
+        ))
+        .orderBy(desc(heartbeatRuns.finishedAt))
+        .limit(1);
+
+      if (lastFinishedRow?.finishedAt) {
+        const elapsedSec = (Date.now() - lastFinishedRow.finishedAt.getTime()) / 1000;
+        if (elapsedSec < cooldownSec) {
+          return []; // Leave queued runs for the next heartbeat tick
+        }
+      }
+
       const queuedRuns = await db
         .select()
         .from(heartbeatRuns)
@@ -5331,6 +5356,14 @@ export function heartbeatService(db: Db) {
       let enqueued = 0;
       let skipped = 0;
 
+      // Collect eligible agents first, then shuffle to prevent thundering herd
+      // when multiple agents' intervals expire on the same tick (e.g. after a
+      // gateway outage).  Combined with the per-agent cooldown in
+      // startNextQueuedRunForAgent this spreads concurrent wakeups across
+      // multiple ticks instead of firing all at once.
+      // See: https://github.com/paperclipai/paperclip/issues/1241
+      const eligible: Array<typeof allAgents[number]> = [];
+
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
         const policy = parseHeartbeatPolicy(agent);
@@ -5340,6 +5373,26 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        eligible.push(agent);
+      }
+
+      // Fisher-Yates shuffle so no deterministic ordering bias
+      for (let i = eligible.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [eligible[i], eligible[j]] = [eligible[j]!, eligible[i]!];
+      }
+
+      // Cap how many agents we enqueue per tick to avoid bursting the
+      // provider API when many intervals expire simultaneously.
+      const MAX_ENQUEUE_PER_TICK = 3;
+      let enqueuedThisTick = 0;
+
+      for (const agent of eligible) {
+        if (enqueuedThisTick >= MAX_ENQUEUE_PER_TICK) {
+          skipped += 1;
+          continue; // Remaining agents will fire on the next tick
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
@@ -5353,8 +5406,12 @@ export function heartbeatService(db: Db) {
             now: now.toISOString(),
           },
         });
-        if (run) enqueued += 1;
-        else skipped += 1;
+        if (run) {
+          enqueued += 1;
+          enqueuedThisTick += 1;
+        } else {
+          skipped += 1;
+        }
       }
 
       return { checked, enqueued, skipped };
