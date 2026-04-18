@@ -15,6 +15,8 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -86,6 +88,53 @@ function PropertyRow({ label, children }: { label: string; children: React.React
       <span className="text-xs text-muted-foreground shrink-0 w-20 mt-0.5">{label}</span>
       <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">{children}</div>
     </div>
+  );
+}
+
+function MissionControlTextField({
+  label,
+  value,
+  placeholder,
+  multiline = false,
+  onCommit,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  multiline?: boolean;
+  onCommit: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commit = useCallback(() => {
+    if (draft === value) return;
+    onCommit(draft.trim());
+  }, [draft, onCommit, value]);
+
+  return (
+    <PropertyRow label={label}>
+      {multiline ? (
+        <Textarea
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          placeholder={placeholder}
+          className="min-h-[72px] text-sm"
+        />
+      ) : (
+        <Input
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          placeholder={placeholder}
+          className="h-8 text-sm"
+        />
+      )}
+    </PropertyRow>
   );
 }
 
@@ -253,6 +302,7 @@ export function IssueProperties({
   const currentProject = issue.projectId
     ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
     : null;
+  const missionControl = issue.missionControl ?? null;
   const projectLink = (id: string | null) => {
     if (!id) return null;
     const project = projects?.find((p) => p.id === id) ?? null;
@@ -1023,6 +1073,59 @@ export function IssueProperties({
         >
           {blockedByContent}
         </PropertyPicker>
+
+        <MissionControlTextField
+          label="Source"
+          value={missionControl?.sourceOfTruthPath ?? ""}
+          placeholder="Source-of-truth path"
+          onCommit={(value) => onUpdate({
+            missionControl: {
+              ...(missionControl ?? {}),
+              sourceOfTruthPath: value || null,
+            },
+          })}
+        />
+
+        <MissionControlTextField
+          label="Next"
+          value={missionControl?.nextStep ?? ""}
+          placeholder="Next step"
+          onCommit={(value) => onUpdate({
+            missionControl: {
+              ...(missionControl ?? {}),
+              nextStep: value || null,
+            },
+          })}
+        />
+
+        <MissionControlTextField
+          label="Blocker"
+          value={missionControl?.blocker ?? ""}
+          placeholder="Current blocker or none"
+          multiline
+          onCommit={(value) => onUpdate({
+            missionControl: {
+              ...(missionControl ?? {}),
+              blocker: value || null,
+            },
+          })}
+        />
+
+        <PropertyRow label="Danny">
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={missionControl?.needsDannyAttention ?? false}
+              onChange={(event) => onUpdate({
+                missionControl: {
+                  ...(missionControl ?? {}),
+                  needsDannyAttention: event.target.checked,
+                },
+              })}
+            />
+            Needs attention
+          </label>
+        </PropertyRow>
 
         <PropertyRow label="Blocking">
           {blockingIssues.length > 0 ? (

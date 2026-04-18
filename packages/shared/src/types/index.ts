@@ -110,6 +110,7 @@ export type {
   IssueExecutionStageParticipant,
   IssueExecutionStagePrincipal,
   IssueExecutionDecision,
+  IssueMissionControlMetadata,
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,

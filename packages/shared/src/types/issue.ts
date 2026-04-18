@@ -173,6 +173,14 @@ export interface IssueExecutionDecision {
   updatedAt: Date;
 }
 
+export interface IssueMissionControlMetadata {
+  sourceOfTruthPath?: string | null;
+  nextStep?: string | null;
+  blocker?: string | null;
+  collaboratorAgentIds?: string[];
+  needsDannyAttention?: boolean;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -206,6 +214,7 @@ export interface Issue {
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  missionControl?: IssueMissionControlMetadata | null;
   startedAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;

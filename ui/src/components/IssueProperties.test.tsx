@@ -131,6 +131,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     executionWorkspaceId: null,
     executionWorkspacePreference: null,
     executionWorkspaceSettings: null,
+    missionControl: null,
     startedAt: null,
     completedAt: null,
     cancelledAt: null,
@@ -456,6 +457,66 @@ describe("IssueProperties", () => {
 
     expect(container.textContent).not.toContain("Run review now");
     expect(container.textContent).not.toContain("Run approval now");
+
+    act(() => root.unmount());
+  });
+
+  it("edits mission control metadata fields", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        missionControl: {
+          sourceOfTruthPath: "/tmp/spec.md",
+          nextStep: "Ship the dashboard",
+          blocker: null,
+          collaboratorAgentIds: [],
+          needsDannyAttention: false,
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const inputs = container.querySelectorAll("input");
+    const sourceInput = Array.from(inputs).find((input) => input.getAttribute("placeholder") === "Source-of-truth path");
+    expect(sourceInput).not.toBeUndefined();
+
+    await act(async () => {
+      sourceInput!.value = "/workspace/docs/spec.md";
+      sourceInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      sourceInput!.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      missionControl: {
+        sourceOfTruthPath: "/workspace/docs/spec.md",
+        nextStep: "Ship the dashboard",
+        blocker: null,
+        collaboratorAgentIds: [],
+        needsDannyAttention: false,
+      },
+    });
+
+    onUpdate.mockClear();
+    const checkbox = Array.from(inputs).find((input) => input.getAttribute("type") === "checkbox");
+    expect(checkbox).not.toBeUndefined();
+
+    await act(async () => {
+      checkbox!.checked = true;
+      checkbox!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      missionControl: {
+        sourceOfTruthPath: "/tmp/spec.md",
+        nextStep: "Ship the dashboard",
+        blocker: null,
+        collaboratorAgentIds: [],
+        needsDannyAttention: true,
+      },
+    });
 
     act(() => root.unmount());
   });

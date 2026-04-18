@@ -113,6 +113,14 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
 });
 
+export const issueMissionControlMetadataSchema = z.object({
+  sourceOfTruthPath: z.string().trim().min(1).max(500).nullable().optional(),
+  nextStep: z.string().trim().min(1).max(500).nullable().optional(),
+  blocker: z.string().trim().min(1).max(1000).nullable().optional(),
+  collaboratorAgentIds: z.array(z.string().uuid()).optional().default([]),
+  needsDannyAttention: z.boolean().optional(),
+});
+
 export const createIssueSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
@@ -133,6 +141,7 @@ export const createIssueSchema = z.object({
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  missionControl: issueMissionControlMetadataSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
 
@@ -155,6 +164,7 @@ export const updateIssueSchema = createIssueSchema.partial().extend({
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
+export type IssueMissionControlMetadata = z.infer<typeof issueMissionControlMetadataSchema>;
 
 export const checkoutIssueSchema = z.object({
   agentId: z.string().uuid(),
