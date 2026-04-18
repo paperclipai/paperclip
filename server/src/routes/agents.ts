@@ -20,6 +20,7 @@ import {
   updateAgentInstructionsBundleSchema,
   updateAgentPermissionsSchema,
   updateAgentInstructionsPathSchema,
+  updateHirePolicySchema,
   wakeAgentSchema,
   updateAgentSchema,
 } from "@paperclipai/shared";
@@ -31,6 +32,7 @@ import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
   agentService,
+  agentHirePolicyService,
   agentInstructionsService,
   accessService,
   approvalService,
@@ -116,6 +118,7 @@ export function agentRoutes(db: Db) {
 
   const router = Router();
   const svc = agentService(db);
+  const hirePolicy = agentHirePolicyService(db);
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -1364,7 +1367,14 @@ export function agentRoutes(db: Db) {
 
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    await assertCanCreateAgentsForCompany(req, companyId);
+    const actorAgent = await assertCanCreateAgentsForCompany(req, companyId);
+    if (actorAgent) {
+      await hirePolicy.enforce(actorAgent.id, companyId, {
+        adapterType: req.body.adapterType,
+        role: req.body.role ?? "general",
+        reportsTo: req.body.reportsTo ?? null,
+      });
+    }
     const sourceIssueIds = parseSourceIssueIds(req.body);
     const {
       desiredSkills: requestedDesiredSkills,
@@ -1758,6 +1768,99 @@ export function agentRoutes(db: Db) {
       path: pathValue,
     });
   });
+
+  async function assertCanManageHirePolicy(
+    req: Request,
+    targetAgent: { id: string; companyId: string },
+    { allowSelfRead }: { allowSelfRead: boolean },
+  ) {
+    assertCompanyAccess(req, targetAgent.companyId);
+    if (req.actor.type === "board") {
+      await assertBoardCanManageAgentsForCompany(req, targetAgent.companyId);
+      return;
+    }
+    if (!req.actor.agentId) throw forbidden("Agent authentication required");
+    const actorAgent = await svc.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== targetAgent.companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+    if (allowSelfRead && actorAgent.id === targetAgent.id) return;
+    if (actorAgent.role === "ceo") return;
+    const chain = await svc.getChainOfCommand(targetAgent.id);
+    if (chain.some((node) => node.id === actorAgent.id)) return;
+    throw forbidden("Only CEO, ancestor-manager, or board can manage hire policy");
+  }
+
+  function serializeHirePolicy(row: {
+    agentId: string;
+    companyId: string;
+    allowedCombinations: unknown;
+    maxHiresPerMinute: number | null;
+    maxHiresPerHour: number | null;
+    notes: string | null;
+    updatedAt: Date;
+  } | null) {
+    if (!row) return null;
+    return {
+      agentId: row.agentId,
+      companyId: row.companyId,
+      allowedCombinations: row.allowedCombinations ?? [],
+      maxHiresPerMinute: row.maxHiresPerMinute,
+      maxHiresPerHour: row.maxHiresPerHour,
+      notes: row.notes,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  router.get("/agents/:id/hire-policy", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanManageHirePolicy(req, existing, { allowSelfRead: true });
+    const policy = await hirePolicy.getByAgentId(id);
+    res.json({ agentId: id, policy: serializeHirePolicy(policy) });
+  });
+
+  router.put(
+    "/agents/:id/hire-policy",
+    validate(updateHirePolicySchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      await assertCanManageHirePolicy(req, existing, { allowSelfRead: false });
+      const actor = getActorInfo(req);
+      const updatedByUserId = actor.actorType === "user" ? actor.actorId : null;
+      const saved = await hirePolicy.upsert(
+        existing.companyId,
+        id,
+        req.body,
+        updatedByUserId,
+      );
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agent.hire_policy_updated",
+        entityType: "agent",
+        entityId: id,
+        details: {
+          allowedCombinations: saved.allowedCombinations,
+          maxHiresPerMinute: saved.maxHiresPerMinute,
+          maxHiresPerHour: saved.maxHiresPerHour,
+        },
+      });
+      res.json({ agentId: id, policy: serializeHirePolicy(saved) });
+    },
+  );
 
   router.get("/agents/:id/instructions-bundle", async (req, res) => {
     const id = req.params.id as string;

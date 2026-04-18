@@ -104,6 +104,8 @@ export {
   testAdapterEnvironmentSchema,
   agentPermissionsSchema,
   updateAgentPermissionsSchema,
+  hireCombinationSchema,
+  updateHirePolicySchema,
   type CreateAgent,
   type CreateAgentHire,
   type UpdateAgent,
@@ -116,6 +118,8 @@ export {
   type ResetAgentSession,
   type TestAdapterEnvironment,
   type UpdateAgentPermissions,
+  type HireCombinationInput,
+  type UpdateHirePolicy,
 } from "./agent.js";
 
 export {

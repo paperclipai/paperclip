@@ -133,3 +133,32 @@ export const updateAgentPermissionsSchema = z.object({
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
+
+const hireCombinationValueSchema = z.union([
+  z.literal("*"),
+  z.string().trim().min(1).max(128),
+]);
+
+const hireCombinationParentSchema = z.union([
+  z.literal("*"),
+  z.literal("self"),
+  z.null(),
+  z.string().uuid(),
+]);
+
+export const hireCombinationSchema = z.object({
+  adapterType: hireCombinationValueSchema,
+  role: hireCombinationValueSchema,
+  parent: hireCombinationParentSchema.default(null),
+});
+
+export type HireCombinationInput = z.infer<typeof hireCombinationSchema>;
+
+export const updateHirePolicySchema = z.object({
+  allowedCombinations: z.array(hireCombinationSchema).max(64),
+  maxHiresPerMinute: z.number().int().positive().max(10_000).nullable().optional(),
+  maxHiresPerHour: z.number().int().positive().max(100_000).nullable().optional(),
+  notes: z.string().trim().max(2048).nullable().optional(),
+});
+
+export type UpdateHirePolicy = z.infer<typeof updateHirePolicySchema>;

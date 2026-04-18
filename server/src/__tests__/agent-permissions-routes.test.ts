@@ -39,6 +39,13 @@ const mockAgentService = vi.hoisted(() => ({
   resolveByReference: vi.fn(),
 }));
 
+const mockAgentHirePolicyService = vi.hoisted(() => ({
+  getByAgentId: vi.fn().mockResolvedValue(null),
+  upsert: vi.fn(),
+  enforce: vi.fn().mockResolvedValue(undefined),
+  recordHireEvent: vi.fn().mockResolvedValue(undefined),
+}));
+
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   hasPermission: vi.fn(),
@@ -102,6 +109,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
+    agentHirePolicyService: () => mockAgentHirePolicyService,
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,

@@ -21,6 +21,12 @@ const mockIssueService = vi.hoisted(() => ({
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
+    agentHirePolicyService: () => ({
+      getByAgentId: vi.fn().mockResolvedValue(null),
+      upsert: vi.fn(),
+      enforce: vi.fn().mockResolvedValue(undefined),
+      recordHireEvent: vi.fn().mockResolvedValue(undefined),
+    }),
     agentInstructionsService: () => ({}),
     accessService: () => ({}),
     approvalService: () => ({}),

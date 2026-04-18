@@ -1,11 +1,18 @@
 export class HttpError extends Error {
   status: number;
   details?: unknown;
+  headers?: Record<string, string>;
 
-  constructor(status: number, message: string, details?: unknown) {
+  constructor(
+    status: number,
+    message: string,
+    details?: unknown,
+    headers?: Record<string, string>,
+  ) {
     super(message);
     this.status = status;
     this.details = details;
+    this.headers = headers;
   }
 }
 
@@ -31,4 +38,16 @@ export function conflict(message: string, details?: unknown) {
 
 export function unprocessable(message: string, details?: unknown) {
   return new HttpError(422, message, details);
+}
+
+export function tooManyRequests(
+  message: string,
+  retryAfterSeconds?: number,
+  details?: unknown,
+) {
+  const headers =
+    typeof retryAfterSeconds === "number" && retryAfterSeconds > 0
+      ? { "Retry-After": String(Math.ceil(retryAfterSeconds)) }
+      : undefined;
+  return new HttpError(429, message, details, headers);
 }
