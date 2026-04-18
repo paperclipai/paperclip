@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -35,6 +36,35 @@ import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
+ * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
+ * them as proper registered skills.
+ */
+async function buildSkillsDir(config: Record<string, unknown>): Promise<string> {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
+  const target = path.join(tmp, ".claude", "skills");
+  await fs.mkdir(target, { recursive: true });
+  const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredNames = new Set(
+    resolveClaudeDesiredSkillNames(
+      config,
+      availableEntries,
+    ),
+  );
+  for (const entry of availableEntries) {
+    if (!desiredNames.has(entry.key)) continue;
+    // On Windows, regular symlinks require elevated privileges (EPERM).
+    // Use junctions instead — they work for directories without admin rights.
+    await fs.symlink(
+      entry.source,
+      path.join(target, entry.runtimeName),
+      os.platform() === "win32" ? "junction" : undefined,
+    );
+  }
+  return tmp;
+}
 
 interface ClaudeExecutionInput {
   runId: string;
