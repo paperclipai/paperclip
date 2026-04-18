@@ -7,6 +7,7 @@ const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
+type SharedFileSeedResult = "unchanged" | "symlinked" | "copied" | "refreshed";
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -42,26 +43,51 @@ async function ensureParentDir(target: string): Promise<void> {
   await fs.mkdir(path.dirname(target), { recursive: true });
 }
 
-async function ensureSymlink(target: string, source: string): Promise<void> {
+function shouldCopyInsteadOfSymlink(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? (error as { code: unknown }).code
+    : null;
+  return code === "EPERM" || code === "ENOSYS" || code === "EACCES";
+}
+
+async function copyFileReplacingTarget(target: string, source: string): Promise<void> {
+  await ensureParentDir(target);
+  await fs.copyFile(source, target);
+}
+
+async function filesMatch(first: string, second: string): Promise<boolean> {
+  const [firstContents, secondContents] = await Promise.all([
+    fs.readFile(first, "utf8"),
+    fs.readFile(second, "utf8"),
+  ]);
+  return firstContents === secondContents;
+}
+
+async function ensureSymlink(target: string, source: string): Promise<SharedFileSeedResult> {
   const existing = await fs.lstat(target).catch(() => null);
-  if (!existing) {
-    await ensureParentDir(target);
+  if (existing?.isSymbolicLink()) {
+    const linkedPath = await fs.readlink(target).catch(() => null);
+    if (linkedPath) {
+      const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
+      if (resolvedLinkedPath === source) return "unchanged";
+    }
+
+    await fs.unlink(target);
+  } else if (existing) {
+    if (await filesMatch(target, source).catch(() => false)) return "unchanged";
+    await copyFileReplacingTarget(target, source);
+    return "refreshed";
+  }
+
+  await ensureParentDir(target);
+  try {
     await fs.symlink(source, target);
-    return;
+    return "symlinked";
+  } catch (error) {
+    if (!shouldCopyInsteadOfSymlink(error)) throw error;
+    await copyFileReplacingTarget(target, source);
+    return "copied";
   }
-
-  if (!existing.isSymbolicLink()) {
-    return;
-  }
-
-  const linkedPath = await fs.readlink(target).catch(() => null);
-  if (!linkedPath) return;
-
-  const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-  if (resolvedLinkedPath === source) return;
-
-  await fs.unlink(target);
-  await fs.symlink(source, target);
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
@@ -86,7 +112,18 @@ export async function prepareManagedCodexHome(
   for (const name of SYMLINKED_SHARED_FILES) {
     const source = path.join(sourceHome, name);
     if (!(await pathExists(source))) continue;
-    await ensureSymlink(path.join(targetHome, name), source);
+    const result = await ensureSymlink(path.join(targetHome, name), source);
+    if (result === "copied") {
+      await onLog(
+        "stdout",
+        `[paperclip] Seeded Codex shared file "${name}" by copy because symlink creation was not permitted.\n`,
+      );
+    } else if (result === "refreshed") {
+      await onLog(
+        "stdout",
+        `[paperclip] Refreshed copied Codex shared file "${name}" from the shared Codex home.\n`,
+      );
+    }
   }
 
   for (const name of COPIED_SHARED_FILES) {
