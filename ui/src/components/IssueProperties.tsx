@@ -350,6 +350,31 @@ export function IssueProperties({
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
 
+  const isPendingForCurrentUser = (() => {
+    const state = issue.executionState;
+    if (!state || state.status !== "pending") return false;
+    const p = state.currentParticipant;
+    if (!p || p.type !== "user") return false;
+    return !!currentUserId && p.userId === currentUserId;
+  })();
+
+  const handleStageDecision = (outcome: "approve" | "reject") => {
+    const promptLabel = outcome === "approve"
+      ? "Approve this stage — add a note (required):"
+      : "Request changes — add a note (required):";
+    const note = window.prompt(promptLabel, "");
+    if (note === null) return;
+    const trimmed = note.trim();
+    if (!trimmed) {
+      window.alert("A note is required to advance this stage.");
+      return;
+    }
+    onUpdate({
+      status: outcome === "approve" ? "done" : "in_progress",
+      comment: trimmed,
+    });
+  };
+
   const labelsTrigger = (issue.labels ?? []).length > 0 ? (
     <div className="flex items-center gap-1 flex-wrap">
       {(issue.labels ?? []).slice(0, 3).map((label) => (
@@ -1107,6 +1132,27 @@ export function IssueProperties({
         {currentExecutionLabel && (
           <PropertyRow label="Execution">
             <span className="text-sm">{currentExecutionLabel}</span>
+          </PropertyRow>
+        )}
+
+        {isPendingForCurrentUser && (
+          <PropertyRow label="">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="inline-flex items-center rounded-full border border-border bg-accent/30 px-2 py-0.5 text-xs text-foreground transition-colors hover:bg-accent/60"
+                onClick={() => handleStageDecision("approve")}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                onClick={() => handleStageDecision("reject")}
+              >
+                Request changes
+              </button>
+            </div>
           </PropertyRow>
         )}
 
