@@ -2320,7 +2320,11 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+    const isPmCommentAuthority = req.actor.type === "agent"
+      && req.actor.agentId === issue.assigneeAgentId
+      && req.body.reopen !== true
+      && req.body.interrupt !== true;
+    if (!isPmCommentAuthority && !(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
