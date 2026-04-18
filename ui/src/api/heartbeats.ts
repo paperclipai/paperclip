@@ -29,6 +29,35 @@ export interface LiveRunForIssue {
   issueId?: string | null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isLiveRunRecord(value: unknown): value is LiveRunForIssue {
+  if (!isRecord(value)) return false;
+  return isNonEmptyString(value.id)
+    && isNonEmptyString(value.status)
+    && isNonEmptyString(value.invocationSource)
+    && isNonEmptyString(value.agentId)
+    && isNonEmptyString(value.agentName)
+    && isNonEmptyString(value.adapterType)
+    && isNonEmptyString(value.createdAt);
+}
+
+function sanitizeLiveRuns(value: unknown): LiveRunForIssue[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isLiveRunRecord);
+}
+
+function sanitizeActiveRun(value: unknown): ActiveRunForIssue | null {
+  if (value === null) return null;
+  return isLiveRunRecord(value) ? value : null;
+}
+
 export const heartbeatsApi = {
   list: (companyId: string, agentId?: string, limit?: number) => {
     const searchParams = new URLSearchParams();
@@ -54,11 +83,11 @@ export const heartbeatsApi = {
     ),
   cancel: (runId: string) => api.post<void>(`/heartbeat-runs/${runId}/cancel`, {}),
   liveRunsForIssue: (issueId: string) =>
-    api.get<LiveRunForIssue[]>(`/issues/${issueId}/live-runs`),
+    api.get<unknown>(`/issues/${issueId}/live-runs`).then(sanitizeLiveRuns),
   activeRunForIssue: (issueId: string) =>
-    api.get<ActiveRunForIssue | null>(`/issues/${issueId}/active-run`),
+    api.get<unknown>(`/issues/${issueId}/active-run`).then(sanitizeActiveRun),
   liveRunsForCompany: (companyId: string, minCount?: number) =>
-    api.get<LiveRunForIssue[]>(`/companies/${companyId}/live-runs${minCount ? `?minCount=${minCount}` : ""}`),
+    api.get<unknown>(`/companies/${companyId}/live-runs${minCount ? `?minCount=${minCount}` : ""}`).then(sanitizeLiveRuns),
   listInstanceSchedulerAgents: () =>
     api.get<InstanceSchedulerHeartbeatAgent[]>("/instance/scheduler-heartbeats"),
 };
