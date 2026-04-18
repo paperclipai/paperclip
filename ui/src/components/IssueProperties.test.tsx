@@ -674,6 +674,60 @@ describe("IssueProperties", () => {
     act(() => resumedRoot.unmount());
   });
 
+  it("offers a resolve handoff control that clears handoff state cleanly", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "todo",
+        missionControl: {
+          collaboratorAgentIds: [],
+          needsHumanAttention: true,
+          workflowState: {
+            kind: "handed_off",
+            enteredAt: new Date("2026-04-06T12:00:00.000Z"),
+            resumedFrom: null,
+          },
+          handoff: {
+            fromAgentId: "11111111-1111-4111-8111-111111111111",
+            toAgentId: "22222222-2222-4222-8222-222222222222",
+            reason: "Need Ork to finish the implementation",
+            requestedNextStep: "Finish the patch",
+            unblockCondition: "Patch merged",
+            timestamp: new Date("2026-04-06T12:00:00.000Z"),
+            context: {
+              issueId: "issue-1",
+              identifier: "PAP-1",
+              title: "Parent issue",
+            },
+          },
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const resolveHandoffButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Resolve handoff"));
+    expect(resolveHandoffButton).not.toBeUndefined();
+
+    await act(async () => {
+      resolveHandoffButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      missionControl: {
+        collaboratorAgentIds: [],
+        needsHumanAttention: true,
+        workflowState: null,
+        handoff: null,
+      },
+    });
+
+    act(() => root.unmount());
+  });
+
   it("allows setting an owner and collaborator agents", async () => {
     const onUpdate = vi.fn();
     mockAgentsApi.list.mockResolvedValue([

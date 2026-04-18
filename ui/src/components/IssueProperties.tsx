@@ -100,6 +100,10 @@ function workflowStateLabel(kind: IssueMissionControlWorkflowStateKind | null | 
 const OPERATOR_CONTROL_BUTTON_CLASS =
   "inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground";
 
+function hasStructuredHandoff(handoff: Issue["missionControl"] extends { handoff?: infer THandoff } ? THandoff : unknown) {
+  return Boolean(handoff);
+}
+
 interface IssuePropertiesProps {
   issue: Issue;
   childIssues?: Issue[];
@@ -423,7 +427,7 @@ export function IssueProperties({
       },
     });
   };
-  const applyOperatorControl = (action: "mark_waiting" | "mark_blocked_on_upstream" | "resume") => {
+  const applyOperatorControl = (action: "mark_waiting" | "mark_blocked_on_upstream" | "resume" | "resolve_handoff") => {
     if (action === "mark_waiting") {
       onUpdate({
         missionControl: {
@@ -447,6 +451,17 @@ export function IssueProperties({
             kind: "blocked_on_upstream",
             enteredAt: new Date(),
           },
+        },
+      });
+      return;
+    }
+
+    if (action === "resolve_handoff") {
+      onUpdate({
+        missionControl: {
+          ...(missionControl ?? {}),
+          handoff: null,
+          workflowState: workflowState?.kind === "handed_off" ? null : workflowState,
         },
       });
       return;
@@ -1416,6 +1431,15 @@ export function IssueProperties({
                 onClick={() => applyOperatorControl("resume")}
               >
                 Resume
+              </button>
+            ) : null}
+            {hasStructuredHandoff(handoff) || workflowState?.kind === "handed_off" ? (
+              <button
+                type="button"
+                className={OPERATOR_CONTROL_BUTTON_CLASS}
+                onClick={() => applyOperatorControl("resolve_handoff")}
+              >
+                Resolve handoff
               </button>
             ) : null}
           </div>

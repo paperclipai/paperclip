@@ -141,6 +141,19 @@ function formatWorkflowStateChange(details: ActivityDetails): string | null {
   return `marked the issue ${workflowStateLabel(nextKind)}`;
 }
 
+function formatHandoffChange(details: ActivityDetails): string | null {
+  if (!details) return null;
+  const previous = asRecord(details._previous) ?? {};
+  const nextHandoff = asRecord(asRecord(details.missionControl)?.handoff);
+  const previousHandoff = asRecord(asRecord(previous.missionControl)?.handoff);
+
+  if (!nextHandoff && !previousHandoff) return null;
+  if (nextHandoff && !previousHandoff) return "created handoff";
+  if (!nextHandoff && previousHandoff) return "cleared handoff";
+  if ((nextHandoff?.toAgentId ?? null) !== (previousHandoff?.toAgentId ?? null)) return "updated handoff target";
+  return "updated handoff";
+}
+
 function isActivityParticipant(value: unknown): value is ActivityParticipant {
   const record = asRecord(value);
   if (!record) return false;
@@ -341,6 +354,11 @@ export function formatIssueActivityAction(
     forIssueDetail: true,
   });
   if (structuredChange) return structuredChange;
+
+  if (action === "issue.handoff_updated") {
+    const handoffChange = formatHandoffChange(details);
+    if (handoffChange) return handoffChange;
+  }
 
   if (
     (action === "issue.document_created" || action === "issue.document_updated" || action === "issue.document_deleted") &&

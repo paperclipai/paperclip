@@ -95,4 +95,23 @@ describe("activity formatting", () => {
       "marked the issue resumed from blocked on upstream",
     );
   });
+
+  it("formats handoff activity using readable handoff summaries", () => {
+    const details = {
+      missionControl: {
+        handoff: null,
+      },
+      _previous: {
+        missionControl: {
+          handoff: {
+            fromAgentId: "agent-reviewer",
+            toAgentId: "agent-approver",
+            reason: "Need a second pass",
+          },
+        },
+      },
+    };
+
+    expect(formatIssueActivityAction("issue.handoff_updated", details)).toBe("cleared handoff");
+  });
 });
