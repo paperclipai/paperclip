@@ -4487,15 +4487,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     // Remap secret_ref bindings in imported agent/project records to target company secret IDs
     for (const envInput of sourceManifest.envInputs ?? []) {
-      if (envInput.portability === "system_dependent") {
-        const scope = envInput.agentSlug
-          ? ` for agent ${envInput.agentSlug}`
-          : envInput.projectSlug
-            ? ` for project ${envInput.projectSlug}`
-            : "";
-        warnings.push(`Environment input ${envInput.key}${scope} is system-dependent and was not imported. Set manually after import.`);
-        continue;
-      }
       if (envInput.kind !== "secret" || !envInput.secretName) continue;
       const newSecretId = secretNameToId.get(envInput.secretName);
       if (!newSecretId) {
