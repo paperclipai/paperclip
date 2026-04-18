@@ -2851,7 +2851,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     adapterConfig: Record<string, unknown>,
     desiredSkills: string[],
     mode: ImportMode,
-    dummySecretCompanyId?: string,
   ) {
     const effectiveAdapterType = assertKnownImportAdapterType(adapterType);
     if (mode === "agent_safe" && IMPORT_FORBIDDEN_ADAPTER_TYPES.has(effectiveAdapterType)) {
@@ -2864,10 +2863,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     delete nextAdapterConfig.instructionsBundleMode;
     delete nextAdapterConfig.instructionsRootPath;
     delete nextAdapterConfig.instructionsEntryFile;
-    // Use a dummy company ID so that secret_ref bindings are preserved as-is.
-    // The remapping step (line 4515) will update them to the correct target-company secrets.
     const normalizedAdapterConfig = await secrets.normalizeAdapterConfigForPersistence(
-      dummySecretCompanyId ?? companyId,
+      companyId,
       nextAdapterConfig,
       { strictMode: strictSecretsMode },
     );
@@ -4268,7 +4265,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           baseAdapterConfig,
           desiredSkills,
           mode,
-          "dummy-import-company",
         );
         const patch = {
           name: planAgent.plannedName,
