@@ -68,5 +68,6 @@ export {
   discoverOpenCodeModels,
   ensureOpenCodeModelConfiguredAndAvailable,
   resetOpenCodeModelsCacheForTests,
+  setOpenCodeModelsRetryForTests,
 } from "./models.js";
 export { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
