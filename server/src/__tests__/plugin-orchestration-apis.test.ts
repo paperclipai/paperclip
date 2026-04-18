@@ -51,9 +51,9 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
   }, 20_000);
 
   afterEach(async () => {
-    await db.delete(agentWakeupRequests);
-    await db.delete(heartbeatRuns);
     await db.delete(activityLog);
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(agents);
@@ -91,6 +91,14 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const blockerIssueId = randomUUID();
     const originRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: originRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId: blockerIssueId },
+    });
     await db.insert(issues).values({
       id: blockerIssueId,
       companyId,
