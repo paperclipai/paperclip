@@ -2137,9 +2137,20 @@ export function heartbeatService(db: Db) {
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    // Terminal statuses MUST have finished_at. Several call sites (e.g.
+    // cancelActiveForAgentInternal) historically forgot to pass it, leaving
+    // 280+ rows with finished_at=null and skewing analytics. Default it here.
+    const terminalFinishedAt =
+      RUN_TERMINAL_STATUSES.has(status) && !patch?.finishedAt ? new Date() : undefined;
+
     const updated = await db
       .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
+      .set({
+        status,
+        ...patch,
+        ...(terminalFinishedAt ? { finishedAt: terminalFinishedAt } : {}),
+        updatedAt: new Date(),
+      })
       .where(eq(heartbeatRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
@@ -2718,7 +2729,21 @@ export function heartbeatService(db: Db) {
       return;
     }
 
-    const isFirstHeartbeat = !existing.lastHeartbeatAt;
+    // Previously this used `!existing.lastHeartbeatAt` to detect the first
+    // heartbeat. setRunStatus now advances lastHeartbeatAt as soon as any
+    // run reaches a terminal state, so that signal is stale by the time
+    // we get here. Count how many terminal runs exist for this agent
+    // instead: a count of 1 means the currently-finalising run is the first.
+    const [{ priorRunCount }] = await db
+      .select({ priorRunCount: sql<number>`COUNT(*)` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled"]),
+        ),
+      );
+    const isFirstHeartbeat = Number(priorRunCount) <= 1;
 
     const runningCount = await countRunningRunsForAgent(agentId);
     const nextStatus =
@@ -5198,6 +5223,48 @@ export function heartbeatService(db: Db) {
     return { timedOut: timedOut.length, runIds: timedOut };
   }
 
+  // Reconcile agent_wakeup_requests with their heartbeat_runs. Direct DB edits
+  // or old code paths can leave a wakeup_request status='queued' even after
+  // the linked run reached a terminal state, which pollutes the queue depth
+  // and blocks stuck-agent detection. Sync any mismatch to the run's outcome.
+  async function reconcileStaleWakeupRequests() {
+    const stale = await db
+      .select({
+        wakeupId: agentWakeupRequests.id,
+        runStatus: heartbeatRuns.status,
+        runFinishedAt: heartbeatRuns.finishedAt,
+        runUpdatedAt: heartbeatRuns.updatedAt,
+        runError: heartbeatRuns.error,
+      })
+      .from(agentWakeupRequests)
+      .innerJoin(heartbeatRuns, eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId))
+      .where(
+        and(
+          inArray(agentWakeupRequests.status, ["queued", "claimed"]),
+          inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled"]),
+        ),
+      )
+      .limit(500);
+
+    if (stale.length === 0) return { reconciled: 0 };
+
+    const now = new Date();
+    for (const row of stale) {
+      const mappedStatus =
+        row.runStatus === "succeeded"
+          ? "completed"
+          : row.runStatus === "failed"
+            ? "failed"
+            : "cancelled";
+      await setWakeupStatus(row.wakeupId, mappedStatus, {
+        finishedAt: row.runFinishedAt ?? row.runUpdatedAt ?? now,
+        error: row.runError ?? null,
+      });
+    }
+    logger.warn({ reconciledCount: stale.length }, "reconciled stale agent_wakeup_requests");
+    return { reconciled: stale.length };
+  }
+
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
     if (scope.scopeType === "agent") {
       await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
@@ -5430,6 +5497,8 @@ export function heartbeatService(db: Db) {
     reapOrphanedRuns,
 
     enforceRunTimeouts,
+
+    reconcileStaleWakeupRequests,
 
     resumeQueuedRuns,
 

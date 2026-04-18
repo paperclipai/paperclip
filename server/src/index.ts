@@ -630,6 +630,14 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "enforceRunTimeouts failed");
         });
 
+      // Sync wakeup_requests whose linked run reached a terminal state but
+      // weren't updated (e.g. direct DB cancels, upgrade path bugs).
+      void heartbeat
+        .reconcileStaleWakeupRequests()
+        .catch((err) => {
+          logger.error({ err }, "reconcileStaleWakeupRequests failed");
+        });
+
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
       void heartbeat
