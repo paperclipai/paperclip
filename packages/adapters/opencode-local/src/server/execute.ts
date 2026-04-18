@@ -282,10 +282,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+    const delegationGuard = [
+      "## Delegation Policy",
+      "When working on a Paperclip issue or task, complete all work before finishing.",
+      "NEVER use run_in_background=true for implementation or issue-resolution work.",
+      "If you delegate to a sub-agent, use run_in_background=false and wait for the result.",
+      "Your process exits when you stop responding — exiting after delegation means incomplete work.",
+      "",
+    ].join("\n");
     const prompt = joinPromptSections([
       instructionsPrefix,
       renderedBootstrapPrompt,
       wakePrompt,
+      delegationGuard,
       sessionHandoffNote,
       renderedPrompt,
     ]);
@@ -407,6 +416,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
+    const MAX_DELEGATION_CONTINUATIONS = 2;
+
     const initial = await runAttempt(sessionId);
     const initialFailed =
       !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
@@ -421,6 +432,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       const retry = await runAttempt(null);
       return toResult(retry, true);
+    }
+
+    if (!initialFailed && initial.parsed.hasBackgroundDelegation) {
+      const continuationSessionId = initial.parsed.sessionId ?? sessionId;
+      if (continuationSessionId) {
+        let lastAttempt = initial;
+        for (let i = 0; i < MAX_DELEGATION_CONTINUATIONS; i++) {
+          await onLog(
+            "stdout",
+            `[paperclip] Background delegation detected; resuming session to verify completion (attempt ${i + 1}/${MAX_DELEGATION_CONTINUATIONS}).\n`,
+          );
+          const continuation = await runAttempt(continuationSessionId);
+          lastAttempt = continuation;
+          const continuationFailed =
+            !continuation.proc.timedOut &&
+            ((continuation.proc.exitCode ?? 0) !== 0 || Boolean(continuation.parsed.errorMessage));
+          if (continuationFailed || !continuation.parsed.hasBackgroundDelegation) {
+            return toResult(continuation);
+          }
+        }
+        return toResult(lastAttempt);
+      }
     }
 
     return toResult(initial);
