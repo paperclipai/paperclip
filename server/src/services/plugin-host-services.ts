@@ -51,13 +51,63 @@ const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
 /**
+ * Hostnames that plugins are allowed to reach even when they resolve to
+ * private/reserved IP addresses.
+ *
+ * Self-hosted deployments often run plugins alongside local services (databases,
+ * APIs, other agents) on the same machine or LAN. Without an allowlist, all
+ * plugin HTTP requests to these services are blocked by SSRF protection.
+ *
+ * Set via the `PAPERCLIP_PLUGIN_ALLOWED_HOSTS` environment variable as a
+ * comma-separated list of hostnames (e.g. `localhost,127.0.0.1,myapi.local`).
+ *
+ * Allowed hosts still go through DNS pinning to prevent rebinding attacks;
+ * only the private-IP filter is bypassed.
+ *
+ * **Security note:** Adding a hostname to this allowlist permits plugins to
+ * reach *any* port and path on that host (e.g. `localhost` opens access to
+ * every local service — Postgres, Redis, etc.). Only add hosts you trust all
+ * installed plugins to contact.
+ */
+let _allowedPrivateHosts: Set<string> | undefined;
+
+/** @internal Exported for testing only. */
+export function getAllowedPrivateHosts(envValue?: string): Set<string> {
+  if (envValue !== undefined) {
+    // Explicit value passed (e.g. from tests) — bypass cache.
+    return new Set(
+      envValue.split(",").map((h) => h.trim().toLowerCase()).filter(Boolean),
+    );
+  }
+  if (!_allowedPrivateHosts) {
+    const raw = process.env.PAPERCLIP_PLUGIN_ALLOWED_HOSTS ?? "";
+    _allowedPrivateHosts = new Set(
+      raw.split(",").map((h) => h.trim().toLowerCase()).filter(Boolean),
+    );
+    if (_allowedPrivateHosts.size > 0) {
+      logger.warn(
+        { allowedHosts: [..._allowedPrivateHosts] },
+        "PAPERCLIP_PLUGIN_ALLOWED_HOSTS is set — plugins may reach private/local IPs on these hosts",
+      );
+    }
+  }
+  return _allowedPrivateHosts;
+}
+
+/** Reset the cached allowlist. Exported for test isolation only. */
+export function _resetAllowedPrivateHostsCache(): void {
+  _allowedPrivateHosts = undefined;
+}
+
+/**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
  * link-local, etc.) that plugins should never be able to reach.
  *
  * Handles IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1) which Node's
  * dns.lookup may return depending on OS configuration.
  */
-function isPrivateIP(ip: string): boolean {
+/** @internal Exported for testing only. */
+export function isPrivateIP(ip: string): boolean {
   const lower = ip.toLowerCase();
 
   // Unwrap IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) and re-check as IPv4
@@ -100,7 +150,8 @@ function isPrivateIP(ip: string): boolean {
  * @returns Request-routing metadata used to connect directly to the resolved IP
  *          while preserving the original hostname for HTTP Host and TLS SNI.
  */
-interface ValidatedFetchTarget {
+/** @internal Exported for testing only. */
+export interface ValidatedFetchTarget {
   parsedUrl: URL;
   resolvedAddress: string;
   hostHeader: string;
@@ -108,7 +159,8 @@ interface ValidatedFetchTarget {
   useTls: boolean;
 }
 
-async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
+/** @internal Exported for testing only. */
+export async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -147,7 +199,16 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     // Filter to only non-private IPs instead of rejecting the entire request
     // when some IPs are private. This handles multi-homed hosts that resolve
     // to both private and public addresses.
-    const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
+    //
+    // Hosts listed in PAPERCLIP_PLUGIN_ALLOWED_HOSTS bypass private-IP
+    // filtering so that self-hosted plugins can reach local services.
+    // DNS pinning still applies to prevent rebinding.
+    // Note: allowed hosts can be reached on ANY port — see JSDoc above.
+    const allowedHosts = getAllowedPrivateHosts();
+    const hostIsAllowed = allowedHosts.has(originalHostname.toLowerCase());
+    const safeResults = hostIsAllowed
+      ? results
+      : results.filter((entry) => !isPrivateIP(entry.address));
     if (safeResults.length === 0) {
       throw new Error(
         `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
