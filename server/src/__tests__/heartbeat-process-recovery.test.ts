@@ -308,6 +308,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runStatus: "failed" | "timed_out" | "cancelled" | "succeeded";
     retryReason?: "assignment_recovery" | "issue_continuation_needed" | null;
     assignToUser?: boolean;
+    blockedAssigneeMode?: "agent" | "user" | "none";
+    agentName?: string;
+    issueTitle?: string;
+    runErrorCode?: string | null;
+    runError?: string | null;
+    createdByAgentId?: string | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -374,16 +380,35 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       error: input.runStatus === "succeeded" ? null : "run failed before issue advanced",
     });
 
+    const blockedAssigneeMode = input.blockedAssigneeMode ?? "none";
+    const assigneeAgentId =
+      input.status === "blocked"
+        ? blockedAssigneeMode === "agent"
+          ? agentId
+          : null
+        : input.assignToUser
+          ? null
+          : agentId;
+    const assigneeUserId =
+      input.status === "blocked"
+        ? blockedAssigneeMode === "user"
+          ? "user-1"
+          : null
+        : input.assignToUser
+          ? "user-1"
+          : null;
+
     await db.insert(issues).values({
       id: issueId,
       companyId,
       title: "Recover stranded assigned work",
       status: input.status,
       priority: "medium",
-      assigneeAgentId: input.assignToUser ? null : agentId,
-      assigneeUserId: input.assignToUser ? "user-1" : null,
+      assigneeAgentId,
+      assigneeUserId,
       checkoutRunId: input.status === "in_progress" ? runId : null,
-      executionRunId: null,
+      executionRunId: input.runStatus === "running" ? runId : null,
+      createdByAgentId: input.createdByAgentId === undefined ? agentId : input.createdByAgentId,
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       startedAt: input.status === "in_progress" ? now : null,
@@ -669,5 +694,102 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+
+  it("reroutes blocked orphaned issues back to their creator agent when no active execution run remains", async () => {
+    const { issueId, agentId } = await seedStrandedIssueFixture({
+      status: "blocked",
+      runStatus: "failed",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.blockedRerouted).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+    expect(issue?.assigneeUserId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+  });
+
+  it("reroutes blocked user-owned issues back to an agent owner", async () => {
+    const { issueId, agentId } = await seedStrandedIssueFixture({
+      status: "blocked",
+      runStatus: "failed",
+      blockedAssigneeMode: "user",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.blockedRerouted).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.assigneeAgentId).toBe(agentId);
+    expect(issue?.assigneeUserId).toBeNull();
+  });
+
+  it("keeps blocked ownership intact while a live execution run still exists", async () => {
+    const { issueId, agentId, runId } = await seedStrandedIssueFixture({
+      status: "blocked",
+      runStatus: "running",
+      blockedAssigneeMode: "agent",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.blockedRerouted).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.assigneeAgentId).toBe(agentId);
+    expect(issue?.executionRunId).toBe(runId);
+  });
+
+  it("keeps blocked review-manager review ownership intact without a live run", async () => {
+    const { issueId, agentId } = await seedStrandedIssueFixture({
+      status: "blocked",
+      runStatus: "failed",
+      blockedAssigneeMode: "agent",
+      agentName: "Review Manager",
+      issueTitle: "[REVIEW] Verify adapter_failed continuation routing",
+      runErrorCode: "adapter_failed",
+      runError: "reviewer adapter unavailable",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.blockedRerouted).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+  });
+
+  it("restores the checkout agent on blocked issues during terminal run cleanup without waiting for the periodic sweep", async () => {
+    const { issueId, runId, agentId } = await seedRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    await db
+      .update(issues)
+      .set({
+        status: "blocked",
+        checkoutRunId: null,
+        executionRunId: null,
+      })
+      .where(eq(issues.id, issueId));
+
+    await heartbeat.cancelRun(runId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+    expect(issue?.assigneeUserId).toBeNull();
   });
 });

@@ -1403,6 +1403,28 @@ function normalizeAgentNameKey(value: string | null | undefined) {
   return normalized.length > 0 ? normalized : null;
 }
 
+function isReviewManagerNameKey(value: string | null | undefined) {
+  const normalized = normalizeAgentNameKey(value);
+  return normalized === "review manager" || normalized === "review-manager";
+}
+
+function isReviewManagerBlockerIssue(input: {
+  title: string | null | undefined;
+  assigneeAgentName: string | null | undefined;
+}) {
+  if (!isReviewManagerNameKey(input.assigneeAgentName)) return false;
+  if (typeof input.title !== "string") return false;
+  return input.title.trim().toLowerCase().startsWith("[review]");
+}
+
+function isAssignableRecoveryAgent(agent: {
+  companyId: string;
+  status: string;
+} | null | undefined, companyId: string) {
+  if (!agent) return false;
+  if (agent.companyId !== companyId) return false;
+  return agent.status !== "pending_approval" && agent.status !== "terminated";
+}
 const defaultSessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {
     const asObj = parseObject(raw);
@@ -2912,6 +2934,156 @@ export function heartbeatService(db: Db) {
     return Boolean(run || deferredWake);
   }
 
+  async function findCompanyFallbackRecoveryAgent(companyId: string) {
+    const candidates = await db
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        status: agents.status,
+        role: agents.role,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId))
+      .orderBy(
+        sql`case
+          when ${agents.role} = 'cto' then 0
+          when ${agents.role} = 'ceo' then 1
+          else 2
+        end`,
+        asc(agents.createdAt),
+        asc(agents.id),
+      );
+
+    return candidates.find((candidate) => isAssignableRecoveryAgent(candidate, companyId)) ?? null;
+  }
+
+  async function resolveBlockedIssueRecoveryAgentId(input: {
+    companyId: string;
+    parentId?: string | null;
+    createdByAgentId?: string | null;
+    preferredAgentId?: string | null;
+  }) {
+    const candidateIds: string[] = [];
+    if (input.preferredAgentId) candidateIds.push(input.preferredAgentId);
+    if (input.createdByAgentId) candidateIds.push(input.createdByAgentId);
+
+    let currentParentId = input.parentId ?? null;
+    const visitedParentIds = new Set<string>();
+    while (currentParentId && !visitedParentIds.has(currentParentId)) {
+      visitedParentIds.add(currentParentId);
+      const parent = await db
+        .select({
+          id: issues.id,
+          parentId: issues.parentId,
+          assigneeAgentId: issues.assigneeAgentId,
+          createdByAgentId: issues.createdByAgentId,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, input.companyId), eq(issues.id, currentParentId)))
+        .then((rows) => rows[0] ?? null);
+      if (!parent) break;
+      if (parent.assigneeAgentId) candidateIds.push(parent.assigneeAgentId);
+      if (parent.createdByAgentId) candidateIds.push(parent.createdByAgentId);
+      currentParentId = parent.parentId ?? null;
+    }
+
+    const seenAgentIds = new Set<string>();
+    for (const candidateId of candidateIds) {
+      if (!candidateId || seenAgentIds.has(candidateId)) continue;
+      seenAgentIds.add(candidateId);
+      const candidate = await getAgent(candidateId);
+      if (isAssignableRecoveryAgent(candidate, input.companyId)) {
+        return candidate.id;
+      }
+    }
+
+    const fallback = await findCompanyFallbackRecoveryAgent(input.companyId);
+    return fallback?.id ?? null;
+  }
+
+  async function rerouteBlockedIssueOwnership(input: {
+    issue: Pick<
+      typeof issues.$inferSelect,
+      | "id"
+      | "companyId"
+      | "identifier"
+      | "title"
+      | "status"
+      | "assigneeAgentId"
+      | "assigneeUserId"
+      | "checkoutRunId"
+      | "parentId"
+      | "createdByAgentId"
+    >;
+    source: string;
+    tx?: any;
+    runId?: string | null;
+    preferredAgentId?: string | null;
+  }) {
+    if (input.issue.status !== "blocked") return null;
+
+    if (input.issue.assigneeAgentId) {
+      const assigneeAgent = await getAgent(input.issue.assigneeAgentId);
+      if (
+        assigneeAgent &&
+        isReviewManagerBlockerIssue({
+          title: input.issue.title,
+          assigneeAgentName: assigneeAgent.name,
+        })
+      ) {
+        return null;
+      }
+    }
+
+    const recoveryAgentId = await resolveBlockedIssueRecoveryAgentId({
+      companyId: input.issue.companyId,
+      parentId: input.issue.parentId ?? null,
+      createdByAgentId: input.issue.createdByAgentId ?? null,
+      preferredAgentId: input.preferredAgentId ?? null,
+    });
+    if (!recoveryAgentId) return null;
+    if (
+      input.issue.assigneeAgentId === recoveryAgentId &&
+      input.issue.assigneeUserId == null
+    ) {
+      return null;
+    }
+
+    const executor: any = input.tx ?? db;
+    const updated = await issuesSvc.update(
+      input.issue.id,
+      {
+        assigneeAgentId: recoveryAgentId,
+        assigneeUserId: null,
+      },
+      executor,
+    );
+    if (!updated) return null;
+
+    await logActivity(executor, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: input.runId ?? null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: "blocked",
+        source: input.source,
+        ownershipRerouted: true,
+        reroutedAssigneeAgentId: recoveryAgentId,
+        previousAssigneeAgentId: input.issue.assigneeAgentId,
+        previousAssigneeUserId: input.issue.assigneeUserId,
+        previousCheckoutRunId: input.issue.checkoutRunId ?? null,
+      },
+    });
+
+    return updated;
+  }
+
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
     agentId: string;
@@ -3009,6 +3181,7 @@ export function heartbeatService(db: Db) {
     const result = {
       dispatchRequeued: 0,
       continuationRequeued: 0,
+      blockedRerouted: 0,
       escalated: 0,
       skipped: 0,
       issueIds: [] as string[],
@@ -3119,6 +3292,49 @@ export function heartbeatService(db: Db) {
       }
     }
 
+    const blockedCandidates = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        checkoutRunId: issues.checkoutRunId,
+        parentId: issues.parentId,
+        createdByAgentId: issues.createdByAgentId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.status, "blocked"),
+          sql`${issues.assigneeAgentId} is null`,
+        ),
+      );
+
+    for (const issue of blockedCandidates) {
+      if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      try {
+        const rerouted = await rerouteBlockedIssueOwnership({
+          issue,
+          source: "heartbeat.blocked_orphan_assignee_sweep",
+        });
+        if (rerouted) {
+          result.blockedRerouted += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+      } catch (err) {
+        logger.error({ err, issueId: issue.id }, "failed to reroute blocked orphan issue ownership");
+        result.skipped += 1;
+      }
+    }
     return result;
   }
 
@@ -4224,7 +4440,13 @@ export function heartbeatService(db: Db) {
           id: issues.id,
           companyId: issues.companyId,
           identifier: issues.identifier,
+          title: issues.title,
           status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          checkoutRunId: issues.checkoutRunId,
+          parentId: issues.parentId,
+          createdByAgentId: issues.createdByAgentId,
           executionRunId: issues.executionRunId,
         })
         .from(issues)
@@ -4266,7 +4488,16 @@ export function heartbeatService(db: Db) {
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
-        if (!deferred) return null;
+        if (!deferred) {
+          await rerouteBlockedIssueOwnership({
+            issue,
+            source: "heartbeat.run_completion_release",
+            tx,
+            runId: run.id,
+            preferredAgentId: run.agentId,
+          });
+          return null;
+        }
 
         const deferredAgent = await tx
           .select()

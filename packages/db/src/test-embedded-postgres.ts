@@ -2,6 +2,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { applyPendingMigrations, ensurePostgresDatabase } from "./client.js";
 
 type EmbeddedPostgresInstance = {
@@ -32,6 +33,17 @@ export type EmbeddedPostgresTestDatabase = {
 };
 
 let embeddedPostgresSupportPromise: Promise<EmbeddedPostgresTestSupport> | null = null;
+
+function ensureDirectoryOwnedByPostgres(dataDir: string) {
+  if (process.platform === "win32") return;
+  if (typeof process.getuid === "function" && process.getuid() !== 0) return;
+
+  try {
+    execFileSync("chown", ["-R", "postgres:postgres", dataDir]);
+  } catch {
+    // If the host cannot chown the temp directory, fall back to the existing behavior.
+  }
+}
 
 async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   const mod = await import("embedded-postgres");
@@ -66,6 +78,7 @@ function formatEmbeddedPostgresError(error: unknown): string {
 
 async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSupport> {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-embedded-postgres-probe-"));
+  ensureDirectoryOwnedByPostgres(dataDir);
   const port = await getAvailablePort();
   const EmbeddedPostgres = await getEmbeddedPostgresCtor();
   const instance = new EmbeddedPostgres({
@@ -105,6 +118,7 @@ export async function startEmbeddedPostgresTestDatabase(
   tempDirPrefix: string,
 ): Promise<EmbeddedPostgresTestDatabase> {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), tempDirPrefix));
+  ensureDirectoryOwnedByPostgres(dataDir);
   const port = await getAvailablePort();
   const EmbeddedPostgres = await getEmbeddedPostgresCtor();
   const instance = new EmbeddedPostgres({
