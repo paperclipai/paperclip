@@ -308,6 +308,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runStatus: "failed" | "timed_out" | "cancelled" | "succeeded";
     retryReason?: "assignment_recovery" | "issue_continuation_needed" | null;
     assignToUser?: boolean;
+    runErrorCode?: string | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -370,7 +371,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       startedAt: now,
       finishedAt: new Date("2026-03-19T00:05:00.000Z"),
       updatedAt: new Date("2026-03-19T00:05:00.000Z"),
-      errorCode: input.runStatus === "succeeded" ? null : "process_lost",
+      errorCode: input.runStatus === "succeeded" ? null : (input.runErrorCode ?? "process_lost"),
       error: input.runStatus === "succeeded" ? null : "run failed before issue advanced",
     });
 
@@ -491,12 +492,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
   });
 
-  it("does not queue a second retry after the first process-loss retry was already used", async () => {
-    const { agentId, runId, issueId } = await seedRunFixture({
+  it("auto-blocks the issue and stops retrying after MAX_SAME_ERROR_RETRIES consecutive process_lost failures (SHA-1891)", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "running",
       processPid: 999_999_999,
-      processLossRetryCount: 1,
     });
+    // Seed 4 prior failed `process_lost` runs for the same (agent, issue) pair
+    // so that after the current running run is finalized as failed, the
+    // consecutive-failure counter hits MAX_SAME_ERROR_RETRIES (5) and the
+    // backoff schedule is exhausted — triggering auto-block instead of retry.
+    for (let i = 0; i < 4; i += 1) {
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: { issueId },
+        startedAt: new Date(`2026-03-18T${String(i).padStart(2, "0")}:00:00.000Z`),
+        finishedAt: new Date(`2026-03-18T${String(i).padStart(2, "0")}:05:00.000Z`),
+        updatedAt: new Date(`2026-03-18T${String(i).padStart(2, "0")}:05:00.000Z`),
+        errorCode: "process_lost",
+        error: "prior process_lost failure",
+      });
+    }
+
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
@@ -507,16 +528,22 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId));
-    expect(runs).toHaveLength(1);
-    expect(runs[0]?.status).toBe("failed");
+    // 4 prior failed + 1 just-finalized = 5. No retry queued.
+    expect(runs).toHaveLength(5);
+    expect(runs.every((row) => row.status === "failed")).toBe(true);
 
     const issue = await db
       .select()
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
     expect(issue?.executionRunId).toBeNull();
-    expect(issue?.checkoutRunId).toBe(runId);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Auto-blocked after 5 consecutive `process_lost` failures");
+    expect(comments[0]?.body).toContain("exponential backoff exhausted");
 
     // After exhausted process_lost retries, agent should be idle (not error)
     // because process_lost is a transient infrastructure issue, not a persistent agent failure
@@ -526,6 +553,156 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
     expect(agent?.status).toBe("idle");
+  });
+
+  it("defers the retry (no immediate queued run) on the 2nd consecutive process_lost failure (SHA-1891 backoff)", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 999_999_999,
+    });
+    // Seed 1 prior failed process_lost run → current finalization brings the
+    // counter to 2, which maps to a 30s deferred retry. The retry is scheduled
+    // via setTimeout; no new heartbeatRuns row should exist immediately.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      contextSnapshot: { issueId },
+      startedAt: new Date("2026-03-18T00:00:00.000Z"),
+      finishedAt: new Date("2026-03-18T00:05:00.000Z"),
+      updatedAt: new Date("2026-03-18T00:05:00.000Z"),
+      errorCode: "process_lost",
+      error: "prior process_lost failure",
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    // Only the 1 prior + 1 just-finalized — no immediate retry row because
+    // the retry is deferred behind a 30s timer.
+    expect(runs).toHaveLength(2);
+    expect(runs.every((row) => row.status === "failed")).toBe(true);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    // Issue not blocked yet — backoff schedule still has room.
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("does not count a different errorCode toward the process_lost retry counter (SHA-1891)", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 999_999_999,
+    });
+    // Seed 4 prior failed runs with a DIFFERENT errorCode — these must not
+    // accumulate against the current process_lost run.
+    for (let i = 0; i < 4; i += 1) {
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: { issueId },
+        startedAt: new Date(`2026-03-18T${String(i).padStart(2, "0")}:00:00.000Z`),
+        finishedAt: new Date(`2026-03-18T${String(i).padStart(2, "0")}:05:00.000Z`),
+        updatedAt: new Date(`2026-03-18T${String(i).padStart(2, "0")}:05:00.000Z`),
+        errorCode: "claude_auth_required",
+        error: "prior transient failure",
+      });
+    }
+
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    // Counter should be 1 (only the current process_lost), so an immediate
+    // retry is queued — 4 prior + 1 finalized + 1 retry = 6 total rows.
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(6);
+    expect(runs.filter((row) => row.status === "queued")).toHaveLength(1);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("resets the process_lost counter when a succeeded run exists for the same (agent, issue) pair (SHA-1891)", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 999_999_999,
+    });
+    // 3 prior failures → 1 success → then current failure.
+    for (let i = 0; i < 3; i += 1) {
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: { issueId },
+        startedAt: new Date(`2026-03-17T${String(i).padStart(2, "0")}:00:00.000Z`),
+        finishedAt: new Date(`2026-03-17T${String(i).padStart(2, "0")}:05:00.000Z`),
+        updatedAt: new Date(`2026-03-17T${String(i).padStart(2, "0")}:05:00.000Z`),
+        errorCode: "process_lost",
+        error: "prior process_lost failure",
+      });
+    }
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      contextSnapshot: { issueId },
+      startedAt: new Date("2026-03-18T00:00:00.000Z"),
+      finishedAt: new Date("2026-03-18T00:05:00.000Z"),
+      updatedAt: new Date("2026-03-18T00:05:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    // Counter resets to 1 after the success — immediate retry queued.
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.filter((row) => row.status === "queued")).toHaveLength(1);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
@@ -610,6 +787,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried dispatch");
     expect(comments[0]?.body).toContain("Latest retry failure: `process_lost` - run failed before issue advanced.");
+  });
+
+  it("does not escalate assigned todo work when the latest retry failed with claude_auth_required (transient)", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+      runErrorCode: "claude_auth_required",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
   });
 
   it("re-enqueues continuation for stranded in-progress work with no active run", async () => {

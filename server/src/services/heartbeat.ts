@@ -1522,6 +1522,7 @@ export function heartbeatService(db: Db) {
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  const pendingTransientRetryTimers = new Set<ReturnType<typeof setTimeout>>();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -2608,6 +2609,302 @@ export function heartbeatService(db: Db) {
     return queued;
   }
 
+  async function enqueueTransientErrorRetry(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    nextRetryCount: number,
+  ) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
+    const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const originalWakeReason = readNonEmptyString(contextSnapshot.wakeReason);
+    const now = new Date();
+    const retryContextSnapshot = {
+      ...contextSnapshot,
+      retryOfRunId: run.id,
+      wakeReason: "transient_error_retry",
+      retryReason: "transient_error_retry",
+      transientRetryCount: nextRetryCount,
+      ...(originalWakeReason && !contextSnapshot.originalWakeReason
+        ? { originalWakeReason }
+        : {}),
+    };
+
+    const queued = await db.transaction(async (tx) => {
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "transient_error_retry",
+          payload: {
+            ...(issueId ? { issueId } : {}),
+            retryOfRunId: run.id,
+            transientRetryCount: nextRetryCount,
+          },
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const retryRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: retryContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          retryOfRunId: run.id,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          runId: retryRun.id,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      if (issueId) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: retryRun.id,
+            executionAgentNameKey: normalizeAgentNameKey(agent.name),
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, run.companyId),
+              isNull(issues.executionRunId),
+            ),
+          );
+      }
+
+      return retryRun;
+    });
+
+    publishLiveEvent({
+      companyId: queued.companyId,
+      type: "heartbeat.run.queued",
+      payload: {
+        runId: queued.id,
+        agentId: queued.agentId,
+        invocationSource: queued.invocationSource,
+        triggerDetail: queued.triggerDetail,
+        wakeupRequestId: queued.wakeupRequestId,
+      },
+    });
+
+    await appendRunEvent(queued, 1, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: `Queued automatic retry after transient error (consecutive failure #${nextRetryCount} for this agent-issue-errorCode)`,
+      payload: {
+        retryOfRunId: run.id,
+        transientRetryCount: nextRetryCount,
+        errorCode: run.errorCode,
+      },
+    });
+
+    return queued;
+  }
+
+  // Count consecutive failed runs with matching `errorCode` for the same
+  // (agent, issueId) pair since the most recent successful run for that pair.
+  // A success naturally resets the counter by advancing the lower bound.
+  async function countConsecutiveSameErrorCodeFailures(
+    companyId: string,
+    agentId: string,
+    issueId: string | null,
+    errorCode: string,
+  ): Promise<{ count: number; runIds: string[] }> {
+    const issueFilter = issueId
+      ? sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`
+      : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' IS NULL`;
+
+    const lastSuccess = await db
+      .select({ createdAt: heartbeatRuns.createdAt })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "succeeded"),
+          issueFilter,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    const runs = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "failed"),
+          eq(heartbeatRuns.errorCode, errorCode),
+          issueFilter,
+          lastSuccess ? gt(heartbeatRuns.createdAt, lastSuccess.createdAt) : sql`true`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt));
+
+    return { count: runs.length, runIds: runs.map((r) => r.id) };
+  }
+
+  function backoffDelayForFailureCount(failureCount: number): number | null {
+    if (failureCount < 1) return null;
+    if (failureCount > RETRY_BACKOFF_SCHEDULE_MS.length) return null;
+    return RETRY_BACKOFF_SCHEDULE_MS[failureCount - 1];
+  }
+
+  async function blockIssueForRetryExhaustion(
+    run: typeof heartbeatRuns.$inferSelect,
+    errorCode: string,
+    failureCount: number,
+    runIds: string[],
+  ) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (!issueId) return false;
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return false;
+    if (issue.status === "blocked" || issue.status === "done" || issue.status === "cancelled") {
+      return false;
+    }
+
+    const retryHistory = runIds.slice(0, MAX_SAME_ERROR_RETRIES).join(", ");
+    const comment =
+      `Auto-blocked after ${failureCount} consecutive \`${errorCode}\` failures on this agent-issue pair — ` +
+      `exponential backoff exhausted, needs human review. Retry history: ${retryHistory}.`;
+
+    const previousStatus = issue.status;
+    const updated = await issuesSvc.update(issue.id, { status: "blocked" });
+    if (!updated) return false;
+
+    await issuesSvc.addComment(issue.id, comment, {});
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        status: "blocked",
+        previousStatus,
+        source: "heartbeat.retry_backoff_exhausted",
+        errorCode,
+        consecutiveFailures: failureCount,
+        retryRunIds: runIds.slice(0, MAX_SAME_ERROR_RETRIES),
+      },
+    });
+
+    return true;
+  }
+
+  // Schedule an auto-retry for a run that finalized with a retryable errorCode,
+  // using the exponential backoff schedule. Returns the outcome so callers can
+  // log appropriately. Retries are scoped per (agent, issue, errorCode) so
+  // different error codes don't accumulate together and a success for the same
+  // pair resets the counter.
+  async function maybeScheduleBackoffRetryOrBlock(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    errorCode: string,
+    kind: "process_lost" | "transient",
+  ): Promise<{
+    outcome: "retry_immediate" | "retry_deferred" | "blocked" | "skipped";
+    runId: string | null;
+    delayMs: number;
+    failureCount: number;
+  }> {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const { count, runIds } = await countConsecutiveSameErrorCodeFailures(
+      run.companyId,
+      run.agentId,
+      issueId,
+      errorCode,
+    );
+
+    const delayMs = backoffDelayForFailureCount(count);
+    if (delayMs === null) {
+      await blockIssueForRetryExhaustion(run, errorCode, count, runIds);
+      return { outcome: "blocked", runId: null, delayMs: 0, failureCount: count };
+    }
+
+    if (delayMs === 0) {
+      const queued = kind === "process_lost"
+        ? await enqueueProcessLossRetry(run, agent, new Date())
+        : await enqueueTransientErrorRetry(run, agent, count);
+      return {
+        outcome: "retry_immediate",
+        runId: queued?.id ?? null,
+        delayMs: 0,
+        failureCount: count,
+      };
+    }
+
+    scheduleBackoffRetry(run, agent, kind, count, delayMs);
+    return { outcome: "retry_deferred", runId: null, delayMs, failureCount: count };
+  }
+
+  function scheduleBackoffRetry(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    kind: "process_lost" | "transient",
+    failureCount: number,
+    delayMs: number,
+  ) {
+    const handle = setTimeout(() => {
+      pendingTransientRetryTimers.delete(handle);
+      const enqueueFn = kind === "process_lost"
+        ? () => enqueueProcessLossRetry(run, agent, new Date())
+        : () => enqueueTransientErrorRetry(run, agent, failureCount);
+      enqueueFn().catch((err) => {
+        logger.error(
+          { err, runId: run.id, agentId: agent.id, failureCount, kind },
+          "failed to enqueue backoff retry",
+        );
+      });
+    }, delayMs);
+    if (typeof handle === "object" && handle && typeof (handle as { unref?: () => void }).unref === "function") {
+      (handle as { unref: () => void }).unref();
+    }
+    pendingTransientRetryTimers.add(handle);
+  }
+
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
@@ -2818,49 +3115,73 @@ export function heartbeatService(db: Db) {
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const eligibleForRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId);
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: baseMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
 
-      let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
-      if (shouldRetry) {
+      let retryResult:
+        | Awaited<ReturnType<typeof maybeScheduleBackoffRetryOrBlock>>
+        | null = null;
+      if (eligibleForRetry) {
         const agent = await getAgent(run.agentId);
         if (agent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
+          retryResult = await maybeScheduleBackoffRetryOrBlock(
+            finalizedRun,
+            agent,
+            "process_lost",
+            "process_lost",
+          );
         }
-      } else {
+      }
+
+      if (!retryResult || retryResult.outcome === "blocked" || retryResult.outcome === "skipped") {
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
+
+      const retryMessage = (() => {
+        if (!retryResult) return baseMessage;
+        switch (retryResult.outcome) {
+          case "retry_immediate":
+            return `${baseMessage}; queued retry ${retryResult.runId ?? ""}`.trim();
+          case "retry_deferred":
+            return `${baseMessage}; scheduled retry in ${Math.round(retryResult.delayMs / 1000)}s (consecutive failure #${retryResult.failureCount})`;
+          case "blocked":
+            return `${baseMessage}; auto-blocked issue after ${retryResult.failureCount} consecutive process_lost failures`;
+          default:
+            return baseMessage;
+        }
+      })();
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
         eventType: "lifecycle",
         stream: "system",
         level: "error",
-        message: shouldRetry
-          ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : baseMessage,
+        message: retryMessage,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
-          ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          ...(retryResult?.runId ? { retryRunId: retryResult.runId } : {}),
+          ...(retryResult ? { retryOutcome: retryResult.outcome, retryFailureCount: retryResult.failureCount } : {}),
         },
       });
 
       // When process_lost retries are exhausted, the agent itself is fine —
       // it was a transient child process death. Reset to idle, not error.
-      const processLostRetriesExhausted = tracksLocalChild && !!run.processPid && !shouldRetry;
+      const retriedOrDeferred =
+        retryResult?.outcome === "retry_immediate" || retryResult?.outcome === "retry_deferred";
+      const processLostRetriesExhausted = tracksLocalChild && !!run.processPid && !retriedOrDeferred;
       await finalizeAgentStatus(run.agentId, processLostRetriesExhausted ? "cancelled" : "failed");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
@@ -3020,10 +3341,29 @@ export function heartbeatService(db: Db) {
     return queued;
   }
 
-  // Error codes that represent transient failures (e.g. subscription quota).
-  // When the latest recovery run failed with one of these, we skip escalation
-  // to `blocked` and let the normal heartbeat cycle retry after the window resets.
-  const TRANSIENT_ERROR_CODES = new Set(["rate_limited", "timeout"]);
+  // Error codes that represent transient failures (e.g. subscription quota,
+  // OAuth refresh hiccup). When the latest recovery run failed with one of
+  // these, we skip escalation to `blocked` and let the normal heartbeat cycle
+  // retry after the window resets.
+  const TRANSIENT_ERROR_CODES = new Set(["rate_limited", "timeout", "claude_auth_required"]);
+
+  // Error codes produced by the adapter execution path that should trigger an
+  // in-process auto-retry when the run finalizes with them. These are transient
+  // failures (e.g. an OAuth token rotation race) where a fresh attempt often
+  // succeeds. `process_lost` has its own retry path in `reapOrphanedRuns` and
+  // is intentionally not listed here. Retries for both are gated by the
+  // exponential backoff helper so sustained failures don't burn spend in a
+  // tight loop. See SHA-1868, SHA-1891.
+  const AUTO_RETRY_ERROR_CODES = new Set(["claude_auth_required"]);
+
+  // Exponential backoff schedule for consecutive same-`errorCode` failures
+  // scoped to a single (agent, issue) pair. The N-th consecutive failure
+  // schedules retry #N with delay `RETRY_BACKOFF_SCHEDULE_MS[N-1]`. Once the
+  // count exceeds the schedule length we stop retrying and auto-block the
+  // issue for human review (SHA-1866-style). A successful run for the same
+  // (agent, issue) pair naturally resets the counter (query-bound). See SHA-1891.
+  const RETRY_BACKOFF_SCHEDULE_MS = [0, 30_000, 120_000, 480_000];
+  const MAX_SAME_ERROR_RETRIES = RETRY_BACKOFF_SCHEDULE_MS.length + 1;
 
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
@@ -4155,6 +4495,19 @@ export function heartbeatService(db: Db) {
         }
         await finalizeIssueCommentPolicy(finalizedRun, agent);
         await releaseIssueExecutionAndPromote(finalizedRun);
+
+        if (
+          outcome === "failed" &&
+          adapterResult.errorCode &&
+          AUTO_RETRY_ERROR_CODES.has(adapterResult.errorCode)
+        ) {
+          await maybeScheduleBackoffRetryOrBlock(
+            finalizedRun,
+            agent,
+            adapterResult.errorCode,
+            "transient",
+          );
+        }
       }
 
       if (finalizedRun) {
