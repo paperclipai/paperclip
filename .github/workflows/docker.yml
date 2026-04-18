@@ -6,6 +6,12 @@ on:
       - "master"
     tags:
       - "v*"
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref (tag or SHA) to build. Required for callers; push events use github.ref.
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,7 +21,7 @@ permissions:
 # supersedes only the pending slot, so the image build that is already
 # running always finishes and publishes.
 concurrency:
-  group: docker-${{ github.ref }}
+  group: docker-${{ inputs.ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -26,6 +32,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref || github.ref }}
           # Full history and tags so `git describe` below can compute the
           # release version to stamp into the image.
           fetch-depth: 0
@@ -169,6 +176,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref || github.ref }}
           # Full history and tags so `git describe` below can compute the
           # release version to stamp into the image.
           fetch-depth: 0
