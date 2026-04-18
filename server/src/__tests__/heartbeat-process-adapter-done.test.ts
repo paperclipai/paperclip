@@ -18,7 +18,6 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { runningProcesses } from "../adapters/index.ts";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
@@ -37,25 +36,6 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   };
 });
 
-vi.mock("../adapters/index.ts", async () => {
-  const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
-  return {
-    ...actual,
-    getServerAdapter: vi.fn(() => ({
-      supportsLocalAgentJwt: false,
-      execute: vi.fn(async () => ({
-        exitCode: 0,
-        signal: null,
-        timedOut: false,
-        errorMessage: null,
-        provider: "test",
-        model: "test-model",
-      })),
-    })),
-  };
-});
-
-import { getServerAdapter } from "../adapters/index.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -65,20 +45,6 @@ if (!embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres heartbeat process-adapter done tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
-}
-
-async function waitForRunToSettle(
-  heartbeat: ReturnType<typeof heartbeatService>,
-  runId: string,
-  timeoutMs = 3_000,
-) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const run = await heartbeat.getRun(runId);
-    if (!run || (run.status !== "queued" && run.status !== "running")) return run;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return heartbeat.getRun(runId);
 }
 
 describeEmbeddedPostgres("heartbeat process-adapter done lifecycle", () => {
@@ -92,15 +58,6 @@ describeEmbeddedPostgres("heartbeat process-adapter done lifecycle", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
-    runningProcesses.clear();
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
-      if (runs.every((run) => run.status !== "queued" && run.status !== "running")) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
     await db.delete(activityLog);
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);
@@ -123,16 +80,14 @@ describeEmbeddedPostgres("heartbeat process-adapter done lifecycle", () => {
   });
 
   afterAll(async () => {
-    runningProcesses.clear();
     await tempDb?.cleanup();
   });
 
   async function seedRunFixture(input?: {
     adapterType?: string;
-    agentStatus?: "paused" | "idle" | "running";
     issueStatus?: "in_progress" | "done" | "cancelled";
     issueCompletedAt?: Date | null;
-    runStatus?: "queued" | "running";
+    runStatus?: "succeeded" | "failed";
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -154,15 +109,14 @@ describeEmbeddedPostgres("heartbeat process-adapter done lifecycle", () => {
       companyId,
       name: "ProcessBot",
       role: "engineer",
-      status: input?.agentStatus ?? "idle",
+      status: "idle",
       adapterType: input?.adapterType ?? "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
     });
 
-    const runStatus = input?.runStatus ?? "queued";
-    const wakeupStatus = runStatus === "queued" ? "queued" : "claimed";
+    const runStatus = input?.runStatus ?? "succeeded";
 
     await db.insert(agentWakeupRequests).values({
       id: wakeupRequestId,
@@ -172,9 +126,10 @@ describeEmbeddedPostgres("heartbeat process-adapter done lifecycle", () => {
       triggerDetail: "system",
       reason: "issue_assigned",
       payload: { issueId },
-      status: wakeupStatus,
+      status: "finalized",
       runId,
-      claimedAt: runStatus === "running" ? now : null,
+      claimedAt: now,
+      finishedAt: now,
     });
 
     await db.insert(heartbeatRuns).values({
@@ -191,6 +146,7 @@ describeEmbeddedPostgres("heartbeat process-adapter done lifecycle", () => {
       processLossRetryCount: 0,
       startedAt: now,
       updatedAt: now,
+      finishedAt: now,
     });
 
     const issueStatus = input?.issueStatus ?? "in_progress";
@@ -209,6 +165,8 @@ describeEmbeddedPostgres("heartbeat process-adapter done lifecycle", () => {
       assigneeAgentId: agentId,
       checkoutRunId: runId,
       executionRunId: runId,
+      executionAgentNameKey: "processbot",
+      executionLockedAt: now,
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       startedAt: now,
@@ -218,71 +176,58 @@ describeEmbeddedPostgres("heartbeat process-adapter done lifecycle", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
-  it("transitions issue to done on successful process-adapter run", async () => {
-    const { runId, issueId } = await seedRunFixture({ adapterType: "process" });
-    const heartbeat = heartbeatService(db);
+  async function loadRun(runId: string) {
+    const row = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw new Error(`run ${runId} not found`);
+    return row;
+  }
 
-    await heartbeat.resumeQueuedRuns();
-    await waitForRunToSettle(heartbeat, runId);
-
-    const issue = await db
+  async function loadIssue(issueId: string) {
+    return db
       .select()
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
+  }
 
+  it("transitions issue to done on successful process-adapter run", async () => {
+    const { runId, issueId } = await seedRunFixture({ adapterType: "process", runStatus: "succeeded" });
+    const heartbeat = heartbeatService(db);
+    const run = await loadRun(runId);
+
+    await heartbeat.releaseIssueExecutionAndPromote(run);
+
+    const issue = await loadIssue(issueId);
     expect(issue?.status).toBe("done");
     expect(issue?.completedAt).not.toBeNull();
   });
 
   it("does NOT transition issue when adapterType is not process (claude-code)", async () => {
-    const { runId, issueId } = await seedRunFixture({ adapterType: "claude_local" });
+    // CEO non-negotiable #2: the done-gate MUST be scoped to adapterType === "process".
+    // Any other adapter (including claude_local/claude_code) must leave the issue untouched.
+    const { runId, issueId } = await seedRunFixture({ adapterType: "claude_local", runStatus: "succeeded" });
     const heartbeat = heartbeatService(db);
+    const run = await loadRun(runId);
 
-    await heartbeat.resumeQueuedRuns();
-    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.releaseIssueExecutionAndPromote(run);
 
-    const issue = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0] ?? null);
-
+    const issue = await loadIssue(issueId);
     expect(issue?.status).toBe("in_progress");
     expect(issue?.completedAt).toBeNull();
   });
 
   it("does NOT transition when process run failed", async () => {
-    // executeRun calls getServerAdapter twice per run (once for session codec
-    // lookup, once for adapter invocation), so stub both calls to the
-    // failing-exit adapter for this test.
-    const failingAdapter = {
-      supportsLocalAgentJwt: false,
-      execute: vi.fn(async () => ({
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorMessage: "process exited with code 1",
-        provider: "test",
-        model: "test-model",
-      })),
-    } as unknown as ReturnType<typeof getServerAdapter>;
-    vi.mocked(getServerAdapter)
-      .mockReturnValueOnce(failingAdapter)
-      .mockReturnValueOnce(failingAdapter);
-
-    const { runId, issueId } = await seedRunFixture({ adapterType: "process" });
+    const { runId, issueId } = await seedRunFixture({ adapterType: "process", runStatus: "failed" });
     const heartbeat = heartbeatService(db);
+    const run = await loadRun(runId);
 
-    await heartbeat.resumeQueuedRuns();
-    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.releaseIssueExecutionAndPromote(run);
 
-    const issue = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0] ?? null);
-
+    const issue = await loadIssue(issueId);
     expect(issue?.status).toBe("in_progress");
     expect(issue?.completedAt).toBeNull();
   });
@@ -291,37 +236,30 @@ describeEmbeddedPostgres("heartbeat process-adapter done lifecycle", () => {
     const doneCompletedAt = new Date("2026-03-19T00:00:00.000Z");
     const { runId, issueId } = await seedRunFixture({
       adapterType: "process",
-      runStatus: "running",
+      runStatus: "succeeded",
       issueStatus: "done",
       issueCompletedAt: doneCompletedAt,
     });
     const heartbeat = heartbeatService(db);
+    const run = await loadRun(runId);
 
-    await heartbeat.cancelRun(runId);
+    await heartbeat.releaseIssueExecutionAndPromote(run);
 
-    const issue = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0] ?? null);
-
+    const issue = await loadIssue(issueId);
     expect(issue?.status).toBe("done");
-    expect(issue?.completedAt).not.toBeNull();
+    expect(issue?.completedAt?.toISOString()).toBe(doneCompletedAt.toISOString());
   });
 
   it("still releases the execution lock regardless of the done gate", async () => {
-    const { runId, issueId } = await seedRunFixture({ adapterType: "process" });
+    const { runId, issueId } = await seedRunFixture({ adapterType: "process", runStatus: "succeeded" });
     const heartbeat = heartbeatService(db);
+    const run = await loadRun(runId);
 
-    await heartbeat.resumeQueuedRuns();
-    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.releaseIssueExecutionAndPromote(run);
 
-    const issue = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0] ?? null);
-
+    const issue = await loadIssue(issueId);
     expect(issue?.executionRunId).toBeNull();
+    expect(issue?.executionAgentNameKey).toBeNull();
+    expect(issue?.executionLockedAt).toBeNull();
   });
 });

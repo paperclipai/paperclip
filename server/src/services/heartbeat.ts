@@ -5430,5 +5430,10 @@ export function heartbeatService(db: Db) {
         .limit(1);
       return run ?? null;
     },
+
+    // Exposed for targeted unit tests of the done-gate / deferred-wake promotion
+    // logic. Production callers should go through executeRun/cancelRun, which
+    // invoke this internally after finalizing run state.
+    releaseIssueExecutionAndPromote,
   };
 }
