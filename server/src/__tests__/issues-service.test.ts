@@ -754,6 +754,133 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("derives compact latest handoff summaries from structured handoff activity", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const mainAgentId = randomUUID();
+    const orkAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Hand the task to Ork",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(agents).values([
+      {
+        id: mainAgentId,
+        companyId,
+        name: "Main",
+        role: "coordinator",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: orkAgentId,
+        companyId,
+        name: "Ork",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: mainAgentId,
+      agentId: mainAgentId,
+      action: "issue.handoff_updated",
+      entityType: "issue",
+      entityId: issueId,
+      createdAt: new Date("2026-04-18T12:00:00.000Z"),
+      details: {
+        missionControl: {
+          handoff: {
+            fromAgentId: mainAgentId,
+            toAgentId: orkAgentId,
+            reason: "Engineering implementation",
+            requestedNextStep: "Take ownership",
+            unblockCondition: null,
+          },
+        },
+        _previous: {
+          missionControl: {
+            handoff: null,
+          },
+        },
+      },
+    });
+
+    const [result] = await svc.list(companyId, {});
+
+    expect(result?.latestHandoffSummary).toMatchObject({
+      text: "Created handoff",
+      action: "issue.handoff_updated",
+      actorType: "agent",
+      actorId: mainAgentId,
+      agentId: mainAgentId,
+    });
+  });
+
+  it("keeps reviewer changes out of the handoff summary lane", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review the task",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "user-1",
+      action: "issue.reviewers_updated",
+      entityType: "issue",
+      entityId: issueId,
+      createdAt: new Date("2026-04-18T13:00:00.000Z"),
+      details: {
+        participants: [{ type: "agent", agentId: "agent-reviewer" }],
+      },
+    });
+
+    const [result] = await svc.list(companyId, {});
+
+    expect(result?.latestActivitySummary).toMatchObject({
+      text: "Updated reviewers",
+      action: "issue.reviewers_updated",
+      actorType: "user",
+      actorId: "user-1",
+    });
+    expect(result?.latestHandoffSummary).toBeNull();
+  });
+
   it("trims list payload fields that can grow large on issue index routes", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();

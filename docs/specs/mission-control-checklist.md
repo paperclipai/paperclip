@@ -17,7 +17,7 @@ This feature is only done when:
 - Branch: `feat/mission-control-customization-lane`
 - Implementation owner: `ork`
 - Product/orchestration owner: `main`
-- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, the first operator controls in `IssueProperties`, and the first operational inbox views are now in place; `Resume` now records the existing `resumed` workflow state instead of clearing context, `Resolve handoff` now clears active handoff state through the same issue update surface and keeps handoff/history wording legible, `Reassign owner` now promotes the active handoff target through the same owner/mission-control plumbing so ownership stays clean, `Escalate` now raises `needsHumanAttention` through the same minimal mission-control payload while preserving any existing workflow state, and `Inbox` now exposes practical operational view chips for the broader operator queue, Main/Ork/Stitch/Personal OS owner slices when those agents exist, needs-human, blocked/waiting, and recent handoffs by reusing the existing issue filter/view plumbing. The remaining gap is broader history/use validation
+- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, the first operator controls in `IssueProperties`, and the first operational inbox views are now in place; `Resume` now records the existing `resumed` workflow state instead of clearing context, `Resolve handoff` now clears active handoff state through the same issue update surface and keeps handoff/history wording legible, `Reassign owner` now promotes the active handoff target through the same owner/mission-control plumbing so ownership stays clean, `Escalate` now raises `needsHumanAttention` through the same minimal mission-control payload while preserving any existing workflow state, `Inbox` now exposes practical operational view chips for the broader operator queue, Main/Ork/Stitch/Personal OS owner slices when those agents exist, needs-human, blocked/waiting, and recent handoffs by reusing the existing issue filter/view plumbing, and the existing latest-summary lane now treats structured `issue.handoff_updated` activity as the durable handoff/history source instead of letting reviewer/approver churn masquerade as mission-control handoffs. The remaining gap is broader history/use validation and summary-noise validation
 
 ## Checklist
 
@@ -66,8 +66,8 @@ This feature is only done when:
 - [x] View/filter for recent handoffs
 
 ### 5. Task history / orchestration context
-- [ ] Durable history for meaningful handoffs and state changes
-- [ ] Clear latest meaningful actor/update display
+- [x] Durable history for meaningful handoffs and state changes
+- [x] Clear latest meaningful actor/update display
 - [ ] Avoid transcript-noise creep in summaries
 - [ ] Verify history remains high-signal and compact
 
@@ -99,12 +99,13 @@ This feature is only done when:
 - [ ] Decide whether to open PR / merge / continue iteration
 
 ## Current recommended next slice
-- Durable task history and latest meaningful actor/update summaries under real multi-agent usage
+- Validate the remaining latest-summary noise cases under real multi-agent usage, especially transcript/comment churn vs mission-control state changes
 - After that, validate the new operational views against real Main/Ork/Stitch/Personal OS workflows and make sure the queue stays high-signal
 
 ## Current blockers
-- No hard blocker right now
-- Main remaining gap is broader history verification and real-use validation on top of the workflow-state and operational-view foundation
+- No hard blocker for this slice
+- Repo-wide `pnpm -r typecheck` is currently blocked by an unrelated duplicate DB migration number (`0057_gentle_mission_control.sql` and `0057_tidy_join_requests.sql`)
+- Main remaining gap is broader history verification, summary-noise validation, and real-use validation on top of the workflow-state and operational-view foundation
 
 ## Update rule for Ork
 When meaningful progress lands, Ork should update this checklist with:

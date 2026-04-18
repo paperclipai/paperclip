@@ -158,12 +158,6 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
-const ISSUE_HANDOFF_ACTIONS = new Set([
-  "issue.checked_out",
-  "issue.released",
-  "issue.reviewers_updated",
-  "issue.approvers_updated",
-]);
 const ISSUE_MISSION_CONTROL_WORKFLOW_STATE_KINDS = new Set([
   "waiting_on_human",
   "blocked_on_upstream",
@@ -798,6 +792,10 @@ function toIssueActivitySummary(
   };
 }
 
+function isStructuredHandoffActivity(row: IssueActivitySummaryRow): boolean {
+  return row.action === "issue.handoff_updated";
+}
+
 async function getIssueActivitySummaries(
   db: DbReader,
   companyId: string,
@@ -834,7 +832,7 @@ async function getIssueActivitySummaries(
       const summary = toIssueActivitySummary(row, "activity");
       if (summary) latestActivityByIssueId.set(row.issueId, summary);
     }
-    if (!latestHandoffByIssueId.has(row.issueId) && ISSUE_HANDOFF_ACTIONS.has(row.action)) {
+    if (!latestHandoffByIssueId.has(row.issueId) && isStructuredHandoffActivity(row)) {
       const summary = toIssueActivitySummary(row, "handoff");
       if (summary) latestHandoffByIssueId.set(row.issueId, summary);
     }
