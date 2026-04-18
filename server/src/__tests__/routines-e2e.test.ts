@@ -27,6 +27,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { accessService } from "../services/access.js";
+import { errorHandler as errorHandlerMiddleware } from "../middleware/index.js";
+import { routineRoutes as routineRoutesFactory } from "../routes/routines.js";
 
 vi.mock("../services/index.js", async () => {
   const actual = await vi.importActual<typeof import("../services/index.js")>("../services/index.js");
@@ -79,6 +81,7 @@ vi.mock("../services/index.js", async () => {
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const EMBEDDED_POSTGRES_SETUP_TIMEOUT_MS = 60_000;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -89,16 +92,11 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("routine routes end-to-end", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  let routineRoutesFactory!: typeof import("../routes/routines.js").routineRoutes;
-  let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-e2e-");
     db = createDb(tempDb.connectionString);
-    vi.resetModules();
-    ({ routineRoutes: routineRoutesFactory } = await import("../routes/routines.js"));
-    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_SETUP_TIMEOUT_MS);
 
   afterEach(async () => {
     await db.delete(activityLog);

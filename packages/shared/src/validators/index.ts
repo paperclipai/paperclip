@@ -207,6 +207,7 @@ export {
 
 export {
   createApprovalSchema,
+  strategistDecisionCardPayloadSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,

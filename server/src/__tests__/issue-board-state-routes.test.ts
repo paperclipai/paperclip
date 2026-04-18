@@ -1,6 +1,9 @@
 import express from "express";
 import request from "supertest";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HttpError as HttpErrorCtor } from "../errors.js";
+import { errorHandler as errorHandlerMiddleware } from "../middleware/index.js";
+import { issueRoutes as issueRoutesFactory } from "../routes/issues.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -94,9 +97,6 @@ vi.mock("../services/issue-merge.js", () => ({
 const mockDb = {
   select: vi.fn(),
 } as any;
-let issueRoutesFactory!: typeof import("../routes/issues.js").issueRoutes;
-let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
-let HttpErrorCtor!: typeof import("../errors.js").HttpError;
 
 function createApp() {
   const app = express();
@@ -150,15 +150,8 @@ function makeIssue(overrides?: Record<string, unknown>) {
 }
 
 describe("issue board state routes", () => {
-  beforeAll(async () => {
-    vi.resetModules();
-    ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
-    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-    ({ HttpError: HttpErrorCtor } = await import("../errors.js"));
-  }, 30_000);
-
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.getAncestors.mockResolvedValue([]);

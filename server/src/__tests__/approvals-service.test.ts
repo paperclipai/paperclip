@@ -251,4 +251,81 @@ describe("approvalService resolution idempotency", () => {
       }),
     );
   });
+
+  it("rejects strategist resubmissions that do not satisfy the decision card contract", async () => {
+    const revisionRequested: ApprovalRecord = {
+      id: "approval-2",
+      companyId: "company-1",
+      type: "approve_ceo_strategy",
+      status: "revision_requested",
+      payload: {
+        recommendation: "Proceed with the launch.",
+        why: ["We need to move quickly."],
+        topRisk: "We could learn too late.",
+        confidence: "low",
+        nextStepMode: "execute",
+        nextStep: "Start rollout.",
+      },
+      requestedByAgentId: "requester-1",
+    };
+    const dbStub = createDbStub([[revisionRequested]], []);
+
+    const svc = approvalService(dbStub.db as any);
+
+    await expect(svc.resubmit("approval-2", revisionRequested.payload)).rejects.toThrow(
+      "changeMyMind is required when confidence is low or medium",
+    );
+    expect(dbStub.setCalls).toHaveLength(0);
+  });
+
+  it("normalizes strategist resubmissions before persisting them", async () => {
+    const revisionRequested: ApprovalRecord = {
+      id: "approval-3",
+      companyId: "company-1",
+      type: "approve_ceo_strategy",
+      status: "revision_requested",
+      payload: {
+        recommendation: "Old direction",
+        why: ["Old reason"],
+        topRisk: "Old risk",
+        confidence: "high",
+        nextStepMode: "execute",
+        nextStep: "Old next step",
+      },
+      requestedByAgentId: "requester-1",
+    };
+    const updated: ApprovalRecord = {
+      ...revisionRequested,
+      status: "pending",
+      payload: {
+        recommendation: "Run a focused pricing probe before a full launch.",
+        why: ["The evidence is directionally positive but still incomplete."],
+        topRisk: "A full rollout could lock the team into the wrong pricing model.",
+        confidence: "medium",
+        nextStepMode: "probe",
+        nextStep: "Run a two-week pricing test on a limited cohort.",
+        changeMyMind: "If paid conversion does not improve, keep the current pricing.",
+      },
+    };
+    const dbStub = createDbStub([[revisionRequested]], [[updated]]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.resubmit("approval-3", {
+      recommendation: "Run a focused pricing probe before a full launch.",
+      why: ["The evidence is directionally positive but still incomplete."],
+      topRisk: "A full rollout could lock the team into the wrong pricing model.",
+      confidence: "Medium",
+      nextStepMode: "Probe",
+      nextStep: "Run a two-week pricing test on a limited cohort.",
+      changeMyMind: "If paid conversion does not improve, keep the current pricing.",
+    });
+
+    expect(result.status).toBe("pending");
+    expect(dbStub.setCalls.at(-1)).toMatchObject({
+      payload: expect.objectContaining({
+        confidence: "medium",
+        nextStepMode: "probe",
+      }),
+    });
+  });
 });

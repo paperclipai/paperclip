@@ -1,4 +1,5 @@
-import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import type { ReactNode } from "react";
+import { ChevronRight, Lightbulb, ShieldAlert, ShieldCheck, UserPlus } from "lucide-react";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
@@ -17,11 +18,92 @@ function firstNonEmptyString(...values: unknown[]): string | null {
   return null;
 }
 
+function firstNonEmptyArray(...values: unknown[]): string[] {
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      const items = value
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+      if (items.length > 0) return items;
+    }
+    if (typeof value === "string") {
+      const item = value.trim();
+      if (item.length > 0) return [item];
+    }
+  }
+  return [];
+}
+
+type StrategyDecisionCard = {
+  recommendation: string;
+  why: string[];
+  topRisk: string | null;
+  confidence: "low" | "medium" | "high" | null;
+  nextStepMode: "execute" | "probe" | "escalate" | null;
+  nextStep: string | null;
+  alternatives: string[];
+  evidence: string[];
+  changeMyMind: string | null;
+};
+
+const CONFIDENCE_TONES: Record<NonNullable<StrategyDecisionCard["confidence"]>, string> = {
+  high: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  medium: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  low: "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+};
+
+const NEXT_STEP_LABELS: Record<NonNullable<StrategyDecisionCard["nextStepMode"]>, string> = {
+  execute: "Execute",
+  probe: "Run Probe",
+  escalate: "Escalate",
+};
+
+function parseStrategyDecisionCard(payload: Record<string, unknown>): StrategyDecisionCard | null {
+  const recommendation = firstNonEmptyString(
+    payload.recommendation,
+    payload.recommendedDirection,
+  );
+  const why = firstNonEmptyArray(payload.why, payload.whyThisDirection).slice(0, 3);
+  const topRisk = firstNonEmptyString(payload.topRisk, Array.isArray(payload.risks) ? payload.risks[0] : null);
+  const confidenceCandidate = firstNonEmptyString(payload.confidence)?.toLowerCase();
+  const confidence =
+    confidenceCandidate === "low" || confidenceCandidate === "medium" || confidenceCandidate === "high"
+      ? confidenceCandidate
+      : null;
+  const nextStepModeCandidate = firstNonEmptyString(payload.nextStepMode)?.toLowerCase();
+  const nextStepMode =
+    nextStepModeCandidate === "execute" || nextStepModeCandidate === "probe" || nextStepModeCandidate === "escalate"
+      ? nextStepModeCandidate
+      : null;
+  const nextStep = firstNonEmptyString(payload.nextStep, payload.nextActionOnApproval);
+  const alternatives = firstNonEmptyArray(payload.alternatives, payload.alternativesConsidered).slice(0, 2);
+  const evidence = firstNonEmptyArray(payload.evidence);
+  const changeMyMind = firstNonEmptyString(payload.changeMyMind, payload.whatWouldChangeMyMind);
+
+  if (!recommendation) return null;
+  if (why.length === 0 && !topRisk && !confidence && !nextStep) return null;
+
+  return {
+    recommendation,
+    why,
+    topRisk,
+    confidence,
+    nextStepMode,
+    nextStep,
+    alternatives,
+    evidence,
+    changeMyMind,
+  };
+}
+
 export function approvalSubject(payload?: Record<string, unknown> | null): string | null {
   return firstNonEmptyString(
     payload?.title,
     payload?.name,
     payload?.summary,
+    payload?.recommendation,
+    payload?.recommendedDirection,
     payload?.recommendedAction,
   );
 }
@@ -44,6 +126,133 @@ export const typeIcon: Record<string, typeof UserPlus> = {
 };
 
 export const defaultTypeIcon = ShieldCheck;
+
+function StrategistSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-1">
+      <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">{title}</p>
+      {children}
+    </div>
+  );
+}
+
+function StrategistDisclosure({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <details className="group rounded-lg border border-border/60 bg-background/40 px-3.5 py-2.5">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+        <span>{title}</span>
+        <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
+      </summary>
+      <div className="mt-2 text-sm text-foreground/90">{children}</div>
+    </details>
+  );
+}
+
+function StrategistDecisionCard({ payload }: { payload: Record<string, unknown> }) {
+  const card = parseStrategyDecisionCard(payload);
+  if (!card) return null;
+
+  return (
+    <div className="space-y-3.5 rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
+      <StrategistSection title="Recommended Direction">
+        <p className="leading-6 text-foreground">{card.recommendation}</p>
+      </StrategistSection>
+
+      {card.why.length > 0 && (
+        <StrategistSection title="Why This Direction">
+          <ul className="space-y-1.5 text-sm text-foreground/90">
+            {card.why.map((reason) => (
+              <li key={reason} className="flex items-start gap-2">
+                <span className="mt-2 h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
+                <span className="leading-6">{reason}</span>
+              </li>
+            ))}
+          </ul>
+        </StrategistSection>
+      )}
+
+      {card.topRisk && (
+        <StrategistSection title="Top Risk">
+          <p className="leading-6 text-foreground/90">{card.topRisk}</p>
+        </StrategistSection>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {card.confidence && (
+          <StrategistSection title="Confidence">
+            <span
+              className={[
+                "inline-flex rounded-full border px-2 py-1 text-xs font-medium capitalize",
+                CONFIDENCE_TONES[card.confidence],
+              ].join(" ")}
+            >
+              {card.confidence.slice(0, 1).toUpperCase() + card.confidence.slice(1)}
+            </span>
+          </StrategistSection>
+        )}
+
+        {(card.nextStepMode || card.nextStep) && (
+          <StrategistSection title="Next Step">
+            <div className="space-y-2">
+              {card.nextStepMode && (
+                <span className="inline-flex rounded-full border border-border/70 bg-muted/40 px-2 py-1 text-xs font-medium text-foreground">
+                  {NEXT_STEP_LABELS[card.nextStepMode]}
+                </span>
+              )}
+              {card.nextStep && (
+                <p className="leading-6 text-foreground/90">{card.nextStep}</p>
+              )}
+            </div>
+          </StrategistSection>
+        )}
+      </div>
+
+      {card.alternatives.length > 0 && (
+        <StrategistDisclosure title="Alternatives Considered">
+          <ul className="space-y-1.5">
+            {card.alternatives.map((alternative) => (
+              <li key={alternative} className="flex items-start gap-2">
+                <span className="mt-2 h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
+                <span className="leading-6">{alternative}</span>
+              </li>
+            ))}
+          </ul>
+        </StrategistDisclosure>
+      )}
+
+      {card.evidence.length > 0 && (
+        <StrategistDisclosure title="Evidence">
+          <ul className="space-y-1.5">
+            {card.evidence.map((item) => (
+              <li key={item} className="flex items-start gap-2">
+                <span className="mt-2 h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
+                <span className="leading-6">{item}</span>
+              </li>
+            ))}
+          </ul>
+        </StrategistDisclosure>
+      )}
+
+      {card.changeMyMind && (
+        <StrategistDisclosure title="What Would Change My Mind">
+          <p className="leading-6">{card.changeMyMind}</p>
+        </StrategistDisclosure>
+      )}
+    </div>
+  );
+}
 
 function PayloadField({ label, value }: { label: string; value: unknown }) {
   if (!value) return null;
@@ -110,6 +319,15 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
 }
 
 export function CeoStrategyPayload({ payload }: { payload: Record<string, unknown> }) {
+  const decisionCard = parseStrategyDecisionCard(payload);
+  if (decisionCard) {
+    return (
+      <div className="mt-3">
+        <StrategistDecisionCard payload={payload} />
+      </div>
+    );
+  }
+
   const plan = payload.plan ?? payload.description ?? payload.strategy ?? payload.text;
   return (
     <div className="mt-3 space-y-1.5 text-sm">
@@ -162,6 +380,15 @@ export function BoardApprovalPayload({
 }
 
 function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unknown> }) {
+  const strategistDecisionCard = parseStrategyDecisionCard(payload);
+  if (strategistDecisionCard) {
+    return (
+      <div className="mt-4">
+        <StrategistDecisionCard payload={payload} />
+      </div>
+    );
+  }
+
   const risks = Array.isArray(payload.risks)
     ? payload.risks
         .filter((value): value is string => typeof value === "string")

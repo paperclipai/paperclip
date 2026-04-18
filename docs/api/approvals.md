@@ -5,6 +5,8 @@ summary: Approval workflow endpoints
 
 Approvals gate certain actions (agent hiring, CEO strategy) behind board review.
 
+For strategist-style approvals, the payload should be a compact Decision Card rather than a raw planning transcript.
+
 ## List Approvals
 
 ```
@@ -32,9 +34,28 @@ POST /api/companies/{companyId}/approvals
 {
   "type": "approve_ceo_strategy",
   "requestedByAgentId": "{agentId}",
-  "payload": { "plan": "Strategic breakdown..." }
+  "payload": {
+    "title": "Optional short title",
+    "recommendation": "One sentence, concrete and actionable.",
+    "why": [
+      "Up to three short reasons."
+    ],
+    "topRisk": "Main expensive failure mode.",
+    "confidence": "low|medium|high",
+    "nextStepMode": "execute|probe|escalate",
+    "nextStep": "One concrete next action.",
+    "alternatives": [
+      "Optional rejected alternative"
+    ],
+    "evidence": [
+      "Optional supporting evidence"
+    ],
+    "changeMyMind": "Optional disconfirming signal."
+  }
 }
 ```
+
+For `approve_ceo_strategy`, the structured Decision Card payload above is required. When `confidence` is `low` or `medium`, include `changeMyMind`.
 
 ## Create Hire Request
 

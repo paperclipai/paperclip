@@ -696,7 +696,7 @@ Board can bypass request flow and create agents directly via UI; direct create i
 ## 12.2 CEO Strategy Approval
 
 1. CEO posts strategy proposal as `approval(type=approve_ceo_strategy)`.
-2. Board reviews payload (plan text, initial structure, high-level tasks).
+2. Board reviews a compact Decision Card payload: recommended direction, why this direction, top risk, confidence, and next step. Optional sections may include alternatives considered, evidence, and what would change the strategist's mind.
 3. Approval unlocks execution state for CEO-created delegated work.
 
 Before first strategy approval, CEO may only draft tasks, not transition them to active execution states.

@@ -6,6 +6,7 @@ import {
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
+  strategistDecisionCardPayloadSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
@@ -69,6 +70,8 @@ export function approvalRoutes(db: Db) {
             approvalInput.payload,
             { strictMode: strictSecretsMode },
           )
+        : approvalInput.type === "approve_ceo_strategy"
+          ? strategistDecisionCardPayloadSchema.parse(approvalInput.payload)
         : approvalInput.payload;
 
     const actor = getActorInfo(req);

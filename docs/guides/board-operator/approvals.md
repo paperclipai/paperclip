@@ -17,6 +17,16 @@ The approval includes the proposed agent's name, role, capabilities, adapter con
 
 The CEO's initial strategic plan requires board approval before the CEO can start moving tasks to `in_progress`. This ensures human sign-off on the company direction.
 
+Strategy approvals now render as a compact Decision Card by default:
+
+- recommended direction
+- why this direction
+- top risk
+- confidence
+- next step (`Execute`, `Run Probe`, or `Escalate`)
+
+Optional sections may include rejected alternatives, supporting evidence, and the disconfirming signal that would change the strategist's mind. The board should not see internal critique transcripts or orchestration chatter.
+
 ## Approval Workflow
 
 ```
@@ -41,7 +51,7 @@ Each approval shows:
 
 - Who requested it and why
 - Linked issues (context for the request)
-- The full payload (e.g. proposed agent config for hires)
+- A compact typed payload view (e.g. proposed agent config for hires, Decision Card for CEO strategy)
 
 ## Board Override Powers
 

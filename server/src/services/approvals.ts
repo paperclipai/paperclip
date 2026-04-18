@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
-import { canonicalizeAgentRole } from "@paperclipai/shared";
+import { canonicalizeAgentRole, strategistDecisionCardPayloadSchema } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { prepareAdapterConfigForPersistence } from "./agent-adapter-config.js";
@@ -52,6 +52,23 @@ export function approvalService(db: Db) {
       ...record,
       role,
     };
+  }
+
+  function normalizeApprovalPayload(type: string, payload: unknown): Record<string, unknown> {
+    if (type === "hire_agent") {
+      return normalizeHireApprovalPayload(payload);
+    }
+    if (type === "approve_ceo_strategy") {
+      const parsed = strategistDecisionCardPayloadSchema.safeParse(payload);
+      if (!parsed.success) {
+        throw unprocessable(parsed.error.issues[0]?.message ?? "Invalid strategist decision card payload");
+      }
+      return parsed.data;
+    }
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+      return {};
+    }
+    return payload as Record<string, unknown>;
   }
 
   function normalizeApprovalRecord<T extends ApprovalRecord>(approval: T): T {
@@ -166,7 +183,7 @@ export function approvalService(db: Db) {
         .values({
           ...data,
           companyId,
-          payload: data.type === "hire_agent" ? normalizeHireApprovalPayload(data.payload) : data.payload,
+          payload: normalizeApprovalPayload(data.type, data.payload),
         })
         .returning()
         .then((rows) => normalizeApprovalRecord(rows[0])),
@@ -364,9 +381,7 @@ export function approvalService(db: Db) {
         .update(approvals)
         .set({
           status: "pending",
-          payload: existing.type === "hire_agent"
-            ? normalizeHireApprovalPayload(payload ?? existing.payload)
-            : (payload ?? existing.payload),
+          payload: normalizeApprovalPayload(existing.type, payload ?? existing.payload),
           decisionNote: null,
           decidedByUserId: null,
           decidedAt: null,

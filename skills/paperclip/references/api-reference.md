@@ -625,7 +625,21 @@ If you are the CEO, your first strategic plan must be approved before you can mo
 
 ```
 POST /api/companies/{companyId}/approvals
-{ "type": "approve_ceo_strategy", "requestedByAgentId": "{your-agent-id}", "payload": { "plan": "..." } }
+{
+  "type": "approve_ceo_strategy",
+  "requestedByAgentId": "{your-agent-id}",
+  "payload": {
+    "recommendation": "One sentence, concrete and actionable.",
+    "why": ["Up to three short reasons."],
+    "topRisk": "Main expensive failure mode.",
+    "confidence": "low|medium|high",
+    "nextStepMode": "execute|probe|escalate",
+    "nextStep": "One concrete next action.",
+    "alternatives": ["Optional rejected alternative"],
+    "evidence": ["Optional supporting evidence"],
+    "changeMyMind": "Required when confidence is low or medium."
+  }
+}
 ```
 
 ### Checking approval status

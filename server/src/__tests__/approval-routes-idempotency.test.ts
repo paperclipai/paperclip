@@ -177,4 +177,75 @@ describe("approval routes idempotent retries", () => {
       }),
     );
   });
+
+  it("normalizes strategist decision cards before persisting CEO strategy approvals", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-2",
+      companyId: "company-1",
+      type: "approve_ceo_strategy",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: {
+        recommendation: "Run a limited pricing probe before a full launch.",
+        why: ["Current evidence is promising but still incomplete."],
+        topRisk: "A full rollout could commit the team to the wrong pricing model.",
+        confidence: "medium",
+        nextStepMode: "probe",
+        nextStep: "Run a two-week pricing test on a limited cohort.",
+        changeMyMind: "If paid conversion does not improve, keep the current pricing.",
+      },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-17T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-17T00:00:00.000Z"),
+    });
+
+    const res = await request(createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "approve_ceo_strategy",
+        payload: {
+          recommendation: "Run a limited pricing probe before a full launch.",
+          why: ["Current evidence is promising but still incomplete."],
+          topRisk: "A full rollout could commit the team to the wrong pricing model.",
+          confidence: "Medium",
+          nextStepMode: "Probe",
+          nextStep: "Run a two-week pricing test on a limited cohort.",
+          changeMyMind: "If paid conversion does not improve, keep the current pricing.",
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        type: "approve_ceo_strategy",
+        payload: expect.objectContaining({
+          confidence: "medium",
+          nextStepMode: "probe",
+        }),
+      }),
+    );
+  });
+
+  it("rejects malformed CEO strategy approvals before they reach the service", async () => {
+    const res = await request(createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "approve_ceo_strategy",
+        payload: {
+          recommendation: "Ship the strategy.",
+          why: ["It feels right."],
+          topRisk: "We could be wrong.",
+          confidence: "low",
+          nextStepMode: "execute",
+          nextStep: "Start immediately.",
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
 });

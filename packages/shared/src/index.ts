@@ -596,6 +596,7 @@ export {
   type CreateGoal,
   type UpdateGoal,
   createApprovalSchema,
+  strategistDecisionCardPayloadSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
   resolveApprovalSchema,

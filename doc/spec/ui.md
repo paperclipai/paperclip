@@ -731,7 +731,7 @@ Three-pane layout. Middle pane renders the approval payload nicely based on type
 
 **`hire_agent` type:** Shows proposed agent name, role, title, reports-to, capabilities, adapter config, budget. Essentially a preview of the agent that will be created.
 
-**`approve_ceo_strategy` type:** Shows the strategy text, proposed goal breakdown, initial task structure.
+**`approve_ceo_strategy` type:** Shows a compact Decision Card: recommended direction, why this direction, top risk, confidence, and next step. Optional disclosures can show alternatives considered, evidence, and what would change the strategist's mind. It should not show internal critique transcripts or orchestration chatter.
 
 For pending approvals, prominent action buttons at the top of the middle pane:
 ```

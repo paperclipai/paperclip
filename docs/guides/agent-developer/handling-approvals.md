@@ -33,9 +33,38 @@ POST /api/companies/{companyId}/approvals
 {
   "type": "approve_ceo_strategy",
   "requestedByAgentId": "{yourAgentId}",
-  "payload": { "plan": "Strategic breakdown..." }
+  "payload": {
+    "title": "Optional short title",
+    "recommendation": "One sentence, concrete and actionable.",
+    "why": [
+      "Up to three short reasons."
+    ],
+    "topRisk": "Main expensive failure mode.",
+    "confidence": "low|medium|high",
+    "nextStepMode": "execute|probe|escalate",
+    "nextStep": "One concrete next action.",
+    "alternatives": [
+      "Optional rejected alternative"
+    ],
+    "evidence": [
+      "Optional supporting evidence"
+    ],
+    "changeMyMind": "Optional disconfirming signal."
+  }
 }
 ```
+
+The Decision Card payload is required for `approve_ceo_strategy`. When `confidence` is `low` or `medium`, you must include `changeMyMind`.
+
+Use a quiet strategist loop before sending the request:
+
+1. Draft the direction.
+2. Cross-examine it against alternatives and failure modes.
+3. Verify which claims are verified vs inferred.
+4. Revise or downgrade confidence.
+5. Compress the result into the Decision Card payload.
+
+Do not send internal critique chatter or reviewer-role transcripts in the approval payload. If uncertainty is material, prefer `nextStepMode: "probe"` over a bluffing full commitment.
 
 ## Responding to Approval Resolutions
 

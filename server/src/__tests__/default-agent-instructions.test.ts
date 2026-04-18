@@ -57,4 +57,21 @@ describe("loadDefaultAgentInstructionsBundle", () => {
       );
     }
   });
+
+  it("teaches strategist roles to use an internal review loop and publish a decision card", async () => {
+    const ceoBundle = await loadDefaultAgentInstructionsBundle("ceo");
+    const cooBundle = await loadDefaultAgentInstructionsBundle("coo");
+    const defaultBundle = await loadDefaultAgentInstructionsBundle("default");
+
+    for (const bundle of [ceoBundle, cooBundle, defaultBundle]) {
+      expect(bundle["AGENTS.md"]).toContain("Draft -> Cross-examine -> Verify -> Revise -> Compress");
+      expect(bundle["AGENTS.md"]).toContain("Decision Card");
+      expect(bundle["AGENTS.md"]).toContain("Do not expose internal debate, reviewer personas, or orchestration chatter.");
+      expect(bundle["AGENTS.md"]).toContain("When in doubt between `Execute` and `Run Probe`, default to `Run Probe`.");
+    }
+
+    expect(ceoBundle["AGENTS.md"]).toContain("When you submit `approve_ceo_strategy`");
+    expect(ceoBundle["AGENTS.md"]).toContain("\"recommendation\"");
+    expect(ceoBundle["AGENTS.md"]).toContain("\"nextStepMode\"");
+  });
 });
