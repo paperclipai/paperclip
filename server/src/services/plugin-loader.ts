@@ -4,7 +4,8 @@
  * This service is the entry point for the plugin system's I/O boundary:
  *
  * 1. **Discovery** — Scans the local plugin directory
- *    (`~/.paperclip/plugins/`) and `node_modules` for packages matching
+ *    (`$PAPERCLIP_HOME/plugins/` when configured, otherwise `~/.paperclip/plugins/`)
+ *    and `node_modules` for packages matching
  *    the `paperclip-plugin-*` naming convention. Aggregates results with
  *    path-based deduplication.
  *
@@ -27,7 +28,6 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -39,6 +39,7 @@ import type {
   PluginUiSlotDeclaration,
 } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
+import { resolveDefaultLocalPluginDir } from "../home-paths.js";
 import { pluginManifestValidator } from "./plugin-manifest-validator.js";
 import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
 import { pluginRegistryService } from "./plugin-registry.js";
@@ -70,11 +71,9 @@ export const NPM_PLUGIN_PACKAGE_PREFIX = "paperclip-plugin-";
  *
  * @see PLUGIN_SPEC.md §8.1 — On-Disk Layout
  */
-export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
-  os.homedir(),
-  ".paperclip",
-  "plugins",
-);
+export function getDefaultLocalPluginDir(): string {
+  return resolveDefaultLocalPluginDir();
+}
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
@@ -143,7 +142,7 @@ function getDeclaredPageRoutePaths(manifest: PaperclipPluginManifestV1): string[
 export interface PluginLoaderOptions {
   /**
    * Path to the local plugin directory to scan.
-   * Defaults to ~/.paperclip/plugins/
+   * Defaults to $PAPERCLIP_HOME/plugins/ when configured, otherwise ~/.paperclip/plugins/
    */
   localPluginDir?: string;
 
@@ -734,7 +733,7 @@ export function pluginLoader(
   runtimeServices?: PluginRuntimeServices,
 ): PluginLoader {
   const {
-    localPluginDir = DEFAULT_LOCAL_PLUGIN_DIR,
+    localPluginDir = getDefaultLocalPluginDir(),
     enableLocalFilesystem = true,
     enableNpmDiscovery = true,
   } = options;
