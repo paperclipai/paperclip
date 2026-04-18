@@ -76,7 +76,9 @@ function layoutDAG(nodes: WorkflowTemplateNode[]): {
 
   const layerMap = assignLayers(nodes);
   const rootIds = new Set(
-    nodes.filter((n) => !n.parentTempId).map((n) => n.tempId),
+    nodes
+      .filter((n) => !n.parentTempId && n.blockedByTempIds.length === 0)
+      .map((n) => n.tempId),
   );
 
   // Group by layer
@@ -385,10 +387,10 @@ export function WorkflowDAGView({
               onClick={() => onNodeClick?.(node.tempId)}
             >
               <div className="px-3 py-2">
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-start gap-1.5">
                   {/* Status indicator */}
                   <span
-                    className={`shrink-0 w-2 h-2 rounded-full ${
+                    className={`shrink-0 mt-1 w-2 h-2 rounded-full ${
                       node.isRoot
                         ? "bg-primary"
                         : hasBlockers
@@ -396,7 +398,7 @@ export function WorkflowDAGView({
                           : "bg-emerald-400"
                     }`}
                   />
-                  <span className="text-sm font-medium truncate">{node.title || "Untitled"}</span>
+                  <span className="text-sm font-medium leading-tight break-words" style={{ wordBreak: "break-word" }}>{node.title || "Untitled"}</span>
                 </div>
                 <div className="flex items-center gap-2 mt-1">
                   <code className="text-[10px] text-muted-foreground bg-muted px-1 py-0.5 rounded font-mono">
@@ -421,10 +423,10 @@ export function WorkflowDAGView({
           <span className="w-2 h-2 rounded-full bg-primary" /> Root
         </span>
         <span className="flex items-center gap-1">
-          <span className="w-2 h-2 rounded-full bg-emerald-400" /> Ready
+          <span className="w-2 h-2 rounded-full bg-emerald-400" /> No deps
         </span>
         <span className="flex items-center gap-1">
-          <span className="w-2 h-2 rounded-full bg-amber-400" /> Blocked
+          <span className="w-2 h-2 rounded-full bg-amber-400" /> Has deps
         </span>
         <span className="flex items-center gap-1">
           → Dependency

@@ -175,7 +175,7 @@ export function workflowTemplateService(db: Db) {
             priority: overrides?.priority ?? node.defaultPriority ?? "medium",
             assigneeAgentId: overrides?.assigneeAgentId ?? node.defaultAssigneeAgentId ?? input.defaultAssigneeAgentId ?? null,
             assigneeUserId: overrides?.assigneeUserId ?? null,
-            projectId: overrides?.projectId ?? input.projectId ?? null,
+            projectId: overrides?.projectId ?? node.defaultProjectId ?? input.projectId ?? null,
             goalId: overrides?.goalId ?? input.goalId ?? null,
             billingCode: overrides?.billingCode ?? null,
             executionPolicy: (overrides?.executionPolicy ?? node.executionPolicy ?? null) as any,

@@ -1,14 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@/lib/router";
-import { GitBranch, MoreHorizontal, Play, Plus, Trash2 } from "lucide-react";
+import { GitBranch, MoreHorizontal, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { workflowTemplatesApi } from "../api/workflow-templates";
+import { agentsApi } from "../api/agents";
+import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { MarkdownEditor } from "../components/MarkdownEditor";
+import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
+import { AgentIcon } from "../components/AgentIconPicker";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -31,6 +37,37 @@ export function Workflows() {
 
   const [showCreate, setShowCreate] = useState(false);
   const [showInvoke, setShowInvoke] = useState<string | null>(null);
+  const [invokeContext, setInvokeContext] = useState("");
+  const [invokeAgentId, setInvokeAgentId] = useState("");
+
+  const { data: agents = [] } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: projects = [] } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const assigneeOptions = useMemo<InlineEntityOption[]>(
+    () =>
+      agents
+        .filter((a) => a.status !== "terminated")
+        .map((a) => ({
+          id: a.id,
+          label: a.name,
+          searchText: `${a.name} ${a.role} ${a.title ?? ""}`,
+        })),
+    [agents],
+  );
+
+  const mentionOptions = useMemo(
+    () => buildMarkdownMentionOptions({ agents, projects }),
+    [agents, projects],
+  );
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Workflows" }]);
@@ -59,6 +96,8 @@ export function Workflows() {
         title: `Workflow invoked — ${result.createdIssues.length} issues created`,
       });
       setShowInvoke(null);
+      setInvokeContext("");
+      setInvokeAgentId("");
       navigate(`/issues/${result.rootIssueId}`);
     },
   });
@@ -124,6 +163,7 @@ export function Workflows() {
                         <DropdownMenuItem
                           onClick={() => navigate(`/workflows/${t.id}/edit`)}
                         >
+                          <Pencil className="mr-2 h-4 w-4" />
                           Edit
                         </DropdownMenuItem>
                         <DropdownMenuItem
@@ -143,17 +183,75 @@ export function Workflows() {
         </div>
       )}
 
-      {/* Quick invoke dialog */}
-      <Dialog open={!!showInvoke} onOpenChange={() => setShowInvoke(null)}>
+      {/* Invoke dialog */}
+      <Dialog open={!!showInvoke} onOpenChange={(open) => { if (!open) { setShowInvoke(null); setInvokeContext(""); setInvokeAgentId(""); } }}>
         <DialogContent>
           <h2 className="text-lg font-semibold mb-4">Invoke Workflow</h2>
-          <p className="text-sm text-muted-foreground mb-4">
-            This will create a new issue tree from the template.
-          </p>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setShowInvoke(null)}>Cancel</Button>
+          <div className="space-y-3">
+            <div>
+              <label className="text-sm font-medium">Context / prompt</label>
+              <div className="mt-1 rounded-md border border-border">
+                <MarkdownEditor
+                  value={invokeContext}
+                  onChange={setInvokeContext}
+                  placeholder="Describe what this run is for — use @mention to reference agents or projects"
+                  mentions={mentionOptions}
+                  contentClassName="text-sm min-h-[100px]"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                This context will be prepended to every issue description in the workflow.
+              </p>
+            </div>
+            <div>
+              <label className="text-sm font-medium mb-1.5 block">Default assignee</label>
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <span className="text-xs shrink-0">For</span>
+                <InlineEntitySelector
+                  value={invokeAgentId}
+                  options={assigneeOptions}
+                  placeholder="Assignee"
+                  noneLabel="No assignee (use node defaults)"
+                  searchPlaceholder="Search agents..."
+                  emptyMessage="No agents found."
+                  disablePortal
+                  onChange={setInvokeAgentId}
+                  renderTriggerValue={(option) => {
+                    if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                    const agent = agents.find((a) => a.id === option.id);
+                    return (
+                      <>
+                        {agent && <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                        <span className="truncate">{option.label}</span>
+                      </>
+                    );
+                  }}
+                  renderOption={(option) => {
+                    const agent = agents.find((a) => a.id === option.id);
+                    return (
+                      <>
+                        {agent && <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                        <span className="truncate">{option.label}</span>
+                      </>
+                    );
+                  }}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Assigned to issues that don't have a per-node agent configured.
+              </p>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            <Button variant="outline" onClick={() => { setShowInvoke(null); setInvokeContext(""); setInvokeAgentId(""); }}>Cancel</Button>
             <Button
-              onClick={() => showInvoke && invokeMutation.mutate({ id: showInvoke, data: {} })}
+              onClick={() => showInvoke && invokeMutation.mutate({
+                id: showInvoke,
+                data: {
+                  ...(invokeContext.trim() ? { context: invokeContext.trim() } : {}),
+                  ...(invokeAgentId ? { defaultAssigneeAgentId: invokeAgentId } : {}),
+                },
+              })}
               disabled={invokeMutation.isPending}
             >
               {invokeMutation.isPending ? "Invoking..." : "Invoke"}

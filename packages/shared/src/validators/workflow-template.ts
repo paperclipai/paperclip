@@ -11,6 +11,7 @@ const workflowTemplateNodeSchema = z.object({
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
   defaultAssigneeAgentId: z.string().uuid().optional().nullable(),
   defaultPriority: z.enum(ISSUE_PRIORITIES).optional().nullable(),
+  defaultProjectId: z.string().uuid().optional().nullable(),
 });
 
 export const createWorkflowTemplateSchema = z.object({

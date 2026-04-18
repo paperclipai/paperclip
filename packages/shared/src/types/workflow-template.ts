@@ -9,6 +9,7 @@ export interface WorkflowTemplateNode {
   executionPolicy?: IssueExecutionPolicy | null;
   defaultAssigneeAgentId?: string | null;
   defaultPriority?: "critical" | "high" | "medium" | "low" | null;
+  defaultProjectId?: string | null;
 }
 
 export interface WorkflowTemplate {

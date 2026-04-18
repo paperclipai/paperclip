@@ -1,19 +1,34 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@/lib/router";
-import { ArrowLeft, ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowDown,
+  ArrowUp,
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  Minus,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import { workflowTemplatesApi } from "../api/workflow-templates";
 import { agentsApi } from "../api/agents";
+import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { priorityColor, priorityColorDefault } from "../lib/status-colors";
+import { cn } from "../lib/utils";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
+import { AgentIcon } from "../components/AgentIconPicker";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { WorkflowDAGView } from "../components/WorkflowDAGView";
 import type { IssueExecutionPolicy, IssuePriority } from "@paperclipai/shared";
-import { ISSUE_PRIORITIES } from "@paperclipai/shared";
 
 interface NodeDraft {
   tempId: string;
@@ -24,6 +39,7 @@ interface NodeDraft {
   executionPolicy?: IssueExecutionPolicy | null;
   defaultAssigneeAgentId?: string | null;
   defaultPriority?: IssuePriority | null;
+  defaultProjectId?: string | null;
   _metaOpen?: boolean;
 }
 
@@ -53,6 +69,39 @@ export function WorkflowEdit() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: projects = [] } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const assigneeOptions = useMemo<InlineEntityOption[]>(
+    () =>
+      agents
+        .filter((a) => a.status !== "terminated")
+        .map((a) => ({
+          id: a.id,
+          label: a.name,
+          searchText: `${a.name} ${a.role} ${a.title ?? ""}`,
+        })),
+    [agents],
+  );
+
+  const projectOptions = useMemo<InlineEntityOption[]>(
+    () => projects.map((p) => ({ id: p.id, label: p.name, searchText: p.description ?? "" })),
+    [projects],
+  );
+
+  const priorityItems = useMemo(
+    () => [
+      { value: "critical" as const, label: "Critical", icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
+      { value: "high" as const, label: "High", icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault },
+      { value: "medium" as const, label: "Medium", icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
+      { value: "low" as const, label: "Low", icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
+    ],
+    [],
+  );
+
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [nodes, setNodes] = useState<NodeDraft[]>([]);
@@ -80,6 +129,7 @@ export function WorkflowEdit() {
           executionPolicy: n.executionPolicy ?? null,
           defaultAssigneeAgentId: n.defaultAssigneeAgentId ?? null,
           defaultPriority: n.defaultPriority ?? null,
+          defaultProjectId: n.defaultProjectId ?? null,
         })),
       );
     }
@@ -138,6 +188,7 @@ export function WorkflowEdit() {
         executionPolicy: n.executionPolicy || undefined,
         defaultAssigneeAgentId: n.defaultAssigneeAgentId || undefined,
         defaultPriority: n.defaultPriority || undefined,
+        defaultProjectId: n.defaultProjectId || undefined,
       })),
     };
     saveMutation.mutate(payload);
@@ -146,7 +197,7 @@ export function WorkflowEdit() {
   if (!isNew && isLoading) return <PageSkeleton />;
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6">
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="icon-sm" onClick={() => navigate(isNew ? "/workflows" : `/workflows/${id}`)}>
           <ArrowLeft className="h-4 w-4" />
@@ -203,7 +254,7 @@ export function WorkflowEdit() {
           </Button>
         </div>
 
-        <div className="space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 items-start">
           {nodes.map((node, i) => (
             <Card key={node.tempId}>
               <CardContent className="py-3 px-4 space-y-2">
@@ -224,13 +275,13 @@ export function WorkflowEdit() {
                   value={node.description}
                   onChange={(e) => updateNode(i, { description: e.target.value })}
                   placeholder="Node description (issue body)"
-                  rows={2}
+                  rows={5}
                 />
                 <div className="flex gap-3">
-                  <div className="flex-1">
-                    <label className="text-xs text-muted-foreground">Blocked by (comma-separated tempIds)</label>
+                  <div className="flex-1 flex flex-col">
+                    <label className="text-xs text-muted-foreground mb-0.5">Blocked by</label>
                     <input
-                      className="mt-0.5 w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm"
+                      className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm"
                       value={node.blockedByTempIds.join(", ")}
                       onChange={(e) =>
                         updateNode(i, {
@@ -243,10 +294,10 @@ export function WorkflowEdit() {
                       placeholder="e.g. $root, $node_2"
                     />
                   </div>
-                  <div className="flex-1">
-                    <label className="text-xs text-muted-foreground">Parent tempId</label>
+                  <div className="flex-1 flex flex-col">
+                    <label className="text-xs text-muted-foreground mb-0.5">Parent tempId</label>
                     <input
-                      className="mt-0.5 w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm"
+                      className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm"
                       value={node.parentTempId ?? ""}
                       onChange={(e) => updateNode(i, { parentTempId: e.target.value || null })}
                       placeholder="Optional parent"
@@ -254,70 +305,143 @@ export function WorkflowEdit() {
                   </div>
                 </div>
 
-                {/* Collapsible metadata */}
+                {/* Collapsible metadata — matches issue creation style */}
                 <div className="border-t border-border pt-1">
                   <button
                     type="button"
-                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors py-1"
+                    className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors py-1"
                     onClick={() => updateNode(i, { _metaOpen: !node._metaOpen })}
                   >
                     {node._metaOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
                     Issue defaults
-                    {(node.defaultAssigneeAgentId || node.defaultPriority || node.executionPolicy) && (
+                    {(node.defaultAssigneeAgentId || node.defaultPriority || node.defaultProjectId || node.executionPolicy) && (
                       <span className="ml-1 w-1.5 h-1.5 rounded-full bg-primary" />
                     )}
                   </button>
                   {node._metaOpen && (
-                    <div className="mt-1.5 space-y-2 rounded-md border border-border bg-muted/20 p-3">
-                      <div className="flex gap-3">
-                        <div className="flex-1">
-                          <label className="text-xs text-muted-foreground">Default assignee</label>
-                          <select
-                            className="mt-0.5 w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm"
-                            value={node.defaultAssigneeAgentId ?? ""}
-                            onChange={(e) => updateNode(i, { defaultAssigneeAgentId: e.target.value || null })}
-                          >
-                            <option value="">None (use invoke default)</option>
-                            {agents.map((a) => (
-                              <option key={a.id} value={a.id}>
-                                {a.icon ? `${a.icon} ` : ""}{a.name} — {a.title ?? a.role}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="w-36">
-                          <label className="text-xs text-muted-foreground">Priority</label>
-                          <select
-                            className="mt-0.5 w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm capitalize"
-                            value={node.defaultPriority ?? ""}
-                            onChange={(e) => updateNode(i, { defaultPriority: (e.target.value || null) as IssuePriority | null })}
-                          >
-                            <option value="">Default (medium)</option>
-                            {ISSUE_PRIORITIES.map((p) => (
-                              <option key={p} value={p} className="capitalize">{p}</option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-                      <div>
-                        <label className="text-xs text-muted-foreground">Execution policy (JSON, optional)</label>
-                        <input
-                          className="mt-0.5 w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm font-mono"
-                          value={node.executionPolicy ? JSON.stringify(node.executionPolicy) : ""}
-                          onChange={(e) => {
-                            if (!e.target.value) {
-                              updateNode(i, { executionPolicy: null });
-                              return;
-                            }
-                            try {
-                              const parsed = JSON.parse(e.target.value);
-                              updateNode(i, { executionPolicy: parsed });
-                            } catch {
-                              // Let user keep typing
-                            }
+                    <div className="mt-1.5 rounded-md border border-border bg-muted/20 p-3 space-y-3">
+                      {/* Assignee + Project row — "For [agent] in [project]" like NewIssueDialog */}
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
+                        <span className="text-xs shrink-0">For</span>
+                        <InlineEntitySelector
+                          value={node.defaultAssigneeAgentId ?? ""}
+                          options={assigneeOptions}
+                          placeholder="Assignee"
+                          noneLabel="No assignee (use invoke default)"
+                          searchPlaceholder="Search agents..."
+                          emptyMessage="No agents found."
+                          onChange={(val) => updateNode(i, { defaultAssigneeAgentId: val || null })}
+                          renderTriggerValue={(option) => {
+                            if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                            const agent = agents.find((a) => a.id === option.id);
+                            return (
+                              <>
+                                {agent && <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                                <span className="truncate">{option.label}</span>
+                              </>
+                            );
                           }}
-                          placeholder='e.g. {"autoAssign":true}'
+                          renderOption={(option) => {
+                            const agent = agents.find((a) => a.id === option.id);
+                            return (
+                              <>
+                                {agent && <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                                <span className="truncate">{option.label}</span>
+                              </>
+                            );
+                          }}
                         />
+                        <span className="text-xs shrink-0">in</span>
+                        <InlineEntitySelector
+                          value={node.defaultProjectId ?? ""}
+                          options={projectOptions}
+                          placeholder="Project"
+                          noneLabel="No project"
+                          searchPlaceholder="Search projects..."
+                          emptyMessage="No projects found."
+                          onChange={(val) => updateNode(i, { defaultProjectId: val || null })}
+                          renderTriggerValue={(option) => {
+                            if (!option) return <span className="text-muted-foreground">Project</span>;
+                            const project = projects.find((p) => p.id === option.id);
+                            return (
+                              <>
+                                {project && (
+                                  <span
+                                    className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                                    style={{ backgroundColor: (project as any).color ?? "#6366f1" }}
+                                  />
+                                )}
+                                <span className="truncate">{option.label}</span>
+                              </>
+                            );
+                          }}
+                          renderOption={(option) => {
+                            const project = projects.find((p) => p.id === option.id);
+                            return (
+                              <>
+                                {project && (
+                                  <span
+                                    className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                                    style={{ backgroundColor: (project as any).color ?? "#6366f1" }}
+                                  />
+                                )}
+                                <span className="truncate">{option.label}</span>
+                              </>
+                            );
+                          }}
+                        />
+                      </div>
+
+                      {/* Priority chip — popover picker like NewIssueDialog */}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <NodePriorityChip
+                          value={node.defaultPriority ?? null}
+                          items={priorityItems}
+                          onChange={(val) => updateNode(i, { defaultPriority: val })}
+                        />
+                      </div>
+
+                      {/* Execution policy */}
+                      <div className="space-y-2">
+                        <div className="text-xs text-muted-foreground font-medium">Execution policy</div>
+                        <div className="flex items-end gap-4 flex-wrap">
+                          <div className="flex flex-col gap-0.5">
+                            <label className="text-xs text-muted-foreground">Mode</label>
+                            <select
+                              className="rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+                              value={node.executionPolicy?.mode ?? "normal"}
+                              onChange={(e) =>
+                                updateNode(i, {
+                                  executionPolicy: {
+                                    mode: e.target.value as "normal" | "auto",
+                                    commentRequired: node.executionPolicy?.commentRequired ?? true,
+                                    stages: node.executionPolicy?.stages ?? [],
+                                  },
+                                })
+                              }
+                            >
+                              <option value="normal">Normal</option>
+                              <option value="auto">Auto</option>
+                            </select>
+                          </div>
+                          <label className="flex items-center gap-1.5 pb-1.5 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              className="rounded border-border"
+                              checked={node.executionPolicy?.commentRequired ?? true}
+                              onChange={(e) =>
+                                updateNode(i, {
+                                  executionPolicy: {
+                                    mode: node.executionPolicy?.mode ?? "normal",
+                                    commentRequired: e.target.checked,
+                                    stages: node.executionPolicy?.stages ?? [],
+                                  },
+                                })
+                              }
+                            />
+                            <span className="text-xs text-muted-foreground">Require comment on decision</span>
+                          </label>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -340,5 +464,77 @@ export function WorkflowEdit() {
         </Button>
       </div>
     </div>
+  );
+}
+
+// ── Priority chip (matches NewIssueDialog pattern) ──────────────────────
+
+interface PriorityItem {
+  value: IssuePriority;
+  label: string;
+  icon: typeof Minus;
+  color: string;
+}
+
+function NodePriorityChip({
+  value,
+  items,
+  onChange,
+}: {
+  value: IssuePriority | null;
+  items: PriorityItem[];
+  onChange: (v: IssuePriority | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = items.find((p) => p.value === value);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors"
+        >
+          {current ? (
+            <>
+              <current.icon className={cn("h-3 w-3", current.color)} />
+              {current.label}
+            </>
+          ) : (
+            <>
+              <Minus className="h-3 w-3 text-muted-foreground" />
+              Priority
+            </>
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-36 p-1" align="start">
+        <button
+          type="button"
+          className={cn(
+            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+            !value && "bg-accent",
+          )}
+          onClick={() => { onChange(null); setOpen(false); }}
+        >
+          <Minus className="h-3 w-3 text-muted-foreground" />
+          Default
+        </button>
+        {items.map((p) => (
+          <button
+            key={p.value}
+            type="button"
+            className={cn(
+              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+              p.value === value && "bg-accent",
+            )}
+            onClick={() => { onChange(p.value); setOpen(false); }}
+          >
+            <p.icon className={cn("h-3 w-3", p.color)} />
+            {p.label}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
   );
 }

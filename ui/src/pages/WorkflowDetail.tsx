@@ -1,15 +1,22 @@
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@/lib/router";
 import { ArrowLeft, Play, Pencil, Trash2 } from "lucide-react";
 import { workflowTemplatesApi } from "../api/workflow-templates";
+import { agentsApi } from "../api/agents";
+import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { MarkdownEditor } from "../components/MarkdownEditor";
+import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
+import { AgentIcon } from "../components/AgentIconPicker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { WorkflowDAGView } from "../components/WorkflowDAGView";
 import type { WorkflowTemplateNode, WorkflowInvokeResponse } from "@paperclipai/shared";
 
@@ -20,6 +27,38 @@ export function WorkflowDetail() {
   const navigate = useNavigate();
   const { pushToast } = useToastActions();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const [showInvoke, setShowInvoke] = useState(false);
+  const [invokeContext, setInvokeContext] = useState("");
+  const [invokeAgentId, setInvokeAgentId] = useState("");
+
+  const { data: agents = [] } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: projects = [] } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const assigneeOptions = useMemo<InlineEntityOption[]>(
+    () =>
+      agents
+        .filter((a) => a.status !== "terminated")
+        .map((a) => ({
+          id: a.id,
+          label: a.name,
+          searchText: `${a.name} ${a.role} ${a.title ?? ""}`,
+        })),
+    [agents],
+  );
+
+  const mentionOptions = useMemo(
+    () => buildMarkdownMentionOptions({ agents, projects }),
+    [agents, projects],
+  );
 
   const { data: template, isLoading } = useQuery({
     queryKey: queryKeys.workflowTemplates.detail(id!),
@@ -77,7 +116,7 @@ export function WorkflowDetail() {
             <Pencil className="mr-1.5 h-4 w-4" />
             Edit
           </Button>
-          <Button size="sm" onClick={() => invokeMutation.mutate({})} disabled={invokeMutation.isPending}>
+          <Button size="sm" onClick={() => setShowInvoke(true)} disabled={invokeMutation.isPending}>
             <Play className="mr-1.5 h-4 w-4" />
             {invokeMutation.isPending ? "Invoking..." : "Invoke"}
           </Button>
@@ -106,6 +145,85 @@ export function WorkflowDetail() {
           ))}
         </div>
       </div>
+
+      {/* Invoke dialog */}
+      <Dialog open={showInvoke} onOpenChange={(open) => { if (!open) { setShowInvoke(false); setInvokeContext(""); setInvokeAgentId(""); } }}>
+        <DialogContent>
+          <h2 className="text-lg font-semibold mb-4">Invoke: {template.name}</h2>
+          <div className="space-y-3">
+            <div>
+              <label className="text-sm font-medium">Context / prompt</label>
+              <div className="mt-1 rounded-md border border-border">
+                <MarkdownEditor
+                  value={invokeContext}
+                  onChange={setInvokeContext}
+                  placeholder="Describe what this run is for — use @mention to reference agents or projects"
+                  mentions={mentionOptions}
+                  contentClassName="text-sm min-h-[100px]"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                This context will be prepended to every issue description in the workflow.
+              </p>
+            </div>
+            <div>
+              <label className="text-sm font-medium mb-1.5 block">Default assignee</label>
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <span className="text-xs shrink-0">For</span>
+                <InlineEntitySelector
+                  value={invokeAgentId}
+                  options={assigneeOptions}
+                  placeholder="Assignee"
+                  noneLabel="No assignee (use node defaults)"
+                  searchPlaceholder="Search agents..."
+                  emptyMessage="No agents found."
+                  disablePortal
+                  onChange={setInvokeAgentId}
+                  renderTriggerValue={(option) => {
+                    if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                    const agent = agents.find((a) => a.id === option.id);
+                    return (
+                      <>
+                        {agent && <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                        <span className="truncate">{option.label}</span>
+                      </>
+                    );
+                  }}
+                  renderOption={(option) => {
+                    const agent = agents.find((a) => a.id === option.id);
+                    return (
+                      <>
+                        {agent && <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                        <span className="truncate">{option.label}</span>
+                      </>
+                    );
+                  }}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Assigned to issues that don't have a per-node agent configured.
+              </p>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            <Button variant="outline" onClick={() => { setShowInvoke(false); setInvokeContext(""); setInvokeAgentId(""); }}>Cancel</Button>
+            <Button
+              onClick={() => {
+                invokeMutation.mutate({
+                  ...(invokeContext.trim() ? { context: invokeContext.trim() } : {}),
+                  ...(invokeAgentId ? { defaultAssigneeAgentId: invokeAgentId } : {}),
+                });
+                setShowInvoke(false);
+                setInvokeContext("");
+                setInvokeAgentId("");
+              }}
+              disabled={invokeMutation.isPending}
+            >
+              {invokeMutation.isPending ? "Invoking..." : "Invoke"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Metadata */}
       <div className="text-xs text-muted-foreground space-y-1">
