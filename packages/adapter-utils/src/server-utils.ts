@@ -1145,6 +1145,8 @@ export async function runChildProcess(
         const useBufferCapture = process.platform === "win32";
         const stdoutBufs: Buffer[] = [];
         const stderrBufs: Buffer[] = [];
+        let stdoutBufBytes = 0;
+        let stderrBufBytes = 0;
         let logChain: Promise<void> = Promise.resolve();
 
         const timeout =
@@ -1159,8 +1161,10 @@ export async function runChildProcess(
             : null;
 
         child.stdout?.on("data", (chunk: unknown) => {
-          if (useBufferCapture) {
-            stdoutBufs.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+          if (useBufferCapture && stdoutBufBytes < MAX_CAPTURE_BYTES) {
+            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+            stdoutBufs.push(buf.subarray(0, MAX_CAPTURE_BYTES - stdoutBufBytes));
+            stdoutBufBytes += buf.length;
           }
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
@@ -1170,8 +1174,10 @@ export async function runChildProcess(
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
-          if (useBufferCapture) {
-            stderrBufs.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+          if (useBufferCapture && stderrBufBytes < MAX_CAPTURE_BYTES) {
+            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+            stderrBufs.push(buf.subarray(0, MAX_CAPTURE_BYTES - stderrBufBytes));
+            stderrBufBytes += buf.length;
           }
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
