@@ -2373,6 +2373,7 @@ export function agentRoutes(db: Db) {
     }
     assertCompanyAccess(req, existing.companyId);
 
+
     const run = await heartbeat.cancelRun(runId);
 
     if (run) {

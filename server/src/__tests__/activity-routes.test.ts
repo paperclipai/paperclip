@@ -12,6 +12,10 @@ const mockActivityService = vi.hoisted(() => ({
   create: vi.fn(),
 }));
 
+const mockHeartbeatService = vi.hoisted(() => ({
+  getRun: vi.fn(),
+}));
+
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdentifier: vi.fn(),
@@ -26,7 +30,7 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({ findById: vi.fn(async () => null), findByCompany: vi.fn(async () => []), update: vi.fn(async (id: string, data: any) => ({ id, ...data })) }),
   executionWorkspaceService: () => ({ findById: vi.fn(async () => null) }),
   goalService: () => ({ findById: vi.fn(async () => null) }),
-  heartbeatService: () => ({ findRunById: vi.fn(async () => null), queueIssueAssignmentWakeup: vi.fn() }),
+  heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => ({ getSettings: vi.fn(async () => ({})), findByCompany: vi.fn(async () => null) }),
   issueApprovalService: () => ({ findById: vi.fn(async () => null) }),
   documentService: () => ({ findByIssueAndKey: vi.fn(async () => null) }),
@@ -79,5 +83,33 @@ describe("activity routes", () => {
     expect(mockIssueService.getById).not.toHaveBeenCalled();
     expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1");
     expect(res.body).toEqual([{ runId: "run-1" }]);
+  });
+
+  it("requires company access before creating activity events", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-2/activity")
+      .send({
+        actorId: "user-1",
+        action: "test.event",
+        entityType: "issue",
+        entityId: "issue-1",
+      });
+
+    expect(res.status).toBe(403);
+    expect(mockActivityService.create).not.toHaveBeenCalled();
+  });
+
+  it("requires company access before listing issues for another company's run", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-2",
+      companyId: "company-2",
+    });
+
+    const app = await createApp();
+    const res = await request(app).get("/api/heartbeat-runs/run-2/issues");
+
+    expect(res.status).toBe(403);
+    expect(mockActivityService.issuesForRun).not.toHaveBeenCalled();
   });
 });
