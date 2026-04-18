@@ -1843,7 +1843,13 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        // Suppress comment wake when the issue's *post-update* status is non-actionable.
+        // `isClosed` already covers `done`/`cancelled` (via `existing.status`); we add a
+        // check on `issue.status` (the post-update value) for `blocked`, so that an
+        // unblock+comment in the same PATCH still wakes the assignee, but a comment on
+        // a still-blocked issue does not. Without this guard, the obvious operator flow
+        // ("mark blocked + leave a context note") wakes the assignee anyway.
+        const skipAssigneeCommentWake = selfComment || isClosed || issue.status === "blocked";
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -2435,7 +2441,11 @@ export function issueRoutes(
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      // Suppress comment wake when the issue is non-actionable. `isClosed` already
+      // covers `done`/`cancelled`; the `blocked` check is symmetric. The `reopened`
+      // path (which handles `done`/`cancelled` → `todo` via this same endpoint) is
+      // gated separately below, so this skip does not interfere with it.
+      const skipWake = selfComment || isClosed || currentIssue.status === "blocked";
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
