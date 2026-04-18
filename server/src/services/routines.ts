@@ -42,6 +42,7 @@ import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
+import { workflowTemplateService } from "./workflow-templates.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
@@ -313,6 +314,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
   const heartbeat = deps.heartbeat ?? heartbeatService(db);
+  const workflowSvc = workflowTemplateService(db);
 
   async function getRoutineById(id: string) {
     return db
@@ -773,6 +775,64 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         }
 
         try {
+          // Workflow template invoke branch
+          if (input.routine.workflowTemplateId) {
+            const wfTemplate = await workflowSvc.get(input.routine.workflowTemplateId);
+            if (!wfTemplate) throw new Error(`Workflow template ${input.routine.workflowTemplateId} not found`);
+            const invokeInput = (input.routine.workflowInvokeInput ?? {}) as Record<string, unknown>;
+            const context = typeof invokeInput.context === "string"
+              ? interpolateRoutineTemplate(invokeInput.context, allVariables) ?? invokeInput.context
+              : undefined;
+            const result = await workflowSvc.invoke(
+              input.routine.companyId,
+              wfTemplate,
+              {
+                context: context ?? null,
+                defaultAssigneeAgentId: (invokeInput.defaultAssigneeAgentId as string) ?? assigneeAgentId ?? null,
+                nodeOverrides: (invokeInput.nodeOverrides as Record<string, Record<string, unknown>>) ?? null,
+                goalId: (invokeInput.goalId as string) ?? input.routine.goalId ?? null,
+                projectId: (invokeInput.projectId as string) ?? projectId ?? null,
+              },
+              {
+                agentId: null,
+                userId: input.routine.createdByUserId ?? null,
+              },
+            );
+
+            // Wake unblocked assigned nodes
+            for (const created of result.createdIssues) {
+              if (created.status === "todo" && created.assigneeAgentId) {
+                await queueIssueAssignmentWakeup({
+                  heartbeat,
+                  issue: {
+                    id: created.issueId,
+                    assigneeAgentId: created.assigneeAgentId,
+                    status: "todo",
+                  },
+                  reason: "issue_assigned",
+                  mutation: "create",
+                  contextSource: "routine.workflow_dispatch",
+                  requestedByActorType: input.source === "schedule" ? "system" : undefined,
+                  rethrowOnError: true,
+                });
+              }
+            }
+
+            const updated = await finalizeRun(createdRun.id, {
+              status: "issue_created",
+              linkedIssueId: result.rootIssueId,
+            }, txDb);
+            await updateRoutineTouchedState({
+              routineId: input.routine.id,
+              triggerId: input.trigger?.id ?? null,
+              triggeredAt,
+              status: "issue_created",
+              issueId: result.rootIssueId,
+              nextRunAt,
+            }, txDb);
+            return updated ?? createdRun;
+          }
+
           createdIssue = await issueSvc.create(input.routine.companyId, {
             projectId,
             goalId: input.routine.goalId,

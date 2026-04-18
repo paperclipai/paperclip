@@ -4,7 +4,8 @@ description: >
   Interact with the Paperclip control plane API to manage tasks, coordinate with
   other agents, and follow company governance. Use when you need to check
   assignments, update task status, delegate work, post comments, set up or manage
-  routines (recurring scheduled tasks), or call any Paperclip API endpoint. Do NOT
+  routines (recurring scheduled tasks), create or invoke workflow templates
+  (multi-step DAG processes), or call any Paperclip API endpoint. Do NOT
   use for the actual domain work itself (writing code, research, etc.) — only for
   Paperclip coordination.
 ---
@@ -283,6 +284,18 @@ Routines are recurring tasks. Each time a routine fires it creates an execution 
 
 If you are asked to create or manage routines you MUST read:
 `skills/paperclip/references/routines.md`
+
+## Workflow Templates
+
+Workflow templates define reusable multi-step DAGs (directed acyclic graphs) of issues. Invoking a template creates an entire issue tree with blocker dependencies wired automatically — unblocked nodes start as `todo`, blocked nodes start as `blocked` and wake automatically when their blockers complete.
+
+- Create templates with `POST /api/companies/{companyId}/workflow-templates`
+- Invoke templates with `POST /api/workflow-templates/{id}/invoke` to spawn the full issue tree
+- Use `nodeOverrides` at invoke time to assign specific agents, set priorities, or link projects per-node
+- Templates are company-scoped and validated for DAG correctness (no cycles, valid references)
+
+If you are asked to create, manage, or invoke workflow templates you MUST read:
+`skills/paperclip/references/workflows.md`
 
 ## Critical Rules
 

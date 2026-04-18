@@ -1373,7 +1373,7 @@ export function issueService(db: Db) {
       }
 
       return candidates
-        .filter((candidate) => candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status))
+        .filter((candidate) => !["backlog", "done", "cancelled"].includes(candidate.status))
         .map((candidate) => {
           const blockers = blockersByIssueId.get(candidate.id) ?? [];
           return {
@@ -1385,7 +1385,7 @@ export function issueService(db: Db) {
         .filter((candidate) => candidate.allBlockersDone)
         .map((candidate) => ({
           id: candidate.id,
-          assigneeAgentId: candidate.assigneeAgentId!,
+          assigneeAgentId: candidate.assigneeAgentId,
           blockerIssueIds: candidate.blockerIssueIds,
         }));
     },
@@ -1401,7 +1401,7 @@ export function issueService(db: Db) {
         .from(issues)
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
-      if (!parent || !parent.assigneeAgentId || ["backlog", "done", "cancelled"].includes(parent.status)) {
+      if (!parent || ["backlog", "done", "cancelled"].includes(parent.status)) {
         return null;
       }
 

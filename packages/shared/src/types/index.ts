@@ -154,6 +154,13 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
+export type {
+  WorkflowTemplate,
+  WorkflowTemplateNode,
+  WorkflowTemplateListItem,
+  WorkflowTemplateDetail,
+  WorkflowInvokeResponse,
+} from "./workflow-template.js";
 export type { CostEvent, CostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
