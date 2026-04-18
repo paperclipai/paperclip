@@ -344,7 +344,17 @@ test.describe("Signoff execution policy", () => {
     const changesIssue = await changesRes.json();
 
     expect(changesIssue.status).toBe("in_progress");
-    expect(changesIssue.assigneeAgentId).toBe(ctx.executor.agentId);
+    // LIF-34: poll the assignee via a fresh GET to tolerate transient read-after-write lag
+    // under CI contention. A real regression still times out red inside the 3s budget.
+    await expect
+      .poll(
+        async () => {
+          const r = await ctx.boardRequest.get(`${BASE_URL}/api/issues/${issueId}`);
+          return (await r.json()).assigneeAgentId;
+        },
+        { timeout: 3_000 },
+      )
+      .toBe(ctx.executor.agentId);
     expect(changesIssue.executionState.status).toBe("changes_requested");
     expect(changesIssue.executionState.lastDecisionOutcome).toBe("changes_requested");
 
@@ -391,7 +401,13 @@ test.describe("Signoff execution policy", () => {
       ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
       { status: "done", comment: "Done." },
     );
-    expect(doneRes.ok()).toBe(true);
+    // LIF-34: surface status + body on failure so intermittent CI flakes are diagnosable
+    // from the first red run instead of requiring a rerun with tracing.
+    if (!doneRes.ok()) {
+      throw new Error(
+        `executor mark-done failed: status=${doneRes.status()} body=${await doneRes.text()}`,
+      );
+    }
 
     // Verify issue is in_review with reviewer
     const issueRes = await ctx.boardRequest.get(`${BASE_URL}/api/issues/${issueId}`);
