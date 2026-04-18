@@ -1843,7 +1843,16 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        // Defensive: also treat a comment as a self-comment when its createdByRunId
+        // matches the issue's active execution run. This prevents retrigger loops when
+        // agent auth falls through to board-user context (e.g. missing JWT secret in
+        // local mode) but the run ID header is still present and correct.
+        const runLinkedSelfComment =
+          !selfComment &&
+          comment.createdByRunId &&
+          issue.executionRunId &&
+          comment.createdByRunId === issue.executionRunId;
+        const skipAssigneeCommentWake = selfComment || runLinkedSelfComment || isClosed;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -2435,7 +2444,14 @@ export function issueRoutes(
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      // Defensive: also treat a comment as a self-comment when its createdByRunId
+      // matches the issue's active execution run (same rationale as PATCH route).
+      const runLinkedSelfComment =
+        !selfComment &&
+        comment.createdByRunId &&
+        currentIssue.executionRunId &&
+        comment.createdByRunId === currentIssue.executionRunId;
+      const skipWake = selfComment || runLinkedSelfComment || isClosed;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {

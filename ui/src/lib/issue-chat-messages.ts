@@ -276,7 +276,7 @@ function authorNameForComment(
     return agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8);
   }
   const authorUserId = comment.authorUserId ?? null;
-  if (!authorUserId) return "You";
+  if (!authorUserId) return "System";
   const userLabel = userLabelMap?.get(authorUserId)?.trim();
   if (userLabel) return userLabel;
   return formatAssigneeUserLabel(authorUserId, currentUserId, userLabelMap) ?? "You";
