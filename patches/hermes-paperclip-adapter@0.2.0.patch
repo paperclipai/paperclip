@@ -253,18 +253,44 @@ index f566623b5996e6effcd9e4ab6d5c9ee547612a83..3ef72177c921c046465bb50792d685e9
  //# sourceMappingURL=detect-model.js.map
 \ No newline at end of file
 diff --git a/dist/server/execute.js b/dist/server/execute.js
-index 93cddf8243271f5fb3ab101617f9114257e41328..236b4a1f57ad5b78bc3206bc7103c6097eb097c7 100644
-@@ -45,6 +45,9 @@
+index 93cddf8243271f5fb3ab101617f9114257e41328..82ce97cb7d54687734e4eaaf343b6a06638ed14e 100644
+@@ -45,6 +45,17 @@
    Agent ID: {{agentId}}
    Company ID: {{companyId}}
    API Base: {{paperclipApiUrl}}
 +  API Key: available as env var $PAPERCLIP_API_KEY
 +
 +IMPORTANT: ALL curl calls to the Paperclip API MUST include: -H "Authorization: Bearer $PAPERCLIP_API_KEY"
++
++## Time Budget
++
++You have **{{timeoutSec}} seconds** for this run. Manage your time:
++- Reserve the last **{{checkpointSec}} seconds** to write output (file, issue comment, or status update).
++- After each research or work phase, immediately write partial findings before continuing.
++- If you cannot finish the task, write what you have and post a comment on the issue describing exactly where you stopped and what remains — the next heartbeat will continue from there.
++- Do not spend the entire budget on research without writing anything.
  
  {{#taskId}}
  ## Assigned Task
-@@ -302,8 +305,14 @@
+@@ -110,6 +121,8 @@
+     if (!paperclipApiUrl.endsWith("/api")) {
+         paperclipApiUrl = paperclipApiUrl.replace(/\/+$/, "") + "/api";
+     }
++    const timeoutSec = cfgNumber(config.timeoutSec) ?? DEFAULT_TIMEOUT_SEC;
++    const checkpointSec = Math.max(30, Math.round(timeoutSec * 0.15));
+     const vars = {
+         agentId: ctx.agent?.id || "",
+         agentName,
+@@ -123,6 +136,8 @@
+         wakeReason,
+         projectName,
+         paperclipApiUrl,
++        timeoutSec: String(timeoutSec),
++        checkpointSec: String(checkpointSec),
+     };
+     // Handle conditional sections: {{#key}}...{{/key}}
+     let rendered = template;
+@@ -302,8 +317,14 @@
      if (userEnv && typeof userEnv === "object") {
          Object.assign(env, userEnv);
      }
@@ -280,7 +306,7 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..236b4a1f57ad5b78bc3206bc7103c609
      try {
          await ensureAbsoluteDirectory(cwd);
      }
-@@ -319,7 +328,14 @@
+@@ -319,7 +340,14 @@
      // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
      // Paperclip renders all stderr as red/error in the UI.
      // Wrap onLog to reclassify benign stderr lines as stdout.
@@ -295,7 +321,7 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..236b4a1f57ad5b78bc3206bc7103c609
          if (stream === "stderr") {
              const trimmed = chunk.trimEnd();
              // Benign patterns that should NOT appear as errors:
-@@ -348,6 +364,12 @@
+@@ -348,6 +376,12 @@
      // ── Parse output ───────────────────────────────────────────────────────
      const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
      await ctx.onLog("stdout", `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`);
