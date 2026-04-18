@@ -118,7 +118,7 @@ export const issueMissionControlMetadataSchema = z.object({
   nextStep: z.string().trim().min(1).max(500).nullable().optional(),
   blocker: z.string().trim().min(1).max(1000).nullable().optional(),
   collaboratorAgentIds: z.array(z.string().uuid()).optional().default([]),
-  needsDannyAttention: z.boolean().optional(),
+  needsHumanAttention: z.boolean().optional(),
 });
 
 export const createIssueSchema = z.object({

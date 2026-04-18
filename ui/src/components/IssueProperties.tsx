@@ -1111,19 +1111,19 @@ export function IssueProperties({
           })}
         />
 
-        <PropertyRow label="Danny">
+        <PropertyRow label="Attention">
           <label className="inline-flex items-center gap-2 text-sm">
             <input
               type="checkbox"
-              checked={missionControl?.needsDannyAttention ?? false}
+              checked={missionControl?.needsHumanAttention ?? false}
               onChange={(event) => onUpdate({
                 missionControl: {
                   ...(missionControl ?? {}),
-                  needsDannyAttention: event.target.checked,
+                  needsHumanAttention: event.target.checked,
                 },
               })}
             />
-            Needs attention
+            Needs human attention
           </label>
         </PropertyRow>
 

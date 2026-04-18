@@ -470,7 +470,7 @@ describe("IssueProperties", () => {
           nextStep: "Ship the dashboard",
           blocker: null,
           collaboratorAgentIds: [],
-          needsDannyAttention: false,
+          needsHumanAttention: false,
         },
       }),
       childIssues: [],
@@ -495,7 +495,7 @@ describe("IssueProperties", () => {
         nextStep: "Ship the dashboard",
         blocker: null,
         collaboratorAgentIds: [],
-        needsDannyAttention: false,
+        needsHumanAttention: false,
       },
     });
 
@@ -514,7 +514,7 @@ describe("IssueProperties", () => {
         nextStep: "Ship the dashboard",
         blocker: null,
         collaboratorAgentIds: [],
-        needsDannyAttention: true,
+        needsHumanAttention: true,
       },
     });
 

@@ -178,7 +178,7 @@ export interface IssueMissionControlMetadata {
   nextStep?: string | null;
   blocker?: string | null;
   collaboratorAgentIds?: string[];
-  needsDannyAttention?: boolean;
+  needsHumanAttention?: boolean;
 }
 
 export interface Issue {
