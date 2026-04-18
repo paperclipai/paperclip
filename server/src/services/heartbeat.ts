@@ -1499,7 +1499,12 @@ export function heartbeatService(db: Db) {
   const issuesSvc = issueService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
-  const activeRunExecutions = new Set<string>();
+  type ActiveRunExecutionEntry = {
+    agentId: string;
+    companyId: string;
+    promise: Promise<unknown>;
+  };
+  const activeRunExecutions = new Map<string, ActiveRunExecutionEntry>();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -3205,8 +3210,17 @@ export function heartbeatService(db: Db) {
       if (claimedRuns.length === 0) return [];
 
       for (const claimedRun of claimedRuns) {
-        void executeRun(claimedRun.id).catch((err) => {
+        const promise = executeRun(claimedRun.id).catch((err) => {
           logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+        });
+        activeRunExecutions.set(claimedRun.id, {
+          agentId: claimedRun.agentId,
+          companyId: claimedRun.companyId,
+          promise,
+        });
+        void promise.finally(() => {
+          const current = activeRunExecutions.get(claimedRun.id);
+          if (current?.promise === promise) activeRunExecutions.delete(claimedRun.id);
         });
       }
       return claimedRuns;
@@ -3226,8 +3240,6 @@ export function heartbeatService(db: Db) {
       }
       run = claimed;
     }
-
-    activeRunExecutions.add(run.id);
 
     try {
     const agent = await getAgent(run.agentId);
@@ -4200,7 +4212,6 @@ export function heartbeatService(db: Db) {
           await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
-          activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
         }
   }
@@ -5128,6 +5139,23 @@ export function heartbeatService(db: Db) {
     return runs.length;
   }
 
+  async function drainActiveRunExecutionsInternal(filter?: {
+    agentId?: string;
+    companyId?: string;
+    runId?: string;
+  }) {
+    const promises: Promise<unknown>[] = [];
+    for (const [runId, entry] of activeRunExecutions) {
+      if (filter?.runId && runId !== filter.runId) continue;
+      if (filter?.agentId && entry.agentId !== filter.agentId) continue;
+      if (filter?.companyId && entry.companyId !== filter.companyId) continue;
+      promises.push(entry.promise);
+    }
+    if (promises.length === 0) return 0;
+    await Promise.allSettled(promises);
+    return promises.length;
+  }
+
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
     if (scope.scopeType === "agent") {
       await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
@@ -5389,6 +5417,9 @@ export function heartbeatService(db: Db) {
     cancelRun: (runId: string) => cancelRunInternal(runId),
 
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
+
+    drainActiveRunExecutions: (filter?: { agentId?: string; companyId?: string; runId?: string }) =>
+      drainActiveRunExecutionsInternal(filter),
 
     cancelBudgetScopeWork,
 

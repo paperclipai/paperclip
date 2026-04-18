@@ -2130,6 +2130,10 @@ export function agentRoutes(db: Db) {
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
+
+    await heartbeat.cancelActiveForAgent(id);
+    await heartbeat.drainActiveRunExecutions({ agentId: id });
+
     const agent = await svc.remove(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
