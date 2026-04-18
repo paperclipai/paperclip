@@ -111,7 +111,7 @@ export function registerApprovalCommands(program: Command): void {
       .command("create")
       .description("Create an approval request")
       .requiredOption("-C, --company-id <id>", "Company ID")
-      .requiredOption("--type <type>", "Approval type (hire_agent|approve_ceo_strategy)")
+      .requiredOption("--type <type>", "Approval type (see APPROVAL_TYPES in @paperclipai/shared)")
       .requiredOption("--payload <json>", "Approval payload as JSON object")
       .option("--requested-by-agent-id <id>", "Requesting agent ID")
       .option("--issue-ids <csv>", "Comma-separated linked issue IDs")
