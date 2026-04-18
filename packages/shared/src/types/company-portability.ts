@@ -1,4 +1,4 @@
-import type { AgentEnvConfig } from "./secrets.js";
+import type { AgentEnvConfig, SecretProvider } from "./secrets.js";
 import type { RoutineVariable } from "./routine.js";
 
 export interface CompanyPortabilityInclude {
@@ -169,6 +169,15 @@ export interface CompanyPortabilityManifest {
   projects: CompanyPortabilityProjectManifestEntry[];
   issues: CompanyPortabilityIssueManifestEntry[];
   envInputs: CompanyPortabilityEnvInput[];
+  secrets?: CompanyPortabilitySecretEntry[];
+}
+
+export interface CompanyPortabilitySecretEntry {
+  name: string;
+  provider: SecretProvider;
+  description: string | null;
+  latestVersion: number;
+  currentValue: string;
 }
 
 export interface CompanyPortabilityExportResult {
@@ -320,4 +329,5 @@ export interface CompanyPortabilityExportRequest {
   selectedFiles?: string[];
   expandReferencedSkills?: boolean;
   sidebarOrder?: Partial<CompanyPortabilitySidebarOrder>;
+  includeSecrets?: boolean;
 }

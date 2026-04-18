@@ -220,6 +220,7 @@ export type {
   CompanyPortabilityImportRequest,
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
+  CompanyPortabilitySecretEntry,
 } from "./company-portability.js";
 export type {
   JsonSchema,
