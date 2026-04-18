@@ -17,7 +17,7 @@ This feature is only done when:
 - Branch: `feat/mission-control-customization-lane`
 - Implementation owner: `ork`
 - Product/orchestration owner: `main`
-- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, and explicit workflow-state modeling are now in place; next slice is operator control actions on top of those states
+- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, and the first operator controls in `IssueProperties` are now in place; remaining gap is broader control coverage plus verification on summaries/history
 
 ## Checklist
 
@@ -49,9 +49,10 @@ This feature is only done when:
 
 ### 3. Operator control actions
 - [ ] Reassign owner cleanly
-- [ ] Mark waiting
+- [x] Mark waiting
+- [x] Mark blocked on upstream
 - [ ] Escalate
-- [ ] Resume
+- [x] Resume
 - [ ] Close loop / resolve handoff
 - [ ] Verify control actions update summaries/state correctly
 
@@ -98,12 +99,13 @@ This feature is only done when:
 - [ ] Decide whether to open PR / merge / continue iteration
 
 ## Current recommended next slice
-- Operator control actions that drive workflow states cleanly
+- Finish the remaining operator controls: reassign owner cleanly, escalate, close loop / resolve handoff
+- Add focused verification that control actions keep summaries/history/state legible
 - Then ownership and operational views for blocked/stalled/recent-handoff work
 
 ## Current blockers
 - No hard blocker right now
-- Main remaining gap is control actions and operational views on top of the workflow-state foundation
+- Main remaining gap is the rest of the control actions plus summary/history verification and operational views on top of the workflow-state foundation
 
 ## Update rule for Ork
 When meaningful progress lands, Ork should update this checklist with:

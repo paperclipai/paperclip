@@ -576,6 +576,101 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("offers explicit operator controls for waiting, blocked, and resume", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        missionControl: {
+          collaboratorAgentIds: [],
+          needsHumanAttention: false,
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const markWaitingButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Mark waiting"));
+    expect(markWaitingButton).not.toBeUndefined();
+
+    await act(async () => {
+      markWaitingButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      missionControl: expect.objectContaining({
+        collaboratorAgentIds: [],
+        needsHumanAttention: true,
+        workflowState: expect.objectContaining({
+          kind: "waiting_on_human",
+        }),
+      }),
+    });
+
+    onUpdate.mockClear();
+
+    const markBlockedButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Mark blocked on upstream"));
+    expect(markBlockedButton).not.toBeUndefined();
+
+    await act(async () => {
+      markBlockedButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      status: "blocked",
+      missionControl: expect.objectContaining({
+        collaboratorAgentIds: [],
+        needsHumanAttention: false,
+        workflowState: expect.objectContaining({
+          kind: "blocked_on_upstream",
+        }),
+      }),
+    });
+
+    onUpdate.mockClear();
+    act(() => root.unmount());
+
+    const resumedRoot = renderProperties(container, {
+      issue: createIssue({
+        status: "blocked",
+        missionControl: {
+          collaboratorAgentIds: [],
+          needsHumanAttention: true,
+          workflowState: {
+            kind: "waiting_on_human",
+            enteredAt: new Date("2026-04-06T12:00:00.000Z"),
+            resumedFrom: null,
+          },
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const resumeButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Resume"));
+    expect(resumeButton).not.toBeUndefined();
+
+    await act(async () => {
+      resumeButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      missionControl: {
+        collaboratorAgentIds: [],
+        needsHumanAttention: true,
+        workflowState: null,
+      },
+    });
+
+    act(() => resumedRoot.unmount());
+  });
+
   it("allows setting an owner and collaborator agents", async () => {
     const onUpdate = vi.fn();
     mockAgentsApi.list.mockResolvedValue([

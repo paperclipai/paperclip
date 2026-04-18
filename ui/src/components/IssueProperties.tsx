@@ -97,6 +97,9 @@ function workflowStateLabel(kind: IssueMissionControlWorkflowStateKind | null | 
   return MISSION_CONTROL_WORKFLOW_OPTIONS.find((option) => option.kind === kind)?.label ?? "No workflow state";
 }
 
+const OPERATOR_CONTROL_BUTTON_CLASS =
+  "inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground";
+
 interface IssuePropertiesProps {
   issue: Issue;
   childIssues?: Issue[];
@@ -417,6 +420,42 @@ export function IssueProperties({
           enteredAt: workflowState?.enteredAt ?? new Date(),
           resumedFrom: kind,
         },
+      },
+    });
+  };
+  const applyOperatorControl = (action: "mark_waiting" | "mark_blocked_on_upstream" | "resume") => {
+    if (action === "mark_waiting") {
+      onUpdate({
+        missionControl: {
+          ...(missionControl ?? {}),
+          needsHumanAttention: true,
+          workflowState: {
+            kind: "waiting_on_human",
+            enteredAt: new Date(),
+          },
+        },
+      });
+      return;
+    }
+
+    if (action === "mark_blocked_on_upstream") {
+      onUpdate({
+        status: "blocked",
+        missionControl: {
+          ...(missionControl ?? {}),
+          workflowState: {
+            kind: "blocked_on_upstream",
+            enteredAt: new Date(),
+          },
+        },
+      });
+      return;
+    }
+
+    onUpdate({
+      missionControl: {
+        ...(missionControl ?? {}),
+        workflowState: null,
       },
     });
   };
@@ -1346,6 +1385,34 @@ export function IssueProperties({
             ))}
           </div>
         </PropertyPicker>
+
+        <PropertyRow label="Controls">
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              className={OPERATOR_CONTROL_BUTTON_CLASS}
+              onClick={() => applyOperatorControl("mark_waiting")}
+            >
+              Mark waiting
+            </button>
+            <button
+              type="button"
+              className={OPERATOR_CONTROL_BUTTON_CLASS}
+              onClick={() => applyOperatorControl("mark_blocked_on_upstream")}
+            >
+              Mark blocked on upstream
+            </button>
+            {workflowState ? (
+              <button
+                type="button"
+                className={OPERATOR_CONTROL_BUTTON_CLASS}
+                onClick={() => applyOperatorControl("resume")}
+              >
+                Resume
+              </button>
+            ) : null}
+          </div>
+        </PropertyRow>
 
         {workflowState?.kind === "resumed" ? (
           <PropertyPicker
