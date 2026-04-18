@@ -454,6 +454,25 @@ export interface PluginSecretsClient {
    * @returns The resolved secret value
    */
   resolve(secretRef: string): Promise<string>;
+
+  /**
+   * Create a new secret in the Paperclip vault.
+   *
+   * The actual secret material is securely processed by the configured
+   * SecretProvider (e.g., encrypted using AES-256-GCM or sent to an
+   * external KMS) and never stored in plaintext.
+   *
+   * Requires `secrets.write` capability.
+   *
+   * @param input - The secret metadata and plaintext value to securely store
+   * @returns The newly created secret reference UUID (`secretRef`)
+   */
+  write(input: {
+    companyId: string;
+    name: string;
+    value: string;
+    description?: string;
+  }): Promise<string>;
 }
 
 /**

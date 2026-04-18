@@ -460,6 +460,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async resolve(secretRef: string): Promise<string> {
           return callHost("secrets.resolve", { secretRef });
         },
+        async write(input: { companyId: string; name: string; value: string; description?: string }): Promise<string> {
+          return callHost("secrets.write", input);
+        },
       },
 
       activity: {

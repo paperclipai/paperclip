@@ -217,7 +217,7 @@ export function secretService(db: Db) {
 
     rotate: async (
       secretId: string,
-      input: { value: string; externalRef?: string | null },
+      input: { value: string; description?: string | null; externalRef?: string | null },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
       const secret = await getById(secretId);
@@ -243,6 +243,7 @@ export function secretService(db: Db) {
           .update(companySecrets)
           .set({
             latestVersion: nextVersion,
+            description: input.description === undefined ? secret.description : input.description,
             externalRef: prepared.externalRef,
             updatedAt: new Date(),
           })
