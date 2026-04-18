@@ -55,7 +55,7 @@ export function EntityRow({
 
   if (to) {
     return (
-      <Link to={to} className={cn(classes, "no-underline text-inherit")} onClick={onClick}>
+      <Link to={to} className={cn(classes, "no-underline text-inherit focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1")} onClick={onClick}>
         {content}
       </Link>
     );
