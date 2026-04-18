@@ -598,7 +598,7 @@ export async function startServer(): Promise<StartedServer> {
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
-    setInterval(() => {
+    const timerInterval = setInterval(() => {
       void heartbeat
         .tickTimers(new Date())
         .then((result) => {
@@ -640,6 +640,7 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+    if (timerInterval.unref) timerInterval.unref();
   }
   
   if (config.databaseBackupEnabled) {
@@ -690,9 +691,10 @@ export async function startServer(): Promise<StartedServer> {
       },
       "Automatic database backups enabled",
     );
-    setInterval(() => {
+    const backupInterval = setInterval(() => {
       void runScheduledBackup();
     }, backupIntervalMs);
+    if (backupInterval.unref) backupInterval.unref();
   }
   
   // Wait for external adapters to finish loading before accepting requests.

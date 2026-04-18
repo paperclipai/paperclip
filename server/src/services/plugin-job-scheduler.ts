@@ -698,6 +698,7 @@ export function createPluginJobScheduler(
     tickTimer = setInterval(() => {
       void tick();
     }, tickIntervalMs);
+    if (tickTimer.unref) tickTimer.unref();
 
     log.info(
       { tickIntervalMs, maxConcurrentJobs },

@@ -76,6 +76,7 @@ export function startPluginLogRetention(
       logger.warn({ err }, "Plugin log retention sweep failed");
     });
   }, intervalMs);
+  if (timer.unref) timer.unref();
 
   // Run once immediately on startup
   prunePluginLogs(db, retentionDays).catch((err) => {
