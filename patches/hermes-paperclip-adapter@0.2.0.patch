@@ -253,89 +253,25 @@ index f566623b5996e6effcd9e4ab6d5c9ee547612a83..3ef72177c921c046465bb50792d685e9
  //# sourceMappingURL=detect-model.js.map
 \ No newline at end of file
 diff --git a/dist/server/execute.js b/dist/server/execute.js
-index 93cddf8243271f5fb3ab101617f9114257e41328..25f3bf8eac83e2a01be812cc1432431edfc2b7ce 100644
---- a/dist/server/execute.js
-+++ b/dist/server/execute.js
-@@ -58,18 +58,18 @@ Title: {{taskTitle}}
+index 93cddf8243271f5fb3ab101617f9114257e41328..236b4a1f57ad5b78bc3206bc7103c6097eb097c7 100644
+@@ -45,6 +45,9 @@
+   Agent ID: {{agentId}}
+   Company ID: {{companyId}}
+   API Base: {{paperclipApiUrl}}
++  API Key: available as env var $PAPERCLIP_API_KEY
++
++IMPORTANT: ALL curl calls to the Paperclip API MUST include: -H "Authorization: Bearer $PAPERCLIP_API_KEY"
  
- 1. Work on the task using your tools
- 2. When done, mark the issue as completed:
--   \`curl -s -X PATCH "{{paperclipApiUrl}}/issues/{{taskId}}" -H "Content-Type: application/json" -d '{"status":"done"}'\`
-+   \`curl -s -X PATCH "{{paperclipApiUrl}}/issues/{{taskId}}" {{authHeader}} -H "Content-Type: application/json" -d '{"status":"done"}'\`
- 3. Post a completion comment on the issue summarizing what you did:
--   \`curl -s -X POST "{{paperclipApiUrl}}/issues/{{taskId}}/comments" -H "Content-Type: application/json" -d '{"body":"DONE: <your summary here>"}'\`
-+   \`curl -s -X POST "{{paperclipApiUrl}}/issues/{{taskId}}/comments" {{authHeader}} -H "Content-Type: application/json" -d '{"body":"DONE: <your summary here>"}'\`
- 4. If this issue has a parent (check the issue body or comments for references like TRA-XX), post a brief notification on the parent issue so the parent owner knows:
--   \`curl -s -X POST "{{paperclipApiUrl}}/issues/PARENT_ISSUE_ID/comments" -H "Content-Type: application/json" -d '{"body":"{{agentName}} completed {{taskId}}. Summary: <brief>"}'\`
-+   \`curl -s -X POST "{{paperclipApiUrl}}/issues/PARENT_ISSUE_ID/comments" {{authHeader}} -H "Content-Type: application/json" -d '{"body":"{{agentName}} completed {{taskId}}. Summary: <brief>"}'\`
- {{/taskId}}
- 
- {{#commentId}}
- ## Comment on This Issue
- 
- Someone commented. Read it:
--   \`curl -s "{{paperclipApiUrl}}/issues/{{taskId}}/comments/{{commentId}}" | python3 -m json.tool\`
-+   \`curl -s "{{paperclipApiUrl}}/issues/{{taskId}}/comments/{{commentId}}" {{authHeader}} | python3 -m json.tool\`
- 
- Address the comment, POST a reply if needed, then continue working.
- {{/commentId}}
-@@ -78,17 +78,17 @@ Address the comment, POST a reply if needed, then continue working.
- ## Heartbeat Wake — Check for Work
- 
- 1. List ALL open issues assigned to you (todo, backlog, in_progress):
--   \`curl -s "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"status\"]:>12} {i[\"priority\"]:>6} {i[\"title\"]}') for i in issues if i['status'] not in ('done','cancelled')]" \`
-+   \`curl -s "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}" {{authHeader}} | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"status\"]:>12} {i[\"priority\"]:>6} {i[\"title\"]}') for i in issues if i['status'] not in ('done','cancelled')]" \`
- 
- 2. If issues found, pick the highest priority one that is not done/cancelled and work on it:
--   - Read the issue details: \`curl -s "{{paperclipApiUrl}}/issues/ISSUE_ID"\`
-+   - Read the issue details: \`curl -s "{{paperclipApiUrl}}/issues/ISSUE_ID" {{authHeader}}\`
-    - Do the work in the project directory: {{projectName}}
-    - When done, mark complete and post a comment (see Workflow steps 2-4 above)
- 
- 3. If no issues assigned to you, check for unassigned issues:
--   \`curl -s "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"title\"]}') for i in issues if not i.get('assigneeAgentId')]" \`
-+   \`curl -s "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog" {{authHeader}} | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"title\"]}') for i in issues if not i.get('assigneeAgentId')]" \`
-    If you find a relevant issue, assign it to yourself:
--   \`curl -s -X PATCH "{{paperclipApiUrl}}/issues/ISSUE_ID" -H "Content-Type: application/json" -d '{"assigneeAgentId":"{{agentId}}","status":"todo"}'\`
-+   \`curl -s -X PATCH "{{paperclipApiUrl}}/issues/ISSUE_ID" {{authHeader}} -H "Content-Type: application/json" -d '{"assigneeAgentId":"{{agentId}}","status":"todo"}'\`
- 
- 4. If truly nothing to do, report briefly what you checked.
- {{/noTask}}`;
-@@ -110,6 +110,12 @@ function buildPrompt(ctx, config) {
-     if (!paperclipApiUrl.endsWith("/api")) {
-         paperclipApiUrl = paperclipApiUrl.replace(/\/+$/, "") + "/api";
-     }
-+    // Build auth header for curl commands — uses PAPERCLIP_API_KEY env var
-+    // which is injected from ctx.authToken during execute()
-+    const authToken = ctx.authToken || process.env.PAPERCLIP_API_KEY || "";
-+    const authHeader = authToken
-+        ? `-H "Authorization: Bearer ${authToken}"`
-+        : "";
-     const vars = {
-         agentId: ctx.agent?.id || "",
-         agentName,
-@@ -123,6 +129,7 @@ function buildPrompt(ctx, config) {
-         wakeReason,
-         projectName,
-         paperclipApiUrl,
-+        authHeader,
-     };
-     // Handle conditional sections: {{#key}}...{{/key}}
-     let rendered = template;
-@@ -298,12 +305,20 @@ export async function execute(ctx) {
-     const taskId = cfgString(ctx.config?.taskId);
-     if (taskId)
-         env.PAPERCLIP_TASK_ID = taskId;
-+    // Inject auth token as PAPERCLIP_API_KEY so the agent can authenticate
-+    // with the Paperclip API in authenticated deployment mode.
-+    // Follows the same pattern as claude-local adapter.
-+    if (ctx.authToken) {
-+        env.PAPERCLIP_API_KEY = ctx.authToken;
-+    }
-     const userEnv = config.env;
+ {{#taskId}}
+ ## Assigned Task
+@@ -302,8 +305,14 @@
      if (userEnv && typeof userEnv === "object") {
          Object.assign(env, userEnv);
      }
++    // Inject the run-scoped JWT so Hermes can authenticate to the Paperclip API
++    if (ctx.authToken && !env.PAPERCLIP_API_KEY) {
++        env.PAPERCLIP_API_KEY = ctx.authToken;
++    }
      // ── Resolve working directory ──────────────────────────────────────────
 -    const cwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
 +    // Use instructionsRootPath as fallback cwd so hermes reads the agent's own
@@ -343,6 +279,34 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..25f3bf8eac83e2a01be812cc1432431e
 +    const cwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || cfgString(config.instructionsRootPath) || ".";
      try {
          await ensureAbsoluteDirectory(cwd);
+     }
+@@ -319,7 +328,14 @@
+     // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
+     // Paperclip renders all stderr as red/error in the UI.
+     // Wrap onLog to reclassify benign stderr lines as stdout.
++    // Track last output and last stuck tool-init line for timeout diagnostics.
++    let lastLogChunk = "";
++    let lastToolInit = "";
+     const wrappedOnLog = async (stream, chunk) => {
++        lastLogChunk = chunk;
++        if (/preparing /.test(chunk)) {
++            lastToolInit = chunk.trimEnd();
++        }
+         if (stream === "stderr") {
+             const trimmed = chunk.trimEnd();
+             // Benign patterns that should NOT appear as errors:
+@@ -348,6 +364,12 @@
+     // ── Parse output ───────────────────────────────────────────────────────
+     const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+     await ctx.onLog("stdout", `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`);
++    if (result.timedOut) {
++        await ctx.onLog("stdout", `[hermes] Timed out. Last output: ${lastLogChunk.trimEnd()}\n`);
++        if (lastToolInit) {
++            await ctx.onLog("stdout", `[hermes] Last tool init seen: ${lastToolInit}\n`);
++        }
++    }
+     if (parsed.sessionId) {
+         await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
      }
 diff --git a/dist/server/index.js b/dist/server/index.js
 index 74d5314a0f76b605e89664b44c99ec04f7dce64c..cac5b7317736e347f4e446cefa4c78262f8b6e88 100644
