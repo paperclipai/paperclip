@@ -1427,6 +1427,33 @@ export function agentRoutes(db: Db) {
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
 
+    // Auto-generate API key for the new agent so it can authenticate with
+    // the Paperclip API immediately. Agents created via the hire flow (e.g.
+    // by a CEO agent) previously had no key injected, causing every run to
+    // fail with "Agent authentication required".
+    if (!requiresApproval) {
+      try {
+        const autoKey = await svc.createApiKey(agent.id, "auto-generated-run-key");
+        const currentEnv =
+          (agent.adapterConfig as Record<string, unknown> | null)?.env ?? {};
+        await svc.update(
+          agent.id,
+          {
+            adapterConfig: {
+              ...(agent.adapterConfig as Record<string, unknown>),
+              env: {
+                ...(currentEnv as Record<string, unknown>),
+                PAPERCLIP_API_KEY: { type: "plain", value: autoKey.token },
+              },
+            },
+          },
+          {},
+        );
+      } catch (e) {
+        console.warn("[auto-key] Failed to create agent API key:", (e as Error)?.message);
+      }
+    }
+
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
 
@@ -1577,6 +1604,28 @@ export function agentRoutes(db: Db) {
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
+
+    // Auto-generate API key (same as hire flow above).
+    try {
+      const autoKey = await svc.createApiKey(agent.id, "auto-generated-run-key");
+      const currentEnv =
+        (agent.adapterConfig as Record<string, unknown> | null)?.env ?? {};
+      await svc.update(
+        agent.id,
+        {
+          adapterConfig: {
+            ...(agent.adapterConfig as Record<string, unknown>),
+            env: {
+              ...(currentEnv as Record<string, unknown>),
+              PAPERCLIP_API_KEY: { type: "plain", value: autoKey.token },
+            },
+          },
+        },
+        {},
+      );
+    } catch (e) {
+      console.warn("[auto-key] Failed to create agent API key:", (e as Error)?.message);
+    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
