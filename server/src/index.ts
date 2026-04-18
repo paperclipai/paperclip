@@ -610,6 +610,12 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "heartbeat timer tick failed");
         });
 
+      void heartbeat
+        .tickActiveAgentActivity(new Date())
+        .catch((err) => {
+          logger.error({ err }, "heartbeat active-agent activity tick failed");
+        });
+
       void routines
         .tickScheduledTriggers(new Date())
         .then((result) => {
