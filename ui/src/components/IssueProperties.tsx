@@ -212,6 +212,10 @@ export function IssueProperties({
   const companyId = issue.companyId ?? selectedCompanyId;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
+  const [ownerOpen, setOwnerOpen] = useState(false);
+  const [ownerSearch, setOwnerSearch] = useState("");
+  const [collaboratorsOpen, setCollaboratorsOpen] = useState(false);
+  const [collaboratorsSearch, setCollaboratorsSearch] = useState("");
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
   const [blockedByOpen, setBlockedByOpen] = useState(false);
@@ -326,6 +330,10 @@ export function IssueProperties({
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
+  const owner = issue.ownerAgentId
+    ? agents?.find((a) => a.id === issue.ownerAgentId)
+    : null;
+  const collaboratorAgentIds = missionControl?.collaboratorAgentIds ?? [];
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
@@ -512,6 +520,116 @@ export function IssueProperties({
     <>
       <User className="h-3.5 w-3.5 text-muted-foreground" />
       <span className="text-sm text-muted-foreground">Unassigned</span>
+    </>
+  );
+
+  const ownerTrigger = owner ? (
+    <Identity name={owner.name} size="sm" />
+  ) : (
+    <>
+      <User className="h-3.5 w-3.5 text-muted-foreground" />
+      <span className="text-sm text-muted-foreground">No owner</span>
+    </>
+  );
+
+  const ownerContent = (
+    <>
+      <input
+        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+        placeholder="Search owners..."
+        value={ownerSearch}
+        onChange={(e) => setOwnerSearch(e.target.value)}
+        autoFocus={!inline}
+      />
+      <div className="max-h-48 overflow-y-auto overscroll-contain">
+        <button
+          className={cn(
+            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+            !issue.ownerAgentId && "bg-accent",
+          )}
+          onClick={() => {
+            onUpdate({ ownerAgentId: null });
+            setOwnerOpen(false);
+          }}
+        >
+          No owner
+        </button>
+        {sortedAgents
+          .filter((a) => {
+            if (!ownerSearch.trim()) return true;
+            return a.name.toLowerCase().includes(ownerSearch.toLowerCase());
+          })
+          .map((a) => (
+            <button
+              key={a.id}
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                issue.ownerAgentId === a.id && "bg-accent",
+              )}
+              onClick={() => {
+                onUpdate({ ownerAgentId: a.id });
+                setOwnerOpen(false);
+              }}
+            >
+              <Identity name={a.name} size="sm" />
+            </button>
+          ))}
+      </div>
+    </>
+  );
+
+  const collaboratorsTrigger = collaboratorAgentIds.length > 0 ? (
+    <span className="text-sm break-words min-w-0">
+      {collaboratorAgentIds.map((agentId) => agentName(agentId) ?? agentId.slice(0, 8)).join(", ")}
+    </span>
+  ) : (
+    <span className="text-sm text-muted-foreground">None</span>
+  );
+
+  const toggleCollaborator = (agentId: string) => {
+    const nextCollaboratorAgentIds = collaboratorAgentIds.includes(agentId)
+      ? collaboratorAgentIds.filter((id) => id !== agentId)
+      : [...collaboratorAgentIds, agentId];
+    onUpdate({
+      missionControl: {
+        ...(missionControl ?? {}),
+        collaboratorAgentIds: nextCollaboratorAgentIds,
+      },
+    });
+  };
+
+  const collaboratorsContent = (
+    <>
+      <input
+        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+        placeholder="Search collaborators..."
+        value={collaboratorsSearch}
+        onChange={(e) => setCollaboratorsSearch(e.target.value)}
+        autoFocus={!inline}
+      />
+      <div className="max-h-48 overflow-y-auto overscroll-contain">
+        {sortedAgents
+          .filter((a) => a.id !== issue.ownerAgentId)
+          .filter((a) => {
+            if (!collaboratorsSearch.trim()) return true;
+            return a.name.toLowerCase().includes(collaboratorsSearch.toLowerCase());
+          })
+          .map((a) => {
+            const selected = collaboratorAgentIds.includes(a.id);
+            return (
+              <button
+                key={a.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  selected && "bg-accent",
+                )}
+                onClick={() => toggleCollaborator(a.id)}
+              >
+                <Identity name={a.name} size="sm" />
+              </button>
+            );
+          })}
+      </div>
     </>
   );
 
@@ -1020,6 +1138,38 @@ export function IssueProperties({
           ) : undefined}
         >
           {assigneeContent}
+        </PropertyPicker>
+
+        <PropertyPicker
+          inline={inline}
+          label="Owner"
+          open={ownerOpen}
+          onOpenChange={(open) => { setOwnerOpen(open); if (!open) setOwnerSearch(""); }}
+          triggerContent={ownerTrigger}
+          popoverClassName="w-52"
+          extra={issue.ownerAgentId ? (
+            <Link
+              to={`/agents/${issue.ownerAgentId}`}
+              className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <ArrowUpRight className="h-3 w-3" />
+            </Link>
+          ) : undefined}
+        >
+          {ownerContent}
+        </PropertyPicker>
+
+        <PropertyPicker
+          inline={inline}
+          label="Collaborators"
+          open={collaboratorsOpen}
+          onOpenChange={(open) => { setCollaboratorsOpen(open); if (!open) setCollaboratorsSearch(""); }}
+          triggerContent={collaboratorsTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-56"
+        >
+          {collaboratorsContent}
         </PropertyPicker>
 
         <PropertyPicker

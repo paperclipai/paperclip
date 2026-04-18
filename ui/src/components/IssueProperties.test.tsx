@@ -115,6 +115,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    ownerAgentId: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     checkoutRunId: null,
@@ -519,5 +520,86 @@ describe("IssueProperties", () => {
     });
 
     act(() => root.unmount());
+  });
+
+  it("allows setting an owner and collaborator agents", async () => {
+    const onUpdate = vi.fn();
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "11111111-1111-4111-8111-111111111111", name: "Main" },
+      { id: "22222222-2222-4222-8222-222222222222", name: "Ork" },
+      { id: "33333333-3333-4333-8333-333333333333", name: "Stitch" },
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        missionControl: {
+          collaboratorAgentIds: [],
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const ownerTrigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("No owner"));
+    expect(ownerTrigger).not.toBeUndefined();
+
+    await act(async () => {
+      ownerTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const ownerOption = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Ork"));
+    expect(ownerOption).not.toBeUndefined();
+
+    await act(async () => {
+      ownerOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ ownerAgentId: "22222222-2222-4222-8222-222222222222" });
+
+    onUpdate.mockClear();
+    act(() => root.unmount());
+
+    const rerenderedRoot = renderProperties(container, {
+      issue: createIssue({
+        ownerAgentId: "22222222-2222-4222-8222-222222222222",
+        missionControl: {
+          collaboratorAgentIds: [],
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const collaboratorsTrigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("None"));
+    expect(collaboratorsTrigger).not.toBeUndefined();
+
+    await act(async () => {
+      collaboratorsTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const collaboratorOption = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Stitch"));
+    expect(collaboratorOption).not.toBeUndefined();
+
+    await act(async () => {
+      collaboratorOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      missionControl: {
+        collaboratorAgentIds: ["33333333-3333-4333-8333-333333333333"],
+      },
+    });
+
+    act(() => rerenderedRoot.unmount());
   });
 });

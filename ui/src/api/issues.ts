@@ -25,8 +25,10 @@ export const issuesApi = {
       status?: string;
       projectId?: string;
       parentId?: string;
+      ownerAgentId?: string;
       assigneeAgentId?: string;
       participantAgentId?: string;
+      needsHumanAttention?: boolean;
       assigneeUserId?: string;
       touchedByUserId?: string;
       inboxArchivedByUserId?: string;
@@ -44,8 +46,10 @@ export const issuesApi = {
     if (filters?.status) params.set("status", filters.status);
     if (filters?.projectId) params.set("projectId", filters.projectId);
     if (filters?.parentId) params.set("parentId", filters.parentId);
+    if (filters?.ownerAgentId) params.set("ownerAgentId", filters.ownerAgentId);
     if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
     if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
+    if (filters?.needsHumanAttention) params.set("needsHumanAttention", "true");
     if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
     if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
     if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);

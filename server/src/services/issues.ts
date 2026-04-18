@@ -66,8 +66,10 @@ function applyStatusSideEffects(
 
 export interface IssueFilters {
   status?: string;
+  ownerAgentId?: string;
   assigneeAgentId?: string;
   participantAgentId?: string;
+  needsHumanAttention?: boolean;
   assigneeUserId?: string;
   touchedByUserId?: string;
   inboxArchivedByUserId?: string;
@@ -544,6 +546,7 @@ const issueListSelect = {
   `,
   status: issues.status,
   priority: issues.priority,
+  ownerAgentId: issues.ownerAgentId,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
   checkoutRunId: issues.checkoutRunId,
@@ -573,6 +576,24 @@ const issueListSelect = {
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
+
+function normalizeMissionControlMetadata(
+  raw: Record<string, unknown> | null | undefined,
+  ownerAgentId: string | null | undefined,
+): Record<string, unknown> | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+
+  const collaboratorAgentIds = Array.isArray(raw.collaboratorAgentIds)
+    ? Array.from(new Set(raw.collaboratorAgentIds.filter((value): value is string => typeof value === "string")))
+      .filter((agentId) => agentId !== ownerAgentId)
+    : [];
+
+  return {
+    ...raw,
+    collaboratorAgentIds,
+  };
+}
 
 function withActiveRuns(
   issueRows: IssueWithLabels[],
@@ -990,6 +1011,9 @@ export function issueService(db: Db) {
         const statuses = filters.status.split(",").map((s) => s.trim());
         conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
       }
+      if (filters?.ownerAgentId) {
+        conditions.push(eq(issues.ownerAgentId, filters.ownerAgentId));
+      }
       if (filters?.assigneeAgentId) {
         conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
       }
@@ -1022,6 +1046,9 @@ export function issueService(db: Db) {
           .where(and(eq(issueLabels.companyId, companyId), eq(issueLabels.labelId, filters.labelId)));
         if (labeledIssueIds.length === 0) return [];
         conditions.push(inArray(issues.id, labeledIssueIds.map((row) => row.issueId)));
+      }
+      if (filters?.needsHumanAttention === true) {
+        conditions.push(sql<boolean>`coalesce((${issues.missionControl} ->> 'needsHumanAttention')::boolean, false) = true`);
       }
       if (hasSearch) {
         conditions.push(
@@ -1444,8 +1471,17 @@ export function issueService(db: Db) {
       if (data.assigneeAgentId) {
         await assertAssignableAgent(companyId, data.assigneeAgentId);
       }
+      if (data.ownerAgentId) {
+        await assertAssignableAgent(companyId, data.ownerAgentId);
+      }
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
+      }
+      const collaboratorAgentIds = Array.isArray(data.missionControl?.collaboratorAgentIds)
+        ? data.missionControl.collaboratorAgentIds
+        : [];
+      for (const collaboratorAgentId of collaboratorAgentIds) {
+        await assertAssignableAgent(companyId, collaboratorAgentId);
       }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
@@ -1555,6 +1591,10 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          missionControl: normalizeMissionControlMetadata(
+            issueData.missionControl as Record<string, unknown> | null | undefined,
+            issueData.ownerAgentId ?? null,
+          ),
           originKind: issueData.originKind ?? "manual",
           goalId: resolveIssueGoalId({
             projectId: issueData.projectId,
@@ -1636,8 +1676,15 @@ export function issueService(db: Db) {
         assertTransition(existing.status, issueData.status);
       }
 
+      const nextMissionControl = normalizeMissionControlMetadata(
+        (issueData.missionControl as Record<string, unknown> | null | undefined)
+          ?? (existing.missionControl as Record<string, unknown> | null | undefined),
+        issueData.ownerAgentId !== undefined ? issueData.ownerAgentId : existing.ownerAgentId,
+      );
+
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
+        ...(issueData.missionControl !== undefined ? { missionControl: nextMissionControl } : {}),
         updatedAt: new Date(),
       };
 
@@ -1655,8 +1702,17 @@ export function issueService(db: Db) {
       if (issueData.assigneeAgentId) {
         await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
       }
+      if (issueData.ownerAgentId) {
+        await assertAssignableAgent(existing.companyId, issueData.ownerAgentId);
+      }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
+      }
+      const collaboratorAgentIds = Array.isArray(nextMissionControl?.collaboratorAgentIds)
+        ? nextMissionControl.collaboratorAgentIds.filter((value): value is string => typeof value === "string")
+        : [];
+      for (const collaboratorAgentId of collaboratorAgentIds) {
+        await assertAssignableAgent(existing.companyId, collaboratorAgentId);
       }
       const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =

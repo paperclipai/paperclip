@@ -642,8 +642,13 @@ export function issueRoutes(
 
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
+      ownerAgentId: req.query.ownerAgentId as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
+      needsHumanAttention:
+        req.query.needsHumanAttention === "true" || req.query.needsHumanAttention === "1"
+          ? true
+          : undefined,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,

@@ -31,6 +31,7 @@ export const issues = pgTable(
     description: text("description"),
     status: text("status").notNull().default("backlog"),
     priority: text("priority").notNull().default("medium"),
+    ownerAgentId: uuid("owner_agent_id").references(() => agents.id),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
     checkoutRunId: uuid("checkout_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
@@ -66,6 +67,11 @@ export const issues = pgTable(
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(
       table.companyId,
       table.assigneeAgentId,
+      table.status,
+    ),
+    ownerStatusIdx: index("issues_company_owner_status_idx").on(
+      table.companyId,
+      table.ownerAgentId,
       table.status,
     ),
     assigneeUserStatusIdx: index("issues_company_assignee_user_status_idx").on(
