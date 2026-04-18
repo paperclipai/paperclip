@@ -264,16 +264,26 @@ export function pluginRegistryService(db: Db) {
           .then((rows) => rows[0] ?? null);
       }
 
-      // Soft delete – mark as uninstalled
-      return db
-        .update(plugins)
-        .set({
-          status: "uninstalled" as PluginStatus,
-          updatedAt: new Date(),
-        })
-        .where(eq(plugins.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      // Soft delete – mark as uninstalled.
+      // Clean runtime job state — plugin_jobs are re-created from the manifest
+      // on reinstall, and stale rows cause the scheduler to spam
+      // "skipping job — worker not running" every tick. Wrap in a transaction
+      // so the status flip and the job-state cleanup are atomic. plugin_config
+      // is intentionally preserved so user settings survive uninstall/reinstall
+      // cycles.
+      return db.transaction(async (tx) => {
+        await tx.delete(pluginJobRuns).where(eq(pluginJobRuns.pluginId, id));
+        await tx.delete(pluginJobs).where(eq(pluginJobs.pluginId, id));
+        return tx
+          .update(plugins)
+          .set({
+            status: "uninstalled" as PluginStatus,
+            updatedAt: new Date(),
+          })
+          .where(eq(plugins.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
     },
 
     // ----- Config ---------------------------------------------------------
