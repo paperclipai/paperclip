@@ -49,7 +49,8 @@ export function Goals() {
 
       {goals && goals.length > 0 && (
         <>
-          <div className="flex items-center justify-start">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-muted-foreground tabular-nums">{goals.length} {goals.length === 1 ? "goal" : "goals"}</span>
             <Button size="sm" variant="outline" onClick={() => openNewGoal()}>
               <Plus className="h-3.5 w-3.5 mr-1.5" />
               New Goal
