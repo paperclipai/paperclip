@@ -411,6 +411,29 @@ export function normalizeAgentMentionToken(raw: string): string {
   return s.trim();
 }
 
+/**
+ * Replaces Markdown fenced code blocks and inline code spans with equal-length
+ * whitespace so that `@slug` / `agent://` references inside documentation code
+ * do not trigger wake-emission. Offsets are preserved in case a caller runs
+ * position-dependent logic on the result.
+ */
+export function stripMarkdownCodeSegments(body: string): string {
+  if (!body) return body;
+  // Fenced blocks first: a run of 3+ backticks opens and the same run closes.
+  // Matches across lines (non-greedy). Stripped before inline spans so a fence
+  // is not re-matched as three adjacent single-tick spans.
+  const withoutFences = body.replace(
+    /(`{3,})[\s\S]*?\1/g,
+    (match) => match.replace(/[^\n]/g, " "),
+  );
+  // Inline spans: run of N backticks closed by a run of exactly N backticks
+  // (CommonMark semantics). Requires a backreference + negative lookahead.
+  return withoutFences.replace(
+    /(`+)(?:(?!\1)[\s\S])*?\1/g,
+    (match) => match.replace(/[^\n]/g, " "),
+  );
+}
+
 export function deriveIssueUserContext(
   issue: IssueUserContextInput,
   userId: string,
@@ -2382,10 +2405,15 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
+      // Documentation comments often illustrate mention syntax inside Markdown
+      // code spans / fences (e.g. `` `@cto` ``). Strip those segments first so
+      // literal mentions in code do not trigger live wake-emission.
+      const scannable = stripMarkdownCodeSegments(body);
+
       const re = /\B@([^\s@,!?.]+)/g;
       const tokens = new Set<string>();
       let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) {
+      while ((m = re.exec(scannable)) !== null) {
         const normalized = normalizeAgentMentionToken(m[1]);
         if (!normalized) continue;
         tokens.add(normalized.toLowerCase());
@@ -2393,7 +2421,7 @@ export function issueService(db: Db) {
         if (slugified) tokens.add(slugified);
       }
 
-      const hrefAgentRefs = extractAgentMentionIds(body);
+      const hrefAgentRefs = extractAgentMentionIds(scannable);
       if (tokens.size === 0 && hrefAgentRefs.length === 0) return [];
 
       const rows = await db.select({ id: agents.id, name: agents.name })

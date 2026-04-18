@@ -1675,4 +1675,59 @@ describeEmbeddedPostgres("issueService.findMentionedAgents slug + href resolutio
 
     expect(ids).toEqual([]);
   });
+
+  it("does not emit a mention when @slug appears inside an inline code span", async () => {
+    const companyId = randomUUID();
+    const ctoId = randomUUID();
+    const ceoId = randomUUID();
+    const seniorId = randomUUID();
+    await seedAgents(companyId, [
+      { id: ctoId, name: "CTO" },
+      { id: ceoId, name: "CEO" },
+      { id: seniorId, name: "Senior Engineer" },
+    ]);
+
+    const body = "docs: use `@cto`/`@ceo`/`@senior-engineer` to tag agents";
+    const ids = await svc.findMentionedAgents(companyId, body);
+
+    expect(ids).toEqual([]);
+  });
+
+  it("still wakes on plain @slug alongside code-spanned examples", async () => {
+    const companyId = randomUUID();
+    const ctoId = randomUUID();
+    await seedAgents(companyId, [{ id: ctoId, name: "CTO" }]);
+
+    const body = "example syntax is `@cto` — e.g. hey @cto please review";
+    const ids = await svc.findMentionedAgents(companyId, body);
+
+    expect(ids).toEqual([ctoId]);
+  });
+
+  it("does not emit a mention when @slug appears inside a fenced code block", async () => {
+    const companyId = randomUUID();
+    const ctoId = randomUUID();
+    await seedAgents(companyId, [{ id: ctoId, name: "CTO" }]);
+
+    const body = [
+      "see example below:",
+      "```md",
+      "Ping @cto for sign-off",
+      "```",
+    ].join("\n");
+    const ids = await svc.findMentionedAgents(companyId, body);
+
+    expect(ids).toEqual([]);
+  });
+
+  it("does not emit a mention for agent:// hrefs inside code spans", async () => {
+    const companyId = randomUUID();
+    const ctoId = randomUUID();
+    await seedAgents(companyId, [{ id: ctoId, name: "CTO" }]);
+
+    const body = "syntax: `[@CTO](agent://cto)` renders as a link";
+    const ids = await svc.findMentionedAgents(companyId, body);
+
+    expect(ids).toEqual([]);
+  });
 });
