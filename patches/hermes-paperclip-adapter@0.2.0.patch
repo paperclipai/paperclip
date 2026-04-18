@@ -344,3 +344,15 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..25f3bf8eac83e2a01be812cc1432431e
      try {
          await ensureAbsoluteDirectory(cwd);
      }
+diff --git a/dist/server/index.js b/dist/server/index.js
+index 74d5314a0f76b605e89664b44c99ec04f7dce64c..cac5b7317736e347f4e446cefa4c78262f8b6e88 100644
+--- a/dist/server/index.js
++++ b/dist/server/index.js
+@@ -40,4 +40,5 @@
+         return readNonEmptyString(params.sessionId) ?? readNonEmptyString(params.session_id);
+     },
+ };
+-//# sourceMappingURL=index.js.map
++export const supportsLocalAgentJwt = true;
++//# sourceMappingURL=index.js.map
+\ No newline at end of file
