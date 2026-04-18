@@ -345,8 +345,30 @@ export async function startServer(): Promise<StartedServer> {
     };
   
     const runningPid = getRunningPid();
+    let pidReusable = false;
     if (runningPid) {
-      logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
+      // Verify the process is actually accepting connections before trusting the PID
+      const verifyConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+      for (let verifyAttempt = 1; verifyAttempt <= 10; verifyAttempt++) {
+        try {
+          await getPostgresDataDirectory(verifyConnectionString);
+          pidReusable = true;
+          break;
+        } catch {
+          if (verifyAttempt === 1) logger.info(`Verifying embedded PostgreSQL (pid=${runningPid}) is accepting connections...`);
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      }
+      if (pidReusable) {
+        logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
+      } else {
+        logger.warn(`PID file references process ${runningPid} but PostgreSQL is not accepting connections; starting fresh instance`);
+        try { process.kill(runningPid, "SIGTERM"); } catch { /* ignore */ }
+        if (existsSync(postmasterPidFile)) rmSync(postmasterPidFile, { force: true });
+      }
+    }
+    if (pidReusable) {
+      // PID verified, skip startup
     } else {
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
       try {
@@ -411,7 +433,20 @@ export async function startServer(): Promise<StartedServer> {
     }
   
     const embeddedAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-    const dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "paperclip");
+    // Retry ensurePostgresDatabase to handle PostgreSQL still finishing crash-recovery
+    let dbStatus: "created" | "exists" | undefined;
+    for (let attempt = 1; attempt <= 30; attempt++) {
+      try {
+        dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "paperclip");
+        break;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isTransient = msg.includes("starting up") || msg.includes("57P03") || msg.includes("ECONNREFUSED");
+        if (!isTransient || attempt === 30) throw err;
+        if (attempt === 1) logger.info("Waiting for embedded PostgreSQL to finish recovery...");
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
     if (dbStatus === "created") {
       logger.info("Created embedded PostgreSQL database: paperclip");
     }
