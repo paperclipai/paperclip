@@ -31,7 +31,7 @@ async function makeConfigHome(initialConfig?: Record<string, unknown>) {
 }
 
 describe("prepareOpenCodeRuntimeConfig", () => {
-  it("injects an external_directory allow rule by default", async () => {
+  it("injects an external_directory allow rule using object format", async () => {
     const configHome = await makeConfigHome({
       permission: {
         read: "allow",
@@ -56,13 +56,82 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       theme: "system",
       permission: {
         read: "allow",
-        external_directory: "allow",
+        external_directory: {
+          "/*": "allow",
+        },
       },
     });
 
     await prepared.cleanup();
     cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
     await expect(fs.access(prepared.env.XDG_CONFIG_HOME)).rejects.toThrow();
+  });
+
+  it("merges with existing external_directory object entries", async () => {
+    const configHome = await makeConfigHome({
+      permission: {
+        external_directory: {
+          "/Users/me/src/*": "allow",
+          "/tmp": "allow",
+        },
+      },
+    });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig).toMatchObject({
+      permission: {
+        external_directory: {
+          "/Users/me/src/*": "allow",
+          "/tmp": "allow",
+          "/*": "allow",
+        },
+      },
+    });
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
+
+  it("replaces a legacy string external_directory value with the object form", async () => {
+    const configHome = await makeConfigHome({
+      permission: {
+        external_directory: "allow",
+      },
+    });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig).toMatchObject({
+      permission: {
+        external_directory: {
+          "/*": "allow",
+        },
+      },
+    });
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
   });
 
   it("respects explicit opt-out", async () => {
