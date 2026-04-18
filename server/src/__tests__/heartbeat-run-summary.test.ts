@@ -55,6 +55,33 @@ describe("buildHeartbeatRunIssueComment", () => {
   it("returns null when there is no usable final text", () => {
     expect(buildHeartbeatRunIssueComment({ costUsd: 1.2 })).toBeNull();
   });
+
+  it("falls back to stdout+stderr when summary/result/message all missing", () => {
+    const comment = buildHeartbeatRunIssueComment({ stdout: "my output", stderr: "my error" });
+    expect(comment).not.toBeNull();
+    expect(comment).toContain("stdout:");
+    expect(comment).toContain("stderr:");
+    expect(comment).toContain("my output");
+    expect(comment).toContain("my error");
+  });
+
+  it("falls back to stdout alone when stderr empty/missing", () => {
+    expect(buildHeartbeatRunIssueComment({ stdout: "ok" })).toBe("ok");
+    expect(buildHeartbeatRunIssueComment({ stdout: "ok", stderr: "   " })).toBe("ok");
+  });
+
+  it("falls back to stderr alone when stdout empty/missing", () => {
+    expect(buildHeartbeatRunIssueComment({ stderr: "boom" })).toBe("boom");
+  });
+
+  it("preserves existing precedence — summary wins over stdout", () => {
+    expect(buildHeartbeatRunIssueComment({ summary: "real summary", stdout: "raw" })).toBe("real summary");
+  });
+
+  it("returns null when only non-text or whitespace fields exist", () => {
+    expect(buildHeartbeatRunIssueComment({ stdout: "", stderr: "" })).toBeNull();
+    expect(buildHeartbeatRunIssueComment({ costUsd: 0.12 })).toBeNull();
+  });
 });
 
 describe("mergeHeartbeatRunResultJson", () => {
