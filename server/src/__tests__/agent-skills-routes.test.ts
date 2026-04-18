@@ -69,6 +69,12 @@ vi.mock("../telemetry.js", () => ({
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
+  agentHirePolicyService: () => ({
+    getByAgentId: vi.fn().mockResolvedValue(null),
+    upsert: vi.fn(),
+    enforce: vi.fn().mockResolvedValue(undefined),
+    recordHireEvent: vi.fn().mockResolvedValue(undefined),
+  }),
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => mockApprovalService,
@@ -102,6 +108,12 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
+    agentHirePolicyService: () => ({
+      getByAgentId: vi.fn().mockResolvedValue(null),
+      upsert: vi.fn(),
+      enforce: vi.fn().mockResolvedValue(undefined),
+      recordHireEvent: vi.fn().mockResolvedValue(undefined),
+    }),
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
