@@ -533,6 +533,28 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       } finally {
         await verifySql.end();
       }
+
+      const noOpSql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const authAccountHash = await migrationHash("0058_auth_account_rename.sql");
+        await noOpSql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${authAccountHash}'`,
+        );
+      } finally {
+        await noOpSql.end();
+      }
+
+      const noOpPendingState = await inspectMigrations(connectionString);
+      expect(noOpPendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0058_auth_account_rename.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const noOpFinalState = await inspectMigrations(connectionString);
+      expect(noOpFinalState.status).toBe("upToDate");
     },
     20_000,
   );
