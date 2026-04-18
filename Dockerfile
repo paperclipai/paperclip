@@ -57,6 +57,8 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+RUN mkdir -p /paperclip && chown -R node:node /paperclip /app
+
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \
@@ -71,6 +73,7 @@ ENV NODE_ENV=production \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
   OPENCODE_ALLOW_ALL_MODELS=true
 
+USER node
 VOLUME ["/paperclip"]
 EXPOSE 3100
 
