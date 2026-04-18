@@ -3013,7 +3013,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const files: Record<string, CompanyPortabilityFileEntry> = {};
     const warnings: string[] = [];
     const envInputs: CompanyPortabilityManifest["envInputs"] = [];
-    const secretEntries: CompanyPortabilityManifest["secrets"] = [];
+    const secretEntries: CompanyPortabilitySecretEntry[] = [];
     const requestedSidebarOrder = normalizePortableSidebarOrder(input.sidebarOrder);
     const includeSecrets = input.includeSecrets === true;
     const rootPath = normalizeAgentUrlKey(company.name) ?? "company-package";
