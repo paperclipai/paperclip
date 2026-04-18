@@ -27,6 +27,7 @@ import { AgentIcon } from "../components/AgentIconPicker";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
 import { WorkflowDAGView } from "../components/WorkflowDAGView";
 import type { IssueExecutionPolicy, IssuePriority } from "@paperclipai/shared";
 
@@ -398,6 +399,94 @@ export function WorkflowEdit() {
                           value={node.defaultPriority ?? null}
                           items={priorityItems}
                           onChange={(val) => updateNode(i, { defaultPriority: val })}
+                        />
+                      </div>
+
+                      {/* Reviewer */}
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
+                        <span className="text-xs shrink-0">Reviewed by</span>
+                        <InlineEntitySelector
+                          value={(() => {
+                            const vals = stageParticipantValues(node.executionPolicy, "review");
+                            return vals[0]?.startsWith("agent:") ? vals[0].slice("agent:".length) : "";
+                          })()}
+                          options={assigneeOptions}
+                          placeholder="Reviewer"
+                          noneLabel="No reviewer"
+                          searchPlaceholder="Search agents..."
+                          emptyMessage="No agents found."
+                          onChange={(val) =>
+                            updateNode(i, {
+                              executionPolicy: buildExecutionPolicy({
+                                existingPolicy: node.executionPolicy ?? null,
+                                reviewerValues: val ? [`agent:${val}`] : [],
+                                approverValues: stageParticipantValues(node.executionPolicy, "approval"),
+                              }) ?? undefined,
+                            })
+                          }
+                          renderTriggerValue={(option) => {
+                            if (!option) return <span className="text-muted-foreground">Reviewer</span>;
+                            const agent = agents.find((a) => a.id === option.id);
+                            return (
+                              <>
+                                {agent && <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                                <span className="truncate">{option.label}</span>
+                              </>
+                            );
+                          }}
+                          renderOption={(option) => {
+                            const agent = agents.find((a) => a.id === option.id);
+                            return (
+                              <>
+                                {agent && <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                                <span className="truncate">{option.label}</span>
+                              </>
+                            );
+                          }}
+                        />
+                      </div>
+
+                      {/* Approver */}
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
+                        <span className="text-xs shrink-0">Approved by</span>
+                        <InlineEntitySelector
+                          value={(() => {
+                            const vals = stageParticipantValues(node.executionPolicy, "approval");
+                            return vals[0]?.startsWith("agent:") ? vals[0].slice("agent:".length) : "";
+                          })()}
+                          options={assigneeOptions}
+                          placeholder="Approver"
+                          noneLabel="No approver"
+                          searchPlaceholder="Search agents..."
+                          emptyMessage="No agents found."
+                          onChange={(val) =>
+                            updateNode(i, {
+                              executionPolicy: buildExecutionPolicy({
+                                existingPolicy: node.executionPolicy ?? null,
+                                reviewerValues: stageParticipantValues(node.executionPolicy, "review"),
+                                approverValues: val ? [`agent:${val}`] : [],
+                              }) ?? undefined,
+                            })
+                          }
+                          renderTriggerValue={(option) => {
+                            if (!option) return <span className="text-muted-foreground">Approver</span>;
+                            const agent = agents.find((a) => a.id === option.id);
+                            return (
+                              <>
+                                {agent && <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                                <span className="truncate">{option.label}</span>
+                              </>
+                            );
+                          }}
+                          renderOption={(option) => {
+                            const agent = agents.find((a) => a.id === option.id);
+                            return (
+                              <>
+                                {agent && <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                                <span className="truncate">{option.label}</span>
+                              </>
+                            );
+                          }}
                         />
                       </div>
 
