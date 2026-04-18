@@ -308,6 +308,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runStatus: "failed" | "timed_out" | "cancelled" | "succeeded";
     retryReason?: "assignment_recovery" | "issue_continuation_needed" | null;
     assignToUser?: boolean;
+    blockedAssigneeMode?: "agent" | "user" | "none";
+    blockedCheckoutRunId?: boolean;
+    agentName?: string;
+    issueTitle?: string;
+    runErrorCode?: string | null;
+    runError?: string | null;
+    createdByAgentId?: string | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -327,7 +334,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.insert(agents).values({
       id: agentId,
       companyId,
-      name: "CodexCoder",
+      name: input.agentName ?? "CodexCoder",
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
@@ -348,7 +355,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       claimedAt: now,
       finishedAt: new Date("2026-03-19T00:05:00.000Z"),
-      error: input.runStatus === "succeeded" ? null : "run failed before issue advanced",
+      error: input.runError ?? (input.runStatus === "succeeded" ? null : "run failed before issue advanced"),
     });
 
     await db.insert(heartbeatRuns).values({
@@ -370,20 +377,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       startedAt: now,
       finishedAt: new Date("2026-03-19T00:05:00.000Z"),
       updatedAt: new Date("2026-03-19T00:05:00.000Z"),
-      errorCode: input.runStatus === "succeeded" ? null : "process_lost",
-      error: input.runStatus === "succeeded" ? null : "run failed before issue advanced",
+      errorCode: input.runErrorCode ?? (input.runStatus === "succeeded" ? null : "process_lost"),
+      error: input.runError ?? (input.runStatus === "succeeded" ? null : "run failed before issue advanced"),
     });
 
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Recover stranded assigned work",
+      title: input.issueTitle ?? "Recover stranded assigned work",
       status: input.status,
       priority: "medium",
-      assigneeAgentId: input.assignToUser ? null : agentId,
-      assigneeUserId: input.assignToUser ? "user-1" : null,
-      checkoutRunId: input.status === "in_progress" ? runId : null,
-      executionRunId: null,
+      assigneeAgentId:
+        input.status === "blocked"
+          ? (input.blockedAssigneeMode ?? "none") === "agent"
+            ? agentId
+            : null
+          : input.assignToUser
+            ? null
+            : agentId,
+      assigneeUserId:
+        input.status === "blocked"
+          ? (input.blockedAssigneeMode ?? "none") === "user"
+            ? "user-1"
+            : null
+          : input.assignToUser
+            ? "user-1"
+            : null,
+      checkoutRunId:
+        input.status === "in_progress" || (input.status === "blocked" && input.blockedCheckoutRunId)
+          ? runId
+          : null,
+      executionRunId: input.runStatus === "running" ? runId : null,
+      createdByAgentId: input.createdByAgentId === undefined ? agentId : input.createdByAgentId,
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       startedAt: input.status === "in_progress" ? now : null,
@@ -669,5 +694,141 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+  it("does not reroute blocked issues that never had a recovery marker", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "blocked",
+      runStatus: "failed",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.blockedRerouted).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.assigneeAgentId).toBeNull();
+    expect(issue?.assigneeUserId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+  });
+
+  it("reroutes blocked user-owned recovery issues back to an agent owner", async () => {
+    const { issueId, agentId } = await seedStrandedIssueFixture({
+      status: "blocked",
+      runStatus: "failed",
+      blockedAssigneeMode: "user",
+      blockedCheckoutRunId: true,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.blockedRerouted).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.assigneeAgentId).toBe(agentId);
+    expect(issue?.assigneeUserId).toBeNull();
+  });
+
+  it("reroutes blocked orphaned issues even when a deferred execution wakeup still exists", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "blocked",
+      runStatus: "failed",
+      blockedCheckoutRunId: true,
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "deferred_issue_execution",
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.blockedRerouted).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.assigneeAgentId).toBe(agentId);
+    expect(issue?.assigneeUserId).toBeNull();
+  });
+
+  it("keeps blocked ownership intact while a live execution run still exists", async () => {
+    const { issueId, agentId, runId } = await seedStrandedIssueFixture({
+      status: "blocked",
+      runStatus: "running",
+      blockedAssigneeMode: "agent",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.blockedRerouted).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.assigneeAgentId).toBe(agentId);
+    expect(issue?.executionRunId).toBe(runId);
+  });
+
+  it("keeps blocked review-manager review ownership intact after the assignee is cleared", async () => {
+    const { issueId, runId } = await seedStrandedIssueFixture({
+      status: "blocked",
+      runStatus: "failed",
+      blockedAssigneeMode: "agent",
+      agentName: "Review Manager",
+      issueTitle: "[REVIEW-GPT] Verify adapter_failed continuation routing",
+      runErrorCode: "adapter_failed",
+      runError: "reviewer adapter unavailable",
+      blockedCheckoutRunId: true,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await db
+      .update(issues)
+      .set({
+        assigneeAgentId: null,
+      })
+      .where(eq(issues.id, issueId));
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.blockedRerouted).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.assigneeAgentId).toBeNull();
+    expect(issue?.assigneeUserId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("restores the checkout agent on blocked issues during terminal run cleanup without waiting for the periodic sweep", async () => {
+    const { issueId, runId, agentId } = await seedRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    await db
+      .update(issues)
+      .set({
+        status: "blocked",
+        checkoutRunId: null,
+        executionRunId: null,
+      })
+      .where(eq(issues.id, issueId));
+
+    await heartbeat.cancelRun(runId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+    expect(issue?.assigneeUserId).toBeNull();
   });
 });
