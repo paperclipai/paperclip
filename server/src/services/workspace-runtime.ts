@@ -455,6 +455,23 @@ function createProcessOutputCapture(maxBytes: number): ProcessOutputAccumulator 
   };
 }
 
+/**
+ * Build a process env that injects safe.directory for the target cwd via
+ * one-shot GIT_CONFIG env vars so git doesn't reject cross-filesystem paths
+ * (e.g. WSL mounts accessed from Windows). Only affects the spawned subprocess.
+ */
+export function buildSafeDirectoryEnv(cwd: string): Record<string, string> {
+  const env: Record<string, string> = Object.fromEntries(
+    Object.entries(process.env).filter((e): e is [string, string] => e[1] != null),
+  );
+  const parsed = parseInt(env.GIT_CONFIG_COUNT ?? "0", 10);
+  const existingCount = Math.max(0, Number.isFinite(parsed) ? parsed : 0);
+  env.GIT_CONFIG_COUNT = String(existingCount + 1);
+  env[`GIT_CONFIG_KEY_${existingCount}`] = "safe.directory";
+  env[`GIT_CONFIG_VALUE_${existingCount}`] = cwd;
+  return env;
+}
+
 async function executeProcess(input: {
   command: string;
   args: string[];
@@ -510,6 +527,7 @@ async function runGit(args: string[], cwd: string): Promise<string> {
     command: "git",
     args,
     cwd,
+    env: buildSafeDirectoryEnv(cwd) as NodeJS.ProcessEnv,
   });
   if (proc.code !== 0) {
     throw new Error(proc.stderr.trim() || proc.stdout.trim() || `git ${args.join(" ")} failed`);
@@ -787,6 +805,7 @@ async function recordGitOperation(
         command: "git",
         args: input.args,
         cwd: input.cwd,
+        env: buildSafeDirectoryEnv(input.cwd) as NodeJS.ProcessEnv,
       });
       stdout = result.stdout;
       stderr = result.stderr;
