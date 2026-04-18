@@ -51,6 +51,7 @@ export function activityRoutes(db: Db) {
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
     const event = await svc.create({
       companyId,
       ...req.body,

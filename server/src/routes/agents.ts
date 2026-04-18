@@ -2727,6 +2727,10 @@ Your team is ready to work. Assign tasks by creating issues and setting an assig
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
     assertBoard(req);
     const runId = req.params.runId as string;
+    const existing = await heartbeat.getRun(runId);
+    if (existing) {
+      assertCompanyAccess(req, existing.companyId);
+    }
     const run = await heartbeat.cancelRun(runId);
 
     if (run) {
@@ -2782,7 +2786,6 @@ Your team is ready to work. Assign tasks by creating issues and setting an assig
       limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
     });
 
-    res.set("Cache-Control", "no-cache, no-store");
     res.json(result);
   });
 
@@ -2817,7 +2820,6 @@ Your team is ready to work. Assign tasks by creating issues and setting an assig
       limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
     });
 
-    res.set("Cache-Control", "no-cache, no-store");
     res.json(result);
   });
 

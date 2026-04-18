@@ -26,7 +26,7 @@ import {
 import { knowledgeService } from "../services/knowledge.js";
 import { seedDefaultChannels } from "../services/channels.js";
 import type { StorageService } from "../storage/types.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { ROLE_DEFAULT_CAPABILITIES } from "../services/role-defaults.js";
 
 export function companyRoutes(db: Db, storage?: StorageService) {
@@ -124,7 +124,9 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post("/import/preview", validate(companyPortabilityPreviewSchema), async (req, res) => {
     assertBoard(req);
-    if (req.body.target.mode === "existing_company") {
+    if (req.body.target.mode === "new_company") {
+      assertInstanceAdmin(req);
+    } else {
       assertCompanyAccess(req, req.body.target.companyId);
     }
     const preview = await portability.previewImport(req.body);
@@ -133,7 +135,9 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post("/import", validate(companyPortabilityImportSchema), async (req, res) => {
     assertBoard(req);
-    if (req.body.target.mode === "existing_company") {
+    if (req.body.target.mode === "new_company") {
+      assertInstanceAdmin(req);
+    } else {
       assertCompanyAccess(req, req.body.target.companyId);
     }
     const actor = getActorInfo(req);

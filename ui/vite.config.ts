@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { visualizer } from "rollup-plugin-visualizer";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [
     react(),
     tailwindcss(),
@@ -20,6 +20,7 @@ export default defineConfig({
       lexical: path.resolve(__dirname, "./node_modules/lexical/Lexical.mjs"),
     },
   },
+  esbuild: mode === "production" ? { drop: ["console", "debugger"], legalComments: "none" } : {},
   build: {
     sourcemap: false,
     rollupOptions: {
@@ -59,4 +60,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

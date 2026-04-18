@@ -75,7 +75,7 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@2.1.92 @openai/cod
 # of postgresql-client). The .so file requires postgresql-common at runtime;
 # install only the runtime dependency here (no dev headers).
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends postgresql-common \
+  && apt-get install -y --no-install-recommends postgresql-common openssh-client jq \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=pgvector-build /usr/share/postgresql /usr/share/postgresql
 COPY --from=pgvector-build /usr/lib/postgresql /usr/lib/postgresql
