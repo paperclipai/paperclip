@@ -1,0 +1,24 @@
+{
+  "name": "paperclip-adapter-lmstudio",
+  "version": "1.0.0",
+  "description": "Paperclip adapter for LM Studio (OpenAI-compatible local LLMs)",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./ui-parser": "./dist/ui-parser.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run"
+  },
+  "paperclip": {
+    "adapterUiParser": "1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
