@@ -5,7 +5,7 @@
  * External npm packages remain as regular dependencies.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, cpSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -50,6 +50,28 @@ for (const name of externalWorkspacePackages) {
   externals.add(name);
 }
 
+// Post-build plugin: copy DB migrations into dist/ so that
+// import.meta.url-based resolution works from the bundled CLI.
+const copyMigrationsPlugin = {
+  name: "copy-migrations",
+  setup(build) {
+    build.onEnd((result) => {
+      try {
+        const src = resolve(repoRoot, "packages/db/src/migrations");
+        const dest = resolve(__dirname, "dist/migrations");
+        cpSync(src, dest, { recursive: true });
+      } catch (err) {
+        result.errors.push({
+          text: `copy-migrations: ${err instanceof Error ? err.message : String(err)}`,
+          location: null,
+          notes: [],
+          detail: err,
+        });
+      }
+    });
+  },
+};
+
 /** @type {import('esbuild').BuildOptions} */
 export default {
   entryPoints: ["src/index.ts"],
@@ -62,4 +84,5 @@ export default {
   external: [...externals].sort(),
   treeShaking: true,
   sourcemap: true,
+  plugins: [copyMigrationsPlugin],
 };
