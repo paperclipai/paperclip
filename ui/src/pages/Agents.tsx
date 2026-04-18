@@ -122,6 +122,15 @@ export function Agents() {
 
   const filtered = filterAgents(agents ?? [], tab, showTerminated);
   const filteredOrg = filterOrgTree(orgTree ?? [], tab, showTerminated);
+  const counts = useMemo(() => {
+    const all = agents ?? [];
+    return {
+      all: all.filter((a) => matchesFilter(a.status, "all", showTerminated)).length,
+      active: all.filter((a) => matchesFilter(a.status, "active", showTerminated)).length,
+      paused: all.filter((a) => matchesFilter(a.status, "paused", showTerminated)).length,
+      error: all.filter((a) => matchesFilter(a.status, "error", showTerminated)).length,
+    };
+  }, [agents, showTerminated]);
 
   return (
     <div className="space-y-4">
@@ -129,10 +138,10 @@ export function Agents() {
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
             items={[
-              { value: "all", label: "All" },
-              { value: "active", label: "Active" },
-              { value: "paused", label: "Paused" },
-              { value: "error", label: "Error" },
+              { value: "all", label: `All (${counts.all})` },
+              { value: "active", label: `Active (${counts.active})` },
+              { value: "paused", label: `Paused (${counts.paused})` },
+              { value: "error", label: `Error (${counts.error})` },
             ]}
             value={tab}
             onValueChange={(v) => navigate(`/agents/${v}`)}
