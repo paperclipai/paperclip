@@ -93,7 +93,7 @@ function decryptValue(masterKey: Buffer, material: LocalEncryptedMaterial): stri
   const iv = Buffer.from(material.iv, "base64");
   const tag = Buffer.from(material.tag, "base64");
   const ciphertext = Buffer.from(material.ciphertext, "base64");
-  const decipher = createDecipheriv("aes-256-gcm", masterKey, iv);
+  const decipher = createDecipheriv("aes-256-gcm", masterKey, iv, { authTagLength: 16 });
   decipher.setAuthTag(tag);
   const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return plain.toString("utf8");

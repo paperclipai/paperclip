@@ -183,10 +183,11 @@ jobs:
       - name: Dry-run stable release
         env:
           GITHUB_ACTIONS: "true"
+          INPUT_STABLE_DATE: ${{ inputs.stable_date }}
         run: |
           args=(stable --skip-verify --dry-run)
-          if [ -n "${{ inputs.stable_date }}" ]; then
-            args+=(--date "${{ inputs.stable_date }}")
+          if [ -n "$INPUT_STABLE_DATE" ]; then
+            args+=(--date "$INPUT_STABLE_DATE")
           fi
           ./scripts/release.sh "${args[@]}"
 
@@ -232,10 +233,11 @@ jobs:
       - name: Publish stable
         env:
           GITHUB_ACTIONS: "true"
+          INPUT_STABLE_DATE: ${{ inputs.stable_date }}
         run: |
           args=(stable --skip-verify)
-          if [ -n "${{ inputs.stable_date }}" ]; then
-            args+=(--date "${{ inputs.stable_date }}")
+          if [ -n "$INPUT_STABLE_DATE" ]; then
+            args+=(--date "$INPUT_STABLE_DATE")
           fi
           ./scripts/release.sh "${args[@]}"
 
