@@ -46,6 +46,7 @@ async function createMockGatewayServer(options?: {
   const wss = new WebSocketServer({ server });
 
   let agentPayload: Record<string, unknown> | null = null;
+  let waitPayload: Record<string, unknown> | null = null;
 
   wss.on("connection", (socket) => {
     socket.send(
@@ -136,6 +137,7 @@ async function createMockGatewayServer(options?: {
       }
 
       if (frame.method === "agent.wait") {
+        waitPayload = frame.params ?? null;
         socket.send(
           JSON.stringify({
             type: "res",
@@ -165,6 +167,7 @@ async function createMockGatewayServer(options?: {
   return {
     url: `ws://127.0.0.1:${address.port}`,
     getAgentPayload: () => agentPayload,
+    getWaitPayload: () => waitPayload,
     close: async () => {
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -601,6 +604,83 @@ describe("openclaw gateway adapter execute", () => {
       );
       expect(logs.some((entry) => entry.includes("auto-approved pairing request"))).toBe(true);
       expect(gateway.getAgentPayload()).toBeTruthy();
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("allows wait timeout to be disabled with 0", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          timeoutSec: 0,
+          waitTimeoutMs: 0,
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.timedOut).toBe(false);
+      expect(gateway.getAgentPayload()?.timeout).toBeUndefined();
+      expect(gateway.getWaitPayload()).toEqual({ runId: "run-123", timeoutMs: 86_400_000 });
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("falls back to the default wait timeout when waitTimeoutMs is negative", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          timeoutSec: 0,
+          waitTimeoutMs: -1,
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.timedOut).toBe(false);
+      expect(gateway.getAgentPayload()?.timeout).toBe(30_000);
+      expect(gateway.getWaitPayload()).toEqual({ runId: "run-123", timeoutMs: 30_000 });
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("reports the gateway wait timeout duration that was actually used", async () => {
+    const gateway = await createMockGatewayServer({
+      waitPayload: {
+        runId: "run-123",
+        status: "timeout",
+      },
+    });
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          timeoutSec: 0,
+          waitTimeoutMs: 0,
+        }),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.timedOut).toBe(true);
+      expect(result.errorMessage).toBe("OpenClaw gateway run timed out after 86400000ms");
+      expect(gateway.getWaitPayload()).toEqual({ runId: "run-123", timeoutMs: 86_400_000 });
     } finally {
       await gateway.close();
     }

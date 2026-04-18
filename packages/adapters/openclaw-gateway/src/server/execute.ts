@@ -91,6 +91,7 @@ const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
 const DEFAULT_CLIENT_VERSION = "paperclip";
 const DEFAULT_ROLE = "operator";
+const DISABLED_WAIT_TIMEOUT_FALLBACK_MS = 24 * 60 * 60 * 1000;
 
 const SENSITIVE_LOG_KEY_PATTERN =
   /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)|^x-openclaw-(auth|token)$/i;
@@ -113,6 +114,17 @@ function parseOptionalPositiveInteger(value: unknown): number | null {
   if (typeof value === "string" && value.trim().length > 0) {
     const parsed = Number.parseInt(value.trim(), 10);
     if (Number.isFinite(parsed)) return Math.max(1, Math.floor(parsed));
+  }
+  return null;
+}
+
+function parseOptionalNonNegativeInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
   }
   return null;
 }
@@ -1077,7 +1089,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutSec = Math.max(0, Math.floor(asNumber(ctx.config.timeoutSec, 120)));
   const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 0;
   const connectTimeoutMs = timeoutMs > 0 ? Math.min(timeoutMs, 15_000) : 10_000;
-  const waitTimeoutMs = parseOptionalPositiveInteger(ctx.config.waitTimeoutMs) ?? (timeoutMs > 0 ? timeoutMs : 30_000);
+  const configuredWaitTimeoutMs = parseOptionalNonNegativeInteger(ctx.config.waitTimeoutMs);
+  const waitTimeoutMs = configuredWaitTimeoutMs ?? (timeoutMs > 0 ? timeoutMs : 30_000);
+  const gatewayWaitTimeoutMs = configuredWaitTimeoutMs === 0 ? DISABLED_WAIT_TIMEOUT_FALLBACK_MS : waitTimeoutMs;
 
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const transportHint = nonEmpty(ctx.config.streamTransport) ?? nonEmpty(ctx.config.transport);
@@ -1139,7 +1153,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agentParams.agentId = configuredAgentId;
   }
 
-  if (typeof agentParams.timeout !== "number") {
+  if (typeof agentParams.timeout !== "number" && configuredWaitTimeoutMs !== 0) {
     agentParams.timeout = waitTimeoutMs;
   }
 
@@ -1337,8 +1351,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (acceptedStatus !== "ok") {
         const waitPayload = await client.request<Record<string, unknown>>(
           "agent.wait",
-          { runId: acceptedRunId, timeoutMs: waitTimeoutMs },
-          { timeoutMs: waitTimeoutMs + connectTimeoutMs },
+          { runId: acceptedRunId, timeoutMs: gatewayWaitTimeoutMs },
+          { timeoutMs: gatewayWaitTimeoutMs + connectTimeoutMs },
         );
 
         latestResultPayload = waitPayload;
@@ -1349,7 +1363,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             exitCode: 1,
             signal: null,
             timedOut: true,
-            errorMessage: `OpenClaw gateway run timed out after ${waitTimeoutMs}ms`,
+            errorMessage: `OpenClaw gateway run timed out after ${gatewayWaitTimeoutMs}ms`,
             errorCode: "openclaw_gateway_wait_timeout",
             resultJson: waitPayload,
           };
