@@ -6,8 +6,8 @@ import { resetOpenCodeModelsCacheForTests, setOpenCodeModelsRetryForTests, testE
 
 describe("opencode_local environment diagnostics", () => {
   beforeEach(() => {
-    setOpenCodeModelsRetryForTests(0); // skip retry backoff to keep tests within 5s timeout
-    resetOpenCodeModelsCacheForTests();
+    resetOpenCodeModelsCacheForTests(); // clear cache first (also resets retry override)
+    setOpenCodeModelsRetryForTests(0); // then disable retry backoff to keep tests within 5s timeout
   });
 
   it("reports a missing working directory as an error when cwd is absolute", async () => {
