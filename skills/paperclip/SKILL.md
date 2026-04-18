@@ -23,6 +23,32 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
+## Curl Encoding (Critical)
+
+On Windows, `curl -d '...'` with inline JSON containing non-ASCII characters (CJK, emoji, special chars) gets corrupted. Windows `CreateProcess` converts command-line arguments through the system locale (GBK/CP936 on Chinese Windows), mangling UTF-8 bytes before curl even sees them.
+
+**Always pipe JSON payloads through stdin instead of inlining in `-d`:**
+
+```bash
+# CORRECT — pipe through stdin, bytes never touch command-line encoding
+jq -n --arg body "中文评论" '{comment:$body}' | curl -sS -X PATCH \
+  "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d @-
+
+# CORRECT — use the helper script (handles multiline too)
+scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
+Done — 中文内容正常显示
+MD
+
+# WRONG — inline -d with non-ASCII (corrupted on Windows)
+curl -d '{"comment":"中文评论"}' ...
+```
+
+This applies to **all** POST/PATCH requests with JSON bodies, not just comments. For GET requests (no body), plain curl is fine.
+
 ## The Heartbeat Procedure
 
 Follow these steps every time you wake up:

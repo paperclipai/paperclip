@@ -1,4 +1,4 @@
-import express, { Router, type Request as ExpressRequest } from "express";
+import express, { Router, type Request as ExpressRequest, type Response, type NextFunction } from "express";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -134,6 +134,23 @@ export async function createApp(
       (req as unknown as { rawBody: Buffer }).rawBody = buf;
     },
   }));
+
+  // On Windows, body-parser's iconv.decode corrupts UTF-8 CJK characters.
+  // Re-parse the raw Buffer using Node.js native UTF-8 decoding instead.
+  if (process.platform === "win32") {
+    app.use((req: ExpressRequest, _res: Response, next: NextFunction) => {
+      const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
+      if (raw && raw.length > 0 && (req.method === "POST" || req.method === "PATCH" || req.method === "PUT") && req.is("application/json")) {
+        try {
+          req.body = JSON.parse(raw.toString("utf8"));
+        } catch {
+          // keep original body if re-parse fails
+        }
+      }
+      next();
+    });
+  }
+
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
