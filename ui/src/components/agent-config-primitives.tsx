@@ -4,6 +4,7 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import {
   Dialog,
   DialogContent,
@@ -33,6 +34,7 @@ export const help: Record<string, string> = {
   dangerouslySkipPermissions: "Run unattended by auto-approving adapter permission prompts when supported.",
   dangerouslyBypassSandbox: "Run Codex without sandbox restrictions. Required for filesystem/network access.",
   search: "Enable Codex web search capability during runs.",
+  fastMode: "Enable Codex Fast mode. This burns credits/tokens much faster and is currently supported on GPT-5.4 only.",
   workspaceStrategy: "How Paperclip should realize an execution workspace for this agent. Keep project_primary for normal cwd execution, or use git_worktree for issue-scoped isolated checkouts.",
   workspaceBaseRef: "Base git ref used when creating a worktree branch. Leave blank to use the resolved workspace ref or HEAD.",
   workspaceBranchTemplate: "Template for naming derived branches. Supports {{issue.identifier}}, {{issue.title}}, {{agent.name}}, {{project.id}}, {{workspace.repoRef}}, and {{slug}}.",
@@ -57,17 +59,9 @@ export const help: Record<string, string> = {
   budgetMonthlyCents: "Monthly spending limit in cents. 0 means no limit.",
 };
 
-export const adapterLabels: Record<string, string> = {
-  claude_local: "Claude (local)",
-  codex_local: "Codex (local)",
-  gemini_local: "Gemini CLI (local)",
-  opencode_local: "OpenCode (local)",
-  openclaw_gateway: "OpenClaw Gateway",
-  cursor: "Cursor (local)",
-  hermes_local: "Hermes Agent",
-  process: "Process",
-  http: "HTTP",
-};
+import { getAdapterLabels } from "../adapters/adapter-display-registry";
+
+export const adapterLabels = getAdapterLabels();
 
 export const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
@@ -105,11 +99,13 @@ export function ToggleField({
   hint,
   checked,
   onChange,
+  toggleTestId,
 }: {
   label: string;
   hint?: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  toggleTestId?: string;
 }) {
   return (
     <div className="flex items-center justify-between">
@@ -119,6 +115,8 @@ export function ToggleField({
       </div>
       <button
         data-slot="toggle"
+        data-testid={toggleTestId}
+        type="button"
         className={cn(
           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
           checked ? "bg-green-600" : "bg-muted"
@@ -166,21 +164,10 @@ export function ToggleWithNumber({
           <span className="text-xs text-muted-foreground">{label}</span>
           {hint && <HintIcon text={hint} />}
         </div>
-        <button
-          data-slot="toggle"
-          className={cn(
-            "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0",
-            checked ? "bg-green-600" : "bg-muted"
-          )}
-          onClick={() => onCheckedChange(!checked)}
-        >
-          <span
-            className={cn(
-              "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-              checked ? "translate-x-4.5" : "translate-x-0.5"
-            )}
-          />
-        </button>
+        <ToggleSwitch
+          checked={checked}
+          onCheckedChange={onCheckedChange}
+        />
       </div>
       {showNumber && (
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">

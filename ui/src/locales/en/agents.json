@@ -181,6 +181,7 @@
     "workingDir": "Working dir:",
     "adapterLabel": "Adapter:",
     "commandLabel": "Command:",
+    "detailsLabel": "Details",
     "transcript": "Transcript ({{count}})",
     "jumpToLive": "Jump to live",
     "liveLabel": "Live",

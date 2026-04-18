@@ -28,11 +28,19 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup, routineService } from "./services/index.js";
+import {
+  feedbackService,
+  heartbeatService,
+  instanceSettingsService,
+  reconcilePersistedRuntimeServicesOnStartup,
+  routineService,
+} from "./services/index.js";
+import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
+import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -73,6 +81,7 @@ export interface StartedServer {
 
 export async function startServer(): Promise<StartedServer> {
   let config = loadConfig();
+  initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
   }
@@ -467,13 +476,6 @@ export async function startServer(): Promise<StartedServer> {
       resolveBetterAuthSession,
       resolveBetterAuthSessionFromHeaders,
     } = await import("./auth/better-auth.js");
-    const betterAuthSecret =
-      process.env.BETTER_AUTH_SECRET?.trim() ?? process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
-    if (!betterAuthSecret) {
-      throw new Error(
-        "authenticated mode requires BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET) to be set",
-      );
-    }
     const derivedTrustedOrigins = deriveAuthTrustedOrigins(config);
     const envTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "")
       .split(",")
@@ -516,10 +518,14 @@ export async function startServer(): Promise<StartedServer> {
   });
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
+  const feedback = feedbackService(db as any, {
+    shareClient: createFeedbackTraceShareClientFromConfig(config),
+  });
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
     storageService,
+    feedbackExportService: feedback,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
@@ -530,6 +536,12 @@ export async function startServer(): Promise<StartedServer> {
     resolveSession,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
+
+  // Increase keep-alive timeouts to safely outlive default idle timeouts
+  // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
+  // This prevents intermittent 502/ECONNRESET errors caused by Node's 5s default.
+  server.keepAliveTimeout = 185000;
+  server.headersTimeout = 186000;
   
   if (listenPort !== config.port) {
     logger.warn(`Requested port is busy; using next free port (requestedPort=${config.port}, selectedPort=${listenPort})`);
@@ -542,7 +554,9 @@ export async function startServer(): Promise<StartedServer> {
       : runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
+  if (!process.env.PAPERCLIP_API_URL) {
+    process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
+  }
   
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
@@ -571,6 +585,16 @@ export async function startServer(): Promise<StartedServer> {
     void heartbeat
       .reapOrphanedRuns()
       .then(() => heartbeat.resumeQueuedRuns())
+      .then(async () => {
+        const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+        if (
+          reconciled.dispatchRequeued > 0 ||
+          reconciled.continuationRequeued > 0 ||
+          reconciled.escalated > 0
+        ) {
+          logger.warn({ ...reconciled }, "startup stranded-issue reconciliation changed assigned issue state");
+        }
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
@@ -602,6 +626,16 @@ export async function startServer(): Promise<StartedServer> {
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
         .then(() => heartbeat.resumeQueuedRuns())
+        .then(async () => {
+          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+          if (
+            reconciled.dispatchRequeued > 0 ||
+            reconciled.continuationRequeued > 0 ||
+            reconciled.escalated > 0
+          ) {
+            logger.warn({ ...reconciled }, "periodic stranded-issue reconciliation changed assigned issue state");
+          }
+        })
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
@@ -610,20 +644,25 @@ export async function startServer(): Promise<StartedServer> {
   
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
+    const settingsSvc = instanceSettingsService(db);
     let backupInFlight = false;
-  
+
     const runScheduledBackup = async () => {
       if (backupInFlight) {
         logger.warn("Skipping scheduled database backup because a previous backup is still running");
         return;
       }
-  
+
       backupInFlight = true;
       try {
+        // Read retention from Instance Settings (DB) so changes take effect without restart
+        const generalSettings = await settingsSvc.getGeneral();
+        const retention = generalSettings.backupRetention;
+
         const result = await runDatabaseBackup({
           connectionString: activeDatabaseConnectionString,
           backupDir: config.databaseBackupDir,
-          retentionDays: config.databaseBackupRetentionDays,
+          retention,
           filenamePrefix: "paperclip",
         });
         logger.info(
@@ -632,7 +671,7 @@ export async function startServer(): Promise<StartedServer> {
             sizeBytes: result.sizeBytes,
             prunedCount: result.prunedCount,
             backupDir: config.databaseBackupDir,
-            retentionDays: config.databaseBackupRetentionDays,
+            retention,
           },
           `Automatic database backup complete: ${formatDatabaseBackupResult(result)}`,
         );
@@ -642,11 +681,11 @@ export async function startServer(): Promise<StartedServer> {
         backupInFlight = false;
       }
     };
-  
+
     logger.info(
       {
         intervalMinutes: config.databaseBackupIntervalMinutes,
-        retentionDays: config.databaseBackupRetentionDays,
+        retentionSource: "instance-settings-db",
         backupDir: config.databaseBackupDir,
       },
       "Automatic database backups enabled",
@@ -656,6 +695,12 @@ export async function startServer(): Promise<StartedServer> {
     }, backupIntervalMs);
   }
   
+  // Wait for external adapters to finish loading before accepting requests.
+  // Without this, adapter type validation (assertKnownAdapterType) would
+  // reject valid external adapter types during the startup loading window.
+  const { waitForExternalAdapters } = await import("./adapters/registry.js");
+  await waitForExternalAdapters();
+
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
       server.off("error", onError);
@@ -678,9 +723,10 @@ export async function startServer(): Promise<StartedServer> {
             logger.warn({ err, url }, "Failed to open browser on startup");
           });
       }
-      printStartupBanner({
-        host: config.host,
-        deploymentMode: config.deploymentMode,
+        printStartupBanner({
+          bind: config.bind,
+          host: config.host,
+          deploymentMode: config.deploymentMode,
         deploymentExposure: config.deploymentExposure,
         authReady,
         requestedPort: config.port,
@@ -716,18 +762,26 @@ export async function startServer(): Promise<StartedServer> {
     });
   });
   
-  if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+  {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      logger.info({ signal }, "Stopping embedded PostgreSQL");
-      try {
-        await embeddedPostgres?.stop();
-      } catch (err) {
-        logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-      } finally {
-        process.exit(0);
+      const telemetryClient = getTelemetryClient();
+      if (telemetryClient) {
+        telemetryClient.stop();
+        await telemetryClient.flush();
       }
+
+      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+        logger.info({ signal }, "Stopping embedded PostgreSQL");
+        try {
+          await embeddedPostgres?.stop();
+        } catch (err) {
+          logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+        }
+      }
+
+      process.exit(0);
     };
-  
+
     process.once("SIGINT", () => {
       void shutdown("SIGINT");
     });
@@ -740,7 +794,7 @@ export async function startServer(): Promise<StartedServer> {
     server,
     host: config.host,
     listenPort,
-    apiUrl: process.env.PAPERCLIP_API_URL ?? `http://${runtimeApiHost}:${listenPort}`,
+    apiUrl: process.env.PAPERCLIP_API_URL!,
     databaseUrl: activeDatabaseConnectionString,
   };
 }

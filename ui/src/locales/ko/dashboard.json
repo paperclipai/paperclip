@@ -1,4 +1,11 @@
 {
+  "activeAgents": {
+    "heading": "에이전트",
+    "noRecentRuns": "최근 실행된 에이전트가 없습니다.",
+    "liveNow": "지금 실행 중",
+    "finishedAgo": "{{time}} 완료",
+    "startedAgo": "{{time}} 시작"
+  },
   "dashboard": {
     "welcomeMessage": "Paperclip에 오신 것을 환영합니다. 첫 회사와 에이전트를 설정하여 시작하세요.",
     "getStarted": "시작하기",
@@ -79,7 +86,29 @@
       "mine": "받은함이 비었습니다.",
       "unread": "새 받은함 항목이 없습니다.",
       "recent": "최근 받은함 항목이 없습니다.",
-      "filtered": "이 필터에 맞는 받은함 항목이 없습니다."
+      "filtered": "이 필터에 맞는 받은함 항목이 없습니다.",
+      "noSearchMatch": "검색 조건에 맞는 받은함 항목이 없습니다."
+    },
+    "searchPlaceholder": "받은함 검색…",
+    "group": "그룹",
+    "chooseColumns": "받은함 열 표시 선택",
+    "groupOptions": {
+      "none": "없음",
+      "type": "유형",
+      "workspace": "워크스페이스"
+    },
+    "nesting": {
+      "enable": "부모-자식 중첩 활성화",
+      "disable": "부모-자식 중첩 비활성화"
+    },
+    "searchSection": {
+      "archived": "보관됨",
+      "otherResults": "기타 결과"
+    },
+    "markAllConfirm": {
+      "title": "모두 읽음 표시?",
+      "description": "읽지 않은 {{count}}개 항목을 모두 읽음으로 표시합니다.",
+      "cancel": "취소"
     },
     "live": "실행 중",
     "alerts": "알림",

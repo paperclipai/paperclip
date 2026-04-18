@@ -31,6 +31,7 @@
       "general": "일반",
       "appearance": "외관",
       "hiring": "채용",
+      "feedbackSharing": "피드백 공유",
       "invites": "초대",
       "companyPackages": "회사 패키지",
       "dangerZone": "위험 구역"
@@ -77,6 +78,16 @@
       "copied": "복사됨",
       "copiedSnippet": "스니펫 복사됨",
       "copySnippet": "스니펫 복사"
+    },
+    "feedbackSharing": {
+      "toggleLabel": "투표한 AI 출력을 Paperclip Labs와 공유 허용",
+      "toggleHint": "명시적으로 투표한 AI 생성 출력만 피드백 공유 대상이 됩니다.",
+      "description": "투표는 항상 로컬에 저장됩니다. 이 설정은 투표된 AI 출력을 Paperclip Labs와 공유 대상으로 표시할지 여부를 제어합니다.",
+      "termsVersion": "약관 버전: {{version}}",
+      "enabledAt": "{{time}}에 활성화됨",
+      "enabledAtBy": "{{time}}에 {{user}}님이 활성화",
+      "disabled": "공유가 현재 비활성화되어 있습니다.",
+      "readTerms": "서비스 약관 읽기"
     },
     "packages": {
       "movedPrefix": "가져오기 및 내보내기는",

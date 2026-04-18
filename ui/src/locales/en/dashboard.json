@@ -1,4 +1,11 @@
 {
+  "activeAgents": {
+    "heading": "Agents",
+    "noRecentRuns": "No recent agent runs.",
+    "liveNow": "Live now",
+    "finishedAgo": "Finished {{time}}",
+    "startedAgo": "Started {{time}}"
+  },
   "dashboard": {
     "welcomeMessage": "Welcome to Paperclip. Set up your first company and agent to get started.",
     "getStarted": "Get Started",
@@ -79,7 +86,29 @@
       "mine": "Inbox zero.",
       "unread": "No new inbox items.",
       "recent": "No recent inbox items.",
-      "filtered": "No inbox items match these filters."
+      "filtered": "No inbox items match these filters.",
+      "noSearchMatch": "No inbox items match your search."
+    },
+    "searchPlaceholder": "Search inbox…",
+    "group": "Group",
+    "chooseColumns": "Choose which inbox columns stay visible",
+    "groupOptions": {
+      "none": "None",
+      "type": "Type",
+      "workspace": "Workspace"
+    },
+    "nesting": {
+      "enable": "Enable parent-child nesting",
+      "disable": "Disable parent-child nesting"
+    },
+    "searchSection": {
+      "archived": "Archived",
+      "otherResults": "Other results"
+    },
+    "markAllConfirm": {
+      "title": "Mark all as read?",
+      "description": "This will mark {{count}} unread item(s) as read.",
+      "cancel": "Cancel"
     },
     "live": "Live",
     "alerts": "Alerts",

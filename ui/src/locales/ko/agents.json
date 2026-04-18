@@ -181,6 +181,7 @@
     "workingDir": "작업 디렉터리:",
     "adapterLabel": "어댑터:",
     "commandLabel": "명령:",
+    "detailsLabel": "세부사항",
     "transcript": "트랜스크립트 ({{count}})",
     "jumpToLive": "실시간으로 이동",
     "liveLabel": "실시간",

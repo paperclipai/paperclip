@@ -23,13 +23,26 @@
       "uploadLong": "첨부 파일 업로드",
       "uploadShort": "업로드",
       "delete": "첨부 파일 삭제",
-      "imageAlt": "첨부 파일"
+      "imageAlt": "첨부 파일",
+      "confirmDelete": "삭제하시겠습니까?",
+      "confirmYes": "예",
+      "confirmNo": "아니요"
     },
     "tabs": {
+      "chat": "채팅",
       "comments": "댓글",
       "subIssues": "하위 이슈",
       "activity": "활동"
     },
+    "mobileToolbar": {
+      "backToInbox": "받은함으로 돌아가기",
+      "archiveFromInbox": "받은함에서 보관",
+      "moreActions": "추가 작업",
+      "copyAsMarkdown": "Markdown으로 복사",
+      "properties": "속성",
+      "hideIssue": "이 이슈 숨기기"
+    },
+    "routineBadge": "루틴",
     "empty": {
       "subIssues": "하위 이슈가 없습니다.",
       "activity": "활동 내역이 없습니다."
@@ -87,6 +100,10 @@
       "descriptionUpdated": "설명을 수정했습니다",
       "documentAction": "{{label}} {{key}}{{title}}"
     }
+  },
+  "issueChatTab": {
+    "loadingEarlier": "이전 댓글 불러오는 중...",
+    "loadEarlier": "이전 댓글 불러오기"
   },
   "routineDetail": {
     "breadcrumb": "루틴",
@@ -181,7 +198,9 @@
       "deleteTriggerFailed": "트리거 삭제에 실패했습니다",
       "deleteTriggerFailedBody": "Paperclip이 트리거를 삭제하지 못했습니다.",
       "rotateSecretFailed": "웹훅 시크릿 교체에 실패했습니다",
-      "rotateSecretFailedBody": "Paperclip이 웹훅 시크릿을 교체하지 못했습니다."
+      "rotateSecretFailedBody": "Paperclip이 웹훅 시크릿을 교체하지 못했습니다.",
+      "defaultAgentRequired": "기본 에이전트가 필요합니다",
+      "defaultAgentRequiredBody": "루틴 자동화를 활성화하기 전에 기본 에이전트를 지정하세요."
     }
   },
   "goalDetail": {

@@ -31,6 +31,7 @@
       "general": "General",
       "appearance": "Appearance",
       "hiring": "Hiring",
+      "feedbackSharing": "Feedback Sharing",
       "invites": "Invites",
       "companyPackages": "Company Packages",
       "dangerZone": "Danger Zone"
@@ -77,6 +78,16 @@
       "copied": "Copied",
       "copiedSnippet": "Copied snippet",
       "copySnippet": "Copy snippet"
+    },
+    "feedbackSharing": {
+      "toggleLabel": "Allow sharing voted AI outputs with Paperclip Labs",
+      "toggleHint": "Only AI-generated outputs you explicitly vote on are eligible for feedback sharing.",
+      "description": "Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.",
+      "termsVersion": "Terms version: {{version}}",
+      "enabledAt": "Enabled {{time}}",
+      "enabledAtBy": "Enabled {{time}} by {{user}}",
+      "disabled": "Sharing is currently disabled.",
+      "readTerms": "Read our terms of service"
     },
     "packages": {
       "movedPrefix": "Import and export have moved to dedicated pages accessible from the",

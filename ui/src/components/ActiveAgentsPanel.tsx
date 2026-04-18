@@ -1,15 +1,16 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
-import { issuesApi } from "../api/issues";
 import type { TranscriptEntry } from "../adapters";
+import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
-import { agentRoleKo, cn, isLangKo, relativeTime, relativeTimeKo } from "../lib/utils";
+import { cn, relativeTime } from "../lib/utils";
 import { ExternalLink } from "lucide-react";
 import { Identity } from "./Identity";
-import { RunTranscriptView } from "./transcript/RunTranscriptView";
+import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 
 const MIN_DASHBOARD_RUNS = 4;
@@ -23,6 +24,7 @@ interface ActiveAgentsPanelProps {
 }
 
 export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
+  const { t } = useTranslation();
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), "dashboard"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, MIN_DASHBOARD_RUNS),
@@ -30,8 +32,8 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
 
   const runs = liveRuns ?? [];
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(companyId),
-    queryFn: () => issuesApi.list(companyId),
+    queryKey: [...queryKeys.issues.list(companyId), "with-routine-executions"],
+    queryFn: () => issuesApi.list(companyId, { includeRoutineExecutions: true }),
     enabled: runs.length > 0,
   });
 
@@ -52,27 +54,18 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
   return (
     <div>
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Agents
-        {isLangKo() && (
-          <span className="ml-2 normal-case tracking-normal text-[11px] font-normal text-muted-foreground/80">
-            (에이전트 · 회사에서 실행 중이거나 최근에 실행된 에이전트)
-          </span>
-        )}
+        {t("activeAgents.heading")}
       </h3>
       {runs.length === 0 ? (
         <div className="rounded-xl border border-border p-4">
-          <p className="text-sm text-muted-foreground">
-            No recent agent runs.
-            {isLangKo() && (
-              <span className="ml-1 text-muted-foreground/80">(최근 실행된 에이전트가 없습니다.)</span>
-            )}
-          </p>
+          <p className="text-sm text-muted-foreground">{t("activeAgents.noRecentRuns")}</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
           {runs.map((run) => (
             <AgentRunCard
               key={run.id}
+              companyId={companyId}
               run={run}
               issue={run.issueId ? issueById.get(run.issueId) : undefined}
               transcript={transcriptByRun.get(run.id) ?? []}
@@ -87,18 +80,28 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
 }
 
 function AgentRunCard({
+  companyId,
   run,
   issue,
   transcript,
   hasOutput,
   isActive,
 }: {
+  companyId: string;
   run: LiveRunForIssue;
   issue?: Issue;
   transcript: TranscriptEntry[];
   hasOutput: boolean;
   isActive: boolean;
 }) {
+  const { t } = useTranslation();
+
+  const statusLabel = isActive
+    ? t("activeAgents.liveNow")
+    : run.finishedAt
+      ? t("activeAgents.finishedAgo", { time: relativeTime(run.finishedAt) })
+      : t("activeAgents.startedAgo", { time: relativeTime(run.createdAt) });
+
   return (
     <div className={cn(
       "flex h-[320px] flex-col overflow-hidden rounded-xl border shadow-sm",
@@ -119,23 +122,9 @@ function AgentRunCard({
                 <span className="inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground/35" />
               )}
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
-              {isLangKo() && agentRoleKo(run.agentName) && (
-                <span className="text-[10px] text-muted-foreground/80">
-                  ({agentRoleKo(run.agentName)})
-                </span>
-              )}
             </div>
             <div className="mt-2 flex flex-col gap-0.5 text-[11px] text-muted-foreground">
-              <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
-              {isLangKo() && (
-                <span className="text-[10px] text-muted-foreground/80">
-                  {isActive
-                    ? "지금 실행 중"
-                    : run.finishedAt
-                      ? `${relativeTimeKo(run.finishedAt)} 완료`
-                      : `${relativeTimeKo(run.createdAt)} 시작`}
-                </span>
-              )}
+              <span>{statusLabel}</span>
             </div>
           </div>
 
@@ -165,20 +154,11 @@ function AgentRunCard({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        <RunTranscriptView
-          entries={transcript}
-          density="compact"
-          limit={5}
-          streaming={isActive}
-          collapseStdout
-          thinkingClassName="!text-[10px] !leading-4"
-          emptyMessage={
-            hasOutput
-              ? `Waiting for transcript parsing...${isLangKo() ? " (트랜스크립트 파싱 대기 중)" : ""}`
-              : isActive
-                ? `Waiting for output...${isLangKo() ? " (출력 대기 중)" : ""}`
-                : `No transcript captured.${isLangKo() ? " (수집된 트랜스크립트 없음)" : ""}`
-          }
+        <RunChatSurface
+          run={run}
+          transcript={transcript}
+          hasOutput={hasOutput}
+          companyId={companyId}
         />
       </div>
     </div>

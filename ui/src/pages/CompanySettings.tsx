@@ -1,9 +1,11 @@
 import { ChangeEvent, useEffect, useState } from "react";
+import { Link } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
@@ -23,6 +25,8 @@ type AgentSnippetInput = {
   testResolutionUrl?: string | null;
 };
 
+const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+
 export function CompanySettings() {
   const { t } = useTranslation();
   const {
@@ -32,7 +36,7 @@ export function CompanySettings() {
     setSelectedCompanyId
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   // General settings local state
   const [companyName, setCompanyName] = useState("");
@@ -80,6 +84,27 @@ export function CompanySettings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
+  });
+
+  const feedbackSharingMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      companiesApi.update(selectedCompanyId!, {
+        feedbackDataSharingEnabled: enabled,
+      }),
+    onSuccess: (_company, enabled) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      pushToast({
+        title: enabled ? "Feedback sharing enabled" : "Feedback sharing disabled",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update feedback sharing",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const inviteMutation = useMutation({
@@ -379,7 +404,7 @@ export function CompanySettings() {
       )}
 
       {/* Hiring */}
-      <div className="space-y-4">
+      <div className="space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           {t("companySettings.sections.hiring")}
         </div>
@@ -389,12 +414,63 @@ export function CompanySettings() {
             hint={t("companySettings.fields.requireBoardApprovalHint")}
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
+            toggleTestId="company-settings-team-approval-toggle"
           />
         </div>
       </div>
 
-      {/* Invites */}
       <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          {t("companySettings.sections.feedbackSharing")}
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <ToggleField
+            label={t("companySettings.feedbackSharing.toggleLabel")}
+            hint={t("companySettings.feedbackSharing.toggleHint")}
+            checked={!!selectedCompany.feedbackDataSharingEnabled}
+            onChange={(enabled) => feedbackSharingMutation.mutate(enabled)}
+          />
+          <p className="text-sm text-muted-foreground">
+            {t("companySettings.feedbackSharing.description")}
+          </p>
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <div>
+              {t("companySettings.feedbackSharing.termsVersion", {
+                version:
+                  selectedCompany.feedbackDataSharingTermsVersion ??
+                  DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
+              })}
+            </div>
+            {selectedCompany.feedbackDataSharingConsentAt ? (
+              <div>
+                {selectedCompany.feedbackDataSharingConsentByUserId
+                  ? t("companySettings.feedbackSharing.enabledAtBy", {
+                      time: new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString(),
+                      user: selectedCompany.feedbackDataSharingConsentByUserId,
+                    })
+                  : t("companySettings.feedbackSharing.enabledAt", {
+                      time: new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString(),
+                    })}
+              </div>
+            ) : (
+              <div>{t("companySettings.feedbackSharing.disabled")}</div>
+            )}
+            {FEEDBACK_TERMS_URL ? (
+              <a
+                href={FEEDBACK_TERMS_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex text-foreground underline underline-offset-4"
+              >
+                {t("companySettings.feedbackSharing.readTerms")}
+              </a>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      {/* Invites */}
+      <div className="space-y-4" data-testid="company-settings-invites-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           {t("companySettings.sections.invites")}
         </div>
@@ -407,6 +483,7 @@ export function CompanySettings() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
+              data-testid="company-settings-invites-generate-button"
               size="sm"
               onClick={() => inviteMutation.mutate()}
               disabled={inviteMutation.isPending}
@@ -420,7 +497,10 @@ export function CompanySettings() {
             <p className="text-sm text-destructive">{inviteError}</p>
           )}
           {inviteSnippet && (
-            <div className="rounded-md border border-border bg-muted/30 p-2">
+            <div
+              className="rounded-md border border-border bg-muted/30 p-2"
+              data-testid="company-settings-invites-snippet"
+            >
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs text-muted-foreground">
                   {t("companySettings.invites.invitePromptLabel")}
@@ -437,12 +517,14 @@ export function CompanySettings() {
               </div>
               <div className="mt-1 space-y-1.5">
                 <textarea
+                  data-testid="company-settings-invites-snippet-textarea"
                   className="h-[28rem] w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
                   value={inviteSnippet}
                   readOnly
                 />
                 <div className="flex justify-end">
                   <Button
+                    data-testid="company-settings-invites-copy-button"
                     size="sm"
                     variant="ghost"
                     onClick={async () => {
@@ -477,16 +559,16 @@ export function CompanySettings() {
           </p>
           <div className="mt-3 flex items-center gap-2">
             <Button size="sm" variant="outline" asChild>
-              <a href="/company/export">
+              <Link to="/company/export">
                 <Download className="mr-1.5 h-3.5 w-3.5" />
                 {t("companySettings.actions.export")}
-              </a>
+              </Link>
             </Button>
             <Button size="sm" variant="outline" asChild>
-              <a href="/company/import">
+              <Link to="/company/import">
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
                 {t("companySettings.actions.import")}
-              </a>
+              </Link>
             </Button>
           </div>
         </div>

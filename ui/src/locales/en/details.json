@@ -23,13 +23,26 @@
       "uploadLong": "Upload attachment",
       "uploadShort": "Upload",
       "delete": "Delete attachment",
-      "imageAlt": "attachment"
+      "imageAlt": "attachment",
+      "confirmDelete": "Delete?",
+      "confirmYes": "Yes",
+      "confirmNo": "No"
     },
     "tabs": {
+      "chat": "Chat",
       "comments": "Comments",
       "subIssues": "Sub-issues",
       "activity": "Activity"
     },
+    "mobileToolbar": {
+      "backToInbox": "Back to inbox",
+      "archiveFromInbox": "Archive from inbox",
+      "moreActions": "More actions",
+      "copyAsMarkdown": "Copy as markdown",
+      "properties": "Properties",
+      "hideIssue": "Hide this issue"
+    },
+    "routineBadge": "Routine",
     "empty": {
       "subIssues": "No sub-issues.",
       "activity": "No activity yet."
@@ -87,6 +100,10 @@
       "descriptionUpdated": "updated the description",
       "documentAction": "{{label}} {{key}}{{title}}"
     }
+  },
+  "issueChatTab": {
+    "loadingEarlier": "Loading earlier comments...",
+    "loadEarlier": "Load earlier comments"
   },
   "routineDetail": {
     "breadcrumb": "Routines",
@@ -181,7 +198,9 @@
       "deleteTriggerFailed": "Failed to delete trigger",
       "deleteTriggerFailedBody": "Paperclip could not delete the trigger.",
       "rotateSecretFailed": "Failed to rotate webhook secret",
-      "rotateSecretFailedBody": "Paperclip could not rotate the webhook secret."
+      "rotateSecretFailedBody": "Paperclip could not rotate the webhook secret.",
+      "defaultAgentRequired": "Default agent required",
+      "defaultAgentRequiredBody": "Set a default agent before enabling routine automation."
     }
   },
   "goalDetail": {

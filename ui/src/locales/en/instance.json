@@ -37,14 +37,66 @@
     "description": "Configure instance-wide defaults that affect how operator-visible logs are displayed.",
     "censorHeading": "Censor username in logs",
     "censorDescription": "Hide the username segment in home-directory paths and similar operator-visible log output. Standalone username mentions outside of paths are not yet masked in the live transcript view. This is off by default.",
-    "censorToggleAria": "Toggle username log censoring"
+    "censorToggleAria": "Toggle username log censoring",
+    "signOutFailed": "Failed to sign out.",
+    "deployment": {
+      "heading": "Deployment and auth",
+      "localTrusted": "Local trusted mode is optimized for a local operator. Browser requests run as local board context and no sign-in is required.",
+      "publicAuth": "Authenticated public mode requires sign-in for board access and is intended for public URLs.",
+      "privateAuth": "Authenticated private mode requires sign-in and is intended for LAN, VPN, or other private-network deployments.",
+      "authReady": "Auth readiness",
+      "ready": "Ready",
+      "notReady": "Not ready",
+      "bootstrapStatus": "Bootstrap status",
+      "setupRequired": "Setup required",
+      "bootstrapInvite": "Bootstrap invite",
+      "active": "Active",
+      "none": "None"
+    },
+    "shortcuts": {
+      "heading": "Keyboard shortcuts",
+      "description": "Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating issues or toggling panels. This is off by default.",
+      "toggleAria": "Toggle keyboard shortcuts"
+    },
+    "backup": {
+      "heading": "Backup retention",
+      "description": "Configure how long to keep automatic database backups at each tier. Daily backups are kept in full, then thinned to one per week and one per month. Backups are compressed with gzip.",
+      "daily": "Daily",
+      "weekly": "Weekly",
+      "monthly": "Monthly",
+      "days": "{{count}} days",
+      "week_one": "{{count}} week",
+      "week_other": "{{count}} weeks",
+      "month_one": "{{count}} month",
+      "month_other": "{{count}} months"
+    },
+    "feedback": {
+      "heading": "AI feedback sharing",
+      "description": "Control whether thumbs up and thumbs down votes can send the voted AI output to Paperclip Labs. Votes are always saved locally.",
+      "readTerms": "Read our terms of service",
+      "prompt": "No default is saved yet. The next thumbs up or thumbs down choice will ask once and then save the answer here.",
+      "allowedLabel": "Always allow",
+      "allowedDescription": "Share voted AI outputs automatically.",
+      "notAllowedLabel": "Don't allow",
+      "notAllowedDescription": "Keep voted AI outputs local only.",
+      "devHint": "To retest the first-use prompt in local dev, remove the feedbackDataSharingPreference key from the instance_settings.general JSON row for this instance, or set it back to \"prompt\". Unset and \"prompt\" both mean no default has been chosen yet."
+    },
+    "signOut": {
+      "heading": "Sign out",
+      "description": "Sign out of this Paperclip instance. You will be redirected to the login page.",
+      "action": "Sign out",
+      "pending": "Signing out..."
+    }
   },
   "instanceSidebar": {
     "title": "Instance Settings",
+    "profile": "Profile",
     "general": "General",
+    "access": "Access",
     "heartbeats": "Heartbeats",
     "experimental": "Experimental",
-    "plugins": "Plugins"
+    "plugins": "Plugins",
+    "adapters": "Adapters"
   },
   "instanceExperimental": {
     "breadcrumbInstanceSettings": "Instance Settings",

@@ -37,14 +37,66 @@
     "description": "운영자에게 노출되는 로그 표시 방식에 영향을 주는 인스턴스 전반의 기본값을 구성합니다.",
     "censorHeading": "로그에서 사용자명 검열",
     "censorDescription": "홈 디렉터리 경로와 유사한 운영자 노출 로그 출력에서 사용자명 부분을 숨깁니다. 경로 외 영역의 단독 사용자명 언급은 라이브 트랜스크립트 뷰에서 아직 마스킹되지 않습니다. 기본값은 꺼짐입니다.",
-    "censorToggleAria": "사용자명 로그 검열 토글"
+    "censorToggleAria": "사용자명 로그 검열 토글",
+    "signOutFailed": "로그아웃에 실패했습니다.",
+    "deployment": {
+      "heading": "배포 및 인증",
+      "localTrusted": "로컬 신뢰 모드는 로컬 운영자에 최적화되어 있습니다. 브라우저 요청은 로컬 보드 컨텍스트로 실행되며 로그인이 필요하지 않습니다.",
+      "publicAuth": "인증된 공개 모드는 보드 접근을 위해 로그인이 필요하며 공개 URL용으로 설계되었습니다.",
+      "privateAuth": "인증된 비공개 모드는 로그인이 필요하며 LAN, VPN, 또는 기타 비공개 네트워크 배포용입니다.",
+      "authReady": "인증 준비 상태",
+      "ready": "준비됨",
+      "notReady": "준비 안됨",
+      "bootstrapStatus": "부트스트랩 상태",
+      "setupRequired": "설정 필요",
+      "bootstrapInvite": "부트스트랩 초대",
+      "active": "활성",
+      "none": "없음"
+    },
+    "shortcuts": {
+      "heading": "키보드 단축키",
+      "description": "받은함 탐색과 이슈 생성 또는 패널 토글 같은 전역 단축키를 포함한 앱 키보드 단축키를 활성화합니다. 기본값은 꺼짐입니다.",
+      "toggleAria": "키보드 단축키 토글"
+    },
+    "backup": {
+      "heading": "백업 보존",
+      "description": "각 단계의 자동 DB 백업을 얼마나 보관할지 구성합니다. 일일 백업은 전체로 보관된 뒤 주별로 한 개, 월별로 한 개로 축소됩니다. 백업은 gzip으로 압축됩니다.",
+      "daily": "일일",
+      "weekly": "주간",
+      "monthly": "월간",
+      "days": "{{count}}일",
+      "week_one": "{{count}}주",
+      "week_other": "{{count}}주",
+      "month_one": "{{count}}개월",
+      "month_other": "{{count}}개월"
+    },
+    "feedback": {
+      "heading": "AI 피드백 공유",
+      "description": "좋아요/싫어요 투표를 Paperclip Labs에 전송할지 여부를 제어합니다. 투표는 항상 로컬에 저장됩니다.",
+      "readTerms": "서비스 약관 읽기",
+      "prompt": "기본값이 아직 저장되지 않았습니다. 다음 좋아요/싫어요 선택 시 한 번 묻고 여기 저장됩니다.",
+      "allowedLabel": "항상 허용",
+      "allowedDescription": "투표한 AI 출력을 자동으로 공유합니다.",
+      "notAllowedLabel": "허용 안함",
+      "notAllowedDescription": "투표한 AI 출력을 로컬에만 유지합니다.",
+      "devHint": "로컬 개발에서 최초 사용 프롬프트를 다시 테스트하려면 이 인스턴스의 instance_settings.general JSON 행에서 feedbackDataSharingPreference 키를 제거하거나 \"prompt\"로 다시 설정하세요. 설정되지 않음과 \"prompt\" 모두 기본값이 선택되지 않음을 의미합니다."
+    },
+    "signOut": {
+      "heading": "로그아웃",
+      "description": "이 Paperclip 인스턴스에서 로그아웃합니다. 로그인 페이지로 리디렉션됩니다.",
+      "action": "로그아웃",
+      "pending": "로그아웃 중..."
+    }
   },
   "instanceSidebar": {
     "title": "인스턴스 설정",
+    "profile": "프로필",
     "general": "일반",
+    "access": "접근 권한",
     "heartbeats": "하트비트",
     "experimental": "실험 기능",
-    "plugins": "플러그인"
+    "plugins": "플러그인",
+    "adapters": "어댑터"
   },
   "instanceExperimental": {
     "breadcrumbInstanceSettings": "인스턴스 설정",

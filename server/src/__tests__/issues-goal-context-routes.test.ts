@@ -1,15 +1,15 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { issueRoutes } from "../routes/issues.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getAncestors: vi.fn(),
+  getRelationSummaries: vi.fn(),
   findMentionedProjectIds: vi.fn(),
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
+  listAttachments: vi.fn(),
 }));
 
 const mockProjectService = vi.hoisted(() => ({
@@ -36,10 +36,24 @@ vi.mock("../services/index.js", () => ({
   executionWorkspaceService: () => ({
     getById: vi.fn(),
   }),
+  feedbackService: () => ({
+    listIssueVotesForUser: vi.fn(async () => []),
+    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+  }),
   goalService: () => mockGoalService,
   heartbeatService: () => ({
     wakeup: vi.fn(async () => undefined),
     reportRunActivity: vi.fn(async () => undefined),
+  }),
+  instanceSettingsService: () => ({
+    get: vi.fn(async () => ({
+      id: "instance-settings-1",
+      general: {
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      },
+    })),
+    listCompanyIds: vi.fn(async () => ["company-1"]),
   }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
@@ -53,7 +67,11 @@ vi.mock("../services/index.js", () => ({
   }),
 }));
 
-function createApp() {
+async function createApp() {
+  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -105,9 +123,14 @@ const projectGoal = {
 
 describe("issue goal context routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
     mockIssueService.getAncestors.mockResolvedValue([]);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
     mockIssueService.getCommentCursor.mockResolvedValue({
       totalComments: 0,
@@ -115,6 +138,7 @@ describe("issue goal context routes", () => {
       latestCommentAt: null,
     });
     mockIssueService.getComment.mockResolvedValue(null);
+    mockIssueService.listAttachments.mockResolvedValue([]);
     mockProjectService.getById.mockResolvedValue({
       id: legacyProjectLinkedIssue.projectId,
       companyId: "company-1",
@@ -156,7 +180,7 @@ describe("issue goal context routes", () => {
   });
 
   it("surfaces the project goal from GET /issues/:id when the issue has no direct goal", async () => {
-    const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
+    const res = await request(await createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
 
     expect(res.status).toBe(200);
     expect(res.body.goalId).toBe(projectGoal.id);
@@ -166,11 +190,15 @@ describe("issue goal context routes", () => {
         title: projectGoal.title,
       }),
     );
+    expect(mockIssueService.findMentionedProjectIds).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { includeCommentBodies: false },
+    );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
   });
 
   it("surfaces the project goal from GET /issues/:id/heartbeat-context", async () => {
-    const res = await request(createApp()).get(
+    const res = await request(await createApp()).get(
       "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
     );
 
@@ -183,5 +211,35 @@ describe("issue goal context routes", () => {
       }),
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
+    expect(res.body.attachments).toEqual([]);
+  });
+
+  it("surfaces blocker summaries on GET /issues/:id/heartbeat-context", async () => {
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [
+        {
+          id: "55555555-5555-4555-8555-555555555555",
+          identifier: "PAP-580",
+          title: "Finish wakeup plumbing",
+          status: "done",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      ],
+      blocks: [],
+    });
+
+    const res = await request(await createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.issue.blockedBy).toEqual([
+      expect.objectContaining({
+        id: "55555555-5555-4555-8555-555555555555",
+        identifier: "PAP-580",
+      }),
+    ]);
   });
 });
