@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  linkPaperclipSkill,
   listPaperclipSkillEntries,
   removeMaintainerOnlySkillSymlinks,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -58,5 +59,40 @@ describe("paperclip skill utils", () => {
     await expect(fs.lstat(path.join(skillsHome, "release"))).rejects.toThrow();
     expect((await fs.lstat(path.join(skillsHome, "paperclip"))).isSymbolicLink()).toBe(true);
     expect((await fs.lstat(path.join(skillsHome, "release-notes"))).isSymbolicLink()).toBe(true);
+  });
+
+  it("uses a junction for Windows directory-backed Paperclip skills", async () => {
+    const symlink = vi.fn(async () => {});
+
+    await linkPaperclipSkill("C:\\paperclip\\skills\\paperclip", "C:\\codex\\skills\\paperclip", {
+      platform: "win32",
+      fsImpl: {
+        lstat: vi.fn(async () => ({ isDirectory: () => true })) as unknown as typeof fs.lstat,
+        symlink: symlink as unknown as typeof fs.symlink,
+      },
+    });
+
+    expect(symlink).toHaveBeenCalledWith(
+      path.resolve("C:\\paperclip\\skills\\paperclip"),
+      "C:\\codex\\skills\\paperclip",
+      "junction",
+    );
+  });
+
+  it("keeps using a regular symlink for non-Windows Paperclip skills", async () => {
+    const symlink = vi.fn(async () => {});
+
+    await linkPaperclipSkill("/tmp/paperclip/skills/paperclip", "/tmp/codex/skills/paperclip", {
+      platform: "linux",
+      fsImpl: {
+        lstat: vi.fn(async () => ({ isDirectory: () => true })) as unknown as typeof fs.lstat,
+        symlink: symlink as unknown as typeof fs.symlink,
+      },
+    });
+
+    expect(symlink).toHaveBeenCalledWith(
+      "/tmp/paperclip/skills/paperclip",
+      "/tmp/codex/skills/paperclip",
+    );
   });
 });

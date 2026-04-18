@@ -10,6 +10,7 @@ import {
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
+  linkPaperclipSkill,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
@@ -161,7 +162,7 @@ export async function ensureCodexSkillsInjected(
 
   const skillsHome = options.skillsHome ?? resolveCodexSkillsDir(resolveSharedCodexHomeDir());
   await fs.mkdir(skillsHome, { recursive: true });
-  const linkSkill = options.linkSkill;
+  const linkSkill = options.linkSkill ?? linkPaperclipSkill;
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.runtimeName);
 
@@ -178,11 +179,7 @@ export async function ensureCodexSkillsInjected(
           (await isLikelyPaperclipRuntimeSkillPath(resolvedLinkedPath, entry.runtimeName))
         ) {
           await fs.unlink(target);
-          if (linkSkill) {
-            await linkSkill(entry.source, target);
-          } else {
-            await fs.symlink(entry.source, target);
-          }
+          await linkSkill(entry.source, target);
           await onLog(
             "stdout",
             `[paperclip] Repaired Codex skill "${entry.runtimeName}" into ${skillsHome}\n`,
