@@ -2254,6 +2254,18 @@ export function agentRoutes(db: Db) {
     }
 
     const actor = getActorInfo(req);
+    if (actor.runId) {
+      await db
+        .insert(heartbeatRuns)
+        .values({
+          id: actor.runId,
+          companyId: agent.companyId,
+          agentId: actor.agentId ?? id,
+          invocationSource: "on_demand",
+          status: "running",
+        })
+        .onConflictDoNothing();
+    }
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: actor.actorType,
