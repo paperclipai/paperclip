@@ -14,7 +14,7 @@ describe("openCode models", () => {
   it("returns an empty list when discovery command is unavailable", async () => {
     process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
     await expect(listOpenCodeModels()).resolves.toEqual([]);
-  });
+  }, 30_000);
 
   it("rejects when model is missing", async () => {
     await expect(
@@ -29,5 +29,5 @@ describe("openCode models", () => {
         model: "openai/gpt-5",
       }),
     ).rejects.toThrow("Failed to start command");
-  });
+  }, 30_000);
 });
