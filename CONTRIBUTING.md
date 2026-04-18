@@ -20,8 +20,8 @@ These almost always get merged quickly when they're clean.
 ### Path 2: Bigger or Impactful Changes
 
 - **First** talk about it in Discord → #dev channel  
-  → Describe what you're trying to solve  
-  → Share rough ideas / approach
+→ Describe what you're trying to solve  
+→ Share rough ideas / approach
 - Once there's rough agreement, build it
 - In your PR include:
   - Before / After screenshots (or short video if UI/behavior change)
@@ -37,7 +37,7 @@ PRs that follow this path are **much** more likely to be accepted, even when the
 
 ### Use the PR Template
 
-Every pull request **must** follow the PR template at [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). If you create a PR via the GitHub API or other tooling that bypasses the template, copy its contents into your PR description manually. The template includes required sections: Thinking Path, What Changed, Verification, Risks, Model Used, and a Checklist.
+Every pull request **must** follow the PR template at `[.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md)`. If you create a PR via the GitHub API or other tooling that bypasses the template, copy its contents into your PR description manually. The template includes required sections: Thinking Path, What Changed, Verification, Risks, Model Used, and a Checklist.
 
 ### Model Used (Required)
 

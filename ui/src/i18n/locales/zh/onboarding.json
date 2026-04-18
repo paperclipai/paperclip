@@ -1,0 +1,100 @@
+{
+  "defaults": {
+    "taskTitle": "招聘首位工程师并制定招聘计划",
+    "agentName": "CEO",
+    "taskDescription": "你是 CEO，为公司设定方向。\n\n- 招聘创始工程师\n- 撰写招聘计划\n- 把路线图拆成可执行事务并开始分派"
+  },
+  "steps": {
+    "company": "公司",
+    "agent": "智能体",
+    "task": "任务",
+    "launch": "启动"
+  },
+  "step1": {
+    "title": "为公司命名",
+    "subtitle": "这是你的智能体为之工作的组织。",
+    "companyName": "公司名称",
+    "companyNamePlaceholder": "示例科技公司",
+    "mission": "使命 / 目标（可选）",
+    "missionPlaceholder": "这家公司希望达成什么？"
+  },
+  "step2": {
+    "title": "创建首位智能体",
+    "subtitle": "选择该智能体如何执行任务。",
+    "agentName": "智能体名称",
+    "agentNamePlaceholder": "CEO",
+    "adapterType": "适配器类型",
+    "model": "模型",
+    "modelDefault": "默认",
+    "modelRequired": "选择模型（必填）",
+    "searchModels": "搜索模型…",
+    "noModels": "未发现可用模型。",
+    "gatewayUrl": "网关 URL",
+    "webhookUrl": "Webhook URL",
+    "urlPlaceholderGateway": "ws://127.0.0.1:18789",
+    "urlPlaceholderHttps": "https://..."
+  },
+  "adapter": {
+    "recommended": "推荐",
+    "comingSoon": "即将推出",
+    "moreTypes": "更多智能体适配器类型",
+    "envTitle": "适配器环境检测",
+    "envSubtitle": "运行实时探测，要求适配器 CLI 回复 hello。",
+    "testNow": "立即测试",
+    "testing": "测试中…",
+    "passed": "通过",
+    "anthropicUnsetHint": "在已设置 ANTHROPIC_API_KEY 时 Claude 检测失败。你可以在 CEO 适配器配置中清除该变量并重试探测。",
+    "unsetKey": "清除 ANTHROPIC_API_KEY",
+    "retrying": "重试中…",
+    "manualDebug": "手动排查",
+    "promptLabel": "提示词：",
+    "promptValue": "Respond with hello.",
+    "authIfFailsEnv": "若认证失败，请设置环境变量 {{envKey}}，或运行 {{loginCmd}}。",
+    "ifLoginRequired": "若需要登录，请运行 {{command}} 后重试。"
+  },
+  "step3": {
+    "title": "给它一件事做",
+    "subtitle": "从一个小的任务开始——修 bug、调研问题、写脚本等。",
+    "taskTitle": "任务标题",
+    "taskTitlePlaceholder": "例如：调研竞品定价",
+    "description": "描述（可选）",
+    "descriptionPlaceholder": "补充智能体应完成的具体内容…"
+  },
+  "step4": {
+    "title": "准备启动",
+    "subtitle": "一切就绪。启动后将创建入门任务、唤醒智能体并打开对应事务。",
+    "labelCompany": "公司",
+    "labelTask": "任务"
+  },
+  "footer": {
+    "back": "上一步",
+    "next": "下一步",
+    "creating": "创建中…",
+    "createOpenIssue": "创建并打开事务"
+  },
+  "envResult": {
+    "passed": "通过",
+    "warnings": "警告",
+    "failed": "失败",
+    "hintPrefix": "提示：",
+    "level": {
+      "info": "信息",
+      "warn": "警告",
+      "error": "错误"
+    }
+  },
+  "errors": {
+    "needCompanyForTest": "请先创建或选择公司，再测试适配器环境。",
+    "adapterTestFailed": "适配器环境测试失败",
+    "createCompanyFailed": "创建公司失败",
+    "openCodeModelFormat": "OpenCode 需要显式的 provider/model 格式模型 ID。",
+    "openCodeModelsLoadFailed": "加载 OpenCode 模型列表失败。",
+    "openCodeModelsLoading": "OpenCode 模型仍在加载，请稍后再试。",
+    "openCodeNoModels": "未发现 OpenCode 模型。请运行 `opencode models` 并完成提供商认证。",
+    "openCodeModelUnavailable": "配置的 OpenCode 模型不可用：{{model}}",
+    "createAgentFailed": "创建智能体失败",
+    "anthropicRetryStillFailing": "已在适配器配置中清除 ANTHROPIC_API_KEY 并重试，但环境测试仍然失败。",
+    "anthropicUnsetFailed": "清除 ANTHROPIC_API_KEY 并重试失败。",
+    "createTaskFailed": "创建任务失败"
+  }
+}

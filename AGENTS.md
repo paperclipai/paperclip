@@ -62,26 +62,32 @@ pnpm dev
 ## 5. Core Engineering Rules
 
 1. Keep changes company-scoped.
+
 Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.
 
-2. Keep contracts synchronized.
+1. Keep contracts synchronized.
+
 If you change schema/API behavior, update all impacted layers:
+
 - `packages/db` schema and exports
 - `packages/shared` types/constants/validators
 - `server` routes/services
 - `ui` API clients and pages
 
-3. Preserve control-plane invariants.
+1. Preserve control-plane invariants.
+
 - Single-assignee task model
 - Atomic issue checkout semantics
 - Approval gates for governed actions
 - Budget hard-stop auto-pause behavior
 - Activity logging for mutating actions
 
-4. Do not replace strategic docs wholesale unless asked.
+1. Do not replace strategic docs wholesale unless asked.
+
 Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
 
-5. Keep repo plan docs dated and centralized.
+1. Keep repo plan docs dated and centralized.
+
 When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Paperclip issue planning: if a Paperclip issue asks for a plan, update the issue `plan` document per the `paperclip` skill instead of creating a repo markdown file.
 
 ## 6. Database Change Workflow
@@ -96,13 +102,14 @@ When changing data model:
 pnpm db:generate
 ```
 
-4. Validate compile:
+1. Validate compile:
 
 ```sh
 pnpm -r typecheck
 ```
 
 Notes:
+
 - `packages/db/drizzle.config.ts` reads compiled schema from `dist/schema/*.js`
 - `pnpm db:generate` compiles `packages/db` first
 
@@ -155,7 +162,7 @@ When adding endpoints:
 
 ## 10. Pull Request Requirements
 
-When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
+When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of `[.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md)`. Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
 
 - **Thinking Path** — trace reasoning from project context to this change (see `CONTRIBUTING.md` for examples)
 - **What Changed** — bullet list of concrete changes
@@ -214,3 +221,4 @@ PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See roo
 - `createServerAdapter()` must include ALL optional fields (especially `detectModel`)
 - Built-in UI adapters can shadow external plugin parsers — remove built-in when fully externalizing
 - Reference external adapters: Hermes (`@henkey/hermes-paperclip-adapter` or `file:`) and Droid (npm)
+

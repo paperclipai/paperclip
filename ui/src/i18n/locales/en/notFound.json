@@ -1,0 +1,10 @@
+{
+  "breadcrumb": "Not Found",
+  "invalidCompanyTitle": "Company not found",
+  "invalidCompanyBody": "No company matches prefix \"{{prefix}}\".",
+  "pageTitle": "Page not found",
+  "pageBody": "This route does not exist.",
+  "requestedPath": "Requested path:",
+  "openDashboard": "Open dashboard",
+  "goHome": "Go home"
+}

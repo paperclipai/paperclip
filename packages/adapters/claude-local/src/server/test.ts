@@ -50,6 +50,16 @@ function summarizeProbeDetail(stdout: string, stderr: string): string | null {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+/** True if the model followed the English probe; false if it likely localized the greeting (still proves the CLI works). */
+function classifyClaudeHelloProbe(summary: string): "english" | "localized" | "none" {
+  const normalized = summary.replace(/\s+/g, " ").trim();
+  if (!normalized) return "none";
+  if (/\bhello\b/i.test(normalized)) return "english";
+  // zh-CN and similar locales often reply with 你好 even when asked for the word "hello".
+  if (/你好/u.test(normalized)) return "localized";
+  return "none";
+}
+
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -181,7 +191,8 @@ export async function testEnvironment(
           env,
           timeoutSec: 45,
           graceSec: 5,
-          stdin: "Respond with hello.",
+          stdin:
+            "Reply with exactly the English word hello in lowercase. Do not translate it; do not add any other words.",
           onLog: async () => {},
         },
       );
@@ -214,12 +225,15 @@ export async function testEnvironment(
         });
       } else if ((probe.exitCode ?? 1) === 0) {
         const summary = parsedStream.summary.trim();
-        const hasHello = /\bhello\b/i.test(summary);
+        const probeKind = classifyClaudeHelloProbe(summary);
+        const hasHello = probeKind !== "none";
         checks.push({
           code: hasHello ? "claude_hello_probe_passed" : "claude_hello_probe_unexpected_output",
           level: hasHello ? "info" : "warn",
           message: hasHello
-            ? "Claude hello probe succeeded."
+            ? probeKind === "english"
+              ? "Claude hello probe succeeded."
+              : "Claude hello probe succeeded (assistant replied in Chinese; CLI and model path are working)."
             : "Claude probe ran but did not return `hello` as expected.",
           ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
           ...(hasHello

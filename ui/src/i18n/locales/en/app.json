@@ -1,0 +1,25 @@
+{
+  "bootstrap": {
+    "title": "Instance setup required",
+    "bodyWithInvite": "No instance admin exists yet. A bootstrap invite is already active. Check your Paperclip startup logs for the first admin invite URL, or run this command to rotate it:",
+    "bodyDefault": "No instance admin exists yet. Run this command in your Paperclip environment to generate the first admin invite URL:"
+  },
+  "errors": {
+    "loadAppState": "Failed to load app state"
+  },
+  "onboardingRoute": {
+    "titleAddAgent": "Add another agent to {{companyName}}",
+    "titleAnotherCompany": "Create another company",
+    "titleFirstCompany": "Create your first company",
+    "descAddAgent": "Run onboarding again to add an agent and a starter task for this company.",
+    "descAnotherCompany": "Run onboarding again to create another company and seed its first agent.",
+    "descFirstCompany": "Get started by creating a company and your first agent.",
+    "ctaAddAgent": "Add Agent",
+    "ctaStart": "Start Onboarding"
+  },
+  "noCompanies": {
+    "title": "Create your first company",
+    "body": "Get started by creating a company.",
+    "cta": "New Company"
+  }
+}

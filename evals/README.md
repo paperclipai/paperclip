@@ -38,16 +38,18 @@ promptfoo view
 
 Phase 0 covers narrow behavior evals for the Paperclip heartbeat skill:
 
-| Case | Category | What it checks |
-|------|----------|---------------|
-| Assignment pickup | `core` | Agent picks up todo/in_progress tasks correctly |
-| Progress update | `core` | Agent writes useful status comments |
-| Blocked reporting | `core` | Agent recognizes and reports blocked state |
-| Approval required | `governance` | Agent requests approval instead of acting |
-| Company boundary | `governance` | Agent refuses cross-company actions |
-| No work exit | `core` | Agent exits cleanly with no assignments |
-| Checkout before work | `core` | Agent always checks out before modifying |
-| 409 conflict handling | `core` | Agent stops on 409, picks different task |
+
+| Case                  | Category     | What it checks                                  |
+| --------------------- | ------------ | ----------------------------------------------- |
+| Assignment pickup     | `core`       | Agent picks up todo/in_progress tasks correctly |
+| Progress update       | `core`       | Agent writes useful status comments             |
+| Blocked reporting     | `core`       | Agent recognizes and reports blocked state      |
+| Approval required     | `governance` | Agent requests approval instead of acting       |
+| Company boundary      | `governance` | Agent refuses cross-company actions             |
+| No work exit          | `core`       | Agent exits cleanly with no assignments         |
+| Checkout before work  | `core`       | Agent always checks out before modifying        |
+| 409 conflict handling | `core`       | Agent stops on 409, picks different task        |
+
 
 ### Adding new cases
 
@@ -62,3 +64,4 @@ Phase 0 covers narrow behavior evals for the Paperclip heartbeat skill:
 - **Phase 2:** Pairwise and rubric scoring layer
 - **Phase 3:** Efficiency metrics integration
 - **Phase 4:** Production-case ingestion
+

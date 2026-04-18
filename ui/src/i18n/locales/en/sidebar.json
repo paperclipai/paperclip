@@ -1,0 +1,18 @@
+{
+  "selectCompany": "Select company",
+  "newIssue": "New Issue",
+  "dashboard": "Dashboard",
+  "inbox": "Inbox",
+  "sections": {
+    "work": "Work",
+    "company": "Company"
+  },
+  "issues": "Issues",
+  "routines": "Routines",
+  "goals": "Goals",
+  "org": "Org",
+  "skills": "Skills",
+  "costs": "Costs",
+  "activity": "Activity",
+  "settings": "Settings"
+}

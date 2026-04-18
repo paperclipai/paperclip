@@ -1,0 +1,10 @@
+{
+  "breadcrumb": "未找到",
+  "invalidCompanyTitle": "未找到公司",
+  "invalidCompanyBody": "没有与前缀「{{prefix}}」匹配的公司。",
+  "pageTitle": "页面不存在",
+  "pageBody": "该路由不存在。",
+  "requestedPath": "请求的路径：",
+  "openDashboard": "打开仪表盘",
+  "goHome": "返回首页"
+}

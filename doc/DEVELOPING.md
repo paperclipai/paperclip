@@ -39,6 +39,10 @@ This starts:
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
+## Board UI locales
+
+See `doc/I18N.md` for JSON-based translations (default `zh`, fallback `en`), environment variables, and how to add keys or new languages without changing i18n plumbing.
+
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.

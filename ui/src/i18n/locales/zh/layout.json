@@ -1,0 +1,13 @@
+{
+  "skipToContent": "跳到主内容",
+  "closeSidebar": "关闭侧边栏",
+  "documentation": "文档",
+  "instanceSettings": "实例设置",
+  "switchTheme": "切换到{{mode}}模式",
+  "themeLight": "浅色",
+  "themeDark": "深色",
+  "companyRail": {
+    "addCompanyAria": "添加公司",
+    "addCompanyTooltip": "添加公司"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "bootstrap": {
+    "title": "需要完成实例初始化",
+    "bodyWithInvite": "当前还没有实例管理员。引导邀请已激活。请在 Paperclip 启动日志中查找首位管理员的邀请链接，或运行以下命令轮换邀请：",
+    "bodyDefault": "当前还没有实例管理员。请在运行 Paperclip 的环境中执行以下命令以生成首位管理员邀请链接："
+  },
+  "errors": {
+    "loadAppState": "无法加载应用状态"
+  },
+  "onboardingRoute": {
+    "titleAddAgent": "为 {{companyName}} 添加另一名智能体",
+    "titleAnotherCompany": "创建另一家公司",
+    "titleFirstCompany": "创建你的第一家公司",
+    "descAddAgent": "再次运行引导流程，为该公司添加智能体并创建入门任务。",
+    "descAnotherCompany": "再次运行引导流程，创建另一家公司并初始化首位智能体。",
+    "descFirstCompany": "从创建公司与首位智能体开始。",
+    "ctaAddAgent": "添加智能体",
+    "ctaStart": "开始引导"
+  },
+  "noCompanies": {
+    "title": "创建你的第一家公司",
+    "body": "从创建一家公司开始。",
+    "cta": "新建公司"
+  }
+}

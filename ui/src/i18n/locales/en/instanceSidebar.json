@@ -1,0 +1,8 @@
+{
+  "title": "Instance Settings",
+  "general": "General",
+  "heartbeats": "Heartbeats",
+  "experimental": "Experimental",
+  "plugins": "Plugins",
+  "adapters": "Adapters"
+}

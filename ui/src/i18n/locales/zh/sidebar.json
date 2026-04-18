@@ -1,0 +1,18 @@
+{
+  "selectCompany": "选择公司",
+  "newIssue": "新建事务",
+  "dashboard": "仪表盘",
+  "inbox": "收件箱",
+  "sections": {
+    "work": "工作",
+    "company": "公司"
+  },
+  "issues": "事务",
+  "routines": "例行任务",
+  "goals": "目标",
+  "org": "组织",
+  "skills": "技能",
+  "costs": "成本",
+  "activity": "动态",
+  "settings": "设置"
+}
