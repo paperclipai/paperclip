@@ -221,6 +221,67 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
   });
 
+  it("clears stale sibling routine locks before creating a fresh execution issue", async () => {
+    const { companyId, agentId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+    const staleExecutionRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "todo",
+      priority: routine.priority,
+      assigneeAgentId: null,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+      completedAt: new Date("2026-03-20T12:00:00.000Z"),
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: staleExecutionRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      contextSnapshot: { issueId: previousIssue.id },
+      startedAt: new Date("2026-03-20T12:01:00.000Z"),
+      finishedAt: new Date("2026-03-20T12:02:00.000Z"),
+    });
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: staleExecutionRunId,
+        executionLockedAt: new Date("2026-03-20T12:01:00.000Z"),
+      })
+      .where(eq(issues.id, previousIssue.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+
+    const refreshedPreviousIssue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, previousIssue.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(refreshedPreviousIssue?.executionRunId).toBeNull();
+  });
+
   it("wakes the assignee when a routine creates a fresh execution issue", async () => {
     const { agentId, routine, svc, wakeups } = await seedFixture();
 

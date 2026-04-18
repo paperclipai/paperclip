@@ -1,7 +1,7 @@
 # Agent Runtime Guide
 
 Status: User-facing guide  
-Last updated: 2026-04-16  
+Last updated: 2026-04-17  
 Audience: Operators setting up and running agents in PrivateClip
 
 ## 1. What this system does
@@ -27,6 +27,7 @@ An agent can be woken up in four ways:
 - `automation`: system-triggered wakeup for future automations
 
 If an agent is already running, new wakeups are merged (coalesced) instead of launching duplicate runs.
+Timer heartbeats are periodic nudges, not catch-up jobs: if a timer-triggered run is already `queued` or `running`, the scheduler keeps that single outstanding wake instead of stacking missed intervals into a backlog.
 If a manual wakeup is blocked by policy or company state, the request should return a visible skipped reason rather than appearing to do nothing.
 
 ## 3. What to configure per agent
@@ -165,11 +166,36 @@ COO treats `assigneeAgentId` and `status` differently:
 That means COO may correct the same issue without creating a successor issue:
 
 - wrong-specialist ownership can be reassigned on the same issue
+- project/domain truth should win over incidental phrasing:
+  - `App` project delivery defaults to the app engineer
+  - `Website` / marketing-surface delivery defaults to the web engineer
+  - generic words like `browser`, `page`, or `route` do not by themselves justify website routing
+- backend / API / runtime failure signals should route to platform before website when both appear in the same issue text
 - `in_progress` without a live execution run or fresh structured wait/handoff truth can be demoted back to `todo`
 - assigned `todo` is valid queued ownership and does not consume a slot
 - wakes should only be issued when the selected owner has a real free heartbeat slot
+- stale `routine_execution` siblings must not be re-woken once another open issue for the same routine already holds the live execution slot
 
 This is intentionally limited to same-issue correction. `recovered_by` successor issues remain exceptional board-controlled recovery only.
+
+## 7.6 Self-healing heartbeat recovery
+
+The heartbeat runtime should prefer same-issue recovery over operator cleanup:
+
+- active runs are judged by fresh runtime activity, not only by `status = running`
+- trusted liveness should come from `lastActivityAt` and runtime signals such as log streaming, adapter metadata, process spawn metadata, and explicit activity reports; ordinary status bookkeeping must not refresh that lease by itself
+- a quiet run should become `suspect` before it is declared lost
+- the default balanced policy is:
+  - suspect after roughly 90 seconds without trusted activity
+  - declare loss after roughly 150 seconds without trusted activity
+  - recover on the same issue inside 5 minutes when possible
+- process loss should retry the same agent on the same issue once, including adapters without a local child pid when the lease has clearly expired
+- the queued recovery run may reserve the issue execution lock so another worker does not steal the same execution while recovery is in flight
+- if that retry is already used, the run should become terminal from a recovery perspective (`exhausted`, `blocked`, or `non_retriable`)
+- transient adapter failures should trip an adapter-level retry circuit before they create a retry storm, and an open circuit should pause fresh dispatch on that adapter until the cooldown expires
+- recovery should always write structured run events and activity-log rows
+- issue comments should only be added when recovery changes ownership, changes status, or needs operator attention
+- Inbox should not surface failed runs that are still auto-recovering
 
 ## 8. Troubleshooting
 

@@ -108,6 +108,8 @@ Orchestrero’s core identity is a **control plane for autonomous AI companies**
 - Keep work anchored to **issues/comments/projects/goals**, even if the surface feels conversational.
 - Treat **agency / internal team / startup** as the same underlying abstraction with different templates and labels.
 - Make outputs first-class: files, docs, reports, previews, links, screenshots.
+- Turn issue detail into an output review surface: detectable files, docs, links, previews, images, and missing references should be surfaced for inspection instead of buried in comment order.
+- The top of issue detail should be decision-centric, not a flat asset wall: one review pack should explain the task, primary deliverable, risk/missing context, and next action before the raw thread.
 - Provide **hooks into engineering workflows**: worktrees, preview servers, PR links, external review tools.
 - Use **plugins** for edge cases like rich chat, knowledge bases, doc editors, custom tracing.
 
@@ -117,6 +119,7 @@ Orchestrero’s core identity is a **control plane for autonomous AI companies**
 - Do not build a complete Jira/GitHub replacement. The repo/docs already position Orchestrero as organization orchestration, not focused on pull-request review.
 - Do not build enterprise-grade RBAC first. The current V1 spec still treats multi-board governance and fine-grained human permissions as out of scope, so the first multi-user version should be coarse and company-scoped.
 - Do not lead with raw bash logs and transcripts. Default view should be human-readable intent/progress, with raw detail beneath.
+- Do not treat control-plane mention links (`agent://`, `project://`, `skill://`) or other routing metadata as review artifacts. They are context, not deliverables.
 - Do not force users to understand provider/API-key plumbing unless absolutely necessary. There are active onboarding/auth issues already; friction here is clearly real.
 
 ## Specific design goals
@@ -132,9 +135,12 @@ Orchestrero’s core identity is a **control plane for autonomous AI companies**
 
 4. **Progressive disclosure**
    Top layer: human-readable summary. Middle layer: checklist/steps/artifacts. Bottom layer: raw logs/tool calls/transcript.
+   Smart Review should follow the same rule: when multiple QA gate failures apply, surface the highest-priority blocker first and collapse lower-priority verdict-format problems into compact follow-up detail instead of dumping raw requirement codes.
 
 5. **Output-first**
    Work is not done until the user can see the result: file, document, preview link, screenshot, plan, or PR.
+   Issue detail should therefore lead with a reviewable artifact surface, with the raw comment thread acting as provenance and context beneath it.
+   That artifact surface should prioritize one review pack hero and supporting evidence, not treat every detected file as an equal card.
 
 6. **Local-first, cloud-ready**
    The mental model should not change between local solo use and shared/private or public/cloud deployment.

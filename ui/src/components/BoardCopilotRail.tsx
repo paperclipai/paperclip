@@ -80,9 +80,15 @@ function writeSessionKey(value: string | null) {
   }
 }
 
-function buildRouteSessionKey(companyId: string | null, pagePath: string) {
+function buildRouteSessionKey(
+  companyId: string | null,
+  routeContext: { pagePath: string; entityType?: string | null; entityId?: string | null },
+) {
   if (!companyId) return null;
-  return `${companyId}::${pagePath}`;
+  if (routeContext.entityType === "agent" && routeContext.entityId) {
+    return `${companyId}::agent:${routeContext.entityId}`;
+  }
+  return `${companyId}::${routeContext.pagePath}`;
 }
 
 function stripCopilotContext(body: string) {
@@ -137,8 +143,8 @@ export function BoardCopilotRail() {
   const copilotEnabledForRoute = Boolean(selectedCompanyId) && routeContext.pageKind !== "instance";
   const panelOpen = isMobile ? mobileOpen : desktopVisible;
   const routeSessionKey = useMemo(
-    () => buildRouteSessionKey(selectedCompanyId, routeContext.pagePath),
-    [selectedCompanyId, routeContext.pagePath],
+    () => buildRouteSessionKey(selectedCompanyId, routeContext),
+    [selectedCompanyId, routeContext],
   );
   const hasCurrentRouteSession = Boolean(routeSessionKey) && currentSessionKey === routeSessionKey;
   const threadQueryKey = useMemo(

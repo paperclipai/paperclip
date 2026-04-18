@@ -106,5 +106,5 @@ pnpm paperclipai dashboard get
 ## Heartbeat
 
 ```sh
-pnpm paperclipai heartbeat run --agent-id <agent-id> [--api-base http://localhost:3100]
+pnpm paperclipai heartbeat run --agent-id <agent-id> [--api-base http://localhost:3102]
 ```

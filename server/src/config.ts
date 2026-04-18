@@ -240,7 +240,7 @@ export function loadConfig(): Config {
     deploymentMode,
     deploymentExposure,
     host: process.env.HOST ?? fileConfig?.server.host ?? "127.0.0.1",
-    port: Number(process.env.PORT) || fileConfig?.server.port || 3100,
+    port: Number(process.env.PORT) || fileConfig?.server.port || 3102,
     allowedHostnames,
     authBaseUrlMode,
     authPublicBaseUrl,

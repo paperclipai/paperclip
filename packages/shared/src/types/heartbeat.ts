@@ -48,6 +48,7 @@ export interface HeartbeatRun {
   retryPolicyJson: Record<string, unknown> | null;
   processLossRetryCount: number;
   contextSnapshot: Record<string, unknown> | null;
+  lastActivityAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -26,6 +26,12 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { buildRoutineTriggerPatch } from "../lib/routine-trigger-patch";
+import {
+  ROUTINE_CONCURRENCY_POLICY_DESCRIPTIONS,
+  formatRoutineConcurrencyPolicyLabel,
+  formatRoutineLastResultLabel,
+  formatRoutineRunStatusLabel,
+} from "../lib/routine-labels";
 import { timeAgo } from "../lib/timeAgo";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
@@ -77,11 +83,6 @@ type NewTriggerDraft = {
   replayWindowSec: string;
 };
 
-const concurrencyPolicyDescriptions: Record<string, string> = {
-  coalesce_if_active: "Keep one follow-up run queued while an active run is still working.",
-  always_enqueue: "Queue every trigger occurrence, even if several runs stack up.",
-  skip_if_active: "Drop overlapping trigger occurrences while the routine is already active.",
-};
 const catchUpPolicyDescriptions: Record<string, string> = {
   skip_missed: "Ignore schedule windows that were missed while the routine or scheduler was paused.",
   enqueue_missed_with_cap: "Catch up missed schedule windows in capped batches after recovery.",
@@ -281,7 +282,9 @@ function TriggerEditor({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        {trigger.lastResult && <span className="text-xs text-muted-foreground">Last: {trigger.lastResult}</span>}
+        {trigger.lastResult && (
+          <span className="text-xs text-muted-foreground">Last: {formatRoutineLastResultLabel(trigger.lastResult)}</span>
+        )}
         <div className="ml-auto flex items-center gap-2">
           {trigger.kind === "webhook" && (
             <Button variant="outline" size="sm" onClick={() => onRotate(trigger.id)}>
@@ -1045,7 +1048,7 @@ export function RoutineDetail() {
         <CollapsibleContent className="pt-3">
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Concurrency</p>
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">When runs overlap</p>
               <Select
                 value={editDraft.concurrencyPolicy}
                 onValueChange={(concurrencyPolicy) => setEditDraft((current) => ({ ...current, concurrencyPolicy }))}
@@ -1055,11 +1058,11 @@ export function RoutineDetail() {
                 </SelectTrigger>
                 <SelectContent>
                   {concurrencyPolicies.map((value) => (
-                    <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                    <SelectItem key={value} value={value}>{formatRoutineConcurrencyPolicyLabel(value)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[editDraft.concurrencyPolicy]}</p>
+              <p className="text-xs text-muted-foreground">{ROUTINE_CONCURRENCY_POLICY_DESCRIPTIONS[editDraft.concurrencyPolicy]}</p>
             </div>
             <div className="space-y-2">
               <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>
@@ -1265,7 +1268,7 @@ export function RoutineDetail() {
                   <div className="flex items-center gap-2 min-w-0">
                     <Badge variant="outline" className="shrink-0">{run.source}</Badge>
                     <Badge variant={run.status === "failed" ? "destructive" : "secondary"} className="shrink-0">
-                      {run.status.replaceAll("_", " ")}
+                      {formatRoutineRunStatusLabel(run.status)}
                     </Badge>
                     {run.trigger && (
                       <span className="text-muted-foreground truncate">{run.trigger.label ?? run.trigger.kind}</span>

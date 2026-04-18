@@ -1199,6 +1199,7 @@ export function IssuesList({
       {viewState.viewMode === "board" ? (
         <KanbanBoard
           issues={filtered}
+          allIssues={sourceIssues}
           agents={agents}
           liveIssueIds={liveIssueIds}
           epicStylesByIssueId={epicStylesByIssueId}

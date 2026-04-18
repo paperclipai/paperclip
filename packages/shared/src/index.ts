@@ -1,5 +1,13 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export { LEGACY_AGENT_ROLE_ALIASES, canonicalizeAgentRole, normalizeAgentRoleInput } from "./agent-role.js";
+export { issuePriorityWeight, normalizeIssuePriority, normalizeIssuePriorityInput } from "./issue-priority.js";
+export {
+  QA_RELEASE_DEFAULT_NAME,
+  QA_RELEASE_DEFAULT_TITLE,
+  isEligibleQaAgentStatus,
+  isCanonicalReleaseGateQaAgent,
+  resolveReleaseGateQaAgent,
+} from "./release-gate-qa.js";
 export {
   BOARD_BRIEF_HEALTH_TONES,
   BOARD_BRIEF_FRESHNESS_STATUSES,
@@ -332,6 +340,24 @@ export type {
   DocumentRevision,
   DocumentFormat,
   LegacyPlanDocument,
+  IssueReviewItem,
+  IssueReviewItemGroup,
+  IssueReviewItemKind,
+  IssueReviewItemPreviewState,
+  IssueReviewItemStatus,
+  IssueReviewItemSourceType,
+  IssueReviewItemSourceRef,
+  IssueReviewItemResolvedTarget,
+  IssueReviewHintSeverity,
+  IssueReviewHint,
+  IssueReviewActionTargetType,
+  IssueReviewActionTarget,
+  IssueReviewPackStatus,
+  IssueReviewPack,
+  IssueReviewBlocker,
+  IssueReviewPackSurface,
+  IssueFilePreviewKind,
+  IssueFilePreview,
   IssueAttachment,
   IssueLabel,
   Goal,

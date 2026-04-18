@@ -43,7 +43,7 @@ const toastState = vi.hoisted(() => ({
 }));
 
 const kanbanPropsState = vi.hoisted(() => ({
-  latest: null as { issues: Issue[] } | null,
+  latest: null as { issues: Issue[]; allIssues?: Issue[] } | null,
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -98,7 +98,7 @@ vi.mock("./IssueRow", () => ({
 }));
 
 vi.mock("./KanbanBoard", () => ({
-  KanbanBoard: (props: { issues: Issue[] }) => {
+  KanbanBoard: (props: { issues: Issue[]; allIssues?: Issue[] }) => {
     kanbanPropsState.latest = props;
     return <div>Kanban board</div>;
   },
@@ -707,6 +707,66 @@ describe("IssuesList", () => {
       expect(kanbanPropsState.latest?.issues.map((issue) => issue.title)).toEqual([
         "Board recent issue",
         "Board older issue",
+      ]);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("passes both filtered board issues and the pre-filter source issues to the board", async () => {
+    window.localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({
+        schemaVersion: 4,
+        statuses: ["todo"],
+        priorities: [],
+        assignees: [],
+        labels: [],
+        projects: [],
+        epicId: null,
+        sortField: "recent",
+        sortDir: "desc",
+        groupBy: "none",
+        viewMode: "board",
+        collapsedGroups: [],
+        collapsedParents: [],
+      }),
+    );
+
+    const backlogIssue = createIssue({
+      id: "issue-board-backlog",
+      identifier: "PAP-62",
+      title: "Board backlog issue",
+      status: "backlog",
+    });
+    const todoIssue = createIssue({
+      id: "issue-board-todo",
+      identifier: "PAP-63",
+      title: "Board todo issue",
+      status: "todo",
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[backlogIssue, todoIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Kanban board");
+      expect(kanbanPropsState.latest?.issues.map((issue) => issue.title)).toEqual([
+        "Board todo issue",
+      ]);
+      expect(kanbanPropsState.latest?.allIssues?.map((issue) => issue.title)).toEqual([
+        "Board backlog issue",
+        "Board todo issue",
       ]);
     });
 

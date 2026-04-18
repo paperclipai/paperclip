@@ -664,7 +664,7 @@ export async function startServer(): Promise<StartedServer> {
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
-      .reapOrphanedRuns()
+      .reapOrphanedRuns({ suspectThresholdMs: 90 * 1000, staleThresholdMs: 150 * 1000 })
       .then(() => heartbeat.resumeQueuedRuns())
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
@@ -716,7 +716,7 @@ export async function startServer(): Promise<StartedServer> {
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
       void heartbeat
-        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .reapOrphanedRuns({ suspectThresholdMs: 90 * 1000, staleThresholdMs: 150 * 1000 })
         .then(() => heartbeat.resumeQueuedRuns())
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");

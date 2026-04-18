@@ -28,6 +28,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   interpolateRoutineTemplate,
+  normalizeIssuePriority,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
 } from "@paperclipai/shared";
@@ -570,6 +571,71 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     }
   }
 
+  async function clearStaleExecutionLocksForRoutine(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+  ) {
+    const lockedIssueRows = await executor
+      .select({
+        id: issues.id,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+        ),
+      );
+
+    const runIds = Array.from(
+      new Set(lockedIssueRows.map((row) => row.executionRunId).filter((id): id is string => Boolean(id))),
+    );
+    if (runIds.length === 0) return;
+
+    const runRows = await executor
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, routine.companyId),
+          inArray(heartbeatRuns.id, runIds),
+        ),
+      );
+    const liveRunIds = new Set(
+      runRows
+        .filter((row) => LIVE_HEARTBEAT_RUN_STATUSES.includes(row.status))
+        .map((row) => row.id),
+    );
+    const staleIssueIds = lockedIssueRows
+      .filter((row) => row.executionRunId && !liveRunIds.has(row.executionRunId))
+      .map((row) => row.id);
+
+    if (staleIssueIds.length === 0) return;
+
+    await executor
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          inArray(issues.id, staleIssueIds),
+        ),
+      );
+  }
+
   async function findLiveExecutionIssue(routine: typeof routines.$inferSelect, executor: Db = db) {
     const executionBoundIssue = await executor
       .select()
@@ -674,6 +740,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
   }) {
+    await clearStaleExecutionLocksForRoutine(input.routine);
+
     const resolvedVariables = resolveRoutineVariableValues(input.routine.variables ?? [], input);
     const description = interpolateRoutineTemplate(input.routine.description, resolvedVariables);
     const triggerPayload = mergeRoutineRunPayload(input.payload, resolvedVariables);
@@ -995,6 +1063,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       await assertAssignableAgent(companyId, input.assigneeAgentId);
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
+      const priority = normalizeIssuePriority(input.priority ?? null) ?? input.priority;
       const variables = syncRoutineVariablesWithTemplate(
         input.description,
         sanitizeRoutineVariableInputs(input.variables),
@@ -1010,7 +1079,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           title: input.title,
           description: input.description ?? null,
           assigneeAgentId: input.assigneeAgentId,
-          priority: input.priority,
+          priority,
           status: input.status,
           concurrencyPolicy: input.concurrencyPolicy,
           catchUpPolicy: input.catchUpPolicy,
@@ -1030,6 +1099,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       const nextProjectId = patch.projectId ?? existing.projectId;
       const nextAssigneeAgentId = patch.assigneeAgentId ?? existing.assigneeAgentId;
       const nextDescription = patch.description === undefined ? existing.description : patch.description;
+      const nextPriority = normalizeIssuePriority(patch.priority ?? null) ?? patch.priority ?? existing.priority;
       const nextVariables = syncRoutineVariablesWithTemplate(
         nextDescription,
         patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
@@ -1063,7 +1133,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           title: patch.title ?? existing.title,
           description: nextDescription,
           assigneeAgentId: nextAssigneeAgentId,
-          priority: patch.priority ?? existing.priority,
+          priority: nextPriority,
           status: patch.status ?? existing.status,
           concurrencyPolicy: patch.concurrencyPolicy ?? existing.concurrencyPolicy,
           catchUpPolicy: patch.catchUpPolicy ?? existing.catchUpPolicy,

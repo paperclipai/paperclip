@@ -15,6 +15,11 @@ import { queryKeys } from "../lib/queryKeys";
 import { groupBy } from "../lib/groupBy";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import {
+  ROUTINE_CONCURRENCY_POLICY_DESCRIPTIONS,
+  formatRoutineConcurrencyPolicyLabel,
+  formatRoutineRunStatusLabel,
+} from "../lib/routine-labels";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
@@ -53,11 +58,6 @@ import type { RoutineListItem, RoutineVariable } from "@paperclipai/shared";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
-const concurrencyPolicyDescriptions: Record<string, string> = {
-  coalesce_if_active: "If a run is already active, keep just one follow-up run queued.",
-  always_enqueue: "Queue every trigger occurrence, even if the routine is already running.",
-  skip_if_active: "Drop new trigger occurrences while a run is still active.",
-};
 const catchUpPolicyDescriptions: Record<string, string> = {
   skip_missed: "Ignore windows that were missed while the scheduler or routine was paused.",
   enqueue_missed_with_cap: "Catch up missed schedule windows in capped batches after recovery.",
@@ -110,11 +110,6 @@ function getRoutineViewState(key: string): RoutineViewState {
 
 function saveRoutineViewState(key: string, state: RoutineViewState) {
   localStorage.setItem(key, JSON.stringify(state));
-}
-
-function formatRoutineRunStatus(value: string | null | undefined) {
-  if (!value) return null;
-  return value.replaceAll("_", " ");
 }
 
 export function buildRoutineGroups(
@@ -217,7 +212,7 @@ function RoutineListRow({
           </span>
           <span>
             {formatLastRunTimestamp(routine.lastRun?.triggeredAt)}
-            {routine.lastRun ? ` · ${formatRoutineRunStatus(routine.lastRun.status)}` : ""}
+            {routine.lastRun ? ` · ${formatRoutineRunStatusLabel(routine.lastRun.status)}` : ""}
           </span>
         </div>
       </div>
@@ -858,7 +853,7 @@ export function Routines() {
                 <CollapsibleContent className="pt-3">
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Concurrency</p>
+                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">When runs overlap</p>
                       <Select
                         value={draft.concurrencyPolicy}
                         onValueChange={(concurrencyPolicy) => setDraft((current) => ({ ...current, concurrencyPolicy }))}
@@ -868,11 +863,11 @@ export function Routines() {
                         </SelectTrigger>
                         <SelectContent>
                           {concurrencyPolicies.map((value) => (
-                            <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                            <SelectItem key={value} value={value}>{formatRoutineConcurrencyPolicyLabel(value)}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[draft.concurrencyPolicy]}</p>
+                      <p className="text-xs text-muted-foreground">{ROUTINE_CONCURRENCY_POLICY_DESCRIPTIONS[draft.concurrencyPolicy]}</p>
                     </div>
                     <div className="space-y-2">
                       <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>

@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAccessService = vi.hoisted(() => ({
   hasPermission: vi.fn(),
@@ -125,17 +125,15 @@ function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) 
 }
 
 describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
-  beforeAll(async () => {
+  beforeEach(async () => {
+    vi.resetAllMocks();
     vi.resetModules();
     ({ accessRoutes: accessRoutesFactory } = await import("../routes/access.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-  }, 30_000);
-
-  beforeEach(() => {
     mockAccessService.canUser.mockResolvedValue(false);
     mockAgentService.getById.mockReset();
     mockLogActivity.mockResolvedValue(undefined);
-  });
+  }, 30_000);
 
   it("rejects non-CEO agent callers", async () => {
     const db = createDbStub();

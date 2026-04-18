@@ -215,7 +215,9 @@ Invariant:
 Invariants:
 
 - single assignee only
+- canonical issue priorities are `critical | high | medium | low`; API compatibility input may accept legacy `urgent` and normalize it to `critical`
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
+- agent-created follow-up issues inherit `project_id` from the active run context when omitted, preferring the source issue's project over raw run snapshot fallback
 - `in_progress` requires assignee
 - `blocked` requires at least one explicit blocker relation; it is reserved for real dependency-blocked work
 - terminal states: `done | cancelled`
@@ -395,6 +397,12 @@ Normalization rule:
 
 - when the last blocker relation is removed from a blocked issue, the service must normalize the issue out of `blocked` unless the same mutation explicitly sets another non-blocked status
 - terminal: `done`, `cancelled`
+- delivery-scoped issues entering `in_review` must be owned by the resolved release-gate QA owner; prefer the canonical `QA and Release Engineer`, preserve that assignee when already present, and treat multiple canonical matches as ambiguous instead of picking one by row order
+- delivery-scoped issues may only close once the resolved release-gate QA owner already holds the issue; fixing QA ownership and closing are separate mutations
+- delivery-scoped issues may only move from `in_review` to `done` when the latest QA-authored verdict comment includes the Smart Review summary tokens, passing verification tokens (`TYPECHECK`, `TESTS`, `BUILD`, and `SMOKE`/`na`), `[QA PASS]`, and `[RELEASE CONFIRMED]`; a failing Smart Review verdict or failing verification blocks closure even if the release markers are present
+- when no QA assignee is already present, auto-route into QA only when the resolved release-gate QA owner is unambiguous: use the canonical `QA and Release Engineer` when present, otherwise fall back only when exactly one healthy eligible QA agent exists; QA agents in `error` do not count as eligible for automatic routing
+- when a delivery assignee posts completion truth but no single healthy QA assignee can be selected automatically, keep the issue out of `in_review` and add an explicit workflow-gate comment so operations recovery does not demote the issue back to `todo`
+- workflow-gate dedupe for ambiguous QA routing must key off the latest structured-truth comment, so a fresh completion comment after an older gate note re-arms the gate instead of silently reusing stale wait-state truth
 
 Side effects:
 
@@ -493,8 +501,35 @@ All endpoints are under `/api` and return JSON.
 - `GET /issues/:issueId/comments`
 - `POST /companies/:companyId/issues/:issueId/attachments` (multipart upload)
 - `GET /issues/:issueId/attachments`
+- `GET /issues/:issueId/file-preview?path=relative/path.txt`
+- `GET /issues/:issueId/file-preview/content?path=relative/path.png`
 - `GET /attachments/:attachmentId/content`
 - `DELETE /attachments/:attachmentId`
+- when an agent run that is scoped to a recovery successor posts a comment onto the recovery-source issue, the server must normalize that comment into explicit successor/source language instead of allowing an ambiguous "this issue completed" note, and this normalization must apply both to `POST /issues/:issueId/comments` and to `PATCH /issues/:issueId` when the patch includes a comment body
+- when a recovery successor transitions to `done`, any linked recovery-source issues that are still `blocked` solely as continuation placeholders and have no active first-class blockers must automatically transition to `done`; the server must persist source-side audit truth for that automatic completion, and recovery links stay intact for history so stale "blocked because superseded" sources do not remain open
+
+Issue detail payload requirements:
+
+- `GET /issues/:issueId` must include a server-built `reviewItems` collection for board review surfaces
+- `GET /issues/:issueId` must also include a server-built `reviewPackSurface` presentation model for the top of issue detail
+- `reviewItems` must normalize detectable issue artifacts from description, comments, attachments, documents, and work products
+- detection must include markdown links/images, plain URLs, workspace-style file paths, and known marketplace URLs
+- items must be deduped, grouped as `review_now | references | hidden_context`, and preserve source references back to issue comments when available
+- unavailable or unresolved references must remain visible as explicit review items rather than disappearing silently
+- `reviewPackSurface` must derive from `reviewItems` and the computed board state, yielding:
+  - a compact blocker rail only when reviewability is materially affected
+  - one hero review pack that explains the review task, primary deliverable, risks, and next action
+  - up to four ranked secondary review targets
+  - a dense supporting-evidence list that does not compete with the hero
+- review packs may group multiple raw items into one operator-facing review task when the source context is clearly shared (for example marketplace listing outputs in the same workspace folder)
+- the raw thread must remain available below the review surface for provenance; `reviewPackSurface` is additive and must not replace `reviewItems`
+
+Safe file preview requirements:
+
+- `GET /issues/:issueId/file-preview` must resolve only within the issue project's `effectiveLocalFolder`
+- traversal outside the project root must return `422`
+- previews must be bounded and typed as `text | image | unsupported | missing`
+- image content streaming via `GET /issues/:issueId/file-preview/content` must stay scoped to safe image types
 
 ### 10.4.1 Atomic Checkout Contract
 
@@ -546,6 +581,9 @@ Dashboard payload must include:
 - active/running/paused/error agent counts
 - open/in-progress/blocked/done issue counts
 - issue detail and list surfaces must expose a server-computed board-facing state (`boardState`, `primaryBlocker`, and for detail views `rootBlockers` / `blockerPath`) so the board sees the current problem and next click without interpreting raw status/comments manually
+- issue detail must also surface a review-board-first artifact layer so operators can inspect files, docs, links, previews, and missing references without scanning comment prose linearly
+- the issue-detail artifact layer must be decision-centric rather than item-grid-centric: the first screen should answer what to review now, why it is first, what is missing/risky, and what action to take next
+- heartbeat-owned issue mutations that change assignee or status must emit ordinary `issue.updated` activity events with previous values so the timeline explains operations-driven demotions and reassignments
 - month-to-date spend and budget utilization
 - pending approvals count
 
@@ -592,6 +630,9 @@ Behavior:
 - stream stdout/stderr to run logs
 - mark run status on exit code/timeout
 - cancel sends SIGTERM then SIGKILL after grace
+- for issue-scoped successful runs, synthesize at most one run-summary issue comment from adapter result text when the run did not already create a run-linked issue comment
+- synthesized run-summary comments must normalize duplicated terminal output and strip trailing session-id noise before persistence
+- read paths that surface persisted run-linked synthesized summaries must apply the same normalization without rewriting unrelated run-linked comments
 
 ## 11.3 HTTP Adapter
 
@@ -631,7 +672,9 @@ Scheduler must skip invocation when:
 
 - agent is paused/terminated
 - an existing run is active
+- a timer heartbeat is already `queued` or `running` for that agent; missed timer windows coalesce into one outstanding wake instead of backfilling a backlog after downtime
 - hard budget limit has been hit
+- before binding a new run to a `routine_execution` issue, the server must clear dead sibling `execution_run_id` locks for the same routine origin; if a live sibling issue still owns the routine, the new wake must cancel/coalesce instead of surfacing a database uniqueness error
 
 ## 12. Governance and Approval Flows
 
@@ -726,6 +769,7 @@ Required UX behaviors:
 - global company selector
 - quick actions: pause/resume agent, create task, approve/reject request
 - conflict toasts on atomic checkout failure
+- transient toasts stay visible long enough to read, pause auto-dismiss while hovered, let actionable notifications open from the toast card, and use status-semantic styling for key issue transitions (for example green success affordance for `done`, red error affordance for `blocked`)
 - no silent background failures; every failed run visible in UI
 
 ## 15. Operational Requirements

@@ -100,7 +100,7 @@ HOST=0.0.0.0 pnpm dev
 
 Open from the host:
 
-- `http://localhost:3100`
+- `http://localhost:3102`
 
 The Compose file also exposes Vite's default port:
 

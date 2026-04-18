@@ -35,6 +35,7 @@ Notes:
 - Pi supports multiple providers and models. Use \`pi --list-models\` to list available options.
 - PrivateClip requires an explicit \`model\` value for \`pi_local\` agents.
 - Sessions are stored in ~/.pi/paperclips/ and resumed with --session.
+- If \`env.HOME\` is overridden for the adapter, Pi session and skill paths move under that home directory.
 - All tools (read, bash, edit, write, grep, find, ls) are enabled by default.
 - Agent instructions are appended to Pi's system prompt via --append-system-prompt, while the user task is sent via -p.
 `;

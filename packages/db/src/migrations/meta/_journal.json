@@ -428,6 +428,13 @@
       "when": 1776232391526,
       "tag": "0060_chief_kree",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1776427830399,
+      "tag": "0061_fine_nehzno",
+      "breakpoints": true
     }
   ]
 }

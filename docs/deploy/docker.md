@@ -11,11 +11,11 @@ Run Orchestrero in Docker without installing Node or pnpm locally.
 docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
-Open [http://localhost:3100](http://localhost:3100).
+Open [http://localhost:3102](http://localhost:3102).
 
 Defaults:
 
-- Host port: `3100`
+- Host port: `3102`
 - Data directory: `./data/docker-paperclip`
 
 Override with environment variables:
@@ -32,7 +32,7 @@ PAPERCLIP_PORT=3200 PAPERCLIP_DATA_DIR=../data/pc \
 ```sh
 docker build -t paperclip-local .
 docker run --name paperclip \
-  -p 3100:3100 \
+  -p 3102:3102 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
@@ -59,7 +59,7 @@ Pass API keys to enable local adapter runs inside the container:
 
 ```sh
 docker run --name paperclip \
-  -p 3100:3100 \
+  -p 3102:3102 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
   -e OPENAI_API_KEY=sk-... \

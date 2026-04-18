@@ -171,4 +171,41 @@ describe("KanbanBoard", () => {
       root.unmount();
     });
   });
+
+  it("hides columns emptied by filters and shows a notice listing them", () => {
+    const root = createRoot(container);
+    const backlogIssue = createIssue({
+      id: "issue-backlog",
+      identifier: "PAP-2",
+      title: "Backlog issue",
+      status: "backlog",
+    });
+    const todoIssue = createIssue({
+      id: "issue-todo",
+      identifier: "PAP-3",
+      title: "Todo issue",
+      status: "todo",
+    });
+
+    act(() => {
+      root.render(
+        <KanbanBoard
+          issues={[todoIssue]}
+          allIssues={[backlogIssue, todoIssue]}
+          onUpdateIssue={() => undefined}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Hidden by current filters");
+    expect(container.textContent).toContain("Backlog");
+    expect(container.querySelector('[data-kanban-hidden-statuses]')).not.toBeNull();
+    expect(container.querySelector('[data-kanban-hidden-status-chip="backlog"]')).not.toBeNull();
+    expect(container.querySelector('[data-kanban-column-status="backlog"]')).toBeNull();
+    expect(container.querySelector('[data-kanban-column-status="todo"]')).not.toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });

@@ -55,7 +55,7 @@ function defaultConfig(): PaperclipConfig {
       deploymentMode: "local_trusted",
       exposure: "private",
       host: "127.0.0.1",
-      port: 3100,
+      port: 3102,
       allowedHostnames: [],
       serveUi: true,
     },

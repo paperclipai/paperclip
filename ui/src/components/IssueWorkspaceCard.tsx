@@ -63,9 +63,17 @@ function BreakablePath({ text }: { text: string }) {
   return <>{parts}</>;
 }
 
-function CopyableInline({ value, label, mono }: { value: string; label?: string; mono?: boolean }) {
+  function CopyableInline({ value, label, mono }: { value: string; label?: string; mono?: boolean }) {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    };
+  }, []);
+
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(value);

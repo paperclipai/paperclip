@@ -9,7 +9,10 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(async () => null),
   getComment: vi.fn(),
   getCommentCursor: vi.fn(),
+  findMentionedProjectIds: vi.fn(),
   getRelationSummaries: vi.fn(),
+  listAttachments: vi.fn(),
+  listComments: vi.fn(),
   update: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
@@ -35,6 +38,7 @@ vi.mock("../services/index.js", () => ({
   }),
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
+    listIssueDocuments: vi.fn(async () => []),
   }),
   executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => ({
@@ -105,7 +109,10 @@ describe("issue dependency wakeups in issue routes", () => {
       latestCommentId: null,
       latestCommentAt: null,
     });
+    mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.listAttachments.mockResolvedValue([]);
+    mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
   });

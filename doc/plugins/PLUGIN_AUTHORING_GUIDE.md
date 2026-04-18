@@ -60,7 +60,7 @@ For local development, install it into PrivateClip from an absolute local path t
 Example:
 
 ```bash
-curl -X POST http://127.0.0.1:3100/api/plugins/install \
+curl -X POST http://127.0.0.1:3102/api/plugins/install \
   -H "Content-Type: application/json" \
   -d '{"packageName":"/absolute/path/to/your-plugin","isLocalPath":true}'
 ```

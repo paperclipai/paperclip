@@ -50,6 +50,7 @@ export const queryKeys = {
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     feedbackVotes: (issueId: string) => ["issues", "feedback-votes", issueId] as const,
     attachments: (issueId: string) => ["issues", "attachments", issueId] as const,
+    filePreview: (issueId: string, path: string) => ["issues", "file-preview", issueId, path] as const,
     documents: (issueId: string) => ["issues", "documents", issueId] as const,
     documentRevisions: (issueId: string, key: string) => ["issues", "document-revisions", issueId, key] as const,
     activity: (issueId: string) => ["issues", "activity", issueId] as const,

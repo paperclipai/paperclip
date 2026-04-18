@@ -192,6 +192,98 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
   });
 });
 
+describe("LiveUpdatesProvider issue activity toasts", () => {
+  it("uses a success toast when an issue moves to done", () => {
+    const queryClient = {
+      getQueryData: (key: unknown) => {
+        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-759"))) {
+          return {
+            id: "issue-1",
+            identifier: "PAP-759",
+            title: "Ship the release",
+          };
+        }
+        return undefined;
+      },
+    };
+
+    expect(
+      // buildActivityToast is intentionally exercised via test utils so status-tone
+      // mapping stays covered without mounting the provider.
+      (__liveUpdatesTestUtils as { buildActivityToast?: (...args: unknown[]) => unknown }).buildActivityToast?.(
+        queryClient,
+        "company-1",
+        {
+          entityType: "issue",
+          entityId: "issue-1",
+          action: "issue.updated",
+          actorType: "agent",
+          actorId: "agent-1",
+          details: {
+            identifier: "PAP-759",
+            title: "Ship the release",
+            status: "done",
+            _previous: {
+              status: "in_review",
+            },
+          },
+        },
+        {
+          userId: null,
+          agentId: null,
+        },
+      ),
+    ).toMatchObject({
+      title: "Agent agent-1 updated PAP-759",
+      tone: "success",
+    });
+  });
+
+  it("uses an error toast when an issue moves to blocked", () => {
+    const queryClient = {
+      getQueryData: (key: unknown) => {
+        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-760"))) {
+          return {
+            id: "issue-2",
+            identifier: "PAP-760",
+            title: "Fix the flaky deploy",
+          };
+        }
+        return undefined;
+      },
+    };
+
+    expect(
+      (__liveUpdatesTestUtils as { buildActivityToast?: (...args: unknown[]) => unknown }).buildActivityToast?.(
+        queryClient,
+        "company-1",
+        {
+          entityType: "issue",
+          entityId: "issue-2",
+          action: "issue.updated",
+          actorType: "agent",
+          actorId: "agent-2",
+          details: {
+            identifier: "PAP-760",
+            title: "Fix the flaky deploy",
+            status: "blocked",
+            _previous: {
+              status: "in_progress",
+            },
+          },
+        },
+        {
+          userId: null,
+          agentId: null,
+        },
+      ),
+    ).toMatchObject({
+      title: "Agent agent-2 updated PAP-760",
+      tone: "error",
+    });
+  });
+});
+
 describe("LiveUpdatesProvider socket helpers", () => {
   it("waits for the selected company object to catch up before connecting", () => {
     expect(__liveUpdatesTestUtils.resolveLiveCompanyId("company-1", null)).toBeNull();

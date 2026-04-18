@@ -29,6 +29,8 @@ const dynamicParserCache = new Map<string, DynamicParserModule>();
 
 // Track which types we've already attempted to load (to avoid repeat 404s).
 const failedLoads = new Set<string>();
+// Track in-flight loads so repeated callers share the same request.
+const inFlightLoads = new Map<string, Promise<DynamicParserModule | null>>();
 
 /**
  * Dynamically load a UI parser for an adapter type from the server API.
@@ -46,64 +48,77 @@ export async function loadDynamicParser(adapterType: string): Promise<DynamicPar
   // Don't retry types that previously 404'd
   if (failedLoads.has(adapterType)) return null;
 
+  const existingLoad = inFlightLoads.get(adapterType);
+  if (existingLoad) return existingLoad;
+
   try {
-    const response = await fetch(`/api/adapters/${encodeURIComponent(adapterType)}/ui-parser.js`);
-    if (!response.ok) {
-      failedLoads.add(adapterType);
-      return null;
-    }
+    const loadPromise = (async () => {
+      try {
+        const response = await fetch(`/api/adapters/${encodeURIComponent(adapterType)}/ui-parser.js`);
+        if (!response.ok) {
+          failedLoads.add(adapterType);
+          return null;
+        }
 
-    const source = await response.text();
+        const source = await response.text();
 
-    // Evaluate the module source using URL.createObjectURL + dynamic import().
-    // This properly supports ESM modules with `export` statements.
-    // (new Function("exports", source) would fail with SyntaxError on `export` keywords.)
-    const blob = new Blob([source], { type: "application/javascript" });
-    const blobUrl = URL.createObjectURL(blob);
+        // Evaluate the module source using URL.createObjectURL + dynamic import().
+        // This properly supports ESM modules with `export` statements.
+        // (new Function("exports", source) would fail with SyntaxError on `export` keywords.)
+        const blob = new Blob([source], { type: "application/javascript" });
+        const blobUrl = URL.createObjectURL(blob);
 
-    let parserModule: DynamicParserModule;
+        let parserModule: DynamicParserModule;
 
-    try {
-      const mod = await import(/* @vite-ignore */ blobUrl);
+        try {
+          const mod = await import(/* @vite-ignore */ blobUrl);
 
-      // Prefer the factory function (stateful parser) if available,
-      // fall back to the static parseStdoutLine function.
-      if (typeof mod.createStdoutParser === "function") {
-        const createStdoutParser = mod.createStdoutParser as StdoutParserFactory;
-        parserModule = {
-          createStdoutParser,
-          // Fallback for callers that only know about parseStdoutLine.
-          parseStdoutLine:
-            typeof mod.parseStdoutLine === "function"
-              ? (mod.parseStdoutLine as StdoutLineParser)
-              : ((line: string, ts: string) => {
-                  const parser = createStdoutParser() as StatefulStdoutParser;
-                  const entries = parser.parseLine(line, ts);
-                  parser.reset();
-                  return entries;
-                }),
-        };
-      } else if (typeof mod.parseStdoutLine === "function") {
-        parserModule = {
-          parseStdoutLine: mod.parseStdoutLine as StdoutLineParser,
-        };
-      } else {
-        console.warn(`[adapter-ui-loader] Module for "${adapterType}" exports neither parseStdoutLine nor createStdoutParser`);
+          // Prefer the factory function (stateful parser) if available,
+          // fall back to the static parseStdoutLine function.
+          if (typeof mod.createStdoutParser === "function") {
+            const createStdoutParser = mod.createStdoutParser as StdoutParserFactory;
+            parserModule = {
+              createStdoutParser,
+              // Fallback for callers that only know about parseStdoutLine.
+              parseStdoutLine:
+                typeof mod.parseStdoutLine === "function"
+                  ? (mod.parseStdoutLine as StdoutLineParser)
+                  : ((line: string, ts: string) => {
+                      const parser = createStdoutParser() as StatefulStdoutParser;
+                      const entries = parser.parseLine(line, ts);
+                      parser.reset();
+                      return entries;
+                    }),
+            };
+          } else if (typeof mod.parseStdoutLine === "function") {
+            parserModule = {
+              parseStdoutLine: mod.parseStdoutLine as StdoutLineParser,
+            };
+          } else {
+            console.warn(`[adapter-ui-loader] Module for "${adapterType}" exports neither parseStdoutLine nor createStdoutParser`);
+            failedLoads.add(adapterType);
+            return null;
+          }
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+        }
+
+        // Cache for reuse
+        dynamicParserCache.set(adapterType, parserModule);
+        console.info(`[adapter-ui-loader] Loaded dynamic UI parser for "${adapterType}"`);
+        return parserModule;
+      } catch (err) {
+        console.warn(`[adapter-ui-loader] Failed to load UI parser for "${adapterType}":`, err);
         failedLoads.add(adapterType);
         return null;
       }
-    } finally {
-      URL.revokeObjectURL(blobUrl);
-    }
-
-    // Cache for reuse
-    dynamicParserCache.set(adapterType, parserModule);
-    console.info(`[adapter-ui-loader] Loaded dynamic UI parser for "${adapterType}"`);
-    return parserModule;
-  } catch (err) {
-    console.warn(`[adapter-ui-loader] Failed to load UI parser for "${adapterType}":`, err);
-    failedLoads.add(adapterType);
-    return null;
+    })();
+    inFlightLoads.set(adapterType, loadPromise);
+    const loaded = await loadPromise;
+    inFlightLoads.delete(adapterType);
+    return loaded;
+  } finally {
+    inFlightLoads.delete(adapterType);
   }
 }
 
@@ -115,6 +130,7 @@ export function invalidateDynamicParser(adapterType: string): boolean {
   const wasCached = dynamicParserCache.has(adapterType);
   dynamicParserCache.delete(adapterType);
   failedLoads.delete(adapterType);
+  inFlightLoads.delete(adapterType);
   if (wasCached) {
     console.info(`[adapter-ui-loader] Invalidated dynamic UI parser for "${adapterType}"`);
   }

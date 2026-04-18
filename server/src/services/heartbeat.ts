@@ -4,13 +4,14 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { buildAgentMentionHref, type BillingType, type ExecutionWorkspace, type ExecutionWorkspaceConfig } from "@paperclipai/shared";
+import { buildAgentMentionHref, issuePriorityWeight, type BillingType, type ExecutionWorkspace, type ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
   agents,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
   companies,
+  heartbeatRetryCircuits,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -22,6 +23,7 @@ import {
 import { HttpError, conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
+import { logActivity } from "./activity-log.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
@@ -73,7 +75,6 @@ import {
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { roadmapEpicService } from "./roadmap-epics.js";
-import { logActivity } from "./activity-log.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import {
   isOrchestratorOnlyAgent,
@@ -116,6 +117,33 @@ const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
+const PROCESS_SUSPECT_ERROR_CODE = "process_suspect";
+const RUN_ACTIVITY_TOUCH_INTERVAL_MS = 15_000;
+const DEFAULT_RUN_SUSPECT_THRESHOLD_MS = 90 * 1000;
+const DEFAULT_RUN_LOST_THRESHOLD_MS = 150 * 1000;
+const AUTO_RETRY_TIMEOUT_DELAY_MS = 20 * 1000;
+const AUTO_RETRY_CIRCUIT_WINDOW_MS = 3 * 60 * 1000;
+const AUTO_RETRY_CIRCUIT_FAILURE_THRESHOLD = 3;
+const AUTO_RETRY_CIRCUIT_COOLDOWN_SECONDS = 10 * 60;
+const TRANSIENT_AUTO_RETRY_ERROR_CODES = new Set([
+  "adapter_transient_error",
+  "process_lost",
+  "timeout",
+  "openclaw_gateway_wait_timeout",
+  "openclaw_gateway_wait_error",
+  "openclaw_gateway_wait_status_unexpected",
+]);
+const NON_RETRIABLE_AUTO_RETRY_ERROR_CODES = new Set([
+  "agent_not_found",
+  "missing_assigned_issue_context",
+  "cancelled",
+  "adapter_failed",
+  "orchestrator_only_specialist_execution_blocked",
+  "openclaw_gateway_url_missing",
+  "openclaw_gateway_url_invalid",
+  "openclaw_gateway_url_protocol",
+]);
+const runActivityTouchMs = new Map<string, number>();
 
 const POSTGRES_TEXT_NULL_BYTE = /\u0000/g;
 
@@ -154,18 +182,7 @@ function sanitizePostgresTextValue<T>(value: T): T {
 function toAny(v: any): any { return v; }
 
 function normalizePriorityRank(priority: string | null | undefined) {
-  switch ((priority ?? "").toLowerCase()) {
-    case "urgent":
-      return 4;
-    case "high":
-      return 3;
-    case "medium":
-      return 2;
-    case "low":
-      return 1;
-    default:
-      return 0;
-  }
+  return issuePriorityWeight(priority);
 }
 
 function isOperationsAutomationCommentBody(body: string | null | undefined): boolean {
@@ -1046,6 +1063,7 @@ const heartbeatRunListColumns = {
   retryPolicyJson: heartbeatRuns.retryPolicyJson,
   processLossRetryCount: heartbeatRuns.processLossRetryCount,
   contextSnapshot: heartbeatRuns.contextSnapshot,
+  lastActivityAt: heartbeatRuns.lastActivityAt,
   createdAt: heartbeatRuns.createdAt,
   updatedAt: heartbeatRuns.updatedAt,
 } as const;
@@ -1131,6 +1149,66 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function isOpenRoutineExecutionConflict(error: unknown) {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: string }).code === "23505" &&
+    "constraint" in error &&
+    (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq"
+  );
+}
+
+function runActivityReferenceTime(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "lastActivityAt" | "updatedAt" | "startedAt" | "createdAt">,
+) {
+  return run.lastActivityAt ?? run.updatedAt ?? run.startedAt ?? run.createdAt;
+}
+
+function classifyThrownHeartbeatErrorCode(error: unknown): string {
+  const thrown = (error && typeof error === "object" ? error : null) as
+    | { errorCode?: unknown; code?: unknown; message?: unknown }
+    | null;
+  const directErrorCode = readNonEmptyString(thrown?.errorCode);
+  if (directErrorCode) return directErrorCode;
+
+  const directCode = readNonEmptyString(thrown?.code);
+  if (directCode) {
+    const normalizedCode = directCode.toUpperCase();
+    if ([
+      "ECONNRESET",
+      "ETIMEDOUT",
+      "ECONNREFUSED",
+      "EAI_AGAIN",
+      "ENOTFOUND",
+      "ECONNABORTED",
+    ].includes(normalizedCode)) {
+      return "adapter_transient_error";
+    }
+    if (isTransientAutoRetryErrorCode(directCode) || isNonRetriableAutoRetryErrorCode(directCode)) {
+      return directCode;
+    }
+  }
+
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  if (
+    /socket hang up|econnreset|etimedout|timeout|timed out|eai_again|enotfound|econnrefused|temporarily unavailable|gateway not connected|502|503|504/.test(message)
+  ) {
+    return "adapter_transient_error";
+  }
+
+  return "adapter_failed";
+}
+
+function isTransientAutoRetryErrorCode(errorCode: string | null | undefined) {
+  return Boolean(errorCode && TRANSIENT_AUTO_RETRY_ERROR_CODES.has(errorCode));
+}
+
+function isNonRetriableAutoRetryErrorCode(errorCode: string | null | undefined) {
+  return Boolean(errorCode && NON_RETRIABLE_AUTO_RETRY_ERROR_CODES.has(errorCode));
 }
 
 function normalizeLedgerBillingType(value: unknown): BillingType {
@@ -2536,6 +2614,10 @@ export function heartbeatService(db: Db) {
       });
     }
 
+    if (updated && status !== "running" && status !== "queued") {
+      runActivityTouchMs.delete(runId);
+    }
+
     return updated;
   }
 
@@ -2552,6 +2634,170 @@ export function heartbeatService(db: Db) {
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
   }
 
+  async function touchRunActivity(runId: string, opts?: { force?: boolean; now?: Date }) {
+    const now = opts?.now ?? new Date();
+    const nowMs = now.getTime();
+    const previousTouchMs = runActivityTouchMs.get(runId) ?? 0;
+    if (!opts?.force && nowMs - previousTouchMs < RUN_ACTIVITY_TOUCH_INTERVAL_MS) {
+      return null;
+    }
+    runActivityTouchMs.set(runId, nowMs);
+    return db
+      .update(heartbeatRuns)
+      .set({
+        lastActivityAt: now,
+        updatedAt: now,
+      })
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function logRunRecoveryActivity(
+    run: typeof heartbeatRuns.$inferSelect,
+    action: string,
+    details?: Record<string, unknown>,
+  ) {
+    const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "heartbeat_recovery",
+      action,
+      entityType: issueId ? "issue" : "heartbeat_run",
+      entityId: issueId ?? run.id,
+      agentId: run.agentId,
+      runId: run.id,
+      details: {
+        ...(issueId ? { issueId } : {}),
+        ...details,
+      },
+    });
+  }
+
+  async function getRetryCircuit(companyId: string, adapterType: string) {
+    return db
+      .select()
+      .from(heartbeatRetryCircuits)
+      .where(and(eq(heartbeatRetryCircuits.companyId, companyId), eq(heartbeatRetryCircuits.adapterType, adapterType)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function closeRetryCircuitIfReady(companyId: string, adapterType: string, now: Date) {
+    const existing = await getRetryCircuit(companyId, adapterType);
+    if (!existing) return { closed: false };
+    const isExpired =
+      existing.state === "open" &&
+      existing.openUntil != null &&
+      new Date(existing.openUntil).getTime() <= now.getTime();
+    if (!isExpired) return { closed: false };
+
+    await db
+      .update(heartbeatRetryCircuits)
+      .set({
+        state: "closed",
+        openedAt: null,
+        openUntil: null,
+        nextProbeAt: null,
+        windowStartedAt: now,
+        windowTotal: 0,
+        windowFailures: 0,
+        consecutiveFailures: 0,
+        updatedAt: now,
+      })
+      .where(eq(heartbeatRetryCircuits.id, existing.id));
+
+    return { closed: existing.state !== "closed" || isExpired };
+  }
+
+  async function recordTransientFailureForRetryCircuit(
+    companyId: string,
+    adapterType: string,
+    errorCode: string | null,
+    now: Date,
+  ) {
+    const existing = await getRetryCircuit(companyId, adapterType);
+    const windowExpired =
+      !existing || now.getTime() - new Date(existing.windowStartedAt).getTime() > AUTO_RETRY_CIRCUIT_WINDOW_MS;
+    const baseWindowStartedAt = windowExpired ? now : new Date(existing.windowStartedAt);
+    const windowTotal = (windowExpired ? 0 : existing?.windowTotal ?? 0) + 1;
+    const windowFailures = (windowExpired ? 0 : existing?.windowFailures ?? 0) + 1;
+    const consecutiveFailures = (existing?.consecutiveFailures ?? 0) + 1;
+    const cooldownSeconds = existing?.cooldownSeconds ?? AUTO_RETRY_CIRCUIT_COOLDOWN_SECONDS;
+    const shouldOpen = windowFailures >= AUTO_RETRY_CIRCUIT_FAILURE_THRESHOLD;
+    const openUntil = shouldOpen ? new Date(now.getTime() + cooldownSeconds * 1000) : existing?.openUntil ?? null;
+
+    if (!existing) {
+      await db.insert(heartbeatRetryCircuits).values({
+        companyId,
+        adapterType,
+        state: shouldOpen ? "open" : "closed",
+        openedAt: shouldOpen ? now : null,
+        openUntil,
+        nextProbeAt: null,
+        windowStartedAt: baseWindowStartedAt,
+        windowTotal,
+        windowFailures,
+        consecutiveFailures,
+        cooldownSeconds,
+        lastFailureCode: errorCode,
+        lastFailureAt: now,
+        updatedAt: now,
+      });
+      return { isOpen: shouldOpen, openedNow: shouldOpen };
+    }
+
+    const openedNow = existing.state !== "open" && shouldOpen;
+    await db
+      .update(heartbeatRetryCircuits)
+      .set({
+        state: shouldOpen ? "open" : existing.state,
+        openedAt: shouldOpen ? (openedNow ? now : existing.openedAt ?? now) : existing.openedAt,
+        openUntil,
+        nextProbeAt: null,
+        windowStartedAt: baseWindowStartedAt,
+        windowTotal,
+        windowFailures,
+        consecutiveFailures,
+        cooldownSeconds,
+        lastFailureCode: errorCode,
+        lastFailureAt: now,
+        updatedAt: now,
+      })
+      .where(eq(heartbeatRetryCircuits.id, existing.id));
+
+    return { isOpen: shouldOpen || existing.state === "open", openedNow };
+  }
+
+  async function noteRetryCircuitSuccess(
+    companyId: string,
+    adapterType: string,
+    now: Date,
+  ) {
+    const existing = await getRetryCircuit(companyId, adapterType);
+    if (!existing) return { closed: false };
+
+    const closed = existing.state !== "closed" || (existing.consecutiveFailures ?? 0) > 0;
+    await db
+      .update(heartbeatRetryCircuits)
+      .set({
+        state: "closed",
+        openedAt: null,
+        openUntil: null,
+        nextProbeAt: null,
+        windowStartedAt: now,
+        windowTotal: 0,
+        windowFailures: 0,
+        consecutiveFailures: 0,
+        updatedAt: now,
+      })
+      .where(eq(heartbeatRetryCircuits.id, existing.id));
+
+    return { closed };
+  }
+
   async function appendRunEvent(
     run: typeof heartbeatRuns.$inferSelect,
     seq: number,
@@ -2562,6 +2808,7 @@ export function heartbeatService(db: Db) {
       color?: string;
       message?: string;
       payload?: Record<string, unknown>;
+      touchActivity?: boolean;
     },
   ) {
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
@@ -2600,6 +2847,10 @@ export function heartbeatService(db: Db) {
         payload: sanitizedPayload ?? null,
       },
     });
+
+    if (event.touchActivity) {
+      await touchRunActivity(run.id);
+    }
   }
 
   async function nextRunEventSeq(runId: string) {
@@ -2614,37 +2865,56 @@ export function heartbeatService(db: Db) {
     runId: string,
     meta: { pid: number; startedAt: string },
   ) {
+    const now = new Date();
     const startedAt = new Date(meta.startedAt);
-    return db
+    const updated = await db
       .update(heartbeatRuns)
       .set({
         processPid: meta.pid,
         processStartedAt: Number.isNaN(startedAt.getTime()) ? new Date() : startedAt,
-        updatedAt: new Date(),
+        lastActivityAt: now,
+        updatedAt: now,
       })
       .where(eq(heartbeatRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
+    if (updated) runActivityTouchMs.set(runId, now.getTime());
+    return updated;
   }
 
   async function clearDetachedRunWarning(runId: string) {
+    const current = await getRun(runId);
+    if (!current || current.status !== "running") return null;
+
+    const shouldClearWarning =
+      current.errorCode === DETACHED_PROCESS_ERROR_CODE || current.errorCode === PROCESS_SUSPECT_ERROR_CODE;
     const updated = await db
       .update(heartbeatRuns)
       .set({
-        error: null,
-        errorCode: null,
+        lastActivityAt: new Date(),
         updatedAt: new Date(),
+        ...(shouldClearWarning
+          ? {
+              error: null,
+              errorCode: null,
+            }
+          : {}),
       })
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.errorCode, DETACHED_PROCESS_ERROR_CODE)))
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
       .returning()
       .then((rows) => rows[0] ?? null);
     if (!updated) return null;
+    runActivityTouchMs.set(runId, Date.now());
+    if (!shouldClearWarning) return updated;
 
     await appendRunEvent(updated, await nextRunEventSeq(updated.id), {
       eventType: "lifecycle",
       stream: "system",
       level: "info",
-      message: "Detached child process reported activity; cleared detached warning",
+      message:
+        current.errorCode === PROCESS_SUSPECT_ERROR_CODE
+          ? "Recovered run activity after quiet-period warning; cleared suspect state"
+          : "Detached child process reported activity; cleared detached warning",
     });
     return updated;
   }
@@ -3087,20 +3357,106 @@ export function heartbeatService(db: Db) {
     return legacyRun;
   }
 
-  async function enqueueProcessLossRetry(
+  async function repairRoutineExecutionSiblingLocks(
+    tx: DbExecutor,
+    issue: {
+      id: string;
+      companyId: string;
+      originKind: string | null;
+      originId: string | null;
+    },
+    now = new Date(),
+  ) {
+    if (issue.originKind !== "routine_execution" || !issue.originId) return [];
+
+    const siblingRows = await tx
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, issue.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, issue.originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES as unknown as string[]),
+          isNull(issues.hiddenAt),
+          sql`${issues.executionRunId} is not null`,
+          sql`${issues.id} <> ${issue.id}`,
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt));
+
+    const activeSiblingIssueIds: string[] = [];
+    for (const sibling of siblingRows) {
+      const activeExecutionRun = await repairIssueExecutionLock(tx, sibling, now);
+      if (activeExecutionRun) activeSiblingIssueIds.push(sibling.id);
+    }
+
+    return activeSiblingIssueIds;
+  }
+
+  function classifyAutomaticRetry(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "status" | "errorCode" | "retryAttempt" | "processLossRetryCount">,
+  ) {
+    const errorCode = readNonEmptyString(run.errorCode) ?? (run.status === "timed_out" ? "timeout" : null);
+    if (errorCode === "process_lost") {
+      return {
+        eligible: true,
+        retryClass: "transient",
+        retryReason: errorCode,
+        delayMs: 0,
+      } as const;
+    }
+    if (isTransientAutoRetryErrorCode(errorCode)) {
+      return {
+        eligible: true,
+        retryClass: "transient",
+        retryReason: errorCode ?? "timeout",
+        delayMs: AUTO_RETRY_TIMEOUT_DELAY_MS,
+      } as const;
+    }
+    if (isNonRetriableAutoRetryErrorCode(errorCode)) {
+      return {
+        eligible: false,
+        retryClass: "non_retriable",
+        retryReason: errorCode ?? "non_retriable",
+        delayMs: 0,
+      } as const;
+    }
+    return {
+      eligible: false,
+      retryClass: "non_retriable",
+      retryReason: errorCode ?? "unclassified_failure",
+      delayMs: 0,
+    } as const;
+  }
+
+  async function enqueueAutomaticRetry(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
     now: Date,
+    input: {
+      retryReason: string;
+      retryClass: string;
+      delayMs: number;
+    },
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const retryGroupId = run.retryGroupId ?? run.id;
+    const retryAttempt = (run.retryAttempt ?? 0) + 1;
+    const scheduledFor = new Date(now.getTime() + input.delayMs);
     const retryContextSnapshot = {
       ...contextSnapshot,
       retryOfRunId: run.id,
-      wakeReason: "process_lost_retry",
-      retryReason: "process_lost",
+      wakeReason: "auto_retry",
+      retryReason: input.retryReason,
     };
 
     const queued = await db.transaction(async (tx) => {
@@ -3111,14 +3467,18 @@ export function heartbeatService(db: Db) {
           agentId: run.agentId,
           source: "automation",
           triggerDetail: "system",
-          reason: "process_lost_retry",
+          reason: "auto_retry",
           payload: {
             ...(issueId ? { issueId } : {}),
             retryOfRunId: run.id,
+            retryReason: input.retryReason,
           },
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
+          scheduledFor,
+          retryGroupId,
+          retryAttempt,
           updatedAt: now,
         })
         .returning()
@@ -3136,7 +3496,20 @@ export function heartbeatService(db: Db) {
           contextSnapshot: retryContextSnapshot,
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
-          processLossRetryCount: (run.processLossRetryCount ?? 0) + 1,
+          retryGroupId,
+          retryAttempt,
+          retryState: "scheduled",
+          retryClass: input.retryClass,
+          retryScheduledFor: scheduledFor,
+          retryLastDecision: "auto_retry_scheduled",
+          retryPolicyJson: {
+            delayMs: input.delayMs,
+            retryReason: input.retryReason,
+          },
+          processLossRetryCount:
+            input.retryReason === "process_lost"
+              ? (run.processLossRetryCount ?? 0) + 1
+              : (run.processLossRetryCount ?? 0),
           updatedAt: now,
         })
         .returning()
@@ -3181,13 +3554,133 @@ export function heartbeatService(db: Db) {
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: "Queued automatic retry after orphaned child process was confirmed dead",
+      message:
+        input.retryReason === "process_lost"
+          ? "Queued automatic retry after orphaned child process was confirmed dead"
+          : "Queued automatic retry after transient heartbeat failure",
       payload: {
         retryOfRunId: run.id,
+        retryReason: input.retryReason,
+        retryScheduledFor: scheduledFor.toISOString(),
       },
     });
 
     return queued;
+  }
+
+  async function planAutomaticRetry(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    now: Date,
+  ) {
+    const classification = classifyAutomaticRetry(run);
+
+    if (!classification.eligible) {
+      const finalized = await setRunStatus(run.id, run.status, {
+        retryState: "non_retriable",
+        retryClass: classification.retryClass,
+        retryBlockedReason: classification.retryReason,
+        retryLastDecision: "auto_retry_not_applicable",
+        retryScheduledFor: null,
+      });
+      const effectiveRun = finalized ?? run;
+      await appendRunEvent(effectiveRun, await nextRunEventSeq(effectiveRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: `Automatic recovery skipped: ${classification.retryReason}`,
+      });
+      await logRunRecoveryActivity(effectiveRun, "heartbeat.recovery_non_retriable", {
+        reason: classification.retryReason,
+      });
+      return { outcome: "non_retriable" as const, queuedRun: null, updatedRun: effectiveRun };
+    }
+
+    const closedCircuit = await closeRetryCircuitIfReady(run.companyId, agent.adapterType, now);
+    if (closedCircuit.closed) {
+      await logRunRecoveryActivity(run, "heartbeat.circuit_closed", {
+        adapterType: agent.adapterType,
+      });
+    }
+
+    const circuitResult = await recordTransientFailureForRetryCircuit(
+      run.companyId,
+      agent.adapterType,
+      readNonEmptyString(run.errorCode),
+      now,
+    );
+    if (circuitResult.openedNow) {
+      await logRunRecoveryActivity(run, "heartbeat.circuit_opened", {
+        adapterType: agent.adapterType,
+      });
+    }
+
+    if (circuitResult.isOpen) {
+      const blocked = await setRunStatus(run.id, run.status, {
+        retryState: "blocked",
+        retryClass: classification.retryClass,
+        retryBlockedReason: "adapter_retry_circuit_open",
+        retryLastDecision: "blocked_by_adapter_circuit",
+        retryScheduledFor: null,
+      });
+      const effectiveRun = blocked ?? run;
+      await appendRunEvent(effectiveRun, await nextRunEventSeq(effectiveRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Automatic recovery blocked because the adapter retry circuit is open",
+      });
+      await logRunRecoveryActivity(effectiveRun, "heartbeat.recovery_blocked", {
+        reason: "adapter_retry_circuit_open",
+        adapterType: agent.adapterType,
+      });
+      return { outcome: "blocked" as const, queuedRun: null, updatedRun: effectiveRun };
+    }
+
+    if ((run.retryAttempt ?? 0) >= 1 || (classification.retryReason === "process_lost" && (run.processLossRetryCount ?? 0) >= 1)) {
+      const exhausted = await setRunStatus(run.id, run.status, {
+        retryState: "exhausted",
+        retryClass: classification.retryClass,
+        retryExhaustedAt: now,
+        retryLastDecision: "auto_retry_exhausted",
+        retryScheduledFor: null,
+      });
+      const effectiveRun = exhausted ?? run;
+      await appendRunEvent(effectiveRun, await nextRunEventSeq(effectiveRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Automatic recovery exhausted after the same-issue retry was already used",
+      });
+      await logRunRecoveryActivity(effectiveRun, "heartbeat.recovery_exhausted", {
+        reason: classification.retryReason,
+      });
+      return { outcome: "exhausted" as const, queuedRun: null, updatedRun: effectiveRun };
+    }
+
+    const queuedRun = await enqueueAutomaticRetry(run, agent, now, classification);
+    const scheduled = await setRunStatus(run.id, run.status, {
+      retryState: "scheduled",
+      retryClass: classification.retryClass,
+      retryScheduledFor: queuedRun.retryScheduledFor ?? now,
+      retryBlockedReason: null,
+      retryExhaustedAt: null,
+      retryLastDecision: "auto_retry_scheduled",
+      retryPolicyJson: {
+        delayMs: classification.delayMs,
+        retryReason: classification.retryReason,
+      },
+    });
+    const effectiveRun = scheduled ?? run;
+    await logRunRecoveryActivity(effectiveRun, "heartbeat.recovery_queued", {
+      retryRunId: queuedRun.id,
+      retryAttempt: queuedRun.retryAttempt,
+      retryScheduledFor: queuedRun.retryScheduledFor
+        ? new Date(queuedRun.retryScheduledFor).toISOString()
+        : null,
+      reason: classification.retryReason,
+    });
+    return { outcome: "retry_queued" as const, queuedRun, updatedRun: effectiveRun };
   }
 
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
@@ -3211,8 +3704,28 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
+  async function hasLiveTimerRun(agentId: string) {
+    const existing = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.invocationSource, "timer"),
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    return Boolean(existing);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
+    if (run.retryScheduledFor && new Date(run.retryScheduledFor).getTime() > Date.now()) {
+      return null;
+    }
     const agent = await getAgent(run.agentId);
     if (!agent) {
       await cancelRunInternal(run.id, "Cancelled because the agent no longer exists", {
@@ -3238,6 +3751,16 @@ export function heartbeatService(db: Db) {
       await cancelRunInternal(run.id, "Cancelled because the company is archived", {
         skipStartNextQueuedRun: true,
       });
+      return null;
+    }
+
+    const now = new Date();
+    await closeRetryCircuitIfReady(run.companyId, agent.adapterType, now);
+    const retryCircuit = await getRetryCircuit(run.companyId, agent.adapterType);
+    if (
+      retryCircuit?.state === "open" &&
+      (!retryCircuit.openUntil || new Date(retryCircuit.openUntil).getTime() > now.getTime())
+    ) {
       return null;
     }
 
@@ -3268,6 +3791,9 @@ export function heartbeatService(db: Db) {
       .set({
         status: "running",
         startedAt: run.startedAt ?? claimedAt,
+        lastActivityAt: claimedAt,
+        retryState: run.retryAttempt > 0 ? "retrying" : run.retryState,
+        retryScheduledFor: null,
         updatedAt: claimedAt,
       })
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
@@ -3298,21 +3824,62 @@ export function heartbeatService(db: Db) {
     const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
     if (claimedIssueId) {
       const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
+      const boundIssue = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select id from issues where id = ${claimedIssueId} and company_id = ${claimed.companyId} for update`,
         );
+
+        const issue = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            executionRunId: issues.executionRunId,
+            executionAgentNameKey: issues.executionAgentNameKey,
+            originKind: issues.originKind,
+            originId: issues.originId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, claimedIssueId), eq(issues.companyId, claimed.companyId)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!issue) return false;
+
+        const activeSiblingIssueIds = await repairRoutineExecutionSiblingLocks(tx, issue, claimedAt);
+        if (activeSiblingIssueIds.length > 0) return false;
+
+        try {
+          const updatedIssue = await tx
+            .update(issues)
+            .set({
+              executionRunId: claimed.id,
+              executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+              executionLockedAt: claimedAt,
+              updatedAt: claimedAt,
+            })
+            .where(
+              and(
+                eq(issues.id, claimedIssueId),
+                eq(issues.companyId, claimed.companyId),
+                or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+              ),
+            )
+            .returning({ id: issues.id })
+            .then((rows) => rows[0] ?? null);
+          return Boolean(updatedIssue);
+        } catch (error) {
+          if (isOpenRoutineExecutionConflict(error)) return false;
+          throw error;
+        }
+      });
+
+      if (!boundIssue) {
+        await cancelRunInternal(
+          claimed.id,
+          "Cancelled because another open routine execution issue is already active",
+          { skipStartNextQueuedRun: true },
+        );
+        return null;
+      }
     }
 
     return claimed;
@@ -3371,8 +3938,9 @@ export function heartbeatService(db: Db) {
     }
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; suspectThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const suspectThresholdMs = opts?.suspectThresholdMs ?? (staleThresholdMs > 0 ? DEFAULT_RUN_SUSPECT_THRESHOLD_MS : 0);
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -3390,10 +3958,38 @@ export function heartbeatService(db: Db) {
     for (const { run, adapterType } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
+      const activityAgeMs = now.getTime() - runActivityReferenceTime(run).getTime();
+
+      if (
+        staleThresholdMs > 0 &&
+        suspectThresholdMs > 0 &&
+        activityAgeMs >= suspectThresholdMs &&
+        activityAgeMs < staleThresholdMs
+      ) {
+        if (run.errorCode !== PROCESS_SUSPECT_ERROR_CODE) {
+          const suspectMessage = `Run has been quiet for ${Math.floor(activityAgeMs / 1000)}s; waiting for lease expiry before recovery`;
+          const suspectedRun = await setRunStatus(run.id, "running", {
+            error: suspectMessage,
+            errorCode: PROCESS_SUSPECT_ERROR_CODE,
+          });
+          if (suspectedRun) {
+            await appendRunEvent(suspectedRun, await nextRunEventSeq(suspectedRun.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: suspectMessage,
+            });
+            await logRunRecoveryActivity(suspectedRun, "heartbeat.run_suspect", {
+              staleForMs: activityAgeMs,
+            });
+          }
+        }
+        continue;
+      }
+
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
-        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
-        if (now.getTime() - refTime < staleThresholdMs) continue;
+        if (activityAgeMs < staleThresholdMs) continue;
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
@@ -3419,43 +4015,59 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      const shouldRetry = tracksLocalChild && (run.processLossRetryCount ?? 0) < 1;
+      const shouldRetry = (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = run.processPid
         ? `Process lost -- child pid ${run.processPid} is no longer running`
         : "Process lost -- server may have restarted";
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: baseMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
+      let recoveryOutcome: "retry_queued" | "blocked" | "exhausted" | "non_retriable" | "skipped" = "skipped";
       if (shouldRetry) {
         const agent = await getAgent(run.agentId);
         if (agent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
+          const recovery = await planAutomaticRetry(finalizedRun, agent, now);
+          recoveryOutcome = recovery.outcome;
+          retriedRun = recovery.queuedRun;
+          finalizedRun = recovery.updatedRun;
         }
-      } else {
+      }
+      if (recoveryOutcome !== "retry_queued") {
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
+      await logRunRecoveryActivity(finalizedRun, "heartbeat.run_lost", {
+        staleForMs: activityAgeMs,
+        recoveryOutcome,
+        retryRunId: retriedRun?.id ?? null,
+      });
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
         eventType: "lifecycle",
         stream: "system",
         level: "error",
-        message: shouldRetry
-          ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : baseMessage,
+        message:
+          recoveryOutcome === "retry_queued"
+            ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
+            : recoveryOutcome === "blocked"
+              ? `${baseMessage}; automatic recovery blocked`
+              : recoveryOutcome === "exhausted"
+                ? `${baseMessage}; automatic recovery exhausted`
+                : baseMessage,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          recoveryOutcome,
         },
       });
 
@@ -3618,8 +4230,15 @@ export function heartbeatService(db: Db) {
       const queuedRuns = await db
         .select()
         .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            eq(heartbeatRuns.status, "queued"),
+            sql`(${heartbeatRuns.retryScheduledFor} is null or ${heartbeatRuns.retryScheduledFor} <= now())`,
+          ),
+        )
         .orderBy(
+          asc(sql`coalesce(${heartbeatRuns.retryScheduledFor}, ${heartbeatRuns.createdAt})`),
           desc(
             sql<number>`case
               when (${heartbeatRuns.contextSnapshot} ->> 'priority') ~ '^-?[0-9]+$'
@@ -3669,6 +4288,8 @@ export function heartbeatService(db: Db) {
           id: issues.id,
           status: issues.status,
           priority: issues.priority,
+          originKind: issues.originKind,
+          originId: issues.originId,
           identifier: issues.identifier,
           title: issues.title,
           description: issues.description,
@@ -3696,6 +4317,8 @@ export function heartbeatService(db: Db) {
           id: issues.id,
           status: issues.status,
           priority: issues.priority,
+          originKind: issues.originKind,
+          originId: issues.originId,
           identifier: issues.identifier,
           title: issues.title,
           description: issues.description,
@@ -3739,6 +4362,93 @@ export function heartbeatService(db: Db) {
         const recoveredSourceIssueIds = new Set(recoveredSourceRows.map((row) => row.issueId));
         openAssignedIssues = openAssignedIssues.filter((issue) => !recoveredSourceIssueIds.has(issue.id));
         openUnassignedIssues = openUnassignedIssues.filter((issue) => !recoveredSourceIssueIds.has(issue.id));
+      }
+    }
+    const routineOriginIds = Array.from(new Set(
+      [...openAssignedIssues, ...openUnassignedIssues]
+        .filter((issue) => issue.originKind === "routine_execution" && Boolean(issue.originId))
+        .map((issue) => issue.originId)
+        .filter((originId): originId is string => Boolean(originId)),
+    ));
+    if (routineOriginIds.length > 0) {
+      const liveRoutineIssueByOriginId = new Map<string, string>();
+      const executionBoundRoutineRows = await db
+        .selectDistinctOn([issues.originId], {
+          originId: issues.originId,
+          issueId: issues.id,
+        })
+        .from(issues)
+        .innerJoin(
+          heartbeatRuns,
+          and(
+            eq(heartbeatRuns.id, issues.executionRunId),
+            inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES as unknown as string[]),
+          ),
+        )
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "routine_execution"),
+            inArray(issues.originId, routineOriginIds),
+            inArray(issues.status, OPEN_ISSUE_STATUSES as unknown as string[]),
+            sql`${issues.hiddenAt} is null`,
+          ),
+        )
+        .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
+      for (const row of executionBoundRoutineRows) {
+        if (!row.originId) continue;
+        liveRoutineIssueByOriginId.set(row.originId, row.issueId);
+      }
+
+      const missingRoutineOriginIds = routineOriginIds.filter((originId) => !liveRoutineIssueByOriginId.has(originId));
+      if (missingRoutineOriginIds.length > 0) {
+        const legacyRoutineRows = await db
+          .selectDistinctOn([issues.originId], {
+            originId: issues.originId,
+            issueId: issues.id,
+          })
+          .from(issues)
+          .innerJoin(
+            heartbeatRuns,
+            and(
+              eq(heartbeatRuns.companyId, issues.companyId),
+              inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES as unknown as string[]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${issues.id} as text)`,
+            ),
+          )
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              eq(issues.originKind, "routine_execution"),
+              inArray(issues.originId, missingRoutineOriginIds),
+              inArray(issues.status, OPEN_ISSUE_STATUSES as unknown as string[]),
+              sql`${issues.hiddenAt} is null`,
+            ),
+          )
+          .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
+        for (const row of legacyRoutineRows) {
+          if (!row.originId) continue;
+          liveRoutineIssueByOriginId.set(row.originId, row.issueId);
+        }
+      }
+
+      if (liveRoutineIssueByOriginId.size > 0) {
+        const staleRoutineIssueIds = new Set(
+          [...openAssignedIssues, ...openUnassignedIssues]
+            .filter((issue) => {
+              const originId = issue.originId;
+              if (issue.originKind !== "routine_execution" || !originId) return false;
+              return (
+                liveRoutineIssueByOriginId.has(originId) &&
+                liveRoutineIssueByOriginId.get(originId) !== issue.id
+              );
+            })
+            .map((issue) => issue.id),
+        );
+        if (staleRoutineIssueIds.size > 0) {
+          openAssignedIssues = openAssignedIssues.filter((issue) => !staleRoutineIssueIds.has(issue.id));
+          openUnassignedIssues = openUnassignedIssues.filter((issue) => !staleRoutineIssueIds.has(issue.id));
+        }
       }
     }
     const issueIds = openAssignedIssues.map((issue) => issue.id);
@@ -4008,6 +4718,8 @@ export function heartbeatService(db: Db) {
           id: base.id,
           status: patch.status ?? base.status,
           priority: base.priority,
+          originKind: base.originKind,
+          originId: base.originId,
           identifier: base.identifier,
           title: base.title,
           description: base.description,
@@ -4030,6 +4742,8 @@ export function heartbeatService(db: Db) {
         id: base.id,
         status: nextStatus,
         priority: base.priority,
+        originKind: base.originKind,
+        originId: base.originId,
         identifier: base.identifier,
         title: base.title,
         description: base.description,
@@ -4141,7 +4855,50 @@ export function heartbeatService(db: Db) {
         ownershipCorrectedWakeDeferredCount += 1;
       }
     };
+    const updateOwnedIssueWithActivity = async (
+      issue: (typeof openAssignedIssues)[number],
+      patch: {
+        assigneeAgentId: string;
+        status?: string;
+      },
+    ) => {
+      const updated = await issuesSvc.update(issue.id, {
+        assigneeAgentId: patch.assigneeAgentId,
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+        actorAgentId: input.agent.id,
+      });
+      if (!updated) return updated;
 
+      const previous: Record<string, unknown> = {};
+      const details: Record<string, unknown> = {
+        identifier: updated.identifier,
+        source: "operations_heartbeat",
+      };
+      if (patch.assigneeAgentId !== issue.assigneeAgentId) {
+        previous.assigneeAgentId = issue.assigneeAgentId;
+        details.assigneeAgentId = updated.assigneeAgentId;
+      }
+      if (patch.status !== undefined && patch.status !== issue.status) {
+        previous.status = issue.status;
+        details.status = updated.status;
+      }
+      if (Object.keys(previous).length > 0) {
+        details._previous = previous;
+        await logActivity(db, {
+          companyId,
+          actorType: "agent",
+          actorId: input.agent.id,
+          agentId: input.agent.id,
+          runId: input.run.id,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: updated.id,
+          details,
+        });
+      }
+
+      return updated;
+    };
     for (const issue of [...openAssignedIssues]) {
       if (!issue.assigneeAgentId) continue;
       if (issue.assigneeAgentId === input.agent.id) continue;
@@ -4174,10 +4931,9 @@ export function heartbeatService(db: Db) {
         if (!nextOwner) continue;
         const nextStatus = issue.status === "in_progress" ? "todo" : issue.status;
         try {
-          await issuesSvc.update(issue.id, {
+          await updateOwnedIssueWithActivity(issue, {
             assigneeAgentId: nextOwner.id,
             ...(nextStatus !== issue.status ? { status: nextStatus } : {}),
-            actorAgentId: input.agent.id,
           });
           const updatedIssue = syncLocalAssignedIssue(issue.id, {
             assigneeAgentId: nextOwner.id,
@@ -4209,10 +4965,9 @@ export function heartbeatService(db: Db) {
       ) {
         const nextStatus = issue.status === "in_progress" ? "todo" : issue.status;
         try {
-          await issuesSvc.update(issue.id, {
+          await updateOwnedIssueWithActivity(issue, {
             assigneeAgentId: bestFreeSlotCandidate.id,
             ...(nextStatus !== issue.status ? { status: nextStatus } : {}),
-            actorAgentId: input.agent.id,
           });
           const updatedIssue = syncLocalAssignedIssue(issue.id, {
             assigneeAgentId: bestFreeSlotCandidate.id,
@@ -4244,10 +4999,9 @@ export function heartbeatService(db: Db) {
           : (bestEligibleCandidate?.id ?? issue.assigneeAgentId);
         if (!nextOwnerId) continue;
         try {
-          await issuesSvc.update(issue.id, {
+          await updateOwnedIssueWithActivity(issue, {
             assigneeAgentId: nextOwnerId,
             status: "todo",
-            actorAgentId: input.agent.id,
           });
           const updatedIssue = syncLocalAssignedIssue(issue.id, {
             assigneeAgentId: nextOwnerId,
@@ -5384,6 +6138,7 @@ export function heartbeatService(db: Db) {
             truncated: payloadChunk.length !== sanitizedChunk.length,
           },
         });
+        await touchRunActivity(run.id);
       };
       await onLog("stdout", `[context] wake_reason=${wakeReason ?? ""}\n`);
       if (issueId) {
@@ -5455,6 +6210,7 @@ export function heartbeatService(db: Db) {
           level: "info",
           message: "adapter invocation",
           payload: meta as unknown as Record<string, unknown>,
+          touchActivity: true,
         });
       };
 
@@ -5639,7 +6395,7 @@ export function heartbeatService(db: Db) {
         error: adapterResult.errorMessage ?? null,
       });
 
-      const finalizedRun = await getRun(run.id);
+      let finalizedRun = await getRun(run.id);
       if (finalizedRun) {
         await appendRunEvent(finalizedRun, seq++, {
           eventType: "lifecycle",
@@ -5653,7 +6409,10 @@ export function heartbeatService(db: Db) {
         });
         if (issueId && outcome === "succeeded") {
           try {
-            const issueComment = buildHeartbeatRunIssueComment(adapterResult.resultJson ?? null);
+            const existingRunComment = await findRunIssueComment(finalizedRun.id, finalizedRun.companyId, issueId);
+            const issueComment = buildHeartbeatRunIssueComment(adapterResult.resultJson ?? null, {
+              hasExistingRunComment: Boolean(existingRunComment),
+            });
             if (issueComment) {
               await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: finalizedRun.id });
             }
@@ -5662,6 +6421,26 @@ export function heartbeatService(db: Db) {
               "stderr",
               `[paperclip] Failed to post run summary comment: ${err instanceof Error ? err.message : String(err)}\n`,
             );
+          }
+        }
+        if (outcome === "succeeded") {
+          const circuit = await noteRetryCircuitSuccess(agent.companyId, agent.adapterType, new Date());
+          if (circuit.closed) {
+            await logRunRecoveryActivity(finalizedRun, "heartbeat.circuit_closed", {
+              adapterType: agent.adapterType,
+            });
+          }
+          if ((finalizedRun.retryAttempt ?? 0) > 0) {
+            finalizedRun =
+              await setRunStatus(finalizedRun.id, finalizedRun.status, {
+                retryState: "recovered",
+                retryBlockedReason: null,
+                retryScheduledFor: null,
+                retryLastDecision: "auto_retry_recovered",
+              }) ?? finalizedRun;
+            await logRunRecoveryActivity(finalizedRun, "heartbeat.recovery_recovered", {
+              retryAttempt: finalizedRun.retryAttempt,
+            });
           }
         }
         await finalizeIssueCommentPolicy(finalizedRun, agent);
@@ -5698,6 +6477,7 @@ export function heartbeatService(db: Db) {
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
       );
+      const errorCode = classifyThrownHeartbeatErrorCode(err);
       logger.error({ err, runId }, "heartbeat execution failed");
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -5711,7 +6491,7 @@ export function heartbeatService(db: Db) {
 
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
-        errorCode: "adapter_failed",
+        errorCode,
         finishedAt: new Date(),
         stdoutExcerpt,
         stderrExcerpt,
@@ -5731,10 +6511,14 @@ export function heartbeatService(db: Db) {
           level: "error",
           message,
         });
-        await finalizeIssueCommentPolicy(failedRun, agent);
-        await releaseIssueExecutionAndPromote(failedRun);
+        const recovery = await planAutomaticRetry(failedRun, agent, new Date());
+        const effectiveFailedRun = recovery.updatedRun;
+        await finalizeIssueCommentPolicy(effectiveFailedRun, agent);
+        if (recovery.outcome !== "retry_queued") {
+          await releaseIssueExecutionAndPromote(effectiveFailedRun);
+        }
 
-        await updateRuntimeState(agent, failedRun, {
+        await updateRuntimeState(agent, effectiveFailedRun, {
           exitCode: null,
           signal: null,
           timedOut: false,
@@ -5751,7 +6535,7 @@ export function heartbeatService(db: Db) {
             taskKey,
             sessionParamsJson: previousSessionParams,
             sessionDisplayId: previousSessionDisplayId,
-            lastRunId: failedRun.id,
+            lastRunId: effectiveFailedRun.id,
             lastError: message,
           });
         }
@@ -5763,10 +6547,11 @@ export function heartbeatService(db: Db) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const errorCode = classifyThrownHeartbeatErrorCode(outerErr);
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           await setRunStatus(runId, "failed", {
             error: message,
-            errorCode: "adapter_failed",
+            errorCode,
             finishedAt: new Date(),
           }).catch(() => undefined);
           await setWakeupStatus(run.wakeupRequestId, "failed", {
@@ -5785,9 +6570,15 @@ export function heartbeatService(db: Db) {
             }).catch(() => undefined);
             const failedAgent = await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
-              await finalizeIssueCommentPolicy(failedRun, failedAgent).catch(() => undefined);
+              const recovery = await planAutomaticRetry(failedRun, failedAgent, new Date()).catch(() => null);
+              const effectiveFailedRun = recovery?.updatedRun ?? failedRun;
+              await finalizeIssueCommentPolicy(effectiveFailedRun, failedAgent).catch(() => undefined);
+              if (recovery?.outcome !== "retry_queued") {
+                await releaseIssueExecutionAndPromote(effectiveFailedRun).catch(() => undefined);
+              }
+            } else {
+              await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
             }
-            await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
@@ -6868,6 +7659,13 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+        // Timer heartbeats are periodic nudges, not catch-up jobs. Keep at most
+        // one outstanding timer run per agent so downtime or long executions do
+        // not accumulate an unbounded queued backlog.
+        if (await hasLiveTimerRun(agent.id)) {
+          skipped += 1;
+          continue;
+        }
 
         let run = null;
         try {

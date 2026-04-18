@@ -977,7 +977,8 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   }
 
   const claimedPorts = collectClaimedWorktreePorts(paths.homeDir, paths.instanceId, paths.cwd);
-  const preferredServerPort = opts.serverPort ?? ((sourceConfig?.server.port ?? 3100) + 1);
+  const preferredSourceServerPort = Math.max(sourceConfig?.server.port ?? 3102, 3102);
+  const preferredServerPort = opts.serverPort ?? (preferredSourceServerPort + 1);
   const serverPort = await findAvailablePort(preferredServerPort, claimedPorts.serverPorts);
   const preferredDbPort = opts.dbPort ?? ((sourceConfig?.database.embeddedPostgresPort ?? 54329) + 1);
   const databasePort = await findAvailablePort(

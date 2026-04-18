@@ -39,7 +39,7 @@ This plan is now **gateway-only**. PrivateClip supports OpenClaw through `opencl
 Recommended fields:
 ```json
 {
-  "paperclipApiUrl": "http://host.docker.internal:3100",
+  "paperclipApiUrl": "http://host.docker.internal:3102",
   "waitTimeoutMs": 120000,
   "sessionKeyStrategy": "issue",
   "role": "operator",
@@ -67,7 +67,7 @@ OPENCLAW_RESET_STATE=1 OPENCLAW_BUILD=1 ./scripts/smoke/openclaw-docker-ui.sh
 ### 1) Start PrivateClip
 ```bash
 pnpm dev --tailscale-auth
-curl -fsS http://127.0.0.1:3100/api/health
+curl -fsS http://127.0.0.1:3102/api/health
 ```
 
 ### 2) Invite + join + approval

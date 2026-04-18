@@ -190,14 +190,14 @@ function inferApiBaseFromConfig(configPath?: string): string {
   if (!Number.isFinite(port) || port <= 0) {
     try {
       const config = readConfig(configPath);
-      port = Number(config?.server?.port ?? 3100);
+      port = Number(config?.server?.port ?? 3102);
     } catch {
-      port = 3100;
+      port = 3102;
     }
   }
 
   if (!Number.isFinite(port) || port <= 0) {
-    port = 3100;
+    port = 3102;
   }
 
   return `http://${envHost}:${port}`;

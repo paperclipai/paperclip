@@ -212,6 +212,15 @@ function runStatusClass(status: string) {
 
 function CopyMarkdownButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const copiedResetTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => {
+    return () => {
+      if (copiedResetTimeoutRef.current) {
+        clearTimeout(copiedResetTimeoutRef.current);
+      }
+    };
+  }, []);
+
   return (
     <button
       type="button"
@@ -220,7 +229,10 @@ function CopyMarkdownButton({ text }: { text: string }) {
       onClick={() => {
         navigator.clipboard.writeText(text).then(() => {
           setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
+          if (copiedResetTimeoutRef.current) {
+            clearTimeout(copiedResetTimeoutRef.current);
+          }
+          copiedResetTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
         });
       }}
     >

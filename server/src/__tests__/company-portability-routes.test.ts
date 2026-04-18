@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCompanyService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -93,13 +93,11 @@ function createApp(actor: Record<string, unknown>) {
 }
 
 describe("company portability routes", () => {
-  beforeAll(async () => {
+  beforeEach(async () => {
+    vi.resetAllMocks();
     vi.resetModules();
     ({ companyRoutes: companyRoutesFactory } = await import("../routes/companies.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-  });
-
-  beforeEach(() => {
     mockAgentService.getById.mockReset();
     mockCompanyPortabilityService.exportBundle.mockReset();
     mockCompanyPortabilityService.previewExport.mockReset();

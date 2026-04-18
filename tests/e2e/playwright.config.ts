@@ -1,7 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
 // Use a dedicated port so e2e tests always start their own server in local_trusted mode,
-// even when the dev server is running on :3100 in authenticated mode.
+// even when the dev server is running on :3102 in authenticated mode.
 const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 

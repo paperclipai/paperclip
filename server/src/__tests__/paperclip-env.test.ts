@@ -25,6 +25,18 @@ afterEach(() => {
 });
 
 describe("buildPaperclipEnv", () => {
+  it("falls back to the default Orchestrero port when no runtime port is set", () => {
+    delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_LISTEN_HOST;
+    delete process.env.PAPERCLIP_LISTEN_PORT;
+    delete process.env.HOST;
+    delete process.env.PORT;
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3102");
+  });
+
   it("prefers an explicit PAPERCLIP_API_URL", () => {
     process.env.PAPERCLIP_API_URL = "http://localhost:4100";
     process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";

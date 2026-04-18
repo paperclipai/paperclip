@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { issueRoutes } from "../routes/issues.js";
-import { errorHandler } from "../middleware/index.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const agentId = "22222222-2222-4222-8222-222222222222";
@@ -21,6 +19,9 @@ const mockProjectService = vi.hoisted(() => ({
 const mockExecutionGateService = vi.hoisted(() => ({
   getExecutionBlock: vi.fn(),
 }));
+
+let issueRoutesFactory!: typeof import("../routes/issues.js").issueRoutes;
+let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
@@ -101,8 +102,8 @@ function createApp(actorType: "board" | "agent") {
         };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
-  app.use(errorHandler);
+  app.use("/api", issueRoutesFactory({} as any, {} as any));
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
@@ -125,7 +126,11 @@ function makeIssue() {
 }
 
 describe("issue pause guards", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    vi.resetModules();
+    ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.assertCheckoutOwner.mockResolvedValue({

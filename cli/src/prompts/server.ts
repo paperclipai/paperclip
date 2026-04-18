@@ -74,8 +74,8 @@ export async function promptServer(opts?: {
 
   const portStr = await p.text({
     message: "Server port",
-    defaultValue: String(currentServer?.port ?? 3100),
-    placeholder: "3100",
+    defaultValue: String(currentServer?.port ?? 3102),
+    placeholder: "3102",
     validate: (val) => {
       const n = Number(val);
       if (isNaN(n) || n < 1 || n > 65535 || !Number.isInteger(n)) {
@@ -112,7 +112,7 @@ export async function promptServer(opts?: {
     allowedHostnames = parseHostnameCsv(allowedHostnamesInput);
   }
 
-  const port = Number(portStr) || 3100;
+  const port = Number(portStr) || 3102;
   let auth: AuthConfig = { baseUrlMode: "auto", disableSignUp: false };
   if (deploymentMode === "authenticated" && exposure === "public") {
     const urlInput = await p.text({

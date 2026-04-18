@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useState } from "react";
+import { ChangeEvent, useEffect, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
@@ -48,6 +48,7 @@ export function CompanySettings() {
   const [brandColor, setBrandColor] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
+  const snippetCopyTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Sync local state from selected company
   useEffect(() => {
@@ -171,7 +172,10 @@ export function CompanySettings() {
         await navigator.clipboard.writeText(snippet);
         setSnippetCopied(true);
         setSnippetCopyDelightId((prev) => prev + 1);
-        setTimeout(() => setSnippetCopied(false), 2000);
+        if (snippetCopyTimeoutRef.current) {
+          clearTimeout(snippetCopyTimeoutRef.current);
+        }
+        snippetCopyTimeoutRef.current = setTimeout(() => setSnippetCopied(false), 2000);
       } catch {
         /* clipboard may not be available */
       }
@@ -256,6 +260,14 @@ export function CompanySettings() {
       { label: "Settings" }
     ]);
   }, [setBreadcrumbs, selectedCompany?.name]);
+
+  useEffect(() => {
+    return () => {
+      if (snippetCopyTimeoutRef.current) {
+        clearTimeout(snippetCopyTimeoutRef.current);
+      }
+    };
+  }, []);
 
   if (!selectedCompany) {
     return (
@@ -611,7 +623,10 @@ export function CompanySettings() {
                         await navigator.clipboard.writeText(inviteSnippet);
                         setSnippetCopied(true);
                         setSnippetCopyDelightId((prev) => prev + 1);
-                        setTimeout(() => setSnippetCopied(false), 2000);
+                        if (snippetCopyTimeoutRef.current) {
+                          clearTimeout(snippetCopyTimeoutRef.current);
+                        }
+                        snippetCopyTimeoutRef.current = setTimeout(() => setSnippetCopied(false), 2000);
                       } catch {
                         /* clipboard may not be available */
                       }
@@ -725,7 +740,7 @@ Suggested steps:
 - choose a hostname that resolves to the Orchestrero host from your runtime
 - run: pnpm paperclipai allowed-hostname <host>
 - restart Orchestrero
-- verify with: curl -fsS http://<host>:3100/api/health
+- verify with: curl -fsS http://<host>:3102/api/health
 - regenerate this invite snippet`
       : `If none are reachable, ask your user to add a reachable hostname in Orchestrero, restart, and retry.
 Suggested command:

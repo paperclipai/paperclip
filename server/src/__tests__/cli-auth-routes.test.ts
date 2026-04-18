@@ -192,10 +192,12 @@ describe("cli auth routes", () => {
       .send({ token: "pcp_cli_auth_secret" });
 
     expect(res.status).toBe(200);
-    expect(mockBoardAuthService.resolveBoardActivityCompanyIds).toHaveBeenCalledWith({
-      userId: "admin-1",
-      requestedCompanyId: null,
-      boardApiKeyId: "board-key-2",
+    await vi.waitFor(() => {
+      expect(mockBoardAuthService.resolveBoardActivityCompanyIds).toHaveBeenCalledWith({
+        userId: "admin-1",
+        requestedCompanyId: null,
+        boardApiKeyId: "board-key-2",
+      });
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
@@ -218,9 +220,11 @@ describe("cli auth routes", () => {
     const res = await request(app).post("/api/cli-auth/revoke-current").send({});
 
     expect(res.status).toBe(200);
-    expect(mockBoardAuthService.resolveBoardActivityCompanyIds).toHaveBeenCalledWith({
-      userId: "admin-2",
-      boardApiKeyId: "board-key-3",
+    await vi.waitFor(() => {
+      expect(mockBoardAuthService.resolveBoardActivityCompanyIds).toHaveBeenCalledWith({
+        userId: "admin-2",
+        boardApiKeyId: "board-key-3",
+      });
     });
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),

@@ -328,6 +328,87 @@ describeEmbeddedPostgres("issue board state service", () => {
     ]);
   });
 
+  it("treats legacy urgent root blockers as equivalent to critical", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Coma",
+      issuePrefix: "COMA",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const leafIssueId = randomUUID();
+    const criticalImmediateId = randomUUID();
+    const criticalRootId = randomUUID();
+    const urgentImmediateId = randomUUID();
+    const urgentRootId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: leafIssueId,
+        companyId,
+        issueNumber: 1300,
+        identifier: "COMA-1300",
+        title: "Leaf issue",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: criticalImmediateId,
+        companyId,
+        issueNumber: 1301,
+        identifier: "COMA-1301",
+        title: "Critical path blocker",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: criticalRootId,
+        companyId,
+        issueNumber: 1302,
+        identifier: "COMA-1302",
+        title: "Canonical critical root",
+        status: "todo",
+        priority: "critical",
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+      {
+        id: urgentImmediateId,
+        companyId,
+        issueNumber: 1303,
+        identifier: "COMA-1303",
+        title: "Legacy urgent blocker",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: urgentRootId,
+        companyId,
+        issueNumber: 1304,
+        identifier: "COMA-1304",
+        title: "Legacy urgent root",
+        status: "todo",
+        priority: "urgent",
+        updatedAt: new Date("2026-04-02T00:00:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issueRelations).values([
+      { companyId, issueId: criticalImmediateId, relatedIssueId: leafIssueId, type: "blocks" },
+      { companyId, issueId: criticalRootId, relatedIssueId: criticalImmediateId, type: "blocks" },
+      { companyId, issueId: urgentImmediateId, relatedIssueId: leafIssueId, type: "blocks" },
+      { companyId, issueId: urgentRootId, relatedIssueId: urgentImmediateId, type: "blocks" },
+    ]);
+
+    const result = await computeIssueBoardStateMap(db, companyId, [leafIssueId], { includePaths: true });
+    const computed = result.get(leafIssueId);
+
+    expect(computed?.rootBlockers?.map((blocker) => blocker.identifier)).toEqual([
+      "COMA-1302",
+      "COMA-1304",
+    ]);
+  });
+
   it("returns Waiting on QA when review context exists without dependency blockers", async () => {
     const companyId = randomUUID();
     const qaAgentId = randomUUID();

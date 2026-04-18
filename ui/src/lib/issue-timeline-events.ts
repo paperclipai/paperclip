@@ -69,7 +69,7 @@ export function extractIssueTimelineEvents(activity: ActivityEvent[] | null | un
     if (hasOwn(details, "status")) {
       const from = nullableString(previous?.status) ?? nullableString(details.reopenedFrom);
       const to = nullableString(details.status);
-      if (from !== to) {
+      if (from !== null && from !== to) {
         timelineEvent.statusChange = { from, to };
       }
     }

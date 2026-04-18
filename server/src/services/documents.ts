@@ -1,6 +1,7 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
+import type { IssueDocument, IssueDocumentSummary } from "@paperclipai/shared";
 import { issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
@@ -25,24 +26,28 @@ export function extractLegacyPlanBody(description: string | null | undefined) {
   return body ? body : null;
 }
 
+type IssueDocumentRow = {
+  id: string;
+  companyId: string;
+  issueId: string;
+  key: string;
+  title: string | null;
+  format: string;
+  latestBody: string;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+function mapIssueDocumentRow(row: IssueDocumentRow, includeBody: true): IssueDocument;
+function mapIssueDocumentRow(row: IssueDocumentRow, includeBody: false): IssueDocumentSummary;
 function mapIssueDocumentRow(
-  row: {
-    id: string;
-    companyId: string;
-    issueId: string;
-    key: string;
-    title: string | null;
-    format: string;
-    latestBody: string;
-    latestRevisionId: string | null;
-    latestRevisionNumber: number;
-    createdByAgentId: string | null;
-    createdByUserId: string | null;
-    updatedByAgentId: string | null;
-    updatedByUserId: string | null;
-    createdAt: Date;
-    updatedAt: Date;
-  },
+  row: IssueDocumentRow,
   includeBody: boolean,
 ) {
   return {

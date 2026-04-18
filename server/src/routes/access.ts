@@ -1185,7 +1185,7 @@ export function buildInviteOnboardingTextDocument(
         capabilities: "OpenClaw agent adapter",
         agentDefaultsPayload: {
           url: "ws://127.0.0.1:18789",
-          paperclipApiUrl: "http://host.docker.internal:3100",
+          paperclipApiUrl: "http://host.docker.internal:3102",
           headers: { "x-openclaw-token": token },
           waitTimeoutMs: 120000,
           sessionKeyStrategy: "issue",
@@ -1218,7 +1218,7 @@ export function buildInviteOnboardingTextDocument(
       "capabilities": "Optional summary",
       "agentDefaultsPayload": {
         "url": "wss://your-openclaw-gateway.example",
-        "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
+        "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3102",
         "headers": { "x-openclaw-token": "replace-me" },
         "waitTimeoutMs": 120000,
         "sessionKeyStrategy": "issue",

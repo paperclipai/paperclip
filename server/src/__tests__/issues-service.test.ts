@@ -16,6 +16,7 @@ import {
   issueReadStates,
   issueRelations,
   issues,
+  labels,
   projectWorkspaces,
   projects,
 } from "@paperclipai/db";
@@ -70,6 +71,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -1050,6 +1052,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -1136,6 +1139,35 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       mode: "isolated_workspace",
       workspaceRuntime: { profile: "agent" },
     });
+  });
+
+  it("does not infer execution workspace settings when isolated workspaces are disabled", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    const issue = await svc.create(companyId, {
+      projectId,
+      title: "Fix cart checkout bug",
+    });
+
+    expect(issue.executionWorkspaceId).toBeNull();
+    expect(issue.executionWorkspacePreference).toBeNull();
+    expect(issue.executionWorkspaceSettings).toBeNull();
   });
 
   it("keeps explicit workspace fields instead of inheriting the parent linkage", async () => {
@@ -1328,6 +1360,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -1855,6 +1888,7 @@ describeEmbeddedPostgres("issueService recovery transitions", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -2036,6 +2070,212 @@ describeEmbeddedPostgres("issueService recovery transitions", () => {
     expect(copiedArchiveState?.archivedAt.toISOString()).toBe(archivedAt.toISOString());
   });
 
+  it("marks blocked recovery sources done when their successor completes", async () => {
+    const companyId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const successorIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Blocked recovery source",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: successorIssueId,
+        companyId,
+        title: "Continuation issue",
+        status: "in_review",
+        priority: "medium",
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: sourceIssueId,
+      relatedIssueId: successorIssueId,
+      type: "recovered_by",
+    });
+
+    const completed = await svc.update(successorIssueId, {
+      status: "done",
+    });
+
+    expect(completed?.status).toBe("done");
+
+    const sourceIssue = await db
+      .select({
+        status: issues.status,
+        completedAt: issues.completedAt,
+        cancelledAt: issues.cancelledAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(sourceIssue).toEqual(expect.objectContaining({
+      status: "done",
+      cancelledAt: null,
+    }));
+    expect(sourceIssue?.completedAt).toBeInstanceOf(Date);
+  });
+
+  it("does not mark recovery sources done when they still have active blockers", async () => {
+    const companyId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const successorIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Real blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Blocked recovery source",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: successorIssueId,
+        companyId,
+        title: "Continuation issue",
+        status: "in_review",
+        priority: "medium",
+      },
+    ]);
+    await db.insert(issueRelations).values([
+      {
+        companyId,
+        issueId: sourceIssueId,
+        relatedIssueId: successorIssueId,
+        type: "recovered_by",
+      },
+      {
+        companyId,
+        issueId: blockerIssueId,
+        relatedIssueId: sourceIssueId,
+        type: "blocks",
+      },
+    ]);
+
+    const completed = await svc.update(successorIssueId, {
+      status: "done",
+    });
+
+    expect(completed?.status).toBe("done");
+
+    const sourceIssue = await db
+      .select({
+        status: issues.status,
+        completedAt: issues.completedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(sourceIssue).toEqual(expect.objectContaining({
+      status: "blocked",
+      completedAt: null,
+    }));
+  });
+
+  it("records audit truth when successor completion closes a recovery source", async () => {
+    const companyId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const successorIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "PrivateClip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        issueNumber: 11,
+        identifier: "COMA-11",
+        title: "Blocked recovery source",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: successorIssueId,
+        companyId,
+        issueNumber: 12,
+        identifier: "COMA-12",
+        title: "Continuation issue",
+        status: "in_review",
+        priority: "medium",
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: sourceIssueId,
+      relatedIssueId: successorIssueId,
+      type: "recovered_by",
+    });
+
+    await svc.update(successorIssueId, {
+      status: "done",
+    });
+
+    const sourceComments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, sourceIssueId));
+    const sourceActivity = await db
+      .select({
+        actorType: activityLog.actorType,
+        actorId: activityLog.actorId,
+        action: activityLog.action,
+        details: activityLog.details,
+      })
+      .from(activityLog)
+      .where(eq(activityLog.entityId, sourceIssueId))
+      .orderBy(activityLog.createdAt);
+
+    expect(sourceComments.map((row) => row.body)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("[recovery-successor-complete]"),
+      ]),
+    );
+    expect(sourceComments.map((row) => row.body).join("\n")).toContain("COMA-12");
+    expect(sourceActivity).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actorType: "system",
+        action: "issue.updated",
+        details: expect.objectContaining({
+          source: "recovery_successor_completed",
+          status: "done",
+          _previous: expect.objectContaining({
+            status: "blocked",
+          }),
+        }),
+      }),
+    ]));
+  });
+
   it("update recovery with successor clears source ownership and persists transition truth", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -2168,6 +2408,243 @@ describeEmbeddedPostgres("issueService recovery transitions", () => {
     });
 
     expect(comments.map((comment) => comment.id)).toEqual([secondCommentId]);
+  });
+
+  it("normalizes duplicated run-linked agent comments without changing user comments", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const syntheticCreatedAt = new Date("2026-01-01T00:00:00.000Z");
+    const userCreatedAt = new Date("2026-01-01T00:01:00.000Z");
+    const planCreatedAt = new Date("2026-01-01T00:02:00.000Z");
+    const repeatedBlock = [
+      "Parent COMA-145 is cancelled (recovery successor: COMA-1107). No active parent to notify.",
+      "",
+      "Summary",
+      "Implementation Complete — COMA-145 multi-supplier checkout trust fix shipped after explicit verification, cross-supplier retries, and parent recovery routing checks all completed successfully.",
+      "",
+      "Files Changed",
+      "assets/js/composables/useCartView.ts",
+      "assets/js/components/cart/CartCheckoutRunSummary.vue",
+      "assets/js/components/cart/CartStickyCheckout.vue",
+      "assets/js/locales/en.json",
+      "",
+      "Status: todo",
+    ].join("\n");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Comment Normalize Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Hermes",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "succeeded",
+      wakeupRequestId: null,
+      contextSnapshot: { issueId },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Duplicated comment body",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issueComments).values([
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: runId,
+        body: [
+          repeatedBlock,
+          repeatedBlock,
+          "Cannot transition to done directly - delivery gate requires QA agent to move through in_review.",
+        ].join("\n"),
+        createdAt: syntheticCreatedAt,
+        updatedAt: syntheticCreatedAt,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        authorUserId: "user-1",
+        body: `${repeatedBlock}\n${repeatedBlock}`,
+        createdAt: userCreatedAt,
+        updatedAt: userCreatedAt,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: runId,
+        body: [
+          "Plan A",
+          "1. step one with enough detail to make this line long",
+          "2. step two with enough detail to make this line long",
+          "3. step three with enough detail to make this line long",
+          "4. step four with enough detail to make this line long",
+          "Comparison: both approaches produced the same output intentionally.",
+          "Plan A",
+          "1. step one with enough detail to make this line long",
+          "2. step two with enough detail to make this line long",
+          "3. step three with enough detail to make this line long",
+          "4. step four with enough detail to make this line long",
+          "Comparison: both approaches produced the same output intentionally.",
+        ].join("\n"),
+        createdAt: planCreatedAt,
+        updatedAt: planCreatedAt,
+      },
+    ]);
+
+    const comments = await svc.listComments(issueId, { order: "asc" });
+
+    expect(comments).toHaveLength(3);
+    expect(comments[0]?.body).toBe(
+      [
+        repeatedBlock,
+        "Cannot transition to done directly - delivery gate requires QA agent to move through in_review.",
+      ].join("\n"),
+    );
+    expect(comments[1]?.body).toBe(`${repeatedBlock}\n${repeatedBlock}`);
+    expect(comments[2]?.body).toBe(
+      [
+        "Plan A",
+        "1. step one with enough detail to make this line long",
+        "2. step two with enough detail to make this line long",
+        "3. step three with enough detail to make this line long",
+        "4. step four with enough detail to make this line long",
+        "Comparison: both approaches produced the same output intentionally.",
+        "Plan A",
+        "1. step one with enough detail to make this line long",
+        "2. step two with enough detail to make this line long",
+        "3. step three with enough detail to make this line long",
+        "4. step four with enough detail to make this line long",
+        "Comparison: both approaches produced the same output intentionally.",
+      ].join("\n"),
+    );
+  });
+});
+
+describeEmbeddedPostgres("issueService.update idempotency", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-idempotency-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueReadStates);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("keeps updatedAt unchanged for no-op status updates", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const originalUpdatedAt = new Date("2026-04-17T09:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Idempotency Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Already done",
+      status: "done",
+      priority: "medium",
+      updatedAt: originalUpdatedAt,
+      completedAt: new Date("2026-04-17T08:30:00.000Z"),
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    const persisted = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+
+    expect(updated?.updatedAt.toISOString()).toBe(originalUpdatedAt.toISOString());
+    expect(persisted?.updatedAt.toISOString()).toBe(originalUpdatedAt.toISOString());
+  });
+
+  it("keeps updatedAt unchanged for identical label set updates", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const labelId = randomUUID();
+    const originalUpdatedAt = new Date("2026-04-17T09:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Idempotency Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(labels).values({
+      id: labelId,
+      companyId,
+      name: "release-gate",
+      color: "#336699",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Already labeled",
+      status: "todo",
+      priority: "medium",
+      updatedAt: originalUpdatedAt,
+    });
+
+    await svc.update(issueId, { labelIds: [labelId] });
+    await db.update(issues).set({ updatedAt: originalUpdatedAt }).where(eq(issues.id, issueId));
+
+    const updated = await svc.update(issueId, { labelIds: [labelId] });
+    const persisted = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+
+    expect(updated?.updatedAt.toISOString()).toBe(originalUpdatedAt.toISOString());
+    expect(persisted?.updatedAt.toISOString()).toBe(originalUpdatedAt.toISOString());
+    expect(updated?.labelIds).toEqual([labelId]);
   });
 });
 

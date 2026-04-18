@@ -39,6 +39,6 @@ RUN chmod +x /usr/local/bin/review-checkout-pr \
 
 USER reviewer
 
-EXPOSE 3100 5173
+EXPOSE 3102 5173
 
 CMD ["bash", "-l"]

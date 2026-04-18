@@ -96,13 +96,26 @@ vi.mock("../api/auth", () => ({
   authApi: mockAuthApi,
 }));
 
-vi.mock("../lib/copilot-route-context", () => ({
-  buildCopilotRouteContext: () => ({
-    pageKind: locationState.pathname.slice(1) || "dashboard",
+function buildMockRouteContext() {
+  const segments = locationState.pathname.split("/").filter(Boolean);
+  const pageKind = segments[0] ?? "dashboard";
+  const context = {
+    pageKind,
     pagePath: `${locationState.pathname}${locationState.search}`,
-    entityType: null,
-    entityId: null,
-  }),
+    entityType: null as string | null,
+    entityId: null as string | null,
+  };
+
+  if (pageKind === "agents" && segments[1]) {
+    context.entityType = "agent";
+    context.entityId = segments[1];
+  }
+
+  return context;
+}
+
+vi.mock("../lib/copilot-route-context", () => ({
+  buildCopilotRouteContext: () => buildMockRouteContext(),
   extractContextIssueRef: () => null,
 }));
 
@@ -340,6 +353,50 @@ describe("BoardCopilotRail mobile access", () => {
 
     expect(mockCopilotApi.createThread).toHaveBeenCalledTimes(2);
     expect(window.sessionStorage.getItem(SESSION_KEY)).toBe("company-1::/agents");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("reuses the same chat when navigating from an agent page to that agent's run detail", async () => {
+    locationState.pathname = "/agents/agent-1/dashboard";
+    mockCopilotApi.createThread.mockResolvedValue({
+      issueId: "issue-2",
+      issueIdentifier: "PAP-901",
+      issueTitle: "Board Copilot Thread",
+      issueStatus: "todo",
+      issuePriority: "high",
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      threadOwnerUserId: "user-1",
+      updatedAt: "2026-04-12T10:02:00.000Z",
+    });
+
+    const { root, rerender } = renderRail(container);
+    await flush();
+
+    const openButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Chat"),
+    ) as HTMLButtonElement | undefined;
+
+    act(() => {
+      openButton?.click();
+    });
+
+    await flush();
+    await flush();
+
+    expect(mockCopilotApi.createThread).toHaveBeenCalledTimes(1);
+    expect(window.sessionStorage.getItem(SESSION_KEY)).toBe("company-1::agent:agent-1");
+
+    locationState.pathname = "/agents/agent-1/runs/run-1";
+    rerender();
+    await flush();
+    await flush();
+
+    expect(mockCopilotApi.createThread).toHaveBeenCalledTimes(1);
+    expect(window.sessionStorage.getItem(SESSION_KEY)).toBe("company-1::agent:agent-1");
 
     act(() => {
       root.unmount();

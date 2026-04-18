@@ -29,7 +29,7 @@ docker build -t paperclip-local \
 ```sh
 docker build -t paperclip-local . && \
 docker run --name paperclip \
-  -p 3100:3100 \
+  -p 3102:3102 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
   -e BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
@@ -37,7 +37,7 @@ docker run --name paperclip \
   paperclip-local
 ```
 
-Open: `http://localhost:3100`
+Open: `http://localhost:3102`
 
 Data persistence:
 
@@ -61,7 +61,7 @@ BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
 
 Defaults:
 
-- host port: `3100`
+- host port: `3102`
 - persistent data dir: `./data/docker-paperclip`
 
 Optional overrides:
@@ -132,7 +132,7 @@ If you want local adapter runs inside the container, pass API keys when starting
 
 ```sh
 docker run --name paperclip \
-  -p 3100:3100 \
+  -p 3102:3102 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
   -e OPENAI_API_KEY=... \
@@ -217,7 +217,7 @@ systemctl --user stop paperclip-pod      # Stop all
 Use this when you want to mimic a fresh machine that only has Ubuntu + npm and verify:
 
 - `npx paperclipai onboard --yes` completes
-- the server binds to `0.0.0.0:3100` so host access works
+- the server binds to `0.0.0.0:3102` so host access works
 - onboard/run banners and startup logs are visible in your terminal
 
 Build + run:
@@ -241,8 +241,8 @@ Notes:
 - Persistent data is mounted at `./data/docker-onboard-smoke` by default.
 - Container runtime user id defaults to your local `id -u` so the mounted data dir stays writable while avoiding root runtime.
 - Smoke script defaults to `authenticated/private` mode so `HOST=0.0.0.0` can be exposed to the host.
-- Smoke script defaults host port to `3131` to avoid conflicts with local PrivateClip on `3100`.
-- Smoke script also defaults `PAPERCLIP_PUBLIC_URL` to `http://localhost:<HOST_PORT>` so bootstrap invite URLs and auth callbacks use the reachable host port instead of the container's internal `3100`.
+- Smoke script defaults host port to `3131` to avoid conflicts with local PrivateClip on `3102`.
+- Smoke script also defaults `PAPERCLIP_PUBLIC_URL` to `http://localhost:<HOST_PORT>` so bootstrap invite URLs and auth callbacks use the reachable host port instead of the container's internal `3102`.
 - In authenticated mode, the smoke script defaults `SMOKE_AUTO_BOOTSTRAP=true` and drives the real bootstrap path automatically: it signs up a real user, runs `paperclipai auth bootstrap-ceo` inside the container to mint a real bootstrap invite, accepts that invite over HTTP, and verifies board session access.
 - Run the script in the foreground to watch the onboarding flow; stop with `Ctrl+C` after validation.
 - Set `SMOKE_DETACH=true` to leave the container running for automation and optionally write shell-ready metadata to `SMOKE_METADATA_FILE`.

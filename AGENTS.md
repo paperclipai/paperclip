@@ -42,14 +42,14 @@ pnpm dev
 
 This starts:
 
-- API: `http://localhost:3100`
-- UI: `http://localhost:3100` (served by API server in dev middleware mode)
+- API: `http://localhost:3102`
+- UI: `http://localhost:3102` (served by API server in dev middleware mode)
 
 Quick checks:
 
 ```sh
-curl http://localhost:3100/api/health
-curl http://localhost:3100/api/companies
+curl http://localhost:3102/api/health
+curl http://localhost:3102/api/companies
 ```
 
 Reset local dev DB:
@@ -182,7 +182,7 @@ This is a fork of `paperclipai/paperclip` with QoL patches and an **external-onl
 
 ### Local Dev
 
-- Fork runs on port 3101+ (auto-detects if 3100 is taken by upstream instance)
+- Fork runs on port 3102+ (auto-detects if 3102 is taken by another local instance)
 - `npx vite build` hangs on NTFS — use `node node_modules/vite/bin/vite.js build` instead
 - Server startup from NTFS takes 30-60s — don't assume failure immediately
 - Kill ALL paperclip processes before starting: `pkill -f "paperclip"; pkill -f "tsx.*index.ts"`

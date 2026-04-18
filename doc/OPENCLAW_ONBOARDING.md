@@ -7,7 +7,7 @@ pnpm dev --tailscale-auth
 ```
 Then verify:
 ```bash
-curl -sS http://127.0.0.1:3100/api/health | jq
+curl -sS http://127.0.0.1:3102/api/health | jq
 ```
 
 2. Start a clean/stock OpenClaw Docker.
@@ -16,7 +16,7 @@ OPENCLAW_RESET_STATE=1 OPENCLAW_BUILD=1 ./scripts/smoke/openclaw-docker-ui.sh
 ```
 Open the printed `Dashboard URL` (includes `#token=...`) in your browser.
 
-3. In PrivateClip UI, go to `http://127.0.0.1:3100/CLA/company/settings`.
+3. In PrivateClip UI, go to `http://127.0.0.1:3102/CLA/company/settings`.
 
 4. Use the OpenClaw invite prompt flow.
 - In the Invites section, click `Generate OpenClaw Invite Prompt`.
@@ -43,7 +43,7 @@ Security/control note:
 - If you can run API checks with board auth:
 ```bash
 AGENT_ID="<newly-created-agent-id>"
-curl -sS -H "Cookie: $PAPERCLIP_COOKIE" "http://127.0.0.1:3100/api/agents/$AGENT_ID" | jq '{adapterType,adapterConfig:{url:.adapterConfig.url,tokenLen:(.adapterConfig.headers["x-openclaw-token"] // .adapterConfig.headers["x-openclaw-auth"] // "" | length),disableDeviceAuth:(.adapterConfig.disableDeviceAuth // false),hasDeviceKey:(.adapterConfig.devicePrivateKeyPem // "" | length > 0)}}'
+curl -sS -H "Cookie: $PAPERCLIP_COOKIE" "http://127.0.0.1:3102/api/agents/$AGENT_ID" | jq '{adapterType,adapterConfig:{url:.adapterConfig.url,tokenLen:(.adapterConfig.headers["x-openclaw-token"] // .adapterConfig.headers["x-openclaw-auth"] // "" | length),disableDeviceAuth:(.adapterConfig.disableDeviceAuth // false),hasDeviceKey:(.adapterConfig.devicePrivateKeyPem // "" | length > 0)}}'
 ```
 - Expected: `adapterType=openclaw_gateway`, `tokenLen >= 16`, `hasDeviceKey=true`, and `disableDeviceAuth=false`.
 

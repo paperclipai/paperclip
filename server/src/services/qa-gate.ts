@@ -11,6 +11,7 @@ import { isLikelyTechnicalIssueText } from "./issue-routing-heuristics.js";
 
 const DELIVERY_SCOPED_ASSIGNEE_ROLES = new Set(["engineer", "qa", "devops", "cto"]);
 const QA_SUMMARY_TOKEN_REGEX = /\[(CQ|EH|TC|CM|DOC)\s*:\s*(pass|warn|fail|na)\]/gi;
+const QA_VERIFICATION_TOKEN_REGEX = /\[(TYPECHECK|TESTS|BUILD|SMOKE)\s*:\s*(pass|warn|fail|na)\]/gi;
 const QA_PASS_REGEX = /\[QA PASS\]/i;
 const RELEASE_CONFIRMED_REGEX = /\[RELEASE CONFIRMED\]/i;
 const REVIEW_STALE_MS = 24 * 60 * 60 * 1000;
@@ -23,6 +24,13 @@ type QaDimensionMap = {
   docsImpact: IssueQaReviewDimension;
 };
 
+type QaVerificationMap = {
+  typecheck: IssueQaReviewDimension;
+  tests: IssueQaReviewDimension;
+  build: IssueQaReviewDimension;
+  smoke: IssueQaReviewDimension;
+};
+
 function defaultDimensions(): QaDimensionMap {
   return {
     codeQuality: "unknown",
@@ -31,6 +39,19 @@ function defaultDimensions(): QaDimensionMap {
     commentQuality: "unknown",
     docsImpact: "unknown",
   };
+}
+
+function defaultVerification(): QaVerificationMap {
+  return {
+    typecheck: "unknown",
+    tests: "unknown",
+    build: "unknown",
+    smoke: "unknown",
+  };
+}
+
+function summaryIsComplete(dimensions: QaDimensionMap) {
+  return Object.values(dimensions).every((value) => value !== "unknown");
 }
 
 function toOverall(dimensions: QaDimensionMap): IssueQaReviewOverall {
@@ -43,11 +64,9 @@ function toOverall(dimensions: QaDimensionMap): IssueQaReviewOverall {
 
 function parseSummaryDimensions(body: string | null | undefined) {
   const dimensions = defaultDimensions();
-  let hasSummary = false;
-  if (!body) return { dimensions, hasSummary };
+  if (!body) return { dimensions, hasSummary: false };
   const normalized = String(body);
   for (const match of normalized.matchAll(QA_SUMMARY_TOKEN_REGEX)) {
-    hasSummary = true;
     const token = match[1]?.toUpperCase();
     const state = (match[2]?.toLowerCase() ?? "unknown") as IssueQaReviewDimension;
     if (token === "CQ") dimensions.codeQuality = state;
@@ -56,7 +75,38 @@ function parseSummaryDimensions(body: string | null | undefined) {
     else if (token === "CM") dimensions.commentQuality = state;
     else if (token === "DOC") dimensions.docsImpact = state;
   }
-  return { dimensions, hasSummary };
+  return { dimensions, hasSummary: summaryIsComplete(dimensions) };
+}
+
+function parseVerificationDimensions(body: string | null | undefined) {
+  const verification = defaultVerification();
+  let hasVerification = false;
+  if (!body) return { verification, hasVerification };
+  const normalized = String(body);
+  for (const match of normalized.matchAll(QA_VERIFICATION_TOKEN_REGEX)) {
+    hasVerification = true;
+    const token = match[1]?.toUpperCase();
+    const state = (match[2]?.toLowerCase() ?? "unknown") as IssueQaReviewDimension;
+    if (token === "TYPECHECK") verification.typecheck = state;
+    else if (token === "TESTS") verification.tests = state;
+    else if (token === "BUILD") verification.build = state;
+    else if (token === "SMOKE") verification.smoke = state;
+  }
+  return { verification, hasVerification };
+}
+
+function verificationIsComplete(verification: QaVerificationMap) {
+  return Object.values(verification).every((value) => value !== "unknown");
+}
+
+function verificationOverall(verification: QaVerificationMap): IssueQaReviewOverall {
+  const requiredStates = [verification.typecheck, verification.tests, verification.build];
+  if (requiredStates.some((value) => value === "fail" || value === "warn" || value === "na")) return "fail";
+  if (verification.smoke === "fail" || verification.smoke === "warn") return "fail";
+  if (requiredStates.every((value) => value === "pass") && (verification.smoke === "pass" || verification.smoke === "na")) {
+    return "pass";
+  }
+  return "unknown";
 }
 
 function sortCommentsDesc(a: Pick<IssueComment, "createdAt" | "id">, b: Pick<IssueComment, "createdAt" | "id">) {
@@ -83,10 +133,18 @@ export function issueQaGateReasonMessage(reasonCode: IssueQaGateReasonCode): str
       return "Delivery issues can only move to done from in_review";
     case "qa_gate_missing_qa_comment":
       return "No QA-authored comment exists yet for this issue";
+    case "qa_gate_missing_qa_summary":
+      return "Latest QA-authored comment must include the Smart Review summary before moving to done";
     case "qa_gate_missing_qa_pass":
       return "Latest QA-authored comment must include [QA PASS] before moving to done";
     case "qa_gate_missing_release_confirmation":
       return "Latest QA-authored comment must include [RELEASE CONFIRMED] before moving to done";
+    case "qa_gate_missing_verification":
+      return "Latest QA-authored comment must include passing verification tokens for TYPECHECK, TESTS, BUILD, and SMOKE/NA";
+    case "qa_gate_failing_review":
+      return "Latest QA-authored review is failing and must be handed back before moving to done";
+    case "qa_gate_failing_verification":
+      return "Latest QA-authored verification evidence is failing and must be resolved before moving to done";
     default:
       return "Issue update rejected";
   }
@@ -105,18 +163,13 @@ export function buildIssueQaGate(input: {
     isDeliveryScopedAssigneeRole(input.assigneeRole) || isLikelyTechnicalIssueText(input.issueText);
   const qaComments = [...input.qaComments].sort(sortCommentsDesc);
   const latestQaComment = qaComments[0] ?? null;
-  let summaryDimensions = defaultDimensions();
-  let lastQaSummaryAt: Date | null = null;
-  let hasSummary = false;
-
-  for (const comment of qaComments) {
-    const parsed = parseSummaryDimensions(comment.body);
-    if (!parsed.hasSummary) continue;
-    summaryDimensions = parsed.dimensions;
-    hasSummary = true;
-    lastQaSummaryAt = comment.createdAt ? new Date(comment.createdAt) : null;
-    break;
-  }
+  const latestBody = latestQaComment?.body ?? "";
+  const latestSummary = parseSummaryDimensions(latestBody);
+  const latestVerification = parseVerificationDimensions(latestBody);
+  const summaryDimensions = latestSummary.dimensions;
+  const hasSummary = latestSummary.hasSummary;
+  const lastQaSummaryAt = latestQaComment && hasSummary ? new Date(latestQaComment.createdAt) : null;
+  const verificationStatus = latestVerification.verification;
 
   let overall = toOverall(summaryDimensions);
   const latestDecisionOutcome = input.latestDecisionOutcome ?? null;
@@ -138,12 +191,21 @@ export function buildIssueQaGate(input: {
     if (!latestQaComment) {
       missingRequirements.push("qa_gate_missing_qa_comment");
     } else {
-      const latestBody = latestQaComment.body ?? "";
       if (!QA_PASS_REGEX.test(latestBody)) {
         missingRequirements.push("qa_gate_missing_qa_pass");
       }
       if (!RELEASE_CONFIRMED_REGEX.test(latestBody)) {
         missingRequirements.push("qa_gate_missing_release_confirmation");
+      }
+      if (!hasSummary) {
+        missingRequirements.push("qa_gate_missing_qa_summary");
+      } else if (overall === "fail") {
+        missingRequirements.push("qa_gate_failing_review");
+      }
+      if (!verificationIsComplete(verificationStatus)) {
+        missingRequirements.push("qa_gate_missing_verification");
+      } else if (verificationOverall(verificationStatus) !== "pass") {
+        missingRequirements.push("qa_gate_failing_verification");
       }
     }
   }

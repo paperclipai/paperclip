@@ -1,4 +1,7 @@
-const QA_LIKE_ISSUE_PATTERN = /\bqa|release|audit|verify|test\b/;
+const QA_LIKE_ISSUE_PATTERN =
+  /\bqa\b|\bquality assurance\b|\bqa review\b|\bqa verification\b|\bready for qa\b|\bassign to qa\b|\bhand(?:ed)? off to qa\b|\brelease gate\b|\brelease readiness\b|\brelease verification\b|\brelease review\b|\brelease confirmation\b|\bverification required\b|\bmanual test(?:ing)?\b|\bsmoke test(?:ing)?\b|\bregression test(?:ing)?\b|\bacceptance test(?:ing)?\b|\btest plan\b/;
+const EXPLICIT_QA_HANDOFF_PATTERN =
+  /\bqa\b|\bquality assurance\b|\bqa review\b|\bqa verification\b|\bready for qa\b|\bassign to qa\b|\bhand(?:ed)? off to qa\b|\brelease gate\b|\brelease readiness\b|\brelease verification\b|\brelease review\b|\brelease confirmation\b|\bverification required\b/;
 const LEAD_LIKE_ISSUE_PATTERN = /\blead|restaurant|prospect|sheet\b/;
 const ONBOARDING_LIKE_ISSUE_PATTERN = /\bonboard|onboarding|go[- ]?live|activation|rollout|intake|implementation\b/;
 
@@ -6,7 +9,9 @@ export const ENGINEERING_ASSIGNMENT_REBALANCE_PATTERN =
   /\bcart|checkout|frontend|backend|api|component|typescript|react|db|database|migration|refactor|bug|fix|code|branch(?:es)?|merge|git|rebase|cherry[- ]?pick|conflict|pull\s*request|\bpr\b/i;
 
 const APP_LIKE_ENGINEERING_ISSUE_PATTERN = /\bcart|checkout|client|frontend|ui|app|mobile|react|screen|component\b/;
-const WEB_LIKE_ENGINEERING_ISSUE_PATTERN = /\bweb|browser|page|route|view\b/;
+// Reserve "web" for website/marketing surfaces; product-app routes/pages still belong to the app engineer.
+const WEB_LIKE_ENGINEERING_ISSUE_PATTERN =
+  /\bwebsite\b|\bmarketing\b|\bhomepage\b|home page|\blanding\b|\bblog\b|\bseo\b|pricing page|\bsite\b/;
 const PLATFORM_LIKE_ENGINEERING_ISSUE_PATTERN = /\bplatform|infra|runtime|pipeline|orchestr|migration|database|server|backend|auth|api\b/;
 
 const APP_ENGINEER_CANDIDATE_PATTERN = /\bproduct engineer - app\b|\bapp\b|frontend|react|mobile|ios|android|client/;
@@ -84,7 +89,7 @@ function isOnboardingCandidate(candidate: OperationsAssignmentCandidate) {
 }
 
 function isEngineerCandidate(candidate: OperationsAssignmentCandidate) {
-  return candidate.role === "engineer" || ENGINEERING_CANDIDATE_PATTERN.test(buildCandidateSearchText(candidate));
+  return candidate.role === "engineer";
 }
 
 function isAppEngineerCandidate(candidate: OperationsAssignmentCandidate) {
@@ -106,6 +111,7 @@ export function isLikelyTechnicalIssueText(issueText: string | null | undefined)
 function classifyIssueSignals(issueText: string) {
   return {
     isQaLikeIssue: QA_LIKE_ISSUE_PATTERN.test(issueText),
+    hasExplicitQaHandoffIntent: EXPLICIT_QA_HANDOFF_PATTERN.test(issueText),
     isLeadLikeIssue: LEAD_LIKE_ISSUE_PATTERN.test(issueText),
     isOnboardingLikeIssue: ONBOARDING_LIKE_ISSUE_PATTERN.test(issueText),
     isEngineeringIssue: isLikelyTechnicalIssueText(issueText),
@@ -139,23 +145,23 @@ export function resolveEligibleOperationsAssignmentCandidates(
   const platformEngineerCandidates = engineerCandidates.filter(isPlatformEngineerCandidate);
 
   if (signals.isEngineeringIssue) {
-    if (descriptionSignals.isQaLikeIssue) {
+    if (signals.hasExplicitQaHandoffIntent) {
       return qaCandidates.length > 0 ? qaCandidates : engineerCandidates;
-    }
-    if (descriptionSignals.isWebLikeEngineeringIssue) {
-      return webEngineerCandidates.length > 0 ? webEngineerCandidates : engineerCandidates;
     }
     if (descriptionSignals.isPlatformLikeEngineeringIssue) {
       return platformEngineerCandidates.length > 0 ? platformEngineerCandidates : engineerCandidates;
     }
+    if (descriptionSignals.isWebLikeEngineeringIssue) {
+      return webEngineerCandidates.length > 0 ? webEngineerCandidates : engineerCandidates;
+    }
     if (signals.isAppLikeEngineeringIssue) {
       return appEngineerCandidates.length > 0 ? appEngineerCandidates : engineerCandidates;
     }
-    if (signals.isWebLikeEngineeringIssue) {
-      return webEngineerCandidates.length > 0 ? webEngineerCandidates : engineerCandidates;
-    }
     if (signals.isPlatformLikeEngineeringIssue) {
       return platformEngineerCandidates.length > 0 ? platformEngineerCandidates : engineerCandidates;
+    }
+    if (signals.isWebLikeEngineeringIssue) {
+      return webEngineerCandidates.length > 0 ? webEngineerCandidates : engineerCandidates;
     }
     return engineerCandidates;
   }
@@ -229,7 +235,7 @@ export function pickOperationsAssignmentCandidate(input: {
     const platformEngineerCandidates = engineerCandidates.filter((candidate) => (
       PLATFORM_ENGINEER_CANDIDATE_PATTERN.test(buildCandidateDescriptorText(candidate))
     ));
-    const hasExplicitQaIntent = descriptionSignals.isQaLikeIssue;
+    const hasExplicitQaIntent = signals.hasExplicitQaHandoffIntent;
     const hasExplicitWebIntent = descriptionSignals.isWebLikeEngineeringIssue;
     const hasExplicitPlatformIntent = descriptionSignals.isPlatformLikeEngineeringIssue;
 
@@ -240,16 +246,16 @@ export function pickOperationsAssignmentCandidate(input: {
     if (hasExplicitQaIntent) {
       const qaPool = pickReadySpecialists(qaCandidates, isReadyCandidate);
       baseCandidatePool = qaPool.length > 0 ? qaPool : (readyEngineers.length > 0 ? readyEngineers : qaCandidates);
-    } else if (hasExplicitWebIntent) {
-      baseCandidatePool = pickReadySpecialists(webEngineerCandidates, isReadyCandidate);
     } else if (hasExplicitPlatformIntent) {
       baseCandidatePool = pickReadySpecialists(platformEngineerCandidates, isReadyCandidate);
+    } else if (hasExplicitWebIntent) {
+      baseCandidatePool = pickReadySpecialists(webEngineerCandidates, isReadyCandidate);
     } else if (signals.isAppLikeEngineeringIssue) {
       baseCandidatePool = pickReadySpecialists(appEngineerCandidates, isReadyCandidate);
-    } else if (signals.isWebLikeEngineeringIssue) {
-      baseCandidatePool = pickReadySpecialists(webEngineerCandidates, isReadyCandidate);
     } else if (signals.isPlatformLikeEngineeringIssue) {
       baseCandidatePool = pickReadySpecialists(platformEngineerCandidates, isReadyCandidate);
+    } else if (signals.isWebLikeEngineeringIssue) {
+      baseCandidatePool = pickReadySpecialists(webEngineerCandidates, isReadyCandidate);
     } else {
       baseCandidatePool = readyEngineers;
     }

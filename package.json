@@ -14,7 +14,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "vitest",
-    "test:run": "vitest run",
+    "test:run": "node scripts/test-run.mjs",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "branch:audit": "pnpm --filter @paperclipai/server exec tsx ../scripts/branch-audit.ts",

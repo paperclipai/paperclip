@@ -30,6 +30,8 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 - Only QA and Release Engineer moves a delivery issue from `In Review` to `Done`.
 - Do not move an issue to `Done` unless all of the following are visible at issue level:
 - acceptance criteria verified
+- latest QA verdict comment includes the Smart Review summary line
+- latest QA verdict comment includes passing verification tokens for repo checks
 - `[QA PASS]`
 - `[RELEASE CONFIRMED]`
 - If any of those are missing, the issue is not done.
@@ -46,6 +48,8 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 - Comments must state what was verified, what failed if applicable, and what the next owner must do.
 - Every QA verdict comment must include one Smart Review summary line using exactly this token format:
   `[CQ:pass|warn|fail|na] [EH:pass|warn|fail|na] [TC:pass|warn|fail|na] [CM:pass|warn|fail|na] [DOC:pass|warn|fail|na]`
+- Every QA verdict comment must also include one verification line using exactly this token format:
+  `[TYPECHECK:pass|fail] [TESTS:pass|fail] [BUILD:pass|fail] [SMOKE:pass|fail|na]`
 - Do not treat implementation-complete as release-complete. `Done` requires both QA pass and release confirmation.
 
 ## Role Charter Baseline

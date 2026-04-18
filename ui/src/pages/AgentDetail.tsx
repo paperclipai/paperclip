@@ -3978,6 +3978,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
   const [newToken, setNewToken] = useState<string | null>(null);
   const [tokenVisible, setTokenVisible] = useState(false);
   const [copied, setCopied] = useState(false);
+  const copyTokenTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const { data: keys, isLoading } = useQuery({
     queryKey: queryKeys.agents.keys(agentId),
@@ -4005,8 +4006,19 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
     if (!newToken) return;
     navigator.clipboard.writeText(newToken);
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (copyTokenTimeoutRef.current) {
+      clearTimeout(copyTokenTimeoutRef.current);
+    }
+    copyTokenTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
   }
+
+  useEffect(() => {
+    return () => {
+      if (copyTokenTimeoutRef.current) {
+        clearTimeout(copyTokenTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const activeKeys = (keys ?? []).filter((k: AgentKey) => !k.revokedAt);
   const revokedKeys = (keys ?? []).filter((k: AgentKey) => k.revokedAt);

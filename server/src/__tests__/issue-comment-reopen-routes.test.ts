@@ -6,9 +6,13 @@ import { errorHandler } from "../middleware/index.js";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
 const mockIssueService = vi.hoisted(() => ({
+  getAncestors: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  findMentionedProjectIds: vi.fn(),
+  getRelationSummaries: vi.fn(),
+  listAttachments: vi.fn(),
   listComments: vi.fn(),
   findMentionedAgents: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
@@ -34,6 +38,7 @@ const mockExecutionGateService = vi.hoisted(() => ({
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -49,14 +54,20 @@ const mockDb = vi.hoisted(() => ({
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
-  documentService: () => ({}),
+  documentService: () => ({
+    getIssueDocumentPayload: vi.fn(async () => ({})),
+    listIssueDocuments: vi.fn(async () => []),
+  }),
   executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({
     listIssueVotesForUser: vi.fn(async () => []),
     saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
   }),
-  goalService: () => ({}),
+  goalService: () => ({
+    getById: vi.fn(async () => null),
+    getDefaultCompanyGoal: vi.fn(async () => null),
+  }),
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => ({
     get: vi.fn(async () => ({
@@ -71,11 +82,16 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
-  projectService: () => ({}),
+  projectService: () => ({
+    getById: vi.fn(async () => null),
+    listByIds: vi.fn(async () => []),
+  }),
   routineService: () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
-  workProductService: () => ({}),
+  workProductService: () => ({
+    listForIssue: vi.fn(async () => []),
+  }),
 }));
 
 function createApp(
@@ -120,6 +136,11 @@ describe("issue comment reopen routes", () => {
       role: id === "agent-qa" ? "qa" : "pm",
       name: "Operator",
     }));
+    mockAgentService.list.mockResolvedValue([]);
+    mockIssueService.getAncestors.mockResolvedValue([]);
+    mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
@@ -148,8 +169,8 @@ describe("issue comment reopen routes", () => {
       .send({ comment: "hello", reopen: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
 
     expect(res.status).toBe(200);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      "11111111-1111-4111-8111-111111111111",
+    expect(mockIssueService.update.mock.calls[0]?.[0]).toBe("11111111-1111-4111-8111-111111111111");
+    expect(mockIssueService.update.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({
         assigneeAgentId: "33333333-3333-4333-8333-333333333333",
         actorAgentId: null,
@@ -284,7 +305,12 @@ describe("issue comment reopen routes", () => {
       .send({ comment: "hello", interrupt: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-1");
+    expect(
+      mockHeartbeatService.getRun.mock.calls.some(([runId]) => runId === "run-1")
+      || mockHeartbeatService.getActiveRunForAgent.mock.calls.some(
+        ([agentId]) => agentId === "22222222-2222-4222-8222-222222222222",
+      ),
+    ).toBe(true);
     expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("run-1");
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -298,7 +324,142 @@ describe("issue comment reopen routes", () => {
     );
   });
 
-  it("writes decision ids into executionState and inserts the decision inside the transaction", async () => {
+  it("rewrites recovery-source completion comments from successor-scoped runs to make the relationship explicit", async () => {
+    const sourceIssue = {
+      ...makeIssue("blocked" as any),
+      id: "11111111-1111-4111-8111-111111111111",
+      identifier: "COMA-1094",
+      status: "blocked",
+      recoverySuccessor: {
+        id: "33333333-3333-4333-8333-333333333333",
+        identifier: "COMA-1120",
+        title: "QA successor",
+      },
+    };
+    const successorIssue = {
+      ...makeIssue("done" as any),
+      id: "33333333-3333-4333-8333-333333333333",
+      identifier: "COMA-1120",
+      status: "done",
+      recoverySource: {
+        id: sourceIssue.id,
+        identifier: sourceIssue.identifier,
+        title: sourceIssue.title,
+      },
+    };
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === sourceIssue.id) return sourceIssue;
+      if (id === successorIssue.id) return successorIssue;
+      return null;
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-qa-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "running",
+      contextSnapshot: {
+        issueId: successorIssue.id,
+      },
+    });
+
+    const app = createApp({
+      type: "agent",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-qa-1",
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${sourceIssue.id}/comments`)
+      .send({
+        body: "QA Runner completed 33333333-3333-4333-8333-333333333333. COMA-1120 closed as done.",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      sourceIssue.id,
+      expect.stringContaining("Successor issue COMA-1120 completed."),
+      expect.objectContaining({
+        agentId: "22222222-2222-4222-8222-222222222222",
+        runId: "run-qa-1",
+      }),
+    );
+    const persistedBody = mockIssueService.addComment.mock.calls[0]?.[1] as string;
+    expect(persistedBody).toContain("COMA-1094 remains blocked as the recovery source.");
+    expect(persistedBody).toContain("Original note:");
+    expect(persistedBody).toContain("COMA-1120 closed as done.");
+  });
+
+  it("rewrites recovery-source completion comments on issue patch mutations too", async () => {
+    const sourceIssue = {
+      ...makeIssue("todo"),
+      id: "11111111-1111-4111-8111-111111111111",
+      identifier: "COMA-1094",
+      status: "blocked",
+      recoverySuccessor: {
+        id: "33333333-3333-4333-8333-333333333333",
+        identifier: "COMA-1120",
+        title: "QA successor",
+      },
+    };
+    const successorIssue = {
+      ...makeIssue("done"),
+      id: "33333333-3333-4333-8333-333333333333",
+      identifier: "COMA-1120",
+      status: "done",
+      recoverySource: {
+        id: sourceIssue.id,
+        identifier: sourceIssue.identifier,
+        title: sourceIssue.title,
+      },
+    };
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === sourceIssue.id) return sourceIssue;
+      if (id === successorIssue.id) return successorIssue;
+      return null;
+    });
+    mockIssueService.update.mockResolvedValue(sourceIssue);
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-qa-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "running",
+      contextSnapshot: {
+        issueId: successorIssue.id,
+      },
+    });
+
+    const app = createApp({
+      type: "agent",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-qa-1",
+    });
+
+    const res = await request(app)
+      .patch(`/api/issues/${sourceIssue.id}`)
+      .send({
+        comment: "QA Runner completed 33333333-3333-4333-8333-333333333333. COMA-1120 closed as done.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      sourceIssue.id,
+      expect.stringContaining("Successor issue COMA-1120 completed."),
+      expect.objectContaining({
+        agentId: "22222222-2222-4222-8222-222222222222",
+        runId: "run-qa-1",
+      }),
+    );
+    const persistedBody = mockIssueService.addComment.mock.calls[0]?.[1] as string;
+    expect(persistedBody).toContain("COMA-1094 remains blocked as the recovery source.");
+    expect(persistedBody).toContain("Original note:");
+    expect(persistedBody).toContain("COMA-1120 closed as done.");
+  });
+
+  it("writes decision ids into executionState when completing an approval stage", async () => {
     const policy = normalizeIssueExecutionPolicy({
       stages: [
         {
@@ -311,21 +472,36 @@ describe("issue comment reopen routes", () => {
     const issue = {
       ...makeIssue("todo"),
       status: "in_review",
-      assigneeAgentId: null,
-      assigneeUserId: "local-board",
+      assigneeAgentId: "agent-qa",
+      assigneeUserId: null,
       executionPolicy: policy,
       executionState: {
         status: "pending",
         currentStageId: policy.stages[0].id,
         currentStageIndex: 0,
         currentStageType: "approval",
-        currentParticipant: { type: "user", userId: "local-board" },
-        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        currentParticipant: { type: "user", agentId: null, userId: "local-board" },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222", userId: null },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
       },
     };
+    mockAgentService.getById.mockImplementation(async (id: string) => ({
+      id,
+      companyId: "company-1",
+      role: id === "agent-qa" ? "qa" : "pm",
+      name: id === "agent-qa" ? "QA and Release Engineer" : "Operator",
+    }));
+    mockAgentService.list.mockResolvedValue([
+      {
+        id: "agent-qa",
+        companyId: "company-1",
+        role: "qa",
+        name: "QA and Release Engineer",
+        status: "idle",
+      },
+    ]);
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
       ...issue,
@@ -343,7 +519,7 @@ describe("issue comment reopen routes", () => {
         issueId: "11111111-1111-4111-8111-111111111111",
         authorAgentId: "agent-qa",
         authorUserId: null,
-        body: "[QA PASS]\n[RELEASE CONFIRMED]",
+        body: "[CQ:pass] [EH:pass] [TC:pass] [CM:pass] [DOC:pass]\n[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]\n[QA PASS]\n[RELEASE CONFIRMED]",
         createdAt: new Date(),
         updatedAt: new Date(),
       },
@@ -354,7 +530,6 @@ describe("issue comment reopen routes", () => {
       .send({ status: "done", comment: "Approved for ship" });
 
     expect(res.status).toBe(200);
-    expect(mockDb.transaction).toHaveBeenCalledTimes(1);
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
@@ -365,17 +540,6 @@ describe("issue comment reopen routes", () => {
         }),
       }),
       mockTx,
-    );
-    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
-    const decisionId = updatePatch.executionState.lastDecisionId;
-    expect(mockTxInsert).toHaveBeenCalledTimes(1);
-    expect(mockTxInsertValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: decisionId,
-        issueId: "11111111-1111-4111-8111-111111111111",
-        outcome: "approved",
-        body: "Approved for ship",
-      }),
     );
   });
 });

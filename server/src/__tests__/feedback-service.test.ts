@@ -655,6 +655,146 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     expect(String(instructions?.entryBody)).not.toContain("secret-value");
   });
 
+  it("normalizes synthesized run summaries in feedback target and context bodies only", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const earlierCommentId = randomUUID();
+    const targetCommentId = randomUUID();
+    const laterCommentId = randomUUID();
+    const repeatedSummary = [
+      "Parent COMA-145 is cancelled (recovery successor: COMA-1107). No active parent to notify.",
+      "",
+      "Summary",
+      "Implementation Complete — COMA-145 multi-supplier checkout trust fix shipped after explicit verification, cross-supplier retries, and parent recovery routing checks all completed successfully.",
+      "",
+      "Files Changed",
+      "assets/js/composables/useCartView.ts",
+      "assets/js/components/cart/CartCheckoutRunSummary.vue",
+      "assets/js/components/cart/CartStickyCheckout.vue",
+      "assets/js/locales/en.json",
+      "",
+      "Status: todo",
+    ].join("\n");
+    const normalizedSummary = [
+      repeatedSummary,
+      "Cannot transition to done directly - delivery gate requires QA agent to move through in_review.",
+    ].join("\n");
+    const repeatedPlan = [
+      "Plan A",
+      "1. step one with enough detail to make this line long",
+      "2. step two with enough detail to make this line long",
+      "3. step three with enough detail to make this line long",
+      "4. step four with enough detail to make this line long",
+      "Comparison: both approaches produced the same output intentionally.",
+      "Plan A",
+      "1. step one with enough detail to make this line long",
+      "2. step two with enough detail to make this line long",
+      "3. step three with enough detail to make this line long",
+      "4. step four with enough detail to make this line long",
+      "Comparison: both approaches produced the same output intentionally.",
+    ].join("\n");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `F${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Hermes",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Feedback normalization",
+      status: "todo",
+      priority: "medium",
+      createdByUserId: "user-1",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "manual",
+      status: "succeeded",
+      startedAt: new Date("2026-03-30T10:00:00.000Z"),
+      finishedAt: new Date("2026-03-30T10:05:00.000Z"),
+    });
+    await db.insert(issueComments).values([
+      {
+        id: earlierCommentId,
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: runId,
+        body: [
+          repeatedSummary,
+          repeatedSummary,
+          "Cannot transition to done directly - delivery gate requires QA agent to move through in_review.",
+        ].join("\n"),
+        createdAt: new Date("2026-03-30T10:00:00.000Z"),
+        updatedAt: new Date("2026-03-30T10:00:00.000Z"),
+      },
+      {
+        id: targetCommentId,
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: runId,
+        body: [
+          repeatedSummary,
+          repeatedSummary,
+          "Cannot transition to done directly - delivery gate requires QA agent to move through in_review.",
+        ].join("\n"),
+        createdAt: new Date("2026-03-30T10:01:00.000Z"),
+        updatedAt: new Date("2026-03-30T10:01:00.000Z"),
+      },
+      {
+        id: laterCommentId,
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: runId,
+        body: repeatedPlan,
+        createdAt: new Date("2026-03-30T10:02:00.000Z"),
+        updatedAt: new Date("2026-03-30T10:02:00.000Z"),
+      },
+    ]);
+
+    await svc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: targetCommentId,
+      vote: "up",
+      authorUserId: "user-1",
+      allowSharing: true,
+    });
+
+    const traces = await svc.listFeedbackTraces({
+      companyId,
+      issueId,
+      includePayload: true,
+    });
+    const payload = traces[0]?.payloadSnapshot;
+    const bundle = payload?.bundle as Record<string, unknown> | null;
+    const primaryContent = bundle?.primaryContent as Record<string, unknown> | null;
+    const issueContext = bundle?.issueContext as Record<string, unknown> | null;
+    const issueContextItems = issueContext?.items as Array<Record<string, unknown>> | undefined;
+
+    expect(primaryContent?.body).toBe(normalizedSummary);
+    expect(issueContextItems?.map((item) => item.body)).toEqual([normalizedSummary, repeatedPlan]);
+  });
+
   it("keeps earlier local votes local when a later vote enables sharing", async () => {
     const { companyId, issueId, commentId: firstCommentId } = await seedIssueWithAgentComment();
     const secondCommentId = randomUUID();

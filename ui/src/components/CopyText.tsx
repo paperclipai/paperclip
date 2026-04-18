@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 interface CopyTextProps {
@@ -43,6 +43,14 @@ export function CopyText({ text, children, className, copiedLabel = "Copied!" }:
     setVisible(true);
     timerRef.current = setTimeout(() => setVisible(false), 1500);
   }, [copiedLabel, text]);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    };
+  }, []);
 
   return (
     <span className="relative inline-flex">

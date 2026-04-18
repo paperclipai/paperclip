@@ -46,7 +46,7 @@ export PC_CACHE="${PC_CACHE:-$PC_TEST_ROOT/npm-cache}"
 export PC_DATA="${PC_DATA:-$PC_TEST_ROOT/paperclip-data}"
 export PC_REPO="${PC_REPO:-$PC_TEST_ROOT/repo}"
 export PAPERCLIP_HOST="${PAPERCLIP_HOST:-127.0.0.1}"
-export PAPERCLIP_PORT="${PAPERCLIP_PORT:-3100}"
+export PAPERCLIP_PORT="${PAPERCLIP_PORT:-3102}"
 export PAPERCLIP_OPEN_ON_LISTEN="${PAPERCLIP_OPEN_ON_LISTEN:-false}"
 
 cleanup() {

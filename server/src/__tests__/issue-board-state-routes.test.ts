@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
   update: vi.fn(),
   listComments: vi.fn(),
+  listAttachments: vi.fn(),
   getAncestors: vi.fn(),
   findMentionedProjectIds: vi.fn(),
   getRelationSummaries: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
+    listIssueDocuments: vi.fn(async () => []),
   }),
   executionGateService: () => ({
     getExecutionBlock: vi.fn(async () => null),
@@ -158,6 +160,7 @@ describe("issue board state routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.listComments.mockResolvedValue([]);
+    mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({

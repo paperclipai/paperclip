@@ -40,6 +40,40 @@ describe("operations heartbeat target helpers", () => {
     expect(selected?.id).toBe("urgent");
   });
 
+  it("treats canonical critical as higher priority than high", () => {
+    const selected = selectReadyUnassignedCandidate([
+      {
+        id: "critical",
+        priority: "critical",
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+      {
+        id: "high",
+        priority: "high",
+        updatedAt: new Date("2026-04-02T00:00:00.000Z"),
+      },
+    ]);
+
+    expect(selected?.id).toBe("critical");
+  });
+
+  it("treats legacy urgent as equivalent to critical and falls back to recency", () => {
+    const selected = selectReadyUnassignedCandidate([
+      {
+        id: "urgent",
+        priority: "urgent",
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+      {
+        id: "critical",
+        priority: "critical",
+        updatedAt: new Date("2026-04-02T00:00:00.000Z"),
+      },
+    ]);
+
+    expect(selected?.id).toBe("critical");
+  });
+
   it("uses recency as the tiebreaker when priorities match", () => {
     const selected = selectReadyUnassignedCandidate([
       {

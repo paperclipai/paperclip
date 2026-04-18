@@ -53,6 +53,7 @@ export const heartbeatRuns = pgTable(
     issueCommentSatisfiedByCommentId: uuid("issue_comment_satisfied_by_comment_id"),
     issueCommentRetryQueuedAt: timestamp("issue_comment_retry_queued_at", { withTimezone: true }),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -425,7 +425,7 @@ async function scanForBackendChanges() {
 }
 
 async function getDevHealthPayload() {
-  const serverPort = env.PORT ?? process.env.PORT ?? "3100";
+  const serverPort = env.PORT ?? process.env.PORT ?? "3102";
   const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`);
   if (!response.ok) {
     throw new Error(`Health request failed (${response.status})`);

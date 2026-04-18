@@ -738,6 +738,114 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     expect(sweep.targetMode).toBeNull();
   });
 
+  it("logs issue.updated activity when operations heartbeat demotes fake WIP", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const workerAgentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Operations Activity Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: workerAgentId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue that only looks in progress",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: workerAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    const persistedIssue = await db
+      .select({
+        status: issues.status,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    const issueUpdates = await db
+      .select({
+        action: activityLog.action,
+        details: activityLog.details,
+      })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.action, "issue.updated"),
+        ),
+      );
+
+    expect(persistedIssue?.status).toBe("todo");
+    expect(issueUpdates).toContainEqual(
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          source: "operations_heartbeat",
+          status: "todo",
+          _previous: expect.objectContaining({
+            status: "in_progress",
+          }),
+        }),
+      }),
+    );
+  });
+
   it("does not auto-reassign cross-agent recovery work during operations sweeps", async () => {
     const companyId = randomUUID();
     const operationsAgentId = randomUUID();
@@ -1127,6 +1235,307 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         wakeup.agentId === workerAgentId && wakeup.reason === "operations_idle_assignment_wakeup"
       )),
     ).toHaveLength(1);
+  });
+
+  it("does not wake a stale routine execution issue when a sibling routine issue is already live", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const workerAgentId = randomUUID();
+    const staleIssueId = randomUUID();
+    const liveIssueId = randomUUID();
+    const liveRunId = randomUUID();
+    const routineId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Routine Stale Wake Co",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values([
+        {
+          id: operationsAgentId,
+          companyId,
+          name: "Operations",
+          role: "coo",
+          status: "idle",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {
+            executionBoundary: "orchestrator_only",
+          },
+          permissions: {},
+        },
+        {
+          id: workerAgentId,
+          companyId,
+          name: "Product Engineer - App",
+          role: "engineer",
+          status: "idle",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {
+            heartbeat: {
+              maxConcurrentRuns: 2,
+            },
+          },
+          permissions: {},
+        },
+      ]);
+
+      await db.insert(heartbeatRuns).values({
+        id: liveRunId,
+        companyId,
+        agentId: workerAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        startedAt: new Date("2026-04-16T10:00:00.000Z"),
+        contextSnapshot: { issueId: liveIssueId },
+      });
+
+      await db.insert(issues).values([
+        {
+          id: staleIssueId,
+          companyId,
+          title: "Older routine issue should stay dormant",
+          status: "todo",
+          priority: "high",
+          assigneeAgentId: workerAgentId,
+          originKind: "routine_execution",
+          originId: routineId,
+          originRunId: randomUUID(),
+          issueNumber: 1,
+          identifier: `${issuePrefix}-1`,
+        },
+        {
+          id: liveIssueId,
+          companyId,
+          title: "Current live routine issue",
+          status: "in_progress",
+          priority: "high",
+          assigneeAgentId: workerAgentId,
+          originKind: "routine_execution",
+          originId: routineId,
+          originRunId: randomUUID(),
+          executionRunId: liveRunId,
+          executionLockedAt: new Date("2026-04-16T10:00:00.000Z"),
+          issueNumber: 2,
+          identifier: `${issuePrefix}-2`,
+        },
+      ]);
+
+      const run = await heartbeat.wakeup(operationsAgentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "manual_probe",
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(run).not.toBeNull();
+      await waitFor(async () => {
+        const currentRun = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, run!.id))
+          .then((rows) => rows[0] ?? null);
+        return currentRun?.status === "succeeded";
+      }, 20_000);
+
+      const comments = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, staleIssueId))
+        .orderBy(asc(issueComments.createdAt));
+      const wakeups = await db
+        .select({
+          agentId: agentWakeupRequests.agentId,
+          reason: agentWakeupRequests.reason,
+        })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId))
+        .orderBy(asc(agentWakeupRequests.createdAt));
+
+      expect(comments.some((comment) => comment.body?.includes("[operations-heartbeat-wakeup]"))).toBe(false);
+      expect(
+        wakeups.some((wakeup) => (
+          wakeup.agentId === workerAgentId && wakeup.reason === "operations_idle_assignment_wakeup"
+        )),
+      ).toBe(false);
+    } finally {
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, workerAgentId),
+            or(eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.status, "running")),
+          ),
+        );
+    }
+  });
+
+  it("clears stale sibling routine locks before cross-agent recovery wakes", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const workerAgentId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const staleIssueId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const staleRunId = randomUUID();
+    const routineId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Routine Recovery Co",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values([
+        {
+          id: operationsAgentId,
+          companyId,
+          name: "Operations",
+          role: "coo",
+          status: "idle",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {
+            executionBoundary: "orchestrator_only",
+          },
+          permissions: {},
+        },
+        {
+          id: workerAgentId,
+          companyId,
+          name: "Product Engineer - App",
+          role: "engineer",
+          status: "idle",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {
+            heartbeat: {
+              maxConcurrentRuns: 2,
+            },
+          },
+          permissions: {},
+        },
+      ]);
+
+      await db.insert(heartbeatRuns).values({
+        id: staleRunId,
+        companyId,
+        agentId: workerAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "completed",
+        startedAt: new Date("2026-04-16T08:00:00.000Z"),
+        finishedAt: new Date("2026-04-16T08:10:00.000Z"),
+        contextSnapshot: { issueId: staleIssueId },
+      });
+
+      await db.insert(issues).values([
+        {
+          id: blockerIssueId,
+          companyId,
+          title: "Restore the blocked dependency",
+          status: "todo",
+          priority: "medium",
+          issueNumber: 1,
+          identifier: `${issuePrefix}-1`,
+        },
+        {
+          id: staleIssueId,
+          companyId,
+          title: "Older routine execution issue with a dead lock",
+          status: "todo",
+          priority: "high",
+          assigneeAgentId: null,
+          originKind: "routine_execution",
+          originId: routineId,
+          originRunId: randomUUID(),
+          executionRunId: staleRunId,
+          executionLockedAt: new Date("2026-04-16T08:00:00.000Z"),
+          issueNumber: 2,
+          identifier: `${issuePrefix}-2`,
+        },
+        {
+          id: blockedIssueId,
+          companyId,
+          title: "Current routine issue that needs recovery",
+          status: "blocked",
+          priority: "high",
+          assigneeAgentId: workerAgentId,
+          originKind: "routine_execution",
+          originId: routineId,
+          originRunId: randomUUID(),
+          issueNumber: 3,
+          identifier: `${issuePrefix}-3`,
+        },
+      ]);
+
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blockerIssueId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      });
+
+      const run = await heartbeat.wakeup(operationsAgentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "manual_probe",
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(run).not.toBeNull();
+      await waitFor(async () => {
+        const currentRun = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, run!.id))
+          .then((rows) => rows[0] ?? null);
+        return currentRun?.status === "succeeded";
+      }, 20_000);
+
+      const staleIssue = await db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, staleIssueId))
+        .then((rows) => rows[0] ?? null);
+
+      expect(staleIssue?.executionRunId).toBeNull();
+    } finally {
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, workerAgentId),
+            or(eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.status, "running")),
+          ),
+        );
+    }
   });
 
   it("skips cross-agent recovery wakes when the target assignee has no free slot", async () => {

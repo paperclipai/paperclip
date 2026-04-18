@@ -128,8 +128,10 @@ describe("worktree config repair", () => {
     expect(repairedConfig.database.embeddedPostgresDataDir).toBe(path.join(instanceRoot, "db"));
     expect(repairedConfig.database.backup.dir).toBe(path.join(instanceRoot, "data", "backups"));
     expect(repairedConfig.logging.logDir).toBe(path.join(instanceRoot, "logs"));
+    expect(repairedConfig.server.port).toBe(3102);
     expect(repairedConfig.storage.localDisk.baseDir).toBe(path.join(instanceRoot, "data", "storage"));
     expect(repairedConfig.secrets.localEncrypted.keyFilePath).toBe(path.join(instanceRoot, "secrets", "master.key"));
+    expect(repairedConfig.auth.publicBaseUrl).toBe("http://127.0.0.1:3102/");
     expect(repairedEnv).toContain(`PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`);
     expect(repairedEnv).toContain('PAPERCLIP_INSTANCE_ID="pap-884-ai-commits-component"');
     expect(repairedEnv).toContain(`PAPERCLIP_CONFIG=${JSON.stringify(await fs.realpath(configPath))}`);

@@ -39,7 +39,10 @@ export function buildCopilotRouteContext(pathname: string, search: string): Copi
     filters: readSearchFilters(url.searchParams),
   };
 
-  if (pageKind === "issues" && segments[1]) {
+  if (pageKind === "agents" && segments[1]) {
+    context.entityType = "agent";
+    context.entityId = decodeSegment(segments[1]);
+  } else if (pageKind === "issues" && segments[1]) {
     context.entityType = "issue";
     context.entityId = decodeSegment(segments[1]);
   } else if (pageKind === "projects" && segments[1]) {
@@ -64,4 +67,3 @@ export function buildCopilotRouteContext(pathname: string, search: string): Copi
 
   return context;
 }
-

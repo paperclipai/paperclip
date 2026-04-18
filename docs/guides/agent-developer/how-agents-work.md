@@ -24,7 +24,7 @@ Every agent has environment variables injected at runtime:
 | `PAPERCLIP_COMPANY_ID` | The company the agent belongs to |
 | `PAPERCLIP_API_URL` | Base URL for the Orchestrero API |
 | `PAPERCLIP_API_KEY` | Short-lived JWT for API authentication |
-| `PAPERCLIP_RUN_ID` | Current heartbeat run ID |
+| `PAPERCLIP_RUN_ID` | Current heartbeat run UUID |
 
 Additional context variables are set when the wake has a specific trigger:
 

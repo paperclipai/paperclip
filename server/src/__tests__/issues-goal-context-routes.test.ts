@@ -9,6 +9,7 @@ const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getRelationSummaries: vi.fn(),
   findMentionedProjectIds: vi.fn(),
+  listComments: vi.fn(),
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
   listAttachments: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("../services/index.js", () => ({
   }),
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
+    listIssueDocuments: vi.fn(async () => []),
   }),
   executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => ({
@@ -131,6 +133,18 @@ describe("issue goal context routes", () => {
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
+    mockIssueService.listComments.mockResolvedValue([
+      {
+        id: "comment-1",
+        companyId: "company-1",
+        issueId: legacyProjectLinkedIssue.id,
+        authorAgentId: "33333333-3333-4333-8333-333333333333",
+        authorUserId: null,
+        body: "Check https://www.ebay.es/itm/123456789 and ops/cocktail-machine-sale/listing-templates/wallapop.txt",
+        createdAt: new Date("2026-04-17T10:00:00Z"),
+        updatedAt: new Date("2026-04-17T10:00:00Z"),
+      },
+    ]);
     mockIssueService.getCommentCursor.mockResolvedValue({
       totalComments: 0,
       latestCommentId: null,
@@ -187,6 +201,27 @@ describe("issue goal context routes", () => {
       expect.objectContaining({
         id: projectGoal.id,
         title: projectGoal.title,
+      }),
+    );
+    expect(res.body.reviewItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "marketplace_link",
+          resolvedTarget: expect.objectContaining({ url: "https://www.ebay.es/itm/123456789" }),
+        }),
+        expect.objectContaining({
+          kind: "file",
+          resolvedTarget: expect.objectContaining({
+            path: "ops/cocktail-machine-sale/listing-templates/wallapop.txt",
+          }),
+        }),
+      ]),
+    );
+    expect(res.body.reviewPackSurface).toEqual(
+      expect.objectContaining({
+        heroPack: expect.objectContaining({
+          title: expect.stringContaining("Legacy onboarding task"),
+        }),
       }),
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();

@@ -43,6 +43,7 @@ import {
   envConfigSchema,
   canonicalizeAgentRole,
   normalizeAgentUrlKey,
+  normalizeIssuePriority,
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
@@ -3326,10 +3327,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         },
         issue.description ?? "",
       );
+      const normalizedIssuePriority = normalizeIssuePriority(issue.priority) ?? issue.priority;
       const extension = stripEmptyValues({
         identifier: issue.identifier,
         status: issue.status,
-        priority: issue.priority,
+        priority: normalizedIssuePriority,
         labelIds: issue.labelIds ?? undefined,
         billingCode: issue.billingCode ?? null,
         projectWorkspaceKey: projectWorkspaceKey ?? undefined,
@@ -3359,9 +3361,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         },
         routine.description ?? "",
       );
+      const normalizedRoutinePriority = normalizeIssuePriority(routine.priority) ?? routine.priority;
       const extension = stripEmptyValues({
         status: routine.status !== "active" ? routine.status : undefined,
-        priority: routine.priority !== "medium" ? routine.priority : undefined,
+        priority: normalizedRoutinePriority !== "medium" ? normalizedRoutinePriority : undefined,
         concurrencyPolicy: routine.concurrencyPolicy !== "coalesce_if_active" ? routine.concurrencyPolicy : undefined,
         catchUpPolicy: routine.catchUpPolicy !== "skip_missed" ? routine.catchUpPolicy : undefined,
         variables: (routine.variables ?? []).length > 0 ? routine.variables : undefined,
@@ -4364,6 +4367,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             variables: null,
             triggers: [],
           };
+          const normalizedPriority = normalizeIssuePriority(manifestIssue.priority ?? null);
           const createdRoutine = await routines.create(targetCompany.id, {
             projectId,
             goalId: null,
@@ -4371,9 +4375,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             title: manifestIssue.title,
             description,
             assigneeAgentId,
-            priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
-              ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
-              : "medium",
+            priority: normalizedPriority ?? "medium",
             status: manifestIssue.status && ROUTINE_STATUSES.includes(manifestIssue.status as any)
               ? manifestIssue.status as typeof ROUTINE_STATUSES[number]
               : "active",
@@ -4431,6 +4433,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
           continue;
         }
+        const normalizedPriority = normalizeIssuePriority(manifestIssue.priority ?? null);
         await issues.create(targetCompany.id, {
           projectId,
           projectWorkspaceId,
@@ -4440,9 +4443,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           status: manifestIssue.status && ISSUE_STATUSES.includes(manifestIssue.status as any)
             ? manifestIssue.status as typeof ISSUE_STATUSES[number]
             : "backlog",
-          priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
-            ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
-            : "medium",
+          priority: normalizedPriority ?? "medium",
           billingCode: manifestIssue.billingCode,
           assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides,
           executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings,

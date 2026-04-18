@@ -24,6 +24,16 @@ describe("describeIssueUpdateError", () => {
     expect(parsed.body).toContain("eligible QA agent");
   });
 
+  it("maps stricter QA evidence failures to operator-friendly text", () => {
+    const err = new ApiError("Request failed", 422, {
+      reasonCode: "qa_gate_missing_verification",
+    });
+
+    const parsed = describeIssueUpdateError(err);
+    expect(parsed.title).toBe("Ship blocked: missing verification evidence");
+    expect(parsed.body).toContain("TYPECHECK");
+  });
+
   it("falls back to generic errors when reasonCode is absent", () => {
     const err = new ApiError("Bad request", 400, { error: "Bad request" });
     const parsed = describeIssueUpdateError(err);

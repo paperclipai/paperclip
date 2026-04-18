@@ -39,13 +39,13 @@ You can also use your Tailscale MagicDNS hostname (for example `my-macbook.tailn
 Use the Tailscale IP or MagicDNS host with the Orchestrero port:
 
 ```txt
-http://<tailscale-host-or-ip>:3100
+http://<tailscale-host-or-ip>:3102
 ```
 
 Example:
 
 ```txt
-http://my-macbook.tailnet.ts.net:3100
+http://my-macbook.tailnet.ts.net:3102
 ```
 
 ## 4. Allow custom private hostnames when needed
@@ -61,7 +61,7 @@ pnpm paperclipai allowed-hostname my-macbook.tailnet.ts.net
 From a remote Tailscale-connected device:
 
 ```sh
-curl http://<tailscale-host-or-ip>:3100/api/health
+curl http://<tailscale-host-or-ip>:3102/api/health
 ```
 
 Expected result:
@@ -74,4 +74,4 @@ Expected result:
 
 - Login or redirect errors on a private hostname: add it with `paperclipai allowed-hostname`.
 - App only works on `localhost`: make sure you started with `--tailscale-auth` (or set `HOST=0.0.0.0` in private mode).
-- Can connect locally but not remotely: verify both devices are on the same Tailscale network and port `3100` is reachable.
+- Can connect locally but not remotely: verify both devices are on the same Tailscale network and port `3102` is reachable.

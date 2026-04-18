@@ -38,7 +38,7 @@ Store defaults to avoid repeating flags:
 
 ```sh
 # Set defaults
-pnpm paperclipai context set --api-base http://localhost:3100 --company-id <id>
+pnpm paperclipai context set --api-base http://localhost:3102 --company-id <id>
 
 # View current context
 pnpm paperclipai context show

@@ -30,14 +30,17 @@ import {
   extractAgentMentionIds,
   extractProjectMentionIds,
   isUuidLike,
+  normalizeIssuePriority,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { normalizeRunLinkedIssueCommentBody } from "./heartbeat-run-summary.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
+import { isLikelyTechnicalIssueText } from "./issue-routing-heuristics.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
@@ -66,6 +69,9 @@ const RECOVERY_DISPOSITION_COMPLETE_STATUS: Record<IssueRecoveryDisposition, "do
   blocked: "blocked",
 };
 const RECOVERY_TRUTH_COMMENT_MARKER = "[issue-recovery-transition]";
+const RECOVERY_SUCCESSOR_COMPLETE_COMMENT_MARKER = "[recovery-successor-complete]";
+const RECOVERY_SUCCESSOR_COMPLETE_ACTIVITY_ACTOR_ID = "recovery-successor-completion";
+const RECOVERY_SUCCESSOR_COMPLETE_ACTIVITY_SOURCE = "recovery_successor_completed";
 const RECOVERY_DISPOSITION_LABEL: Record<IssueRecoveryDisposition, string> = {
   closed: "closed",
   cancelled: "cancelled",
@@ -108,6 +114,25 @@ function applyStatusSideEffects(
     patch.cancelledAt = new Date();
   }
   return patch;
+}
+
+function sameIssueFieldValue(left: unknown, right: unknown): boolean {
+  if (left instanceof Date || right instanceof Date) {
+    const leftTime = left instanceof Date ? left.getTime() : (left == null ? null : new Date(left as string).getTime());
+    const rightTime = right instanceof Date ? right.getTime() : (right == null ? null : new Date(right as string).getTime());
+    return leftTime === rightTime;
+  }
+  if (typeof left === "object" || typeof right === "object") {
+    return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+  }
+  return left === right;
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  const normalizedLeft = [...new Set(left)].sort();
+  const normalizedRight = [...new Set(right)].sort();
+  if (normalizedLeft.length !== normalizedRight.length) return false;
+  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }
 
 function assertBlockedStatusMatchesRelations(status: string | undefined, blockedByIssueIds: string[]) {
@@ -206,6 +231,17 @@ function buildRecoveryTransitionComment(input: {
   ].join("\n");
 }
 
+function buildRecoverySuccessorCompletionComment(input: {
+  successorIssue: { id: string; identifier: string | null; title?: string | null };
+}) {
+  const successorRef = formatRecoveryIssueReference(input.successorIssue);
+  return [
+    RECOVERY_SUCCESSOR_COMPLETE_COMMENT_MARKER,
+    "Recovery successor completed; this blocked source was automatically marked done.",
+    `Successor issue: ${successorRef}`,
+  ].join("\n");
+}
+
 async function appendRecoveryTransitionComment({
   dbOrTx,
   companyId,
@@ -232,6 +268,30 @@ async function appendRecoveryTransitionComment({
     issueId: sourceIssueId,
     authorAgentId: actorAgentId ?? null,
     authorUserId: actorUserId ?? null,
+    createdByRunId: null,
+    body,
+  });
+}
+
+async function appendRecoverySuccessorCompletionComment({
+  dbOrTx,
+  companyId,
+  sourceIssueId,
+  successorIssue,
+}: {
+  dbOrTx: any;
+  companyId: string;
+  sourceIssueId: string;
+  successorIssue: { id: string; identifier: string | null; title?: string | null };
+}) {
+  const body = buildRecoverySuccessorCompletionComment({
+    successorIssue,
+  });
+  await dbOrTx.insert(issueComments).values({
+    companyId,
+    issueId: sourceIssueId,
+    authorAgentId: null,
+    authorUserId: null,
     createdByRunId: null,
     body,
   });
@@ -319,6 +379,158 @@ async function copyRecoveryInboxContext({
         })),
       )
       .onConflictDoNothing();
+  }
+}
+
+async function markBlockedRecoverySourcesDone({
+  dbOrTx,
+  companyId,
+  completedIssueId,
+}: {
+  dbOrTx: any;
+  companyId: string;
+  completedIssueId: string;
+}) {
+  const visitedSuccessorIds = new Set<string>();
+  let frontier = [completedIssueId];
+
+  while (frontier.length > 0) {
+    const successorIssueIds = frontier.filter((issueId) => !visitedSuccessorIds.has(issueId));
+    if (successorIssueIds.length === 0) break;
+    successorIssueIds.forEach((issueId) => visitedSuccessorIds.add(issueId));
+
+    const successorRows: Array<{ id: string; identifier: string | null; title: string }> = await dbOrTx
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, successorIssueIds)));
+    const successorById = new Map(successorRows.map((row) => [row.id, row]));
+
+    const sourceRows: Array<{ id: string; identifier: string | null; successorIssueId: string }> = await dbOrTx
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        successorIssueId: issueRelations.relatedIssueId,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, RECOVERY_RELATION_TYPE),
+          inArray(issueRelations.relatedIssueId, successorIssueIds),
+          eq(issues.status, "blocked"),
+        ),
+      );
+
+    const sourceById = new Map<
+      string,
+      {
+        id: string;
+        identifier: string | null;
+        successorIssue: { id: string; identifier: string | null; title: string };
+      }
+    >();
+    for (const row of sourceRows) {
+      const successorIssue = successorById.get(row.successorIssueId);
+      if (!successorIssue || sourceById.has(row.id)) continue;
+      sourceById.set(row.id, {
+        id: row.id,
+        identifier: row.identifier,
+        successorIssue,
+      });
+    }
+
+    const sourceIssueIds = [...sourceById.keys()];
+    if (sourceIssueIds.length === 0) {
+      frontier = [];
+      continue;
+    }
+
+    const activeBlockerRows: Array<{ blockedIssueId: string }> = await dbOrTx
+      .select({
+        blockedIssueId: issueRelations.relatedIssueId,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issueRelations.relatedIssueId, sourceIssueIds),
+          ne(issues.status, "done"),
+          ne(issues.status, "cancelled"),
+        ),
+      );
+    const blockedSourceIds = new Set(activeBlockerRows.map((row) => row.blockedIssueId));
+    const autoCloseSourceRows = [...sourceById.values()].filter((row) => !blockedSourceIds.has(row.id));
+    if (autoCloseSourceRows.length === 0) {
+      frontier = [];
+      continue;
+    }
+
+    const now = new Date();
+    const autoCloseSourceIssueIds = autoCloseSourceRows.map((row) => row.id);
+    const updatedRows: Array<{ id: string }> = await dbOrTx
+      .update(issues)
+      .set({
+        status: "done",
+        completedAt: now,
+        cancelledAt: null,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.id, autoCloseSourceIssueIds),
+          eq(issues.status, "blocked"),
+        ),
+      )
+      .returning({ id: issues.id });
+
+    const updatedSourceIdSet = new Set(updatedRows.map((row) => row.id));
+    const updatedSourceRows = autoCloseSourceRows.filter((row) => updatedSourceIdSet.has(row.id));
+    if (updatedSourceRows.length === 0) {
+      frontier = [];
+      continue;
+    }
+
+    await Promise.all(updatedSourceRows.map((row) =>
+      appendRecoverySuccessorCompletionComment({
+        dbOrTx,
+        companyId,
+        sourceIssueId: row.id,
+        successorIssue: row.successorIssue,
+      })
+    ));
+
+    await dbOrTx.insert(activityLog).values(updatedSourceRows.map((row) => ({
+      companyId,
+      actorType: "system",
+      actorId: RECOVERY_SUCCESSOR_COMPLETE_ACTIVITY_ACTOR_ID,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: row.id,
+      details: {
+        identifier: row.identifier,
+        source: RECOVERY_SUCCESSOR_COMPLETE_ACTIVITY_SOURCE,
+        recoverySuccessorIssueId: row.successorIssue.id,
+        recoverySuccessorIdentifier: row.successorIssue.identifier,
+        status: "done",
+        _previous: {
+          status: "blocked",
+        },
+      },
+    })));
+
+    frontier = updatedSourceRows.map((row) => row.id);
   }
 }
 
@@ -1046,10 +1258,17 @@ export function issueService(db: Db) {
     return enriched;
   }
 
-  function redactIssueComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
+  function redactIssueComment<
+    T extends {
+      body: string;
+      authorAgentId?: string | null;
+      createdByRunId?: string | null;
+    },
+  >(comment: T, censorUsernameInLogs: boolean): T {
+    const normalizedBody = normalizeRunLinkedIssueCommentBody(comment);
     return {
       ...comment,
-      body: redactCurrentUserText(comment.body, { enabled: censorUsernameInLogs }),
+      body: redactCurrentUserText(normalizedBody, { enabled: censorUsernameInLogs }),
     };
   }
 
@@ -1326,9 +1545,32 @@ export function issueService(db: Db) {
         if (visited.has(current)) continue;
         visited.add(current);
         queue.push(...(adjacency.get(current) ?? []));
-      }
     }
   }
+}
+
+function resolveDefaultIssueExecutionWorkspaceSettings(input: {
+  issueTitle: string;
+  issueDescription: string | null | undefined;
+  projectExecutionWorkspacePolicy: ReturnType<typeof parseProjectExecutionWorkspacePolicy>;
+  isolatedWorkspacesEnabled: boolean;
+}) {
+  const isTechnical = isLikelyTechnicalIssueText(
+    [input.issueTitle, input.issueDescription].filter(Boolean).join(" "),
+  );
+  const parsedPolicy = gateProjectExecutionWorkspacePolicy(
+    input.projectExecutionWorkspacePolicy,
+    input.isolatedWorkspacesEnabled,
+  );
+  const projectDefault = defaultIssueExecutionWorkspaceSettingsForProject(parsedPolicy);
+  if (projectDefault?.mode === "shared_workspace") {
+    return { mode: isTechnical ? "isolated_workspace" : "shared_workspace" };
+  }
+  if (projectDefault) {
+    return projectDefault;
+  }
+  return { mode: isTechnical ? "isolated_workspace" : "shared_workspace" };
+}
 
   async function syncBlockedByIssueIds(
     issueId: string,
@@ -2293,6 +2535,10 @@ export function issueService(db: Db) {
         recoveryDisposition,
         ...issueData
       } = data;
+      const normalizedPriority = normalizeIssuePriority(issueData.priority ?? null);
+      if (normalizedPriority) {
+        issueData.priority = normalizedPriority;
+      }
       const hasRecoverySource = Boolean(recoveryFromIssueId);
       const hasRecoveryDisposition = Boolean(recoveryDisposition);
       if (hasRecoverySource !== hasRecoveryDisposition) {
@@ -2361,6 +2607,7 @@ export function issueService(db: Db) {
           }
         }
         if (
+          isolatedWorkspacesEnabled &&
           executionWorkspaceSettings == null &&
           executionWorkspaceId == null &&
           issueData.projectId
@@ -2370,13 +2617,12 @@ export function issueService(db: Db) {
             .from(projects)
             .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
             .then((rows) => rows[0] ?? null);
-          executionWorkspaceSettings =
-            defaultIssueExecutionWorkspaceSettingsForProject(
-              gateProjectExecutionWorkspacePolicy(
-                parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
-                isolatedWorkspacesEnabled,
-              ),
-            ) as Record<string, unknown> | null;
+          executionWorkspaceSettings = resolveDefaultIssueExecutionWorkspaceSettings({
+            issueTitle: issueData.title,
+            issueDescription: issueData.description,
+            projectExecutionWorkspacePolicy: parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
+            isolatedWorkspacesEnabled,
+          }) as Record<string, unknown> | null;
         }
         if (!projectWorkspaceId && issueData.projectId) {
           const project = await tx
@@ -2510,6 +2756,10 @@ export function issueService(db: Db) {
         recovery,
         ...issueData
       } = data;
+      const normalizedPriority = normalizeIssuePriority(issueData.priority ?? null);
+      if (normalizedPriority) {
+        issueData.priority = normalizedPriority;
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -2543,7 +2793,6 @@ export function issueService(db: Db) {
 
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
-        updatedAt: new Date(),
       };
       if (recovery?.successorIssueId) {
         patch.assigneeAgentId = null;
@@ -2593,6 +2842,16 @@ export function issueService(db: Db) {
         const finalBlockedByIssueIds = blockedByIssueIds !== undefined
           ? [...new Set(blockedByIssueIds)]
           : currentBlockedByIssueIds;
+        const normalizedNextLabelIds = nextLabelIds !== undefined
+          ? [...new Set(nextLabelIds)]
+          : undefined;
+        const currentLabelIds = normalizedNextLabelIds === undefined
+          ? []
+          : await tx
+            .select({ labelId: issueLabels.labelId })
+            .from(issueLabels)
+            .where(and(eq(issueLabels.issueId, id), eq(issueLabels.companyId, existing.companyId)))
+            .then((rows: Array<{ labelId: string }>) => rows.map((row) => row.labelId));
         let resolvedStatus = issueData.status ?? existing.status;
         if (resolvedStatus === "blocked" && finalBlockedByIssueIds.length === 0) {
           if (issueData.status === "blocked") {
@@ -2611,21 +2870,24 @@ export function issueService(db: Db) {
         if (resolvedStatus !== existing.status || issueData.status !== undefined) {
           patchForTx.status = resolvedStatus;
         }
+        const statusWillChange = patchForTx.status !== undefined && patchForTx.status !== existing.status;
         if (recovery) {
           applyIssueLifecyclePatch(patchForTx, resolvedStatus);
         } else {
-          applyStatusSideEffects(patchForTx.status, patchForTx);
-          if (patchForTx.status && patchForTx.status !== "done") {
-            patchForTx.completedAt = null;
-          }
-          if (patchForTx.status && patchForTx.status !== "cancelled") {
-            patchForTx.cancelledAt = null;
-          }
-          if (patchForTx.status && patchForTx.status !== "in_progress") {
-            patchForTx.checkoutRunId = null;
-            patchForTx.executionRunId = null;
-            patchForTx.executionAgentNameKey = null;
-            patchForTx.executionLockedAt = null;
+          if (statusWillChange) {
+            applyStatusSideEffects(patchForTx.status, patchForTx);
+            if (patchForTx.status && patchForTx.status !== "done") {
+              patchForTx.completedAt = null;
+            }
+            if (patchForTx.status && patchForTx.status !== "cancelled") {
+              patchForTx.cancelledAt = null;
+            }
+            if (patchForTx.status && patchForTx.status !== "in_progress") {
+              patchForTx.checkoutRunId = null;
+              patchForTx.executionRunId = null;
+              patchForTx.executionAgentNameKey = null;
+              patchForTx.executionLockedAt = null;
+            }
           }
         }
         if (assigneeWillChange) {
@@ -2653,6 +2915,19 @@ export function issueService(db: Db) {
           projectGoalId: nextProjectGoalId,
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
+        const issueColumnChanges = Object.entries(patchForTx)
+          .filter(([key]) => key !== "updatedAt")
+          .some(([key, value]) => !sameIssueFieldValue((existing as Record<string, unknown>)[key], value));
+        const blockedByWillChange =
+          blockedByIssueIds !== undefined
+            && JSON.stringify([...currentBlockedByIssueIds].sort()) !== JSON.stringify([...finalBlockedByIssueIds].sort());
+        const labelsWillChange =
+          normalizedNextLabelIds !== undefined && !sameStringSet(currentLabelIds, normalizedNextLabelIds);
+        if (!issueColumnChanges && !labelsWillChange && !blockedByWillChange && !recovery) {
+          const [enrichedExisting] = await withIssueLabels(tx, [existing]);
+          return enrichedExisting;
+        }
+        patchForTx.updatedAt = new Date();
         const updated = await tx
           .update(issues)
           .set(patchForTx)
@@ -2660,8 +2935,8 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
-        if (nextLabelIds !== undefined) {
-          await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
+        if (labelsWillChange && normalizedNextLabelIds !== undefined) {
+          await syncIssueLabels(updated.id, existing.companyId, normalizedNextLabelIds, tx);
         }
         if (blockedByIssueIds !== undefined) {
           await syncBlockedByIssueIds(
@@ -2700,6 +2975,13 @@ export function issueService(db: Db) {
             disposition: recovery.disposition,
             actorAgentId,
             actorUserId,
+          });
+        }
+        if (existing.status !== "done" && updated.status === "done") {
+          await markBlockedRecoverySourcesDone({
+            dbOrTx: tx,
+            companyId: existing.companyId,
+            completedIssueId: updated.id,
           });
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
@@ -3051,6 +3333,26 @@ export function issueService(db: Db) {
         .where(eq(labels.id, id))
         .returning()
         .then((rows) => rows[0] ?? null),
+
+    hasCommentContaining: async (issueId: string, needle: string) => {
+      const trimmedNeedle = needle.trim();
+      if (!trimmedNeedle) return false;
+      const escapedNeedle = escapeLikePattern(trimmedNeedle);
+      const likePattern = `%${escapedNeedle}%`;
+      const match = await db
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.issueId, issueId),
+            sql<boolean>`${issueComments.body} ILIKE ${likePattern} ESCAPE '\\'`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      return Boolean(match);
+    },
 
     listComments: async (
       issueId: string,

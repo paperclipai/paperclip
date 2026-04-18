@@ -61,7 +61,7 @@ Environment knobs:
 - `OPENCLAW_MODEL_FALLBACK` (default `openai/gpt-5.2-chat-latest`)
 - `OPENCLAW_CONFIG_DIR` (default `~/.openclaw-paperclip-smoke`)
 - `OPENCLAW_RESET_STATE=1` (default) resets smoke agent state on each run to avoid stale auth/session drift
-- `PAPERCLIP_HOST_PORT` (default `3100`)
+- `PAPERCLIP_HOST_PORT` (default `3102`)
 - `PAPERCLIP_HOST_FROM_CONTAINER` (default `host.docker.internal`)
 
 ### Authenticated mode
@@ -78,7 +78,7 @@ PAPERCLIP_COOKIE="your_session_cookie=..." pnpm smoke:openclaw-join
 
 - Local same-host smoke: default callback uses `http://127.0.0.1:<port>/webhook`.
 - Inside OpenClaw Docker, `127.0.0.1` points to the container itself, not your host Orchestrero server.
-- For invite/onboarding URLs consumed by OpenClaw in Docker, use the script-printed Orchestrero URL (typically `http://host.docker.internal:3100`).
+- For invite/onboarding URLs consumed by OpenClaw in Docker, use the script-printed Orchestrero URL (typically `http://host.docker.internal:3102`).
 - If Orchestrero rejects the container-visible host with a hostname error, allow it from host:
 
 ```bash

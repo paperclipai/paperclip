@@ -329,15 +329,14 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   });
 
   it("persists execution workspace selections from manual routine runs", async () => {
-    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const { companyId, agentId, projectId } = await seedFixture();
     const projectWorkspaceId = randomUUID();
     const executionWorkspaceId = randomUUID();
     const app = await createApp({
-      type: "board",
-      userId,
-      source: "session",
-      isInstanceAdmin: false,
-      companyIds: [companyId],
+      type: "agent",
+      companyId,
+      agentId,
+      source: "agent_api_key",
     });
 
     await db.insert(projectWorkspaces).values({

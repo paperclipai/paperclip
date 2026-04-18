@@ -1,12 +1,13 @@
 import express from "express";
 import request from "supertest";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   create: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
   listComments: vi.fn(),
+  listAttachments: vi.fn(),
   getAncestors: vi.fn(),
   findMentionedProjectIds: vi.fn(),
   getRelationSummaries: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
+    listIssueDocuments: vi.fn(async () => []),
   }),
   executionGateService: () => ({
     getExecutionBlock: vi.fn(async () => null),
@@ -140,15 +142,29 @@ function makeIssue(overrides?: Record<string, unknown>) {
 }
 
 describe("issue recovery route guards", () => {
-  beforeAll(async () => {
+  beforeEach(async () => {
+    vi.resetAllMocks();
     vi.resetModules();
     ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-  }, 30_000);
-
-  beforeEach(() => {
+    mockIssueService.create.mockReset();
+    mockIssueService.getById.mockReset();
+    mockIssueService.update.mockReset();
+    mockIssueService.listComments.mockReset();
+    mockIssueService.listAttachments.mockReset();
+    mockIssueService.getAncestors.mockReset();
+    mockIssueService.findMentionedProjectIds.mockReset();
+    mockIssueService.getRelationSummaries.mockReset();
+    mockIssueService.listWakeableBlockedDependents.mockReset();
+    mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
+    mockIssueService.addComment.mockReset();
+    mockIssueService.findMentionedAgents.mockReset();
+    mockAgentService.getById.mockReset();
+    mockAgentService.list.mockReset();
+    mockComputeIssueBoardStateMap.mockReset();
     vi.clearAllMocks();
     mockIssueService.listComments.mockResolvedValue([]);
+    mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({

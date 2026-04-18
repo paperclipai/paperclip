@@ -219,7 +219,10 @@ export function copilotRoutes(db: Db) {
         });
         return created;
       } catch (error) {
-        if ((error as { constraint?: string }).constraint !== "issues_open_board_copilot_thread_uq") {
+        const constraint =
+          (error as { constraint?: string; constraint_name?: string }).constraint ??
+          (error as { constraint?: string; constraint_name?: string }).constraint_name;
+        if (constraint !== "issues_open_board_copilot_thread_uq") {
           throw error;
         }
         const raced = await issuesSvc.list(input.companyId, {

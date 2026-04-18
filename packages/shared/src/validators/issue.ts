@@ -8,6 +8,7 @@ import {
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
 } from "../constants.js";
+import { normalizeIssuePriorityInput } from "../issue-priority.js";
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
@@ -137,6 +138,8 @@ export const issueRecoverySchema = z
 
 export type IssueRecovery = z.infer<typeof issueRecoverySchema>;
 
+const issuePrioritySchema = z.preprocess(normalizeIssuePriorityInput, z.enum(ISSUE_PRIORITIES));
+
 const createIssueCoreSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
@@ -147,7 +150,7 @@ const createIssueCoreSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional().nullable(),
   status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
-  priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
+  priority: issuePrioritySchema.optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
   requestDepth: z.number().int().nonnegative().optional().default(0),

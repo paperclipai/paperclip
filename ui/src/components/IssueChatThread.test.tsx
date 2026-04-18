@@ -5,6 +5,7 @@ import { createContext, useContext, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { IssueReviewItem } from "@paperclipai/shared";
 import { IssueChatThread, resolveAssistantMessageFoldedState } from "./IssueChatThread";
 import { formatDateTime } from "../lib/utils";
 
@@ -170,6 +171,34 @@ vi.mock("../hooks/usePaperclipIssueRuntime", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+function makeReviewItem(overrides: Partial<IssueReviewItem> = {}): IssueReviewItem {
+  return {
+    id: "item-1",
+    kind: "file",
+    group: "references",
+    title: "wallapop.txt",
+    subtitle: "ops/listing-templates/wallapop.txt",
+    summary: null,
+    previewState: "partial",
+    status: "new",
+    thumbnailUrl: null,
+    resolvedTarget: { path: "ops/listing-templates/wallapop.txt" },
+    sourceRefs: [
+      {
+        sourceType: "issue_comment",
+        sourceId: "agent-1",
+        commentId: "agent-1",
+        authorAgentId: "agent-1",
+        authorUserId: null,
+        createdAt: new Date("2026-04-17T10:00:00.000Z"),
+      },
+    ],
+    mentionCount: 1,
+    metadata: { extension: ".txt" },
+    ...overrides,
+  };
+}
 
 describe("IssueChatThread", () => {
   let container: HTMLDivElement;
@@ -396,6 +425,90 @@ describe("IssueChatThread", () => {
     expect(agentTimestamp?.textContent).toBe(formatDateTime(agentCommentAt));
     expect(userTimestamp?.className).toContain("rounded-full");
     expect(agentTimestamp?.className).toContain("rounded-full");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders inline review items under the matching comment and opens them on click", () => {
+    const root = createRoot(container);
+    const onOpenReviewItem = vi.fn();
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[
+              {
+                id: "agent-1",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: "agent-1",
+                authorUserId: null,
+                body: "Use ops/listing-templates/wallapop.txt for the marketplace copy.",
+                createdAt: new Date("2026-04-17T10:00:00.000Z"),
+                updatedAt: new Date("2026-04-17T10:00:00.000Z"),
+              },
+              {
+                id: "agent-2",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: "agent-1",
+                authorUserId: null,
+                body: "No file references in this follow-up.",
+                createdAt: new Date("2026-04-17T10:05:00.000Z"),
+                updatedAt: new Date("2026-04-17T10:05:00.000Z"),
+              },
+            ]}
+            reviewItems={[
+              makeReviewItem(),
+              makeReviewItem({
+                id: "item-2",
+                title: "preview.paperclip.local",
+                kind: "generic_link",
+                resolvedTarget: { url: "https://preview.paperclip.local/listing/123" },
+                sourceRefs: [
+                  {
+                    sourceType: "issue_comment",
+                    sourceId: "agent-2",
+                    commentId: "agent-2",
+                    authorAgentId: "agent-1",
+                    authorUserId: null,
+                    createdAt: new Date("2026-04-17T10:05:00.000Z"),
+                  },
+                ],
+              }),
+            ]}
+            onOpenReviewItem={onOpenReviewItem}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            showJumpToLatest={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const inlineCard = Array.from(container.querySelectorAll("button")).find((node) =>
+      node.textContent?.includes("wallapop.txt"),
+    );
+    expect(inlineCard).toBeTruthy();
+    expect(container.textContent).toContain("preview.paperclip.local");
+
+    act(() => {
+      inlineCard?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onOpenReviewItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "wallapop.txt",
+        resolvedTarget: expect.objectContaining({ path: "ops/listing-templates/wallapop.txt" }),
+      }),
+    );
 
     act(() => {
       root.unmount();

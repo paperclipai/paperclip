@@ -34,4 +34,12 @@ describe("issuesApi.list", () => {
       "/companies/company-1/issues?excludeRecoverySourcesWithOpenSuccessors=true",
     );
   });
+
+  it("requests issue-scoped file previews with encoded paths", async () => {
+    await issuesApi.getFilePreview("issue-1", "ops/listings/wallapop draft.txt");
+
+    expect(mockGet).toHaveBeenCalledWith(
+      "/issues/issue-1/file-preview?path=ops%2Flistings%2Fwallapop+draft.txt",
+    );
+  });
 });

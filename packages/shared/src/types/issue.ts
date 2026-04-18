@@ -227,8 +227,12 @@ export type IssueQaGateReasonCode =
   | "qa_gate_no_eligible_qa_agent"
   | "qa_gate_requires_in_review"
   | "qa_gate_missing_qa_comment"
+  | "qa_gate_missing_qa_summary"
   | "qa_gate_missing_qa_pass"
-  | "qa_gate_missing_release_confirmation";
+  | "qa_gate_missing_release_confirmation"
+  | "qa_gate_missing_verification"
+  | "qa_gate_failing_review"
+  | "qa_gate_failing_verification";
 
 export type IssueCommentPublicationStatus =
   | "not_applicable"
@@ -330,6 +334,8 @@ export interface Issue {
   goal?: Goal | null;
   currentExecutionWorkspace?: ExecutionWorkspace | null;
   workProducts?: IssueWorkProduct[];
+  reviewItems?: IssueReviewItem[];
+  reviewPackSurface?: IssueReviewPackSurface | null;
   mentionedProjects?: Project[];
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
@@ -369,4 +375,122 @@ export interface IssueAttachment {
   createdAt: Date;
   updatedAt: Date;
   contentPath: string;
+}
+
+export type IssueReviewItemGroup = "review_now" | "references" | "hidden_context";
+
+export type IssueReviewItemKind =
+  | "image"
+  | "file"
+  | "document"
+  | "marketplace_link"
+  | "work_product"
+  | "generic_link"
+  | "missing";
+
+export type IssueReviewItemPreviewState = "ready" | "partial" | "missing" | "unsupported";
+
+export type IssueReviewItemStatus = "new" | "reviewed" | "stale" | "unavailable";
+
+export type IssueReviewItemSourceType =
+  | "issue_description"
+  | "issue_comment"
+  | "attachment"
+  | "document"
+  | "work_product";
+
+export interface IssueReviewItemSourceRef {
+  sourceType: IssueReviewItemSourceType;
+  sourceId: string;
+  commentId?: string | null;
+  authorAgentId?: string | null;
+  authorUserId?: string | null;
+  createdAt: Date;
+}
+
+export interface IssueReviewItemResolvedTarget {
+  url?: string | null;
+  path?: string | null;
+  attachmentId?: string | null;
+  documentKey?: string | null;
+  workProductId?: string | null;
+}
+
+export interface IssueReviewItem {
+  id: string;
+  kind: IssueReviewItemKind;
+  group: IssueReviewItemGroup;
+  title: string;
+  subtitle: string | null;
+  summary: string | null;
+  previewState: IssueReviewItemPreviewState;
+  status: IssueReviewItemStatus;
+  thumbnailUrl: string | null;
+  resolvedTarget: IssueReviewItemResolvedTarget;
+  sourceRefs: IssueReviewItemSourceRef[];
+  mentionCount: number;
+  metadata: Record<string, unknown> | null;
+}
+
+export type IssueReviewHintSeverity = "info" | "warning" | "critical";
+
+export interface IssueReviewHint {
+  code: string;
+  label: string;
+  severity: IssueReviewHintSeverity;
+  detail: string | null;
+}
+
+export type IssueReviewActionTargetType = "item" | "issue" | "agent" | "comment";
+
+export interface IssueReviewActionTarget {
+  type: IssueReviewActionTargetType;
+  value: string;
+}
+
+export type IssueReviewPackStatus = "ready" | "warning" | "blocked" | "reviewed";
+
+export interface IssueReviewPack {
+  id: string;
+  title: string;
+  summary: string | null;
+  reason: string;
+  primaryItemIds: string[];
+  evidenceItemIds: string[];
+  warningCodes: string[];
+  hints: IssueReviewHint[];
+  status: IssueReviewPackStatus;
+  nextActionLabel: string | null;
+  nextActionTarget: IssueReviewActionTarget | null;
+  mentionCount: number;
+  sourceRefs: IssueReviewItemSourceRef[];
+}
+
+export interface IssueReviewBlocker {
+  id: string;
+  title: string;
+  summary: string | null;
+  actionLabel: string | null;
+  actionTarget: IssueReviewActionTarget | null;
+  severity: IssueReviewHintSeverity;
+}
+
+export interface IssueReviewPackSurface {
+  blockers: IssueReviewBlocker[];
+  heroPack: IssueReviewPack | null;
+  queue: IssueReviewPack[];
+  evidence: string[];
+}
+
+export type IssueFilePreviewKind = "text" | "image" | "unsupported" | "missing";
+
+export interface IssueFilePreview {
+  path: string;
+  absolutePath: string | null;
+  exists: boolean;
+  kind: IssueFilePreviewKind;
+  contentType: string | null;
+  byteSize: number | null;
+  snippet: string | null;
+  contentPath: string | null;
 }

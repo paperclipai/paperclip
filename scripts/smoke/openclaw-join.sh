@@ -10,7 +10,7 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-PAPERCLIP_API_URL="${PAPERCLIP_API_URL:-http://localhost:3100}"
+PAPERCLIP_API_URL="${PAPERCLIP_API_URL:-http://localhost:3102}"
 API_BASE="${PAPERCLIP_API_URL%/}/api"
 COMPANY_ID="${COMPANY_ID:-${PAPERCLIP_COMPANY_ID:-}}"
 OPENCLAW_AGENT_NAME="${OPENCLAW_AGENT_NAME:-OpenClaw Smoke Agent}"

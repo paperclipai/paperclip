@@ -8,7 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
   PAPERCLIP_HOME=/paperclip \
   PAPERCLIP_OPEN_ON_LISTEN=false \
   HOST=0.0.0.0 \
-  PORT=3100 \
+  PORT=3102 \
   HOME=/home/paperclip \
   LANG=en_US.UTF-8 \
   LC_ALL=en_US.UTF-8 \
@@ -34,7 +34,7 @@ RUN apt-get update \
 
 VOLUME ["/paperclip"]
 WORKDIR /home/paperclip/workspace
-EXPOSE 3100
+EXPOSE 3102
 USER paperclip
 
 CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$PAPERCLIP_HOME\"; npx --yes \"paperclipai@${PAPERCLIPAI_VERSION}\" onboard --yes --data-dir \"$PAPERCLIP_HOME\""]

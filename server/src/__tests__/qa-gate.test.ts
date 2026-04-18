@@ -80,7 +80,12 @@ describe("qa gate helpers", () => {
       qaComments: [
         {
           id: "comment-2",
-          body: "[QA PASS]\n[RELEASE CONFIRMED]",
+          body: [
+            "[CQ:pass] [EH:pass] [TC:pass] [CM:pass] [DOC:pass]",
+            "[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]",
+            "[QA PASS]",
+            "[RELEASE CONFIRMED]",
+          ].join("\n"),
           createdAt: new Date("2026-04-11T11:00:00Z"),
         },
       ],
@@ -135,11 +140,115 @@ describe("qa gate helpers", () => {
     expect(stale.review.stale).toBe(true);
   });
 
+  it("requires the latest QA comment to carry a Smart Review summary before shipping", () => {
+    const gate = buildIssueQaGate({
+      issue: { status: "in_review" },
+      assigneeRole: "engineer",
+      qaComments: [
+        {
+          id: "comment-2",
+          body: [
+            "[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]",
+            "[QA PASS]",
+            "[RELEASE CONFIRMED]",
+          ].join("\n"),
+          createdAt: new Date("2026-04-11T11:30:00Z"),
+        },
+        {
+          id: "comment-1",
+          body: "[CQ:pass] [EH:pass] [TC:pass] [CM:pass] [DOC:pass]",
+          createdAt: new Date("2026-04-11T11:00:00Z"),
+        },
+      ],
+      latestDecisionOutcome: null,
+      now: new Date("2026-04-11T12:00:00Z"),
+    });
+
+    expect(gate.canShip).toBe(false);
+    expect(gate.missingRequirements).toContain("qa_gate_missing_qa_summary");
+  });
+
+  it("blocks shipping when the latest QA review is failing even if ship markers are present", () => {
+    const gate = buildIssueQaGate({
+      issue: { status: "in_review" },
+      assigneeRole: "engineer",
+      qaComments: [
+        {
+          id: "comment-1",
+          body: [
+            "[CQ:pass] [EH:pass] [TC:fail] [CM:pass] [DOC:pass]",
+            "[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]",
+            "[QA PASS]",
+            "[RELEASE CONFIRMED]",
+          ].join("\n"),
+          createdAt: new Date("2026-04-11T11:00:00Z"),
+        },
+      ],
+      latestDecisionOutcome: null,
+      now: new Date("2026-04-11T12:00:00Z"),
+    });
+
+    expect(gate.review.overall).toBe("fail");
+    expect(gate.canShip).toBe(false);
+    expect(gate.missingRequirements).toContain("qa_gate_failing_review");
+  });
+
+  it("requires explicit passing verification tokens on the latest QA verdict before shipping", () => {
+    const gate = buildIssueQaGate({
+      issue: { status: "in_review" },
+      assigneeRole: "engineer",
+      qaComments: [
+        {
+          id: "comment-1",
+          body: [
+            "[CQ:pass] [EH:pass] [TC:pass] [CM:pass] [DOC:pass]",
+            "[QA PASS]",
+            "[RELEASE CONFIRMED]",
+          ].join("\n"),
+          createdAt: new Date("2026-04-11T11:00:00Z"),
+        },
+      ],
+      latestDecisionOutcome: null,
+      now: new Date("2026-04-11T12:00:00Z"),
+    });
+
+    expect(gate.canShip).toBe(false);
+    expect(gate.missingRequirements).toContain("qa_gate_missing_verification");
+  });
+
+  it("requires a complete Smart Review summary on the latest QA verdict before shipping", () => {
+    const gate = buildIssueQaGate({
+      issue: { status: "in_review" },
+      assigneeRole: "engineer",
+      qaComments: [
+        {
+          id: "comment-1",
+          body: [
+            "[CQ:pass]",
+            "[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]",
+            "[QA PASS]",
+            "[RELEASE CONFIRMED]",
+          ].join("\n"),
+          createdAt: new Date("2026-04-11T11:00:00Z"),
+        },
+      ],
+      latestDecisionOutcome: null,
+      now: new Date("2026-04-11T12:00:00Z"),
+    });
+
+    expect(gate.review.overall).toBe("unknown");
+    expect(gate.canShip).toBe(false);
+    expect(gate.missingRequirements).toContain("qa_gate_missing_qa_summary");
+  });
+
   it("returns stable reason messages", () => {
     expect(issueQaGateReasonMessage("invalid_status_transition")).toContain("Invalid issue status transition");
     expect(issueQaGateReasonMessage("qa_gate_requires_in_review")).toContain("in_review");
     expect(issueQaGateReasonMessage("qa_gate_missing_qa_comment")).toContain("No QA-authored comment");
+    expect(issueQaGateReasonMessage("qa_gate_missing_qa_summary")).toContain("Smart Review");
     expect(issueQaGateReasonMessage("qa_gate_missing_qa_pass")).toContain("[QA PASS]");
     expect(issueQaGateReasonMessage("qa_gate_missing_release_confirmation")).toContain("[RELEASE CONFIRMED]");
+    expect(issueQaGateReasonMessage("qa_gate_missing_verification")).toContain("verification");
+    expect(issueQaGateReasonMessage("qa_gate_failing_review")).toContain("failing");
   });
 });

@@ -9,8 +9,87 @@ function readNumericField(record: Record<string, unknown>, key: string) {
 
 function readCommentText(value: unknown) {
   if (typeof value !== "string") return null;
-  const trimmed = value.trim();
+  const trimmed = normalizeIssueCommentText(value);
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function stripTrailingSessionIdLine(value: string) {
+  return value.replace(/\n+session_id:\s*\S+\s*$/i, "").trim();
+}
+
+const RUN_SUMMARY_LAYOUT_MARKERS = [
+  /(^|\n)#{0,3}\s*summary\b/im,
+  /(^|\n)#{0,3}\s*status:\s*/im,
+] as const;
+
+const RUN_SUMMARY_CONTENT_MARKERS = [
+  /(^|\n)#{0,3}\s*acceptance criteria\b/im,
+  /(^|\n)#{0,3}\s*files changed\b/im,
+  /\bImplementation Complete\b/i,
+  /\bNo active parent to notify\b/i,
+  /\bdelivery gate requires QA agent\b/i,
+] as const;
+
+function collapseAdjacentRepeatedPrefix(value: string) {
+  const candidateBoundaries = new Set<number>([value.length]);
+  for (let index = value.indexOf("\n"); index >= 0; index = value.indexOf("\n", index + 1)) {
+    candidateBoundaries.add(index + 1);
+  }
+
+  const orderedBoundaries = [...candidateBoundaries].sort((left, right) => right - left);
+  for (const boundary of orderedBoundaries) {
+    if (boundary < 200) continue;
+
+    const prefix = value.slice(0, boundary);
+    if (!value.startsWith(prefix, boundary)) continue;
+
+    const nonEmptyLineCount = prefix
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .length;
+    if (nonEmptyLineCount < 4) continue;
+
+    return `${prefix}${value.slice(boundary * 2)}`.trim();
+  }
+
+  return value;
+}
+
+function collapseRepeatedContent(value: string) {
+  let current = value;
+  while (true) {
+    const collapsed = collapseAdjacentRepeatedPrefix(current);
+    if (collapsed === current) return current;
+    current = collapsed;
+  }
+}
+
+export function normalizeIssueCommentText(value: string) {
+  return collapseRepeatedContent(stripTrailingSessionIdLine(value.replace(/\r\n?/g, "\n").trim()));
+}
+
+export function isLikelySynthesizedRunSummaryText(value: string) {
+  const normalized = value.replace(/\r\n?/g, "\n").trim();
+  if (normalized.length === 0) return false;
+  if (!RUN_SUMMARY_LAYOUT_MARKERS.some((pattern) => pattern.test(normalized))) {
+    return false;
+  }
+  return RUN_SUMMARY_CONTENT_MARKERS.some((pattern) => pattern.test(normalized));
+}
+
+export function normalizeRunLinkedIssueCommentBody(input: {
+  body: string;
+  authorAgentId?: string | null;
+  createdByRunId?: string | null;
+}) {
+  if (!input.authorAgentId || !input.createdByRunId) {
+    return input.body;
+  }
+  if (!isLikelySynthesizedRunSummaryText(input.body)) {
+    return input.body;
+  }
+  return normalizeIssueCommentText(input.body);
 }
 
 export function summarizeHeartbeatRunResultJson(
@@ -42,7 +121,11 @@ export function summarizeHeartbeatRunResultJson(
 
 export function buildHeartbeatRunIssueComment(
   resultJson: Record<string, unknown> | null | undefined,
+  opts: { hasExistingRunComment?: boolean } = {},
 ): string | null {
+  if (opts.hasExistingRunComment) {
+    return null;
+  }
   if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) {
     return null;
   }

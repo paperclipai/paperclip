@@ -38,6 +38,7 @@ import {
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { agentInstructionsService } from "./agent-instructions.js";
+import { normalizeRunLinkedIssueCommentBody } from "./heartbeat-run-summary.js";
 import {
   createFeedbackRedactionState,
   finalizeFeedbackRedactionSummary,
@@ -812,11 +813,13 @@ async function resolveFeedbackTarget(
       throw unprocessable("Feedback voting is only available on agent-authored issue comments");
     }
 
+    const normalizedBody = normalizeRunLinkedIssueCommentBody(targetComment);
+
     const record: ResolvedFeedbackTarget = {
       targetType,
       targetId,
       label: "Comment",
-      body: targetComment.body,
+      body: normalizedBody,
       createdAt: targetComment.createdAt,
       authorAgentId: targetComment.authorAgentId,
       authorUserId: targetComment.authorUserId,
@@ -942,9 +945,13 @@ async function listIssueContextItems(
   ]);
 
   const issuePath = buildIssuePath(issue.identifier);
+  const normalizedCommentRows = commentRows.map((row) => ({
+    ...row,
+    body: normalizeRunLinkedIssueCommentBody(row),
+  }));
 
   const items: FeedbackTargetRecord[] = [
-    ...commentRows.map((row) => ({
+    ...normalizedCommentRows.map((row) => ({
       targetType: "issue_comment" as const,
       targetId: row.targetId,
       label: "Comment",

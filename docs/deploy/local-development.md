@@ -19,7 +19,7 @@ pnpm dev
 
 This starts:
 
-- **API server** at `http://localhost:3100`
+- **API server** at `http://localhost:3102`
 - **UI** served by the API server in dev middleware mode (same origin)
 
 No Docker or external database required. Orchestrero uses embedded PostgreSQL automatically.
@@ -92,10 +92,10 @@ For full setup and troubleshooting, see [Tailscale Private Access](/deploy/tails
 ## Health Checks
 
 ```sh
-curl http://localhost:3100/api/health
+curl http://localhost:3102/api/health
 # -> {"status":"ok"}
 
-curl http://localhost:3100/api/companies
+curl http://localhost:3102/api/companies
 # -> []
 ```
 

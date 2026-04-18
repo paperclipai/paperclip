@@ -75,6 +75,15 @@ function ComboboxField({
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const closeTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimeoutRef.current) {
+        clearTimeout(closeTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Sync filter with external value when it changes (e.g. provider switch resets model)
   useEffect(() => {
@@ -148,7 +157,10 @@ function ComboboxField({
           }}
           onBlur={() => {
             // Delay close to allow click on option to register
-            setTimeout(() => setOpen(false), 150);
+            if (closeTimeoutRef.current) {
+              clearTimeout(closeTimeoutRef.current);
+            }
+            closeTimeoutRef.current = setTimeout(() => setOpen(false), 150);
           }}
           onKeyDown={handleKeyDown}
         />

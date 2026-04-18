@@ -34,7 +34,7 @@ pnpm install
 pnpm dev
 ```
 
-This starts the API server and UI at [http://localhost:3100](http://localhost:3100).
+This starts the API server and UI at [http://localhost:3102](http://localhost:3102).
 
 No external database required — Orchestrero uses an embedded PostgreSQL instance by default.
 

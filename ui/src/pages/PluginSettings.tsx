@@ -588,6 +588,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saveMessage, setSaveMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [testResult, setTestResult] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const saveMessageTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Dirty tracking: compare against initial values
   const isDirty = JSON.stringify(values) !== JSON.stringify({
@@ -604,12 +605,23 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
       setTestResult(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId) });
       // Clear success message after 3s
-      setTimeout(() => setSaveMessage(null), 3000);
+      if (saveMessageTimeoutRef.current) {
+        clearTimeout(saveMessageTimeoutRef.current);
+      }
+      saveMessageTimeoutRef.current = setTimeout(() => setSaveMessage(null), 3000);
     },
     onError: (err: Error) => {
       setSaveMessage({ type: "error", text: err.message || "Failed to save configuration." });
     },
   });
+
+  useEffect(() => {
+    return () => {
+      if (saveMessageTimeoutRef.current) {
+        clearTimeout(saveMessageTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Test configuration mutation
   const testMutation = useMutation({

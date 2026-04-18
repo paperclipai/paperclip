@@ -86,8 +86,8 @@ vi.mock("../services/quota-windows.js", () => ({
   fetchAllQuotaWindows: mockFetchAllQuotaWindows,
 }));
 
-let costRoutesFactory: typeof import("../routes/costs.js").costRoutes;
-let errorHandlerMiddleware: typeof import("../middleware/index.js").errorHandler;
+let costRoutesFactory!: typeof import("../routes/costs.js").costRoutes;
+let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
 
 function createApp() {
   const app = express();
@@ -117,7 +117,7 @@ beforeAll(async () => {
   vi.resetModules();
   ({ costRoutes: costRoutesFactory } = await import("../routes/costs.js"));
   ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-}, 20_000);
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

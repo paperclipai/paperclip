@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { buildCopilotRouteContext, extractContextIssueRef } from "./copilot-route-context";
 
 describe("copilot-route-context", () => {
+  it("builds agent context from an agent run detail path", () => {
+    const context = buildCopilotRouteContext("/PAP/agents/agent-7/runs/run-9", "");
+    expect(context).toEqual({
+      pageKind: "agents",
+      pagePath: "/agents/agent-7/runs/run-9",
+      entityType: "agent",
+      entityId: "agent-7",
+      filters: undefined,
+    });
+  });
+
   it("builds issue context from a company-prefixed issue detail path", () => {
     const context = buildCopilotRouteContext("/PAP/issues/PAP-42", "?status=todo&q=cleanup");
     expect(context).toEqual({
@@ -32,4 +43,3 @@ describe("copilot-route-context", () => {
     expect(extractContextIssueRef("/PAP/projects/abc", "")).toBeNull();
   });
 });
-

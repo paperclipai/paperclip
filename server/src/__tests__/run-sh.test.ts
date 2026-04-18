@@ -68,7 +68,7 @@ cat >/dev/null
 
     expect(calls[0]).toBe("kill");
     expect(calls.slice(1).sort()).toEqual([
-      "pnpm:-s dev",
+      "pnpm:dev:once",
       "rg:-i error|warn|fatal|failed",
     ]);
   });

@@ -62,7 +62,7 @@ Controls what happens when a trigger fires while the previous run issue is still
 
 | Policy | Behaviour |
 |--------|-----------|
-| `coalesce_if_active` **(default)** | New run is marked `coalesced` and linked to the existing active run — no new issue created |
+| `coalesce_if_active` **(default)** | New run is marked `coalesced` and linked to the existing active run — no new issue created. The board UI labels this policy as `Reuse Active Run` and shows the run status as `Added to Active Run`. |
 | `skip_if_active` | New run is marked `skipped` and linked to the existing active run — no new issue created |
 | `always_enqueue` | Always create a new issue regardless of active runs |
 

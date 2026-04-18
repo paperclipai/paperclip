@@ -126,6 +126,29 @@ describe("extractIssueTimelineEvents", () => {
     ]);
   });
 
+  it("ignores malformed status updates that omit both _previous.status and reopenedFrom", () => {
+    const events = extractIssueTimelineEvents([
+      {
+        id: "evt-bad-status",
+        companyId: "company-1",
+        actorType: "agent",
+        actorId: "agent-1",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: "issue-1",
+        agentId: "agent-1",
+        runId: "run-1",
+        createdAt: new Date("2026-03-31T12:02:00.000Z"),
+        details: {
+          status: "done",
+          identifier: "COMA-1119",
+        },
+      },
+    ] satisfies ActivityEvent[]);
+
+    expect(events).toEqual([]);
+  });
+
   it("ignores issue updates without visible status or assignee transitions", () => {
     const events = extractIssueTimelineEvents([
       {

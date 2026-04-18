@@ -3,11 +3,20 @@ import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { heartbeatsApi } from "../../api/heartbeats";
+import { ApiError } from "../../api/client";
 import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import { queryKeys } from "../../lib/queryKeys";
 
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
+const LOG_MISSING_BASE_RETRY_MS = 2_000;
+const LOG_MISSING_MAX_RETRY_MS = 30_000;
+const LOG_MISSING_MAX_RETRIES = 3;
+
+const pollInFlightByRun = new Map<string, boolean>();
+const terminalMissingLogRuns = new Set<string>();
+const transientLogMissingRetryByRun = new Map<string, number>();
+const transientLogMissingAttemptsByRun = new Map<string, number>();
 
 export interface RunTranscriptSource {
   id: string;
@@ -27,6 +36,21 @@ function readString(value: unknown): string | null {
 
 function isTerminalStatus(status: string): boolean {
   return status === "failed" || status === "timed_out" || status === "cancelled" || status === "succeeded";
+}
+
+function isLogPollableStatus(status: string): boolean {
+  return status === "running";
+}
+
+function isNotFoundError(err: unknown): boolean {
+  if (err instanceof ApiError) {
+    return err.status === 404;
+  }
+  if (!err || typeof err !== "object") return false;
+  const candidate = err as { status?: unknown };
+  return typeof candidate.status === "number"
+    ? candidate.status === 404
+    : candidate.status === "404";
 }
 
 function parsePersistedLogContent(
@@ -71,6 +95,8 @@ export function useLiveRunTranscripts({
   maxChunksPerRun = 200,
 }: UseLiveRunTranscriptsOptions) {
   const [chunksByRun, setChunksByRun] = useState<Map<string, RunLogChunk[]>>(new Map());
+  const [missingLogRuns, setMissingLogRuns] = useState<Set<string>>(() => new Set(terminalMissingLogRuns));
+  const missingLogRunsRef = useRef<Set<string>>(new Set(terminalMissingLogRuns));
   const seenChunkKeysRef = useRef(new Set<string>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
@@ -119,10 +145,34 @@ export function useLiveRunTranscripts({
 
   useEffect(() => {
     const knownRunIds = new Set(runs.map((run) => run.id));
+    setMissingLogRuns((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const runId of prev) {
+        if (knownRunIds.has(runId)) {
+          next.add(runId);
+        } else {
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      missingLogRunsRef.current = next;
+      return next;
+    });
+
+    const nextMissingRuns = new Set<string>();
+    for (const runId of knownRunIds) {
+      if (missingLogRuns.has(runId)) {
+        nextMissingRuns.add(runId);
+      }
+    }
+    missingLogRunsRef.current = nextMissingRuns;
+
+    const visibleRunIds = new Set(runs.map((run) => run.id));
     setChunksByRun((prev) => {
       const next = new Map<string, RunLogChunk[]>();
       for (const [runId, chunks] of prev) {
-        if (knownRunIds.has(runId)) {
+        if (visibleRunIds.has(runId)) {
           next.set(runId, chunks);
         }
       }
@@ -131,13 +181,15 @@ export function useLiveRunTranscripts({
 
     for (const key of pendingLogRowsByRunRef.current.keys()) {
       const runId = key.replace(/:records$/, "");
-      if (!knownRunIds.has(runId)) {
+      if (!visibleRunIds.has(runId)) {
         pendingLogRowsByRunRef.current.delete(key);
       }
     }
     for (const runId of logOffsetByRunRef.current.keys()) {
-      if (!knownRunIds.has(runId)) {
+      if (!visibleRunIds.has(runId)) {
         logOffsetByRunRef.current.delete(runId);
+        transientLogMissingRetryByRun.delete(runId);
+        transientLogMissingAttemptsByRun.delete(runId);
       }
     }
   }, [runs]);
@@ -146,8 +198,40 @@ export function useLiveRunTranscripts({
     if (runs.length === 0) return;
 
     let cancelled = false;
+    const readableRuns = runs.filter((run) => !missingLogRuns.has(run.id) && isLogPollableStatus(run.status));
+    const shouldSkipLogRead = (runId: string) => {
+      const retryAt = transientLogMissingRetryByRun.get(runId);
+      return typeof retryAt === "number" && retryAt > Date.now();
+    };
+    const markTransientLogMissing = (runId: string) => {
+      const attempts = transientLogMissingAttemptsByRun.get(runId) ?? 0;
+      const backoffMs = Math.min(LOG_MISSING_BASE_RETRY_MS * 2 ** attempts, LOG_MISSING_MAX_RETRY_MS);
+      transientLogMissingAttemptsByRun.set(runId, attempts + 1);
+      transientLogMissingRetryByRun.set(runId, Date.now() + backoffMs);
+    };
+
+    const markTerminalMissingLogs = (runId: string) => {
+      const next = new Set(missingLogRunsRef.current);
+      if (!next.has(runId)) {
+        next.add(runId);
+        terminalMissingLogRuns.add(runId);
+        missingLogRunsRef.current = next;
+        setMissingLogRuns(next);
+      }
+      transientLogMissingRetryByRun.delete(runId);
+      transientLogMissingAttemptsByRun.delete(runId);
+    };
+
+    const shouldGiveUpOnMissingLogs = (runId: string) => {
+      return (transientLogMissingAttemptsByRun.get(runId) ?? 0) >= LOG_MISSING_MAX_RETRIES;
+    };
 
     const readRunLog = async (run: RunTranscriptSource) => {
+      if (missingLogRunsRef.current.has(run.id)) return;
+      if (pollInFlightByRun.has(run.id)) return;
+      if (shouldSkipLogRead(run.id)) return;
+      pollInFlightByRun.set(run.id, true);
+
       const offset = logOffsetByRunRef.current.get(run.id) ?? 0;
       try {
         const result = await heartbeatsApi.log(run.id, offset, LOG_READ_LIMIT_BYTES);
@@ -157,25 +241,66 @@ export function useLiveRunTranscripts({
 
         if (result.nextOffset !== undefined) {
           logOffsetByRunRef.current.set(run.id, result.nextOffset);
+          transientLogMissingRetryByRun.delete(run.id);
+          transientLogMissingAttemptsByRun.delete(run.id);
           return;
         }
         if (result.content.length > 0) {
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
+          transientLogMissingRetryByRun.delete(run.id);
+          transientLogMissingAttemptsByRun.delete(run.id);
         }
-      } catch {
+      } catch (err) {
+        if (isNotFoundError(err)) {
+          if (!isTerminalStatus(run.status)) {
+            if (shouldGiveUpOnMissingLogs(run.id)) {
+              markTerminalMissingLogs(run.id);
+              return;
+            }
+
+            // If the run transitioned to terminal status while this hook still
+            // has a stale non-terminal status snapshot, stop polling the log
+            // endpoint for this run immediately.
+            try {
+              const refreshedRun = await heartbeatsApi.get(run.id);
+              if (isTerminalStatus(refreshedRun.status)) {
+                markTerminalMissingLogs(run.id);
+                return;
+              }
+            } catch (refreshErr) {
+              // A missing run should stop log polling permanently.
+              if (isNotFoundError(refreshErr)) {
+                markTerminalMissingLogs(run.id);
+                return;
+              }
+              // Ignore other refresh failures and continue with exponential backoff.
+            }
+
+            markTransientLogMissing(run.id);
+            return;
+          }
+          markTerminalMissingLogs(run.id);
+          return;
+        }
         // Ignore log read errors while output is initializing.
+        return;
+      } finally {
+        pollInFlightByRun.delete(run.id);
       }
     };
 
     const readAll = async () => {
-      await Promise.all(runs.map((run) => readRunLog(run)));
+      await Promise.all(readableRuns.map((run) => readRunLog(run)));
     };
 
     void readAll();
-    const activeRuns = runs.filter((run) => !isTerminalStatus(run.status));
+    const activeRuns = readableRuns.filter((run) => isLogPollableStatus(run.status));
     const interval = activeRuns.length > 0
       ? window.setInterval(() => {
-          void Promise.all(activeRuns.map((run) => readRunLog(run)));
+          const currentRuns = runs.filter((run) =>
+            !missingLogRuns.has(run.id) && isLogPollableStatus(run.status),
+          );
+          void Promise.all(currentRuns.map((run) => readRunLog(run)));
         }, LOG_POLL_INTERVAL_MS)
       : null;
 
@@ -183,7 +308,7 @@ export function useLiveRunTranscripts({
       cancelled = true;
       if (interval !== null) window.clearInterval(interval);
     };
-  }, [runIdsKey, runs]);
+  }, [runIdsKey, runs, missingLogRuns]);
 
   useEffect(() => {
     if (!companyId || activeRunIds.size === 0) return;

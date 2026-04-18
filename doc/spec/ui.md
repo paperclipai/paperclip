@@ -77,7 +77,9 @@ The properties panel slides in when you click into a detail view and slides out 
 The board copilot chat rail is session-scoped to the current browser session and route context.
 
 - Opening chat from a new page context should start a fresh copilot thread by default.
+- Navigating within the same agent detail surface should reuse the current copilot thread, even when the URL changes to a transient run-detail route.
 - Reopening chat on the same page within the same browser session should reuse the current copilot thread.
+- Duplicate startup or "new chat" requests for the same board-copilot session context must be idempotent and reuse the same open thread instead of surfacing a server error.
 - Previous copilot threads remain available from the rail's **History** menu instead of being silently merged into the current chat.
 
 ---
@@ -382,7 +384,11 @@ Clicking an issue opens the detail view. The main content area splits into two z
 - Delivery-scoped issues show a Smart Review card summarizing QA state.
 - Before an issue enters `in_review`, the primary CTA is `Start QA`.
 - Once an issue is in `in_review`, the primary CTA becomes `QA Ship`.
+- `Start QA` must preserve an existing eligible QA assignee; only auto-route when there is exactly one healthy eligible QA agent, otherwise the UI should surface that the board must pick QA first.
+- When delivery work is marked complete but QA cannot be auto-selected, the issue timeline should show an explicit workflow-gate comment instead of bouncing the issue back to `todo`.
+- If a fresh completion comment arrives after an older QA-assignment gate note, the timeline should show a fresh gate comment again; stale gate notes must not suppress new gating truth.
 - If there is no QA-authored comment yet, the card should say that explicitly instead of implying a latest QA verdict already exists.
+- If a successor run comments on a blocked recovery-source issue, the timeline copy must make the relationship explicit: successor issue completed, source issue remains blocked.
 
 #### Right Pane (Properties Panel)
 
@@ -468,7 +474,7 @@ Triggered by the sidebar pencil icon, keyboard shortcut `C`, or the `+` buttons 
 
 Accessible via Display dropdown → Board layout.
 
-Columns represent statuses: Backlog | Todo | In Progress | In Review | Done
+Columns represent statuses: Backlog | Todo | In Progress | In Review | Blocked | Done | Cancelled
 
 Each card shows:
 - Issue key (muted)
@@ -481,6 +487,8 @@ Cards are draggable between columns. Dragging a card to a new column changes its
 Each column header has a `+` button to create a new issue in that status.
 
 Within each column, cards default to **Most recent** ordering. `Done` cards sort by `completedAt`, `Cancelled` cards sort by `cancelledAt`, and all other statuses sort by latest activity.
+
+When board filters or search empty a status that still has source issues, the kanban hides that column and shows a notice listing the hidden statuses instead of leaving ambiguous empty columns behind.
 
 ---
 
@@ -698,6 +706,8 @@ Approvals are governance gates — decisions the board must make (hire an agent,
 - An agent in `pending` status (not yet created) could show: `"Pending approval — requested by CEO"` with approve/reject actions inline.
 
 **4. Activity log.** Approval events (created, approved, rejected) appear in the activity timeline like any other event.
+- Hidden/unhidden issue changes and heartbeat-driven status/assignee corrections should read as first-class activity entries rather than a generic "updated the issue".
+- If an issue is hidden, the detail view shows that it is hidden, when it was hidden, and provides an unhide action.
 
 ### 11.2 Approvals List Page (`/approvals`)
 
@@ -854,8 +864,12 @@ Items are grouped by category, with the most actionable items first:
 
 ### 14.3 Inbox Behavior
 
-- Unread items have a filled blue dot indicator on the left.
-- Clicking an item marks it as read.
+- Unread items have a small blue dot status indicator on the left. It signals unread state; it is not the archive control.
+- Opening or acting on an unread item clears its unread state.
+- Retrying a failed run from **Unread** must keep that row visible long enough to show immediate pending feedback (for example `Retrying…`) before it drops out of the unread list.
+- In **Needs Action** and **Unread**, each issue row shows an explicit outlined **Archive** action so the operator can clear an item without relying on hover-only controls or touch gestures.
+- In **Needs Action** and **Unread**, non-issue rows (for example approvals, failed runs, and join requests) show an explicit outlined **Dismiss** action because they are hidden from the inbox locally rather than archived on the server.
+- **Recent** and **All** keep the lighter read-only presentation and do not expose archive or dismiss actions inline.
 - Approvals disappear from the inbox once approved/rejected (they move to the resolved state).
 - Alerts disappear when the underlying condition is resolved (agent resumed, budget increased).
 - The sidebar badge count mirrors the inbox page: unread issue updates plus unread non-issue rows, with failed runs deduped to the latest failed run per agent.
@@ -937,6 +951,7 @@ Empty states should use a muted illustration (simple line art, not cartoons) and
 - **Loading:** Skeleton placeholders matching the layout of the expected content (not spinners). Skeleton blocks animate with a subtle shimmer.
 - **Error:** Inline error message with a retry button. Never a full-page error unless the app itself is broken.
 - **Conflict (409):** Toast notification: "This issue was updated by another user. Refresh to see changes." with a [Refresh] action.
+- **Toast dwell:** Board toasts should remain on screen long enough to read, pause auto-dismiss while the pointer is hovering them, allow actionable toasts to open from the full toast surface, and switch to semantic success/error styling for key issue status transitions such as `done` and `blocked`.
 - **Optimistic updates:** Status changes and property edits should update immediately in the UI, with rollback on failure.
 
 ---

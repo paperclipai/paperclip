@@ -11,6 +11,7 @@ import {
   ISSUE_EXECUTION_WORKSPACE_PREFERENCES,
   issueExecutionWorkspaceSettingsSchema,
 } from "./issue.js";
+import { normalizeIssuePriorityInput } from "../issue-priority.js";
 
 const routineVariableValueSchema = z.union([z.string(), z.number().finite(), z.boolean()]);
 
@@ -54,7 +55,7 @@ export const createRoutineSchema = z.object({
   title: z.string().trim().min(1).max(200),
   description: z.string().optional().nullable(),
   assigneeAgentId: z.string().uuid(),
-  priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
+  priority: z.preprocess(normalizeIssuePriorityInput, z.enum(ISSUE_PRIORITIES)).optional().default("medium"),
   status: z.enum(ROUTINE_STATUSES).optional().default("active"),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional().default("skip_missed"),

@@ -59,7 +59,7 @@ Fields:
 
 | Value | Behaviour |
 |-------|-----------|
-| `coalesce_if_active` (default) | Incoming run is immediately finalised as `coalesced` and linked to the active run — no new issue is created |
+| `coalesce_if_active` (default) | Incoming run is immediately finalised as `coalesced` and linked to the active run — no new issue is created. The board UI labels this policy as `Reuse Active Run` and shows the run status as `Added to Active Run`. |
 | `skip_if_active` | Incoming run is immediately finalised as `skipped` and linked to the active run — no new issue is created |
 | `always_enqueue` | Always create a new run regardless of active runs |
 

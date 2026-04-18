@@ -5,7 +5,7 @@ import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { authApi } from "../api/auth";
 import { useCompany } from "./CompanyContext";
-import type { ToastInput } from "./ToastContext";
+import type { ToastInput, ToastTone } from "./ToastContext";
 import { useToast } from "./ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { toCompanyRelativePath } from "../lib/company-routes";
@@ -278,6 +278,17 @@ function describeIssueUpdate(details: Record<string, unknown> | null): string | 
   return null;
 }
 
+function resolveIssueUpdateTone(details: Record<string, unknown> | null): ToastTone {
+  const status = readString(details?.status);
+  if (!status) return "info";
+
+  if (status === "done") return "success";
+  if (status === "blocked") return "error";
+  if (status === "cancelled") return "warn";
+
+  return "info";
+}
+
 function buildActivityToast(
   queryClient: QueryClient,
   companyId: string,
@@ -334,7 +345,7 @@ function buildActivityToast(
     return {
       title: `${actor} updated ${issue.ref}`,
       body: truncate(body, 100),
-      tone: "info",
+      tone: resolveIssueUpdateTone(details),
       action: { label: `View ${issue.ref}`, href: issue.href },
       dedupeKey: `activity:${action}:${entityId}`,
     };
@@ -709,6 +720,7 @@ function closeSocketQuietly(target: LiveUpdatesSocketLike | null, reason: string
 }
 
 export const __liveUpdatesTestUtils = {
+  buildActivityToast,
   buildAgentStatusToast,
   buildRunStatusToast,
   closeSocketQuietly,

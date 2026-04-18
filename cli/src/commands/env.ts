@@ -210,7 +210,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
       key: "PORT",
       value:
         process.env.PORT ??
-        (config?.server?.port !== undefined ? String(config.server.port) : "3100"),
+        (config?.server?.port !== undefined ? String(config.server.port) : "3102"),
       source: process.env.PORT ? "env" : config?.server?.port !== undefined ? "config" : "default",
       required: false,
       note: "HTTP listen port",

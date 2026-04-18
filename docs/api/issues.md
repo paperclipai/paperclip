@@ -65,6 +65,8 @@ POST /api/companies/{companyId}/issues
 
 Recovery create fields (`recoveryFromIssueId`, `recoveryDisposition`) are board-only. They are rejected with `403` unless the caller is a board actor, so successor-issue recovery remains an explicit board action.
 
+When an agent-authenticated create request omits `projectId`, the server inherits project scope from the current run context. It prefers the source issue's project when the run is issue-scoped, then falls back to the run snapshot's `projectId`.
+
 ## Update Issue
 
 ```

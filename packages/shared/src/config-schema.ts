@@ -47,7 +47,7 @@ export const serverConfigSchema = z.object({
   deploymentMode: z.enum(DEPLOYMENT_MODES).default("local_trusted"),
   exposure: z.enum(DEPLOYMENT_EXPOSURES).default("private"),
   host: z.string().default("127.0.0.1"),
-  port: z.number().int().min(1).max(65535).default(3100),
+  port: z.number().int().min(1).max(65535).default(3102),
   allowedHostnames: z.array(z.string().min(1)).default([]),
   serveUi: z.boolean().default(true),
 });

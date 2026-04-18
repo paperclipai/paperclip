@@ -66,7 +66,7 @@ pnpm paperclipai issue list --data-dir ./tmp/paperclip-dev
 Store local defaults in `~/.paperclip/context.json`:
 
 ```sh
-pnpm paperclipai context set --api-base http://localhost:3100 --company-id <company-id>
+pnpm paperclipai context set --api-base http://localhost:3102 --company-id <company-id>
 pnpm paperclipai context show
 pnpm paperclipai context list
 pnpm paperclipai context use default
@@ -162,7 +162,7 @@ pnpm paperclipai dashboard get --company-id <company-id>
 `heartbeat run` now also supports context/api-key options and uses the shared client stack:
 
 ```sh
-pnpm paperclipai heartbeat run --agent-id <agent-id> [--api-base http://localhost:3100] [--api-key <token>]
+pnpm paperclipai heartbeat run --agent-id <agent-id> [--api-base http://localhost:3102] [--api-key <token>]
 ```
 
 ## Local Storage Defaults

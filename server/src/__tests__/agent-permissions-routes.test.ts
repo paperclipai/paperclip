@@ -1,9 +1,7 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
-import { agentRoutes } from "../routes/agents.js";
-import { errorHandler } from "../middleware/index.js";
 
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -97,6 +95,9 @@ const mockResolveRoleForCooCoordinatorModel = vi.hoisted(() =>
   vi.fn(({ role }: { role?: string }) => role ?? "general"),
 );
 
+let agentRoutesFactory!: typeof import("../routes/agents.js").agentRoutes;
+let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
+
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
   agentInstructionsService: () => mockAgentInstructionsService,
@@ -140,12 +141,18 @@ function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", agentRoutes(createDbStub() as any));
-  app.use(errorHandler);
+  app.use("/api", agentRoutesFactory(createDbStub() as any));
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
 describe("agent permission routes", () => {
+  beforeAll(async () => {
+    vi.resetModules();
+    ({ agentRoutes: agentRoutesFactory } = await import("../routes/agents.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockRoleRequiresQaCoverage.mockReturnValue(false);

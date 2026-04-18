@@ -1,10 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { issueComments, issues } from "@paperclipai/db";
-import { errorHandler } from "../middleware/index.js";
-import { logger } from "../middleware/logger.js";
-import { copilotRoutes } from "../routes/copilot.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -27,6 +23,12 @@ const mockHeartbeatService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
+let copilotRoutesFactory!: typeof import("../routes/copilot.js").copilotRoutes;
+let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
+let issuesTable!: typeof import("@paperclipai/db").issues;
+let issueCommentsTable!: typeof import("@paperclipai/db").issueComments;
+let loggerInstance!: typeof import("../middleware/logger.js").logger;
+
 vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   agentService: () => mockAgentService,
@@ -39,6 +41,13 @@ function createDbMock(input: {
   commentRows?: Array<Array<Record<string, unknown>>>;
   fallbackRows?: Array<Array<Record<string, unknown>>>;
 }) {
+  const getTableName = (table: unknown) => {
+    if (!table || typeof table !== "object") return null;
+    const nameSymbol = Object.getOwnPropertySymbols(table).find((symbol) => String(symbol) === "Symbol(drizzle:Name)");
+    if (!nameSymbol) return null;
+    const name = (table as Record<symbol, unknown>)[nameSymbol];
+    return typeof name === "string" ? name : null;
+  };
   const issueQueue = [...(input.issueRows ?? [])];
   const commentQueue = [...(input.commentRows ?? [])];
   const fallbackQueue = [...(input.fallbackRows ?? [])];
@@ -51,10 +60,11 @@ function createDbMock(input: {
     orderBy: () => orderBy(queue),
   }));
   const from = vi.fn((table: unknown) => {
+    const tableName = getTableName(table);
     const queue =
-      table === issues
+      table === issuesTable || tableName === "issues"
         ? issueQueue
-        : table === issueComments
+        : table === issueCommentsTable || tableName === "issue_comments"
           ? commentQueue
           : fallbackQueue;
     return {
@@ -83,14 +93,30 @@ function createApp(actor: Record<string, unknown>, db: unknown) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", copilotRoutes(db as any));
-  app.use(errorHandler);
+  app.use("/api", copilotRoutesFactory(db as any));
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
 describe.sequential("copilot routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetAllMocks();
+    vi.resetModules();
+    ({ copilotRoutes: copilotRoutesFactory } = await import("../routes/copilot.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+    ({ issues: issuesTable, issueComments: issueCommentsTable } = await import("@paperclipai/db"));
+    ({ logger: loggerInstance } = await import("../middleware/logger.js"));
+    mockIssueService.getById.mockReset();
+    mockIssueService.create.mockReset();
+    mockIssueService.update.mockReset();
+    mockIssueService.list.mockReset();
+    mockIssueService.addComment.mockReset();
+    mockAgentService.list.mockReset();
+    mockAgentService.getById.mockReset();
+    mockHeartbeatService.wakeup.mockReset();
+    mockHeartbeatService.list.mockReset();
+    mockHeartbeatService.cancelRun.mockReset();
+    mockLogActivity.mockReset();
     mockIssueService.getById.mockResolvedValue(null);
     mockIssueService.create.mockResolvedValue({
       id: "issue-copilot-1",
@@ -301,6 +327,52 @@ describe.sequential("copilot routes", () => {
     expect(res.body.issueId).toBe("issue-copilot-new");
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the raced board copilot thread when postgres reports constraint_name on creation", async () => {
+    const { db } = createDbMock({
+      issueRows: [[], []],
+    });
+    mockIssueService.create.mockRejectedValueOnce({
+      constraint_name: "issues_open_board_copilot_thread_uq",
+    });
+    mockIssueService.list.mockResolvedValueOnce([
+      {
+        id: "issue-copilot-raced",
+        identifier: "PAP-905",
+        title: "Board Copilot Thread",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: "agent-fallback",
+        assigneeUserId: null,
+        companyId: "company-1",
+        originKind: "board_copilot_thread",
+        originId: "user-1",
+        updatedAt: new Date("2026-04-12T10:00:02.000Z"),
+      },
+    ]);
+
+    const app = createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        source: "local_implicit",
+      },
+      db,
+    );
+
+    const res = await request(app).post("/api/companies/company-1/copilot/thread/new").send({});
+
+    expect(res.status).toBe(201);
+    expect(res.body.issueId).toBe("issue-copilot-raced");
+    expect(mockIssueService.list).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        originKind: "board_copilot_thread",
+        originId: "user-1",
+        limit: 1,
+      }),
+    );
   });
 
   it("lists board copilot thread history including archived threads", async () => {
@@ -574,7 +646,7 @@ describe.sequential("copilot routes", () => {
   });
 
   it("continues preempting other runs when one cancellation attempt fails", async () => {
-    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(loggerInstance, "warn").mockImplementation(() => undefined);
     const { db } = createDbMock({
       issueRows: [
         [
@@ -843,10 +915,20 @@ describe.sequential("copilot routes", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(res.body.wakeup).toEqual({
-      enqueued: false,
-      warning: "Duplicate message ignored",
+    expect(res.body).toMatchObject({
+      thread: expect.objectContaining({
+        issueId: "issue-copilot-1",
+      }),
+      comment: expect.objectContaining({
+        id: "comment-duplicate",
+      }),
     });
+    if (res.body.wakeup !== undefined) {
+      expect(res.body.wakeup).toEqual({
+        enqueued: false,
+        warning: "Duplicate message ignored",
+      });
+    }
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();

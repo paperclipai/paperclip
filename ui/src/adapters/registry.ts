@@ -6,7 +6,6 @@ import { geminiLocalUIAdapter } from "./gemini-local";
 import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
 import { openClawGatewayUIAdapter } from "./openclaw-gateway";
-import { hermesLocalUIAdapter } from "./hermes-local";
 import { processUIAdapter } from "./process";
 import { httpUIAdapter } from "./http";
 import { loadDynamicParser, invalidateDynamicParser } from "./dynamic-loader";
@@ -14,6 +13,7 @@ import { SchemaConfigFields, buildSchemaAdapterConfig } from "./schema-config-fi
 
 const uiAdapters: UIAdapterModule[] = [];
 const adaptersByType = new Map<string, UIAdapterModule>();
+const fallbackAdaptersByType = new Map<string, UIAdapterModule>();
 
 // Types registered at module load time — allowed to be overridden by
 // external adapters that ship their own ui-parser.js via the server.
@@ -50,7 +50,6 @@ function registerBuiltInUIAdapters() {
     claudeLocalUIAdapter,
     codexLocalUIAdapter,
     geminiLocalUIAdapter,
-    hermesLocalUIAdapter,
     openCodeLocalUIAdapter,
     piLocalUIAdapter,
     cursorLocalUIAdapter,
@@ -94,33 +93,43 @@ export function getUIAdapter(type: string): UIAdapterModule {
   const builtIn = adaptersByType.get(type);
 
   if (!builtIn) {
-    let loadStarted = false;
-    return {
-      type,
-      label: type,
-      parseStdoutLine: (line: string, ts: string) => {
-        if (!loadStarted) {
-          loadStarted = true;
-          loadDynamicParser(type).then((parserModule) => {
-            if (parserModule) {
-              registerUIAdapter({
-                type,
-                label: type,
-                parseStdoutLine: parserModule.parseStdoutLine,
-                createStdoutParser: parserModule.createStdoutParser,
-                ConfigFields: SchemaConfigFields,
-                buildAdapterConfig: buildSchemaAdapterConfig,
-              });
-            }
-          });
-        }
-        return processUIAdapter.parseStdoutLine(line, ts);
-      },
-      ConfigFields: SchemaConfigFields,
-      buildAdapterConfig: buildSchemaAdapterConfig,
-    };
+    let fallback = fallbackAdaptersByType.get(type);
+    if (!fallback) {
+      let loadStarted = false;
+      fallback = {
+        type,
+        label: type,
+        parseStdoutLine: (line: string, ts: string) => {
+          if (!loadStarted) {
+            loadStarted = true;
+            loadDynamicParser(type).then((parserModule) => {
+              if (parserModule) {
+                registerUIAdapter({
+                  type,
+                  label: type,
+                  parseStdoutLine: parserModule.parseStdoutLine,
+                  createStdoutParser: parserModule.createStdoutParser,
+                  ConfigFields: SchemaConfigFields,
+                  buildAdapterConfig: buildSchemaAdapterConfig,
+                });
+              }
+            });
+          }
+          return processUIAdapter.parseStdoutLine(line, ts);
+        },
+        ConfigFields: SchemaConfigFields,
+        buildAdapterConfig: buildSchemaAdapterConfig,
+      };
+      fallbackAdaptersByType.set(type, fallback);
+    }
+    return fallback;
   }
 
+  // A missing adapter may have a fallback placeholder registered above.
+  // Keep it around for reuse until a concrete adapter replaces it.
+  if (fallbackAdaptersByType.has(type)) {
+    fallbackAdaptersByType.delete(type);
+  }
   return builtIn;
 }
 

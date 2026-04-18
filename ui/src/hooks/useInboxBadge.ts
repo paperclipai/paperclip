@@ -96,7 +96,9 @@ export function useRetryFeedbackRunIds() {
       setRetryFeedbackRunIds(cloneRetryFeedbackRunIds());
     };
     retryFeedbackRunListeners.add(handleChange);
-    return () => retryFeedbackRunListeners.delete(handleChange);
+    return () => {
+      retryFeedbackRunListeners.delete(handleChange);
+    };
   }, []);
 
   const pinRun = useCallback((runId: string) => {

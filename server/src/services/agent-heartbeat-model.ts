@@ -1,7 +1,11 @@
 import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companies } from "@paperclipai/db";
-import { canonicalizeAgentRole } from "@paperclipai/shared";
+import {
+  QA_RELEASE_DEFAULT_NAME,
+  QA_RELEASE_DEFAULT_TITLE,
+  canonicalizeAgentRole,
+} from "@paperclipai/shared";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { deduplicateAgentName, agentService } from "./agents.js";
 import { loadDefaultAgentInstructionsBundle } from "./default-agent-instructions.js";
@@ -9,8 +13,7 @@ import { loadDefaultAgentInstructionsBundle } from "./default-agent-instructions
 export const COO_COORDINATOR_DEFAULT_INTERVAL_SEC = 3600;
 export const COO_COORDINATOR_DEFAULT_NAME = "COO";
 export const COO_COORDINATOR_DEFAULT_TITLE = "COO";
-export const QA_RELEASE_DEFAULT_NAME = "QA and Release Engineer";
-export const QA_RELEASE_DEFAULT_TITLE = "QA and Release Engineer";
+export { QA_RELEASE_DEFAULT_NAME, QA_RELEASE_DEFAULT_TITLE };
 
 const TECH_ROLES_REQUIRING_QA = new Set(["cto", "engineer", "devops"]);
 

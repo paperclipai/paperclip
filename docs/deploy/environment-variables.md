@@ -9,7 +9,7 @@ All environment variables that Orchestrero uses for server configuration.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `3100` | Server port |
+| `PORT` | `3102` | Server port |
 | `HOST` | `127.0.0.1` | Server host binding |
 | `DATABASE_URL` | (embedded) | PostgreSQL connection string |
 | `PAPERCLIP_HOME` | `~/.paperclip` | Base directory for all Orchestrero data |
@@ -34,7 +34,7 @@ These are set automatically by the server when invoking agents:
 | `PAPERCLIP_COMPANY_ID` | Company ID |
 | `PAPERCLIP_API_URL` | Orchestrero API base URL |
 | `PAPERCLIP_API_KEY` | Short-lived JWT for API auth |
-| `PAPERCLIP_RUN_ID` | Current heartbeat run ID |
+| `PAPERCLIP_RUN_ID` | Current heartbeat run UUID; malformed values are ignored on API requests |
 | `PAPERCLIP_TASK_ID` | Issue that triggered this wake |
 | `PAPERCLIP_WAKE_REASON` | Wake trigger reason |
 | `PAPERCLIP_WAKE_COMMENT_ID` | Comment that triggered this wake |

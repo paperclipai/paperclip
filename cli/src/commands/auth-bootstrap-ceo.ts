@@ -41,7 +41,7 @@ function resolveBaseUrl(configPath?: string, explicitBaseUrl?: string) {
     return config.auth.publicBaseUrl.replace(/\/+$/, "");
   }
   const host = config?.server.host ?? "localhost";
-  const port = config?.server.port ?? 3100;
+  const port = config?.server.port ?? 3102;
   const publicHost = host === "0.0.0.0" ? "localhost" : host;
   return `http://${publicHost}:${port}`;
 }

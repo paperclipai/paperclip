@@ -8,6 +8,7 @@ import type {
   IssueAttachment,
   IssueComment,
   IssueDocument,
+  IssueFilePreview,
   IssueLabel,
   IssueWorkProduct,
   UpsertIssueDocument,
@@ -153,6 +154,8 @@ export const issuesApi = {
   deleteDocument: (id: string, key: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
+  getFilePreview: (id: string, path: string) =>
+    api.get<IssueFilePreview>(`/issues/${id}/file-preview?${new URLSearchParams({ path }).toString()}`),
   uploadAttachment: (
     companyId: string,
     issueId: string,

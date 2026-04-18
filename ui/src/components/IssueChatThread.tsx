@@ -15,6 +15,7 @@ import type {
   FeedbackDataSharingPreference,
   FeedbackVote,
   FeedbackVoteValue,
+  IssueReviewItem,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
@@ -56,6 +57,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 import { AgentIcon } from "./AgentIconPicker";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import { getIssueReviewItemKindLabel, groupReviewItemsByCommentId } from "../lib/review-items";
 import { timeAgo } from "../lib/timeAgo";
 import {
   describeToolInput,
@@ -84,6 +86,8 @@ interface IssueChatMessageContext {
   ) => Promise<void>;
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
+  reviewItemsByCommentId?: Map<string, IssueReviewItem[]>;
+  onOpenReviewItem?: (item: IssueReviewItem) => void;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -189,6 +193,8 @@ interface IssueChatThreadProps {
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
   submitHotkey?: MarkdownEditorSubmitHotkey;
+  reviewItems?: IssueReviewItem[];
+  onOpenReviewItem?: (item: IssueReviewItem) => void;
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -573,6 +579,16 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
 
 function CopyablePreBlock({ children, className }: { children: string; className?: string }) {
   const [copied, setCopied] = useState(false);
+  const copiedResetTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    return () => {
+      if (copiedResetTimeoutRef.current) {
+        clearTimeout(copiedResetTimeoutRef.current);
+      }
+    };
+  }, []);
+
   return (
     <div className="group/pre relative">
       <pre className={className}>{children}</pre>
@@ -587,7 +603,10 @@ function CopyablePreBlock({ children, className }: { children: string; className
         onClick={() => {
           void navigator.clipboard.writeText(children).then(() => {
             setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
+            if (copiedResetTimeoutRef.current) {
+              clearTimeout(copiedResetTimeoutRef.current);
+            }
+            copiedResetTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
           });
         }}
       >
@@ -707,15 +726,50 @@ function IssueChatToolPart({
   );
 }
 
+function IssueChatInlineReviewItems({ commentId }: { commentId: string | null }) {
+  const { reviewItemsByCommentId, onOpenReviewItem } = useContext(IssueChatCtx);
+  const items = commentId ? reviewItemsByCommentId?.get(commentId) ?? [] : [];
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          onClick={() => onOpenReviewItem?.(item)}
+          className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-accent/15 px-3 py-1.5 text-left transition-colors hover:border-border hover:bg-accent/25"
+        >
+          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+            {getIssueReviewItemKindLabel(item.kind)}
+          </span>
+          <span className="max-w-[18rem] truncate text-xs font-medium text-foreground">{item.title}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function IssueChatUserMessage() {
   const { onInterruptQueued, interruptingQueuedRunId } = useContext(IssueChatCtx);
   const message = useMessage();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
+  const commentId = typeof custom.commentId === "string" ? custom.commentId : null;
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
   const pending = custom.clientStatus === "pending";
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
   const [copied, setCopied] = useState(false);
+  const copiedResetTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    return () => {
+      if (copiedResetTimeoutRef.current) {
+        clearTimeout(copiedResetTimeoutRef.current);
+      }
+    };
+  }, []);
 
   return (
     <MessagePrimitive.Root id={anchorId}>
@@ -760,6 +814,7 @@ function IssueChatUserMessage() {
                   Text: ({ text }) => <IssueChatTextPart text={text} />,
                 }}
               />
+              <IssueChatInlineReviewItems commentId={commentId} />
             </div>
           </div>
 
@@ -776,7 +831,10 @@ function IssueChatUserMessage() {
                   .join("\n\n");
                 void navigator.clipboard.writeText(text).then(() => {
                   setCopied(true);
-                  setTimeout(() => setCopied(false), 2000);
+                  if (copiedResetTimeoutRef.current) {
+                    clearTimeout(copiedResetTimeoutRef.current);
+                  }
+                  copiedResetTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
                 });
               }}
             >
@@ -929,6 +987,7 @@ function IssueChatAssistantMessage() {
                     ))}
                   </div>
                 ) : null}
+                <IssueChatInlineReviewItems commentId={commentId} />
               </div>
 
               <div className="mt-2 flex items-center gap-1">
@@ -1612,6 +1671,8 @@ export function IssueChatThread({
   onInterruptQueued,
   interruptingQueuedRunId = null,
   submitHotkey = "mod-enter",
+  reviewItems = [],
+  onOpenReviewItem,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const hasScrolledRef = useRef(false);
@@ -1706,6 +1767,10 @@ export function IssueChatThread({
     }
     return map;
   }, [feedbackVotes]);
+  const reviewItemsByCommentId = useMemo(
+    () => groupReviewItemsByCommentId(reviewItems),
+    [reviewItems],
+  );
 
   const runtime = usePaperclipIssueRuntime({
     messages,
@@ -1739,6 +1804,8 @@ export function IssueChatThread({
       onVote,
       onInterruptQueued,
       interruptingQueuedRunId,
+      reviewItemsByCommentId,
+      onOpenReviewItem,
     }),
     [
       feedbackVoteByTargetId,
@@ -1749,6 +1816,8 @@ export function IssueChatThread({
       onVote,
       onInterruptQueued,
       interruptingQueuedRunId,
+      reviewItemsByCommentId,
+      onOpenReviewItem,
     ],
   );
 

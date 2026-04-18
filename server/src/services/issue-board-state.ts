@@ -8,6 +8,7 @@ import type {
   IssueRootBlocker,
   IssueStatus,
 } from "@paperclipai/shared";
+import { issuePriorityWeight } from "@paperclipai/shared";
 
 type IssueBoardStateRow = {
   id: string;
@@ -42,17 +43,8 @@ export type ComputedIssueBoardState = {
   blockerPath?: IssueBlockerPathNode[];
 };
 
-const PRIORITY_WEIGHTS: Record<string, number> = {
-  low: 1,
-  medium: 2,
-  high: 3,
-  critical: 4,
-  urgent: 5,
-};
-
 function priorityWeight(priority: string | null | undefined) {
-  if (!priority) return 0;
-  return PRIORITY_WEIGHTS[priority] ?? 0;
+  return issuePriorityWeight(priority);
 }
 
 function latestTimestampMs(issue: Pick<IssueBoardStateRow, "updatedAt" | "createdAt">) {

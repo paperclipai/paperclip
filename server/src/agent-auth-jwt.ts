@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { isUuidLike } from "@paperclipai/shared";
 
 interface JwtHeader {
   alg: string;
@@ -117,7 +118,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   const runId = typeof claims.run_id === "string" ? claims.run_id : null;
   const iat = typeof claims.iat === "number" ? claims.iat : null;
   const exp = typeof claims.exp === "number" ? claims.exp : null;
-  if (!sub || !companyId || !adapterType || !runId || !iat || !exp) return null;
+  if (!sub || !companyId || !adapterType || !runId || !iat || !exp || !isUuidLike(runId)) return null;
 
   const now = Math.floor(Date.now() / 1000);
   if (exp < now) return null;

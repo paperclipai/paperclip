@@ -38,20 +38,22 @@ pnpm dev
 
 This starts:
 
-- API server: `http://localhost:3100`
+- API server: `http://localhost:3102`
 - UI: served by the API server in dev middleware mode (same origin as API)
 
-If `3100` is already occupied, the dev runner now probes for the next available
+If `3102` is already occupied, the dev runner now probes for the next available
 server port and paired Vite HMR port automatically, then prints the selected
 URL in the startup banner.
 
-If you prefer the repo-root `./run.sh` helper, it first runs `scripts/kill-dev.sh` to clear stale local PrivateClip dev and embedded PostgreSQL processes before starting `pnpm -s dev` with warning/error log filtering.
+If you prefer the repo-root `./run.sh` helper, it first runs `scripts/kill-dev.sh` to clear stale local PrivateClip dev and embedded PostgreSQL processes before starting `PORT=3200 pnpm dev:once` with warning/error log filtering.
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching PrivateClip dev runner is already alive, PrivateClip reports the existing process instead of starting a duplicate.
+
+Repo-root `pnpm test:run` executes each Vitest project explicitly instead of using one shared workspace session. Server test files run one file per Vitest process to avoid cross-suite mock leakage in the current server test harness.
 
 Inspect or stop the current repo's managed dev runner:
 
@@ -66,6 +68,14 @@ If embedded PostgreSQL fails to start with shared-memory errors (for example
 ```sh
 pnpm dev:recover
 ```
+
+PrivateClip no longer registers the PWA service worker in Vite dev. On startup, dev
+now removes stale PrivateClip service workers and `paperclip-*` / `orchestrero-*`
+cache entries so repeated reloads do not accumulate cached module blobs.
+
+If a browser profile was already poisoned by an older dev build and `http://localhost:3102`
+stops loading, clear site data for that origin once (Application/Storage tab in DevTools,
+or browser site settings) and reload.
 
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
@@ -104,7 +114,7 @@ Build and run PrivateClip in Docker:
 ```sh
 docker build -t paperclip-local .
 docker run --name paperclip \
-  -p 3100:3100 \
+  -p 3102:3102 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
@@ -315,8 +325,8 @@ For project execution worktrees, PrivateClip can also run a project-defined prov
 In another terminal:
 
 ```sh
-curl http://localhost:3100/api/health
-curl http://localhost:3100/api/companies
+curl http://localhost:3102/api/health
+curl http://localhost:3102/api/companies
 ```
 
 Expected:
@@ -434,7 +444,7 @@ pnpm paperclipai issue update <issue-id> --status in_progress --comment "Started
 Set defaults once with context profiles:
 
 ```sh
-pnpm paperclipai context set --api-base http://localhost:3100 --company-id <company-id>
+pnpm paperclipai context set --api-base http://localhost:3102 --company-id <company-id>
 ```
 
 Then run commands without repeating flags:

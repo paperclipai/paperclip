@@ -242,6 +242,7 @@ const priorities = [
 ];
 
 const EXECUTION_WORKSPACE_MODES = [
+  { value: "auto", label: "Auto (smart detection)" },
   { value: "shared_workspace", label: "Project default" },
   { value: "isolated_workspace", label: "New isolated workspace" },
   { value: "reuse_existing", label: "Reuse existing workspace" },
@@ -298,7 +299,7 @@ export function NewIssueDialog() {
   const [assigneeModelOverride, setAssigneeModelOverride] = useState("");
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
   const [assigneeChrome, setAssigneeChrome] = useState(false);
-  const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
+  const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("auto");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
@@ -538,7 +539,7 @@ export function NewIssueDialog() {
         ?? defaultProjectWorkspaceIdForProject(defaultProject);
       const defaultExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceId
         ? "reuse_existing"
-        : (newIssueDefaults.executionWorkspaceMode ?? defaultExecutionWorkspaceModeForProject(defaultProject));
+        : (newIssueDefaults.executionWorkspaceMode ?? "auto");
       setTitle(newIssueDefaults.title ?? "");
       setDescription(newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
@@ -569,7 +570,7 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
+      setExecutionWorkspaceMode("auto");
       setSelectedExecutionWorkspaceId("");
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     } else if (draft && draft.title.trim()) {
@@ -595,7 +596,7 @@ export function NewIssueDialog() {
       setAssigneeChrome(draft.assigneeChrome ?? false);
       setExecutionWorkspaceMode(
         draft.executionWorkspaceMode
-          ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : defaultExecutionWorkspaceModeForProject(restoredProject)),
+          ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : "auto"),
       );
       setSelectedExecutionWorkspaceId(draft.selectedExecutionWorkspaceId ?? "");
       executionWorkspaceDefaultProjectId.current = restoredProjectId || null;
@@ -614,7 +615,7 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
+      setExecutionWorkspaceMode("auto");
       setSelectedExecutionWorkspaceId("");
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     }
@@ -663,7 +664,7 @@ export function NewIssueDialog() {
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
-    setExecutionWorkspaceMode("shared_workspace");
+    setExecutionWorkspaceMode("auto");
     setSelectedExecutionWorkspaceId("");
     setExpanded(false);
     setDialogCompanyId(null);
@@ -687,7 +688,7 @@ export function NewIssueDialog() {
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
-    setExecutionWorkspaceMode("shared_workspace");
+    setExecutionWorkspaceMode("auto");
     setSelectedExecutionWorkspaceId("");
   }
 
@@ -717,7 +718,9 @@ export function NewIssueDialog() {
       executionWorkspaceMode === "reuse_existing"
         ? issueExecutionWorkspaceModeForExistingWorkspace(selectedReusableExecutionWorkspace?.mode)
         : executionWorkspaceMode;
-    const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
+    const shouldForceExecutionWorkspacePolicy = executionWorkspacePolicy?.enabled
+      && executionWorkspaceMode !== "auto";
+    const executionWorkspaceSettings = shouldForceExecutionWorkspacePolicy
       ? { mode: requestedExecutionWorkspaceMode }
       : null;
     const executionPolicy = buildExecutionPolicy({
@@ -738,7 +741,7 @@ export function NewIssueDialog() {
       ...(projectId ? { projectId } : {}),
       ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
-      ...(executionWorkspacePolicy?.enabled ? { executionWorkspacePreference: executionWorkspaceMode } : {}),
+      ...(shouldForceExecutionWorkspacePolicy ? { executionWorkspacePreference: executionWorkspaceMode } : {}),
       ...(executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId
         ? { executionWorkspaceId: selectedExecutionWorkspaceId }
         : {}),
@@ -902,7 +905,7 @@ export function NewIssueDialog() {
     const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
     executionWorkspaceDefaultProjectId.current = nextProjectId || null;
     setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
-    setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
+    setExecutionWorkspaceMode("auto");
     setSelectedExecutionWorkspaceId("");
   }, [orderedProjects]);
 
@@ -914,7 +917,7 @@ export function NewIssueDialog() {
     if (!project) return;
     executionWorkspaceDefaultProjectId.current = projectId;
     setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(project));
-    setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(project));
+    setExecutionWorkspaceMode("auto");
     setSelectedExecutionWorkspaceId("");
   }, [newIssueOpen, orderedProjects, projectId]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
@@ -1347,11 +1350,11 @@ export function NewIssueDialog() {
 
         {currentProject && currentProjectSupportsExecutionWorkspace && (
           <div className="px-4 py-3 shrink-0 space-y-2">
-            <div className="space-y-1.5">
-              <div className="text-xs font-medium">Execution workspace</div>
-              <div className="text-[11px] text-muted-foreground">
-                Control whether this issue runs in the shared workspace, a new isolated workspace, or an existing one.
-              </div>
+              <div className="space-y-1.5">
+                <div className="text-xs font-medium">Execution workspace</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Use "Auto" to let Paperclip pick the best workspace mode from issue text; choose another option to force it.
+                </div>
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
                 value={executionWorkspaceMode}

@@ -566,7 +566,7 @@ export function ExecutionWorkspaceDetail() {
                     value={form.workspaceRuntime}
                     onChange={(event) => setForm((current) => current ? { ...current, workspaceRuntime: event.target.value } : current)}
                     disabled={form.inheritRuntime}
-                    placeholder={'{\n  "services": [\n    {\n      "name": "web",\n      "command": "pnpm dev",\n      "port": 3100\n    }\n  ]\n}'}
+                    placeholder={'{\n  "services": [\n    {\n      "name": "web",\n      "command": "pnpm dev",\n      "port": 3102\n    }\n  ]\n}'}
                   />
                 </Field>
               </div>

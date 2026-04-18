@@ -90,7 +90,7 @@ const env: NodeJS.ProcessEnv = {
   ...process.env,
   PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
 };
-const requestedServerPort = Number.parseInt(env.PORT ?? process.env.PORT ?? "3100", 10) || 3100;
+const requestedServerPort = Number.parseInt(env.PORT ?? process.env.PORT ?? "3102", 10) || 3102;
 const devServerRuntimeFilePath = path.join(
   repoRoot,
   ".paperclip",

@@ -1,7 +1,7 @@
 # Agent Runtime Guide
 
 Status: User-facing guide
-Last updated: 2026-03-26
+Last updated: 2026-04-17
 Audience: Operators setting up and running agents in Orchestrero
 
 ## 1. What this system does
@@ -27,6 +27,7 @@ An agent can be woken up in four ways:
 - `automation`: system-triggered wakeup for future automations
 
 If an agent is already running, new wakeups are merged (coalesced) instead of launching duplicate runs.
+Timer heartbeats are periodic nudges, not catch-up jobs: if a timer-triggered run is already `queued` or `running`, the scheduler keeps that single outstanding wake instead of stacking missed intervals into a backlog.
 
 ## 3. What to configure per agent
 

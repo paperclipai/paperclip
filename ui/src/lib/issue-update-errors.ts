@@ -22,6 +22,10 @@ const REASON_TEXT: Record<IssueQaGateReasonCode, { title: string; body: string }
     title: "Ship blocked: waiting on QA",
     body: "A QA-authored comment is required before this issue can ship.",
   },
+  qa_gate_missing_qa_summary: {
+    title: "Ship blocked: missing Smart Review summary",
+    body: "The latest QA-authored comment must include the Smart Review summary line.",
+  },
   qa_gate_missing_qa_pass: {
     title: "Ship blocked: missing QA PASS",
     body: "The latest QA-authored comment must include [QA PASS].",
@@ -29,6 +33,18 @@ const REASON_TEXT: Record<IssueQaGateReasonCode, { title: string; body: string }
   qa_gate_missing_release_confirmation: {
     title: "Ship blocked: missing release confirmation",
     body: "The latest QA-authored comment must include [RELEASE CONFIRMED].",
+  },
+  qa_gate_missing_verification: {
+    title: "Ship blocked: missing verification evidence",
+    body: "The latest QA-authored comment must include passing TYPECHECK, TESTS, BUILD, and SMOKE/NA verification tokens.",
+  },
+  qa_gate_failing_review: {
+    title: "Ship blocked: QA review is failing",
+    body: "The latest Smart Review verdict is failing, so the issue must be handed back before shipping.",
+  },
+  qa_gate_failing_verification: {
+    title: "Ship blocked: verification failed",
+    body: "The latest QA verification evidence shows a failing repo check or smoke check.",
   },
 };
 

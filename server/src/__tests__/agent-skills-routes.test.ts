@@ -163,7 +163,7 @@ describe("agent skill routes", () => {
     vi.resetModules();
     ({ agentRoutes: agentRoutesFactory } = await import("../routes/agents.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-  }, 20_000);
+  });
 
   beforeEach(() => {
     vi.resetAllMocks();
@@ -247,7 +247,7 @@ describe("agent skill routes", () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
-  });
+  }, 20_000);
 
   it("skips runtime materialization when listing Claude skills", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
@@ -256,8 +256,10 @@ describe("agent skill routes", () => {
       .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
-      materializeMissing: false,
+    await vi.waitFor(() => {
+      expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+        materializeMissing: false,
+      });
     });
     expect(mockAdapter.listSkills).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -284,8 +286,10 @@ describe("agent skill routes", () => {
       .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
-      materializeMissing: false,
+    await vi.waitFor(() => {
+      expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+        materializeMissing: false,
+      });
     });
   });
 
@@ -304,8 +308,10 @@ describe("agent skill routes", () => {
       .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
-      materializeMissing: true,
+    await vi.waitFor(() => {
+      expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+        materializeMissing: true,
+      });
     });
   });
 
@@ -317,8 +323,10 @@ describe("agent skill routes", () => {
       .send({ desiredSkills: ["paperclipai/paperclip/paperclip"] });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
-      materializeMissing: false,
+    await vi.waitFor(() => {
+      expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+        materializeMissing: false,
+      });
     });
     expect(mockAdapter.syncSkills).toHaveBeenCalled();
   });

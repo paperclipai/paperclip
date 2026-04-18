@@ -1,57 +1,97 @@
+import { Suspense, lazy } from "react";
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Layout } from "./components/Layout";
-import { OnboardingWizard } from "./components/OnboardingWizard";
 import { authApi } from "./api/auth";
 import { healthApi } from "./api/health";
-import { Dashboard } from "./pages/Dashboard";
-import { Roadmap } from "./pages/Roadmap";
-import { Companies } from "./pages/Companies";
-import { Agents } from "./pages/Agents";
-import { AgentDetail } from "./pages/AgentDetail";
-import { Projects } from "./pages/Projects";
-import { ProjectDetail } from "./pages/ProjectDetail";
-import { ProjectWorkspaceDetail } from "./pages/ProjectWorkspaceDetail";
-import { Issues } from "./pages/Issues";
-import { IssueDetail } from "./pages/IssueDetail";
-import { Routines } from "./pages/Routines";
-import { RoutineDetail } from "./pages/RoutineDetail";
-import { ExecutionWorkspaceDetail } from "./pages/ExecutionWorkspaceDetail";
-import { Goals } from "./pages/Goals";
-import { GoalDetail } from "./pages/GoalDetail";
-import { Approvals } from "./pages/Approvals";
-import { ApprovalDetail } from "./pages/ApprovalDetail";
-import { Costs } from "./pages/Costs";
-import { Activity } from "./pages/Activity";
-import { Inbox } from "./pages/Inbox";
-import { CompanySettings } from "./pages/CompanySettings";
-import { CompanySkills } from "./pages/CompanySkills";
-import { CompanyExport } from "./pages/CompanyExport";
-import { CompanyImport } from "./pages/CompanyImport";
-import { DesignGuide } from "./pages/DesignGuide";
-import { InstanceGeneralSettings } from "./pages/InstanceGeneralSettings";
-import { InstanceSettings } from "./pages/InstanceSettings";
-import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
-import { PluginManager } from "./pages/PluginManager";
-import { PluginSettings } from "./pages/PluginSettings";
-import { AdapterManager } from "./pages/AdapterManager";
-import { PluginPage } from "./pages/PluginPage";
-import { IssueChatUxLab } from "./pages/IssueChatUxLab";
-import { RunTranscriptUxLab } from "./pages/RunTranscriptUxLab";
-import { OrgChart } from "./pages/OrgChart";
-import { NewAgent } from "./pages/NewAgent";
-import { AuthPage } from "./pages/Auth";
-import { BoardClaimPage } from "./pages/BoardClaim";
-import { CliAuthPage } from "./pages/CliAuth";
-import { InviteLandingPage } from "./pages/InviteLanding";
-import { NotFoundPage } from "./pages/NotFound";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
 import { createIssueDetailPath, readLegacyIssueDetailIdentifier } from "./lib/issueDetailBreadcrumb";
 import { shouldRedirectCompanylessRouteToOnboarding } from "./lib/onboarding-route";
+
+const Layout = lazy(() => import("./components/Layout").then((module) => ({ default: module.Layout })));
+const OnboardingWizard = lazy(() =>
+  import("./components/OnboardingWizard").then((module) => ({ default: module.OnboardingWizard })),
+);
+const Dashboard = lazy(() => import("./pages/Dashboard").then((module) => ({ default: module.Dashboard })));
+const Roadmap = lazy(() => import("./pages/Roadmap").then((module) => ({ default: module.Roadmap })));
+const Companies = lazy(() => import("./pages/Companies").then((module) => ({ default: module.Companies })));
+const Agents = lazy(() => import("./pages/Agents").then((module) => ({ default: module.Agents })));
+const AgentDetail = lazy(() => import("./pages/AgentDetail").then((module) => ({ default: module.AgentDetail })));
+const Projects = lazy(() => import("./pages/Projects").then((module) => ({ default: module.Projects })));
+const ProjectDetail = lazy(() => import("./pages/ProjectDetail").then((module) => ({ default: module.ProjectDetail })));
+const ProjectWorkspaceDetail = lazy(() =>
+  import("./pages/ProjectWorkspaceDetail").then((module) => ({ default: module.ProjectWorkspaceDetail })),
+);
+const Issues = lazy(() => import("./pages/Issues").then((module) => ({ default: module.Issues })));
+const IssueDetail = lazy(() => import("./pages/IssueDetail").then((module) => ({ default: module.IssueDetail })));
+const Routines = lazy(() => import("./pages/Routines").then((module) => ({ default: module.Routines })));
+const RoutineDetail = lazy(() => import("./pages/RoutineDetail").then((module) => ({ default: module.RoutineDetail })));
+const ExecutionWorkspaceDetail = lazy(() =>
+  import("./pages/ExecutionWorkspaceDetail").then((module) => ({ default: module.ExecutionWorkspaceDetail })),
+);
+const Goals = lazy(() => import("./pages/Goals").then((module) => ({ default: module.Goals })));
+const GoalDetail = lazy(() => import("./pages/GoalDetail").then((module) => ({ default: module.GoalDetail })));
+const Approvals = lazy(() => import("./pages/Approvals").then((module) => ({ default: module.Approvals })));
+const ApprovalDetail = lazy(() =>
+  import("./pages/ApprovalDetail").then((module) => ({ default: module.ApprovalDetail })),
+);
+const Costs = lazy(() => import("./pages/Costs").then((module) => ({ default: module.Costs })));
+const Activity = lazy(() => import("./pages/Activity").then((module) => ({ default: module.Activity })));
+const Inbox = lazy(() => import("./pages/Inbox").then((module) => ({ default: module.Inbox })));
+const CompanySettings = lazy(() =>
+  import("./pages/CompanySettings").then((module) => ({ default: module.CompanySettings })),
+);
+const CompanySkills = lazy(() =>
+  import("./pages/CompanySkills").then((module) => ({ default: module.CompanySkills })),
+);
+const CompanyExport = lazy(() =>
+  import("./pages/CompanyExport").then((module) => ({ default: module.CompanyExport })),
+);
+const CompanyImport = lazy(() =>
+  import("./pages/CompanyImport").then((module) => ({ default: module.CompanyImport })),
+);
+const DesignGuide = lazy(() =>
+  import("./pages/DesignGuide").then((module) => ({ default: module.DesignGuide })),
+);
+const InstanceGeneralSettings = lazy(() =>
+  import("./pages/InstanceGeneralSettings").then((module) => ({ default: module.InstanceGeneralSettings })),
+);
+const InstanceSettings = lazy(() =>
+  import("./pages/InstanceSettings").then((module) => ({ default: module.InstanceSettings })),
+);
+const InstanceExperimentalSettings = lazy(() =>
+  import("./pages/InstanceExperimentalSettings").then((module) => ({ default: module.InstanceExperimentalSettings })),
+);
+const AdapterManager = lazy(() =>
+  import("./pages/AdapterManager").then((module) => ({ default: module.AdapterManager })),
+);
+const PluginManager = lazy(() =>
+  import("./pages/PluginManager").then((module) => ({ default: module.PluginManager })),
+);
+const PluginSettings = lazy(() =>
+  import("./pages/PluginSettings").then((module) => ({ default: module.PluginSettings })),
+);
+const PluginPage = lazy(() => import("./pages/PluginPage").then((module) => ({ default: module.PluginPage })));
+const IssueChatUxLab = lazy(() =>
+  import("./pages/IssueChatUxLab").then((module) => ({ default: module.IssueChatUxLab })),
+);
+const RunTranscriptUxLab = lazy(() =>
+  import("./pages/RunTranscriptUxLab").then((module) => ({ default: module.RunTranscriptUxLab })),
+);
+const OrgChart = lazy(() => import("./pages/OrgChart").then((module) => ({ default: module.OrgChart })));
+const NewAgent = lazy(() => import("./pages/NewAgent").then((module) => ({ default: module.NewAgent })));
+const AuthPage = lazy(() => import("./pages/Auth").then((module) => ({ default: module.AuthPage })));
+const BoardClaimPage = lazy(() =>
+  import("./pages/BoardClaim").then((module) => ({ default: module.BoardClaimPage })),
+);
+const CliAuthPage = lazy(() => import("./pages/CliAuth").then((module) => ({ default: module.CliAuthPage })));
+const InviteLandingPage = lazy(() =>
+  import("./pages/InviteLanding").then((module) => ({ default: module.InviteLandingPage })),
+);
+const NotFoundPage = lazy(() => import("./pages/NotFound").then((module) => ({ default: module.NotFoundPage })));
 
 function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
   return (
@@ -317,58 +357,66 @@ function NoCompaniesStartPage() {
 
 export function App() {
   return (
-    <>
-      <Routes>
-        <Route path="auth" element={<AuthPage />} />
-        <Route path="board-claim/:token" element={<BoardClaimPage />} />
-        <Route path="cli-auth/:id" element={<CliAuthPage />} />
-        <Route path="invite/:token" element={<InviteLandingPage />} />
+    <Suspense
+      fallback={
+        <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">
+          Loading…
+        </div>
+      }
+    >
+      <>
+        <Routes>
+          <Route path="auth" element={<AuthPage />} />
+          <Route path="board-claim/:token" element={<BoardClaimPage />} />
+          <Route path="cli-auth/:id" element={<CliAuthPage />} />
+          <Route path="invite/:token" element={<InviteLandingPage />} />
 
-        <Route element={<CloudAccessGate />}>
-          <Route index element={<CompanyRootRedirect />} />
-          <Route path="onboarding" element={<OnboardingRoutePage />} />
-          <Route path="instance" element={<Navigate to="/instance/settings/general" replace />} />
-          <Route path="instance/settings" element={<Layout />}>
-            <Route index element={<Navigate to="general" replace />} />
-            <Route path="general" element={<InstanceGeneralSettings />} />
-            <Route path="heartbeats" element={<InstanceSettings />} />
-            <Route path="experimental" element={<InstanceExperimentalSettings />} />
-            <Route path="plugins" element={<PluginManager />} />
-            <Route path="plugins/:pluginId" element={<PluginSettings />} />
-            <Route path="adapters" element={<AdapterManager />} />
+          <Route element={<CloudAccessGate />}>
+            <Route index element={<CompanyRootRedirect />} />
+            <Route path="onboarding" element={<OnboardingRoutePage />} />
+            <Route path="instance" element={<Navigate to="/instance/settings/general" replace />} />
+            <Route path="instance/settings" element={<Layout />}>
+              <Route index element={<Navigate to="general" replace />} />
+              <Route path="general" element={<InstanceGeneralSettings />} />
+              <Route path="heartbeats" element={<InstanceSettings />} />
+              <Route path="experimental" element={<InstanceExperimentalSettings />} />
+              <Route path="plugins" element={<PluginManager />} />
+              <Route path="plugins/:pluginId" element={<PluginSettings />} />
+              <Route path="adapters" element={<AdapterManager />} />
+            </Route>
+            <Route path="companies" element={<UnprefixedBoardRedirect />} />
+            <Route path="roadmap" element={<UnprefixedBoardRedirect />} />
+            <Route path="issues" element={<UnprefixedBoardRedirect />} />
+            <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
+            <Route path="routines" element={<UnprefixedBoardRedirect />} />
+            <Route path="routines/:routineId" element={<UnprefixedBoardRedirect />} />
+            <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
+            <Route path="settings" element={<LegacySettingsRedirect />} />
+            <Route path="settings/*" element={<LegacySettingsRedirect />} />
+            <Route path="agents" element={<UnprefixedBoardRedirect />} />
+            <Route path="agents/new" element={<UnprefixedBoardRedirect />} />
+            <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
+            <Route path="agents/:agentId/:tab" element={<UnprefixedBoardRedirect />} />
+            <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId/workspaces" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId/workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
+            <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
+            <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
+            <Route path="tests/ux/chat" element={<UnprefixedBoardRedirect />} />
+            <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
+            <Route path=":companyPrefix" element={<Layout />}>
+              {boardRoutes()}
+            </Route>
+            <Route path="*" element={<NotFoundPage scope="global" />} />
           </Route>
-          <Route path="companies" element={<UnprefixedBoardRedirect />} />
-          <Route path="roadmap" element={<UnprefixedBoardRedirect />} />
-          <Route path="issues" element={<UnprefixedBoardRedirect />} />
-          <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
-          <Route path="routines" element={<UnprefixedBoardRedirect />} />
-          <Route path="routines/:routineId" element={<UnprefixedBoardRedirect />} />
-          <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
-          <Route path="settings" element={<LegacySettingsRedirect />} />
-          <Route path="settings/*" element={<LegacySettingsRedirect />} />
-          <Route path="agents" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents/new" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents/:agentId/:tab" element={<UnprefixedBoardRedirect />} />
-          <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/workspaces" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
-          <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
-          <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
-          <Route path="tests/ux/chat" element={<UnprefixedBoardRedirect />} />
-          <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
-          <Route path=":companyPrefix" element={<Layout />}>
-            {boardRoutes()}
-          </Route>
-          <Route path="*" element={<NotFoundPage scope="global" />} />
-        </Route>
-      </Routes>
-      <OnboardingWizard />
-    </>
+        </Routes>
+        <OnboardingWizard />
+      </>
+    </Suspense>
   );
 }

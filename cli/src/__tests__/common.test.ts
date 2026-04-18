@@ -80,6 +80,26 @@ describe("resolveCommandContext", () => {
     expect(resolved.api.apiKey).toBe("direct-token");
   });
 
+  it("falls back to the default local API base when no config or profile is set", () => {
+    const contextPath = createTempPath("context.json");
+    const missingConfigPath = createTempPath("missing-config.json");
+    writeContext(
+      {
+        version: 1,
+        currentProfile: "default",
+        profiles: { default: {} },
+      },
+      contextPath,
+    );
+
+    const resolved = resolveCommandContext(
+      { context: contextPath, config: missingConfigPath },
+      { requireCompany: false },
+    );
+
+    expect(resolved.api.apiBase).toBe("http://localhost:3102");
+  });
+
   it("throws when company is required but unresolved", () => {
     const contextPath = createTempPath("context.json");
     writeContext(

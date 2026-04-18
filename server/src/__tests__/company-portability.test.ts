@@ -1437,6 +1437,87 @@ describe("company portability", () => {
     ]);
   });
 
+  it("exports legacy urgent priorities as canonical critical", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    projectSvc.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Launch",
+        urlKey: "launch",
+        description: "Ship it",
+        leadAgentId: "agent-1",
+        targetDate: null,
+        color: null,
+        status: "planned",
+        executionWorkspacePolicy: null,
+        archivedAt: null,
+      },
+    ]);
+    issueSvc.list.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Fix cart",
+        description: "Investigate cart failures",
+        projectId: "project-1",
+        projectWorkspaceId: null,
+        assigneeAgentId: "agent-1",
+        status: "todo",
+        priority: "urgent",
+        labelIds: [],
+        billingCode: null,
+        executionWorkspaceSettings: null,
+        assigneeAdapterOverrides: null,
+      },
+    ]);
+    routineSvc.list.mockResolvedValue([
+      {
+        id: "routine-1",
+        companyId: "company-1",
+        projectId: "project-1",
+        goalId: null,
+        parentIssueId: null,
+        title: "Monday Review",
+        description: "Review pipeline health",
+        assigneeAgentId: "agent-1",
+        priority: "urgent",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        createdByAgentId: null,
+        createdByUserId: null,
+        updatedByAgentId: null,
+        updatedByUserId: null,
+        lastTriggeredAt: null,
+        lastEnqueuedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        triggers: [],
+        lastRun: null,
+        activeIssue: null,
+      },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: true,
+        issues: true,
+        skills: false,
+      },
+    });
+
+    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    expect(extension).toContain('priority: "critical"');
+    expect(extension).not.toContain('priority: "urgent"');
+    expect(exported.manifest.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Fix cart", priority: "critical" }),
+      expect.objectContaining({ slug: "monday-review", priority: "critical" }),
+    ]));
+  });
+
   it("imports recurring task packages as routines instead of one-time issues", async () => {
     const portability = companyPortabilityService({} as any);
 
@@ -1556,6 +1637,103 @@ describe("company portability", () => {
       replayWindowSec: 120,
     }), expect.any(Object));
     expect(issueSvc.create).not.toHaveBeenCalled();
+  });
+
+  it("normalizes legacy urgent priorities to critical when importing task packages", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported PrivateClip",
+    });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.create.mockResolvedValue({
+      id: "agent-created",
+      name: "ClaudeCoder",
+    });
+    projectSvc.create.mockResolvedValue({
+      id: "project-created",
+      name: "Launch",
+      urlKey: "launch",
+    });
+    agentSvc.list.mockResolvedValue([]);
+    projectSvc.list.mockResolvedValue([]);
+    issueSvc.create.mockResolvedValue({
+      id: "issue-imported",
+      title: "Fix cart",
+    });
+
+    const files = {
+      "COMPANY.md": [
+        "---",
+        'schema: "agentcompanies/v1"',
+        'name: "Imported PrivateClip"',
+        "---",
+        "",
+      ].join("\n"),
+      "agents/claudecoder/AGENTS.md": [
+        "---",
+        'name: "ClaudeCoder"',
+        "---",
+        "",
+        "You write code.",
+        "",
+      ].join("\n"),
+      "projects/launch/PROJECT.md": [
+        "---",
+        'name: "Launch"',
+        "---",
+        "",
+      ].join("\n"),
+      "tasks/fix-cart/TASK.md": [
+        "---",
+        'name: "Fix cart"',
+        'project: "launch"',
+        'assignee: "claudecoder"',
+        "---",
+        "",
+        "Investigate cart failures.",
+        "",
+      ].join("\n"),
+      "tasks/monday-review/TASK.md": [
+        "---",
+        'name: "Monday Review"',
+        'project: "launch"',
+        'assignee: "claudecoder"',
+        "recurring: true",
+        "---",
+        "",
+        "Review pipeline health.",
+        "",
+      ].join("\n"),
+      ".paperclip.yaml": [
+        'schema: "paperclip/v1"',
+        "tasks:",
+        "  fix-cart:",
+        '    priority: "urgent"',
+        "routines:",
+        "  monday-review:",
+        '    priority: "urgent"',
+        "",
+      ].join("\n"),
+    };
+
+    await portability.importBundle({
+      source: { type: "inline", rootPath: "paperclip-demo", files },
+      include: { company: true, agents: true, projects: true, issues: true, skills: false },
+      target: { mode: "new_company", newCompanyName: "Imported PrivateClip" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(issueSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      title: "Fix cart",
+      priority: "critical",
+    }));
+    expect(routineSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      title: "Monday Review",
+      priority: "critical",
+    }), expect.any(Object));
   });
 
   it("migrates legacy schedule.recurrence imports into routine triggers", async () => {

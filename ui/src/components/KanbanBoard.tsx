@@ -56,6 +56,7 @@ interface Agent {
 
 interface KanbanBoardProps {
   issues: Issue[];
+  allIssues?: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
   epicStylesByIssueId?: Map<string, { cardClassName: string }>;
@@ -88,7 +89,10 @@ function KanbanColumn({
   const isEmpty = issues.length === 0;
 
   return (
-    <div className={`flex flex-col shrink-0 transition-[width,min-width] ${isEmpty && !isOver ? "min-w-[96px] w-[96px]" : "min-w-[260px] w-[260px]"}`}>
+    <div
+      data-kanban-column-status={status}
+      className={`flex flex-col shrink-0 transition-[width,min-width] ${isEmpty && !isOver ? "min-w-[96px] w-[96px]" : "min-w-[260px] w-[260px]"}`}
+    >
       <div className="flex items-center gap-2 px-2 py-2 mb-1">
         <StatusIcon status={status} />
         <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground truncate">
@@ -241,6 +245,7 @@ function KanbanCard({
 
 export function KanbanBoard({
   issues,
+  allIssues,
   agents,
   liveIssueIds,
   epicStylesByIssueId,
@@ -273,6 +278,32 @@ export function KanbanBoard({
     }
     return grouped;
   }, [issues]);
+
+  const sourceColumnIssues = useMemo(() => {
+    const grouped: Record<string, Issue[]> = {};
+    for (const status of boardStatuses) {
+      grouped[status] = [];
+    }
+    for (const issue of allIssues ?? issues) {
+      if (grouped[issue.status]) {
+        grouped[issue.status].push(issue);
+      }
+    }
+    return grouped;
+  }, [allIssues, issues]);
+
+  const hiddenStatuses = useMemo(
+    () =>
+      boardStatuses.filter(
+        (status) => (sourceColumnIssues[status]?.length ?? 0) > 0 && (columnIssues[status]?.length ?? 0) === 0,
+      ),
+    [columnIssues, sourceColumnIssues],
+  );
+
+  const visibleStatuses = useMemo(
+    () => boardStatuses.filter((status) => !hiddenStatuses.includes(status)),
+    [hiddenStatuses],
+  );
 
   const activeIssue = useMemo(
     () => (activeId ? issues.find((i) => i.id === activeId) : null),
@@ -316,41 +347,60 @@ export function KanbanBoard({
   }
 
   return (
-    <DndContext
-      sensors={sensors}
-      onDragStart={handleDragStart}
-      onDragOver={handleDragOver}
-      onDragEnd={handleDragEnd}
-    >
-      <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">
-        {boardStatuses.map((status) => (
-          <KanbanColumn
-            key={status}
-            status={status}
-            issues={columnIssues[status] ?? []}
-            visibleCount={visibleCountByStatus[status] ?? COLUMN_PAGE_SIZE}
-            onShowMore={() =>
-              setVisibleCountByStatus((prev) => ({
-                ...prev,
-                [status]: (prev[status] ?? COLUMN_PAGE_SIZE) + COLUMN_PAGE_SIZE,
-              }))
-            }
-            agents={agents}
-            liveIssueIds={liveIssueIds}
-            epicStylesByIssueId={epicStylesByIssueId}
-          />
-        ))}
-      </div>
-      <DragOverlay>
-        {activeIssue ? (
-          <KanbanCard
-            issue={activeIssue}
-            agents={agents}
-            isOverlay
-            epicCardClassName={epicStylesByIssueId?.get(activeIssue.id)?.cardClassName}
-          />
-        ) : null}
-      </DragOverlay>
-    </DndContext>
+    <div className="space-y-3">
+      {hiddenStatuses.length > 0 && (
+        <div
+          data-kanban-hidden-statuses
+          className="flex flex-wrap items-center gap-1.5 px-1 text-[11px] text-muted-foreground"
+        >
+          <span className="font-medium">Hidden by current filters</span>
+          {hiddenStatuses.map((status) => (
+            <span
+              key={status}
+              data-kanban-hidden-status-chip={status}
+              className="inline-flex items-center rounded-full border border-border bg-muted/40 px-2 py-0.5 font-medium text-muted-foreground"
+            >
+              {formatIssueStatusLabel(status)}
+            </span>
+          ))}
+        </div>
+      )}
+      <DndContext
+        sensors={sensors}
+        onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
+        onDragEnd={handleDragEnd}
+      >
+        <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">
+          {visibleStatuses.map((status) => (
+            <KanbanColumn
+              key={status}
+              status={status}
+              issues={columnIssues[status] ?? []}
+              visibleCount={visibleCountByStatus[status] ?? COLUMN_PAGE_SIZE}
+              onShowMore={() =>
+                setVisibleCountByStatus((prev) => ({
+                  ...prev,
+                  [status]: (prev[status] ?? COLUMN_PAGE_SIZE) + COLUMN_PAGE_SIZE,
+                }))
+              }
+              agents={agents}
+              liveIssueIds={liveIssueIds}
+              epicStylesByIssueId={epicStylesByIssueId}
+            />
+          ))}
+        </div>
+        <DragOverlay>
+          {activeIssue ? (
+            <KanbanCard
+              issue={activeIssue}
+              agents={agents}
+              isOverlay
+              epicCardClassName={epicStylesByIssueId?.get(activeIssue.id)?.cardClassName}
+            />
+          ) : null}
+        </DragOverlay>
+      </DndContext>
+    </div>
   );
 }

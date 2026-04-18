@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
 describe("agent local JWT", () => {
+  const runId = "11111111-1111-4111-8111-111111111111";
   const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
   const betterAuthSecretEnv = "BETTER_AUTH_SECRET";
   const ttlEnv = "PAPERCLIP_AGENT_JWT_TTL_SECONDS";
@@ -41,7 +42,7 @@ describe("agent local JWT", () => {
 
   it("creates and verifies a token", () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", runId);
     expect(typeof token).toBe("string");
 
     const claims = verifyLocalAgentJwt(token!);
@@ -49,7 +50,7 @@ describe("agent local JWT", () => {
       sub: "agent-1",
       company_id: "company-1",
       adapter_type: "claude_local",
-      run_id: "run-1",
+      run_id: runId,
       iss: "paperclip",
       aud: "paperclip-api",
     });
@@ -66,7 +67,7 @@ describe("agent local JWT", () => {
     delete process.env[secretEnv];
     process.env[betterAuthSecretEnv] = "fallback-secret";
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", runId);
     expect(typeof token).toBe("string");
 
     const claims = verifyLocalAgentJwt(token!);
@@ -74,14 +75,14 @@ describe("agent local JWT", () => {
       sub: "agent-1",
       company_id: "company-1",
       adapter_type: "claude_local",
-      run_id: "run-1",
+      run_id: runId,
     });
   });
 
   it("rejects expired tokens", () => {
     process.env[ttlEnv] = "1";
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", runId);
 
     vi.setSystemTime(new Date("2026-01-01T00:00:05.000Z"));
     expect(verifyLocalAgentJwt(token!)).toBeNull();
@@ -91,10 +92,18 @@ describe("agent local JWT", () => {
     process.env[issuerEnv] = "custom-issuer";
     process.env[audienceEnv] = "custom-audience";
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-    const token = createLocalAgentJwt("agent-1", "company-1", "codex_local", "run-1");
+    const token = createLocalAgentJwt("agent-1", "company-1", "codex_local", runId);
 
     process.env[issuerEnv] = "paperclip";
     process.env[audienceEnv] = "paperclip-api";
+    expect(verifyLocalAgentJwt(token!)).toBeNull();
+  });
+
+  it("rejects tokens with malformed run ids", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "trust-audit-001");
+
+    expect(typeof token).toBe("string");
     expect(verifyLocalAgentJwt(token!)).toBeNull();
   });
 });

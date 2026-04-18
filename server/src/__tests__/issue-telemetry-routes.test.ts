@@ -5,7 +5,12 @@ import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
 
 const mockIssueService = vi.hoisted(() => ({
+  getAncestors: vi.fn(),
   getById: vi.fn(),
+  findMentionedProjectIds: vi.fn(),
+  getRelationSummaries: vi.fn(),
+  listAttachments: vi.fn(),
+  listComments: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
@@ -36,11 +41,17 @@ vi.mock("../services/index.js", () => ({
     hasPermission: vi.fn(),
   }),
   agentService: () => mockAgentService,
-  documentService: () => ({}),
+  documentService: () => ({
+    getIssueDocumentPayload: vi.fn(async () => ({})),
+    listIssueDocuments: vi.fn(async () => []),
+  }),
   executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({}),
-  goalService: () => ({}),
+  goalService: () => ({
+    getById: vi.fn(async () => null),
+    getDefaultCompanyGoal: vi.fn(async () => null),
+  }),
   heartbeatService: () => ({
     wakeup: vi.fn(async () => undefined),
     reportRunActivity: vi.fn(async () => undefined),
@@ -49,11 +60,16 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
   logActivity: vi.fn(async () => undefined),
-  projectService: () => ({}),
+  projectService: () => ({
+    getById: vi.fn(async () => null),
+    listByIds: vi.fn(async () => []),
+  }),
   routineService: () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
-  workProductService: () => ({}),
+  workProductService: () => ({
+    listForIssue: vi.fn(async () => []),
+  }),
 }));
 
 function makeIssue(status: "todo" | "done") {
@@ -96,7 +112,12 @@ describe("issue telemetry routes", () => {
       }
       return null;
     });
+    mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.listAttachments.mockResolvedValue([]);
+    mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({

@@ -1,18 +1,9 @@
+import { issuePriorityWeight } from "@paperclipai/shared";
+
 export type IssueTruthType = "completion" | "blocker" | "handoff" | null;
 
 function normalizePriorityRank(priority: string | null | undefined) {
-  switch ((priority ?? "").toLowerCase()) {
-    case "urgent":
-      return 4;
-    case "high":
-      return 3;
-    case "medium":
-      return 2;
-    case "low":
-      return 1;
-    default:
-      return 0;
-  }
+  return issuePriorityWeight(priority);
 }
 
 export function isSuccessfulHeartbeatRunStatus(status: string | null | undefined) {
