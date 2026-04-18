@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, eq, gte, lt } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentHireEvents,
@@ -63,23 +63,7 @@ export function agentHirePolicyService(db: Db) {
     input: UpdateHirePolicy,
     updatedByUserId: string | null,
   ): Promise<HirePolicyRow> {
-    const existing = await getByAgentId(agentId);
     const now = new Date();
-    if (existing) {
-      const [row] = await db
-        .update(agentHirePolicies)
-        .set({
-          allowedCombinations: input.allowedCombinations,
-          maxHiresPerMinute: input.maxHiresPerMinute ?? null,
-          maxHiresPerHour: input.maxHiresPerHour ?? null,
-          notes: input.notes ?? null,
-          updatedByUserId,
-          updatedAt: now,
-        })
-        .where(eq(agentHirePolicies.id, existing.id))
-        .returning();
-      return row as HirePolicyRow;
-    }
     const [row] = await db
       .insert(agentHirePolicies)
       .values({
@@ -94,6 +78,17 @@ export function agentHirePolicyService(db: Db) {
         createdAt: now,
         updatedAt: now,
       })
+      .onConflictDoUpdate({
+        target: agentHirePolicies.agentId,
+        set: {
+          allowedCombinations: input.allowedCombinations,
+          maxHiresPerMinute: input.maxHiresPerMinute ?? null,
+          maxHiresPerHour: input.maxHiresPerHour ?? null,
+          notes: input.notes ?? null,
+          updatedByUserId,
+          updatedAt: now,
+        },
+      })
       .returning();
     return row as HirePolicyRow;
   }
@@ -104,93 +99,97 @@ export function agentHirePolicyService(db: Db) {
     request: HireRequestShape,
   ): Promise<void> {
     const policy = await getByAgentId(callerAgentId);
-    if (policy) {
-      const combinations = policy.allowedCombinations ?? [];
-      const allowed = combinations.some((c) =>
-        matchesCombination(request, callerAgentId, c),
-      );
-      if (!allowed) {
-        throw unprocessable("Hire policy: combination not allowed", {
-          code: "hire_policy_denied",
-          requested: {
-            adapterType: request.adapterType,
-            role: request.role,
-            parent: request.reportsTo ?? null,
-          },
-          allowedCombinations: combinations,
-        });
-      }
-      await checkRateLimit(callerAgentId, policy);
+    if (!policy) return;
+
+    const combinations = policy.allowedCombinations ?? [];
+    const allowed = combinations.some((c) =>
+      matchesCombination(request, callerAgentId, c),
+    );
+    if (!allowed) {
+      throw unprocessable("Hire policy: combination not allowed", {
+        code: "hire_policy_denied",
+        requested: {
+          adapterType: request.adapterType,
+          role: request.role,
+          parent: request.reportsTo ?? null,
+        },
+        allowedCombinations: combinations,
+      });
     }
+
+    if (policy.maxHiresPerMinute == null && policy.maxHiresPerHour == null) {
+      return;
+    }
+
+    await consumeRateLimitToken(callerAgentId, companyId, policy);
   }
 
-  async function checkRateLimit(
-    callerAgentId: string,
-    policy: HirePolicyRow,
-  ): Promise<void> {
-    const now = Date.now();
-    const hourAgo = new Date(now - 60 * 60 * 1000);
-    const minuteAgo = new Date(now - 60 * 1000);
-
-    if (policy.maxHiresPerMinute != null) {
-      const rows = await db
-        .select({ createdAt: agentHireEvents.createdAt })
-        .from(agentHireEvents)
-        .where(
-          and(
-            eq(agentHireEvents.callerAgentId, callerAgentId),
-            gte(agentHireEvents.createdAt, minuteAgo),
-          ),
-        )
-        .orderBy(desc(agentHireEvents.createdAt));
-      if (rows.length >= policy.maxHiresPerMinute) {
-        const oldest = rows[rows.length - 1].createdAt;
-        const retryAfter =
-          Math.max(1, Math.ceil((60 * 1000 - (now - oldest.getTime())) / 1000));
-        throw tooManyRequests(
-          "Hire rate limit exceeded (per minute)",
-          retryAfter,
-          { code: "hire_rate_limit", window: "minute", limit: policy.maxHiresPerMinute },
-        );
-      }
-    }
-
-    if (policy.maxHiresPerHour != null) {
-      const rows = await db
-        .select({ createdAt: agentHireEvents.createdAt })
-        .from(agentHireEvents)
-        .where(
-          and(
-            eq(agentHireEvents.callerAgentId, callerAgentId),
-            gte(agentHireEvents.createdAt, hourAgo),
-          ),
-        )
-        .orderBy(desc(agentHireEvents.createdAt));
-      if (rows.length >= policy.maxHiresPerHour) {
-        const oldest = rows[rows.length - 1].createdAt;
-        const retryAfter =
-          Math.max(1, Math.ceil((60 * 60 * 1000 - (now - oldest.getTime())) / 1000));
-        throw tooManyRequests(
-          "Hire rate limit exceeded (per hour)",
-          retryAfter,
-          { code: "hire_rate_limit", window: "hour", limit: policy.maxHiresPerHour },
-        );
-      }
-    }
-  }
-
-  async function recordHireEvent(
+  async function consumeRateLimitToken(
     callerAgentId: string,
     companyId: string,
-    createdAgentId: string,
+    policy: HirePolicyRow,
   ): Promise<void> {
-    await db.insert(agentHireEvents).values({
-      callerAgentId,
-      companyId,
-      createdAgentId,
-    });
-    // Soft prune: remove events older than 1 hour for this caller to keep table small.
-    const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const [inserted] = await db
+      .insert(agentHireEvents)
+      .values({ callerAgentId, companyId })
+      .returning({ id: agentHireEvents.id, createdAt: agentHireEvents.createdAt });
+
+    const now = inserted.createdAt.getTime();
+    const hourAgo = new Date(now - 60 * 60 * 1000);
+
+    const windowRows = await db
+      .select({ createdAt: agentHireEvents.createdAt })
+      .from(agentHireEvents)
+      .where(
+        and(
+          eq(agentHireEvents.callerAgentId, callerAgentId),
+          gte(agentHireEvents.createdAt, hourAgo),
+        ),
+      );
+
+    const tooManyInMinute = (() => {
+      if (policy.maxHiresPerMinute == null) return null;
+      const minuteWindowStart = now - 60 * 1000;
+      const inMinute = windowRows.filter((r) => r.createdAt.getTime() >= minuteWindowStart);
+      if (inMinute.length <= policy.maxHiresPerMinute) return null;
+      const oldest = inMinute.reduce(
+        (acc, r) => (r.createdAt.getTime() < acc.getTime() ? r.createdAt : acc),
+        inMinute[0].createdAt,
+      );
+      const retryAfter = Math.max(1, Math.ceil((60 * 1000 - (now - oldest.getTime())) / 1000));
+      return {
+        window: "minute" as const,
+        limit: policy.maxHiresPerMinute,
+        retryAfter,
+      };
+    })();
+
+    const tooManyInHour = (() => {
+      if (policy.maxHiresPerHour == null) return null;
+      if (windowRows.length <= policy.maxHiresPerHour) return null;
+      const oldest = windowRows.reduce(
+        (acc, r) => (r.createdAt.getTime() < acc.getTime() ? r.createdAt : acc),
+        windowRows[0].createdAt,
+      );
+      const retryAfter = Math.max(1, Math.ceil((60 * 60 * 1000 - (now - oldest.getTime())) / 1000));
+      return {
+        window: "hour" as const,
+        limit: policy.maxHiresPerHour,
+        retryAfter,
+      };
+    })();
+
+    const violation = tooManyInMinute ?? tooManyInHour;
+    if (violation) {
+      await db.delete(agentHireEvents).where(eq(agentHireEvents.id, inserted.id));
+      throw tooManyRequests(
+        `Hire rate limit exceeded (per ${violation.window})`,
+        violation.retryAfter,
+        { code: "hire_rate_limit", window: violation.window, limit: violation.limit },
+      );
+    }
+
+    // Opportunistic prune: remove events older than 1 hour for this caller.
     await db
       .delete(agentHireEvents)
       .where(
@@ -205,7 +204,6 @@ export function agentHirePolicyService(db: Db) {
     getByAgentId,
     upsert,
     enforce,
-    recordHireEvent,
   };
 }
 

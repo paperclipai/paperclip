@@ -20,8 +20,8 @@ export const agentHirePolicies = pgTable(
   "agent_hire_policies",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    agentId: uuid("agent_id").notNull().references(() => agents.id),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     allowedCombinations: jsonb("allowed_combinations")
       .$type<HireCombination[]>()
       .notNull()

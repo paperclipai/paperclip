@@ -11,8 +11,8 @@ export const agentHireEvents = pgTable(
   "agent_hire_events",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    callerAgentId: uuid("caller_agent_id").notNull().references(() => agents.id),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    callerAgentId: uuid("caller_agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     createdAgentId: uuid("created_agent_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

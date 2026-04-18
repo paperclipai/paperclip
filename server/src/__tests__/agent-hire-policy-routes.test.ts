@@ -74,7 +74,6 @@ const mockHirePolicyService = vi.hoisted(() => ({
   getByAgentId: vi.fn(),
   upsert: vi.fn(),
   enforce: vi.fn(),
-  recordHireEvent: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -367,7 +366,6 @@ describe("agent hire-policy enforcement on /agent-hires", () => {
       details: expect.objectContaining({ code: "hire_policy_denied" }),
     });
     expect(mockAgentService.create).not.toHaveBeenCalled();
-    expect(mockHirePolicyService.recordHireEvent).not.toHaveBeenCalled();
   });
 
   it("returns 429 with Retry-After when rate-limit triggers", async () => {
@@ -399,9 +397,8 @@ describe("agent hire-policy enforcement on /agent-hires", () => {
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
-  it("records hire event after successful hire", async () => {
+  it("calls enforce with the hire shape on successful hire", async () => {
     mockHirePolicyService.enforce.mockResolvedValue(undefined);
-    mockHirePolicyService.recordHireEvent.mockResolvedValue(undefined);
     agentById[managerAgentId].permissions = { canCreateAgents: true };
 
     const app = await createApp({
@@ -428,11 +425,6 @@ describe("agent hire-policy enforcement on /agent-hires", () => {
         reportsTo: managerAgentId,
       }),
     );
-    expect(mockHirePolicyService.recordHireEvent).toHaveBeenCalledWith(
-      managerAgentId,
-      companyId,
-      "99999999-9999-4999-8999-999999999999",
-    );
   });
 
   it("skips enforcement when caller is board (non-agent)", async () => {
@@ -452,6 +444,5 @@ describe("agent hire-policy enforcement on /agent-hires", () => {
       });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockHirePolicyService.enforce).not.toHaveBeenCalled();
-    expect(mockHirePolicyService.recordHireEvent).not.toHaveBeenCalled();
   });
 });

@@ -1437,10 +1437,6 @@ export function agentRoutes(db: Db) {
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
 
-    if (actorAgent) {
-      await hirePolicy.recordHireEvent(actorAgent.id, companyId, agent.id);
-    }
-
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
     const actor = getActorInfo(req);
 
