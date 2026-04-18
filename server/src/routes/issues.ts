@@ -215,6 +215,51 @@ export function issueRoutes(
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
+  // Monitor-style authoring bypass. Grants a narrow escape from a handful of
+  // authoring/coordination gates so watchdog agents (role-agnostic) can create
+  // repair tickets and nudge ownership without tripping governance rules meant
+  // for ordinary authoring. Bypass NEVER applies to delivery, QA, evidence,
+  // review cycle, review handoff, transition, comment-required, cancellation
+  // replacement, active-children, dispatchability, or rate limits.
+  //
+  // Callers pattern:
+  //   if (would_block && !(await agentHasAuthoringBypass(req, companyId, "gate_name")))
+  //     return block;
+  // The helper caches the permission check per-request and only writes an
+  // `issue.authoring_bypass_used` activity row when it actually returns true —
+  // i.e. when the bypass is in a position to change the outcome.
+  async function agentHasAuthoringBypass(
+    req: Request,
+    companyId: string,
+    gate: string,
+  ): Promise<boolean> {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return false;
+    const cache = req as unknown as { __authoringBypassChecked?: boolean; __authoringBypass?: boolean };
+    if (!cache.__authoringBypassChecked) {
+      cache.__authoringBypass = await access.hasPermission(
+        companyId,
+        "agent",
+        req.actor.agentId,
+        "tickets:bypass_authoring_gates",
+      );
+      cache.__authoringBypassChecked = true;
+    }
+    if (!cache.__authoringBypass) return false;
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.authoring_bypass_used",
+      entityType: "issue",
+      entityId: req.actor.agentId,
+      details: { gate },
+    });
+    return true;
+  }
+
   async function assertCanAssignTasks(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
@@ -694,10 +739,14 @@ export function issueRoutes(
       return { gate: "assignment_target_not_found", reason: "Target agent not found in this company." };
     }
 
+    // Authoring-bypass agents (Monitor) skip ownership + role matrix so they can
+    // nudge any issue back to the right owner. Dispatchability check still applies.
+    const hasAuthoringBypass = await agentHasAuthoringBypass(req, issue.companyId, "assignment_policy");
     const isControlPlane = actorAgent && CONTROL_PLANE_ROLES.has(actorAgent.role);
+    const canBypassOwnership = isControlPlane || hasAuthoringBypass;
 
-    // 1. Ownership check (control-plane bypasses)
-    if (!isControlPlane) {
+    // 1. Ownership check (control-plane + authoring-bypass bypass)
+    if (!canBypassOwnership) {
       const ownsIssue = issue.assigneeAgentId === actorAgentId;
       if (!ownsIssue) {
         return {
@@ -707,7 +756,7 @@ export function issueRoutes(
       }
     }
 
-    // 2. Dispatchability check (applies even to control-plane — don't assign to broken agents)
+    // 2. Dispatchability check (applies to everyone — don't assign to broken agents)
     if (!isDispatchableAgent(targetAgent)) {
       return {
         gate: "assignment_target_not_dispatchable",
@@ -715,8 +764,8 @@ export function issueRoutes(
       };
     }
 
-    // 3. Role handoff matrix (control-plane bypasses)
-    if (!isControlPlane && actorAgent) {
+    // 3. Role handoff matrix (control-plane + authoring-bypass bypass)
+    if (!canBypassOwnership && actorAgent) {
       const allowed = ALLOWED_HANDOFFS[actorAgent.role];
       if (!allowed || !allowed.includes(targetAgent.role)) {
         return {
@@ -1718,7 +1767,10 @@ export function issueRoutes(
 
     // Role-based gate: only leadership agents can create initiatives.
     // Board users (non-agent actors) bypass this check.
-    if (issueType === "initiative" && actor.actorType === "agent" && actor.agentId) {
+    // Agents with `tickets:bypass_authoring_gates` (e.g. Monitor) also bypass, so
+    // watchdog agents can create their own umbrella initiatives (e.g. "Platform Health").
+    if (issueType === "initiative" && actor.actorType === "agent" && actor.agentId
+        && !(await agentHasAuthoringBypass(req, companyId, "initiative_requires_leadership_role"))) {
       const LEADERSHIP_ROLES = new Set(["ceo", "cto", "cmo", "cfo", "pm"]);
       const agentRecord = await agentsSvc.getById(actor.agentId);
       if (!agentRecord || !LEADERSHIP_ROLES.has(agentRecord.role)) {
@@ -1745,7 +1797,9 @@ export function issueRoutes(
     // Heuristic gate: reject initiatives whose titles match obvious child-task patterns.
     // Agents have been caught creating "[DLD-XXXX]" or "[post]" items as initiatives
     // to bypass the parent_requires_initiative rule.
-    if (issueType === "initiative" && actor.actorType === "agent" && typeof req.body.title === "string") {
+    // Authoring-bypass agents skip — Monitor titles legitimately start with "fix"/"patch".
+    if (issueType === "initiative" && actor.actorType === "agent" && typeof req.body.title === "string"
+        && !(await agentHasAuthoringBypass(req, companyId, "initiative_title_looks_like_task"))) {
       const title = req.body.title.trim();
       const childPatterns = [
         /^\[[A-Z]+-\d+\]/i,         // [DLD-3079] ...
@@ -1864,7 +1918,9 @@ export function issueRoutes(
 
     // Relay-duplication blocker: if an agent is creating an issue with the same
     // parentId and a similar title to an existing open issue, reject with 409.
-    if (actor.actorType === "agent" && req.body.parentId && req.body.title) {
+    // Authoring-bypass agents (Monitor) skip — recurrent-repair tickets are the point.
+    if (actor.actorType === "agent" && req.body.parentId && req.body.title
+        && !(await agentHasAuthoringBypass(req, companyId, "relay_duplication_blocker"))) {
       const normalizeTitle = (t: string) =>
         t.replace(/^[A-Z]+-\d+\s*/, "").toLowerCase().trim().slice(0, 40);
       const newNorm = normalizeTitle(req.body.title);
@@ -1893,8 +1949,10 @@ export function issueRoutes(
     }
 
     // Department label gate: every new issue must have exactly one dept:* label.
-    // Board users bypass this gate.
-    if (actor.actorType === "agent") {
+    // Board users bypass this gate. Agents with `tickets:bypass_authoring_gates`
+    // (e.g. Monitor) also bypass: repair tickets are cross-cutting and forcing a
+    // dept:* label creates mislabel churn.
+    if (actor.actorType === "agent" && !(await agentHasAuthoringBypass(req, companyId, "department_label_required"))) {
       const deptLabelIds = await svc.getDepartmentLabelIds(companyId);
       const providedLabelIds: string[] = req.body.labelIds ?? [];
 

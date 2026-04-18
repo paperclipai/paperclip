@@ -28,7 +28,7 @@ vi.mock("../services/index.js", () => ({
   agentInstructionsService: () => ({}),
   accessService: () => ({
     canUser: vi.fn(async () => true),
-    hasPermission: vi.fn(async () => true),
+    hasPermission: vi.fn(async (_c: string, _kind: string, _id: string, key: string) => key !== "tickets:bypass_authoring_gates"),
   }),
   approvalService: () => ({}),
   budgetService: () => ({}),

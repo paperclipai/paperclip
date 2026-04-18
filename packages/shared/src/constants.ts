@@ -376,6 +376,7 @@ export const PERMISSION_KEYS = [
   "tasks:assign",
   "tasks:assign_scope",
   "joins:approve",
+  "tickets:bypass_authoring_gates",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
