@@ -4485,6 +4485,31 @@ export function heartbeatService(db: Db) {
         adapterResult.summary ?? null,
       );
 
+      // Persist the task-session BEFORE finalizing the run. releaseIssueExecutionAndPromote
+      // (called from the finalized-run block below) may immediately queue a next wake, and
+      // that wake's resolveSessionBeforeForWakeup reads agent_task_sessions. If we finalized
+      // first, a wake fired between setRunStatus and upsertTaskSession would miss the fresh
+      // session and start a new one. See SHA-1903.
+      if (taskKey) {
+        if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
+          await clearTaskSessions(agent.companyId, agent.id, {
+            taskKey,
+            adapterType: agent.adapterType,
+          });
+        } else {
+          await upsertTaskSession({
+            companyId: agent.companyId,
+            agentId: agent.id,
+            adapterType: agent.adapterType,
+            taskKey,
+            sessionParamsJson: nextSessionState.params,
+            sessionDisplayId: nextSessionState.displayId,
+            lastRunId: run.id,
+            lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
+          });
+        }
+      }
+
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
         error:
@@ -4568,25 +4593,6 @@ export function heartbeatService(db: Db) {
         await updateRuntimeState(agent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
-        if (taskKey) {
-          if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
-            await clearTaskSessions(agent.companyId, agent.id, {
-              taskKey,
-              adapterType: agent.adapterType,
-            });
-          } else {
-            await upsertTaskSession({
-              companyId: agent.companyId,
-              agentId: agent.id,
-              adapterType: agent.adapterType,
-              taskKey,
-              sessionParamsJson: nextSessionState.params,
-              sessionDisplayId: nextSessionState.displayId,
-              lastRunId: finalizedRun.id,
-              lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
-            });
-          }
-        }
       }
       await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
