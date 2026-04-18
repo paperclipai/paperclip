@@ -49,6 +49,9 @@ vi.mock("../services/index.js", () => ({
   companyService: () => mockCompanyService,
   feedbackService: () => mockFeedbackService,
   logActivity: mockLogActivity,
+  rolesService: () => ({
+    seedSystemRoles: vi.fn(async () => []),
+  }),
 }));
 
 function createCompany() {

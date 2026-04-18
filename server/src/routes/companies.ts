@@ -22,6 +22,7 @@ import {
   companyService,
   feedbackService,
   logActivity,
+  rolesService,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -34,6 +35,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const access = accessService(db);
   const budgets = budgetService(db);
   const feedback = feedbackService(db);
+  const roles = rolesService(db);
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -174,6 +176,9 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
     const actor = getActorInfo(req);
     const result = await portability.importBundle(req.body, req.actor.type === "board" ? req.actor.userId : null);
+    if (result.company.action === "created") {
+      await roles.seedSystemRoles(result.company.id);
+    }
     await logActivity(db, {
       companyId: result.company.id,
       actorType: actor.actorType,
@@ -264,6 +269,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
     const company = await svc.create(req.body);
     await access.ensureMembership(company.id, "user", req.actor.userId ?? "local-board", "owner", "active");
+    await roles.seedSystemRoles(company.id);
     await logActivity(db, {
       companyId: company.id,
       actorType: "user",

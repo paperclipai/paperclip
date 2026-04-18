@@ -44,6 +44,9 @@ const mockDb = vi.hoisted(() => ({
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  departmentService: () => ({
+    listDepartmentIdsForPrincipal: vi.fn(async () => []),
+  }),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({

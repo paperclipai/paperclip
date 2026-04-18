@@ -249,6 +249,33 @@ export function departmentService(db: Db) {
       .where(eq(departmentMemberships.departmentId, departmentId));
   }
 
+  async function listDepartmentIdsForPrincipal(
+    companyId: string,
+    principalType: "user" | "agent",
+    principalId: string,
+  ): Promise<string[]> {
+    if (principalType === "agent") {
+      const agent = await db
+        .select({ id: agents.id, departmentId: agents.departmentId, companyId: agents.companyId })
+        .from(agents)
+        .where(eq(agents.id, principalId))
+        .then((rows) => rows[0] ?? null);
+      if (!agent || agent.companyId !== companyId) return [];
+      return agent.departmentId ? [agent.departmentId] : [];
+    }
+    const rows = await db
+      .select({ departmentId: departmentMemberships.departmentId })
+      .from(departmentMemberships)
+      .where(
+        and(
+          eq(departmentMemberships.companyId, companyId),
+          eq(departmentMemberships.principalType, "user"),
+          eq(departmentMemberships.principalId, principalId),
+        ),
+      );
+    return [...new Set(rows.map((row) => row.departmentId))];
+  }
+
   async function assertNoCycle(departmentId: string, newParentId: string) {
     let cursor: string | null = newParentId;
     for (let i = 0; i < 100; i++) {
@@ -260,5 +287,16 @@ export function departmentService(db: Db) {
     }
   }
 
-  return { list, tree, getById, create, update, archive, addMember, removeMember, listMembers };
+  return {
+    list,
+    tree,
+    getById,
+    create,
+    update,
+    archive,
+    addMember,
+    removeMember,
+    listMembers,
+    listDepartmentIdsForPrincipal,
+  };
 }

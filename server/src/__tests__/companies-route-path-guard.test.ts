@@ -23,6 +23,9 @@ vi.mock("../services/index.js", () => ({
     canUser: vi.fn(),
     ensureMembership: vi.fn(),
   }),
+  rolesService: () => ({
+    seedSystemRoles: vi.fn(async () => []),
+  }),
   budgetService: () => ({
     upsertPolicy: vi.fn(),
   }),

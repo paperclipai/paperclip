@@ -47,6 +47,9 @@ vi.mock("../services/index.js", () => ({
   companyService: () => mockCompanyService,
   feedbackService: () => mockFeedbackService,
   logActivity: mockLogActivity,
+  rolesService: () => ({
+    seedSystemRoles: vi.fn(async () => []),
+  }),
 }));
 
 async function createApp(actor: Record<string, unknown>) {

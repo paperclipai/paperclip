@@ -44,6 +44,9 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({
     getById: vi.fn(async () => null),
   }),
+  departmentService: () => ({
+    listDepartmentIdsForPrincipal: vi.fn(async () => []),
+  }),
   documentService: () => ({}),
   executionWorkspaceService: () => mockExecutionWorkspaceService,
   feedbackService: () => ({

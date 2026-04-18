@@ -17,6 +17,10 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockTrackAgentTaskCompleted = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+const mockAssertScopedPermission = vi.hoisted(() => vi.fn(async () => ({
+  companyWide: true,
+  departmentIds: [],
+})));
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: mockTrackAgentTaskCompleted,
@@ -26,12 +30,26 @@ vi.mock("../telemetry.js", () => ({
   getTelemetryClient: mockGetTelemetryClient,
 }));
 
+vi.mock("../routes/scoped-company-authz.js", () => ({
+  scopedCompanyAuthz: () => ({
+    assertScopedPermission: mockAssertScopedPermission,
+    resolveScopedPermission: mockAssertScopedPermission,
+  }),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(),
     hasPermission: vi.fn(),
+    resolveAccessibleDepartmentIds: vi.fn(async () => ({
+      companyWide: true,
+      departmentIds: [],
+    })),
   }),
   agentService: () => mockAgentService,
+  departmentService: () => ({
+    listDepartmentIdsForPrincipal: vi.fn(async () => []),
+  }),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({}),
