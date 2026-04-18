@@ -3267,8 +3267,13 @@ export function heartbeatService(db: Db) {
     return { count: runs.length, runIds: runs.map((r) => r.id) };
   }
 
+  // Grace window after an agent-initiated pause's resumeAt before the reconciler
+  // stops treating the pause as an active execution path. Covers scheduler drift
+  // between the agent's ScheduleWakeup fire and the next heartbeat cycle.
+  const AGENT_PAUSE_GRACE_MS = 60_000;
+
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
-    const [run, deferredWake] = await Promise.all([
+    const [run, deferredWake, agentPause] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
@@ -3293,9 +3298,22 @@ export function heartbeatService(db: Db) {
         )
         .limit(1)
         .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.status, "deferred_agent_pause"),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+            sql`(${agentWakeupRequests.payload} ->> 'resumeAt')::timestamptz + make_interval(secs => ${AGENT_PAUSE_GRACE_MS / 1000}) > now()`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
     ]);
 
-    return Boolean(run || deferredWake);
+    return Boolean(run || deferredWake || agentPause);
   }
 
   async function enqueueStrandedIssueRecovery(input: {
@@ -3409,6 +3427,42 @@ export function heartbeatService(db: Db) {
     });
 
     return updated;
+  }
+
+  // Agent-initiated pause for an issue currently under execution. Records a
+  // `deferred_agent_pause` wakeup so the reconciler can distinguish an
+  // intentional ScheduleWakeup-style pause from a process-lost run. See
+  // SHA-1873.
+  async function deferIssueExecution(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    resumeAt: Date;
+    reason?: string | null;
+    requestedByActorType?: "user" | "agent" | "system" | null;
+    requestedByActorId?: string | null;
+  }) {
+    const now = new Date();
+    const [row] = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_execution_deferred_by_agent",
+        payload: {
+          issueId: input.issueId,
+          resumeAt: input.resumeAt.toISOString(),
+          ...(input.reason ? { deferReason: input.reason } : {}),
+        },
+        status: "deferred_agent_pause",
+        requestedByActorType: input.requestedByActorType ?? null,
+        requestedByActorId: input.requestedByActorId ?? null,
+        requestedAt: now,
+      })
+      .returning();
+    return row;
   }
 
   async function reconcileStrandedAssignedIssues() {
@@ -5760,6 +5814,8 @@ export function heartbeatService(db: Db) {
     resumeQueuedRuns,
 
     reconcileStrandedAssignedIssues,
+
+    deferIssueExecution,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);

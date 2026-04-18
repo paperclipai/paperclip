@@ -929,6 +929,99 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.status).toBe("in_progress");
   });
 
+  it("skips escalation while a deferred_agent_pause with a future resumeAt is active", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    // Seed three prior continuation retries so the cap would otherwise fire.
+    for (let i = 0; i < 2; i += 1) {
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+        },
+        startedAt: new Date(`2026-03-19T${String(i).padStart(2, "0")}:00:00.000Z`),
+        finishedAt: new Date(`2026-03-19T${String(i).padStart(2, "0")}:05:00.000Z`),
+        updatedAt: new Date(`2026-03-19T${String(i).padStart(2, "0")}:05:00.000Z`),
+        errorCode: "process_lost",
+        error: "run failed before issue advanced",
+      });
+    }
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.deferIssueExecution({
+      companyId,
+      issueId,
+      agentId,
+      resumeAt: new Date(Date.now() + 240_000),
+      reason: "ScheduleWakeup 240s",
+    });
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("escalates stranded work once a deferred_agent_pause resumeAt is past the grace window", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    for (let i = 0; i < 2; i += 1) {
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+        },
+        startedAt: new Date(`2026-03-20T${String(i).padStart(2, "0")}:00:00.000Z`),
+        finishedAt: new Date(`2026-03-20T${String(i).padStart(2, "0")}:05:00.000Z`),
+        updatedAt: new Date(`2026-03-20T${String(i).padStart(2, "0")}:05:00.000Z`),
+        errorCode: "process_lost",
+        error: "run failed before issue advanced",
+      });
+    }
+
+    const heartbeat = heartbeatService(db);
+    // resumeAt already past, beyond the 60s grace window.
+    await heartbeat.deferIssueExecution({
+      companyId,
+      issueId,
+      agentId,
+      resumeAt: new Date(Date.now() - 120_000),
+      reason: "ScheduleWakeup that never woke",
+    });
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+  });
+
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {
     const { issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",

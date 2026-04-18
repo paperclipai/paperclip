@@ -2154,6 +2154,84 @@ export function issueRoutes(
     res.json(updated);
   });
 
+  router.post("/issues/:id/defer-execution", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const rawResumeAt = typeof req.body?.resumeAt === "string" ? req.body.resumeAt : null;
+    const rawResumeInSec = Number.isFinite(req.body?.resumeInSeconds)
+      ? Number(req.body.resumeInSeconds)
+      : null;
+    let resumeAt: Date | null = null;
+    if (rawResumeAt) {
+      const parsed = new Date(rawResumeAt);
+      if (!Number.isNaN(parsed.getTime())) resumeAt = parsed;
+    } else if (rawResumeInSec && rawResumeInSec > 0) {
+      resumeAt = new Date(Date.now() + rawResumeInSec * 1000);
+    }
+    if (!resumeAt) {
+      res.status(400).json({ error: "resumeAt (ISO string) or resumeInSeconds (>0) is required" });
+      return;
+    }
+    if (resumeAt.getTime() <= Date.now() - 1000) {
+      res.status(400).json({ error: "resumeAt must be in the future" });
+      return;
+    }
+    const MAX_DEFER_MS = 60 * 60 * 1000;
+    if (resumeAt.getTime() > Date.now() + MAX_DEFER_MS) {
+      res.status(400).json({ error: "resumeAt too far in the future (max 1h)" });
+      return;
+    }
+
+    const reason = typeof req.body?.reason === "string" && req.body.reason.trim().length > 0
+      ? req.body.reason.trim().slice(0, 500)
+      : null;
+
+    // Must be executed by the agent that holds the checkout run for this issue.
+    if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
+    const actorRunId = requireAgentRunId(req, res);
+    if (req.actor.type === "agent" && !actorRunId) return;
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      res.status(403).json({ error: "Only the assigned agent can defer issue execution" });
+      return;
+    }
+
+    const row = await heartbeat.deferIssueExecution({
+      companyId: existing.companyId,
+      issueId: existing.id,
+      agentId: req.actor.agentId,
+      resumeAt,
+      reason,
+      requestedByActorType: "agent",
+      requestedByActorId: req.actor.agentId,
+    });
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.execution_deferred",
+      entityType: "issue",
+      entityId: existing.id,
+      details: {
+        identifier: existing.identifier,
+        resumeAt: resumeAt.toISOString(),
+        reason,
+        wakeupRequestId: row.id,
+      },
+    });
+
+    res.json({ wakeupRequestId: row.id, resumeAt: resumeAt.toISOString(), reason });
+  });
+
   router.post("/issues/:id/release", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
