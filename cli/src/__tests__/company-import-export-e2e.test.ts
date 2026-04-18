@@ -1,3 +1,5 @@
+// Note: hookTimeout must be set in vitest.config.ts (>=120_000) since vitest 3.x
+// does not reliably honor the per-hook timeout arg when running under a workspace root config.
 import { execFile, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
