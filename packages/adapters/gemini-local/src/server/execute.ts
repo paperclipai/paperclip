@@ -71,7 +71,7 @@ function renderApiAccessNote(env: Record<string, string>): string {
     "GET example:",
     `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_URL/api/agents/me\\"" })`,
     "POST/PATCH example — always pipe JSON through stdin to avoid encoding issues on Windows:",
-    `  run_shell_command({ command: "echo '{\\"agentId\\":\\"YOUR_AGENT_ID\\"}' | curl -s -X POST -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\\" -d @- \\"$PAPERCLIP_API_URL/api/issues/{id}/checkout\\"" })`,
+    `  run_shell_command({ command: "jq -n --arg agentId \\"YOUR_AGENT_ID\\" '{agentId:$agentId}' | curl -s -X POST -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" -H \\"Content-Type: application/json\\" -H \\"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\\" -d @- \\"$PAPERCLIP_API_URL/api/issues/{id}/checkout\\"" })`,
     "For JSON with non-ASCII content, always use: jq -n --arg key value '{...}' | curl -d @-",
     "",
     "",

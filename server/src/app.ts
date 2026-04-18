@@ -140,7 +140,7 @@ export async function createApp(
   if (process.platform === "win32") {
     app.use((req: ExpressRequest, _res: Response, next: NextFunction) => {
       const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
-      if (raw && raw.length > 0 && (req.method === "POST" || req.method === "PATCH" || req.method === "PUT")) {
+      if (raw && raw.length > 0 && (req.method === "POST" || req.method === "PATCH" || req.method === "PUT") && req.is("application/json")) {
         try {
           req.body = JSON.parse(raw.toString("utf8"));
         } catch {
