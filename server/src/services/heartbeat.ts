@@ -5239,12 +5239,18 @@ export function heartbeatService(db: Db) {
     const eventCutoff = new Date(now.getTime() - (opts?.heartbeatEventsKeepDays ?? 14) * 86400_000);
     const activityCutoff = new Date(now.getTime() - (opts?.activityLogKeepDays ?? 30) * 86400_000);
 
+    // Only prune wakeups that have NO linked heartbeat_run — deleting
+    // otherwise violates heartbeat_runs.wakeup_request_id FK.
+    // Coalesced/skipped entries (the bulk of growth, ~70k of 75k expired)
+    // never have a run. Completed/failed/cancelled wakeups with runs are
+    // left alone so run history stays traceable.
     const wakeups = await db
       .delete(agentWakeupRequests)
       .where(
         and(
-          inArray(agentWakeupRequests.status, ["completed", "failed", "cancelled", "skipped", "coalesced"]),
+          inArray(agentWakeupRequests.status, ["coalesced", "skipped"]),
           lt(agentWakeupRequests.updatedAt, wakeupCutoff),
+          sql`NOT EXISTS (SELECT 1 FROM ${heartbeatRuns} WHERE ${heartbeatRuns.wakeupRequestId} = ${agentWakeupRequests.id})`,
         ),
       )
       .returning({ id: agentWakeupRequests.id });
