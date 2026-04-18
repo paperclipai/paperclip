@@ -56,7 +56,7 @@ export function projectRoutes(db: Db) {
   async function normalizeProjectReference(req: Request, rawId: string) {
     if (isUuidLike(rawId)) return rawId;
     const companyId = await resolveCompanyIdForProjectReference(req);
-    if (!companyId) return rawId;
+    if (!companyId) throw notFound("Project not found");
     const resolved = await svc.resolveByReference(companyId, rawId);
     if (resolved.ambiguous) {
       throw conflict("Project shortname is ambiguous in this company. Use the project ID.");
