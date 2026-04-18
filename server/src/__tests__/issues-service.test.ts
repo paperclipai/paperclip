@@ -8,6 +8,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
+    await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -879,6 +881,98 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       actorId: "user-1",
     });
     expect(result?.latestHandoffSummary).toBeNull();
+  });
+
+  it("keeps run-linked comment churn out of the latest activity summary lane when mission-control state changed more recently", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const orkAgentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Wait for operator input",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(agents).values({
+      id: orkAgentId,
+      companyId,
+      name: "Ork",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: orkAgentId,
+      invocationSource: "manual",
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date("2026-04-18T14:00:00.000Z"),
+        details: {
+          missionControl: {
+            workflowState: {
+              kind: "waiting_on_human",
+              enteredAt: "2026-04-18T14:00:00.000Z",
+            },
+          },
+          _previous: {
+            missionControl: {
+              workflowState: null,
+            },
+          },
+        },
+      },
+      {
+        companyId,
+        actorType: "agent",
+        actorId: orkAgentId,
+        agentId: orkAgentId,
+        runId,
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date("2026-04-18T14:05:00.000Z"),
+        details: {
+          commentId: randomUUID(),
+          bodySnippet: "Still waiting on the operator before continuing.",
+        },
+      },
+    ]);
+
+    const [result] = await svc.list(companyId, {});
+
+    expect(result?.latestActivitySummary).toMatchObject({
+      text: "Marked waiting on human",
+      action: "issue.updated",
+      actorType: "user",
+      actorId: "user-1",
+    });
   });
 
   it("trims list payload fields that can grow large on issue index routes", async () => {

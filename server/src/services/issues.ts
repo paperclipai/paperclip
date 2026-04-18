@@ -120,6 +120,7 @@ type IssueActivitySummaryRow = {
   actorType: "agent" | "user" | "system";
   actorId: string;
   agentId: string | null;
+  runId: string | null;
   createdAt: Date;
   details: Record<string, unknown> | null;
 };
@@ -796,6 +797,12 @@ function isStructuredHandoffActivity(row: IssueActivitySummaryRow): boolean {
   return row.action === "issue.handoff_updated";
 }
 
+function isNoiseIssueActivity(row: IssueActivitySummaryRow): boolean {
+  if (ISSUE_NOISE_ACTIONS.has(row.action)) return true;
+  if (row.action === "issue.comment_added" && row.runId) return true;
+  return false;
+}
+
 async function getIssueActivitySummaries(
   db: DbReader,
   companyId: string,
@@ -812,6 +819,7 @@ async function getIssueActivitySummaries(
       actorType: activityLog.actorType,
       actorId: activityLog.actorId,
       agentId: activityLog.agentId,
+      runId: activityLog.runId,
       createdAt: activityLog.createdAt,
       details: activityLog.details,
     })
@@ -828,7 +836,7 @@ async function getIssueActivitySummaries(
   const latestActivityByIssueId = new Map<string, IssueActivitySummary>();
   const latestHandoffByIssueId = new Map<string, IssueActivitySummary>();
   for (const row of rows as IssueActivitySummaryRow[]) {
-    if (!latestActivityByIssueId.has(row.issueId) && !ISSUE_NOISE_ACTIONS.has(row.action)) {
+    if (!latestActivityByIssueId.has(row.issueId) && !isNoiseIssueActivity(row)) {
       const summary = toIssueActivitySummary(row, "activity");
       if (summary) latestActivityByIssueId.set(row.issueId, summary);
     }
