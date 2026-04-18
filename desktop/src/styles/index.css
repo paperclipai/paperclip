@@ -1,0 +1,158 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-fg);
+  --color-muted: var(--bg-muted);
+  --color-muted-foreground: var(--fg-muted);
+  --color-border: var(--border);
+  --color-input: var(--input-border);
+  --color-ring: var(--accent);
+  --color-destructive: var(--destructive);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+}
+
+/* ══════════════════════════════════════════════
+   ARCHONOS DESIGN TOKENS
+   ══════════════════════════════════════════════ */
+:root {
+  /* Typography */
+  --font-body: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* Spacing (4px base) */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px;
+  --sp-12: 48px; --sp-16: 64px;
+
+  /* Border radius */
+  --radius-sm: 4px; --radius-md: 6px; --radius-lg: 8px; --radius-pill: 9999px;
+
+  /* Shadows */
+  --shadow-1: 0 1px 3px oklch(0 0 0 / 0.08);
+  --shadow-2: 0 4px 16px oklch(0 0 0 / 0.12);
+  --shadow-3: 0 8px 32px oklch(0 0 0 / 0.18);
+
+  /* Motion */
+  --ease-default: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 100ms;
+  --duration-normal: 150ms;
+  --duration-slow: 250ms;
+
+  /* Layout */
+  --titlebar-h: 38px;
+  --rail-w: 56px;
+  --sidebar-w: 240px;
+
+  /* ── Light theme (default) ── */
+  --bg: oklch(0.985 0 0);
+  --bg-subtle: oklch(0.97 0 0);
+  --bg-muted: oklch(0.95 0 0);
+  --fg: oklch(0.145 0 0);
+  --fg-secondary: oklch(0.45 0 0);
+  --fg-muted: oklch(0.58 0 0);
+  --border: oklch(0.91 0 0);
+  --border-subtle: oklch(0.94 0 0);
+  --accent: oklch(0.50 0.14 250);
+  --accent-hover: oklch(0.45 0.16 250);
+  --accent-subtle: oklch(0.95 0.03 250);
+  --accent-fg: oklch(0.99 0 0);
+  --success: oklch(0.55 0.18 155);
+  --success-subtle: oklch(0.95 0.04 155);
+  --warning: oklch(0.70 0.15 75);
+  --warning-subtle: oklch(0.95 0.04 75);
+  --destructive: oklch(0.55 0.22 25);
+  --destructive-subtle: oklch(0.95 0.04 25);
+  --rail-bg: oklch(0.975 0 0);
+  --sidebar-bg: oklch(0.98 0 0);
+  --card-bg: oklch(1 0 0);
+  --card-border: oklch(0.92 0 0);
+  --input-bg: oklch(0.98 0 0);
+  --input-border: oklch(0.88 0 0);
+  --skeleton: oklch(0.93 0 0);
+}
+
+/* ── Dark theme ── */
+.dark {
+  --bg: oklch(0.13 0 0);
+  --bg-subtle: oklch(0.16 0 0);
+  --bg-muted: oklch(0.19 0 0);
+  --fg: oklch(0.93 0 0);
+  --fg-secondary: oklch(0.65 0 0);
+  --fg-muted: oklch(0.50 0 0);
+  --border: oklch(0.22 0 0);
+  --border-subtle: oklch(0.19 0 0);
+  --accent: oklch(0.60 0.15 250);
+  --accent-hover: oklch(0.65 0.17 250);
+  --accent-subtle: oklch(0.20 0.04 250);
+  --accent-fg: oklch(0.99 0 0);
+  --success: oklch(0.60 0.18 155);
+  --success-subtle: oklch(0.20 0.04 155);
+  --warning: oklch(0.72 0.15 75);
+  --warning-subtle: oklch(0.20 0.04 75);
+  --destructive: oklch(0.60 0.22 25);
+  --destructive-subtle: oklch(0.20 0.04 25);
+  --rail-bg: oklch(0.11 0 0);
+  --sidebar-bg: oklch(0.12 0 0);
+  --card-bg: oklch(0.16 0 0);
+  --card-border: oklch(0.22 0 0);
+  --input-bg: oklch(0.18 0 0);
+  --input-border: oklch(0.26 0 0);
+  --skeleton: oklch(0.20 0 0);
+  --shadow-1: 0 1px 3px oklch(0 0 0 / 0.3);
+  --shadow-2: 0 4px 16px oklch(0 0 0 / 0.4);
+  --shadow-3: 0 8px 32px oklch(0 0 0 / 0.5);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    height: 100%;
+  }
+  body {
+    height: 100%;
+    overflow: hidden;
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--fg);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  h1, h2, h3 {
+    text-wrap: balance;
+  }
+  a, button, [role="button"], input, select, textarea, label {
+    touch-action: manipulation;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0ms !important;
+    transition-duration: 0ms !important;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
+
+/* Status dot animation */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}

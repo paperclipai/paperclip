@@ -1,0 +1,40 @@
+[package]
+name = "archonos"
+version = "0.1.0"
+edition = "2021"
+default-run = "archonos-desktop"
+
+[lib]
+name = "archonos_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+dirs = "6"
+uuid = { version = "1", features = ["v4"] }
+clap = { version = "4", features = ["derive"] }
+notify = "7"
+sha2 = "0.10"
+reqwest = { version = "0.12", features = ["rustls-tls"] }
+
+[[bin]]
+name = "archonos-desktop"
+path = "src/main.rs"
+
+[[bin]]
+name = "archonos-mcp"
+path = "src/bin/mcp_server.rs"
+
+[[bin]]
+name = "archonos"
+path = "src/bin/archonos_cli.rs"

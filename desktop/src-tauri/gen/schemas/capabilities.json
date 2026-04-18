@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default capabilities for ArchonOS","local":true,"windows":["main"],"permissions":["core:default","shell:allow-open","notification:default","autostart:default"]}}

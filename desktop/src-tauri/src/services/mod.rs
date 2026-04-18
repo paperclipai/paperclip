@@ -1,0 +1,17 @@
+pub mod activity;
+pub mod adapter_host;
+pub mod automation;
+pub mod budget;
+pub mod execution_policy;
+pub mod execution_workspaces;
+pub mod file_watcher;
+pub mod heartbeat;
+pub mod instructions;
+pub mod local_ai;
+pub mod plugin_host;
+pub mod prompt;
+pub mod routine_scheduler;
+pub mod session;
+pub mod workflow_engine;
+pub mod skills;
+pub mod workspace_runtime;
