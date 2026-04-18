@@ -1414,7 +1414,8 @@ function isReviewManagerBlockerIssue(input: {
 }) {
   if (!isReviewManagerNameKey(input.assigneeAgentName)) return false;
   if (typeof input.title !== "string") return false;
-  return input.title.trim().toLowerCase().startsWith("[review]");
+  const normalizedTitle = input.title.trim().toLowerCase();
+  return normalizedTitle.startsWith("[review]") || normalizedTitle.startsWith("[review-");
 }
 
 function isAssignableRecoveryAgent(agent: {

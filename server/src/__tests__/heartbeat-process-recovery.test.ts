@@ -333,7 +333,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.insert(agents).values({
       id: agentId,
       companyId,
-      name: "CodexCoder",
+      name: input.agentName ?? "CodexCoder",
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
@@ -376,8 +376,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       startedAt: now,
       finishedAt: new Date("2026-03-19T00:05:00.000Z"),
       updatedAt: new Date("2026-03-19T00:05:00.000Z"),
-      errorCode: input.runStatus === "succeeded" ? null : "process_lost",
-      error: input.runStatus === "succeeded" ? null : "run failed before issue advanced",
+      errorCode: input.runErrorCode ?? (input.runStatus === "succeeded" ? null : "process_lost"),
+      error: input.runError ?? (input.runStatus === "succeeded" ? null : "run failed before issue advanced"),
     });
 
     const blockedAssigneeMode = input.blockedAssigneeMode ?? "none";
@@ -401,7 +401,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Recover stranded assigned work",
+      title: input.issueTitle ?? "Recover stranded assigned work",
       status: input.status,
       priority: "medium",
       assigneeAgentId,
@@ -757,7 +757,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runStatus: "failed",
       blockedAssigneeMode: "agent",
       agentName: "Review Manager",
-      issueTitle: "[REVIEW] Verify adapter_failed continuation routing",
+      issueTitle: "[REVIEW-GPT] Verify adapter_failed continuation routing",
       runErrorCode: "adapter_failed",
       runError: "reviewer adapter unavailable",
     });
