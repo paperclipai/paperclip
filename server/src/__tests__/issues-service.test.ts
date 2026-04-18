@@ -642,6 +642,17 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       contextSnapshot: { issueId },
     });
 
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId },
+      startedAt: new Date("2026-04-06T16:05:00.000Z"),
+    });
+
     await db.insert(issues).values({
       id: issueId,
       companyId,

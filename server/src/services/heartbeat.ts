@@ -1928,15 +1928,23 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
-  async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
+  async function claimQueuedRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    opts?: { startNextQueuedRunOnCancel?: boolean },
+  ) {
     if (run.status !== "queued") return run;
+    const startNextQueuedRunOnCancel = opts?.startNextQueuedRunOnCancel ?? true;
     const agent = await getAgent(run.agentId);
     if (!agent) {
-      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
+      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists", {
+        startNextQueuedRun: startNextQueuedRunOnCancel,
+      });
       return null;
     }
     if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-      await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
+      await cancelRunInternal(run.id, "Cancelled because the agent is not invokable", {
+        startNextQueuedRun: startNextQueuedRunOnCancel,
+      });
       return null;
     }
 
@@ -1946,7 +1954,9 @@ export function heartbeatService(db: Db) {
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
-      await cancelRunInternal(run.id, budgetBlock.reason);
+      await cancelRunInternal(run.id, budgetBlock.reason, {
+        startNextQueuedRun: startNextQueuedRunOnCancel,
+      });
       return null;
     }
 
@@ -2024,7 +2034,9 @@ export function heartbeatService(db: Db) {
         return { claimed: claimedRun, cancelReason: null };
       }).then(async (result) => {
         if (result.cancelReason) {
-          await cancelRunInternal(run.id, result.cancelReason);
+          await cancelRunInternal(run.id, result.cancelReason, {
+            startNextQueuedRun: startNextQueuedRunOnCancel,
+          });
           return null;
         }
         return result.claimed;
@@ -2303,7 +2315,9 @@ export function heartbeatService(db: Db) {
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of queuedRuns) {
-        const claimed = await claimQueuedRun(queuedRun);
+        const claimed = await claimQueuedRun(queuedRun, {
+          startNextQueuedRunOnCancel: false,
+        });
         if (claimed) claimedRuns.push(claimed);
       }
       if (claimedRuns.length === 0) return [];
@@ -4014,7 +4028,11 @@ export function heartbeatService(db: Db) {
     return wakeupIds.length;
   }
 
-  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane") {
+  async function cancelRunInternal(
+    runId: string,
+    reason = "Cancelled by control plane",
+    opts?: { startNextQueuedRun?: boolean },
+  ) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     if (run.status !== "running" && run.status !== "queued") return run;
@@ -4053,7 +4071,9 @@ export function heartbeatService(db: Db) {
 
     runningProcesses.delete(run.id);
     await finalizeAgentStatus(run.agentId, "cancelled");
-    await startNextQueuedRunForAgent(run.agentId);
+    if (opts?.startNextQueuedRun ?? true) {
+      await startNextQueuedRunForAgent(run.agentId);
+    }
     return cancelled;
   }
 
