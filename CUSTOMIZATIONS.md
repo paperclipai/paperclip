@@ -70,6 +70,8 @@ Post-rebase: verify every row in the tables below is still present. Patches mark
 |---|---|---|---|---|---|
 | dd91289a | fail build if uncommitted changes in PR branch | .github/workflows/pr.yml, .github/workflows/pr-policy.yml | Catches agents ending sessions with uncommitted worktree contamination before merge (FRE-981 systemic) | MEDIUM | Candidate for upstream PR |
 | 6fb9f642 | dev-runner ignore iCloud + macOS metadata | scripts/dev-runner-paths.mjs | Source tree lives in iCloud Drive; iCloud/macOS metadata touches (.DS_Store, *.icloud, ._*, .Spotlight-*) caused tsx watch to restart every few minutes and 502 in-flight requests | MEDIUM | Not upstreamable (iCloud-specific) |
+| f7621e7a | tsx watch: ignore workspace node_modules + packages/dist | server/package.json | iCloud syncs node_modules files touching mtime; tsx treated each as a source change and restarted. Added --ignore for ../node_modules and ../packages/*/dist | MEDIUM | Not upstreamable (iCloud-specific) |
+| (see commit) | dev-runner: static UI serving in watch mode | scripts/dev-runner.mjs | PAPERCLIP_UI_DEV_MIDDLEWARE only set in interactive dev mode; watch mode uses pre-built ui/dist/ to avoid iCloud EAGAIN (errno -11) errors in Vite's react-babel transform | MEDIUM | Not upstreamable (iCloud-specific) |
 
 ### UI
 

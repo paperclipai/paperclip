@@ -75,8 +75,16 @@ if (process.env.npm_config_authenticated_private === "true") {
 
 const env = {
   ...process.env,
-  PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
 };
+// Vite dev middleware is only appropriate in interactive dev mode where a
+// developer is actively editing the frontend. In watch mode (the LaunchAgent's
+// production-like background runner), we serve the pre-built ui/dist/ instead.
+// This avoids iCloud EAGAIN errors: Vite calls readFileSync on ui/src/ files at
+// request time, which fails intermittently when iCloud has them in placeholder
+// state. Static serving reads assets once at startup from already-built files.
+if (mode === "dev") {
+  env.PAPERCLIP_UI_DEV_MIDDLEWARE = "true";
+}
 
 if (mode === "dev") {
   env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
