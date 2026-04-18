@@ -5,8 +5,6 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
-import { authUsers } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
@@ -33,6 +31,7 @@ import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { llmRoutes } from "./routes/llms.js";
+import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { userRoutes } from "./routes/user.js";
@@ -226,33 +225,7 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
-  app.get("/api/auth/get-session", async (req, res) => {
-    if (req.actor.type !== "board" || !req.actor.userId) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    let email: string | null = null;
-    let name: string | null = req.actor.source === "local_implicit" ? "Local Board" : null;
-    if (req.actor.source !== "local_implicit" && db) {
-      const row = await db.select({ email: authUsers.email, name: authUsers.name })
-        .from(authUsers).where(eq(authUsers.id, req.actor.userId)).then((r) => r[0]);
-      if (row) {
-        email = row.email;
-        name = row.name;
-      }
-    }
-    res.json({
-      session: {
-        id: `paperclip:${req.actor.source}:${req.actor.userId}`,
-        userId: req.actor.userId,
-      },
-      user: {
-        id: req.actor.userId,
-        email,
-        name,
-      },
-    });
-  });
+  app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }
