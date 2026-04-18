@@ -245,6 +245,8 @@ export type {
   PluginMinimumHostVersion,
   PluginUiDeclaration,
   PluginDatabaseDeclaration,
+  PluginApiRouteCompanyResolution,
+  PluginApiRouteDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
   PluginDatabaseNamespaceRecord,
@@ -260,4 +262,7 @@ export type {
   PluginDatabaseMigrationStatus,
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
+  PluginApiRouteAuthMode,
+  PluginApiRouteCheckoutPolicy,
+  PluginApiRouteMethod,
 } from "./plugin.js";

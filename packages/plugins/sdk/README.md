@@ -334,6 +334,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `events.emit` |
 | | `jobs.schedule` |
 | | `webhooks.receive` |
+| | `api.routes.register` |
 | | `http.outbound` |
 | | `secrets.read-ref` |
 | **Agent** | `agent.tools.register` |
@@ -369,6 +370,31 @@ only inside the plugin namespace. Runtime `ctx.db.query()` allows `SELECT` from
 `ctx.db.namespace` plus manifest-whitelisted `public` core tables. Runtime
 `ctx.db.execute()` allows `INSERT`, `UPDATE`, and `DELETE` only against the
 plugin namespace.
+
+### Scoped API Routes
+
+Manifest-declared `apiRoutes` expose JSON routes under
+`/api/plugins/:pluginId/api/*` without letting a plugin claim core paths:
+
+```ts
+apiRoutes: [
+  {
+    routeKey: "initialize",
+    method: "POST",
+    path: "/issues/:issueId/smoke",
+    auth: "board-or-agent",
+    capability: "api.routes.register",
+    checkoutPolicy: "required-for-agent-in-progress",
+    companyResolution: { from: "issue", param: "issueId" },
+  },
+]
+```
+
+Implement `onApiRequest(input)` in the worker to handle the route. The host
+performs auth, company access, capability, route matching, and checkout policy
+before dispatch. The worker receives route params, query, parsed JSON body,
+sanitized headers, actor context, and `companyId`; responses are JSON `{ status?,
+headers?, body? }`.
 
 ## Issue Orchestration APIs
 

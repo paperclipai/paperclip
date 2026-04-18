@@ -107,6 +107,30 @@ export interface PluginWebhookInput {
   requestId: string;
 }
 
+export interface PluginApiRequestInput {
+  routeKey: string;
+  method: string;
+  path: string;
+  params: Record<string, string>;
+  query: Record<string, string | string[]>;
+  body: unknown;
+  actor: {
+    actorType: "user" | "agent";
+    actorId: string;
+    agentId?: string | null;
+    userId?: string | null;
+    runId?: string | null;
+  };
+  companyId: string;
+  headers: Record<string, string>;
+}
+
+export interface PluginApiResponse {
+  status?: number;
+  headers?: Record<string, string>;
+  body?: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin definition
 // ---------------------------------------------------------------------------
@@ -197,6 +221,13 @@ export interface PluginDefinition {
    * @see PLUGIN_SPEC.md §13.7 — `handleWebhook`
    */
   onWebhook?(input: PluginWebhookInput): Promise<void>;
+
+  /**
+   * Called for manifest-declared scoped JSON API routes under
+   * `/api/plugins/:pluginId/api/*` after the host has enforced auth, company
+   * access, capabilities, and checkout policy.
+   */
+  onApiRequest?(input: PluginApiRequestInput): Promise<PluginApiResponse>;
 }
 
 // ---------------------------------------------------------------------------

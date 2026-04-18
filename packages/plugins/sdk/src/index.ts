@@ -95,6 +95,8 @@ export type {
   PluginHealthDiagnostics,
   PluginConfigValidationResult,
   PluginWebhookInput,
+  PluginApiRequestInput,
+  PluginApiResponse,
 } from "./define-plugin.js";
 export type {
   TestHarness,
@@ -240,6 +242,8 @@ export type {
   PluginLauncherDeclaration,
   PluginMinimumHostVersion,
   PluginDatabaseDeclaration,
+  PluginApiRouteCompanyResolution,
+  PluginApiRouteDeclaration,
   PluginRecord,
   PluginDatabaseNamespaceRecord,
   PluginMigrationRecord,
@@ -263,6 +267,9 @@ export type {
   PluginDatabaseMigrationStatus,
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
+  PluginApiRouteAuthMode,
+  PluginApiRouteCheckoutPolicy,
+  PluginApiRouteMethod,
   PluginEventType,
   PluginBridgeErrorCode,
 } from "./types.js";

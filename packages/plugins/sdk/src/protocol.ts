@@ -47,6 +47,8 @@ import type {
 } from "./types.js";
 import type {
   PluginHealthDiagnostics,
+  PluginApiRequestInput,
+  PluginApiResponse,
   PluginConfigValidationResult,
   PluginWebhookInput,
 } from "./define-plugin.js";
@@ -382,6 +384,8 @@ export interface HostToWorkerMethods {
   runJob: [params: RunJobParams, result: void];
   /** @see PLUGIN_SPEC.md §13.7 */
   handleWebhook: [params: PluginWebhookInput, result: void];
+  /** Scoped plugin API route dispatch. */
+  handleApiRequest: [params: PluginApiRequestInput, result: PluginApiResponse];
   /** @see PLUGIN_SPEC.md §13.8 */
   getData: [params: GetDataParams, result: unknown];
   /** @see PLUGIN_SPEC.md §13.9 */
@@ -407,6 +411,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "onEvent",
   "runJob",
   "handleWebhook",
+  "handleApiRequest",
   "getData",
   "performAction",
   "executeTool",

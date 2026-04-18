@@ -28,6 +28,7 @@ import { and, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, pluginLogs, pluginWebhookDeliveries } from "@paperclipai/db";
 import type {
+  PluginApiRouteDeclaration,
   PluginStatus,
   PaperclipPluginManifestV1,
   PluginBridgeErrorCode,
@@ -41,6 +42,7 @@ import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import { getPluginUiContributionMetadata, pluginLoader } from "../services/plugin-loader.js";
 import { logActivity } from "../services/activity-log.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
+import { issueService } from "../services/issues.js";
 import type { PluginJobScheduler } from "../services/plugin-job-scheduler.js";
 import type { PluginJobStore } from "../services/plugin-job-store.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -48,8 +50,16 @@ import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { ToolRunContext } from "@paperclipai/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
-import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import {
+  assertAuthenticated,
+  assertBoard,
+  assertBoardOrgAccess,
+  assertCompanyAccess,
+  assertInstanceAdmin,
+  getActorInfo,
+} from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
+import { forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -112,6 +122,8 @@ interface PluginHealthCheckResult {
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const PLUGIN_API_BODY_LIMIT_BYTES = 1_000_000;
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 
@@ -138,6 +150,14 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     displayName: "Kitchen Sink (Example)",
     description: "Reference plugin that demonstrates the current Paperclip plugin API surface, bridge flows, UI extension surfaces, jobs, webhooks, tools, streams, and trusted local workspace/process demos.",
     localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
+    tag: "example",
+  },
+  {
+    packageName: "@paperclipai/plugin-orchestration-smoke-example",
+    pluginKey: "paperclipai.plugin-orchestration-smoke-example",
+    displayName: "Orchestration Smoke (Example)",
+    description: "Acceptance fixture for scoped plugin routes, restricted database namespaces, issue orchestration, documents, wakeups, summaries, and UI status surfaces.",
+    localPath: "packages/plugins/examples/plugin-orchestration-smoke-example",
     tag: "example",
   },
 ];
@@ -246,6 +266,30 @@ export interface PluginRouteBridgeDeps {
   streamBus?: PluginStreamBus;
 }
 
+interface PluginScopedApiRequest {
+  routeKey: string;
+  method: string;
+  path: string;
+  params: Record<string, string>;
+  query: Record<string, string | string[]>;
+  body: unknown;
+  actor: {
+    actorType: "user" | "agent";
+    actorId: string;
+    agentId?: string | null;
+    userId?: string | null;
+    runId?: string | null;
+  };
+  companyId: string;
+  headers: Record<string, string>;
+}
+
+interface PluginScopedApiResponse {
+  status?: number;
+  headers?: Record<string, string>;
+  body?: unknown;
+}
+
 /** Request body for POST /api/plugins/tools/execute */
 interface PluginToolExecuteRequest {
   /** Fully namespaced tool name (e.g., "acme.linear:search-issues"). */
@@ -314,6 +358,135 @@ export function pluginRoutes(
     loader,
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
   });
+  const issuesSvc = issueService(db);
+
+  function matchScopedApiRoute(route: PluginApiRouteDeclaration, method: string, requestPath: string) {
+    if (route.method !== method) return null;
+    const normalize = (value: string) => value.replace(/\/+$/, "") || "/";
+    const routeSegments = normalize(route.path).split("/").filter(Boolean);
+    const requestSegments = normalize(requestPath).split("/").filter(Boolean);
+    if (routeSegments.length !== requestSegments.length) return null;
+    const params: Record<string, string> = {};
+    for (let i = 0; i < routeSegments.length; i += 1) {
+      const routeSegment = routeSegments[i]!;
+      const requestSegment = requestSegments[i]!;
+      if (routeSegment.startsWith(":")) {
+        params[routeSegment.slice(1)] = decodeURIComponent(requestSegment);
+        continue;
+      }
+      if (routeSegment !== requestSegment) return null;
+    }
+    return params;
+  }
+
+  function sanitizePluginRequestHeaders(req: Request): Record<string, string> {
+    const safeHeaderNames = new Set([
+      "accept",
+      "content-type",
+      "user-agent",
+      "x-paperclip-run-id",
+      "x-request-id",
+    ]);
+    const headers: Record<string, string> = {};
+    for (const [name, value] of Object.entries(req.headers)) {
+      const lower = name.toLowerCase();
+      if (!safeHeaderNames.has(lower)) continue;
+      if (Array.isArray(value)) {
+        headers[lower] = value.join(", ");
+      } else if (typeof value === "string") {
+        headers[lower] = value;
+      }
+    }
+    return headers;
+  }
+
+  function normalizeQuery(query: Request["query"]): Record<string, string | string[]> {
+    const normalized: Record<string, string | string[]> = {};
+    for (const [key, value] of Object.entries(query)) {
+      if (typeof value === "string") {
+        normalized[key] = value;
+      } else if (Array.isArray(value)) {
+        normalized[key] = value.map((entry) => String(entry));
+      }
+    }
+    return normalized;
+  }
+
+  async function resolveScopedApiCompanyId(
+    route: PluginApiRouteDeclaration,
+    params: Record<string, string>,
+    req: Request,
+  ) {
+    const resolution = route.companyResolution;
+    if (!resolution) {
+      if (req.actor.type === "agent" && req.actor.companyId) return req.actor.companyId;
+      return null;
+    }
+
+    if (resolution.from === "body") {
+      const body = req.body as Record<string, unknown> | undefined;
+      const companyId = body?.[resolution.key ?? ""];
+      return typeof companyId === "string" ? companyId : null;
+    }
+
+    if (resolution.from === "query") {
+      const value = req.query[resolution.key ?? ""];
+      return typeof value === "string" ? value : null;
+    }
+
+    const issueId = params[resolution.param ?? ""];
+    if (!issueId) return null;
+    const issue = await issuesSvc.getById(issueId);
+    return issue?.companyId ?? null;
+  }
+
+  function assertScopedApiAuth(req: Request, route: PluginApiRouteDeclaration) {
+    if (route.auth === "board") {
+      assertBoard(req);
+      return;
+    }
+    if (route.auth === "agent") {
+      assertAuthenticated(req);
+      if (req.actor.type !== "agent") throw forbidden("Agent access required");
+      return;
+    }
+    if (route.auth === "webhook") {
+      throw unprocessable("Webhook-scoped plugin API routes require a signature verifier and are not enabled");
+    }
+    assertAuthenticated(req);
+    if (req.actor.type !== "board" && req.actor.type !== "agent") {
+      throw forbidden("Board or agent access required");
+    }
+  }
+
+  async function enforceScopedApiCheckout(
+    req: Request,
+    route: PluginApiRouteDeclaration,
+    params: Record<string, string>,
+    companyId: string,
+  ) {
+    const policy = route.checkoutPolicy ?? "none";
+    if (policy === "none" || req.actor.type !== "agent") return;
+    const issueId = params.issueId;
+    if (!issueId) {
+      throw unprocessable("Checkout-protected plugin API routes require an issueId route parameter");
+    }
+    const issue = await issuesSvc.getById(issueId);
+    if (!issue || issue.companyId !== companyId) {
+      throw notFound("Issue not found");
+    }
+    if (policy === "required-for-agent-in-progress") {
+      if (issue.status !== "in_progress" || issue.assigneeAgentId !== req.actor.agentId) return;
+    }
+    const runId = req.actor.runId?.trim();
+    if (!runId) {
+      throw unauthorized("Agent run id required");
+    }
+    if (!req.actor.agentId) {
+      throw forbidden("Agent authentication required");
+    }
+    await issuesSvc.assertCheckoutOwner(issueId, req.actor.agentId, runId);
+  }
 
   async function resolvePluginAuditCompanyIds(req: Request): Promise<string[]> {
     if (typeof (db as { select?: unknown }).select === "function") {
@@ -1187,6 +1360,117 @@ export function pluginRoutes(
 
     req.on("close", safeUnsubscribe);
     res.on("error", safeUnsubscribe);
+  });
+
+  router.use("/plugins/:pluginId/api", async (req, res) => {
+    if (!bridgeDeps) {
+      res.status(501).json({ error: "Plugin scoped API routes are not enabled" });
+      return;
+    }
+
+    const { pluginId } = req.params;
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+    if (plugin.status !== "ready") {
+      res.status(503).json({ error: `Plugin is not ready (current status: ${plugin.status})` });
+      return;
+    }
+    const isWorkerRunning = typeof bridgeDeps.workerManager.isRunning === "function"
+      ? bridgeDeps.workerManager.isRunning(plugin.id)
+      : true;
+    if (!isWorkerRunning) {
+      res.status(503).json({ error: "Plugin worker is not running" });
+      return;
+    }
+    if (!plugin.manifestJson.capabilities.includes("api.routes.register")) {
+      res.status(404).json({ error: "Plugin does not expose scoped API routes" });
+      return;
+    }
+
+    const requestPath = req.path || "/";
+    const routes = plugin.manifestJson.apiRoutes ?? [];
+    const match = routes
+      .map((route) => ({ route, params: matchScopedApiRoute(route, req.method, requestPath) }))
+      .find((candidate) => candidate.params !== null);
+    if (!match || !match.params) {
+      res.status(404).json({ error: "Plugin API route not found" });
+      return;
+    }
+
+    try {
+      assertScopedApiAuth(req, match.route);
+      const companyId = await resolveScopedApiCompanyId(match.route, match.params, req);
+      if (!companyId) {
+        res.status(400).json({ error: "Unable to resolve company for plugin API route" });
+        return;
+      }
+      assertCompanyAccess(req, companyId);
+      await enforceScopedApiCheckout(req, match.route, match.params, companyId);
+      if (req.method !== "GET" && req.headers["content-type"] && !req.is("application/json")) {
+        res.status(415).json({ error: "Plugin API routes accept JSON requests only" });
+        return;
+      }
+      const requestBody = req.body ?? null;
+      const bodySize = Buffer.byteLength(JSON.stringify(requestBody));
+      if (bodySize > PLUGIN_API_BODY_LIMIT_BYTES) {
+        res.status(413).json({ error: "Plugin API request body is too large" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const input: PluginScopedApiRequest = {
+        routeKey: match.route.routeKey,
+        method: req.method,
+        path: requestPath,
+        params: match.params,
+        query: normalizeQuery(req.query),
+        body: requestBody,
+        actor: {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          runId: actor.runId,
+        },
+        companyId,
+        headers: sanitizePluginRequestHeaders(req),
+      };
+
+      const result = await bridgeDeps.workerManager.call(
+        plugin.id,
+        "handleApiRequest",
+        input,
+      ) as PluginScopedApiResponse;
+      const status = Number.isInteger(result.status) && Number(result.status) >= 200 && Number(result.status) <= 599
+        ? Number(result.status)
+        : 200;
+      for (const [name, value] of Object.entries(result.headers ?? {})) {
+        const lower = name.toLowerCase();
+        if (lower === "set-cookie" || lower === "authorization" || lower === "cookie") continue;
+        res.setHeader(name, value);
+      }
+      if (status === 204) {
+        res.status(status).end();
+      } else {
+        res.status(status).json(result.body ?? null);
+      }
+    } catch (err) {
+      const status = typeof (err as { status?: unknown }).status === "number"
+        ? (err as { status: number }).status
+        : err instanceof JsonRpcCallError && err.code === PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED
+          ? 403
+          : err instanceof JsonRpcCallError && err.code === PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED
+            ? 501
+            : err instanceof JsonRpcCallError
+              ? 502
+              : 500;
+      res.status(status).json({
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   /**

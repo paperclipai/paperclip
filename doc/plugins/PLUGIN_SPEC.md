@@ -28,6 +28,9 @@ Current limitations to keep in mind:
 - The repo example plugins under `packages/plugins/examples/` are development conveniences. They work from a source checkout and should not be assumed to exist in a generic published build unless they are explicitly shipped with that build.
 - Dynamic plugin install is not yet cloud-ready for horizontally scaled or ephemeral deployments. There is no shared artifact store, install coordination, or cross-node distribution layer yet.
 - The current runtime does not yet ship a real host-provided plugin UI component kit, and it does not support plugin asset uploads/reads. Treat those as future-scope ideas in this spec, not current implementation promises.
+- Scoped plugin API routes are JSON-only and must be declared in `apiRoutes`.
+  They mount under `/api/plugins/:pluginId/api/*`; plugins cannot shadow core
+  API routes.
 
 In practice, that means the current implementation is a good fit for local development and self-hosted persistent deployments, but not yet for multi-instance cloud plugin distribution.
 
@@ -651,6 +654,17 @@ Governance helpers:
 - `ctx.issues.requestWakeups(issueIds, companyId, options)` applies the same host-owned wakeup semantics to a batch and may use an idempotency key prefix for stable coordinator retries.
 
 Plugin-originated issue, relation, document, comment, and wakeup mutations must write activity entries with `actorType: "plugin"` and details fields for `sourcePluginId`, `sourcePluginKey`, `initiatingActorType`, `initiatingActorId`, and `initiatingRunId` when a user or agent run initiated the plugin work.
+
+Scoped API routes:
+
+- `apiRoutes[]` declares `routeKey`, `method`, plugin-local `path`, `auth`,
+  `capability`, optional checkout policy, and company resolution.
+- The host enforces auth, company access, `api.routes.register`, route matching,
+  and checkout policy before worker dispatch.
+- The worker implements `onApiRequest(input)` and returns a JSON response shape
+  `{ status?, headers?, body? }`.
+- Only safe request headers are forwarded; auth/cookie headers are never passed
+  to the worker.
 
 ## 14.2 Example SDK Shape
 

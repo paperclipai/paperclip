@@ -9,6 +9,9 @@ import type {
   PluginLauncherAction,
   PluginLauncherBounds,
   PluginLauncherRenderEnvironment,
+  PluginApiRouteAuthMode,
+  PluginApiRouteCheckoutPolicy,
+  PluginApiRouteMethod,
   PluginDatabaseCoreReadTable,
   PluginDatabaseMigrationStatus,
   PluginDatabaseNamespaceMode,
@@ -30,6 +33,9 @@ export type {
   PluginDatabaseMigrationStatus,
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
+  PluginApiRouteAuthMode,
+  PluginApiRouteCheckoutPolicy,
+  PluginApiRouteMethod,
 } from "../constants.js";
 
 // ---------------------------------------------------------------------------
@@ -217,6 +223,28 @@ export interface PluginDatabaseDeclaration {
   coreReadTables?: PluginDatabaseCoreReadTable[];
 }
 
+export type PluginApiRouteCompanyResolution =
+  | { from: "body"; key: string }
+  | { from: "query"; key: string }
+  | { from: "issue"; param: string };
+
+export interface PluginApiRouteDeclaration {
+  /** Stable plugin-defined route key passed to the worker. */
+  routeKey: string;
+  /** HTTP method accepted by this route. */
+  method: PluginApiRouteMethod;
+  /** Plugin-local path under `/api/plugins/:pluginId/api`, e.g. `/issues/:issueId/smoke`. */
+  path: string;
+  /** Actor class allowed to call the route. */
+  auth: PluginApiRouteAuthMode;
+  /** Capability required to expose the route. Currently `api.routes.register`. */
+  capability: "api.routes.register";
+  /** Optional checkout policy enforced by the host before worker dispatch. */
+  checkoutPolicy?: PluginApiRouteCheckoutPolicy;
+  /** How the host resolves company access for this route. */
+  companyResolution?: PluginApiRouteCompanyResolution;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1
 // ---------------------------------------------------------------------------
@@ -269,6 +297,8 @@ export interface PaperclipPluginManifestV1 {
   tools?: PluginToolDeclaration[];
   /** Restricted plugin-owned database namespace declaration. */
   database?: PluginDatabaseDeclaration;
+  /** Scoped JSON API routes mounted under `/api/plugins/:pluginId/api/*`. */
+  apiRoutes?: PluginApiRouteDeclaration[];
   /**
    * Legacy top-level launcher declarations.
    * Prefer `ui.launchers` for new manifests.

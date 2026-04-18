@@ -12,6 +12,9 @@ import {
   PLUGIN_LAUNCHER_RENDER_ENVIRONMENTS,
   PLUGIN_STATE_SCOPE_KINDS,
   PLUGIN_DATABASE_CORE_READ_TABLES,
+  PLUGIN_API_ROUTE_AUTH_MODES,
+  PLUGIN_API_ROUTE_CHECKOUT_POLICIES,
+  PLUGIN_API_ROUTE_METHODS,
 } from "../constants.js";
 
 // ---------------------------------------------------------------------------
@@ -350,6 +353,35 @@ export const pluginDatabaseDeclarationSchema = z.object({
 
 export type PluginDatabaseDeclarationInput = z.infer<typeof pluginDatabaseDeclarationSchema>;
 
+export const pluginApiRouteDeclarationSchema = z.object({
+  routeKey: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "routeKey must be lowercase letters, digits, dots, colons, underscores, or hyphens",
+  }),
+  method: z.enum(PLUGIN_API_ROUTE_METHODS),
+  path: z.string().min(1).regex(/^\/[a-zA-Z0-9:_./-]*$/, {
+    message: "path must start with / and contain only path-safe literal or :param segments",
+  }).refine(
+    (value) =>
+      !value.includes("..") &&
+      !value.includes("//") &&
+      value !== "/api" &&
+      !value.startsWith("/api/") &&
+      value !== "/plugins" &&
+      !value.startsWith("/plugins/"),
+    { message: "path must stay inside the plugin api namespace" },
+  ),
+  auth: z.enum(PLUGIN_API_ROUTE_AUTH_MODES),
+  capability: z.literal("api.routes.register"),
+  checkoutPolicy: z.enum(PLUGIN_API_ROUTE_CHECKOUT_POLICIES).optional(),
+  companyResolution: z.discriminatedUnion("from", [
+    z.object({ from: z.literal("body"), key: z.string().min(1) }),
+    z.object({ from: z.literal("query"), key: z.string().min(1) }),
+    z.object({ from: z.literal("issue"), param: z.string().min(1) }),
+  ]).optional(),
+});
+
+export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclarationSchema>;
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1 schema
 // ---------------------------------------------------------------------------
@@ -420,6 +452,7 @@ export const pluginManifestV1Schema = z.object({
   webhooks: z.array(pluginWebhookDeclarationSchema).optional(),
   tools: z.array(pluginToolDeclarationSchema).optional(),
   database: pluginDatabaseDeclarationSchema.optional(),
+  apiRoutes: z.array(pluginApiRouteDeclarationSchema).optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
@@ -489,6 +522,16 @@ export const pluginManifestV1Schema = z.object({
     }
   }
 
+  if (manifest.apiRoutes && manifest.apiRoutes.length > 0) {
+    if (!manifest.capabilities.includes("api.routes.register")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Capability 'api.routes.register' is required when apiRoutes are declared",
+        path: ["capabilities"],
+      });
+    }
+  }
+
   if (manifest.database) {
     const requiredCapabilities = [
       "database.namespace.migrate",
@@ -541,6 +584,27 @@ export const pluginManifestV1Schema = z.object({
         code: z.ZodIssueCode.custom,
         message: `Duplicate webhook endpoint keys: ${[...new Set(duplicates)].join(", ")}`,
         path: ["webhooks"],
+      });
+    }
+  }
+
+  if (manifest.apiRoutes) {
+    const routeKeys = manifest.apiRoutes.map((route) => route.routeKey);
+    const duplicateKeys = routeKeys.filter((key, i) => routeKeys.indexOf(key) !== i);
+    if (duplicateKeys.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate api route keys: ${[...new Set(duplicateKeys)].join(", ")}`,
+        path: ["apiRoutes"],
+      });
+    }
+    const routeSignatures = manifest.apiRoutes.map((route) => `${route.method} ${route.path}`);
+    const duplicateRoutes = routeSignatures.filter((sig, i) => routeSignatures.indexOf(sig) !== i);
+    if (duplicateRoutes.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate api routes: ${[...new Set(duplicateRoutes)].join(", ")}`,
+        path: ["apiRoutes"],
       });
     }
   }

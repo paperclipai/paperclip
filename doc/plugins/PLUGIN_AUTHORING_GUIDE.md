@@ -11,6 +11,8 @@ It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec i
 - Worker-side host APIs are capability-gated.
 - Plugin UI is not sandboxed by manifest capabilities.
 - Plugin database migrations are restricted to a host-derived plugin namespace.
+- Plugin-owned JSON API routes must be declared in the manifest and are mounted
+  only under `/api/plugins/:pluginId/api/*`.
 - There is no host-provided shared React component kit for plugins yet.
 - `ctx.assets` is not supported in the current runtime.
 
@@ -79,6 +81,7 @@ Worker:
 - activity
 - state
 - database namespace via `ctx.db`
+- scoped JSON API routes declared with `apiRoutes`
 - entities
 - projects and project workspaces
 - companies
@@ -114,6 +117,31 @@ but may not mutate/alter/drop/truncate public tables, create extensions,
 triggers, untrusted languages, or runtime multi-statement SQL. Runtime
 `ctx.db.query()` is restricted to `SELECT`; runtime `ctx.db.execute()` is
 restricted to namespace-local `INSERT`, `UPDATE`, and `DELETE`.
+
+### Scoped plugin API routes
+
+Plugins can expose JSON-only routes under their own namespace:
+
+```ts
+apiRoutes: [
+  {
+    routeKey: "initialize",
+    method: "POST",
+    path: "/issues/:issueId/smoke",
+    auth: "board-or-agent",
+    capability: "api.routes.register",
+    checkoutPolicy: "required-for-agent-in-progress",
+    companyResolution: { from: "issue", param: "issueId" },
+  },
+]
+```
+
+The host resolves the plugin, checks that it is ready, enforces
+`api.routes.register`, matches the declared method/path, resolves company access,
+and applies checkout policy before dispatching to the worker's `onApiRequest`
+handler. The worker receives sanitized headers, route params, query, parsed JSON
+body, actor context, and company id. Do not use plugin routes to claim core
+paths; they always remain under `/api/plugins/:pluginId/api/*`.
 
 UI:
 

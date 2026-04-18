@@ -32,7 +32,11 @@ vi.mock("../services/live-events.js", () => ({
   publishGlobalLiveEvent: vi.fn(),
 }));
 
-async function createApp(actor: Record<string, unknown>, loaderOverrides: Record<string, unknown> = {}) {
+async function createApp(
+  actor: Record<string, unknown>,
+  loaderOverrides: Record<string, unknown> = {},
+  bridgeDeps?: Record<string, unknown>,
+) {
   const [{ pluginRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/plugins.js"),
     import("../middleware/index.js"),
@@ -49,7 +53,7 @@ async function createApp(actor: Record<string, unknown>, loaderOverrides: Record
     req.actor = actor as typeof req.actor;
     next();
   });
-  app.use("/api", pluginRoutes({} as never, loader as never));
+  app.use("/api", pluginRoutes({} as never, loader as never, undefined, undefined, undefined, bridgeDeps as never));
   app.use(errorHandler);
 
   return { app, loader };
@@ -193,5 +197,71 @@ describe("plugin install and upgrade authz", () => {
 
     expect(res.status).toBe(200);
     expect(mockLifecycle.upgrade).toHaveBeenCalledWith(pluginId, "1.1.0");
+  }, 20_000);
+});
+
+describe("scoped plugin API routes", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("dispatches manifest-declared scoped routes after company access checks", async () => {
+    const pluginId = "11111111-1111-4111-8111-111111111111";
+    const workerManager = {
+      call: vi.fn().mockResolvedValue({
+        status: 202,
+        body: { ok: true },
+      }),
+    };
+    mockRegistry.getById.mockResolvedValue(null);
+    mockRegistry.getByKey.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+      status: "ready",
+      manifestJson: {
+        id: "paperclip.example",
+        capabilities: ["api.routes.register"],
+        apiRoutes: [
+          {
+            routeKey: "smoke",
+            method: "GET",
+            path: "/smoke",
+            auth: "board-or-agent",
+            capability: "api.routes.register",
+            companyResolution: { from: "query", key: "companyId" },
+          },
+        ],
+      },
+    });
+
+    const { app } = await createApp(
+      {
+        type: "board",
+        userId: "admin-1",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: ["company-1"],
+      },
+      {},
+      { workerManager },
+    );
+
+    const res = await request(app)
+      .get("/api/plugins/paperclip.example/api/smoke")
+      .query({ companyId: "company-1" });
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ ok: true });
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "handleApiRequest",
+      expect.objectContaining({
+        routeKey: "smoke",
+        method: "GET",
+        companyId: "company-1",
+        query: { companyId: "company-1" },
+      }),
+    );
   }, 20_000);
 });

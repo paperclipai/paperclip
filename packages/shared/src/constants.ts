@@ -504,9 +504,6 @@ export const PLUGIN_CAPABILITIES = [
   "issue.subtree.read",
   "issue.comments.read",
   "issue.documents.read",
-  "issue.relations.read",
-  "issue.relations.write",
-  "issue.subtree.read",
   "agents.read",
   "goals.read",
   "goals.create",
@@ -543,6 +540,7 @@ export const PLUGIN_CAPABILITIES = [
   "events.emit",
   "jobs.schedule",
   "webhooks.receive",
+  "api.routes.register",
   "http.outbound",
   "secrets.read-ref",
   // Agent Tools
@@ -589,6 +587,19 @@ export const PLUGIN_DATABASE_CORE_READ_TABLES = [
   "budget_incidents",
 ] as const;
 export type PluginDatabaseCoreReadTable = (typeof PLUGIN_DATABASE_CORE_READ_TABLES)[number];
+
+export const PLUGIN_API_ROUTE_METHODS = ["GET", "POST", "PATCH", "DELETE"] as const;
+export type PluginApiRouteMethod = (typeof PLUGIN_API_ROUTE_METHODS)[number];
+
+export const PLUGIN_API_ROUTE_AUTH_MODES = ["board", "agent", "board-or-agent", "webhook"] as const;
+export type PluginApiRouteAuthMode = (typeof PLUGIN_API_ROUTE_AUTH_MODES)[number];
+
+export const PLUGIN_API_ROUTE_CHECKOUT_POLICIES = [
+  "none",
+  "required-for-agent-in-progress",
+  "always-for-agent",
+] as const;
+export type PluginApiRouteCheckoutPolicy = (typeof PLUGIN_API_ROUTE_CHECKOUT_POLICIES)[number];
 
 /**
  * UI extension slot types. Each slot type corresponds to a mount point in the

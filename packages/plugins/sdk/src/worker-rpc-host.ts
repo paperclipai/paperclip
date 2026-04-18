@@ -42,6 +42,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 
 import type { PaperclipPlugin } from "./define-plugin.js";
 import type {
+  PluginApiRequestInput,
   PluginHealthDiagnostics,
   PluginConfigValidationResult,
   PluginWebhookInput,
@@ -1001,6 +1002,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "handleWebhook":
         return handleWebhook(params as PluginWebhookInput);
 
+      case "handleApiRequest":
+        return handleApiRequest(params as PluginApiRequestInput);
+
       case "getData":
         return handleGetData(params as GetDataParams);
 
@@ -1042,6 +1046,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onConfigChanged) supportedMethods.push("configChanged");
     if (plugin.definition.onHealth) supportedMethods.push("health");
     if (plugin.definition.onShutdown) supportedMethods.push("shutdown");
+    if (plugin.definition.onApiRequest) supportedMethods.push("handleApiRequest");
 
     return { ok: true, supportedMethods };
   }
@@ -1141,6 +1146,16 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       );
     }
     await plugin.definition.onWebhook(params);
+  }
+
+  async function handleApiRequest(params: PluginApiRequestInput): Promise<unknown> {
+    if (!plugin.definition.onApiRequest) {
+      throw Object.assign(
+        new Error("handleApiRequest is not implemented by this plugin"),
+        { code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED },
+      );
+    }
+    return plugin.definition.onApiRequest(params);
   }
 
   async function handleGetData(params: GetDataParams): Promise<unknown> {
