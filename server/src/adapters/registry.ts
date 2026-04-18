@@ -69,6 +69,17 @@ import {
   agentConfigurationDoc as piAgentConfigurationDoc,
 } from "@paperclipai/adapter-pi-local";
 import {
+  execute as kimiExecute,
+  listKimiSkills,
+  syncKimiSkills,
+  testEnvironment as kimiTestEnvironment,
+  sessionCodec as kimiSessionCodec,
+} from "@paperclipai/adapter-kimi-local/server";
+import {
+  agentConfigurationDoc as kimiAgentConfigurationDoc,
+  models as kimiModels,
+} from "@paperclipai/adapter-kimi-local";
+import {
   execute as hermesExecute,
   testEnvironment as hermesTestEnvironment,
   sessionCodec as hermesSessionCodec,
@@ -200,6 +211,19 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const kimiLocalAdapter: ServerAdapterModule = {
+  type: "kimi_local",
+  execute: kimiExecute,
+  testEnvironment: kimiTestEnvironment,
+  listSkills: listKimiSkills,
+  syncSkills: syncKimiSkills,
+  sessionCodec: kimiSessionCodec,
+  sessionManagement: getAdapterSessionManagement("kimi_local") ?? undefined,
+  models: kimiModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: kimiAgentConfigurationDoc,
+};
+
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: hermesExecute,
@@ -233,6 +257,7 @@ function registerBuiltInAdapters() {
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
+    kimiLocalAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
