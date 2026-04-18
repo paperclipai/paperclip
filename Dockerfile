@@ -89,6 +89,11 @@ COPY scripts/docker-entrypoint.sh /usr/local/bin/
 COPY scripts/verify-skills.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/verify-skills.sh
 
+# hermes-bridge.sh bridges the hermes_local adapter to the hermes-agent sidecar container.
+# hermes CLI is at /opt/hermes/.venv/bin/hermes inside hermes-agent — NOT in its $PATH.
+COPY scripts/hermes-bridge.sh /app/scripts/hermes-bridge.sh
+RUN chmod +x /app/scripts/hermes-bridge.sh
+
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \

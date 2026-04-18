@@ -9,7 +9,9 @@
 
 HERMES_CONTAINER="${HERMES_CONTAINER_NAME:-hermes-agent}"
 
-docker exec -i "$HERMES_CONTAINER" hermes "$@"
+# hermes CLI is at /opt/hermes/.venv/bin/hermes — NOT in the container's $PATH,
+# so we must use the absolute path to avoid "executable not found in $PATH".
+docker exec -i "$HERMES_CONTAINER" /opt/hermes/.venv/bin/hermes "$@"
 rc=$?
 
 # Hermes CLI occasionally exits with 134 (SIGABRT) during cleanup after
