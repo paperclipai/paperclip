@@ -975,6 +975,73 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("keeps generic manual comments out of the latest activity summary lane when they add no structured control-plane signal", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Wait for operator input",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date("2026-04-18T14:00:00.000Z"),
+        details: {
+          missionControl: {
+            workflowState: {
+              kind: "waiting_on_human",
+              enteredAt: "2026-04-18T14:00:00.000Z",
+            },
+          },
+          _previous: {
+            missionControl: {
+              workflowState: null,
+            },
+          },
+        },
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date("2026-04-18T14:05:00.000Z"),
+        details: {
+          commentId: randomUUID(),
+          bodySnippet: "Please keep me posted once the operator responds.",
+        },
+      },
+    ]);
+
+    const [result] = await svc.list(companyId, {});
+
+    expect(result?.latestActivitySummary).toMatchObject({
+      text: "Marked waiting on human",
+      action: "issue.updated",
+      actorType: "user",
+      actorId: "user-1",
+    });
+  });
+
   it("trims list payload fields that can grow large on issue index routes", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();

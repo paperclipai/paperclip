@@ -799,7 +799,7 @@ function isStructuredHandoffActivity(row: IssueActivitySummaryRow): boolean {
 
 function isNoiseIssueActivity(row: IssueActivitySummaryRow): boolean {
   if (ISSUE_NOISE_ACTIONS.has(row.action)) return true;
-  if (row.action === "issue.comment_added" && row.runId) return true;
+  if (row.action === "issue.comment_added") return true;
   return false;
 }
 
