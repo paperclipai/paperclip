@@ -36,12 +36,16 @@ const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 const mockHeartbeatGetRun = vi.hoisted(() => vi.fn());
 
+const mockHasPermission = vi.hoisted(() =>
+  vi.fn(async (_c: string, _kind: string, _id: string, key: string) => key !== "tickets:bypass_authoring_gates"),
+);
+
 vi.mock("../services/index.js", () => ({
   instanceSettingsService: () => ({ getSettings: vi.fn(async () => ({})), findByCompany: vi.fn(async () => null) }),
   feedbackService: () => ({}),
   accessService: () => ({
     canUser: vi.fn(async () => true),
-    hasPermission: vi.fn(async (_c: string, _kind: string, _id: string, key: string) => key !== "tickets:bypass_authoring_gates"),
+    hasPermission: mockHasPermission,
   }),
   agentService: () => ({
     getById: vi.fn(async () => ({
@@ -182,6 +186,10 @@ describe("task-bound scope enforcement", () => {
     mockHeartbeatGetRun.mockResolvedValue({
       contextSnapshot: { issueId: BOUND_ISSUE_ID },
     });
+    // Default: no bypass permission. Nested describes can override.
+    mockHasPermission.mockImplementation(
+      async (_c: string, _kind: string, _id: string, key: string) => key !== "tickets:bypass_authoring_gates",
+    );
   });
 
   // ----- PATCH /issues/:id -----
@@ -477,5 +485,80 @@ describe("task-bound scope enforcement", () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(2);
     expect(mockIssueService.list).toHaveBeenCalled();
+  });
+
+  // ----- Watchdog bypass (tickets:bypass_authoring_gates) ----- //
+
+  describe("watchdog bypass on non-bound writes", () => {
+    beforeEach(() => {
+      mockHasPermission.mockImplementation(
+        async (_c: string, _kind: string, _id: string, key: string) => key === "tickets:bypass_authoring_gates",
+      );
+    });
+
+    it("bypass agent POSTs a comment to non-bound issue → 201", async () => {
+      const other = makeOtherIssue();
+      mockIssueService.getById.mockResolvedValue(other);
+
+      const res = await request(createAgentApp())
+        .post(`/api/issues/${OTHER_ISSUE_ID}/comments`)
+        .send({ body: "Watchdog: cross-issue nudge" });
+
+      expect(res.status).toBe(201);
+    });
+
+    it("bypass agent PATCHes a non-bound issue → 200", async () => {
+      const other = makeOtherIssue();
+      mockIssueService.getById.mockResolvedValue(other);
+      mockIssueService.update.mockResolvedValue(other);
+
+      const res = await request(createAgentApp())
+        .patch(`/api/issues/${OTHER_ISSUE_ID}`)
+        .send({ comment: "Watchdog: coordination" });
+
+      expect(res.status).toBe(200);
+    });
+
+    it("fail-closed (unknown run) still blocks bypass-agent writes", async () => {
+      mockHeartbeatGetRun.mockResolvedValue(null);
+      const other = makeOtherIssue();
+      mockIssueService.getById.mockResolvedValue(other);
+
+      const res = await request(createAgentApp())
+        .post(`/api/issues/${OTHER_ISSUE_ID}/comments`)
+        .send({ body: "still should not land" });
+
+      expect(res.status).toBe(422);
+      expect(res.body.gate).toBe("task_bound_scope");
+    });
+
+    it("logs issue.authoring_bypass_used with gate=task_bound_scope on bypass", async () => {
+      const other = makeOtherIssue();
+      mockIssueService.getById.mockResolvedValue(other);
+
+      await request(createAgentApp())
+        .post(`/api/issues/${OTHER_ISSUE_ID}/comments`)
+        .send({ body: "nudge" });
+
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.authoring_bypass_used",
+          details: expect.objectContaining({ gate: "task_bound_scope" }),
+        }),
+      );
+    });
+  });
+
+  it("non-bypass agent POSTing to non-bound issue → 422 (unchanged)", async () => {
+    const other = makeOtherIssue();
+    mockIssueService.getById.mockResolvedValue(other);
+
+    const res = await request(createAgentApp())
+      .post(`/api/issues/${OTHER_ISSUE_ID}/comments`)
+      .send({ body: "cross-scope attempt without bypass" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.gate).toBe("task_bound_scope");
   });
 });

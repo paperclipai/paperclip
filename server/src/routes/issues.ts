@@ -119,6 +119,15 @@ export function issueRoutes(
     const allowReadAcrossScope = req.method === "GET" || req.method === "HEAD";
     const block = assertTaskBoundAccess(scope, issue.id, { allowReadAcrossScope });
     if (!block) return true;
+    // Watchdog bypass: agents holding `tickets:bypass_authoring_gates` scan the
+    // fleet and nudge non-bound issues by design. Permit writes across scope
+    // only when the scope actually resolved (not fail-closed). Every usage is
+    // logged via `issue.authoring_bypass_used` for audit.
+    if (scope.isTaskBound && scope.boundIssueId && !allowReadAcrossScope) {
+      if (await agentHasAuthoringBypass(req, issue.companyId, "task_bound_scope")) {
+        return true;
+      }
+    }
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: issue.companyId,
