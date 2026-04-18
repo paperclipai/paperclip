@@ -10,6 +10,7 @@ It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec i
 - Plugin UI runs as same-origin JavaScript inside the main Paperclip app.
 - Worker-side host APIs are capability-gated.
 - Plugin UI is not sandboxed by manifest capabilities.
+- Plugin database migrations are restricted to a host-derived plugin namespace.
 - There is no host-provided shared React component kit for plugins yet.
 - `ctx.assets` is not supported in the current runtime.
 
@@ -77,10 +78,11 @@ Worker:
 - secrets
 - activity
 - state
+- database namespace via `ctx.db`
 - entities
 - projects and project workspaces
 - companies
-- issues and comments
+- issues, comments, namespaced `plugin:<pluginKey>` origins, blocker relations, checkout assertions, assignment wakeups, and orchestration summaries
 - agents and agent sessions
 - goals
 - data/actions
@@ -88,6 +90,30 @@ Worker:
 - tools
 - metrics
 - logger
+
+### Plugin database declarations
+
+First-party or otherwise trusted orchestration plugins can declare:
+
+```ts
+database: {
+  migrationsDir: "migrations",
+  coreReadTables: ["issues"],
+}
+```
+
+Required capabilities are `database.namespace.migrate` and
+`database.namespace.read`; add `database.namespace.write` for runtime mutations.
+The host derives `ctx.db.namespace`, runs SQL files in filename order before the
+worker starts, records checksums in `plugin_migrations`, and rejects changed
+already-applied migrations.
+
+Migration SQL may create or alter objects only inside `ctx.db.namespace`. It may
+reference whitelisted `public` core tables for foreign keys or read-only views,
+but may not mutate/alter/drop/truncate public tables, create extensions,
+triggers, untrusted languages, or runtime multi-statement SQL. Runtime
+`ctx.db.query()` is restricted to `SELECT`; runtime `ctx.db.execute()` is
+restricted to namespace-local `INSERT`, `UPDATE`, and `DELETE`.
 
 UI:
 

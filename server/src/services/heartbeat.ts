@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
+import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -60,7 +61,7 @@ import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
-import { logActivity, type LogActivityInput } from "./activity-log.js";
+import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -2377,9 +2378,48 @@ export function heartbeatService(db: Db) {
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
+      publishRunLifecyclePluginEvent(updated);
     }
 
     return updated;
+  }
+
+  function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
+    const eventType =
+      run.status === "running"
+        ? "agent.run.started"
+        : run.status === "succeeded"
+          ? "agent.run.finished"
+          : run.status === "failed" || run.status === "timed_out"
+            ? "agent.run.failed"
+            : run.status === "cancelled"
+              ? "agent.run.cancelled"
+              : null;
+    if (!eventType) return;
+    publishPluginDomainEvent({
+      eventId: randomUUID(),
+      eventType,
+      occurredAt: new Date().toISOString(),
+      actorId: run.agentId,
+      actorType: "agent",
+      entityId: run.id,
+      entityType: "heartbeat_run",
+      companyId: run.companyId,
+      payload: {
+        runId: run.id,
+        agentId: run.agentId,
+        status: run.status,
+        invocationSource: run.invocationSource,
+        triggerDetail: run.triggerDetail,
+        error: run.error ?? null,
+        errorCode: run.errorCode ?? null,
+        issueId: typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
+          ? (run.contextSnapshot as Record<string, unknown>).issueId ?? null
+          : null,
+        startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
+        finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
+      },
+    });
   }
 
   async function setWakeupStatus(
@@ -3054,6 +3094,7 @@ export function heartbeatService(db: Db) {
         finishedAt: claimed.finishedAt ? new Date(claimed.finishedAt).toISOString() : null,
       },
     });
+    publishRunLifecyclePluginEvent(claimed);
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
 

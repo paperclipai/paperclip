@@ -11,6 +11,7 @@ import {
   PLUGIN_LAUNCHER_BOUNDS,
   PLUGIN_LAUNCHER_RENDER_ENVIRONMENTS,
   PLUGIN_STATE_SCOPE_KINDS,
+  PLUGIN_DATABASE_CORE_READ_TABLES,
 } from "../constants.js";
 
 // ---------------------------------------------------------------------------
@@ -336,6 +337,19 @@ export const pluginLauncherDeclarationSchema = z.object({
 
 export type PluginLauncherDeclarationInput = z.infer<typeof pluginLauncherDeclarationSchema>;
 
+export const pluginDatabaseDeclarationSchema = z.object({
+  namespaceSlug: z.string().regex(/^[a-z0-9][a-z0-9_]*$/, {
+    message: "namespaceSlug must be lowercase letters, digits, or underscores and start with a letter or digit",
+  }).max(40).optional(),
+  migrationsDir: z.string().min(1).refine(
+    (value) => !value.startsWith("/") && !value.includes("..") && !/[\\]/.test(value),
+    { message: "migrationsDir must be a relative package path without '..' or backslashes" },
+  ),
+  coreReadTables: z.array(z.enum(PLUGIN_DATABASE_CORE_READ_TABLES)).optional(),
+});
+
+export type PluginDatabaseDeclarationInput = z.infer<typeof pluginDatabaseDeclarationSchema>;
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1 schema
 // ---------------------------------------------------------------------------
@@ -405,6 +419,7 @@ export const pluginManifestV1Schema = z.object({
   jobs: z.array(pluginJobDeclarationSchema).optional(),
   webhooks: z.array(pluginWebhookDeclarationSchema).optional(),
   tools: z.array(pluginToolDeclarationSchema).optional(),
+  database: pluginDatabaseDeclarationSchema.optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
@@ -470,6 +485,32 @@ export const pluginManifestV1Schema = z.object({
         code: z.ZodIssueCode.custom,
         message: "Capability 'webhooks.receive' is required when webhooks are declared",
         path: ["capabilities"],
+      });
+    }
+  }
+
+  if (manifest.database) {
+    const requiredCapabilities = [
+      "database.namespace.migrate",
+      "database.namespace.read",
+    ] as const;
+    for (const capability of requiredCapabilities) {
+      if (!manifest.capabilities.includes(capability)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Capability '${capability}' is required when database migrations are declared`,
+          path: ["capabilities"],
+        });
+      }
+    }
+
+    const coreReadTables = manifest.database.coreReadTables ?? [];
+    const duplicates = coreReadTables.filter((table, i) => coreReadTables.indexOf(table) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate database coreReadTables: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["database", "coreReadTables"],
       });
     }
   }

@@ -414,6 +414,13 @@
       "when": 1776542245004,
       "tag": "0058_wealthy_starbolt",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1776542246000,
+      "tag": "0059_plugin_database_namespaces",
+      "breakpoints": true
     }
   ]
 }
