@@ -375,7 +375,7 @@ export function issueRoutes(
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
-  async function assertCanAssignTasks(req: Request, companyId: string) {
+  async function assertCanAssignTasks(req: Request, companyId: string, targetAgentId?: string | null) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
@@ -389,6 +389,18 @@ export function issueRoutes(
       if (allowedByGrant) return;
       const actorAgent = await agentsSvc.getById(req.actor.agentId);
       if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
+      if (actorAgent && actorAgent.companyId === companyId) {
+        const isManager = await agentsSvc.hasDirectReports(companyId, req.actor.agentId);
+        if (isManager) {
+          // Managers may only assign within their direct team. If the target is
+          // another agent (not null / a user assignment), verify it reports to them.
+          if (targetAgentId) {
+            const inTeam = await agentsSvc.isDirectReport(companyId, req.actor.agentId, targetAgentId);
+            if (!inTeam) throw forbidden("Managers may only assign tasks to their direct reports");
+          }
+          return;
+        }
+      }
       throw forbidden("Missing permission: tasks:assign");
     }
     throw unauthorized();
@@ -1331,7 +1343,7 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, companyId);
+      await assertCanAssignTasks(req, companyId, req.body.assigneeAgentId ?? null);
     }
 
     const actor = getActorInfo(req);
@@ -1513,7 +1525,9 @@ export function issueRoutes(
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId);
+        const newAssigneeAgentId =
+          req.body.assigneeAgentId !== undefined ? req.body.assigneeAgentId : existing.assigneeAgentId;
+        await assertCanAssignTasks(req, existing.companyId, newAssigneeAgentId ?? null);
       }
     }
 
