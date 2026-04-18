@@ -114,6 +114,8 @@ Operators can inspect or run the same repair logic manually:
 ```sh
 pnpm runtime-integrity:reconcile
 pnpm runtime-integrity:reconcile -- --apply
+pnpm routine-execution:reconcile
+pnpm routine-execution:reconcile -- --apply
 ```
 
 ## 6. Live updates in the UI
@@ -191,7 +193,10 @@ That means COO may correct the same issue without creating a successor issue:
 - `in_progress` without a live execution run or fresh structured wait/handoff truth can be demoted back to `todo`
 - assigned `todo` is valid queued ownership and does not consume a slot
 - wakes should only be issued when the selected owner has a real free heartbeat slot
-- stale `routine_execution` siblings must not be re-woken once another open issue for the same routine already holds the live execution slot
+- `coalesce_if_active` and `skip_if_active` routines keep one canonical open issue even when no heartbeat run is currently live
+- paused `routine_execution` issues are inert history/work objects and must not be re-woken by COO
+- queued heartbeat runs for paused `routine_execution` issues must be cancelled before claim-time recovery can start them
+- stale `routine_execution` siblings must not be re-woken once another open issue for the same routine already holds the canonical slot
 
 This is intentionally limited to same-issue correction. `recovered_by` successor issues remain exceptional board-controlled recovery only.
 

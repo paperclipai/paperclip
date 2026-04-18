@@ -204,6 +204,9 @@ export type IssueNextActionType = (typeof ISSUE_NEXT_ACTION_TYPES)[number];
 export const ISSUE_ORIGIN_KINDS = ["manual", "routine_execution", "board_copilot_thread"] as const;
 export type IssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 
+export const ISSUE_ROUTINE_EXECUTION_ROLES = ["canonical", "parallel", "superseded"] as const;
+export type IssueRoutineExecutionRole = (typeof ISSUE_ROUTINE_EXECUTION_ROLES)[number];
+
 export const ISSUE_RELATION_TYPES = ["blocks", "recovered_by"] as const;
 export type IssueRelationType = (typeof ISSUE_RELATION_TYPES)[number];
 
@@ -261,11 +264,15 @@ export type RoutineTriggerSigningMode = (typeof ROUTINE_TRIGGER_SIGNING_MODES)[n
 export const ROUTINE_VARIABLE_TYPES = ["text", "textarea", "number", "boolean", "select"] as const;
 export type RoutineVariableType = (typeof ROUTINE_VARIABLE_TYPES)[number];
 
+export const ROUTINE_EXECUTION_STATES = ["none", "paused", "idle", "live"] as const;
+export type RoutineExecutionState = (typeof ROUTINE_EXECUTION_STATES)[number];
+
 export const ROUTINE_RUN_STATUSES = [
   "received",
   "coalesced",
   "skipped",
   "issue_created",
+  "issue_reused",
   "completed",
   "failed",
  ] as const;

@@ -3,7 +3,7 @@ title: Routines
 summary: Recurring task scheduling, triggers, and run history
 ---
 
-Routines are recurring tasks that fire on a schedule, webhook, or API call and create a heartbeat run for the assigned agent.
+Routines are recurring tasks that fire on a schedule, webhook, or API call and create a heartbeat run for the assigned agent. Depending on concurrency policy, a run may create a new issue, reuse the routine's canonical open issue, or coalesce/skip against a live execution.
 
 ## List Routines
 
@@ -20,6 +20,13 @@ GET /api/routines/{routineId}
 ```
 
 Returns routine details including triggers.
+
+Routine detail and list payloads also expose execution-state fields for routine-backed issues:
+
+- `canonicalIssue`: the single durable open issue for `coalesce_if_active` and `skip_if_active`
+- `liveIssue`: the canonical issue only while a live heartbeat run is attached
+- `executionState`: `none`, `paused`, `idle`, or `live`
+- `activeIssue`: legacy alias for `liveIssue`
 
 ## Create Routine
 
@@ -59,8 +66,8 @@ Fields:
 
 | Value | Behaviour |
 |-------|-----------|
-| `coalesce_if_active` (default) | Incoming run is immediately finalised as `coalesced` and linked to the active run — no new issue is created. The board UI labels this policy as `Reuse Active Run` and shows the run status as `Added to Active Run`. |
-| `skip_if_active` | Incoming run is immediately finalised as `skipped` and linked to the active run — no new issue is created |
+| `coalesce_if_active` (default) | If a live canonical issue exists, the new run is finalised as `coalesced`. If the canonical issue is still open but idle, the new run is finalised as `issue_reused` and wakes that existing issue instead of creating a new ticket. |
+| `skip_if_active` | If a live canonical issue exists, the new run is finalised as `skipped`. If the canonical issue is open but idle, the run reuses and re-wakes that issue instead of creating a new ticket. |
 | `always_enqueue` | Always create a new run regardless of active runs |
 
 **Catch-up policies:**
@@ -80,6 +87,14 @@ PATCH /api/routines/{routineId}
 ```
 
 All fields from create are updatable. **Agents can only update routines assigned to themselves and cannot reassign a routine to another agent.**
+
+Pausing a routine is stronger than disabling the scheduler:
+
+- schedules stop firing
+- manual runs return `409`
+- webhook/public trigger fires return `409`
+- queued routine wakeups are cancelled so COO cannot keep re-waking paused routine issues
+- already-queued routine heartbeat runs are cancelled and cleared off the issue before queued-run recovery can claim them
 
 ## Add Trigger
 
@@ -159,6 +174,8 @@ POST /api/routines/{routineId}/run
 
 Fires a run immediately, bypassing the schedule. Concurrency policy still applies.
 
+Paused routines reject manual runs with `409`.
+
 `triggerId` is optional. When supplied, the server validates the trigger belongs to this routine (`403`) and is enabled (`409`), then records the run against that trigger and updates its `lastFiredAt`. Omit it for a generic manual run with no trigger attribution.
 
 ## Fire Public Trigger
@@ -169,6 +186,8 @@ POST /api/routine-triggers/public/{publicId}/fire
 
 Fires a webhook trigger from an external system. Requires a valid `Authorization` or `X-PrivateClip-Signature` + `X-PrivateClip-Timestamp` header pair matching the trigger's signing mode.
 
+Paused routines reject public trigger fires with `409`.
+
 ## List Runs
 
 ```
@@ -176,6 +195,15 @@ GET /api/routines/{routineId}/runs?limit=50
 ```
 
 Returns recent run history for the routine. Defaults to 50 most recent runs.
+
+Routine run statuses include:
+
+- `issue_created`
+- `issue_reused`
+- `coalesced`
+- `skipped`
+- `completed`
+- `failed`
 
 ## Agent Access Rules
 

@@ -678,7 +678,9 @@ Scheduler must skip invocation when:
 - an existing run is active
 - a timer heartbeat is already `queued` or `running` for that agent; missed timer windows coalesce into one outstanding wake instead of backfilling a backlog after downtime
 - hard budget limit has been hit
+- paused routines must reject scheduled, manual, and webhook dispatch after the pause point and must cancel queued routine wakeups and queued routine heartbeat runs instead of leaving them available to COO recovery
 - before binding a new run to a `routine_execution` issue, the server must clear dead sibling `execution_run_id` locks for the same routine origin; if a live sibling issue still owns the routine, the new wake must cancel/coalesce instead of surfacing a database uniqueness error
+- `coalesce_if_active` and `skip_if_active` routines must reuse one canonical open `routine_execution` issue even after the previous heartbeat run has gone idle; `always_enqueue` is the only routine policy that may intentionally leave multiple open routine issues
 
 Company pause/archive must also drain queued/running company-scoped work and deferred wakeups instead of leaving stale queued state behind.
 

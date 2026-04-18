@@ -57,7 +57,11 @@ const ISSUE_STATUS_TRANSITIONS: Record<string, Set<string>> = {
   blocked: new Set(["todo", "in_progress", "in_review", "done", "cancelled"]),
   done: new Set(["todo", "cancelled"]),
   cancelled: new Set(["todo"]),
-};
+}; 
+
+function asUuidParam(value: string) {
+  return sql`${value}::uuid`;
+}
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 const RECOVERY_RELATION_TYPE = "recovered_by" as const;
 const RECOVERY_DISPOSITIONS_REQUIRING_SUCCESSOR = new Set(["superseded", "recovered_by_reissue", "blocked"]);
@@ -1704,10 +1708,10 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
 
     return db.transaction(async (tx) => {
       await tx.execute(
-        sql`select id from issues where id = ${input.issueId} for update`,
+        sql`select id from issues where id = ${asUuidParam(input.issueId)} for update`,
       );
       await tx.execute(
-        sql`select id from heartbeat_runs where id = ${input.expectedExecutionRunId} for update`,
+        sql`select id from heartbeat_runs where id = ${asUuidParam(input.expectedExecutionRunId)} for update`,
       );
 
       const queuedRun = await tx
@@ -3043,7 +3047,7 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
       // matching the existing pattern in enqueueWakeup().
       await db.transaction(async (tx) => {
         await tx.execute(
-          sql`select id from issues where id = ${id} for update`,
+          sql`select id from issues where id = ${asUuidParam(id)} for update`,
         );
         const preCheckRow = await tx
           .select({ executionRunId: issues.executionRunId })

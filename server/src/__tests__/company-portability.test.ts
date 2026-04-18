@@ -1397,6 +1397,9 @@ describe("company portability", () => {
           },
         ],
         lastRun: null,
+        canonicalIssue: null,
+        liveIssue: null,
+        executionState: "none",
         activeIssue: null,
       },
     ]);
@@ -1495,6 +1498,9 @@ describe("company portability", () => {
         updatedAt: new Date(),
         triggers: [],
         lastRun: null,
+        canonicalIssue: null,
+        liveIssue: null,
+        executionState: "none",
         activeIssue: null,
       },
     ]);

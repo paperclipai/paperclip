@@ -4,7 +4,15 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { buildAgentMentionHref, issuePriorityWeight, type BillingType, type ExecutionWorkspace, type ExecutionWorkspaceConfig } from "@paperclipai/shared";
+import {
+  buildAgentMentionHref,
+  isEligibleQaAgentStatus,
+  issuePriorityWeight,
+  resolveReleaseGateQaAgent as resolveSharedReleaseGateQaAgent,
+  type BillingType,
+  type ExecutionWorkspace,
+  type ExecutionWorkspaceConfig,
+} from "@paperclipai/shared";
 import {
   agents,
   agentRuntimeState,
@@ -19,6 +27,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  routines,
 } from "@paperclipai/db";
 import { HttpError, conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -73,6 +82,8 @@ import {
   parseProjectExecutionWorkspacePolicy,
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
+import { parseIssueExecutionState } from "./issue-execution-policy.js";
+import { isDeliveryScopedAssigneeRole } from "./qa-gate.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { roadmapEpicService } from "./roadmap-epics.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
@@ -117,6 +128,7 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const EXECUTION_REVIEW_STAGE_TYPES = new Set(["review", "approval"]);
 const execFile = promisify(execFileCallback);
 const PROCESS_SUSPECT_ERROR_CODE = "process_suspect";
 const RUN_ACTIVITY_TOUCH_INTERVAL_MS = 15_000;
@@ -147,6 +159,10 @@ const NON_RETRIABLE_AUTO_RETRY_ERROR_CODES = new Set([
 const runActivityTouchMs = new Map<string, number>();
 
 const POSTGRES_TEXT_NULL_BYTE = /\u0000/g;
+
+function asUuidParam(value: string) {
+  return sql`${value}::uuid`;
+}
 
 export function mapHermesCommandForRuntimeConfig(
   adapterType: string,
@@ -407,7 +423,12 @@ function buildOperationsAssignmentComment(input: {
 }
 
 function buildOperationsOwnershipCorrectionComment(input: {
-  correctionReason: "wrong_specialist_reassigned" | "fake_wip_demoted" | "slot_rebalanced";
+  correctionReason:
+    | "wrong_specialist_reassigned"
+    | "fake_wip_demoted"
+    | "slot_rebalanced"
+    | "qa_release_gate_reassigned"
+    | "qa_release_gate_demotion";
   wakeDeferred: boolean;
   detail: string;
   nextStatus: string;
@@ -427,6 +448,33 @@ function buildOperationsOwnershipCorrectionComment(input: {
       ? "Wake status: ownership_corrected_wake_deferred."
       : "Next required action: resume work now, or leave issue-level truth (status/outcome with blocker, handoff, completion, or wait-state).",
   ].join("\n");
+}
+
+function isExecutionPolicyReviewIssue(input: {
+  status: string;
+  executionState?: unknown;
+}) {
+  if (input.status !== "in_review") return false;
+  const executionState = parseIssueExecutionState(input.executionState);
+  return (
+    executionState?.currentStageType != null
+    && EXECUTION_REVIEW_STAGE_TYPES.has(executionState.currentStageType)
+  );
+}
+
+async function resolveCompanyReleaseGateQaAgent(db: Db, companyId: string) {
+  const qaAgents = await db
+    .select({
+      id: agents.id,
+      role: agents.role,
+      status: agents.status,
+      name: agents.name,
+      title: agents.title,
+    })
+    .from(agents)
+    .where(and(eq(agents.companyId, companyId), eq(agents.role, "qa")));
+  const eligibleQaAgents = qaAgents.filter((agent) => isEligibleQaAgentStatus(agent.status));
+  return resolveSharedReleaseGateQaAgent(eligibleQaAgents);
 }
 
 export function isOperationsOrchestratorAgent(agent: {
@@ -453,6 +501,189 @@ export async function resolveOperationsHeartbeatTarget(
   return first ?? null;
 }
 
+async function filterRoutineExecutionIssuesForOperations<T extends {
+  id: string;
+  originKind?: string | null;
+  originId?: string | null;
+}>(db: Db, companyId: string, issueRows: T[]) {
+  const routineOriginIds = Array.from(new Set(
+    issueRows
+      .filter((issue) => issue.originKind === "routine_execution" && Boolean(issue.originId))
+      .map((issue) => issue.originId)
+      .filter((originId): originId is string => Boolean(originId)),
+  ));
+  if (routineOriginIds.length === 0) return issueRows;
+
+  await repairRoutineExecutionLocksForOrigins(db, companyId, routineOriginIds);
+
+  const routineRows = await db
+    .select({
+      id: routines.id,
+      status: routines.status,
+      concurrencyPolicy: routines.concurrencyPolicy,
+    })
+    .from(routines)
+    .where(
+      and(
+        eq(routines.companyId, companyId),
+        inArray(routines.id, routineOriginIds),
+      ),
+    );
+  const routineById = new Map(routineRows.map((row) => [row.id, row]));
+
+  let filteredRows = issueRows.filter((issue) => {
+    if (issue.originKind !== "routine_execution" || !issue.originId) return true;
+    const routine = routineById.get(issue.originId);
+    if (!routine) return false;
+    return routine.status === "active";
+  });
+
+  const coalescingOriginIds = routineRows
+    .filter((row) => row.status === "active" && row.concurrencyPolicy !== "always_enqueue")
+    .map((row) => row.id);
+  if (coalescingOriginIds.length === 0) return filteredRows;
+
+  const canonicalRows = await db
+    .selectDistinctOn([issues.originId], {
+      originId: issues.originId,
+      issueId: issues.id,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "routine_execution"),
+        inArray(issues.originId, coalescingOriginIds),
+        inArray(issues.status, OPEN_ISSUE_STATUSES as unknown as string[]),
+        sql`${issues.hiddenAt} is null`,
+      ),
+    )
+    .orderBy(
+      issues.originId,
+      sql`case when ${issues.routineIssueRole} = 'canonical' then 0 else 1 end`,
+      desc(issues.updatedAt),
+      desc(issues.createdAt),
+    );
+  const canonicalIssueIdByOriginId = new Map(
+    canonicalRows
+      .filter((row) => Boolean(row.originId))
+      .map((row) => [row.originId as string, row.issueId]),
+  );
+
+  filteredRows = filteredRows.filter((issue) => {
+    if (issue.originKind !== "routine_execution" || !issue.originId) return true;
+    const routine = routineById.get(issue.originId);
+    if (!routine || routine.concurrencyPolicy === "always_enqueue") return true;
+    const canonicalIssueId = canonicalIssueIdByOriginId.get(issue.originId);
+    return !canonicalIssueId || canonicalIssueId === issue.id;
+  });
+
+  return filteredRows;
+}
+
+async function repairRoutineExecutionLocksForOrigins(db: Db, companyId: string, routineOriginIds: string[]) {
+  const lockedRoutineIssues = await db
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      executionRunId: issues.executionRunId,
+      executionAgentNameKey: issues.executionAgentNameKey,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "routine_execution"),
+        inArray(issues.originId, routineOriginIds),
+        inArray(issues.status, OPEN_ISSUE_STATUSES as unknown as string[]),
+        sql`${issues.hiddenAt} is null`,
+        sql`${issues.executionRunId} is not null`,
+      ),
+    );
+
+  const now = new Date();
+  for (const lockedIssue of lockedRoutineIssues) {
+    await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from issues where id = ${asUuidParam(lockedIssue.id)} and company_id = ${asUuidParam(lockedIssue.companyId)} for update`,
+      );
+
+      const current = await tx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          executionRunId: issues.executionRunId,
+          executionAgentNameKey: issues.executionAgentNameKey,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, lockedIssue.id), eq(issues.companyId, lockedIssue.companyId)))
+        .then((rows) => rows[0] ?? null);
+
+      if (!current?.executionRunId) return;
+
+      let activeExecutionRun: typeof heartbeatRuns.$inferSelect | null = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, current.executionRunId))
+        .then((rows) => rows[0] ?? null);
+
+      if (activeExecutionRun && !LIVE_HEARTBEAT_RUN_STATUSES.includes(activeExecutionRun.status as "queued" | "running")) {
+        activeExecutionRun = null;
+      }
+
+      if (!activeExecutionRun) {
+        const legacyRun = await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, current.companyId),
+              inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${current.id}`,
+            ),
+          )
+          .orderBy(
+            sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
+            asc(heartbeatRuns.createdAt),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        if (legacyRun) {
+          const legacyAgent = await tx
+            .select({ name: agents.name })
+            .from(agents)
+            .where(eq(agents.id, legacyRun.agentId))
+            .then((rows) => rows[0] ?? null);
+
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: legacyRun.id,
+              executionAgentNameKey: normalizeAgentNameKey(legacyAgent?.name),
+              executionLockedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(issues.id, current.id));
+          return;
+        }
+      }
+
+      if (!activeExecutionRun) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          })
+          .where(eq(issues.id, current.id));
+      }
+    });
+  }
+}
+
 async function resolveOperationsHeartbeatTargets(
   db: Db,
   input: { companyId: string; operationsAgentId: string },
@@ -469,6 +700,9 @@ async function resolveOperationsHeartbeatTargets(
       updatedAt: issues.updatedAt,
       executionRunId: issues.executionRunId,
       assigneeAgentId: issues.assigneeAgentId,
+      executionState: issues.executionState,
+      originKind: issues.originKind,
+      originId: issues.originId,
     })
     .from(issues)
     .where(
@@ -497,6 +731,9 @@ async function resolveOperationsHeartbeatTargets(
       openAssignedIssues = openAssignedIssues.filter((row) => !recoveredSourceIssueIds.has(row.id));
     }
   }
+
+  openAssignedIssues = await filterRoutineExecutionIssuesForOperations(db, input.companyId, openAssignedIssues);
+  openAssignedIssues = openAssignedIssues.filter((issue) => !isExecutionPolicyReviewIssue(issue));
 
   if (openAssignedIssues.length > 0) {
     const runIds = Array.from(
@@ -3122,7 +3359,7 @@ export function heartbeatService(db: Db) {
 
     const retryRun = await db.transaction(async (tx) => {
       await tx.execute(
-        sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
+        sql`select id from issues where company_id = ${asUuidParam(run.companyId)} and execution_run_id = ${asUuidParam(run.id)} for update`,
       );
 
       const issue = await tx
@@ -3828,7 +4065,7 @@ export function heartbeatService(db: Db) {
       const claimedAgent = await getAgent(claimed.agentId);
       const boundIssue = await db.transaction(async (tx) => {
         await tx.execute(
-          sql`select id from issues where id = ${claimedIssueId} and company_id = ${claimed.companyId} for update`,
+          sql`select id from issues where id = ${asUuidParam(claimedIssueId)} and company_id = ${asUuidParam(claimed.companyId)} for update`,
         );
 
         const issue = await tx
@@ -4103,7 +4340,7 @@ export function heartbeatService(db: Db) {
     for (const staleIssue of staleIssueLocks) {
       const repaired = await db.transaction(async (tx) => {
         await tx.execute(
-          sql`select id from issues where id = ${staleIssue.id} and company_id = ${staleIssue.companyId} for update`,
+          sql`select id from issues where id = ${asUuidParam(staleIssue.id)} and company_id = ${asUuidParam(staleIssue.companyId)} for update`,
         );
 
         const current = await tx
@@ -4298,6 +4535,7 @@ export function heartbeatService(db: Db) {
           projectId: issues.projectId,
           projectName: projects.name,
           executionRunId: issues.executionRunId,
+          executionState: issues.executionState,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeName: agents.name,
           assigneeRole: agents.role,
@@ -4366,93 +4604,9 @@ export function heartbeatService(db: Db) {
         openUnassignedIssues = openUnassignedIssues.filter((issue) => !recoveredSourceIssueIds.has(issue.id));
       }
     }
-    const routineOriginIds = Array.from(new Set(
-      [...openAssignedIssues, ...openUnassignedIssues]
-        .filter((issue) => issue.originKind === "routine_execution" && Boolean(issue.originId))
-        .map((issue) => issue.originId)
-        .filter((originId): originId is string => Boolean(originId)),
-    ));
-    if (routineOriginIds.length > 0) {
-      const liveRoutineIssueByOriginId = new Map<string, string>();
-      const executionBoundRoutineRows = await db
-        .selectDistinctOn([issues.originId], {
-          originId: issues.originId,
-          issueId: issues.id,
-        })
-        .from(issues)
-        .innerJoin(
-          heartbeatRuns,
-          and(
-            eq(heartbeatRuns.id, issues.executionRunId),
-            inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES as unknown as string[]),
-          ),
-        )
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            eq(issues.originKind, "routine_execution"),
-            inArray(issues.originId, routineOriginIds),
-            inArray(issues.status, OPEN_ISSUE_STATUSES as unknown as string[]),
-            sql`${issues.hiddenAt} is null`,
-          ),
-        )
-        .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
-      for (const row of executionBoundRoutineRows) {
-        if (!row.originId) continue;
-        liveRoutineIssueByOriginId.set(row.originId, row.issueId);
-      }
-
-      const missingRoutineOriginIds = routineOriginIds.filter((originId) => !liveRoutineIssueByOriginId.has(originId));
-      if (missingRoutineOriginIds.length > 0) {
-        const legacyRoutineRows = await db
-          .selectDistinctOn([issues.originId], {
-            originId: issues.originId,
-            issueId: issues.id,
-          })
-          .from(issues)
-          .innerJoin(
-            heartbeatRuns,
-            and(
-              eq(heartbeatRuns.companyId, issues.companyId),
-              inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES as unknown as string[]),
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${issues.id} as text)`,
-            ),
-          )
-          .where(
-            and(
-              eq(issues.companyId, companyId),
-              eq(issues.originKind, "routine_execution"),
-              inArray(issues.originId, missingRoutineOriginIds),
-              inArray(issues.status, OPEN_ISSUE_STATUSES as unknown as string[]),
-              sql`${issues.hiddenAt} is null`,
-            ),
-          )
-          .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
-        for (const row of legacyRoutineRows) {
-          if (!row.originId) continue;
-          liveRoutineIssueByOriginId.set(row.originId, row.issueId);
-        }
-      }
-
-      if (liveRoutineIssueByOriginId.size > 0) {
-        const staleRoutineIssueIds = new Set(
-          [...openAssignedIssues, ...openUnassignedIssues]
-            .filter((issue) => {
-              const originId = issue.originId;
-              if (issue.originKind !== "routine_execution" || !originId) return false;
-              return (
-                liveRoutineIssueByOriginId.has(originId) &&
-                liveRoutineIssueByOriginId.get(originId) !== issue.id
-              );
-            })
-            .map((issue) => issue.id),
-        );
-        if (staleRoutineIssueIds.size > 0) {
-          openAssignedIssues = openAssignedIssues.filter((issue) => !staleRoutineIssueIds.has(issue.id));
-          openUnassignedIssues = openUnassignedIssues.filter((issue) => !staleRoutineIssueIds.has(issue.id));
-        }
-      }
-    }
+    openAssignedIssues = await filterRoutineExecutionIssuesForOperations(db, companyId, openAssignedIssues);
+    openUnassignedIssues = await filterRoutineExecutionIssuesForOperations(db, companyId, openUnassignedIssues);
+    openAssignedIssues = openAssignedIssues.filter((issue) => !isExecutionPolicyReviewIssue(issue));
     const issueIds = openAssignedIssues.map((issue) => issue.id);
     const issueExecutionRunIds = Array.from(
       new Set(openAssignedIssues.map((issue) => issue.executionRunId).filter((id): id is string => Boolean(id))),
@@ -4755,6 +4909,7 @@ export function heartbeatService(db: Db) {
           nextStatus === "in_progress" && existingAssigned?.assigneeAgentId === patch.assigneeAgentId
             ? (existingAssigned?.executionRunId ?? null)
             : null,
+        executionState: existingAssigned?.executionState ?? null,
         assigneeAgentId: patch.assigneeAgentId,
         assigneeName: assignee?.name ?? null,
         assigneeRole: assignee?.role ?? null,
@@ -4785,10 +4940,13 @@ export function heartbeatService(db: Db) {
     let wrongSpecialistReassignCount = 0;
     let fakeWipDemotionCount = 0;
     let slotRebalanceCount = 0;
+    let qaReleaseGateReassignCount = 0;
+    let qaReleaseGateDemotionCount = 0;
     let ownershipCorrectedWakeDeferredCount = 0;
     const ownershipCorrectedIssueIds = new Set<string>();
     const targetReasonByIssueId = new Map<string, string>();
     const opsActiveTargetIssueIdsForAssignment = new Set<string>();
+    const releaseGateQaResolution = await resolveCompanyReleaseGateQaAgent(db, companyId);
 
     const maybeWakeOwnedIssue = async (issue: (typeof openAssignedIssues)[number], reason: string) => {
       if (!issue.assigneeAgentId || !shouldWakeReadyOwnedIssue(issue)) return false;
@@ -4826,7 +4984,12 @@ export function heartbeatService(db: Db) {
     };
     const recordOwnershipCorrection = async (inputCorrection: {
       issue: (typeof openAssignedIssues)[number];
-      correctionReason: "wrong_specialist_reassigned" | "fake_wip_demoted" | "slot_rebalanced";
+      correctionReason:
+        | "wrong_specialist_reassigned"
+        | "fake_wip_demoted"
+        | "slot_rebalanced"
+        | "qa_release_gate_reassigned"
+        | "qa_release_gate_demotion";
       detail: string;
     }) => {
       const wakeDeferred = shouldDeferReadyOwnedIssueWake(inputCorrection.issue);
@@ -4919,6 +5082,61 @@ export function heartbeatService(db: Db) {
         latestTruthAgeHours < 6 &&
         (hasWaitStateTruthFromCommentBody(latestTruthComment.body) || truthType === "handoff")
       );
+
+      if (issue.status === "in_review" && isDeliveryScopedAssigneeRole(issue.assigneeRole)) {
+        if (releaseGateQaResolution.releaseGateQaAgent) {
+          if (issue.assigneeAgentId !== releaseGateQaResolution.releaseGateQaAgent.id) {
+            try {
+              await updateOwnedIssueWithActivity(issue, {
+                assigneeAgentId: releaseGateQaResolution.releaseGateQaAgent.id,
+              });
+              const updatedIssue = syncLocalAssignedIssue(issue.id, {
+                assigneeAgentId: releaseGateQaResolution.releaseGateQaAgent.id,
+                status: issue.status,
+              });
+              if (!updatedIssue) {
+                continue;
+              }
+              qaReleaseGateReassignCount += 1;
+              ownershipCorrectedIssueIds.add(issue.id);
+              await recordOwnershipCorrection({
+                issue: updatedIssue,
+                correctionReason: "qa_release_gate_reassigned",
+                detail: "release-gate QA ownership resolution requires reassignment to the canonical or unique QA owner",
+              });
+            } catch (err) {
+              logger.warn(
+                { err, issueId: issue.id, assigneeAgentId: releaseGateQaResolution.releaseGateQaAgent.id },
+                "operations heartbeat failed to reassign delivery in_review issue to release-gate QA owner",
+              );
+            }
+          }
+        } else {
+          try {
+            await updateOwnedIssueWithActivity(issue, {
+              assigneeAgentId: issue.assigneeAgentId,
+              status: "todo",
+            });
+            const updatedIssue = syncLocalAssignedIssue(issue.id, {
+              assigneeAgentId: issue.assigneeAgentId,
+              status: "todo",
+            });
+            if (!updatedIssue) {
+              continue;
+            }
+            qaReleaseGateDemotionCount += 1;
+            ownershipCorrectedIssueIds.add(issue.id);
+            await recordOwnershipCorrection({
+              issue: updatedIssue,
+              correctionReason: "qa_release_gate_demotion",
+              detail: "release-gate QA ownership is ambiguous or unresolved; moving the issue out of in_review",
+            });
+          } catch (err) {
+            logger.warn({ err, issueId: issue.id }, "operations heartbeat failed to demote in_review delivery issue");
+          }
+        }
+        continue;
+      }
 
       const eligibleCandidatePool = resolveEligibleCandidatePool(issue);
       const eligibleCandidateIds = new Set(eligibleCandidatePool.map((candidate) => candidate.id));
@@ -5398,6 +5616,8 @@ export function heartbeatService(db: Db) {
         wrongSpecialistReassignCount,
         fakeWipDemotionCount,
         slotRebalanceCount,
+        qaReleaseGateReassignCount,
+        qaReleaseGateDemotionCount,
         ownershipCorrectedWakeDeferredCount,
       },
     };
@@ -6595,7 +6815,7 @@ export function heartbeatService(db: Db) {
   async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
     const promotedRun = await db.transaction(async (tx) => {
       await tx.execute(
-        sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
+        sql`select id from issues where company_id = ${asUuidParam(run.companyId)} and execution_run_id = ${asUuidParam(run.id)} for update`,
       );
 
       const issue = await tx
@@ -6859,7 +7079,7 @@ export function heartbeatService(db: Db) {
 
       const outcome = await db.transaction(async (tx) => {
         await tx.execute(
-          sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
+          sql`select id from issues where id = ${asUuidParam(issueId)} and company_id = ${asUuidParam(agent.companyId)} for update`,
         );
 
         const issue = await tx

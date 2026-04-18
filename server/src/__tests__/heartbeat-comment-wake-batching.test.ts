@@ -21,7 +21,7 @@ import {
   issueRelations,
   issues,
 } from "@paperclipai/db";
-import { heartbeatService } from "../services/heartbeat.ts";
+import { heartbeatService, resolveOperationsHeartbeatTarget } from "../services/heartbeat.ts";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -844,6 +844,319 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         }),
       }),
     );
+  });
+
+  it("reassigns a non-QA in_review delivery issue to the canonical release-gate QA owner", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const engineerAgentId = randomUUID();
+    const qaReleaseOwnerId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Canonical QA Release Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: engineerAgentId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: qaReleaseOwnerId,
+        companyId,
+        name: "QA and Release Engineer",
+        role: "qa",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Feature in_review should route to canonical QA owner",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: engineerAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    const updatedIssue = await db
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    const persistedRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run!.id))
+      .then((rows) => rows[0] ?? null);
+    const sweep = (persistedRun?.contextSnapshot ?? {}) as Record<string, Record<string, unknown>>;
+
+    expect(updatedIssue).toMatchObject({
+      assigneeAgentId: qaReleaseOwnerId,
+      status: "in_review",
+    });
+    expect(sweep.operationsHeartbeatSweep?.qaReleaseGateReassignCount).toBe(1);
+    expect(sweep.operationsHeartbeatSweep?.qaReleaseGateDemotionCount).toBe(0);
+  });
+
+  it("demotes ambiguous in_review delivery issues out of review when release-gate QA ownership is unresolved", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const engineerAgentId = randomUUID();
+    const qaOwnerOneId = randomUUID();
+    const qaOwnerTwoId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Ambiguous QA Release Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: engineerAgentId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: qaOwnerOneId,
+        companyId,
+        name: "QA and Release Engineer",
+        role: "qa",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: qaOwnerTwoId,
+        companyId,
+        name: "QA and Release Engineer",
+        role: "qa",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Feature in_review with ambiguous QA owner roster",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: engineerAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    const updatedIssue = await db
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    const persistedRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run!.id))
+      .then((rows) => rows[0] ?? null);
+    const sweep = (persistedRun?.contextSnapshot ?? {}) as Record<string, Record<string, unknown>>;
+
+    expect(updatedIssue).toMatchObject({
+      assigneeAgentId: engineerAgentId,
+      status: "todo",
+    });
+    expect(sweep.operationsHeartbeatSweep?.qaReleaseGateDemotionCount).toBe(1);
+    expect(sweep.operationsHeartbeatSweep?.qaReleaseGateReassignCount).toBe(0);
+  });
+
+  it("does not target in_review execution review issues for operations heartbeat recovery", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const engineerAgentId = randomUUID();
+    const assignedReviewIssueId = randomUUID();
+    const unassignedBacklogIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Execution Review Skip Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: engineerAgentId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: assignedReviewIssueId,
+        companyId,
+        title: "In-review feature in active execution review stage",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: engineerAgentId,
+        executionState: {
+          status: "pending",
+          currentStageId: randomUUID(),
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: null,
+          returnAssignee: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: unassignedBacklogIssueId,
+        companyId,
+        title: "Ready backlog work remains in queue",
+        status: "backlog",
+        priority: "high",
+        assigneeAgentId: null,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    const target = await resolveOperationsHeartbeatTarget(db, {
+      companyId,
+      operationsAgentId,
+    });
+
+    expect(target).toMatchObject({
+      issueId: unassignedBacklogIssueId,
+      mode: "ready_unassigned",
+    });
   });
 
   it("does not auto-reassign cross-agent recovery work during operations sweeps", async () => {

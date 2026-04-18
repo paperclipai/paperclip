@@ -248,6 +248,10 @@ async function createSmtpSenderFromEnv(): Promise<MailSender | null> {
 }
 
 export function executiveSummaryService(db: Db) {
+  function asUuidParam(value: string) {
+    return sql`${value}::uuid`;
+  }
+
   const instanceSettings = instanceSettingsService(db);
   const serviceLogger = logger.child({ service: "executive-summary" });
   let senderPromise: Promise<MailSender | null> | null = null;
@@ -331,7 +335,7 @@ export function executiveSummaryService(db: Db) {
     minute: number,
     now: Date,
   ): Promise<DispatchResult> {
-    await tx.execute(sql`select ${companies.id} from ${companies} where ${companies.id} = ${companyId} for update`);
+    await tx.execute(sql`select ${companies.id} from ${companies} where ${companies.id} = ${asUuidParam(companyId)} for update`);
     const company = await tx
       .select({
         id: companies.id,

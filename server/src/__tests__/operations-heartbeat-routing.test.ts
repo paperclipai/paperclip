@@ -13,6 +13,8 @@ import {
   issueComments,
   issueRelations,
   issues,
+  projects,
+  routines,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -49,6 +51,8 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
+    await db.delete(routines);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companySkills);
     await db.delete(companies);
@@ -186,6 +190,58 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
       autoReissueEligible: true,
     });
     expect(target?.reason).toContain("in_progress with no execution run");
+  });
+
+  it("ignores paused routine execution issues", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const projectId = randomUUID();
+    const pausedRoutineId = randomUUID();
+    const pausedRoutineIssueId = randomUUID();
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Routine Project",
+      status: "in_progress",
+    });
+
+    await db.insert(routines).values({
+      id: pausedRoutineId,
+      companyId,
+      projectId,
+      goalId: null,
+      parentIssueId: null,
+      title: "Paused QA audit",
+      description: null,
+      assigneeAgentId: workerAgentId,
+      priority: "medium",
+      status: "paused",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+      variables: [],
+      createdByAgentId: null,
+      createdByUserId: null,
+      updatedByAgentId: null,
+      updatedByUserId: null,
+    });
+
+    await db.insert(issues).values({
+      id: pausedRoutineIssueId,
+      companyId,
+      projectId,
+      title: "Paused routine issue should stay inert",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: workerAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      originKind: "routine_execution",
+      originId: pausedRoutineId,
+    });
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toBeNull();
   });
 
   it("rebalances overloaded recovery work toward the stronger signal", async () => {
