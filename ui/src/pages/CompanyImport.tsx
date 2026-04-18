@@ -866,7 +866,7 @@ export function CompanyImport() {
         title: "Import complete",
         body: `${result.company.name}: ${result.agents.length} agent${result.agents.length === 1 ? "" : "s"} processed.`,
       });
-      if (result.warnings.some((w) => w.includes("decryption-key-missing") || w.includes("Secret"))) {
+      if (result.warnings.some((w) => w.includes("could not be decrypted") || w.toLowerCase().includes("failed to create secret"))) {
         pushToast({
           tone: "warn",
           title: "Secrets import warning",

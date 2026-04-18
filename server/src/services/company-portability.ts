@@ -409,7 +409,7 @@ async function extractPortableScopedEnvInputs(
   },
   envValue: unknown,
   warnings: string[],
-  secrets: { getById: (id: string) => Promise<{ name: string; provider: string } | null>; resolveSecretValue: (companyId: string, secretId: string, version: "latest") => Promise<string> },
+  secrets: { getById: (id: string) => Promise<{ name: string; provider: string; description: string | null; latestVersion: number } | null>; resolveSecretValue: (companyId: string, secretId: string, version: "latest") => Promise<string> },
   secretEntries: CompanyPortabilitySecretEntry[],
   includeSecrets: boolean,
   companyId: string,
@@ -439,24 +439,27 @@ async function extractPortableScopedEnvInputs(
         secretProvider: secret?.provider ?? null,
       });
       if (includeSecrets && secret && binding.secretId) {
-        try {
-          const resolvedValue = await secrets.resolveSecretValue(companyId, String(binding.secretId), "latest");
-          secretEntries.push({
-            name: secret.name,
-            provider: secret.provider as SecretProvider,
-            description: null,
-            latestVersion: 1,
-            currentValue: resolvedValue,
-          });
-        } catch {
-          secretEntries.push({
-            name: secret.name,
-            provider: secret.provider as SecretProvider,
-            description: null,
-            latestVersion: 1,
-            currentValue: `<decryption-key-missing:${secret.name}>`,
-          });
-          warnings.push(`Secret "${secret.name}" could not be decrypted during export. Placeholder written.`);
+        const alreadyExported = secretEntries.some((e) => e.name === secret.name);
+        if (!alreadyExported) {
+          try {
+            const resolvedValue = await secrets.resolveSecretValue(companyId, String(binding.secretId), "latest");
+            secretEntries.push({
+              name: secret.name,
+              provider: secret.provider as SecretProvider,
+              description: secret.description,
+              latestVersion: secret.latestVersion,
+              currentValue: resolvedValue,
+            });
+          } catch {
+            secretEntries.push({
+              name: secret.name,
+              provider: secret.provider as SecretProvider,
+              description: secret.description,
+              latestVersion: secret.latestVersion,
+              currentValue: `<decryption-key-missing:${secret.name}>`,
+            });
+            warnings.push(`Secret "${secret.name}" could not be decrypted during export. Placeholder written.`);
+          }
         }
       }
       continue;
@@ -1648,7 +1651,7 @@ async function extractPortableEnvInputs(
   agentSlug: string,
   envValue: unknown,
   warnings: string[],
-  secrets: { getById: (id: string) => Promise<{ name: string; provider: string } | null>; resolveSecretValue: (companyId: string, secretId: string, version: "latest") => Promise<string> },
+  secrets: { getById: (id: string) => Promise<{ name: string; provider: string; description: string | null; latestVersion: number } | null>; resolveSecretValue: (companyId: string, secretId: string, version: "latest") => Promise<string> },
   secretEntries: CompanyPortabilitySecretEntry[],
   includeSecrets: boolean,
   companyId: string,
@@ -1673,7 +1676,7 @@ async function extractPortableProjectEnvInputs(
   projectSlug: string,
   envValue: unknown,
   warnings: string[],
-  secrets: { getById: (id: string) => Promise<{ name: string; provider: string } | null>; resolveSecretValue: (companyId: string, secretId: string, version: "latest") => Promise<string> },
+  secrets: { getById: (id: string) => Promise<{ name: string; provider: string; description: string | null; latestVersion: number } | null>; resolveSecretValue: (companyId: string, secretId: string, version: "latest") => Promise<string> },
   secretEntries: CompanyPortabilitySecretEntry[],
   includeSecrets: boolean,
   companyId: string,
