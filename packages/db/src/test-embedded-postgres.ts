@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -64,7 +65,108 @@ function formatEmbeddedPostgresError(error: unknown): string {
   return "embedded Postgres startup failed";
 }
 
+const PROBE_TIMEOUT_MS = 30_000;
+
+function lookupSystemUser(name: string): { uid: number; gid: number } | null {
+  try {
+    const text = fs.readFileSync("/etc/passwd", "utf8");
+    for (const line of text.split("\n")) {
+      const parts = line.split(":");
+      if (parts[0] === name) {
+        const uid = Number(parts[2]);
+        const gid = Number(parts[3]);
+        if (Number.isFinite(uid) && Number.isFinite(gid)) return { uid, gid };
+      }
+    }
+  } catch {
+    // /etc/passwd unreadable — let the library surface its own error
+  }
+  return null;
+}
+
+function findRepoNodeModules(start: string): string | null {
+  let dir = start;
+  for (let i = 0; i < 16; i++) {
+    const candidate = path.join(dir, "node_modules", "embedded-postgres");
+    if (fs.existsSync(candidate)) return path.join(dir, "node_modules");
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return null;
+}
+
+// embedded-postgres@18 spawns initdb under an alternate uid/gid (typically the
+// `postgres` system user) when the host is running as root. The library only
+// listens for the spawned child's `exit` event — if `execve` fails with EACCES
+// (e.g. the postgres user can't traverse to the initdb binary because of repo
+// ACLs / mode bits), Node fires an unhandled `error` event, leaving the probe's
+// initialise() promise pending forever and surfacing as a vitest "unhandled
+// error" that fails the run. Detect this case by spawning `/usr/bin/test -r`
+// against a known file under the workspace's node_modules with the postgres
+// uid/gid: if postgres can't read it, declare support unavailable so test
+// files use `describe.skip` cleanly instead of hanging or polluting the test
+// report.
+function preflightProbeFailure(): Promise<string | null> {
+  if (process.platform !== "linux") return Promise.resolve(null);
+  const geteuid = (process as { geteuid?: () => number }).geteuid;
+  if (!geteuid || geteuid() !== 0) return Promise.resolve(null);
+
+  const postgresIds = lookupSystemUser("postgres");
+  if (!postgresIds) return Promise.resolve(null);
+
+  const nodeModules = findRepoNodeModules(process.cwd());
+  if (!nodeModules) return Promise.resolve(null);
+  const probeTarget = path.join(nodeModules, "embedded-postgres", "package.json");
+  if (!fs.existsSync(probeTarget)) return Promise.resolve(null);
+  if (!fs.existsSync("/usr/bin/test")) return Promise.resolve(null);
+
+  return new Promise<string | null>((resolve) => {
+    let settled = false;
+    const finish = (reason: string | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(reason);
+    };
+    const watchdog = setTimeout(() => finish(null), 5_000);
+    let child;
+    try {
+      child = spawn("/usr/bin/test", ["-r", probeTarget], {
+        uid: postgresIds.uid,
+        gid: postgresIds.gid,
+        stdio: "ignore",
+      });
+    } catch {
+      clearTimeout(watchdog);
+      finish(null);
+      return;
+    }
+    child.on("error", () => {
+      clearTimeout(watchdog);
+      finish(null); // inconclusive
+    });
+    child.on("exit", (code) => {
+      clearTimeout(watchdog);
+      if (code === 0) {
+        finish(null);
+      } else {
+        finish(
+          `running as root, but the postgres user (uid ${postgresIds.uid}) cannot ` +
+            `read ${probeTarget}; embedded-postgres drops to that uid before spawning initdb, ` +
+            `which then fails with EACCES. Fix repo ACLs (e.g. \`setfacl -R -m m::r-x,u:postgres:r-x\` ` +
+            `on the workspace root) or run tests as a non-root user.`,
+        );
+      }
+    });
+  });
+}
+
 async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSupport> {
+  const preflightReason = await preflightProbeFailure();
+  if (preflightReason) {
+    return { supported: false, reason: preflightReason };
+  }
+
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-embedded-postgres-probe-"));
   const port = await getAvailablePort();
   const EmbeddedPostgres = await getEmbeddedPostgresCtor();
@@ -79,9 +181,25 @@ async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSuppo
     onError: () => {},
   });
 
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      // embedded-postgres@18 spawns initdb with an alternate uid/gid and listens
+      // only for 'exit' — a spawn 'error' (e.g. EACCES when the postgres user can't
+      // traverse to the binary path) leaves the promise pending forever. Bound the
+      // probe so callers get a graceful `supported: false` instead of a test hang.
+      reject(new Error(`embedded Postgres probe did not complete within ${PROBE_TIMEOUT_MS}ms`));
+    }, PROBE_TIMEOUT_MS);
+  });
+
   try {
-    await instance.initialise();
-    await instance.start();
+    await Promise.race([
+      (async () => {
+        await instance.initialise();
+        await instance.start();
+      })(),
+      timeoutPromise,
+    ]);
     return { supported: true };
   } catch (error) {
     return {
@@ -89,6 +207,7 @@ async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSuppo
       reason: formatEmbeddedPostgresError(error),
     };
   } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     await instance.stop().catch(() => {});
     fs.rmSync(dataDir, { recursive: true, force: true });
   }

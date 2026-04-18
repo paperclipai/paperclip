@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, notExists, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -14,7 +14,9 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueLabels,
   issues,
+  labels,
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
@@ -3237,6 +3239,12 @@ export function heartbeatService(db: Db) {
   // the assignee posts a comment (treated as proof of progress). See SHA-1866.
   const MAX_CONTINUATION_RETRIES = 3;
 
+  // Issues tagged with any of these labels are intentionally long-running and
+  // should NOT be woken by the stranded-assignment reconciler. The assignee
+  // owns cadence (e.g. scheduled day-N spot-checks) and continuous wake
+  // pressure just burns budget with no actionable work. See SHA-1879.
+  const RECONCILE_EXEMPT_LABELS = ["long-running-verification"] as const;
+
   async function countContinuationRetriesSinceLastAssigneeComment(
     companyId: string,
     issueId: string,
@@ -3471,6 +3479,17 @@ export function heartbeatService(db: Db) {
   }
 
   async function reconcileStrandedAssignedIssues() {
+    const exemptLabelSubquery = db
+      .select({ issueId: issueLabels.issueId })
+      .from(issueLabels)
+      .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+      .where(
+        and(
+          eq(issueLabels.issueId, issues.id),
+          inArray(labels.name, RECONCILE_EXEMPT_LABELS as unknown as string[]),
+        ),
+      );
+
     const candidates = await db
       .select()
       .from(issues)
@@ -3479,6 +3498,7 @@ export function heartbeatService(db: Db) {
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
+          notExists(exemptLabelSubquery),
         ),
       );
 
