@@ -20,8 +20,9 @@ import { StatusIcon } from "../components/StatusIcon";
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
-import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { cn, formatCents, formatTokens } from "../lib/utils";
+import { Ban, Bot, Check, ChevronDown, ChevronRight, CircleDot, Clock, DollarSign, Loader2, ShieldCheck, LayoutDashboard, PauseCircle, XCircle } from "lucide-react";
+import type { HeartbeatRun } from "@paperclipai/shared";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -33,6 +34,341 @@ const DASHBOARD_HEARTBEAT_RUN_LIMIT = 100;
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+/* ------------------------------------------------------------------ */
+/*  Today's Agent Work                                                 */
+/* ------------------------------------------------------------------ */
+
+function extractRunSummary(run: HeartbeatRun): string {
+  const result = run.resultJson;
+  if (!result) return "";
+  return String(result.summary ?? result.result ?? "").trim();
+}
+
+function isToday(date: Date | string): boolean {
+  const d = new Date(date);
+  const now = new Date();
+  // Compare in UTC to avoid timezone-dependent inconsistencies.
+  return (
+    d.getUTCFullYear() === now.getUTCFullYear() &&
+    d.getUTCMonth() === now.getUTCMonth() &&
+    d.getUTCDate() === now.getUTCDate()
+  );
+}
+
+interface AgentWorkRun {
+  id: string;
+  status: "succeeded" | "failed" | "cancelled" | "timed_out" | "running" | "queued";
+  summary: string;
+  /** finishedAt for completed runs, createdAt for active runs. */
+  timestamp: string;
+  issueId: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  costCents: number;
+}
+
+interface AgentWorkGroup {
+  agentId: string;
+  agentName: string;
+  runs: AgentWorkRun[];
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  timedOut: number;
+  active: number;
+  totalTokens: number;
+  totalCostCents: number;
+}
+
+function extractUsage(run: HeartbeatRun): { input: number; output: number; costCents: number } {
+  const usage = run.usageJson as Record<string, unknown> | null;
+  if (!usage) return { input: 0, output: 0, costCents: 0 };
+  const input = Number(usage.inputTokens ?? usage.input_tokens ?? 0);
+  const output = Number(usage.outputTokens ?? usage.output_tokens ?? 0);
+  const costCents = Number(usage.totalCostCents ?? usage.total_cost_cents ?? 0);
+  return { input, output, costCents };
+}
+
+const RUN_STATUS_LABEL: Record<AgentWorkRun["status"], string> = {
+  succeeded: "Completed",
+  failed: "Run failed",
+  cancelled: "Cancelled",
+  timed_out: "Timed out",
+  running: "Running",
+  queued: "Queued",
+};
+
+function defaultSummary(run: HeartbeatRun): string {
+  if (run.status === "failed") return run.error ?? "Run failed";
+  if (run.status === "cancelled") return "Cancelled by operator";
+  if (run.status === "timed_out") return "Run exceeded time limit";
+  if (run.status === "running") return "Currently running…";
+  if (run.status === "queued") return "Waiting to start…";
+  return "Completed";
+}
+
+function groupRunsByAgent(
+  runs: HeartbeatRun[],
+  agentMap: Map<string, Agent>,
+): AgentWorkGroup[] {
+  // Include finished runs from today + any currently active runs.
+  const relevantRuns = runs.filter((r) => {
+    if (r.status === "running" || r.status === "queued") return true;
+    const ts = r.finishedAt ?? r.createdAt;
+    return ts && isToday(ts);
+  }).sort((a, b) => {
+    // Active runs first, then by most recent.
+    const aActive = a.status === "running" || a.status === "queued" ? 1 : 0;
+    const bActive = b.status === "running" || b.status === "queued" ? 1 : 0;
+    if (aActive !== bActive) return bActive - aActive;
+    const aTs = new Date(a.finishedAt ?? a.createdAt).getTime();
+    const bTs = new Date(b.finishedAt ?? b.createdAt).getTime();
+    return bTs - aTs;
+  });
+
+  const grouped = new Map<string, AgentWorkGroup>();
+
+  for (const run of relevantRuns) {
+    const summary = extractRunSummary(run);
+    const context = run.contextSnapshot as Record<string, unknown> | null;
+    const issueId = typeof context?.issueId === "string" ? context.issueId : null;
+    const usage = extractUsage(run);
+
+    let group = grouped.get(run.agentId);
+    if (!group) {
+      const agent = agentMap.get(run.agentId);
+      group = {
+        agentId: run.agentId,
+        agentName: agent?.name ?? run.agentId.slice(0, 8),
+        runs: [],
+        succeeded: 0,
+        failed: 0,
+        cancelled: 0,
+        timedOut: 0,
+        active: 0,
+        totalTokens: 0,
+        totalCostCents: 0,
+      };
+      grouped.set(run.agentId, group);
+    }
+
+    if (run.status === "succeeded") group.succeeded += 1;
+    else if (run.status === "failed") group.failed += 1;
+    else if (run.status === "cancelled") group.cancelled += 1;
+    else if (run.status === "timed_out") group.timedOut += 1;
+    else group.active += 1;
+
+    group.totalTokens += usage.input + usage.output;
+    group.totalCostCents += usage.costCents;
+
+    group.runs.push({
+      id: run.id,
+      status: run.status as AgentWorkRun["status"],
+      summary: summary || defaultSummary(run),
+      timestamp: String(run.finishedAt ?? run.createdAt),
+      issueId,
+      inputTokens: usage.input,
+      outputTokens: usage.output,
+      costCents: usage.costCents,
+    });
+  }
+
+  return [...grouped.values()];
+}
+
+function AgentWorkCard({
+  group,
+  issueMap,
+}: {
+  group: AgentWorkGroup;
+  issueMap: Map<string, Issue>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  // Deduplicate issues touched by this agent today.
+  const touchedIssues = useMemo(() => {
+    const seen = new Set<string>();
+    const result: Issue[] = [];
+    for (const run of group.runs) {
+      if (run.issueId && !seen.has(run.issueId)) {
+        seen.add(run.issueId);
+        const issue = issueMap.get(run.issueId);
+        if (issue) result.push(issue);
+      }
+    }
+    return result;
+  }, [group.runs, issueMap]);
+
+  return (
+    <div className="rounded-md border border-border overflow-hidden">
+      {/* Agent header */}
+      <div className="flex items-center gap-2 bg-muted/30 px-4 py-2.5">
+        <Identity name={group.agentName} size="sm" />
+        <span className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
+          {group.totalTokens > 0 && (
+            <span>{formatTokens(group.totalTokens)} tok</span>
+          )}
+          {group.totalCostCents > 0 && (
+            <span>{formatCents(group.totalCostCents)}</span>
+          )}
+          <span className="flex items-center gap-1.5 flex-wrap">
+            {group.active > 0 && (
+              <span className="inline-flex items-center gap-1 text-cyan-600 dark:text-cyan-400">
+                <Loader2 className="h-3 w-3 animate-spin" />{group.active} active
+              </span>
+            )}
+            {group.succeeded > 0 && (
+              <span className="text-emerald-600 dark:text-emerald-400">{group.succeeded} succeeded</span>
+            )}
+            {group.failed > 0 && (
+              <span className="text-red-600 dark:text-red-400">{group.failed} failed</span>
+            )}
+            {group.timedOut > 0 && (
+              <span className="text-amber-600 dark:text-amber-400">{group.timedOut} timed out</span>
+            )}
+            {group.cancelled > 0 && (
+              <span className="text-muted-foreground">{group.cancelled} cancelled</span>
+            )}
+          </span>
+        </span>
+      </div>
+
+      <div className="px-4 py-2.5 space-y-2">
+        {/* Issues touched */}
+        {touchedIssues.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70 mr-1">Issues</span>
+            {touchedIssues.map((issue) => (
+              <Link
+                key={issue.id}
+                to={`/issues/${issue.identifier ?? issue.id}`}
+                className="inline-flex items-center gap-1 rounded bg-muted/60 px-1.5 py-0.5 text-xs no-underline text-inherit transition-colors hover:bg-accent"
+              >
+                <StatusIcon status={issue.status} />
+                <span className="font-mono text-muted-foreground">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+                <span className="max-w-[180px] truncate">{issue.title}</span>
+              </Link>
+            ))}
+          </div>
+        )}
+
+        {/* Expandable runs */}
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          {group.runs.length} run{group.runs.length === 1 ? "" : "s"}
+        </button>
+      </div>
+
+      {/* Expanded run list */}
+      {expanded && (
+        <div className="border-t border-border divide-y divide-border">
+          {group.runs.map((run) => {
+            const issue = run.issueId ? issueMap.get(run.issueId) ?? null : null;
+            const statusIcon = run.status === "succeeded"
+              ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
+              : run.status === "failed"
+                ? <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500" />
+                : run.status === "running"
+                  ? <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-500 animate-spin" />
+                  : run.status === "queued"
+                    ? <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    : run.status === "timed_out"
+                      ? <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+                      : <Ban className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />;
+            const textClass = run.status === "failed"
+              ? "text-red-600 dark:text-red-400"
+              : run.status === "running" || run.status === "queued"
+                ? "text-cyan-700 dark:text-cyan-300"
+                : run.status === "timed_out"
+                  ? "text-amber-700 dark:text-amber-300"
+                  : run.status === "cancelled"
+                    ? "text-muted-foreground"
+                    : "text-foreground/80";
+            return (
+              <Link
+                key={run.id}
+                to={`/agents/${group.agentId}/runs/${run.id}`}
+                className="flex items-start gap-2.5 px-4 py-2 text-sm no-underline text-inherit transition-colors hover:bg-accent/50"
+              >
+                {statusIcon}
+                <div className="min-w-0 flex-1">
+                  {issue && (
+                    <span className="mr-1.5 text-xs text-muted-foreground font-mono">
+                      {issue.identifier ?? issue.id.slice(0, 8)}
+                    </span>
+                  )}
+                  <span className={cn("text-sm", textClass)}>
+                    {run.summary.length > 120 ? `${run.summary.slice(0, 120)}…` : run.summary}
+                  </span>
+                </div>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {timeAgo(run.timestamp)}
+                </span>
+              </Link>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const AGENT_WORK_INITIAL_LIMIT = 5;
+
+function AgentWorkSection({
+  runs,
+  agentMap,
+  issueMap,
+}: {
+  runs: HeartbeatRun[];
+  agentMap: Map<string, Agent>;
+  issueMap: Map<string, Issue>;
+}) {
+  const groups = useMemo(() => groupRunsByAgent(runs, agentMap), [runs, agentMap]);
+  const [showAll, setShowAll] = useState(false);
+
+  if (groups.length === 0) return null;
+
+  const visibleGroups = showAll ? groups : groups.slice(0, AGENT_WORK_INITIAL_LIMIT);
+  const hiddenCount = groups.length - AGENT_WORK_INITIAL_LIMIT;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+          Today&apos;s Agent Work
+        </h3>
+        <span className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span>
+            {groups.reduce((sum, g) => sum + g.runs.length, 0)} runs across {groups.length} agent{groups.length === 1 ? "" : "s"}
+          </span>
+          <Link to="/agent-work" className="text-muted-foreground hover:text-foreground transition-colors no-underline">
+            See All &rarr;
+          </Link>
+        </span>
+      </div>
+      <div className="space-y-3">
+        {visibleGroups.map((group) => (
+          <AgentWorkCard key={group.agentId} group={group} issueMap={issueMap} />
+        ))}
+        {!showAll && hiddenCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowAll(true)}
+            className="w-full rounded-md border border-dashed border-border py-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            Show {hiddenCount} more agent{hiddenCount === 1 ? "" : "s"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export function Dashboard() {
@@ -170,6 +506,12 @@ export function Dashboard() {
   const entityTitleMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const i of issues ?? []) map.set(`issue:${i.id}`, i.title);
+    return map;
+  }, [issues]);
+
+  const issueMap = useMemo(() => {
+    const map = new Map<string, Issue>();
+    for (const i of issues ?? []) map.set(i.id, i);
     return map;
   }, [issues]);
 
@@ -312,6 +654,8 @@ export function Dashboard() {
               <SuccessRateChart runs={runs ?? []} />
             </ChartCard>
           </div>
+
+          <AgentWorkSection runs={runs ?? []} agentMap={agentMap} issueMap={issueMap} />
 
           <PluginSlotOutlet
             slotTypes={["dashboardWidget"]}
