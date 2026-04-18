@@ -8,6 +8,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { WebSocketServer } from "ws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   applyPendingMigrations,
@@ -429,7 +430,9 @@ describe("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("promotes deferred comment wakes after the active run closes the issue", async () => {
+  // POI-165 fix: deferred comment wakes for terminal (done/cancelled) issues must be
+  // silently dropped and audited rather than reopening the issue.
+  it("drops deferred comment wakes when the active run closes the issue as done", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -469,7 +472,7 @@ describe("heartbeat comment wake batching", () => {
       await db.insert(issues).values({
         id: issueId,
         companyId,
-        title: "Reopen after deferred comment",
+        title: "Completes before follow-up comment arrives",
         status: "todo",
         priority: "medium",
         assigneeAgentId: agentId,
@@ -483,7 +486,7 @@ describe("heartbeat comment wake batching", () => {
           companyId,
           issueId,
           authorUserId: "user-1",
-          body: "First comment",
+          body: "First comment — kicks off the run",
         })
         .returning()
         .then((rows) => rows[0]);
@@ -519,7 +522,7 @@ describe("heartbeat comment wake batching", () => {
           companyId,
           issueId,
           authorUserId: "user-1",
-          body: "Please handle this follow-up after you finish",
+          body: "Follow-up comment that arrives while agent is busy",
         })
         .returning()
         .then((rows) => rows[0]);
@@ -541,6 +544,7 @@ describe("heartbeat comment wake batching", () => {
 
       expect(deferredRun).toBeNull();
 
+      // Wait for the deferred wake to be queued in DB
       await waitFor(async () => {
         const deferred = await db
           .select()
@@ -556,6 +560,7 @@ describe("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Simulate agent marking issue done before the deferred wake fires
       await db
         .update(issues)
         .set({
@@ -568,47 +573,92 @@ describe("heartbeat comment wake batching", () => {
         })
         .where(eq(issues.id, issueId));
 
+      // Release the gateway so run 1 can finish — heartbeat will then attempt
+      // to promote the deferred wake but the issue is now terminal.
       gateway.releaseFirstWait();
 
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
+      // Only one run should ever succeed (no reopen, no second run)
       await waitFor(async () => {
-        const runs = await db
-          .select()
+        const run = await db
+          .select({ status: heartbeatRuns.status })
           .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
       }, 90_000);
 
-      const reopenedIssue = await db
-        .select({
-          status: issues.status,
-          completedAt: issues.completedAt,
-        })
+      // Deferred wake must be marked failed (skipped), not queued
+      await waitFor(async () => {
+        const deferred = await db
+          .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, agentId),
+            ),
+          )
+          .orderBy(asc(agentWakeupRequests.requestedAt))
+          .then((rows) => rows[rows.length - 1] ?? null);
+        return deferred?.status === "failed" && deferred.error === "deferred_comment_wake_terminal_skipped";
+      }, 30_000);
+
+      // Issue must still be done — completedAt preserved
+      const finalIssue = await db
+        .select({ status: issues.status, completedAt: issues.completedAt })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
 
-      expect(reopenedIssue).toMatchObject({
-        status: "in_progress",
-        completedAt: null,
+      expect(finalIssue).toMatchObject({
+        status: "done",
       });
+      expect(finalIssue!.completedAt).not.toBeNull();
 
-      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_commented",
-          commentIds: [comment2.id],
-          latestCommentId: comment2.id,
-          issue: {
-            id: issueId,
-            identifier: `${issuePrefix}-1`,
-            title: "Reopen after deferred comment",
-            status: "in_progress",
-            priority: "medium",
-          },
-        },
+      // Only one agent payload — no second wake fired
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
+
+      // Only one run total
+      const allRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      expect(allRuns).toHaveLength(1);
+
+      // Audit log must record the skip with exact action strings from the CTO spec
+      await waitFor(async () => {
+        const skipLog = await db
+          .select()
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.entityId, issueId),
+              eq(activityLog.action, "issue.wake_ignored_terminal"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return Boolean(skipLog);
+      }, 10_000);
+
+      const skipLog = await db
+        .select()
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.entityId, issueId),
+            eq(activityLog.action, "issue.wake_ignored_terminal"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+
+      expect(skipLog).toMatchObject({
+        action: "issue.wake_ignored_terminal",
+        actorId: "heartbeat",
+        entityId: issueId,
+        details: expect.objectContaining({
+          source: "deferred_comment_wake_terminal_skipped",
+        }),
       });
-      expect(String(secondPayload.message ?? "")).toContain("Please handle this follow-up after you finish");
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
