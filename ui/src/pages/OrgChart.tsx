@@ -12,6 +12,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { Download, Network, Upload } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { calculateFitTransform } from "./org-chart-fit";
 
 // Layout constants
 const CARD_W = 200;
@@ -178,38 +179,70 @@ export function OrgChart() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [dragging, setDragging] = useState(false);
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  const hasUserAdjustedView = useRef(false);
 
-  // Center the chart on first load
-  const hasInitialized = useRef(false);
+  const updateContainerSize = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const next = {
+      width: container.clientWidth,
+      height: container.clientHeight,
+    };
+
+    setContainerSize((current) => (
+      current.width === next.width && current.height === next.height ? current : next
+    ));
+  }, []);
+
   useEffect(() => {
-    if (hasInitialized.current || allNodes.length === 0 || !containerRef.current) return;
-    hasInitialized.current = true;
+    updateContainerSize();
 
     const container = containerRef.current;
-    const containerW = container.clientWidth;
-    const containerH = container.clientHeight;
+    if (!container || typeof ResizeObserver === "undefined") {
+      return;
+    }
 
-    // Fit chart to container
-    const scaleX = (containerW - 40) / bounds.width;
-    const scaleY = (containerH - 40) / bounds.height;
-    const fitZoom = Math.min(scaleX, scaleY, 1);
-
-    const chartW = bounds.width * fitZoom;
-    const chartH = bounds.height * fitZoom;
-
-    setZoom(fitZoom);
-    setPan({
-      x: (containerW - chartW) / 2,
-      y: (containerH - chartH) / 2,
+    const observer = new ResizeObserver(() => {
+      updateContainerSize();
     });
-  }, [allNodes, bounds]);
+    observer.observe(container);
+
+    const viewport = window.visualViewport;
+    window.addEventListener("resize", updateContainerSize);
+    window.addEventListener("orientationchange", updateContainerSize);
+    viewport?.addEventListener("resize", updateContainerSize);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateContainerSize);
+      window.removeEventListener("orientationchange", updateContainerSize);
+      viewport?.removeEventListener("resize", updateContainerSize);
+    };
+  }, [updateContainerSize]);
+
+  useEffect(() => {
+    hasUserAdjustedView.current = false;
+  }, [allNodes.length, bounds.height, bounds.width]);
+
+  useEffect(() => {
+    if (allNodes.length === 0 || hasUserAdjustedView.current) return;
+
+    const next = calculateFitTransform(containerSize.width, containerSize.height, bounds);
+    if (!next) return;
+
+    setZoom(next.zoom);
+    setPan(next.pan);
+  }, [allNodes.length, bounds, containerSize.height, containerSize.width]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
     // Don't drag if clicking a card
     const target = e.target as HTMLElement;
     if (target.closest("[data-org-card]")) return;
+    hasUserAdjustedView.current = true;
     setDragging(true);
     dragStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
   }, [pan]);
@@ -229,6 +262,7 @@ export function OrgChart() {
     e.preventDefault();
     const container = containerRef.current;
     if (!container) return;
+    hasUserAdjustedView.current = true;
 
     const rect = container.getBoundingClientRect();
     const mouseX = e.clientX - rect.left;
@@ -276,6 +310,7 @@ export function OrgChart() {
     </div>
     <div
       ref={containerRef}
+      data-org-viewport
       className="w-full flex-1 min-h-0 overflow-hidden relative bg-muted/20 border border-border rounded-lg"
       style={{ cursor: dragging ? "grabbing" : "grab" }}
       onMouseDown={handleMouseDown}
@@ -289,6 +324,7 @@ export function OrgChart() {
         <button
           className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-sm hover:bg-accent transition-colors"
           onClick={() => {
+            hasUserAdjustedView.current = true;
             const newZoom = Math.min(zoom * 1.2, 2);
             const container = containerRef.current;
             if (container) {
@@ -306,6 +342,7 @@ export function OrgChart() {
         <button
           className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-sm hover:bg-accent transition-colors"
           onClick={() => {
+            hasUserAdjustedView.current = true;
             const newZoom = Math.max(zoom * 0.8, 0.2);
             const container = containerRef.current;
             if (container) {
@@ -324,15 +361,15 @@ export function OrgChart() {
           className="w-7 h-7 flex items-center justify-center bg-background border border-border rounded text-[10px] hover:bg-accent transition-colors"
           onClick={() => {
             if (!containerRef.current) return;
-            const cW = containerRef.current.clientWidth;
-            const cH = containerRef.current.clientHeight;
-            const scaleX = (cW - 40) / bounds.width;
-            const scaleY = (cH - 40) / bounds.height;
-            const fitZoom = Math.min(scaleX, scaleY, 1);
-            const chartW = bounds.width * fitZoom;
-            const chartH = bounds.height * fitZoom;
-            setZoom(fitZoom);
-            setPan({ x: (cW - chartW) / 2, y: (cH - chartH) / 2 });
+            hasUserAdjustedView.current = false;
+            const next = calculateFitTransform(
+              containerRef.current.clientWidth,
+              containerRef.current.clientHeight,
+              bounds,
+            );
+            if (!next) return;
+            setZoom(next.zoom);
+            setPan(next.pan);
           }}
           title="Fit to screen"
           aria-label="Fit chart to screen"
@@ -372,6 +409,7 @@ export function OrgChart() {
 
       {/* Card layer */}
       <div
+        data-org-canvas
         className="absolute inset-0"
         style={{
           transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
