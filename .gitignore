@@ -5,6 +5,8 @@ CLAUDE.md
 node_modules/
 dist/
 .env
+.env.*
+!.env.example
 *.tsbuildinfo
 drizzle/meta/
 .vite/
@@ -56,3 +58,10 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+
+# Local browser automation artifacts (never commit — may contain auth state)
+.playwright-mcp/
+/*.png
+/*-snapshot.md
+/*-after-signin.yml
+/home-after-signin.yml

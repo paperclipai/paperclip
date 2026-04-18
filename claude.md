@@ -19,7 +19,7 @@ files unless the task explicitly calls for an export or migration artifact.
 
 - IP: `64.176.199.162`
 - SSH: `root@64.176.199.162`
-- Password: `bS%4nhouDq+gayS[`
+- Auth: SSH deploy key (GHA secret `VULTR_SSH_PRIVATE_KEY`, rotated 2026-04-18 in issue #311). Password auth intentionally not documented here — contact instance admin for break-glass access.
 
 ## Browser Testing VPS
 
