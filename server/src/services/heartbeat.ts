@@ -2687,6 +2687,7 @@ export function heartbeatService(db: Db) {
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    opts?: { errorMessage?: string | null },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -2732,6 +2733,9 @@ export function heartbeatService(db: Db) {
             ? new Date(updated.lastHeartbeatAt).toISOString()
             : null,
           outcome,
+          ...(nextStatus === "error" && opts?.errorMessage != null
+            ? { errorMessage: opts.errorMessage }
+            : {}),
         },
       });
     }
@@ -4098,7 +4102,9 @@ export function heartbeatService(db: Db) {
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, {
+        errorMessage: outcome !== "succeeded" ? (adapterResult.errorMessage ?? null) : null,
+      });
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -4163,7 +4169,7 @@ export function heartbeatService(db: Db) {
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, "failed", { errorMessage: message });
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -4197,7 +4203,7 @@ export function heartbeatService(db: Db) {
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
-          await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+          await finalizeAgentStatus(run.agentId, "failed", { errorMessage: message }).catch(() => undefined);
         } finally {
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
