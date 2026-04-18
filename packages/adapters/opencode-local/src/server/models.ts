@@ -103,6 +103,12 @@ function pruneExpiredDiscoveryCache(now: number) {
 const MODELS_DISCOVERY_MAX_RETRIES = 2;
 const MODELS_DISCOVERY_BACKOFF_BASE_MS = 2_000;
 
+let _testRetryOverride: { maxRetries: number; backoffMs: number } | undefined;
+/** Override retry config in tests to avoid real backoff delays. */
+export function setOpenCodeModelsRetryForTests(maxRetries: number, backoffMs = 0): void {
+  _testRetryOverride = { maxRetries, backoffMs };
+}
+
 async function discoverOpenCodeModelsOnce(input: {
   command: string;
   cwd: string;
@@ -160,10 +166,12 @@ export async function discoverOpenCodeModels(input: {
   // Prevent OpenCode from writing an opencode.json into the working directory.
   const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}), OPENCODE_DISABLE_PROJECT_CONFIG: "true" }));
 
+  const maxRetries = _testRetryOverride?.maxRetries ?? MODELS_DISCOVERY_MAX_RETRIES;
+  const backoffBase = _testRetryOverride?.backoffMs ?? MODELS_DISCOVERY_BACKOFF_BASE_MS;
   let lastError: Error | undefined;
-  for (let attempt = 0; attempt <= MODELS_DISCOVERY_MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (attempt > 0) {
-      const backoffMs = MODELS_DISCOVERY_BACKOFF_BASE_MS * Math.pow(2, attempt - 1);
+      const backoffMs = backoffBase * Math.pow(2, attempt - 1);
       await sleep(backoffMs);
     }
     try {
@@ -235,4 +243,5 @@ export async function listOpenCodeModels(): Promise<AdapterModel[]> {
 
 export function resetOpenCodeModelsCacheForTests() {
   discoveryCache.clear();
+  _testRetryOverride = undefined;
 }

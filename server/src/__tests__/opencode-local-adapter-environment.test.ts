@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { testEnvironment } from "@paperclipai/adapter-opencode-local/server";
+import { resetOpenCodeModelsCacheForTests, setOpenCodeModelsRetryForTests, testEnvironment } from "@paperclipai/adapter-opencode-local/server";
 
 describe("opencode_local environment diagnostics", () => {
+  beforeEach(() => {
+    setOpenCodeModelsRetryForTests(0); // skip retry backoff to keep tests within 5s timeout
+    resetOpenCodeModelsCacheForTests();
+  });
+
   it("reports a missing working directory as an error when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),
