@@ -54,6 +54,26 @@ describe("mapRunStatusToPluginEvent", () => {
 });
 
 describe("emitRunStatusPluginEvent", () => {
+  it("emits agent.run.started for the queued→running claim transition", async () => {
+    // Regression guard for the site in heartbeat.ts that bypasses setRunStatus()
+    // when claiming a queued run. The same emitRunStatusPluginEvent helper is
+    // used there, so the shape must be identical to the setRunStatus path.
+    const { bus, calls } = makeMockBus();
+    emitRunStatusPluginEvent(
+      bus,
+      buildRun({
+        status: "running",
+        startedAt: new Date("2026-04-17T10:00:00Z"),
+        finishedAt: null,
+      }),
+    );
+    await new Promise((r) => setImmediate(r));
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.eventType).toBe("agent.run.started");
+    expect(calls[0]?.occurredAt).toBe("2026-04-17T10:00:00.000Z");
+  });
+
   it("emits agent.run.started when transitioning to running", async () => {
     const { bus, calls, emit } = makeMockBus();
     emitRunStatusPluginEvent(bus, buildRun({ status: "running" }));

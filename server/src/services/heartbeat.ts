@@ -1776,6 +1776,11 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!claimed) return null;
 
+    // The queued → running transition bypasses setRunStatus(), so emit the
+    // `agent.run.started` plugin event here directly.  Without this, plugins
+    // subscribing to `agent.run.started` would only ever see run terminals.
+    emitRunStatusPluginEvent(_pluginEventBus, claimed);
+
     publishLiveEvent({
       companyId: claimed.companyId,
       type: "heartbeat.run.status",
