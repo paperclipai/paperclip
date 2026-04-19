@@ -2319,6 +2319,7 @@ export function companySkillService(db: Db) {
         ...(skill.metadata ?? {}),
         skillKey: skill.key,
       };
+      const serializedFileInventory = serializeFileInventory(skill.fileInventory);
       const values = {
         companyId,
         key: skill.key,
@@ -2331,10 +2332,36 @@ export function companySkillService(db: Db) {
         sourceRef: skill.sourceRef,
         trustLevel: skill.trustLevel,
         compatibility: skill.compatibility,
-        fileInventory: serializeFileInventory(skill.fileInventory),
+        fileInventory: serializedFileInventory,
         metadata,
         updatedAt: new Date(),
       };
+
+      // Skip the UPDATE when the user-visible content is unchanged.
+      // ensureBundledSkills runs on nearly every API call; before this guard,
+      // companySkills absorbed ~2M UPDATEs/day across 222 rows (write
+      // amplification ~9k) which in turn caused 170k seq-scans and index bloat.
+      //
+      // We intentionally check only the fields a consumer would notice:
+      // markdown + name + description + sourceRef. Structured fields
+      // (compatibility, fileInventory, metadata) are derived from markdown
+      // and the bundled file tree; if markdown is byte-identical AND
+      // sourceRef (commit/version) matches, the derived fields are by
+      // definition unchanged too. This avoids JSON.stringify pitfalls with
+      // property ordering or null-vs-missing.
+      const unchanged = existing
+        && existing.markdown === values.markdown
+        && existing.name === values.name
+        && existing.description === values.description
+        && existing.slug === values.slug
+        && existing.sourceRef === values.sourceRef
+        && existing.trustLevel === values.trustLevel;
+
+      if (unchanged && existing) {
+        out.push(existing);
+        continue;
+      }
+
       const row = existing
         ? await db
           .update(companySkills)
