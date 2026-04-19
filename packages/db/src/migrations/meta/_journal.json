@@ -414,6 +414,13 @@
       "when": 1776643200000,
       "tag": "0058_provider_credentials",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1776700800000,
+      "tag": "0059_two_factor_auth",
+      "breakpoints": true
     }
   ]
 }

@@ -106,11 +106,34 @@ export const authApi = {
   },
 
   signInEmail: async (input: { email: string; password: string }) => {
-    await authPost("/sign-in/email", input);
+    return (await authPost("/sign-in/email", input)) as { twoFactorRedirect?: boolean } | null;
   },
 
   signUpEmail: async (input: { name: string; email: string; password: string }) => {
     await authPost("/sign-up/email", input);
+  },
+
+  twoFactor: {
+    verifyTotp: async (input: { code: string; trustDevice?: boolean }) => {
+      await authPost("/two-factor/verify-totp", input);
+    },
+    verifyBackupCode: async (input: { code: string }) => {
+      await authPost("/two-factor/verify-backup-code", input);
+    },
+    enable: async (input: { password: string }) => {
+      return (await authPost("/two-factor/enable", input)) as {
+        totpURI?: string;
+        backupCodes?: string[];
+      } | null;
+    },
+    disable: async (input: { password: string }) => {
+      await authPost("/two-factor/disable", input);
+    },
+    generateBackupCodes: async (input: { password: string }) => {
+      return (await authPost("/two-factor/generate-backup-codes", input)) as {
+        backupCodes?: string[];
+      } | null;
+    },
   },
 
   getProfile: async (): Promise<CurrentUserProfile> => {

@@ -19,6 +19,9 @@ export function AuthPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [twoFactorRequired, setTwoFactorRequired] = useState(false);
+  const [totpCode, setTotpCode] = useState("");
+  const [useBackupCode, setUseBackupCode] = useState(false);
 
   const nextPath = useMemo(
     () => searchParams.get("next") || getRememberedInvitePath() || "/",
@@ -39,23 +42,50 @@ export function AuthPage() {
   const mutation = useMutation({
     mutationFn: async () => {
       if (mode === "sign_in") {
-        await authApi.signInEmail({ email: email.trim(), password });
-        return;
+        const result = await authApi.signInEmail({ email: email.trim(), password });
+        return { requires2fa: result?.twoFactorRedirect === true };
       }
       await authApi.signUpEmail({
         name: name.trim(),
         email: email.trim(),
         password,
       });
+      return { requires2fa: false };
     },
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setError(null);
+      if (result.requires2fa) {
+        setTwoFactorRequired(true);
+        return;
+      }
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       navigate(nextPath, { replace: true });
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : "Authentication failed");
+    },
+  });
+
+  const verify2faMutation = useMutation({
+    mutationFn: async () => {
+      const code = totpCode.trim();
+      if (useBackupCode) {
+        await authApi.twoFactor.verifyBackupCode({ code });
+      } else {
+        await authApi.twoFactor.verifyTotp({ code });
+      }
+    },
+    onSuccess: async () => {
+      setError(null);
+      setTwoFactorRequired(false);
+      setTotpCode("");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      navigate(nextPath, { replace: true });
+    },
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : "Verification failed");
     },
   });
 
@@ -91,6 +121,57 @@ export function AuthPage() {
               : "Create an account for this instance. Email confirmation is not required in v1."}
           </p>
 
+          {twoFactorRequired ? (
+            <form
+              className="mt-6 space-y-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (verify2faMutation.isPending) return;
+                if (totpCode.trim().length < 6) {
+                  setError("Enter the code from your authenticator app.");
+                  return;
+                }
+                verify2faMutation.mutate();
+              }}
+            >
+              <p className="text-sm text-muted-foreground">
+                Enter the {useBackupCode ? "backup code" : "6-digit code from your authenticator app"}.
+              </p>
+              <div>
+                <label htmlFor="totp" className="text-xs text-muted-foreground mb-1 block">
+                  {useBackupCode ? "Backup code" : "Authenticator code"}
+                </label>
+                <input
+                  id="totp"
+                  name="totp"
+                  className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 font-mono tracking-widest"
+                  inputMode={useBackupCode ? "text" : "numeric"}
+                  autoFocus
+                  value={totpCode}
+                  onChange={(event) => setTotpCode(event.target.value)}
+                />
+              </div>
+              {error && <p className="text-xs text-destructive">{error}</p>}
+              <Button
+                type="submit"
+                disabled={verify2faMutation.isPending}
+                className="w-full"
+              >
+                {verify2faMutation.isPending ? "Verifying…" : "Verify"}
+              </Button>
+              <button
+                type="button"
+                className="text-xs text-muted-foreground underline underline-offset-2"
+                onClick={() => {
+                  setUseBackupCode((prev) => !prev);
+                  setTotpCode("");
+                  setError(null);
+                }}
+              >
+                {useBackupCode ? "Use authenticator code instead" : "Use a backup code"}
+              </button>
+            </form>
+          ) : (
           <form
             className="mt-6 space-y-4"
             method="post"
@@ -158,6 +239,7 @@ export function AuthPage() {
                   : "Create Account"}
             </Button>
           </form>
+          )}
 
           <div className="mt-5 text-sm text-muted-foreground">
             {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}

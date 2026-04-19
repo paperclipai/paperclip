@@ -267,7 +267,129 @@ export function ProfileSettings() {
             </Button>
           </div>
         </form>
+
+        <TwoFactorSection />
       </section>
+    </div>
+  );
+}
+
+function TwoFactorSection() {
+  const queryClient = useQueryClient();
+  const sessionQuery = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    retry: false,
+  });
+  const enabled = Boolean(
+    (sessionQuery.data?.user as { twoFactorEnabled?: boolean } | undefined)?.twoFactorEnabled,
+  );
+
+  const [password, setPassword] = useState("");
+  const [totpUri, setTotpUri] = useState<string | null>(null);
+  const [backupCodes, setBackupCodes] = useState<string[] | null>(null);
+  const [verifyCode, setVerifyCode] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const enableMutation = useMutation({
+    mutationFn: () => authApi.twoFactor.enable({ password }),
+    onSuccess: (result) => {
+      setTotpUri(result?.totpURI ?? null);
+      setBackupCodes(result?.backupCodes ?? null);
+      setError(null);
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Enable failed"),
+  });
+
+  const verifyMutation = useMutation({
+    mutationFn: () => authApi.twoFactor.verifyTotp({ code: verifyCode.trim() }),
+    onSuccess: async () => {
+      setTotpUri(null);
+      setVerifyCode("");
+      setPassword("");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Verification failed"),
+  });
+
+  const disableMutation = useMutation({
+    mutationFn: () => authApi.twoFactor.disable({ password }),
+    onSuccess: async () => {
+      setPassword("");
+      setBackupCodes(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Disable failed"),
+  });
+
+  return (
+    <div className="mt-8 border-t pt-6 space-y-4">
+      <div>
+        <h2 className="text-base font-semibold">Two-factor authentication</h2>
+        <p className="text-sm text-muted-foreground">
+          {enabled ? "2FA is enabled on your account." : "Add a TOTP authenticator to protect your sign-in."}
+        </p>
+      </div>
+
+      {totpUri ? (
+        <div className="space-y-3 rounded-md border p-4">
+          <p className="text-sm">
+            Scan this URI in your authenticator app, then enter the 6-digit code to confirm.
+          </p>
+          <code className="block break-all text-xs bg-muted p-2 rounded">{totpUri}</code>
+          {backupCodes && (
+            <div>
+              <p className="text-sm font-medium">Backup codes (save these):</p>
+              <pre className="text-xs bg-muted p-2 rounded">{backupCodes.join("\n")}</pre>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Input
+              placeholder="6-digit code"
+              value={verifyCode}
+              onChange={(e) => setVerifyCode(e.target.value)}
+              className="max-w-[160px] font-mono"
+            />
+            <Button
+              onClick={() => verifyMutation.mutate()}
+              disabled={verifyMutation.isPending || verifyCode.trim().length < 6}
+            >
+              Verify & activate
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
+            <Label htmlFor="tfa-password" className="text-xs">Password</Label>
+            <Input
+              id="tfa-password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="mt-1"
+            />
+          </div>
+          {enabled ? (
+            <Button
+              variant="destructive"
+              onClick={() => disableMutation.mutate()}
+              disabled={disableMutation.isPending || !password}
+            >
+              Disable 2FA
+            </Button>
+          ) : (
+            <Button
+              onClick={() => enableMutation.mutate()}
+              disabled={enableMutation.isPending || !password}
+            >
+              Enable 2FA
+            </Button>
+          )}
+        </div>
+      )}
+
+      {error && <p className="text-sm text-destructive">{error}</p>}
     </div>
   );
 }

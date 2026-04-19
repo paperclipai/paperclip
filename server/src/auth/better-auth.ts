@@ -2,6 +2,7 @@ import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { twoFactor } from "better-auth/plugins";
 import { toNodeHandler } from "better-auth/node";
 import type { Db } from "@paperclipai/db";
 import {
@@ -9,6 +10,7 @@ import {
   authSessions,
   authUsers,
   authVerifications,
+  authTwoFactors,
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
 
@@ -90,6 +92,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
         session: authSessions,
         account: authAccounts,
         verification: authVerifications,
+        twoFactor: authTwoFactors,
       },
     }),
     emailAndPassword: {
@@ -97,6 +100,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
+    plugins: [twoFactor({ issuer: "Paperclip" })],
     ...(isHttpOnly ? { advanced: { useSecureCookies: false } } : {}),
   };
 
