@@ -630,6 +630,10 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         }
 
         // Keep the dispatch lock until the issue is linked to a queued heartbeat run.
+        // Scheduled fires (cron-based routines) always force a fresh session —
+        // routines run at least once per day, well past Anthropic's prompt cache
+        // TTL, so the `--resume` replay is cold every time anyway. Skipping the
+        // resume step trades a cheap cold-start for a wasted context replay.
         await queueIssueAssignmentWakeup({
           heartbeat,
           issue: createdIssue,
@@ -637,6 +641,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           mutation: "create",
           contextSource: "routine.dispatch",
           requestedByActorType: input.source === "schedule" ? "system" : undefined,
+          forceFreshSession: input.source === "schedule",
           rethrowOnError: true,
         });
         const updated = await finalizeRun(createdRun.id, {
@@ -721,6 +726,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           kind: trigger.kind as RoutineListItem["triggers"][number]["kind"],
           label: trigger.label,
           enabled: trigger.enabled,
+          cronExpression: trigger.cronExpression,
+          timezone: trigger.timezone,
           nextRunAt: trigger.nextRunAt,
           lastFiredAt: trigger.lastFiredAt,
           lastResult: trigger.lastResult,
