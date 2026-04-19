@@ -2676,6 +2676,7 @@ export function heartbeatService(db: Db) {
           and(
             eq(issues.id, claimedIssueId),
             eq(issues.companyId, claimed.companyId),
+            eq(issues.status, "in_progress"),
             eq(issues.assigneeAgentId, claimed.agentId),
             eq(issues.checkoutRunId, claimed.id),
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),

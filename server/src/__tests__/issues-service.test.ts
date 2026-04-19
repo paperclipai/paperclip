@@ -656,6 +656,205 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("replaces a live wrong-issue execution reference with the checked-out issue run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+    const wrongIssueRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Release Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: checkoutRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        wakeupRequestId: randomUUID(),
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-19T17:00:00.000Z"),
+        updatedAt: new Date("2026-04-19T17:00:00.000Z"),
+      },
+      {
+        id: wrongIssueRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        wakeupRequestId: randomUUID(),
+        contextSnapshot: { issueId: randomUUID() },
+        startedAt: new Date("2026-04-19T17:01:00.000Z"),
+        updatedAt: new Date("2026-04-19T17:01:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1069,
+      identifier: "PAP-1069",
+      title: "Wrong issue execution pointer",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId,
+      executionRunId: wrongIssueRunId,
+      executionAgentNameKey: null,
+      createdByUserId: "user-1",
+    });
+
+    const detail = await svc.getById("PAP-1069");
+    const [listed] = await svc.list(companyId, { identifier: "PAP-1069" });
+    const persisted = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(detail).toEqual(expect.objectContaining({
+      id: issueId,
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      executionAgentNameKey: "release engineer",
+    }));
+    expect(listed).toEqual(expect.objectContaining({
+      id: issueId,
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      executionAgentNameKey: "release engineer",
+    }));
+    expect(persisted).toEqual({
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      executionAgentNameKey: "release engineer",
+    });
+  });
+
+  it("preserves a live retry run when it still belongs to the checked-out issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+    const retryRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Release Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: checkoutRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "failed",
+        wakeupRequestId: randomUUID(),
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-19T17:00:00.000Z"),
+        updatedAt: new Date("2026-04-19T17:00:00.000Z"),
+      },
+      {
+        id: retryRunId,
+        companyId,
+        agentId,
+        invocationSource: "issue.continuation_recovery",
+        triggerDetail: "system",
+        status: "running",
+        wakeupRequestId: randomUUID(),
+        retryOfRunId: checkoutRunId,
+        contextSnapshot: { issueId, retryReason: "issue_continuation_needed" },
+        startedAt: new Date("2026-04-19T17:01:00.000Z"),
+        updatedAt: new Date("2026-04-19T17:01:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1070,
+      identifier: "PAP-1070",
+      title: "Continuation retry keeps execution ownership",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId,
+      executionRunId: retryRunId,
+      executionAgentNameKey: null,
+      createdByUserId: "user-1",
+    });
+
+    const detail = await svc.getById("PAP-1070");
+    const [listed] = await svc.list(companyId, { identifier: "PAP-1070" });
+    const persisted = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(detail).toEqual(expect.objectContaining({
+      id: issueId,
+      checkoutRunId,
+      executionRunId: retryRunId,
+      executionAgentNameKey: "release engineer",
+    }));
+    expect(listed).toEqual(expect.objectContaining({
+      id: issueId,
+      checkoutRunId,
+      executionRunId: retryRunId,
+      executionAgentNameKey: "release engineer",
+    }));
+    expect(persisted).toEqual({
+      checkoutRunId,
+      executionRunId: retryRunId,
+      executionAgentNameKey: "release engineer",
+    });
+  });
+
   it("filters issues by execution workspace id", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

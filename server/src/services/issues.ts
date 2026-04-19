@@ -499,6 +499,20 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
 
+function runOwnsIssueExecution(
+  row: Pick<IssueWithLabels, "id" | "status" | "assigneeAgentId" | "checkoutRunId">,
+  run: { status: string; agentId: string; issueId: string | null } | null,
+) {
+  return (
+    row.status === "in_progress"
+    && row.checkoutRunId != null
+    && run != null
+    && ACTIVE_RUN_STATUSES.includes(run.status)
+    && run.agentId === row.assigneeAgentId
+    && run.issueId === row.id
+  );
+}
+
 async function reconcileExecutionStateForIssues(
   dbOrTx: any,
   issueRows: IssueWithLabels[],
@@ -545,14 +559,26 @@ async function reconcileExecutionStateForIssues(
     }
 
     const activeCheckoutRun = row.checkoutRunId ? runMap.get(row.checkoutRunId) : null;
-    const hasMatchingActiveCheckout =
-      Boolean(row.checkoutRunId)
-      && Boolean(activeCheckoutRun)
-      && activeCheckoutRun?.agentId === row.assigneeAgentId
-      && activeCheckoutRun?.issueId === row.id;
+    const activeExecutionRun = row.executionRunId ? runMap.get(row.executionRunId) : null;
+    const hasMatchingActiveExecution = runOwnsIssueExecution(row, activeExecutionRun ?? null);
+    if (hasMatchingActiveExecution && row.executionRunId && activeExecutionRun) {
+      const executionAgentNameKey = row.executionAgentNameKey ?? normalizeAgentNameKey(activeExecutionRun.agentName);
+      if (row.executionAgentNameKey !== executionAgentNameKey) {
+        backfilledExecutionStateByIssueId.set(row.id, {
+          executionRunId: row.executionRunId,
+          executionAgentNameKey,
+        });
+      }
+      return {
+        ...row,
+        executionRunId: row.executionRunId,
+        executionAgentNameKey,
+      };
+    }
+
+    const hasMatchingActiveCheckout = runOwnsIssueExecution(row, activeCheckoutRun ?? null);
     if (hasMatchingActiveCheckout && row.checkoutRunId && activeCheckoutRun) {
-      const executionAgentNameKey =
-        row.executionAgentNameKey ?? normalizeAgentNameKey(activeCheckoutRun.agentName);
+      const executionAgentNameKey = row.executionAgentNameKey ?? normalizeAgentNameKey(activeCheckoutRun.agentName);
       if (row.executionRunId !== row.checkoutRunId || row.executionAgentNameKey !== executionAgentNameKey) {
         backfilledExecutionStateByIssueId.set(row.id, {
           executionRunId: row.checkoutRunId,
@@ -564,18 +590,6 @@ async function reconcileExecutionStateForIssues(
         executionRunId: row.checkoutRunId,
         executionAgentNameKey,
       };
-    }
-
-    const activeExecutionRun = row.executionRunId ? runMap.get(row.executionRunId) : null;
-    const shouldClear =
-      row.checkoutRunId == null
-      || row.executionRunId !== row.checkoutRunId
-      || !activeExecutionRun
-      || activeExecutionRun.agentId !== row.assigneeAgentId
-      || activeExecutionRun.issueId !== row.id
-      || !ACTIVE_RUN_STATUSES.includes(activeExecutionRun.status);
-    if (!shouldClear) {
-      return row;
     }
 
     if (row.checkoutRunId == null || !row.executionRunId) {
