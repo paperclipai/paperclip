@@ -301,9 +301,19 @@ export async function runClaudeLogin(input: {
 // Per-agent worktree provisioning (freemymemories/local-customizations)
 //
 // When adapterConfig.worktreeEnabled === true, the adapter provisions a
-// fresh git worktree per wake, pre-sets git identity + GH_TOKEN from the
-// macOS keychain, and (on session exit) pushes the branch + opens a PR.
-// Cleans up the worktree/branch regardless of exit code.
+// fresh git worktree per wake, pre-sets git identity, and (on session exit)
+// pushes the branch + opens a PR. Cleans up the worktree/branch regardless
+// of exit code.
+//
+// WORKTREE_PATCH_V1.2: removed per-agent PAT reading from macOS keychain.
+// Default gh CLI auth (dirk-miller's OAuth session, stored in ~/.config/gh/)
+// is sufficient for agent GitHub operations. Per-agent PAT scoping was
+// belt-and-suspenders against a low-probability threat (malicious agent
+// behavior) at the cost of high ongoing maintenance (token rotation,
+// per-repo regeneration, Dirk-UI-gated). Not worth it for a single-operator
+// system protected by the PreToolUse hook + adapter worktrees + workflow
+// gates. GH_TOKEN / GITHUB_TOKEN are no longer injected on the spawned
+// process — gh inherits the user's shell auth state.
 //
 // Design plan: /Users/openclaw/.claude/plans/okay-this-is-clearly-luminous-goblet.md
 // (Layer 5 — Modified `claude_local` adapter).
@@ -324,7 +334,6 @@ interface WorktreeConfig {
   primaryBase: string;
   secondaryBase: string | null;
   autoMergeLabel: string;
-  keychainService: string;
 }
 
 interface ProvisionedWorktree {
@@ -339,7 +348,6 @@ interface WorktreeProvisionResult {
   config: WorktreeConfig;
   primary: ProvisionedWorktree;
   secondary: ProvisionedWorktree | null;
-  patToken: string | null;
   sessionCwd: string;
   envAdditions: Record<string, string>;
 }
@@ -360,7 +368,6 @@ function parseWorktreeConfig(config: Record<string, unknown>): WorktreeConfig | 
     primaryBase: asString(config.primaryBase, "master"),
     secondaryBase: asString(config.secondaryBase, "").trim() || null,
     autoMergeLabel: asString(config.autoMergeLabel, "auto-merge:approved"),
-    keychainService: asString(config.keychainService, "paperclip.github.pat."),
   };
 }
 
@@ -382,15 +389,6 @@ function runGit(repoOrWkt: string, args: string[], allowFail = false): { ok: boo
     // caller will decide; we don't throw here
   }
   return { ok, stdout: (res.stdout || "").trim(), stderr: (res.stderr || "").trim() };
-}
-
-function readKeychainPat(service: string, account = "paperclip"): string | null {
-  const res = spawnSync("security", ["find-generic-password", "-a", account, "-s", service, "-w"], {
-    encoding: "utf-8",
-  });
-  if (res.status !== 0) return null;
-  const token = (res.stdout || "").trim();
-  return token.length > 0 ? token : null;
 }
 
 function parseGitHubOwnerRepo(remoteUrl: string): { owner: string; repo: string } | null {
@@ -466,13 +464,10 @@ async function provisionWorktrees(
     }
   }
 
-  const patToken = readKeychainPat(`${wkCfg.keychainService}${wkCfg.agentSlug}`);
-  if (!patToken) {
-    await onLog(
-      "stderr",
-      `[paperclip-worktree] Warning: no keychain PAT found for service="${wkCfg.keychainService}${wkCfg.agentSlug}" (account=paperclip). Agent will run without GH_TOKEN.\n`,
-    );
-  }
+  // WORKTREE_PATCH_V1.2: no longer read per-agent PAT from keychain.
+  // The spawned process inherits default gh CLI auth from the user's
+  // ~/.config/gh/ (dirk-miller's OAuth session). GH_TOKEN / GITHUB_TOKEN
+  // are NOT set, so gh falls through to that auth context automatically.
 
   // cwd for the Claude Code session — inside the primary worktree at the agent's workspace.
   const sessionCwd = path.join(primaryPath, "_workspaces", wkCfg.agentSlug);
@@ -493,14 +488,10 @@ async function provisionWorktrees(
     PAPERCLIP_PRIMARY_REPO: wkCfg.primaryRepo,
     PAPERCLIP_SECONDARY_REPO: wkCfg.secondaryRepo || "",
   };
-  if (patToken) {
-    envAdditions.GH_TOKEN = patToken;
-    envAdditions.GITHUB_TOKEN = patToken;
-  }
 
   await onLog(
     "stdout",
-    `[paperclip-worktree] Provisioned branch="${branch}" primary=${primaryPath}${secondary ? ` secondary=${secondary.worktreePath}` : ""} cwd=${sessionCwd} pat=${patToken ? "yes" : "no"}\n`,
+    `[paperclip-worktree] Provisioned branch="${branch}" primary=${primaryPath}${secondary ? ` secondary=${secondary.worktreePath}` : ""} cwd=${sessionCwd}\n`,
   );
 
   return {
@@ -513,7 +504,6 @@ async function provisionWorktrees(
       isPrimary: true,
     },
     secondary,
-    patToken,
     sessionCwd,
     envAdditions,
   };
@@ -522,7 +512,6 @@ async function provisionWorktrees(
 async function finalizeWorktree(
   wkt: ProvisionedWorktree,
   wkCfg: WorktreeConfig,
-  patToken: string | null,
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
 ): Promise<void> {
   try {
@@ -549,11 +538,10 @@ async function finalizeWorktree(
           // Agents use ship / open-rollup-pr / open-vault-pr skills to open rich-body
           // PRs during the session. The adapter PR-on-exit is a safety net for sessions
           // that crashed or didn't open one. If a PR already exists, skip creation.
+          //
+          // WORKTREE_PATCH_V1.2: no per-agent PAT injection. gh CLI inherits
+          // default auth from ~/.config/gh/ (dirk-miller's OAuth).
           const ghEnv: NodeJS.ProcessEnv = { ...process.env };
-          if (patToken) {
-            ghEnv.GH_TOKEN = patToken;
-            ghEnv.GITHUB_TOKEN = patToken;
-          }
           const existingRes = spawnSync(
             "gh",
             [
@@ -995,9 +983,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // its own try/catch/finally so cleanup still happens on push/PR failure.
     if (worktreeResult) {
       try {
-        await finalizeWorktree(worktreeResult.primary, worktreeResult.config, worktreeResult.patToken, onLog);
+        await finalizeWorktree(worktreeResult.primary, worktreeResult.config, onLog);
         if (worktreeResult.secondary) {
-          await finalizeWorktree(worktreeResult.secondary, worktreeResult.config, worktreeResult.patToken, onLog);
+          await finalizeWorktree(worktreeResult.secondary, worktreeResult.config, onLog);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
