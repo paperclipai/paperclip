@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -857,5 +858,140 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(followUp.executionWorkspaceSettings).toEqual({
       mode: "operator_branch",
     });
+  });
+});
+
+describeEmbeddedPostgres("issueService.update execution lock on reassignment", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-reassign-lock-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedBaseFixture(db: ReturnType<typeof createDb>) {
+    const companyId = randomUUID();
+    const agentAId = randomUUID();
+    const agentBId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: agentAId,
+        companyId,
+        name: "AgentA",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: agentBId,
+        companyId,
+        name: "AgentB",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    // Seed a heartbeat run so FK on checkoutRunId/executionRunId is satisfied
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: agentAId,
+    });
+
+    return { companyId, agentAId, agentBId, runId };
+  }
+
+  it("clears execution lock fields when assigneeAgentId changes", async () => {
+    const { companyId, agentAId, agentBId, runId } = await seedBaseFixture(db);
+    const issueId = randomUUID();
+
+    // Create an issue assigned to agentA with a live execution lock
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Locked issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentAId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "agenta",
+      executionLockedAt: new Date(),
+    });
+
+    // Reassign to agentB — should clear all execution lock fields
+    const updated = await svc.update(issueId, { assigneeAgentId: agentBId });
+
+    expect(updated).not.toBeNull();
+    expect(updated!.assigneeAgentId).toBe(agentBId);
+    expect(updated!.checkoutRunId).toBeNull();
+    expect(updated!.executionRunId).toBeNull();
+    expect(updated!.executionAgentNameKey).toBeNull();
+    expect(updated!.executionLockedAt).toBeNull();
+  });
+
+  it("clears execution lock fields when issue is unassigned", async () => {
+    const { companyId, agentAId, runId } = await seedBaseFixture(db);
+    const issueId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Locked issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentAId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "agenta",
+      executionLockedAt: new Date(),
+    });
+
+    // Unassign — assigneeAgentId change should still clear execution lock
+    const updated = await svc.update(issueId, { assigneeAgentId: null });
+
+    expect(updated).not.toBeNull();
+    expect(updated!.assigneeAgentId).toBeNull();
+    expect(updated!.checkoutRunId).toBeNull();
+    expect(updated!.executionRunId).toBeNull();
+    expect(updated!.executionAgentNameKey).toBeNull();
+    expect(updated!.executionLockedAt).toBeNull();
   });
 });
