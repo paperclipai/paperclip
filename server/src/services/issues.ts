@@ -134,6 +134,16 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 
+function truncateIssueListDescription<T extends { description: string | null }>(row: T): T {
+  // Keep truncation out of SQL: historical SQL_ASCII rows can fail when SQL slices text
+  // at a client-encoding boundary.
+  if (!row.description || row.description.length <= ISSUE_LIST_DESCRIPTION_MAX_CHARS) return row;
+  return {
+    ...row,
+    description: row.description.slice(0, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
+  };
+}
+
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
 }
@@ -536,12 +546,7 @@ const issueListSelect = {
   goalId: issues.goalId,
   parentId: issues.parentId,
   title: issues.title,
-  description: sql<string | null>`
-    CASE
-      WHEN ${issues.description} IS NULL THEN NULL
-      ELSE substring(${issues.description} FROM 1 FOR ${ISSUE_LIST_DESCRIPTION_MAX_CHARS})
-    END
-  `,
+  description: issues.description,
   status: issues.status,
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,
@@ -1176,10 +1181,10 @@ export function issueService(db: Db) {
             activity?.latestCommentAt ?? null,
             activity?.latestLogAt ?? null,
           ) ?? row.updatedAt;
-          return {
+          return truncateIssueListDescription({
             ...row,
             lastActivityAt,
-          };
+          });
         });
       }
 
@@ -1192,7 +1197,7 @@ export function issueService(db: Db) {
           activity?.latestCommentAt ?? null,
           activity?.latestLogAt ?? null,
         ) ?? row.updatedAt;
-        return {
+        return truncateIssueListDescription({
           ...row,
           lastActivityAt,
           ...deriveIssueUserContext(row, contextUserId, {
@@ -1200,7 +1205,7 @@ export function issueService(db: Db) {
             myLastReadAt: readByIssueId.get(row.id) ?? null,
             lastExternalCommentAt: statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
           }),
-        };
+        });
       });
     },
 
