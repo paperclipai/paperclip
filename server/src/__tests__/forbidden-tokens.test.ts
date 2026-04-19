@@ -1,10 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-const {
-  resolveDynamicForbiddenTokens,
-  resolveForbiddenTokens,
-  runForbiddenTokenCheck,
-} = await import("../../../scripts/check-forbidden-tokens.mjs");
+const { resolveDynamicForbiddenTokens, resolveForbiddenTokens, runForbiddenTokenCheck } =
+  await import("../../../scripts/check-forbidden-tokens.mjs");
 
 describe("forbidden token check", () => {
   it("derives username tokens without relying on whoami", () => {
@@ -40,9 +37,13 @@ describe("forbidden token check", () => {
     fs.writeFileSync(tokensFile, "# comment\npaperclip\ncustom-token\n");
 
     try {
-      const tokens = resolveForbiddenTokens(tokensFile, { USER: "paperclip" }, {
-        userInfo: () => ({ username: "paperclip" }),
-      });
+      const tokens = resolveForbiddenTokens(
+        tokensFile,
+        { USER: "paperclip" },
+        {
+          userInfo: () => ({ username: "paperclip" }),
+        },
+      );
 
       expect(tokens).toEqual(["paperclip", "custom-token"]);
     } finally {

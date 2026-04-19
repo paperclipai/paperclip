@@ -95,8 +95,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       name: TOOL_NAMES.getIssue,
       displayName: "Get Sentry Issue Detail",
-      description:
-        "Get detailed information about a Sentry issue including stacktrace, recent events, and tags.",
+      description: "Get detailed information about a Sentry issue including stacktrace, recent events, and tags.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -111,8 +110,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       name: TOOL_NAMES.search,
       displayName: "Search Sentry Errors",
-      description:
-        "Search Sentry errors by query string (message, tag, fingerprint, etc.).",
+      description: "Search Sentry errors by query string (message, tag, fingerprint, etc.).",
       parametersSchema: {
         type: "object",
         properties: {

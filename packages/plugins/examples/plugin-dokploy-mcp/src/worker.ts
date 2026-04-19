@@ -19,9 +19,7 @@ function nextId() {
   return ++_jsonRpcId;
 }
 
-function extractText(
-  result: { content?: Array<{ text?: string }> } | undefined | null,
-): string {
+function extractText(result: { content?: Array<{ text?: string }> } | undefined | null): string {
   return (
     result?.content
       ?.map((c) => c.text ?? "")
@@ -35,18 +33,12 @@ async function getConfig(ctx: PluginContext): Promise<DokployConfig> {
   return { ...DEFAULT_CONFIG, ...(config as DokployConfig) };
 }
 
-async function callMcpTool(
-  ctx: PluginContext,
-  toolName: string,
-  args: Record<string, unknown>,
-): Promise<unknown> {
+async function callMcpTool(ctx: PluginContext, toolName: string, args: Record<string, unknown>): Promise<unknown> {
   const config = await getConfig(ctx);
   const url = config.dokployMcpUrl;
 
   if (!url) {
-    throw new Error(
-      "Dokploy MCP URL is not configured. Set it in the plugin settings.",
-    );
+    throw new Error("Dokploy MCP URL is not configured. Set it in the plugin settings.");
   }
 
   const body = {
@@ -88,8 +80,7 @@ function registerTools(ctx: PluginContext): void {
     TOOL_NAMES.getLogs,
     {
       displayName: "Dokploy: Get Application Logs",
-      description:
-        "Retrieve container logs for a Dokploy application by its application ID.",
+      description: "Retrieve container logs for a Dokploy application by its application ID.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -109,9 +100,7 @@ function registerTools(ctx: PluginContext): void {
         applicationId,
       });
 
-      const logs = extractText(
-        result as { content?: Array<{ text?: string }> },
-      );
+      const logs = extractText(result as { content?: Array<{ text?: string }> });
 
       await ctx.activity.log({
         companyId: runCtx.companyId,
@@ -136,9 +125,7 @@ function registerTools(ctx: PluginContext): void {
     },
     async (_params, runCtx): Promise<ToolResult> => {
       const result = await callMcpTool(ctx, "list-applications", {});
-      const text = extractText(
-        result as { content?: Array<{ text?: string }> },
-      );
+      const text = extractText(result as { content?: Array<{ text?: string }> });
 
       await ctx.activity.log({
         companyId: runCtx.companyId,
@@ -155,8 +142,7 @@ function registerTools(ctx: PluginContext): void {
     TOOL_NAMES.getApplicationStatus,
     {
       displayName: "Dokploy: Get Application Status",
-      description:
-        "Get the current deployment status of a Dokploy application.",
+      description: "Get the current deployment status of a Dokploy application.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -176,9 +162,7 @@ function registerTools(ctx: PluginContext): void {
         applicationId,
       });
 
-      const text = extractText(
-        result as { content?: Array<{ text?: string }> },
-      );
+      const text = extractText(result as { content?: Array<{ text?: string }> });
 
       await ctx.activity.log({
         companyId: runCtx.companyId,
@@ -198,8 +182,7 @@ function registerTools(ctx: PluginContext): void {
     TOOL_NAMES.redeploy,
     {
       displayName: "Dokploy: Redeploy Application",
-      description:
-        "Trigger a redeployment of a Dokploy application. This is a mutating action.",
+      description: "Trigger a redeployment of a Dokploy application. This is a mutating action.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -219,9 +202,7 @@ function registerTools(ctx: PluginContext): void {
         applicationId,
       });
 
-      const text = extractText(
-        result as { content?: Array<{ text?: string }> },
-      );
+      const text = extractText(result as { content?: Array<{ text?: string }> });
 
       await ctx.activity.log({
         companyId: runCtx.companyId,
@@ -245,8 +226,7 @@ function registerTools(ctx: PluginContext): void {
     TOOL_NAMES.getApplicationStats,
     {
       displayName: "Dokploy: Get Application Stats",
-      description:
-        "Get resource usage statistics (CPU, memory, etc.) for a Dokploy application.",
+      description: "Get resource usage statistics (CPU, memory, etc.) for a Dokploy application.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -266,9 +246,7 @@ function registerTools(ctx: PluginContext): void {
         applicationId,
       });
 
-      const text = extractText(
-        result as { content?: Array<{ text?: string }> },
-      );
+      const text = extractText(result as { content?: Array<{ text?: string }> });
 
       await ctx.activity.log({
         companyId: runCtx.companyId,
@@ -298,9 +276,7 @@ const plugin: PaperclipPlugin = definePlugin({
     // Config is read on each tool call, no caching needed
   },
 
-  async onValidateConfig(
-    config: Record<string, unknown>,
-  ): Promise<PluginConfigValidationResult> {
+  async onValidateConfig(config: Record<string, unknown>): Promise<PluginConfigValidationResult> {
     const url = config.dokployMcpUrl as string | undefined;
     if (url && typeof url === "string") {
       try {

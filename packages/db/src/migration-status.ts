@@ -46,9 +46,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    console.log(
-      `Pending migrations via ${payload.source}: ${payload.pendingMigrations.join(", ")}`,
-    );
+    console.log(`Pending migrations via ${payload.source}: ${payload.pendingMigrations.join(", ")}`);
   } finally {
     await connection.stop();
   }

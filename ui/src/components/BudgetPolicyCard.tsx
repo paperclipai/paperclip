@@ -50,7 +50,8 @@ export function BudgetPolicyCard({
   const parsedDraft = parseDollarInput(draftBudget);
   const canSave = typeof parsedDraft === "number" && parsedDraft !== summary.amount && Boolean(onSave);
   const progress = summary.amount > 0 ? Math.min(100, summary.utilizationPercent) : 0;
-  const StatusIcon = summary.status === "hard_stop" ? ShieldAlert : summary.status === "warning" ? AlertTriangle : Wallet;
+  const StatusIcon =
+    summary.status === "hard_stop" ? ShieldAlert : summary.status === "warning" ? AlertTriangle : Wallet;
   const isPlain = variant === "plain";
 
   const observedBudgetGrid = isPlain ? (
@@ -68,7 +69,8 @@ export function BudgetPolicyCard({
           {summary.amount > 0 ? formatCents(summary.amount) : "Disabled"}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
-          Soft alert at {summary.warnPercent}%{summary.paused && summary.pauseReason ? ` · ${summary.pauseReason} pause` : ""}
+          Soft alert at {summary.warnPercent}%
+          {summary.paused && summary.pauseReason ? ` · ${summary.pauseReason} pause` : ""}
         </div>
       </div>
     </div>
@@ -87,7 +89,8 @@ export function BudgetPolicyCard({
           {summary.amount > 0 ? formatCents(summary.amount) : "Disabled"}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
-          Soft alert at {summary.warnPercent}%{summary.paused && summary.pauseReason ? ` · ${summary.pauseReason} pause` : ""}
+          Soft alert at {summary.warnPercent}%
+          {summary.paused && summary.pauseReason ? ` · ${summary.pauseReason} pause` : ""}
         </div>
       </div>
     </div>
@@ -127,11 +130,14 @@ export function BudgetPolicyCard({
   ) : null;
 
   const saveSection = onSave ? (
-    <div className={cn("flex flex-col gap-3 sm:flex-row sm:items-end", isPlain ? "" : "rounded-xl border border-border/70 bg-background/50 p-3")}>
+    <div
+      className={cn(
+        "flex flex-col gap-3 sm:flex-row sm:items-end",
+        isPlain ? "" : "rounded-xl border border-border/70 bg-background/50 p-3",
+      )}
+    >
       <div className="min-w-0 flex-1">
-        <label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-          Budget (USD)
-        </label>
+        <label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Budget (USD)</label>
         <Input
           value={draftBudget}
           onChange={(event) => setDraftBudget(event.target.value)}
@@ -156,9 +162,7 @@ export function BudgetPolicyCard({
       <div className="space-y-6">
         <div className="flex items-start justify-between gap-6">
           <div>
-            <div className="text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
-              {summary.scopeType}
-            </div>
+            <div className="text-[11px] uppercase tracking-[0.22em] text-muted-foreground">{summary.scopeType}</div>
             <div className="mt-2 text-xl font-semibold">{summary.scopeName}</div>
             <div className="mt-2 text-sm text-muted-foreground">{windowLabel(summary.windowKind)}</div>
           </div>
@@ -173,7 +177,13 @@ export function BudgetPolicyCard({
             )}
           >
             <StatusIcon className="h-3.5 w-3.5" />
-            {summary.paused ? "Paused" : summary.status === "warning" ? "Warning" : summary.status === "hard_stop" ? "Hard stop" : "Healthy"}
+            {summary.paused
+              ? "Paused"
+              : summary.status === "warning"
+                ? "Warning"
+                : summary.status === "hard_stop"
+                  ? "Hard stop"
+                  : "Healthy"}
           </div>
         </div>
 
@@ -189,19 +199,33 @@ export function BudgetPolicyCard({
   }
 
   return (
-    <Card className={cn("overflow-hidden border-border/70 bg-card/80", compact ? "" : "shadow-[0_20px_80px_-40px_rgba(0,0,0,0.55)]")}>
+    <Card
+      className={cn(
+        "overflow-hidden border-border/70 bg-card/80",
+        compact ? "" : "shadow-[0_20px_80px_-40px_rgba(0,0,0,0.55)]",
+      )}
+    >
       <CardHeader className={cn("gap-3", compact ? "px-4 pt-4 pb-2" : "px-5 pt-5 pb-3")}>
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
-              {summary.scopeType}
-            </div>
+            <div className="text-[11px] uppercase tracking-[0.22em] text-muted-foreground">{summary.scopeType}</div>
             <CardTitle className="mt-1 text-base">{summary.scopeName}</CardTitle>
             <CardDescription className="mt-1">{windowLabel(summary.windowKind)}</CardDescription>
           </div>
-          <div className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] uppercase tracking-[0.18em]", statusTone(summary.status))}>
+          <div
+            className={cn(
+              "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] uppercase tracking-[0.18em]",
+              statusTone(summary.status),
+            )}
+          >
             <StatusIcon className="h-3.5 w-3.5" />
-            {summary.paused ? "Paused" : summary.status === "warning" ? "Warning" : summary.status === "hard_stop" ? "Hard stop" : "Healthy"}
+            {summary.paused
+              ? "Paused"
+              : summary.status === "warning"
+                ? "Warning"
+                : summary.status === "hard_stop"
+                  ? "Hard stop"
+                  : "Healthy"}
           </div>
         </div>
       </CardHeader>

@@ -614,8 +614,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("issues.listComments", { issueId, companyId });
         },
 
-        async createComment(issueId: string, body: string, companyId: string) {
-          return callHost("issues.createComment", { issueId, body, companyId });
+        async createComment(issueId: string, body: string, companyId: string, options?: { authorAgentId?: string }) {
+          return callHost("issues.createComment", { issueId, body, companyId, authorAgentId: options?.authorAgentId });
         },
 
         documents: {
@@ -801,6 +801,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       metrics: {
         async write(name: string, value: number, tags?: Record<string, string>): Promise<void> {
           await callHost("metrics.write", { name, value, tags });
+        },
+      },
+
+      telemetry: {
+        async track(eventName: string, dimensions?: Record<string, string | number | boolean>): Promise<void> {
+          await callHost("telemetry.track", { eventName, dimensions });
         },
       },
 

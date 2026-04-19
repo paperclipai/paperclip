@@ -1,4 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+
+const MAX_PERSISTED_DEV_SERVER_STATUS_BYTES = 64 * 1024;
 
 export type PersistedDevServerStatus = {
   dirty: boolean;
@@ -37,13 +39,14 @@ function normalizeTimestamp(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-export function readPersistedDevServerStatus(
-  env: NodeJS.ProcessEnv = process.env,
-): PersistedDevServerStatus | null {
+export function readPersistedDevServerStatus(env: NodeJS.ProcessEnv = process.env): PersistedDevServerStatus | null {
   const filePath = env.PAPERCLIP_DEV_SERVER_STATUS_FILE?.trim();
   if (!filePath || !existsSync(filePath)) return null;
 
   try {
+    if (statSync(filePath).size > MAX_PERSISTED_DEV_SERVER_STATUS_BYTES) {
+      return null;
+    }
     const raw = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
     const changedPathsSample = normalizeStringArray(raw.changedPathsSample).slice(0, 5);
     const pendingMigrations = normalizeStringArray(raw.pendingMigrations);
@@ -53,10 +56,7 @@ export function readPersistedDevServerStatus(
         ? Math.max(0, Math.trunc(changedPathCountRaw))
         : changedPathsSample.length;
     const dirtyRaw = raw.dirty;
-    const dirty =
-      typeof dirtyRaw === "boolean"
-        ? dirtyRaw
-        : changedPathCount > 0 || pendingMigrations.length > 0;
+    const dirty = typeof dirtyRaw === "boolean" ? dirtyRaw : changedPathCount > 0 || pendingMigrations.length > 0;
 
     return {
       dirty,

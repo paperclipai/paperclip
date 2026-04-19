@@ -12,12 +12,9 @@ import type {
 import { api } from "./client";
 
 export const companySkillsApi = {
-  list: (companyId: string) =>
-    api.get<CompanySkillListItem[]>(`/companies/${encodeURIComponent(companyId)}/skills`),
+  list: (companyId: string) => api.get<CompanySkillListItem[]>(`/companies/${encodeURIComponent(companyId)}/skills`),
   detail: (companyId: string, skillId: string) =>
-    api.get<CompanySkillDetail>(
-      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}`,
-    ),
+    api.get<CompanySkillDetail>(`/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}`),
   updateStatus: (companyId: string, skillId: string) =>
     api.get<CompanySkillUpdateStatus>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/update-status`,
@@ -32,15 +29,9 @@ export const companySkillsApi = {
       { path, content },
     ),
   create: (companyId: string, payload: CompanySkillCreateRequest) =>
-    api.post<CompanySkill>(
-      `/companies/${encodeURIComponent(companyId)}/skills`,
-      payload,
-    ),
+    api.post<CompanySkill>(`/companies/${encodeURIComponent(companyId)}/skills`, payload),
   importFromSource: (companyId: string, source: string) =>
-    api.post<CompanySkillImportResult>(
-      `/companies/${encodeURIComponent(companyId)}/skills/import`,
-      { source },
-    ),
+    api.post<CompanySkillImportResult>(`/companies/${encodeURIComponent(companyId)}/skills/import`, { source }),
   scanProjects: (companyId: string, payload: CompanySkillProjectScanRequest = {}) =>
     api.post<CompanySkillProjectScanResult>(
       `/companies/${encodeURIComponent(companyId)}/skills/scan-projects`,
@@ -51,4 +42,6 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/install-update`,
       {},
     ),
+  delete: (companyId: string, skillId: string) =>
+    api.delete<CompanySkill>(`/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}`),
 };

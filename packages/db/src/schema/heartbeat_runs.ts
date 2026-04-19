@@ -1,4 +1,15 @@
-import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
+import {
+  type AnyPgColumn,
+  pgTable,
+  uuid,
+  text,
+  timestamp,
+  jsonb,
+  index,
+  integer,
+  bigint,
+  boolean,
+} from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
@@ -7,8 +18,12 @@ export const heartbeatRuns = pgTable(
   "heartbeat_runs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
-    agentId: uuid("agent_id").notNull().references(() => agents.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
     invocationSource: text("invocation_source").notNull().default("on_demand"),
     triggerDetail: text("trigger_detail"),
     status: text("status").notNull().default("queued"),
@@ -32,11 +47,15 @@ export const heartbeatRuns = pgTable(
     errorCode: text("error_code"),
     externalRunId: text("external_run_id"),
     processPid: integer("process_pid"),
+    processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
     retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
       onDelete: "set null",
     }),
     processLossRetryCount: integer("process_loss_retry_count").notNull().default(0),
+    issueCommentStatus: text("issue_comment_status").notNull().default("not_applicable"),
+    issueCommentSatisfiedByCommentId: uuid("issue_comment_satisfied_by_comment_id"),
+    issueCommentRetryQueuedAt: timestamp("issue_comment_retry_queued_at", { withTimezone: true }),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

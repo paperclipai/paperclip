@@ -1,7 +1,7 @@
 name: Sync Upstream
 on:
   schedule:
-    - cron: '0 8 * * 1'  # Cada lunes a las 8:00 UTC
+    - cron: "0 8 * * 1" # Cada lunes a las 8:00 UTC
   workflow_dispatch:
 
 jobs:

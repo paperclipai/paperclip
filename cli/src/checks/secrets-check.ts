@@ -30,8 +30,7 @@ function withStrictModeNote(
   base: Pick<CheckResult, "name" | "status" | "message" | "canRepair" | "repair" | "repairHint">,
   config: PaperclipConfig,
 ): CheckResult {
-  const strictModeDisabledInDeployedSetup =
-    config.database.mode === "postgres" && config.secrets.strictMode === false;
+  const strictModeDisabledInDeployedSetup = config.database.mode === "postgres" && config.secrets.strictMode === false;
   if (!strictModeDisabledInDeployedSetup) return base;
 
   if (base.status === "fail") return base;

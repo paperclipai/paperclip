@@ -1,13 +1,6 @@
 import { z } from "zod";
 
-export const agentSkillStateSchema = z.enum([
-  "available",
-  "configured",
-  "installed",
-  "missing",
-  "stale",
-  "external",
-]);
+export const agentSkillStateSchema = z.enum(["available", "configured", "installed", "missing", "stale", "external"]);
 
 export const agentSkillOriginSchema = z.enum([
   "company_managed",
@@ -16,11 +9,7 @@ export const agentSkillOriginSchema = z.enum([
   "external_unknown",
 ]);
 
-export const agentSkillSyncModeSchema = z.enum([
-  "unsupported",
-  "persistent",
-  "ephemeral",
-]);
+export const agentSkillSyncModeSchema = z.enum(["unsupported", "persistent", "ephemeral"]);
 
 export const agentSkillEntrySchema = z.object({
   key: z.string().min(1),

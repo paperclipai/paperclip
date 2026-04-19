@@ -73,9 +73,7 @@ export function createCapabilityScopedInvoker(
  * - no unrestricted built-in module imports
  * - relative imports are resolved only inside the plugin root directory
  */
-export async function loadPluginModuleInSandbox(
-  options: PluginSandboxOptions,
-): Promise<LoadedModule> {
+export async function loadPluginModuleInSandbox(options: PluginSandboxOptions): Promise<LoadedModule> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const allowedSpecifiers = options.allowedModuleSpecifiers ?? new Set<string>();
   const entrypointPath = path.resolve(options.entrypointPath);
@@ -96,9 +94,7 @@ export async function loadPluginModuleInSandbox(
     const realPath = realpathSync(resolvedPath);
 
     if (!isWithinRoot(realPath, realPluginRoot)) {
-      throw new PluginSandboxError(
-        `Import '${modulePath}' escapes plugin root and is not allowed`,
-      );
+      throw new PluginSandboxError(`Import '${modulePath}' escapes plugin root and is not allowed`);
     }
 
     const cached = moduleCache.get(realPath);
@@ -126,9 +122,7 @@ export async function loadPluginModuleInSandbox(
 
         const binding = allowedModules[specifier];
         if (!binding) {
-          throw new PluginSandboxError(
-            `Bare module '${specifier}' is allow-listed but no host binding is registered.`,
-          );
+          throw new PluginSandboxError(`Bare module '${specifier}' is allow-listed but no host binding is registered.`);
         }
 
         return binding;
@@ -158,7 +152,7 @@ export async function loadPluginModuleInSandbox(
       script.runInContext(context, { timeout: timeoutMs });
     } finally {
       for (const key of Object.keys(sandboxArgs)) {
-        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+         
         delete (context as Record<string, unknown>)[key];
       }
     }

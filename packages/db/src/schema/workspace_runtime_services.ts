@@ -1,12 +1,4 @@
-import {
-  index,
-  integer,
-  jsonb,
-  pgTable,
-  text,
-  timestamp,
-  uuid,
-} from "drizzle-orm/pg-core";
+import { index, integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { projects } from "./projects.js";
 import { projectWorkspaces } from "./project_workspaces.js";
@@ -19,10 +11,14 @@ export const workspaceRuntimeServices = pgTable(
   "workspace_runtime_services",
   {
     id: uuid("id").primaryKey(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
-    executionWorkspaceId: uuid("execution_workspace_id").references(() => executionWorkspaces.id, { onDelete: "set null" }),
+    executionWorkspaceId: uuid("execution_workspace_id").references(() => executionWorkspaces.id, {
+      onDelete: "set null",
+    }),
     issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
     scopeType: text("scope_type").notNull(),
     scopeId: text("scope_id"),
@@ -63,9 +59,6 @@ export const workspaceRuntimeServices = pgTable(
       table.status,
     ),
     runIdx: index("workspace_runtime_services_run_idx").on(table.startedByRunId),
-    companyUpdatedIdx: index("workspace_runtime_services_company_updated_idx").on(
-      table.companyId,
-      table.updatedAt,
-    ),
+    companyUpdatedIdx: index("workspace_runtime_services_company_updated_idx").on(table.companyId, table.updatedAt),
   }),
 );

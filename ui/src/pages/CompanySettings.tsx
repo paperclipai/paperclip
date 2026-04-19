@@ -1,14 +1,16 @@
 import { type ChangeEvent, useEffect, useState } from "react";
+import { Link } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Pause, Play, Download, Upload } from "lucide-react";
+import { Settings, Check, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import { Field, ToggleField, HintIcon } from "../components/agent-config-primitives";
 
@@ -18,10 +20,12 @@ type AgentSnippetInput = {
   testResolutionUrl?: string | null;
 };
 
+const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+
 export function CompanySettings() {
   const { companies, selectedCompany, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   // General settings local state
   const [companyName, setCompanyName] = useState("");
@@ -33,7 +37,7 @@ export function CompanySettings() {
   // Sync local state from selected company
   useEffect(() => {
     if (!selectedCompany) return;
-    setCompanyName(selectedCompany.name); // eslint-disable-line react-hooks/set-state-in-effect
+    setCompanyName(selectedCompany.name);
     setDescription(selectedCompany.description ?? "");
     setBrandColor(selectedCompany.brandColor ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
@@ -65,6 +69,27 @@ export function CompanySettings() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
+  });
+
+  const feedbackSharingMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      companiesApi.update(selectedCompanyId!, {
+        feedbackDataSharingEnabled: enabled,
+      }),
+    onSuccess: (_company, enabled) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      pushToast({
+        title: enabled ? "Feedback sharing enabled" : "Feedback sharing disabled",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update feedback sharing",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 
@@ -147,22 +172,8 @@ export function CompanySettings() {
     clearLogoMutation.mutate();
   }
 
-  const pauseMutation = useMutation({
-    mutationFn: () => companiesApi.pause(selectedCompanyId!),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-    },
-  });
-
-  const resumeMutation = useMutation({
-    mutationFn: () => companiesApi.resume(selectedCompanyId!),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-    },
-  });
-
   useEffect(() => {
-    setInviteError(null); // eslint-disable-line react-hooks/set-state-in-effect
+    setInviteError(null);
     setInviteSnippet(null);
     setSnippetCopied(false);
     setSnippetCopyDelightId(0);
@@ -354,6 +365,48 @@ export function CompanySettings() {
         </div>
       </div>
 
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Feedback Sharing</div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <ToggleField
+            label="Allow sharing voted AI outputs with Paperclip Labs"
+            hint="Only AI-generated outputs you explicitly vote on are eligible for feedback sharing."
+            checked={!!selectedCompany.feedbackDataSharingEnabled}
+            onChange={(enabled) => feedbackSharingMutation.mutate(enabled)}
+          />
+          <p className="text-sm text-muted-foreground">
+            Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for
+            sharing with Paperclip Labs.
+          </p>
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <div>
+              Terms version:{" "}
+              {selectedCompany.feedbackDataSharingTermsVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION}
+            </div>
+            {selectedCompany.feedbackDataSharingConsentAt ? (
+              <div>
+                Enabled {new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString()}
+                {selectedCompany.feedbackDataSharingConsentByUserId
+                  ? ` by ${selectedCompany.feedbackDataSharingConsentByUserId}`
+                  : ""}
+              </div>
+            ) : (
+              <div>Sharing is currently disabled.</div>
+            )}
+            {FEEDBACK_TERMS_URL ? (
+              <a
+                href={FEEDBACK_TERMS_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex text-foreground underline underline-offset-4"
+              >
+                Read our terms of service
+              </a>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
       {/* Invites */}
       <div className="space-y-4" data-testid="company-settings-invites-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Invites</div>
@@ -422,61 +475,6 @@ export function CompanySettings() {
         </div>
       </div>
 
-      {/* Pause / Resume */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Operations</div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          {selectedCompany.status === "paused" ? (
-            <>
-              <div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-                <Pause className="h-4 w-4 text-amber-500" />
-                <span className="text-sm text-amber-600 dark:text-amber-400">
-                  Company paused
-                  {selectedCompany.pausedAt && (
-                    <> &mdash; since {new Date(selectedCompany.pausedAt).toLocaleString()}</>
-                  )}
-                </span>
-              </div>
-              <p className="text-sm text-muted-foreground">
-                All agent heartbeats are suspended. Resume to allow agents to work again.
-              </p>
-              <Button size="sm" onClick={() => resumeMutation.mutate()} disabled={resumeMutation.isPending}>
-                <Play className="mr-1.5 h-3.5 w-3.5" />
-                {resumeMutation.isPending ? "Resuming..." : "Resume company"}
-              </Button>
-            </>
-          ) : (
-            <>
-              <p className="text-sm text-muted-foreground">
-                Pause this company to temporarily stop all agent heartbeats. Agents keep their state and resume where
-                they left off.
-              </p>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={pauseMutation.isPending || selectedCompany.status === "archived"}
-                onClick={() => {
-                  const confirmed = window.confirm(
-                    `Pause company "${selectedCompany.name}"? This will stop all agent work until you resume.`,
-                  );
-                  if (confirmed) pauseMutation.mutate();
-                }}
-              >
-                <Pause className="mr-1.5 h-3.5 w-3.5" />
-                {pauseMutation.isPending ? "Pausing..." : "Pause company"}
-              </Button>
-            </>
-          )}
-          {(pauseMutation.isError || resumeMutation.isError) && (
-            <span className="text-xs text-destructive">
-              {(pauseMutation.error ?? resumeMutation.error) instanceof Error
-                ? (pauseMutation.error ?? resumeMutation.error)!.message
-                : "Operation failed"}
-            </span>
-          )}
-        </div>
-      </div>
-
       {/* Import / Export */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Company Packages</div>
@@ -490,16 +488,16 @@ export function CompanySettings() {
           </p>
           <div className="mt-3 flex items-center gap-2">
             <Button size="sm" variant="outline" asChild>
-              <a href="/company/export">
+              <Link to="/company/export">
                 <Download className="mr-1.5 h-3.5 w-3.5" />
                 Export
-              </a>
+              </Link>
             </Button>
             <Button size="sm" variant="outline" asChild>
-              <a href="/company/import">
+              <Link to="/company/import">
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
                 Import
-              </a>
+              </Link>
             </Button>
           </div>
         </div>

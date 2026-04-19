@@ -53,20 +53,12 @@ export function Sidebar() {
       {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
         {selectedCompany?.brandColor && (
-          <div
-            className="w-4 h-4 rounded-sm shrink-0 ml-1"
-            style={{ backgroundColor: selectedCompany.brandColor }}
-          />
+          <div className="w-4 h-4 rounded-sm shrink-0 ml-1" style={{ backgroundColor: selectedCompany.brandColor }} />
         )}
         <span className="flex-1 text-sm font-bold text-foreground truncate pl-1">
           {selectedCompany?.name ?? "Select company"}
         </span>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="text-muted-foreground shrink-0"
-          onClick={openSearch}
-        >
+        <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" onClick={openSearch}>
           <Search className="h-4 w-4" />
         </Button>
       </div>
@@ -101,7 +93,7 @@ export function Sidebar() {
 
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
-          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} textBadge="Beta" textBadgeTone="amber" />
+          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
         </SidebarSection>
 

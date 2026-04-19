@@ -1,9 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  ensurePiModelConfiguredAndAvailable,
-  listPiModels,
-  resetPiModelsCacheForTests,
-} from "./models.js";
+import { ensurePiModelConfiguredAndAvailable, listPiModels, resetPiModelsCacheForTests } from "./models.js";
 
 describe("pi models", () => {
   afterEach(() => {
@@ -17,9 +13,9 @@ describe("pi models", () => {
   });
 
   it("rejects when model is missing", async () => {
-    await expect(
-      ensurePiModelConfiguredAndAvailable({ model: "" }),
-    ).rejects.toThrow("Pi requires `adapterConfig.model`");
+    await expect(ensurePiModelConfiguredAndAvailable({ model: "" })).rejects.toThrow(
+      "Pi requires `adapterConfig.model`",
+    );
   });
 
   it("rejects when discovery cannot run for configured model", async () => {

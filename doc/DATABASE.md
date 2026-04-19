@@ -123,11 +123,11 @@ See [Supabase pricing](https://supabase.com/pricing) for current details.
 
 The database mode is controlled by `DATABASE_URL`:
 
-| `DATABASE_URL` | Mode |
-|---|---|
-| Not set | Embedded PostgreSQL (`~/.paperclip/instances/default/db/`) |
-| `postgres://...localhost...` | Local Docker PostgreSQL |
-| `postgres://...supabase.com...` | Hosted Supabase |
+| `DATABASE_URL`                  | Mode                                                       |
+| ------------------------------- | ---------------------------------------------------------- |
+| Not set                         | Embedded PostgreSQL (`~/.paperclip/instances/default/db/`) |
+| `postgres://...localhost...`    | Local Docker PostgreSQL                                    |
+| `postgres://...supabase.com...` | Hosted Supabase                                            |
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
 

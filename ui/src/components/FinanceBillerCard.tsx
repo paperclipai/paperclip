@@ -14,7 +14,8 @@ export function FinanceBillerCard({ row }: FinanceBillerCardProps) {
           <div>
             <CardTitle className="text-base">{providerDisplayName(row.biller)}</CardTitle>
             <CardDescription className="mt-1 text-xs">
-              {row.eventCount} event{row.eventCount === 1 ? "" : "s"} across {row.kindCount} kind{row.kindCount === 1 ? "" : "s"}
+              {row.eventCount} event{row.eventCount === 1 ? "" : "s"} across {row.kindCount} kind
+              {row.kindCount === 1 ? "" : "s"}
             </CardDescription>
           </div>
           <div className="text-right">

@@ -127,7 +127,7 @@ export function githubFileRoutes(db: Db) {
     const { projectId, companyId } = await resolveProject(req);
     const dirPath = Array.isArray(req.params.dirPath)
       ? req.params.dirPath.join("/")
-      : ((req.params.dirPath as string) || "");
+      : (req.params.dirPath as string) || "";
     const ref = typeof req.query.ref === "string" ? req.query.ref : undefined;
 
     const files = await github.listFiles(projectId, dirPath, ref);

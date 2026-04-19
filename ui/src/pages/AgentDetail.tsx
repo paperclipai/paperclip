@@ -19,7 +19,7 @@ import { issuesApi } from "../api/issues";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -27,9 +27,11 @@ import { AgentChatTab } from "../components/AgentChatTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
-import { getUIAdapter, buildTranscript } from "../adapters";
+import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -250,12 +252,16 @@ function runMetrics(run: HeartbeatRun) {
   const output = usageNumber(usage, "outputTokens", "output_tokens");
   const cached = usageNumber(usage, "cachedInputTokens", "cached_input_tokens", "cache_read_input_tokens");
   const cost = visibleRunCostUsd(usage, result);
+  const provider = asNonEmptyString(usage?.provider) ?? null;
+  const model = asNonEmptyString(usage?.model) ?? null;
   return {
     input,
     output,
     cached,
     cost,
     totalTokens: input + output,
+    provider,
+    model,
   };
 }
 
@@ -270,6 +276,104 @@ function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+export function RunInvocationCard({
+  payload,
+  censorUsernameInLogs,
+}: {
+  payload: Record<string, unknown>;
+  censorUsernameInLogs: boolean;
+}) {
+  const commandLine = [
+    typeof payload.command === "string" ? payload.command : null,
+    ...(Array.isArray(payload.commandArgs)
+      ? payload.commandArgs.filter((value): value is string => typeof value === "string")
+      : []),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+
+  const hasAdvancedDetails =
+    commandLine.length > 0 ||
+    (Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0) ||
+    payload.prompt !== undefined ||
+    payload.context !== undefined ||
+    payload.env !== undefined;
+
+  return (
+    <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
+      <div className="text-xs font-medium text-muted-foreground">Invocation</div>
+      {typeof payload.adapterType === "string" && (
+        <div className="text-xs">
+          <span className="text-muted-foreground">Adapter: </span>
+          {payload.adapterType}
+        </div>
+      )}
+      {typeof payload.cwd === "string" && (
+        <div className="text-xs break-all">
+          <span className="text-muted-foreground">Working dir: </span>
+          <span className="font-mono">{payload.cwd}</span>
+        </div>
+      )}
+      {hasAdvancedDetails && (
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
+            <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
+            Details
+          </CollapsibleTrigger>
+          <CollapsibleContent className="pt-2 space-y-2">
+            {commandLine && (
+              <div className="text-xs break-all">
+                <span className="text-muted-foreground">Command: </span>
+                <span className="font-mono">{commandLine}</span>
+              </div>
+            )}
+            {Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0 && (
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Command notes</div>
+                <ul className="list-disc pl-5 space-y-1">
+                  {payload.commandNotes
+                    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+                    .map((note, idx) => (
+                      <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
+                        {note}
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            )}
+            {payload.prompt !== undefined && (
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Prompt</div>
+                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                  {typeof payload.prompt === "string"
+                    ? redactPathText(payload.prompt, censorUsernameInLogs)
+                    : JSON.stringify(redactPathValue(payload.prompt, censorUsernameInLogs), null, 2)}
+                </pre>
+              </div>
+            )}
+            {payload.context !== undefined && (
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Context</div>
+                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                  {JSON.stringify(redactPathValue(payload.context, censorUsernameInLogs), null, 2)}
+                </pre>
+              </div>
+            )}
+            {payload.env !== undefined && (
+              <div>
+                <div className="text-xs text-muted-foreground mb-1">Environment</div>
+                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
+                  {formatEnvForDisplay(payload.env, censorUsernameInLogs)}
+                </pre>
+              </div>
+            )}
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+    </div>
+  );
 }
 
 function parseStoredLogContent(content: string): RunLogChunk[] {
@@ -605,8 +709,9 @@ export function AgentDetail() {
     staleTime: 5_000,
   });
 
-  const assignedIssues = (allIssues ?? [])
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  const assignedIssues = (allIssues ?? []).sort(
+    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+  );
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
   const agentBudgetSummary = useMemo(() => {
@@ -1033,6 +1138,7 @@ export function AgentDetail() {
           agentRouteId={canonicalAgentRef}
           selectedRunId={urlRunId ?? null}
           adapterType={agent.adapterType}
+          adapterConfig={agent.adapterConfig}
         />
       )}
 
@@ -1074,8 +1180,10 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
   const summaryRaw = run.resultJson
-    ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
-    : run.error ?? "";
+    ? String(
+        (run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "",
+      )
+    : (run.error ?? "");
 
   // Extract a clean 2-3 line excerpt: first non-empty, non-header, non-list-mark lines
   const summary = (() => {
@@ -1084,7 +1192,15 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
       .replace(/^#{1,6}\s+/gm, "")
       .split("\n")
       .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !l.startsWith("---") && !l.startsWith("|") && !l.startsWith("```") && !/^[-*>]/.test(l) && !/^\d+\./.test(l));
+      .filter(
+        (l) =>
+          l.length > 0 &&
+          !l.startsWith("---") &&
+          !l.startsWith("|") &&
+          !l.startsWith("```") &&
+          !/^[-*>]/.test(l) &&
+          !/^\d+\./.test(l),
+      );
     const excerpt: string[] = [];
     let chars = 0;
     for (const line of lines) {
@@ -1444,9 +1560,7 @@ function ConfigurationTab({
   hideInstructionsFile?: boolean;
 }) {
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const { tab } = useParams<{ tab?: string }>();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
   const lastAgentRef = useRef(agent);
 
@@ -1516,15 +1630,16 @@ function ConfigurationTab({
           : "Disabled unless explicitly granted.";
 
   const roleDefaults = ROLE_DEFAULT_PERMISSIONS[agent.role as AgentRole] ?? [];
-  const explicitGrants = new Set(
-    (agent.access?.grants ?? []).map((g) => g.permissionKey),
-  );
+  const explicitGrants = new Set((agent.access?.grants ?? []).map((g) => g.permissionKey));
 
   const PERMISSION_LABELS: Record<string, { label: string; description: string }> = {
     "agents:create": { label: "Create agents", description: "Create or hire new agents." },
     "agents:manage": { label: "Manage agents", description: "Update agent configuration, permissions, and status." },
     "users:invite": { label: "Invite users", description: "Invite new users to the company." },
-    "users:manage_permissions": { label: "Manage user permissions", description: "Grant or revoke permissions for users." },
+    "users:manage_permissions": {
+      label: "Manage user permissions",
+      description: "Grant or revoke permissions for users.",
+    },
     "tasks:assign": { label: "Assign tasks", description: "Assign issues to agents or users." },
     "tasks:assign_scope": { label: "Assign tasks (scoped)", description: "Assign tasks within a restricted scope." },
     "joins:approve": { label: "Approve join requests", description: "Approve or reject agent/user join requests." },
@@ -1588,65 +1703,39 @@ function ConfigurationTab({
                 Lets this agent create or hire agents and implicitly assign tasks.
               </p>
             </div>
-            <button
-              type="button"
-              role="switch"
-              data-slot="toggle"
-              aria-checked={canCreateAgents}
-              className={cn(
-                "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50",
-                canCreateAgents ? "bg-green-600" : "bg-muted",
-              )}
-              onClick={() =>
+            <ToggleSwitch
+              checked={canCreateAgents}
+              onCheckedChange={() =>
                 updatePermissions.mutate({
                   canCreateAgents: !canCreateAgents,
                   canAssignTasks: !canCreateAgents ? true : canAssignTasks,
                 })
               }
               disabled={updatePermissions.isPending}
-            >
-              <span
-                className={cn(
-                  "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                  canCreateAgents ? "translate-x-4.5" : "translate-x-0.5",
-                )}
-              />
-            </button>
+            />
           </div>
           <div className="flex items-center justify-between gap-4 text-sm">
             <div className="space-y-1">
               <div>Can assign tasks</div>
               <p className="text-xs text-muted-foreground">{taskAssignHint}</p>
             </div>
-            <button
-              type="button"
-              role="switch"
-              data-slot="toggle"
-              aria-checked={canAssignTasks}
-              className={cn(
-                "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50",
-                canAssignTasks ? "bg-green-600" : "bg-muted",
-              )}
-              onClick={() =>
+            <ToggleSwitch
+              checked={canAssignTasks}
+              onCheckedChange={() =>
                 updatePermissions.mutate({
                   canCreateAgents,
                   canAssignTasks: !canAssignTasks,
                 })
               }
               disabled={updatePermissions.isPending || taskAssignLocked}
-            >
-              <span
-                className={cn(
-                  "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                  canAssignTasks ? "translate-x-4.5" : "translate-x-0.5",
-                )}
-              />
-            </button>
+            />
           </div>
 
           {/* Granular permission grants */}
           <div className="border-t border-border pt-4 mt-4">
-            <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">Granular Permissions</h4>
+            <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
+              Granular Permissions
+            </h4>
             <div className="space-y-3">
               {PERMISSION_KEYS.filter((k) => !LEGACY_KEYS.has(k)).map((key) => {
                 const info = PERMISSION_LABELS[key] ?? { label: key, description: "" };
@@ -1744,33 +1833,28 @@ function PromptsTab({
 
   useEffect(() => {
     setSelectedFile("AGENTS.md"); // eslint-disable-line react-hooks/set-state-in-effect
-     
+
     setShowFilePanel(false);
-     
+
     setDraft(null);
-     
+
     setBundleDraft(null);
-     
+
     setNewFilePath("");
-     
+
     setShowNewFileInput(false);
-     
+
     setPendingFiles([]);
-     
+
     setExpandedDirs(new Set());
-     
+
     setAwaitingRefresh(false);
     lastFileVersionRef.current = null;
     externalBundleRef.current = null;
   }, [agent.id]);
 
-  const isLocal =
-    agent.adapterType === "claude_local" ||
-    agent.adapterType === "codex_local" ||
-    agent.adapterType === "opencode_local" ||
-    agent.adapterType === "pi_local" ||
-    agent.adapterType === "hermes_local" ||
-    agent.adapterType === "cursor";
+  const getCapabilities = useAdapterCapabilities();
+  const isLocal = getCapabilities(agent.adapterType).supportsInstructionsBundle;
 
   const { data: bundle, isLoading: bundleLoading } = useQuery({
     queryKey: queryKeys.agents.instructionsBundle(agent.id),
@@ -1870,7 +1954,6 @@ function PromptsTab({
     }
     const availablePaths = bundle.files.map((file) => file.path);
     if (availablePaths.length === 0) {
-       
       if (selectedFile !== bundle.entryFile) setSelectedFile(bundle.entryFile);
       return;
     }
@@ -1879,7 +1962,6 @@ function PromptsTab({
       selectedFile !== currentEntryFile &&
       !pendingFiles.includes(selectedFile)
     ) {
-       
       setSelectedFile(availablePaths.includes(bundle.entryFile) ? bundle.entryFile : availablePaths[0]!);
     }
   }, [bundle, bundleMatchesDraft, currentEntryFile, pendingFiles, selectedFile]);
@@ -1906,15 +1988,14 @@ function PromptsTab({
     if (awaitingRefresh) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setAwaitingRefresh(false);
-       
+
       setBundleDraft(null);
-       
+
       setDraft(null);
       lastFileVersionRef.current = versionKey;
       return;
     }
     if (lastFileVersionRef.current !== versionKey) {
-       
       setDraft(null);
       lastFileVersionRef.current = versionKey;
     }
@@ -2054,7 +2135,7 @@ function PromptsTab({
   }
 
   return (
-    <div className="max-w-6xl space-y-6">
+    <div className="space-y-6">
       {(bundle?.warnings ?? []).length > 0 && (
         <div className="space-y-2">
           {(bundle?.warnings ?? []).map((warning) => (
@@ -2226,11 +2307,14 @@ function PromptsTab({
       </Collapsible>
 
       <div ref={containerRef} className={cn("flex gap-0", isMobile && "flex-col gap-3")}>
-        <div className={cn(
-          "border border-border rounded-lg p-3 space-y-3 shrink-0",
-          isMobile && showFilePanel && "block",
-          isMobile && !showFilePanel && "hidden",
-        )} style={isMobile ? undefined : { width: filePanelWidth }}>
+        <div
+          className={cn(
+            "border border-border rounded-lg p-3 space-y-3 shrink-0",
+            isMobile && showFilePanel && "block",
+            isMobile && !showFilePanel && "hidden",
+          )}
+          style={isMobile ? undefined : { width: filePanelWidth }}
+        >
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-medium">Files</h4>
             <div className="flex items-center gap-1">
@@ -2361,7 +2445,12 @@ function PromptsTab({
           />
         )}
 
-        <div className={cn("border border-border rounded-lg p-4 space-y-3 min-w-0 flex-1", isMobile && showFilePanel && "hidden")}>
+        <div
+          className={cn(
+            "border border-border rounded-lg p-4 space-y-3 min-w-0 flex-1",
+            isMobile && showFilePanel && "hidden",
+          )}
+        >
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 min-w-0">
               {isMobile && (
@@ -2541,7 +2630,7 @@ function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?: string
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSkillDraft([]);
-     
+
     setLastSavedSkills([]);
     lastSavedSkillsRef.current = [];
     hasHydratedSkillSnapshotRef.current = false;
@@ -2560,10 +2649,10 @@ function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?: string
     );
     skipNextSkillAutosaveRef.current = nextState.shouldSkipAutosave;
     hasHydratedSkillSnapshotRef.current = nextState.hasHydratedSnapshot;
-     
+
     setSkillDraft(nextState.draft);
     lastSavedSkillsRef.current = nextState.lastSaved;
-     
+
     setLastSavedSkills(nextState.lastSaved);
   }, [skillDraft, skillSnapshot]);
 
@@ -2834,12 +2923,21 @@ function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?: string
                       tabIndex={0}
                       className="flex cursor-pointer items-center gap-2 border-b border-border bg-muted/40 px-3 py-2 select-none"
                       onClick={() => setUnmanagedOpen((v) => !v)}
-                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setUnmanagedOpen((v) => !v); } }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setUnmanagedOpen((v) => !v);
+                        }
+                      }}
                     >
                       <span className="text-xs font-medium text-muted-foreground">
                         ({unmanagedSkillRows.length}) User-installed skills, not managed by Paperclip
                       </span>
-                      {unmanagedOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+                      {unmanagedOpen ? (
+                        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                      )}
                     </div>
                     {unmanagedOpen && unmanagedSkillRows.map(renderSkillRow)}
                   </section>
@@ -2942,6 +3040,7 @@ function RunsTab({
   agentRouteId,
   selectedRunId,
   adapterType,
+  adapterConfig,
 }: {
   runs: HeartbeatRun[];
   companyId: string;
@@ -2949,6 +3048,7 @@ function RunsTab({
   agentRouteId: string;
   selectedRunId: string | null;
   adapterType: string;
+  adapterConfig: Record<string, unknown>;
 }) {
   const { isMobile } = useSidebar();
 
@@ -2975,7 +3075,13 @@ function RunsTab({
             <ArrowLeft className="h-3.5 w-3.5" />
             Back to runs
           </Link>
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
+          <RunDetail
+            key={selectedRun.id}
+            run={selectedRun}
+            agentRouteId={agentRouteId}
+            adapterType={adapterType}
+            adapterConfig={adapterConfig}
+          />
         </div>
       );
     }
@@ -3003,7 +3109,13 @@ function RunsTab({
       {/* Right: run detail — natural height, page scrolls */}
       {selectedRun && (
         <div className="flex-1 min-w-0 pl-4">
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
+          <RunDetail
+            key={selectedRun.id}
+            run={selectedRun}
+            agentRouteId={agentRouteId}
+            adapterType={adapterType}
+            adapterConfig={adapterConfig}
+          />
         </div>
       )}
     </div>
@@ -3016,10 +3128,12 @@ function RunDetail({
   run: initialRun,
   agentRouteId,
   adapterType,
+  adapterConfig,
 }: {
   run: HeartbeatRun;
   agentRouteId: string;
   adapterType: string;
+  adapterConfig: Record<string, unknown>;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -3074,7 +3188,7 @@ function RunDetail({
         run.companyId,
       );
       if (!("id" in result)) {
-        throw new Error("Resume request was skipped because the agent is not currently invokable.");
+        throw new Error(result.message ?? "Resume request was skipped.");
       }
       return result;
     },
@@ -3110,7 +3224,7 @@ function RunDetail({
         run.companyId,
       );
       if (!("id" in result)) {
-        throw new Error("Retry was skipped because the agent is not currently invokable.");
+        throw new Error(result.message ?? "Retry was skipped.");
       }
       return result;
     },
@@ -3230,6 +3344,27 @@ function RunDetail({
                 </Button>
               )}
             </div>
+            {/* Adapter type · provider · model */}
+            {(() => {
+              const displayProvider = metrics.provider ?? asNonEmptyString(adapterConfig?.provider);
+              const displayModel = metrics.model ?? asNonEmptyString(adapterConfig?.model);
+              if (!adapterType && !displayProvider && !displayModel) return null;
+              return (
+                <div className="text-[11px] text-muted-foreground font-mono flex items-center gap-1.5 flex-wrap">
+                  {adapterType && (
+                    <span className="bg-muted rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">
+                      {adapterType.replace(/_/g, " ")}
+                    </span>
+                  )}
+                  {displayProvider && displayModel && (
+                    <span>
+                      {displayProvider}/{displayModel}
+                    </span>
+                  )}
+                  {!displayProvider && displayModel && <span>{displayModel}</span>}
+                </div>
+              );
+            })()}
             {resumeRun.isError && (
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
@@ -3825,10 +3960,20 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     return redactPathValue(asRecord(evt?.payload ?? null), censorUsernameInLogs);
   }, [censorUsernameInLogs, events]);
 
-  const adapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
+  // NOTE: adapter is NOT memoized because external adapters replace their
+  // parseStdoutLine asynchronously after dynamic parser loading. Memoizing
+  // on adapterType alone would stale the transcript with the fallback parser.
+  // We subscribe to adapter registry changes to force transcript recomputation.
+  const [parserTick, setParserTick] = useState(0);
+  const adapter = getUIAdapter(adapterType);
+
+  useEffect(() => {
+    return onAdapterChange(() => setParserTick((t) => t + 1));
+  }, []);
+
   const transcript = useMemo(
-    () => buildTranscript(logLines, adapter.parseStdoutLine, { censorUsernameInLogs }),
-    [adapter, censorUsernameInLogs, logLines],
+    () => buildTranscript(logLines, adapter, { censorUsernameInLogs }),
+    [adapter, censorUsernameInLogs, logLines, parserTick],
   );
 
   useEffect(() => {
@@ -3859,74 +4004,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     <div className="space-y-3">
       <WorkspaceOperationsSection operations={workspaceOperations} censorUsernameInLogs={censorUsernameInLogs} />
       {adapterInvokePayload && (
-        <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-          <div className="text-xs font-medium text-muted-foreground">Invocation</div>
-          {typeof adapterInvokePayload.adapterType === "string" && (
-            <div className="text-xs">
-              <span className="text-muted-foreground">Adapter: </span>
-              {adapterInvokePayload.adapterType}
-            </div>
-          )}
-          {typeof adapterInvokePayload.cwd === "string" && (
-            <div className="text-xs break-all">
-              <span className="text-muted-foreground">Working dir: </span>
-              <span className="font-mono">{adapterInvokePayload.cwd}</span>
-            </div>
-          )}
-          {typeof adapterInvokePayload.command === "string" && (
-            <div className="text-xs break-all">
-              <span className="text-muted-foreground">Command: </span>
-              <span className="font-mono">
-                {[
-                  adapterInvokePayload.command,
-                  ...(Array.isArray(adapterInvokePayload.commandArgs)
-                    ? adapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string")
-                    : []),
-                ].join(" ")}
-              </span>
-            </div>
-          )}
-          {Array.isArray(adapterInvokePayload.commandNotes) && adapterInvokePayload.commandNotes.length > 0 && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Command notes</div>
-              <ul className="list-disc pl-5 space-y-1">
-                {adapterInvokePayload.commandNotes
-                  .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-                  .map((note, idx) => (
-                    <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
-                      {note}
-                    </li>
-                  ))}
-              </ul>
-            </div>
-          )}
-          {adapterInvokePayload.prompt !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Prompt</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {typeof adapterInvokePayload.prompt === "string"
-                  ? redactPathText(adapterInvokePayload.prompt, censorUsernameInLogs)
-                  : JSON.stringify(redactPathValue(adapterInvokePayload.prompt, censorUsernameInLogs), null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.context !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Context</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                {JSON.stringify(redactPathValue(adapterInvokePayload.context, censorUsernameInLogs), null, 2)}
-              </pre>
-            </div>
-          )}
-          {adapterInvokePayload.env !== undefined && (
-            <div>
-              <div className="text-xs text-muted-foreground mb-1">Environment</div>
-              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
-                {formatEnvForDisplay(adapterInvokePayload.env, censorUsernameInLogs)}
-              </pre>
-            </div>
-          )}
-        </div>
+        <RunInvocationCard payload={adapterInvokePayload} censorUsernameInLogs={censorUsernameInLogs} />
       )}
 
       <div className="flex items-center justify-between">

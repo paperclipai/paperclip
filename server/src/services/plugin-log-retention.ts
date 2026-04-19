@@ -20,10 +20,7 @@ const MAX_ITERATIONS = 100;
  *
  * @returns The total number of rows deleted.
  */
-export async function prunePluginLogs(
-  db: Db,
-  retentionDays: number = DEFAULT_RETENTION_DAYS,
-): Promise<number> {
+export async function prunePluginLogs(db: Db, retentionDays: number = DEFAULT_RETENTION_DAYS): Promise<number> {
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - retentionDays);
 

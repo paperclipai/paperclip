@@ -8,8 +8,12 @@ export const budgetIncidents = pgTable(
   "budget_incidents",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
-    policyId: uuid("policy_id").notNull().references(() => budgetPolicies.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
+    policyId: uuid("policy_id")
+      .notNull()
+      .references(() => budgetPolicies.id),
     scopeType: text("scope_type").notNull(),
     scopeId: uuid("scope_id").notNull(),
     metric: text("metric").notNull(),
@@ -33,10 +37,8 @@ export const budgetIncidents = pgTable(
       table.scopeId,
       table.status,
     ),
-    policyWindowIdx: uniqueIndex("budget_incidents_policy_window_threshold_idx").on(
-      table.policyId,
-      table.windowStart,
-      table.thresholdType,
-    ).where(sql`${table.status} <> 'dismissed'`),
+    policyWindowIdx: uniqueIndex("budget_incidents_policy_window_threshold_idx")
+      .on(table.policyId, table.windowStart, table.thresholdType)
+      .where(sql`${table.status} <> 'dismissed'`),
   }),
 );

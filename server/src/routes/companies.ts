@@ -1,44 +1,70 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
   createCompanySchema,
+  feedbackTargetTypeSchema,
+  feedbackTraceStatusSchema,
+  feedbackVoteValueSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { agents } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
 import {
   accessService,
   agentService,
   budgetService,
   companyPortabilityService,
   companyService,
-  heartbeatService,
+  feedbackService,
   logActivity,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
 export function companyRoutes(db: Db, storage?: StorageService) {
   const router = Router();
   const svc = companyService(db);
-  const agentSvc = agentService(db);
+  const agents = agentService(db);
   const portability = companyPortabilityService(db, storage);
   const access = accessService(db);
   const budgets = budgetService(db);
-  const heartbeat = heartbeatService(db);
+  const feedback = feedbackService(db);
+
+  function parseBooleanQuery(value: unknown) {
+    return value === true || value === "true" || value === "1";
+  }
+
+  function parseDateQuery(value: unknown, field: string) {
+    if (typeof value !== "string" || value.trim().length === 0) return undefined;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      throw badRequest(`Invalid ${field} query value`);
+    }
+    return parsed;
+  }
+
+  function assertImportTargetAccess(
+    req: Request,
+    target: { mode: "new_company" } | { mode: "existing_company"; companyId: string },
+  ) {
+    if (target.mode === "new_company") {
+      assertInstanceAdmin(req);
+      return;
+    }
+    assertCompanyAccess(req, target.companyId);
+  }
 
   async function assertCanUpdateBranding(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") return;
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
 
-    const actorAgent = await agentSvc.getById(req.actor.agentId);
+    const actorAgent = await agents.getById(req.actor.agentId);
     if (!actorAgent || actorAgent.companyId !== companyId) {
       throw forbidden("Agent key cannot access another company");
     }
@@ -52,7 +78,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     if (req.actor.type === "board") return;
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
 
-    const actorAgent = await agentSvc.getById(req.actor.agentId);
+    const actorAgent = await agents.getById(req.actor.agentId);
     if (!actorAgent || actorAgent.companyId !== companyId) {
       throw forbidden("Agent key cannot access another company");
     }
@@ -74,9 +100,8 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.get("/stats", async (req, res) => {
     assertBoard(req);
-    const allowed = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin
-      ? null
-      : new Set(req.actor.companyIds ?? []);
+    const allowed =
+      req.actor.source === "local_implicit" || req.actor.isInstanceAdmin ? null : new Set(req.actor.companyIds ?? []);
     const stats = await svc.stats();
     if (!allowed) {
       res.json(stats);
@@ -108,6 +133,36 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.json(company);
   });
 
+  router.get("/:companyId/feedback-traces", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+
+    const targetTypeRaw = typeof req.query.targetType === "string" ? req.query.targetType : undefined;
+    const voteRaw = typeof req.query.vote === "string" ? req.query.vote : undefined;
+    const statusRaw = typeof req.query.status === "string" ? req.query.status : undefined;
+    const issueId =
+      typeof req.query.issueId === "string" && req.query.issueId.trim().length > 0 ? req.query.issueId : undefined;
+    const projectId =
+      typeof req.query.projectId === "string" && req.query.projectId.trim().length > 0
+        ? req.query.projectId
+        : undefined;
+
+    const traces = await feedback.listFeedbackTraces({
+      companyId,
+      issueId,
+      projectId,
+      targetType: targetTypeRaw ? feedbackTargetTypeSchema.parse(targetTypeRaw) : undefined,
+      vote: voteRaw ? feedbackVoteValueSchema.parse(voteRaw) : undefined,
+      status: statusRaw ? feedbackTraceStatusSchema.parse(statusRaw) : undefined,
+      from: parseDateQuery(req.query.from, "from"),
+      to: parseDateQuery(req.query.to, "to"),
+      sharedOnly: parseBooleanQuery(req.query.sharedOnly),
+      includePayload: parseBooleanQuery(req.query.includePayload),
+    });
+    res.json(traces);
+  });
+
   router.post("/:companyId/export", validate(companyPortabilityExportSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -117,18 +172,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post("/import/preview", validate(companyPortabilityPreviewSchema), async (req, res) => {
     assertBoard(req);
-    if (req.body.target.mode === "existing_company") {
-      assertCompanyAccess(req, req.body.target.companyId);
-    }
+    assertImportTargetAccess(req, req.body.target);
     const preview = await portability.previewImport(req.body);
     res.json(preview);
   });
 
   router.post("/import", validate(companyPortabilityImportSchema), async (req, res) => {
     assertBoard(req);
-    if (req.body.target.mode === "existing_company") {
-      assertCompanyAccess(req, req.body.target.companyId);
-    }
+    assertImportTargetAccess(req, req.body.target);
     const actor = getActorInfo(req);
     const result = await portability.importBundle(req.body, req.actor.type === "board" ? req.actor.userId : null);
     await logActivity(db, {
@@ -250,10 +301,16 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     assertCompanyAccess(req, companyId);
 
     const actor = getActorInfo(req);
+    const existingCompany = await svc.getById(companyId);
+    if (!existingCompany) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
     let body: Record<string, unknown>;
 
     if (req.actor.type === "agent") {
       // Only CEO agents may update company branding fields
+      const agentSvc = agentService(db);
       const actorAgent = req.actor.agentId ? await agentSvc.getById(req.actor.agentId) : null;
       if (!actorAgent || actorAgent.role !== "ceo") {
         throw forbidden("Only CEO agents or board users may update company settings");
@@ -265,6 +322,18 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     } else {
       assertBoard(req);
       body = updateCompanySchema.parse(req.body);
+
+      if (body.feedbackDataSharingEnabled === true && !existingCompany.feedbackDataSharingEnabled) {
+        body = {
+          ...body,
+          feedbackDataSharingConsentAt: new Date(),
+          feedbackDataSharingConsentByUserId: req.actor.userId ?? "local-board",
+          feedbackDataSharingTermsVersion:
+            typeof body.feedbackDataSharingTermsVersion === "string" && body.feedbackDataSharingTermsVersion.length > 0
+              ? body.feedbackDataSharingTermsVersion
+              : DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
+        };
+      }
     }
 
     const company = await svc.update(companyId, body);
@@ -305,53 +374,6 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       entityType: "company",
       entityId: companyId,
       details: req.body,
-    });
-    res.json(company);
-  });
-
-  router.post("/:companyId/pause", async (req, res) => {
-    assertBoard(req);
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const reason = typeof req.body?.reason === "string" ? req.body.reason : "manual";
-    const company = await svc.pause(companyId, reason);
-    if (!company) {
-      res.status(404).json({ error: "Company not found" });
-      return;
-    }
-    // Cancel all active heartbeat runs for agents in this company
-    const companyAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId));
-    for (const agent of companyAgents) {
-      await heartbeat.cancelActiveForAgent(agent.id);
-    }
-    await logActivity(db, {
-      companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "company.paused",
-      entityType: "company",
-      entityId: companyId,
-      details: { reason },
-    });
-    res.json(company);
-  });
-
-  router.post("/:companyId/resume", async (req, res) => {
-    assertBoard(req);
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const company = await svc.resume(companyId);
-    if (!company) {
-      res.status(404).json({ error: "Company not found" });
-      return;
-    }
-    await logActivity(db, {
-      companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "company.resumed",
-      entityType: "company",
-      entityId: companyId,
     });
     res.json(company);
   });

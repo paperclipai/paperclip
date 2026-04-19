@@ -54,10 +54,7 @@ export async function ensureRepo(opts: {
     const parentDir = path.dirname(vaultPath);
     const dirName = path.basename(vaultPath);
     await fs.mkdir(parentDir, { recursive: true });
-    const result = await gitExec(
-      ["clone", "--branch", gitBranch, "--single-branch", gitRemoteUrl, dirName],
-      parentDir,
-    );
+    const result = await gitExec(["clone", "--branch", gitBranch, "--single-branch", gitRemoteUrl, dirName], parentDir);
     if (result.code !== 0) {
       return { cloned: false, pulled: false, error: `git clone failed: ${result.stderr}` };
     }

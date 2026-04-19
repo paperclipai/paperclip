@@ -71,6 +71,7 @@ export interface TestHarness {
   logs: TestHarnessLogEntry[];
   activity: Array<{ message: string; entityType?: string; entityId?: string; metadata?: Record<string, unknown> }>;
   metrics: Array<{ name: string; value: number; tags?: Record<string, string> }>;
+  telemetry: Array<{ eventName: string; dimensions?: Record<string, string | number | boolean> }>;
 }
 
 type EventRegistration = {
@@ -79,7 +80,9 @@ type EventRegistration = {
   fn: (event: PluginEvent) => Promise<void>;
 };
 
-function normalizeScope(input: ScopeKey): Required<Pick<ScopeKey, "scopeKind" | "stateKey">> & Pick<ScopeKey, "scopeId" | "namespace"> {
+function normalizeScope(
+  input: ScopeKey,
+): Required<Pick<ScopeKey, "scopeKind" | "stateKey">> & Pick<ScopeKey, "scopeId" | "namespace"> {
   return {
     scopeKind: input.scopeKind,
     scopeId: input.scopeId,
@@ -95,13 +98,29 @@ function stateMapKey(input: ScopeKey): string {
 
 function allowsEvent(filter: EventFilter | undefined, event: PluginEvent): boolean {
   if (!filter) return true;
-  if (filter.companyId && filter.companyId !== String((event.payload as Record<string, unknown> | undefined)?.companyId ?? "")) return false;
-  if (filter.projectId && filter.projectId !== String((event.payload as Record<string, unknown> | undefined)?.projectId ?? "")) return false;
-  if (filter.agentId && filter.agentId !== String((event.payload as Record<string, unknown> | undefined)?.agentId ?? "")) return false;
+  if (
+    filter.companyId &&
+    filter.companyId !== String((event.payload as Record<string, unknown> | undefined)?.companyId ?? "")
+  )
+    return false;
+  if (
+    filter.projectId &&
+    filter.projectId !== String((event.payload as Record<string, unknown> | undefined)?.projectId ?? "")
+  )
+    return false;
+  if (
+    filter.agentId &&
+    filter.agentId !== String((event.payload as Record<string, unknown> | undefined)?.agentId ?? "")
+  )
+    return false;
   return true;
 }
 
-function requireCapability(manifest: PaperclipPluginManifestV1, allowed: Set<PluginCapability>, capability: PluginCapability) {
+function requireCapability(
+  manifest: PaperclipPluginManifestV1,
+  allowed: Set<PluginCapability>,
+  capability: PluginCapability,
+) {
   if (allowed.has(capability)) return;
   throw new Error(`Plugin '${manifest.id}' is missing required capability '${capability}' in test harness`);
 }
@@ -132,6 +151,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const logs: TestHarnessLogEntry[] = [];
   const activity: TestHarness["activity"] = [];
   const metrics: TestHarness["metrics"] = [];
+  const telemetry: TestHarness["telemetry"] = [];
 
   const state = new Map<string, unknown>();
   const entities = new Map<string, PluginEntityRecord>();
@@ -162,7 +182,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     events: {
-      on(name: PluginEventType | `plugin.${string}`, filterOrFn: EventFilter | ((event: PluginEvent) => Promise<void>), maybeFn?: (event: PluginEvent) => Promise<void>): () => void {
+      on(
+        name: PluginEventType | `plugin.${string}`,
+        filterOrFn: EventFilter | ((event: PluginEvent) => Promise<void>),
+        maybeFn?: (event: PluginEvent) => Promise<void>,
+      ): () => void {
         requireCapability(manifest, capabilitySet, "events.subscribe");
         let registration: EventRegistration;
         if (typeof filterOrFn === "function") {
@@ -238,28 +262,28 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           : null;
         const record: PluginEntityRecord = existing
           ? {
-            ...existing,
-            entityType: input.entityType,
-            scopeKind: input.scopeKind,
-            scopeId: input.scopeId ?? null,
-            externalId: input.externalId ?? null,
-            title: input.title ?? null,
-            status: input.status ?? null,
-            data: input.data,
-            updatedAt: now,
-          }
+              ...existing,
+              entityType: input.entityType,
+              scopeKind: input.scopeKind,
+              scopeId: input.scopeId ?? null,
+              externalId: input.externalId ?? null,
+              title: input.title ?? null,
+              status: input.status ?? null,
+              data: input.data,
+              updatedAt: now,
+            }
           : {
-            id: randomUUID(),
-            entityType: input.entityType,
-            scopeKind: input.scopeKind,
-            scopeId: input.scopeId ?? null,
-            externalId: input.externalId ?? null,
-            title: input.title ?? null,
-            status: input.status ?? null,
-            data: input.data,
-            createdAt: now,
-            updatedAt: now,
-          };
+              id: randomUUID(),
+              entityType: input.entityType,
+              scopeKind: input.scopeKind,
+              scopeId: input.scopeId ?? null,
+              externalId: input.externalId ?? null,
+              title: input.title ?? null,
+              status: input.status ?? null,
+              data: input.data,
+              createdAt: now,
+              updatedAt: now,
+            };
         entities.set(record.id, record);
         if (previousExternalKey && previousExternalKey !== externalKey) {
           entityExternalIndex.delete(previousExternalKey);
@@ -403,7 +427,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         if (!isInCompany(issues.get(issueId), companyId)) return [];
         return issueComments.get(issueId) ?? [];
       },
-      async createComment(issueId, body, companyId) {
+      async createComment(issueId, body, companyId, options) {
         requireCapability(manifest, capabilitySet, "issue.comments.create");
         const parentIssue = issues.get(issueId);
         if (!isInCompany(parentIssue, companyId)) {
@@ -414,7 +438,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           id: randomUUID(),
           companyId: parentIssue.companyId,
           issueId,
-          authorAgentId: null,
+          authorAgentId: options?.authorAgentId ?? null,
           authorUserId: null,
           body,
           createdAt: now,
@@ -495,11 +519,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const cid = requireCompanyId(companyId);
         const agent = agents.get(agentId);
         if (!isInCompany(agent, cid)) throw new Error(`Agent not found: ${agentId}`);
-        if (
-          agent!.status === "paused" ||
-          agent!.status === "terminated" ||
-          agent!.status === "pending_approval"
-        ) {
+        if (agent!.status === "paused" || agent!.status === "terminated" || agent!.status === "pending_approval") {
           throw new Error(`Agent is not invokable in its current state: ${agent!.status}`);
         }
         return { runId: randomUUID() };
@@ -631,6 +651,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         metrics.push({ name, value, tags });
       },
     },
+    telemetry: {
+      async track(eventName, dimensions) {
+        requireCapability(manifest, capabilitySet, "telemetry.track");
+        telemetry.push({ eventName, dimensions });
+      },
+    },
     logger: {
       info(message, meta) {
         logs.push({ level: "info", message, meta });
@@ -680,8 +706,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       for (const handler of events) {
         const exactMatch = handler.name === event.eventType;
         const wildcardPluginAll = handler.name === "plugin.*" && String(event.eventType).startsWith("plugin.");
-        const wildcardPluginOne = String(handler.name).endsWith(".*")
-          && String(event.eventType).startsWith(String(handler.name).slice(0, -1));
+        const wildcardPluginOne =
+          String(handler.name).endsWith(".*") && String(event.eventType).startsWith(String(handler.name).slice(0, -1));
         if (!exactMatch && !wildcardPluginAll && !wildcardPluginOne) continue;
         if (!allowsEvent(handler.filter, event)) continue;
         await handler.fn(event);
@@ -700,12 +726,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     async getData<T = unknown>(key: string, params: Record<string, unknown> = {}) {
       const handler = dataHandlers.get(key);
       if (!handler) throw new Error(`No data handler registered for '${key}'`);
-      return await handler(params) as T;
+      return (await handler(params)) as T;
     },
     async performAction<T = unknown>(key: string, params: Record<string, unknown> = {}) {
       const handler = actionHandlers.get(key);
       if (!handler) throw new Error(`No action handler registered for '${key}'`);
-      return await handler(params) as T;
+      return (await handler(params)) as T;
     },
     async executeTool<T = ToolResult>(name: string, params: unknown, runCtx: Partial<ToolRunContext> = {}) {
       const handler = toolHandlers.get(name);
@@ -716,7 +742,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         companyId: runCtx.companyId ?? "company-test",
         projectId: runCtx.projectId ?? "project-test",
       };
-      return await handler(params, ctxToPass) as T;
+      return (await handler(params, ctxToPass)) as T;
     },
     getState(input) {
       return state.get(stateMapKey(input));
@@ -729,6 +755,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     logs,
     activity,
     metrics,
+    telemetry,
   };
 
   return harness;

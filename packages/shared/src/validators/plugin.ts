@@ -31,7 +31,13 @@ export const jsonSchemaSchema = z.record(z.unknown()).refine(
   (val) => {
     // Must have a "type" field if non-empty, or be a valid JSON Schema object
     if (Object.keys(val).length === 0) return true;
-    return typeof val.type === "string" || val.$ref !== undefined || val.oneOf !== undefined || val.anyOf !== undefined || val.allOf !== undefined;
+    return (
+      typeof val.type === "string" ||
+      val.$ref !== undefined ||
+      val.oneOf !== undefined ||
+      val.anyOf !== undefined ||
+      val.allOf !== undefined
+    );
   },
   { message: "Must be a valid JSON Schema object (requires at least a 'type', '$ref', or composition keyword)" },
 );
@@ -53,7 +59,8 @@ export const jsonSchemaSchema = z.record(z.unknown()).refine(
  *
  * Valid tokens per field: *, N, N-M, N/S, * /S, N-M/S, and comma-separated lists.
  */
-const CRON_FIELD_PATTERN = /^(\*(?:\/[0-9]+)?|[0-9]+(?:-[0-9]+)?(?:\/[0-9]+)?)(?:,(\*(?:\/[0-9]+)?|[0-9]+(?:-[0-9]+)?(?:\/[0-9]+)?))*$/;
+const CRON_FIELD_PATTERN =
+  /^(\*(?:\/[0-9]+)?|[0-9]+(?:-[0-9]+)?(?:\/[0-9]+)?)(?:,(\*(?:\/[0-9]+)?|[0-9]+(?:-[0-9]+)?(?:\/[0-9]+)?))*$/;
 
 function isValidCronExpression(expression: string): boolean {
   const trimmed = expression.trim();
@@ -67,10 +74,12 @@ export const pluginJobDeclarationSchema = z.object({
   jobKey: z.string().min(1),
   displayName: z.string().min(1),
   description: z.string().optional(),
-  schedule: z.string().refine(
-    (val) => isValidCronExpression(val),
-    { message: "schedule must be a valid 5-field cron expression (e.g. '*/15 * * * *')" },
-  ).optional(),
+  schedule: z
+    .string()
+    .refine((val) => isValidCronExpression(val), {
+      message: "schedule must be a valid 5-field cron expression (e.g. '*/15 * * * *')",
+    })
+    .optional(),
 });
 
 export type PluginJobDeclarationInput = z.infer<typeof pluginJobDeclarationSchema>;
@@ -112,68 +121,82 @@ export type PluginToolDeclarationInput = z.infer<typeof pluginToolDeclarationSch
  *
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
  */
-export const pluginUiSlotDeclarationSchema = z.object({
-  type: z.enum(PLUGIN_UI_SLOT_TYPES),
-  id: z.string().min(1),
-  displayName: z.string().min(1),
-  exportName: z.string().min(1),
-  entityTypes: z.array(z.enum(PLUGIN_UI_SLOT_ENTITY_TYPES)).optional(),
-  routePath: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, {
-    message: "routePath must be a lowercase single-segment slug (letters, numbers, hyphens)",
-  }).optional(),
-  order: z.number().int().optional(),
-}).superRefine((value, ctx) => {
-  // context-sensitive slots require explicit entity targeting.
-  const entityScopedTypes = ["detailTab", "taskDetailView", "contextMenuItem", "commentAnnotation", "commentContextMenuItem", "projectSidebarItem"];
-  if (
-    entityScopedTypes.includes(value.type)
-    && (!value.entityTypes || value.entityTypes.length === 0)
-  ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `${value.type} slots require at least one entityType`,
-      path: ["entityTypes"],
-    });
-  }
-  // projectSidebarItem only makes sense for entityType "project".
-  if (value.type === "projectSidebarItem" && value.entityTypes && !value.entityTypes.includes("project")) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "projectSidebarItem slots require entityTypes to include \"project\"",
-      path: ["entityTypes"],
-    });
-  }
-  // commentAnnotation only makes sense for entityType "comment".
-  if (value.type === "commentAnnotation" && value.entityTypes && !value.entityTypes.includes("comment")) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "commentAnnotation slots require entityTypes to include \"comment\"",
-      path: ["entityTypes"],
-    });
-  }
-  // commentContextMenuItem only makes sense for entityType "comment".
-  if (value.type === "commentContextMenuItem" && value.entityTypes && !value.entityTypes.includes("comment")) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "commentContextMenuItem slots require entityTypes to include \"comment\"",
-      path: ["entityTypes"],
-    });
-  }
-  if (value.routePath && value.type !== "page") {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "routePath is only supported for page slots",
-      path: ["routePath"],
-    });
-  }
-  if (value.routePath && PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS.includes(value.routePath as (typeof PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS)[number])) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `routePath "${value.routePath}" is reserved by the host`,
-      path: ["routePath"],
-    });
-  }
-});
+export const pluginUiSlotDeclarationSchema = z
+  .object({
+    type: z.enum(PLUGIN_UI_SLOT_TYPES),
+    id: z.string().min(1),
+    displayName: z.string().min(1),
+    exportName: z.string().min(1),
+    entityTypes: z.array(z.enum(PLUGIN_UI_SLOT_ENTITY_TYPES)).optional(),
+    routePath: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]*$/, {
+        message: "routePath must be a lowercase single-segment slug (letters, numbers, hyphens)",
+      })
+      .optional(),
+    order: z.number().int().optional(),
+  })
+  .superRefine((value, ctx) => {
+    // context-sensitive slots require explicit entity targeting.
+    const entityScopedTypes = [
+      "detailTab",
+      "taskDetailView",
+      "contextMenuItem",
+      "commentAnnotation",
+      "commentContextMenuItem",
+      "projectSidebarItem",
+    ];
+    if (entityScopedTypes.includes(value.type) && (!value.entityTypes || value.entityTypes.length === 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${value.type} slots require at least one entityType`,
+        path: ["entityTypes"],
+      });
+    }
+    // projectSidebarItem only makes sense for entityType "project".
+    if (value.type === "projectSidebarItem" && value.entityTypes && !value.entityTypes.includes("project")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'projectSidebarItem slots require entityTypes to include "project"',
+        path: ["entityTypes"],
+      });
+    }
+    // commentAnnotation only makes sense for entityType "comment".
+    if (value.type === "commentAnnotation" && value.entityTypes && !value.entityTypes.includes("comment")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'commentAnnotation slots require entityTypes to include "comment"',
+        path: ["entityTypes"],
+      });
+    }
+    // commentContextMenuItem only makes sense for entityType "comment".
+    if (value.type === "commentContextMenuItem" && value.entityTypes && !value.entityTypes.includes("comment")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'commentContextMenuItem slots require entityTypes to include "comment"',
+        path: ["entityTypes"],
+      });
+    }
+    if (value.routePath && value.type !== "page") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "routePath is only supported for page slots",
+        path: ["routePath"],
+      });
+    }
+    if (
+      value.routePath &&
+      PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS.includes(
+        value.routePath as (typeof PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS)[number],
+      )
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `routePath "${value.routePath}" is reserved by the host`,
+        path: ["routePath"],
+      });
+    }
+  });
 
 export type PluginUiSlotDeclarationInput = z.infer<typeof pluginUiSlotDeclarationSchema>;
 
@@ -200,139 +223,136 @@ const launcherBoundsByEnvironment: Record<
 /**
  * Validates the action payload for a declarative plugin launcher.
  */
-export const pluginLauncherActionDeclarationSchema = z.object({
-  type: z.enum(PLUGIN_LAUNCHER_ACTIONS),
-  target: z.string().min(1),
-  params: z.record(z.unknown()).optional(),
-}).superRefine((value, ctx) => {
-  if (value.type === "performAction" && value.target.includes("/")) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "performAction launchers must target an action key, not a route or URL",
-      path: ["target"],
-    });
-  }
+export const pluginLauncherActionDeclarationSchema = z
+  .object({
+    type: z.enum(PLUGIN_LAUNCHER_ACTIONS),
+    target: z.string().min(1),
+    params: z.record(z.unknown()).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.type === "performAction" && value.target.includes("/")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "performAction launchers must target an action key, not a route or URL",
+        path: ["target"],
+      });
+    }
 
-  if (value.type === "navigate" && /^https?:\/\//.test(value.target)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "navigate launchers must target a host route, not an absolute URL",
-      path: ["target"],
-    });
-  }
-});
+    if (value.type === "navigate" && /^https?:\/\//.test(value.target)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "navigate launchers must target a host route, not an absolute URL",
+        path: ["target"],
+      });
+    }
+  });
 
-export type PluginLauncherActionDeclarationInput =
-  z.infer<typeof pluginLauncherActionDeclarationSchema>;
+export type PluginLauncherActionDeclarationInput = z.infer<typeof pluginLauncherActionDeclarationSchema>;
 
 /**
  * Validates optional render hints for a plugin launcher destination.
  */
-export const pluginLauncherRenderDeclarationSchema = z.object({
-  environment: z.enum(PLUGIN_LAUNCHER_RENDER_ENVIRONMENTS),
-  bounds: z.enum(PLUGIN_LAUNCHER_BOUNDS).optional(),
-}).superRefine((value, ctx) => {
-  if (!value.bounds) {
-    return;
-  }
+export const pluginLauncherRenderDeclarationSchema = z
+  .object({
+    environment: z.enum(PLUGIN_LAUNCHER_RENDER_ENVIRONMENTS),
+    bounds: z.enum(PLUGIN_LAUNCHER_BOUNDS).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.bounds) {
+      return;
+    }
 
-  const supportedBounds = launcherBoundsByEnvironment[value.environment];
-  if (!supportedBounds.includes(value.bounds)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `bounds "${value.bounds}" is not supported for render environment "${value.environment}"`,
-      path: ["bounds"],
-    });
-  }
-});
+    const supportedBounds = launcherBoundsByEnvironment[value.environment];
+    if (!supportedBounds.includes(value.bounds)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `bounds "${value.bounds}" is not supported for render environment "${value.environment}"`,
+        path: ["bounds"],
+      });
+    }
+  });
 
-export type PluginLauncherRenderDeclarationInput =
-  z.infer<typeof pluginLauncherRenderDeclarationSchema>;
+export type PluginLauncherRenderDeclarationInput = z.infer<typeof pluginLauncherRenderDeclarationSchema>;
 
 /**
  * Validates declarative launcher metadata in a plugin manifest.
  */
-export const pluginLauncherDeclarationSchema = z.object({
-  id: z.string().min(1),
-  displayName: z.string().min(1),
-  description: z.string().optional(),
-  placementZone: z.enum(PLUGIN_LAUNCHER_PLACEMENT_ZONES),
-  exportName: z.string().min(1).optional(),
-  entityTypes: z.array(z.enum(PLUGIN_UI_SLOT_ENTITY_TYPES)).optional(),
-  order: z.number().int().optional(),
-  action: pluginLauncherActionDeclarationSchema,
-  render: pluginLauncherRenderDeclarationSchema.optional(),
-}).superRefine((value, ctx) => {
-  if (
-    entityScopedLauncherPlacementZones.some((zone) => zone === value.placementZone)
-    && (!value.entityTypes || value.entityTypes.length === 0)
-  ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `${value.placementZone} launchers require at least one entityType`,
-      path: ["entityTypes"],
-    });
-  }
+export const pluginLauncherDeclarationSchema = z
+  .object({
+    id: z.string().min(1),
+    displayName: z.string().min(1),
+    description: z.string().optional(),
+    placementZone: z.enum(PLUGIN_LAUNCHER_PLACEMENT_ZONES),
+    exportName: z.string().min(1).optional(),
+    entityTypes: z.array(z.enum(PLUGIN_UI_SLOT_ENTITY_TYPES)).optional(),
+    order: z.number().int().optional(),
+    action: pluginLauncherActionDeclarationSchema,
+    render: pluginLauncherRenderDeclarationSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      entityScopedLauncherPlacementZones.some((zone) => zone === value.placementZone) &&
+      (!value.entityTypes || value.entityTypes.length === 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${value.placementZone} launchers require at least one entityType`,
+        path: ["entityTypes"],
+      });
+    }
 
-  if (
-    value.placementZone === "projectSidebarItem"
-    && value.entityTypes
-    && !value.entityTypes.includes("project")
-  ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "projectSidebarItem launchers require entityTypes to include \"project\"",
-      path: ["entityTypes"],
-    });
-  }
+    if (value.placementZone === "projectSidebarItem" && value.entityTypes && !value.entityTypes.includes("project")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'projectSidebarItem launchers require entityTypes to include "project"',
+        path: ["entityTypes"],
+      });
+    }
 
-  if (value.action.type === "performAction" && value.render) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "performAction launchers cannot declare render hints",
-      path: ["render"],
-    });
-  }
+    if (value.action.type === "performAction" && value.render) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "performAction launchers cannot declare render hints",
+        path: ["render"],
+      });
+    }
 
-  if (
-    ["openModal", "openDrawer", "openPopover"].includes(value.action.type)
-    && !value.render
-  ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `${value.action.type} launchers require render metadata`,
-      path: ["render"],
-    });
-  }
+    if (["openModal", "openDrawer", "openPopover"].includes(value.action.type) && !value.render) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${value.action.type} launchers require render metadata`,
+        path: ["render"],
+      });
+    }
 
-  if (value.action.type === "openModal" && value.render?.environment === "hostInline") {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "openModal launchers cannot use the hostInline render environment",
-      path: ["render", "environment"],
-    });
-  }
+    if (value.action.type === "openModal" && value.render?.environment === "hostInline") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "openModal launchers cannot use the hostInline render environment",
+        path: ["render", "environment"],
+      });
+    }
 
-  if (
-    value.action.type === "openDrawer"
-    && value.render
-    && !["hostOverlay", "iframe"].includes(value.render.environment)
-  ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "openDrawer launchers must use hostOverlay or iframe render environments",
-      path: ["render", "environment"],
-    });
-  }
+    if (
+      value.action.type === "openDrawer" &&
+      value.render &&
+      !["hostOverlay", "iframe"].includes(value.render.environment)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "openDrawer launchers must use hostOverlay or iframe render environments",
+        path: ["render", "environment"],
+      });
+    }
 
-  if (value.action.type === "openPopover" && value.render?.environment === "hostRoute") {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "openPopover launchers cannot use the hostRoute render environment",
-      path: ["render", "environment"],
-    });
-  }
-});
+    if (value.action.type === "openPopover" && value.render?.environment === "hostRoute") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "openPopover launchers cannot use the hostRoute render environment",
+        path: ["render", "environment"],
+      });
+    }
+  });
 
 export type PluginLauncherDeclarationInput = z.infer<typeof pluginLauncherDeclarationSchema>;
 
@@ -374,181 +394,194 @@ export type PluginLauncherDeclarationInput = z.infer<typeof pluginLauncherDeclar
  * @see PLUGIN_SPEC.md §10.1 — Manifest shape
  * @see {@link PaperclipPluginManifestV1} — the inferred TypeScript type
  */
-export const pluginManifestV1Schema = z.object({
-  id: z.string().min(1).regex(
-    /^[a-z0-9][a-z0-9._-]*$/,
-    "Plugin id must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
-  ),
-  apiVersion: z.literal(1),
-  version: z.string().min(1).regex(
-    /^\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/,
-    "Version must follow semver (e.g. 1.0.0 or 1.0.0-beta.1)",
-  ),
-  displayName: z.string().min(1).max(100),
-  description: z.string().min(1).max(500),
-  author: z.string().min(1).max(200),
-  categories: z.array(z.enum(PLUGIN_CATEGORIES)).min(1),
-  minimumHostVersion: z.string().regex(
-    /^\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/,
-    "minimumHostVersion must follow semver (e.g. 1.0.0)",
-  ).optional(),
-  minimumPaperclipVersion: z.string().regex(
-    /^\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/,
-    "minimumPaperclipVersion must follow semver (e.g. 1.0.0)",
-  ).optional(),
-  capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)).min(1),
-  entrypoints: z.object({
-    worker: z.string().min(1),
-    ui: z.string().min(1).optional(),
-  }),
-  instanceConfigSchema: jsonSchemaSchema.optional(),
-  jobs: z.array(pluginJobDeclarationSchema).optional(),
-  webhooks: z.array(pluginWebhookDeclarationSchema).optional(),
-  tools: z.array(pluginToolDeclarationSchema).optional(),
-  launchers: z.array(pluginLauncherDeclarationSchema).optional(),
-  ui: z.object({
-    slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
+export const pluginManifestV1Schema = z
+  .object({
+    id: z
+      .string()
+      .min(1)
+      .regex(
+        /^[a-z0-9][a-z0-9._-]*$/,
+        "Plugin id must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
+      ),
+    apiVersion: z.literal(1),
+    version: z
+      .string()
+      .min(1)
+      .regex(
+        /^\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/,
+        "Version must follow semver (e.g. 1.0.0 or 1.0.0-beta.1)",
+      ),
+    displayName: z.string().min(1).max(100),
+    description: z.string().min(1).max(500),
+    author: z.string().min(1).max(200),
+    categories: z.array(z.enum(PLUGIN_CATEGORIES)).min(1),
+    minimumHostVersion: z
+      .string()
+      .regex(
+        /^\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/,
+        "minimumHostVersion must follow semver (e.g. 1.0.0)",
+      )
+      .optional(),
+    minimumPaperclipVersion: z
+      .string()
+      .regex(
+        /^\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/,
+        "minimumPaperclipVersion must follow semver (e.g. 1.0.0)",
+      )
+      .optional(),
+    capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)).min(1),
+    entrypoints: z.object({
+      worker: z.string().min(1),
+      ui: z.string().min(1).optional(),
+    }),
+    instanceConfigSchema: jsonSchemaSchema.optional(),
+    jobs: z.array(pluginJobDeclarationSchema).optional(),
+    webhooks: z.array(pluginWebhookDeclarationSchema).optional(),
+    tools: z.array(pluginToolDeclarationSchema).optional(),
     launchers: z.array(pluginLauncherDeclarationSchema).optional(),
-  }).optional(),
-}).superRefine((manifest, ctx) => {
-  // ── Entrypoint ↔ UI slot consistency ──────────────────────────────────
-  // Plugins that declare UI slots must also declare a UI entrypoint so the
-  // host knows where to load the bundle from (PLUGIN_SPEC.md §10.1).
-  const hasUiSlots = (manifest.ui?.slots?.length ?? 0) > 0;
-  const hasUiLaunchers = (manifest.ui?.launchers?.length ?? 0) > 0;
-  if ((hasUiSlots || hasUiLaunchers) && !manifest.entrypoints.ui) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "entrypoints.ui is required when ui.slots or ui.launchers are declared",
-      path: ["entrypoints", "ui"],
-    });
-  }
-
-  if (
-    manifest.minimumHostVersion
-    && manifest.minimumPaperclipVersion
-    && manifest.minimumHostVersion !== manifest.minimumPaperclipVersion
-  ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "minimumHostVersion and minimumPaperclipVersion must match when both are declared",
-      path: ["minimumHostVersion"],
-    });
-  }
-
-  // ── Capability ↔ feature declaration consistency ───────────────────────
-  // The host enforces capabilities at install and runtime. A plugin must
-  // declare every capability it needs up-front; silently having more features
-  // than capabilities would cause runtime rejections.
-
-  // tools require agent.tools.register (PLUGIN_SPEC.md §11)
-  if (manifest.tools && manifest.tools.length > 0) {
-    if (!manifest.capabilities.includes("agent.tools.register")) {
+    ui: z
+      .object({
+        slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
+        launchers: z.array(pluginLauncherDeclarationSchema).optional(),
+      })
+      .optional(),
+  })
+  .superRefine((manifest, ctx) => {
+    // ── Entrypoint ↔ UI slot consistency ──────────────────────────────────
+    // Plugins that declare UI slots must also declare a UI entrypoint so the
+    // host knows where to load the bundle from (PLUGIN_SPEC.md §10.1).
+    const hasUiSlots = (manifest.ui?.slots?.length ?? 0) > 0;
+    const hasUiLaunchers = (manifest.ui?.launchers?.length ?? 0) > 0;
+    if ((hasUiSlots || hasUiLaunchers) && !manifest.entrypoints.ui) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Capability 'agent.tools.register' is required when tools are declared",
-        path: ["capabilities"],
+        message: "entrypoints.ui is required when ui.slots or ui.launchers are declared",
+        path: ["entrypoints", "ui"],
       });
     }
-  }
 
-  // jobs require jobs.schedule (PLUGIN_SPEC.md §17)
-  if (manifest.jobs && manifest.jobs.length > 0) {
-    if (!manifest.capabilities.includes("jobs.schedule")) {
+    if (
+      manifest.minimumHostVersion &&
+      manifest.minimumPaperclipVersion &&
+      manifest.minimumHostVersion !== manifest.minimumPaperclipVersion
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Capability 'jobs.schedule' is required when jobs are declared",
-        path: ["capabilities"],
+        message: "minimumHostVersion and minimumPaperclipVersion must match when both are declared",
+        path: ["minimumHostVersion"],
       });
     }
-  }
 
-  // webhooks require webhooks.receive (PLUGIN_SPEC.md §18)
-  if (manifest.webhooks && manifest.webhooks.length > 0) {
-    if (!manifest.capabilities.includes("webhooks.receive")) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Capability 'webhooks.receive' is required when webhooks are declared",
-        path: ["capabilities"],
-      });
-    }
-  }
+    // ── Capability ↔ feature declaration consistency ───────────────────────
+    // The host enforces capabilities at install and runtime. A plugin must
+    // declare every capability it needs up-front; silently having more features
+    // than capabilities would cause runtime rejections.
 
-  // ── Uniqueness checks ──────────────────────────────────────────────────
-  // Duplicate keys within a plugin's own manifest are always a bug. The host
-  // would not know which declaration takes precedence, so we reject early.
-
-  // job keys must be unique within the plugin (used as identifiers in the DB)
-  if (manifest.jobs) {
-    const jobKeys = manifest.jobs.map((j) => j.jobKey);
-    const duplicates = jobKeys.filter((key, i) => jobKeys.indexOf(key) !== i);
-    if (duplicates.length > 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `Duplicate job keys: ${[...new Set(duplicates)].join(", ")}`,
-        path: ["jobs"],
-      });
-    }
-  }
-
-  // webhook endpoint keys must be unique within the plugin (used in routes)
-  if (manifest.webhooks) {
-    const endpointKeys = manifest.webhooks.map((w) => w.endpointKey);
-    const duplicates = endpointKeys.filter((key, i) => endpointKeys.indexOf(key) !== i);
-    if (duplicates.length > 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `Duplicate webhook endpoint keys: ${[...new Set(duplicates)].join(", ")}`,
-        path: ["webhooks"],
-      });
-    }
-  }
-
-  // tool names must be unique within the plugin (namespaced at runtime)
-  if (manifest.tools) {
-    const toolNames = manifest.tools.map((t) => t.name);
-    const duplicates = toolNames.filter((name, i) => toolNames.indexOf(name) !== i);
-    if (duplicates.length > 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `Duplicate tool names: ${[...new Set(duplicates)].join(", ")}`,
-        path: ["tools"],
-      });
-    }
-  }
-
-  // UI slot ids must be unique within the plugin (namespaced at runtime)
-  if (manifest.ui) {
-    if (manifest.ui.slots) {
-      const slotIds = manifest.ui.slots.map((s) => s.id);
-      const duplicates = slotIds.filter((id, i) => slotIds.indexOf(id) !== i);
-      if (duplicates.length > 0) {
+    // tools require agent.tools.register (PLUGIN_SPEC.md §11)
+    if (manifest.tools && manifest.tools.length > 0) {
+      if (!manifest.capabilities.includes("agent.tools.register")) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: `Duplicate UI slot ids: ${[...new Set(duplicates)].join(", ")}`,
-          path: ["ui", "slots"],
+          message: "Capability 'agent.tools.register' is required when tools are declared",
+          path: ["capabilities"],
         });
       }
     }
-  }
 
-  // launcher ids must be unique within the plugin
-  const allLaunchers = [
-    ...(manifest.launchers ?? []),
-    ...(manifest.ui?.launchers ?? []),
-  ];
-  if (allLaunchers.length > 0) {
-    const launcherIds = allLaunchers.map((launcher) => launcher.id);
-    const duplicates = launcherIds.filter((id, i) => launcherIds.indexOf(id) !== i);
-    if (duplicates.length > 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `Duplicate launcher ids: ${[...new Set(duplicates)].join(", ")}`,
-        path: manifest.ui?.launchers ? ["ui", "launchers"] : ["launchers"],
-      });
+    // jobs require jobs.schedule (PLUGIN_SPEC.md §17)
+    if (manifest.jobs && manifest.jobs.length > 0) {
+      if (!manifest.capabilities.includes("jobs.schedule")) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Capability 'jobs.schedule' is required when jobs are declared",
+          path: ["capabilities"],
+        });
+      }
     }
-  }
-});
+
+    // webhooks require webhooks.receive (PLUGIN_SPEC.md §18)
+    if (manifest.webhooks && manifest.webhooks.length > 0) {
+      if (!manifest.capabilities.includes("webhooks.receive")) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Capability 'webhooks.receive' is required when webhooks are declared",
+          path: ["capabilities"],
+        });
+      }
+    }
+
+    // ── Uniqueness checks ──────────────────────────────────────────────────
+    // Duplicate keys within a plugin's own manifest are always a bug. The host
+    // would not know which declaration takes precedence, so we reject early.
+
+    // job keys must be unique within the plugin (used as identifiers in the DB)
+    if (manifest.jobs) {
+      const jobKeys = manifest.jobs.map((j) => j.jobKey);
+      const duplicates = jobKeys.filter((key, i) => jobKeys.indexOf(key) !== i);
+      if (duplicates.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate job keys: ${[...new Set(duplicates)].join(", ")}`,
+          path: ["jobs"],
+        });
+      }
+    }
+
+    // webhook endpoint keys must be unique within the plugin (used in routes)
+    if (manifest.webhooks) {
+      const endpointKeys = manifest.webhooks.map((w) => w.endpointKey);
+      const duplicates = endpointKeys.filter((key, i) => endpointKeys.indexOf(key) !== i);
+      if (duplicates.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate webhook endpoint keys: ${[...new Set(duplicates)].join(", ")}`,
+          path: ["webhooks"],
+        });
+      }
+    }
+
+    // tool names must be unique within the plugin (namespaced at runtime)
+    if (manifest.tools) {
+      const toolNames = manifest.tools.map((t) => t.name);
+      const duplicates = toolNames.filter((name, i) => toolNames.indexOf(name) !== i);
+      if (duplicates.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate tool names: ${[...new Set(duplicates)].join(", ")}`,
+          path: ["tools"],
+        });
+      }
+    }
+
+    // UI slot ids must be unique within the plugin (namespaced at runtime)
+    if (manifest.ui) {
+      if (manifest.ui.slots) {
+        const slotIds = manifest.ui.slots.map((s) => s.id);
+        const duplicates = slotIds.filter((id, i) => slotIds.indexOf(id) !== i);
+        if (duplicates.length > 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Duplicate UI slot ids: ${[...new Set(duplicates)].join(", ")}`,
+            path: ["ui", "slots"],
+          });
+        }
+      }
+    }
+
+    // launcher ids must be unique within the plugin
+    const allLaunchers = [...(manifest.launchers ?? []), ...(manifest.ui?.launchers ?? [])];
+    if (allLaunchers.length > 0) {
+      const launcherIds = allLaunchers.map((launcher) => launcher.id);
+      const duplicates = launcherIds.filter((id, i) => launcherIds.indexOf(id) !== i);
+      if (duplicates.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate launcher ids: ${[...new Set(duplicates)].join(", ")}`,
+          path: manifest.ui?.launchers ? ["ui", "launchers"] : ["launchers"],
+        });
+      }
+    }
+  });
 
 export type PluginManifestV1Input = z.infer<typeof pluginManifestV1Schema>;
 

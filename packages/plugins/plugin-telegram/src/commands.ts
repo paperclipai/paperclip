@@ -58,12 +58,7 @@ export async function handleCommand(
   }
 }
 
-async function handleStatus(
-  ctx: PluginContext,
-  token: string,
-  chatId: string,
-  messageThreadId?: number,
-) {
+async function handleStatus(ctx: PluginContext, token: string, chatId: string, messageThreadId?: number) {
   await sendChatAction(ctx, token, chatId);
 
   try {
@@ -91,9 +86,7 @@ async function handleStatus(
       chatId,
       escapeMarkdownV2("\u{1f4ca}") +
         " *Paperclip Status*\n\n" +
-        escapeMarkdownV2(
-          "Could not fetch status. Make sure this chat is linked to a company with /connect.",
-        ),
+        escapeMarkdownV2("Could not fetch status. Make sure this chat is linked to a company with /connect."),
       {
         parseMode: "MarkdownV2",
         messageThreadId,
@@ -137,9 +130,7 @@ async function handleIssues(
     for (const issue of filtered) {
       const emoji = statusEmoji[issue.status] ?? "\u{1f4cb}";
       const id = issue.identifier ?? issue.id;
-      lines.push(
-        `${escapeMarkdownV2(emoji)} ${escapeMarkdownV2(id)} \\- ${escapeMarkdownV2(issue.title)}`,
-      );
+      lines.push(`${escapeMarkdownV2(emoji)} ${escapeMarkdownV2(id)} \\- ${escapeMarkdownV2(issue.title)}`);
     }
 
     await sendMessage(ctx, token, chatId, lines.join("\n"), {
@@ -158,12 +149,7 @@ async function handleIssues(
   }
 }
 
-async function handleAgents(
-  ctx: PluginContext,
-  token: string,
-  chatId: string,
-  messageThreadId?: number,
-) {
+async function handleAgents(ctx: PluginContext, token: string, chatId: string, messageThreadId?: number) {
   await sendChatAction(ctx, token, chatId);
 
   try {
@@ -185,9 +171,7 @@ async function handleAgents(
     const lines = [escapeMarkdownV2("\u{1f916}") + " *Agents*", ""];
     for (const agent of agents) {
       const emoji = statusEmoji[agent.status] ?? "\u26aa";
-      lines.push(
-        `${escapeMarkdownV2(emoji)} *${escapeMarkdownV2(agent.name)}* \\- ${escapeMarkdownV2(agent.status)}`,
-      );
+      lines.push(`${escapeMarkdownV2(emoji)} *${escapeMarkdownV2(agent.name)}* \\- ${escapeMarkdownV2(agent.status)}`);
     }
 
     await sendMessage(ctx, token, chatId, lines.join("\n"), {
@@ -195,13 +179,9 @@ async function handleAgents(
       messageThreadId,
     });
   } catch {
-    await sendMessage(
-      ctx,
-      token,
-      chatId,
-      "Could not fetch agents. Make sure this chat is linked with /connect.",
-      { messageThreadId },
-    );
+    await sendMessage(ctx, token, chatId, "Could not fetch agents. Make sure this chat is linked with /connect.", {
+      messageThreadId,
+    });
   }
 }
 
@@ -245,19 +225,11 @@ async function handleApprove(
   }
 }
 
-async function handleHelp(
-  ctx: PluginContext,
-  token: string,
-  chatId: string,
-  messageThreadId?: number,
-) {
+async function handleHelp(ctx: PluginContext, token: string, chatId: string, messageThreadId?: number) {
   const lines = [
     escapeMarkdownV2("\u{1f4ce}") + " *Paperclip Bot Commands*",
     "",
-    ...BOT_COMMANDS.map(
-      (cmd) =>
-        `/${escapeMarkdownV2(cmd.command)} \\- ${escapeMarkdownV2(cmd.description)}`,
-    ),
+    ...BOT_COMMANDS.map((cmd) => `/${escapeMarkdownV2(cmd.command)} \\- ${escapeMarkdownV2(cmd.description)}`),
     "",
     `/${escapeMarkdownV2("connect")} \\- ${escapeMarkdownV2("Link this chat to a Paperclip company")}`,
     `/${escapeMarkdownV2("connect-topic")} \\- ${escapeMarkdownV2("Map a project to a forum topic")}`,
@@ -295,29 +267,19 @@ async function handleConnect(
   let companyId: string | undefined;
   try {
     const companies = await ctx.companies.list();
-    const match = companies.find(
-      (c) => c.name.toLowerCase() === trimmedName.toLowerCase(),
-    );
+    const match = companies.find((c) => c.name.toLowerCase() === trimmedName.toLowerCase());
     if (!match) {
-      await sendMessage(
-        ctx,
-        token,
-        chatId,
-        `Company "${trimmedName}" not found. Check the name and try again.`,
-        { messageThreadId },
-      );
+      await sendMessage(ctx, token, chatId, `Company "${trimmedName}" not found. Check the name and try again.`, {
+        messageThreadId,
+      });
       return;
     }
     companyId = match.id;
   } catch (err) {
     ctx.logger.error("Failed to resolve company name", { companyName: trimmedName, error: String(err) });
-    await sendMessage(
-      ctx,
-      token,
-      chatId,
-      `Failed to look up company "${trimmedName}". Please try again.`,
-      { messageThreadId },
-    );
+    await sendMessage(ctx, token, chatId, `Failed to look up company "${trimmedName}". Please try again.`, {
+      messageThreadId,
+    });
     return;
   }
 
@@ -345,16 +307,10 @@ export async function handleConnectTopic(
 ) {
   const parts = args.trim().split(/\s+/);
   if (parts.length < 2) {
-    await sendMessage(
-      ctx,
-      token,
-      chatId,
-      "Usage: /connect\\-topic <project\\-name> <topic\\-id>",
-      {
-        parseMode: "MarkdownV2",
-        messageThreadId,
-      },
-    );
+    await sendMessage(ctx, token, chatId, "Usage: /connect\\-topic <project\\-name> <topic\\-id>", {
+      parseMode: "MarkdownV2",
+      messageThreadId,
+    });
     return;
   }
 
@@ -369,10 +325,7 @@ export async function handleConnectTopic(
   const topicMap = existing ?? {};
   topicMap[projectName] = topicId;
 
-  await ctx.state.set(
-    { scopeKind: "instance", stateKey: `topic-map-${chatId}` },
-    topicMap,
-  );
+  await ctx.state.set({ scopeKind: "instance", stateKey: `topic-map-${chatId}` }, topicMap);
 
   await sendMessage(
     ctx,
@@ -404,9 +357,9 @@ export async function getTopicForProject(
  * instead of the company name. Falls back to chatId if no mapping exists.
  */
 export async function resolveCompanyId(ctx: PluginContext, chatId: string): Promise<string> {
-  const mapping = await ctx.state.get({
+  const mapping = (await ctx.state.get({
     scopeKind: "instance",
     stateKey: `chat_${chatId}`,
-  }) as { companyId?: string; companyName?: string } | null;
+  })) as { companyId?: string; companyName?: string } | null;
   return mapping?.companyId ?? chatId;
 }

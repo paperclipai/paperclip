@@ -25,12 +25,7 @@ interface WsServer {
   clients: Set<WsSocket>;
   on(event: "connection", listener: (socket: WsSocket, req: IncomingMessage) => void): void;
   on(event: "close", listener: () => void): void;
-  handleUpgrade(
-    req: IncomingMessage,
-    socket: Duplex,
-    head: Buffer,
-    callback: (ws: WsSocket) => void,
-  ): void;
+  handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, callback: (ws: WsSocket) => void): void;
   emit(event: "connection", ws: WsSocket, req: IncomingMessage): boolean;
 }
 
@@ -163,10 +158,7 @@ async function authorizeUpgrade(
     return null;
   }
 
-  await db
-    .update(agentApiKeys)
-    .set({ lastUsedAt: new Date() })
-    .where(eq(agentApiKeys.id, key.id));
+  await db.update(agentApiKeys).set({ lastUsedAt: new Date() }).where(eq(agentApiKeys.id, key.id));
 
   return {
     companyId,

@@ -144,7 +144,14 @@ export interface DiscussToolParams {
 
 export interface WorkflowStep {
   id: string;
-  type: "fetch_issue" | "invoke_agent" | "http_request" | "send_message" | "create_issue" | "wait_approval" | "set_state";
+  type:
+    | "fetch_issue"
+    | "invoke_agent"
+    | "http_request"
+    | "send_message"
+    | "create_issue"
+    | "wait_approval"
+    | "set_state";
   name?: string;
   issueId?: string;
   agentId?: string;

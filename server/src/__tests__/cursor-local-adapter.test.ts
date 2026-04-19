@@ -139,7 +139,8 @@ describe("cursor ui stdout parser", () => {
 
   it("compacts shellToolCall and shell tool result for run log", () => {
     const ts = "2026-03-05T00:00:00.000Z";
-    const longCommand = "curl -s -X POST \"$PAPERCLIP_API_URL/api/issues/abc/checkout\" -H \"Authorization: Bearer $PAPERCLIP_API_KEY\"";
+    const longCommand =
+      'curl -s -X POST "$PAPERCLIP_API_URL/api/issues/abc/checkout" -H "Authorization: Bearer $PAPERCLIP_API_KEY"';
 
     expect(
       parseCursorStdoutLine(
@@ -197,7 +198,7 @@ describe("cursor ui stdout parser", () => {
         kind: "tool_result",
         ts,
         toolUseId: "call_shell_1",
-        content: "exit 0\n<stdout>\n{\"id\":\"abc\",\"status\":\"in_progress\"}",
+        content: 'exit 0\n<stdout>\n{"id":"abc","status":"in_progress"}',
         isError: false,
       },
     ]);
@@ -377,9 +378,7 @@ describe("cursor cli formatter", () => {
         false,
       );
 
-      const lines = spy.mock.calls
-        .map((call) => call.map((v) => String(v)).join(" "))
-        .map(stripAnsi);
+      const lines = spy.mock.calls.map((call) => call.map((v) => String(v)).join(" ")).map(stripAnsi);
 
       expect(lines).toEqual(
         expect.arrayContaining([

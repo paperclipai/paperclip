@@ -34,6 +34,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
+import { getTelemetryClient } from "../telemetry.js";
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -47,6 +48,7 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 
 /** Only these protocols are allowed for plugin HTTP requests. */
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
+const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
 /**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
@@ -69,14 +71,14 @@ function isPrivateIP(ip: string): boolean {
     if (second >= 16 && second <= 31) return true;
   }
   if (ip.startsWith("192.168.")) return true;
-  if (ip.startsWith("127.")) return true;                   // loopback
-  if (ip.startsWith("169.254.")) return true;               // link-local
+  if (ip.startsWith("127.")) return true; // loopback
+  if (ip.startsWith("169.254.")) return true; // link-local
   if (ip === "0.0.0.0") return true;
 
   // IPv6 patterns
-  if (lower === "::1") return true;                          // loopback
+  if (lower === "::1") return true; // loopback
   if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
-  if (lower.startsWith("fe80")) return true;                 // link-local
+  if (lower.startsWith("fe80")) return true; // link-local
   if (lower === "::") return true;
 
   return false;
@@ -115,9 +117,7 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
   }
 
   if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
-    throw new Error(
-      `Disallowed protocol "${parsed.protocol}" — only http: and https: are permitted`,
-    );
+    throw new Error(`Disallowed protocol "${parsed.protocol}" — only http: and https: are permitted`);
   }
 
   // Resolve the hostname to an IP and check for private ranges.
@@ -147,9 +147,7 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     // to both private and public addresses.
     const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
     if (safeResults.length === 0) {
-      throw new Error(
-        `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
-      );
+      throw new Error(`All resolved IPs for ${originalHostname} are in private/reserved ranges`);
     }
 
     const resolved = safeResults[0]!;
@@ -157,18 +155,18 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
       parsedUrl: parsed,
       resolvedAddress: resolved.address,
       hostHeader,
-      tlsServername: parsed.protocol === "https:" && isIP(originalHostname) === 0
-        ? originalHostname
-        : undefined,
+      tlsServername: parsed.protocol === "https:" && isIP(originalHostname) === 0 ? originalHostname : undefined,
       useTls: parsed.protocol === "https:",
     };
   } catch (err) {
     // Re-throw our own errors; wrap DNS failures
-    if (err instanceof Error && (
-      err.message.startsWith("All resolved IPs") ||
-      err.message.startsWith("DNS resolution returned") ||
-      err.message.startsWith("DNS lookup timed out")
-    )) throw err;
+    if (
+      err instanceof Error &&
+      (err.message.startsWith("All resolved IPs") ||
+        err.message.startsWith("DNS resolution returned") ||
+        err.message.startsWith("DNS lookup timed out"))
+    )
+      throw err;
     throw new Error(`DNS resolution failed for ${originalHostname}: ${(err as Error).message}`);
   }
 }
@@ -179,11 +177,12 @@ function buildPinnedRequestOptions(
 ): { options: HttpRequestOptions & { servername?: string }; body: string | undefined } {
   const headers = new Headers(init?.headers);
   const method = init?.method ?? "GET";
-  const body = init?.body === undefined || init?.body === null
-    ? undefined
-    : typeof init.body === "string"
-      ? init.body
-      : String(init.body);
+  const body =
+    init?.body === undefined || init?.body === null
+      ? undefined
+      : typeof init.body === "string"
+        ? init.body
+        : String(init.body);
 
   headers.set("Host", target.hostHeader);
   if (body !== undefined && !headers.has("content-length") && !headers.has("transfer-encoding")) {
@@ -191,19 +190,16 @@ function buildPinnedRequestOptions(
   }
 
   const pathname = `${target.parsedUrl.pathname}${target.parsedUrl.search}`;
-  const auth = target.parsedUrl.username || target.parsedUrl.password
-    ? `${decodeURIComponent(target.parsedUrl.username)}:${decodeURIComponent(target.parsedUrl.password)}`
-    : undefined;
+  const auth =
+    target.parsedUrl.username || target.parsedUrl.password
+      ? `${decodeURIComponent(target.parsedUrl.username)}:${decodeURIComponent(target.parsedUrl.password)}`
+      : undefined;
 
   return {
     options: {
       protocol: target.parsedUrl.protocol,
       host: target.resolvedAddress,
-      port: target.parsedUrl.port
-        ? Number(target.parsedUrl.port)
-        : target.useTls
-          ? 443
-          : 80,
+      port: target.parsedUrl.port ? Number(target.parsedUrl.port) : target.useTls ? 443 : 80,
       path: pathname,
       method,
       headers: Object.fromEntries(headers.entries()),
@@ -275,9 +271,9 @@ const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 function looksLikePath(value: string): boolean {
   const normalized = value.trim();
   return (
-    PATH_LIKE_PATTERN.test(normalized)
-    || WINDOWS_DRIVE_PATH_PATTERN.test(normalized)
-  ) && !UUID_PATTERN.test(normalized);
+    (PATH_LIKE_PATTERN.test(normalized) || WINDOWS_DRIVE_PATH_PATTERN.test(normalized)) &&
+    !UUID_PATTERN.test(normalized)
+  );
 }
 
 function sanitizeWorkspaceText(value: string): string {
@@ -321,14 +317,7 @@ const MAX_LOG_META_JSON_LENGTH = 50_000;
 const MAX_METRIC_NAME_LENGTH = 500;
 
 /** Pino reserved field names that plugins must not overwrite. */
-const PINO_RESERVED_KEYS = new Set([
-  "level",
-  "time",
-  "pid",
-  "hostname",
-  "msg",
-  "v",
-]);
+const PINO_RESERVED_KEYS = new Set(["level", "time", "pid", "hostname", "msg", "v"]);
 
 /** Truncate a string to `max` characters, appending a marker if truncated. */
 function truncStr(s: string, max: number): string {
@@ -636,6 +625,18 @@ export function buildHostServices(
       },
     },
 
+    telemetry: {
+      async track(params) {
+        const eventName = String(params.eventName ?? "").trim();
+        if (!TELEMETRY_EVENT_NAME_REGEX.test(eventName)) {
+          throw new Error('Plugin telemetry event names must be lowercase slugs using letters, numbers, "_" or "-".');
+        }
+        const telemetryClient = getTelemetryClient();
+        if (!telemetryClient) return;
+        telemetryClient.track(`plugin.${pluginKey}.${eventName}`, params.dimensions);
+      },
+    },
+
     logger: {
       async log(params) {
         const { level, meta } = params;
@@ -788,11 +789,9 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        return (await issues.addComment(
-          params.issueId,
-          params.body,
-          {},
-        )) as IssueComment;
+        return (await issues.addComment(params.issueId, params.body, {
+          agentId: params.authorAgentId,
+        })) as IssueComment;
       },
     },
 
@@ -838,10 +837,7 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const rows = await agents.list(companyId);
-        return applyWindow(
-          rows.filter((agent) => !params.status || agent.status === params.status) as Agent[],
-          params,
-        );
+        return applyWindow(rows.filter((agent) => !params.status || agent.status === params.status) as Agent[], params);
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -887,9 +883,9 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const rows = await goals.list(companyId);
         return applyWindow(
-          rows.filter((goal) =>
-            (!params.level || goal.level === params.level) &&
-            (!params.status || goal.status === params.status),
+          rows.filter(
+            (goal) =>
+              (!params.level || goal.level === params.level) && (!params.status || goal.status === params.status),
           ) as Goal[],
           params,
         );

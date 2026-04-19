@@ -142,10 +142,10 @@ export function workspaceOperationService(db: Db) {
             status: "running",
             logStore: handle.store,
             logRef: handle.logRef,
-            metadata: redactCurrentUserValue(
-              recordInput.metadata ?? null,
-              currentUserRedactionOptions,
-            ) as Record<string, unknown> | null,
+            metadata: redactCurrentUserValue(recordInput.metadata ?? null, currentUserRedactionOptions) as Record<
+              string,
+              unknown
+            > | null,
             startedAt,
           });
           createdIds.push(id);

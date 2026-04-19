@@ -47,11 +47,7 @@ function parseRepoFromUrl(repoUrl: string): { owner: string; repo: string } | nu
   return null;
 }
 
-async function githubFetch(
-  url: string,
-  token: string,
-  init?: RequestInit,
-): Promise<Response> {
+async function githubFetch(url: string, token: string, init?: RequestInit): Promise<Response> {
   return fetch(url, {
     ...init,
     headers: {
@@ -110,11 +106,7 @@ export function githubService(db: Db) {
      * Read a file from the project's GitHub repository.
      * Returns the file content (base64-decoded), SHA, and metadata.
      */
-    async getFile(
-      projectId: string,
-      filePath: string,
-      ref?: string,
-    ): Promise<GitHubFileContent> {
+    async getFile(projectId: string, filePath: string, ref?: string): Promise<GitHubFileContent> {
       const { owner, repo, companyId } = await resolveRepo(projectId);
       const token = await resolveGitHubToken(companyId);
 
@@ -244,7 +236,7 @@ export function githubService(db: Db) {
       return data.map((item: { name: string; path: string; type: string; sha: string; size: number }) => ({
         name: item.name,
         path: item.path,
-        type: item.type === "dir" ? "dir" as const : "file" as const,
+        type: item.type === "dir" ? ("dir" as const) : ("file" as const),
         sha: item.sha,
         size: item.size ?? 0,
       }));

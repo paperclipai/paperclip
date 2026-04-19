@@ -6,7 +6,9 @@ export const assets = pgTable(
   "assets",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
     provider: text("provider").notNull(),
     objectKey: text("object_key").notNull(),
     contentType: text("content_type").notNull(),

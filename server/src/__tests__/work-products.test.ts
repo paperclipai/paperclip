@@ -68,9 +68,7 @@ describe("workProductService", () => {
     const selectFrom = vi.fn(() => ({ where: selectWhere }));
     const txSelect = vi.fn(() => ({ from: selectFrom }));
 
-    const updateReturning = vi
-      .fn()
-      .mockResolvedValue([createWorkProductRow({ reviewState: "ready_for_review" })]);
+    const updateReturning = vi.fn().mockResolvedValue([createWorkProductRow({ reviewState: "ready_for_review" })]);
     const updateWhere = vi.fn(() => ({ returning: updateReturning }));
     const updateSet = vi.fn(() => ({ where: updateWhere }));
     const txUpdate = vi.fn(() => ({ set: updateSet }));

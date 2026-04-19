@@ -151,24 +151,20 @@ export function ApprovalDetail() {
   const TypeIcon = typeIcon[approval.type] ?? defaultTypeIcon;
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
   const primaryLinkedIssue = linkedIssues?.[0] ?? null;
-  const resolvedCta =
-    primaryLinkedIssue
+  const resolvedCta = primaryLinkedIssue
+    ? {
+        label: (linkedIssues?.length ?? 0) > 1 ? "Review linked issues" : "Review linked issue",
+        to: `/issues/${primaryLinkedIssue.identifier ?? primaryLinkedIssue.id}`,
+      }
+    : linkedAgentId
       ? {
-          label:
-            (linkedIssues?.length ?? 0) > 1
-              ? "Review linked issues"
-              : "Review linked issue",
-          to: `/issues/${primaryLinkedIssue.identifier ?? primaryLinkedIssue.id}`,
+          label: "Open hired agent",
+          to: `/agents/${linkedAgentId}`,
         }
-      : linkedAgentId
-        ? {
-            label: "Open hired agent",
-            to: `/agents/${linkedAgentId}`,
-          }
-        : {
-            label: "Back to approvals",
-            to: "/approvals",
-          };
+      : {
+          label: "Back to approvals",
+          to: "/approvals",
+        };
 
   return (
     <div className="space-y-6 max-w-3xl">
@@ -203,7 +199,9 @@ export function ApprovalDetail() {
           <div className="flex items-center gap-2">
             <TypeIcon className="h-5 w-5 text-muted-foreground shrink-0" />
             <div>
-              <h2 className="text-lg font-semibold">{approvalLabel(approval.type, approval.payload as Record<string, unknown> | null)}</h2>
+              <h2 className="text-lg font-semibold">
+                {approvalLabel(approval.type, approval.payload as Record<string, unknown> | null)}
+              </h2>
               <p className="text-xs text-muted-foreground font-mono">{approval.id}</p>
             </div>
           </div>
@@ -229,9 +227,7 @@ export function ApprovalDetail() {
             See full request
           </button>
           {showRawPayload && (
-            <pre className="text-xs bg-muted/40 rounded-md p-3 overflow-x-auto">
-              {JSON.stringify(payload, null, 2)}
-            </pre>
+            <pre className="text-xs bg-muted/40 rounded-md p-3 overflow-x-auto">{JSON.stringify(payload, null, 2)}</pre>
           )}
           {approval.decisionNote && (
             <p className="text-xs text-muted-foreground">Decision note: {approval.decisionNote}</p>
@@ -283,7 +279,11 @@ export function ApprovalDetail() {
           )}
           {isBudgetApproval && approval.status === "pending" && (
             <p className="text-sm text-muted-foreground">
-              Resolve this budget stop from the budget controls on <Link to="/costs" className="underline underline-offset-2">/costs</Link>.
+              Resolve this budget stop from the budget controls on{" "}
+              <Link to="/costs" className="underline underline-offset-2">
+                /costs
+              </Link>
+              .
             </p>
           )}
           {approval.status === "pending" && (
@@ -339,9 +339,7 @@ export function ApprovalDetail() {
                 ) : (
                   <Identity name="Board" size="sm" />
                 )}
-                <span className="text-xs text-muted-foreground">
-                  {new Date(comment.createdAt).toLocaleString()}
-                </span>
+                <span className="text-xs text-muted-foreground">{new Date(comment.createdAt).toLocaleString()}</span>
               </div>
               <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
             </div>

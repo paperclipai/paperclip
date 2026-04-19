@@ -65,21 +65,13 @@ export function dashboardService(db: Db) {
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
       const [{ monthSpend }] = await db
         .select({
-          monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
         })
         .from(costEvents)
-        .where(
-          and(
-            eq(costEvents.companyId, companyId),
-            gte(costEvents.occurredAt, monthStart),
-          ),
-        );
+        .where(and(eq(costEvents.companyId, companyId), gte(costEvents.occurredAt, monthStart)));
 
       const monthSpendCents = Number(monthSpend);
-      const utilization =
-        company.budgetMonthlyCents > 0
-          ? (monthSpendCents / company.budgetMonthlyCents) * 100
-          : 0;
+      const utilization = company.budgetMonthlyCents > 0 ? (monthSpendCents / company.budgetMonthlyCents) * 100 : 0;
 
       // Burn rate: spend per day so far this month, projected to month end
       const daysElapsed = Math.max(now.getDate(), 1);

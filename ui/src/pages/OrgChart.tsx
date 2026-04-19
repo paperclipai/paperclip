@@ -116,17 +116,7 @@ function collectEdges(nodes: LayoutNode[]): Array<{ parent: LayoutNode; child: L
 
 // ── Status dot colors (raw hex for SVG) ─────────────────────────────────
 
-const adapterLabels: Record<string, string> = {
-  claude_local: "Claude",
-  codex_local: "Codex",
-  gemini_local: "Gemini",
-  opencode_local: "OpenCode",
-  cursor: "Cursor",
-  hermes_local: "Hermes",
-  openclaw_gateway: "OpenClaw Gateway",
-  process: "Process",
-  http: "HTTP",
-};
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
 const statusDotColor: Record<string, string> = {
   running: "#22d3ee",
@@ -428,18 +418,29 @@ export function OrgChart() {
                       style={{ backgroundColor: dotColor }}
                     />
                   </div>
-                  {/* Name + role + adapter type */}
-                  <div className="flex flex-col items-start min-w-0 flex-1">
-                    <span className="text-sm font-semibold text-foreground leading-tight">{node.name}</span>
-                    <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
-                      {agent?.title ?? roleLabel(node.role)}
+                  <span
+                    className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card"
+                    style={{ backgroundColor: dotColor }}
+                  />
+                </div>
+                {/* Name + role + adapter type */}
+                <div className="flex flex-col items-start min-w-0 flex-1">
+                  <span className="text-sm font-semibold text-foreground leading-tight">
+                    {node.name}
+                  </span>
+                  <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
+                    {agent?.title ?? roleLabel(node.role)}
+                  </span>
+                  {agent && (
+                    <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
+                      {getAdapterLabel(agent.adapterType)}
                     </span>
-                    {agent && (
-                      <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
-                        {adapterLabels[agent.adapterType] ?? agent.adapterType}
-                      </span>
-                    )}
-                  </div>
+                  )}
+                  {agent && agent.capabilities && (
+                    <span className="text-[10px] text-muted-foreground/80 leading-tight mt-1 line-clamp-2">
+                      {agent.capabilities}
+                    </span>
+                  )}
                 </div>
               </div>
             );

@@ -14,11 +14,6 @@ await esbuild.build({
   platform: "browser",
   target: ["es2022"],
   sourcemap: true,
-  external: [
-    "react",
-    "react-dom",
-    "react/jsx-runtime",
-    "@paperclipai/plugin-sdk/ui",
-  ],
+  external: ["react", "react-dom", "react/jsx-runtime", "@paperclipai/plugin-sdk/ui"],
   logLevel: "info",
 });

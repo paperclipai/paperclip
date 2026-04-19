@@ -65,9 +65,7 @@ export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
 function sanitizeFriendlyPathSegment(value: string | null | undefined, fallback = "_default"): string {
   const trimmed = value?.trim() ?? "";
   if (!trimmed) return fallback;
-  const sanitized = trimmed
-    .replace(FRIENDLY_PATH_SEGMENT_RE, "-")
-    .replace(/^-+|-+$/g, "");
+  const sanitized = trimmed.replace(FRIENDLY_PATH_SEGMENT_RE, "-").replace(/^-+|-+$/g, "");
   return sanitized || fallback;
 }
 

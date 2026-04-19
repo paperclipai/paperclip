@@ -79,10 +79,7 @@ export function useDateRange(): UseDateRangeResult {
     const msToNextMinute = (60 - now.getSeconds()) * 1000 - now.getMilliseconds();
     const timeout = setTimeout(() => {
       setMinuteTick(floorToMinute(new Date()));
-      intervalRef.current = setInterval(
-        () => setMinuteTick(floorToMinute(new Date())),
-        60_000,
-      );
+      intervalRef.current = setInterval(() => setMinuteTick(floorToMinute(new Date())), 60_000);
     }, msToNextMinute);
     return () => {
       clearTimeout(timeout);
@@ -100,8 +97,8 @@ export function useDateRange(): UseDateRangeResult {
       from: fromDate ? fromDate.toISOString() : "",
       to: toDate ? toDate.toISOString() : "",
     };
-  // minuteTick drives re-evaluation of sliding presets once per minute.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // minuteTick drives re-evaluation of sliding presets once per minute.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset, customFrom, customTo, minuteTick]);
 
   const customReady = preset !== "custom" || (!!customFrom && !!customTo);

@@ -1,15 +1,5 @@
-import type {
-  AdapterEnvironmentCheck,
-  AdapterEnvironmentTestContext,
-  AdapterEnvironmentTestResult,
-} from "../types.js";
-import {
-  asString,
-  parseObject,
-  ensureAbsoluteDirectory,
-  ensureCommandResolvable,
-  ensurePathInEnv,
-} from "../utils.js";
+import type { AdapterEnvironmentCheck, AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "../types.js";
+import { asString, parseObject, ensureAbsoluteDirectory, ensureCommandResolvable, ensurePathInEnv } from "../utils.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -17,9 +7,7 @@ function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentT
   return "pass";
 }
 
-export async function testEnvironment(
-  ctx: AdapterEnvironmentTestContext,
-): Promise<AdapterEnvironmentTestResult> {
+export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "");

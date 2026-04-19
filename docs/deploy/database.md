@@ -68,10 +68,10 @@ export function createDb(url: string) {
 
 ## Switching Between Modes
 
-| `DATABASE_URL` | Mode |
-|----------------|------|
-| Not set | Embedded PostgreSQL |
-| `postgres://...localhost...` | Local Docker PostgreSQL |
-| `postgres://...supabase.com...` | Hosted Supabase |
+| `DATABASE_URL`                  | Mode                    |
+| ------------------------------- | ----------------------- |
+| Not set                         | Embedded PostgreSQL     |
+| `postgres://...localhost...`    | Local Docker PostgreSQL |
+| `postgres://...supabase.com...` | Hosted Supabase         |
 
 The Drizzle schema (`packages/db/src/schema/`) is the same regardless of mode.

@@ -2,11 +2,7 @@ import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { formatDatabaseBackupResult, runDatabaseBackup } from "@paperclipai/db";
-import {
-  expandHomePrefix,
-  resolveDefaultBackupDir,
-  resolvePaperclipInstanceId,
-} from "../config/home.js";
+import { expandHomePrefix, resolveDefaultBackupDir, resolvePaperclipInstanceId } from "../config/home.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 import { printPaperclipCliBanner } from "../utils/banner.js";
 
@@ -56,10 +52,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
   const defaultDir = resolveDefaultBackupDir(resolvePaperclipInstanceId());
   const configuredDir = opts.dir?.trim() || config?.database.backup.dir || defaultDir;
   const backupDir = resolveBackupDir(configuredDir);
-  const retentionDays = normalizeRetentionDays(
-    opts.retentionDays,
-    config?.database.backup.retentionDays ?? 30,
-  );
+  const retentionDays = normalizeRetentionDays(opts.retentionDays, config?.database.backup.retentionDays ?? 30);
   const filenamePrefix = opts.filenamePrefix?.trim() || "paperclip";
 
   p.log.message(pc.dim(`Config: ${configPath}`));
@@ -73,7 +66,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
     const result = await runDatabaseBackup({
       connectionString: connection.value,
       backupDir,
-      retentionDays,
+      retention: { dailyDays: retentionDays, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix,
     });
     spinner.stop(`Backup saved: ${formatDatabaseBackupResult(result)}`);

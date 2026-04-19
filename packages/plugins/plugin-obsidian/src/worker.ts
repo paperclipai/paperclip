@@ -1,9 +1,4 @@
-import {
-  definePlugin,
-  runWorker,
-  type PluginContext,
-  type PluginJobContext,
-} from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type PluginContext, type PluginJobContext } from "@paperclipai/plugin-sdk";
 import type { Goal, Issue } from "@paperclipai/shared";
 import {
   ACTION_KEYS,
@@ -15,12 +10,7 @@ import {
   type SyncEntityType,
 } from "./constants.js";
 import { commitAndPush, ensureRepo } from "./lib/git-sync.js";
-import {
-  mapGoalToNote,
-  mapIssueToNote,
-  type MapperContext,
-  type ObsidianNote,
-} from "./lib/mapper.js";
+import { mapGoalToNote, mapIssueToNote, type MapperContext, type ObsidianNote } from "./lib/mapper.js";
 import { writeNotesToVault } from "./lib/vault-writer.js";
 
 interface SyncCursor {
@@ -49,10 +39,11 @@ async function getVaultPath(config: ObsidianPluginConfig): Promise<string> {
   if (config.vaultPath) return config.vaultPath;
   if (config.gitRemoteUrl) {
     // Derive vault path from git URL
-    const repoName = config.gitRemoteUrl
-      .split("/")
-      .pop()
-      ?.replace(/\.git$/, "") ?? "obsidian-vault";
+    const repoName =
+      config.gitRemoteUrl
+        .split("/")
+        .pop()
+        ?.replace(/\.git$/, "") ?? "obsidian-vault";
     return `/tmp/paperclip-obsidian-vaults/${repoName}`;
   }
   throw new Error("Either vaultPath or gitRemoteUrl must be configured");
@@ -76,10 +67,7 @@ async function buildMapperContext(
   const goalTitles = new Map<string, string>();
   const commentsByIssue = new Map<string, Array<{ body: string; createdAt: string; authorName: string }>>();
 
-  const [projects, agents] = await Promise.all([
-    ctx.projects.list({ companyId }),
-    ctx.agents.list({ companyId }),
-  ]);
+  const [projects, agents] = await Promise.all([ctx.projects.list({ companyId }), ctx.agents.list({ companyId })]);
 
   for (const p of projects) {
     projectNames.set(p.id, p.name);
@@ -107,9 +95,7 @@ async function buildMapperContext(
           comments.map((c: { body?: string; createdAt: Date | string; authorAgentId?: string | null }) => ({
             body: c.body ?? "",
             createdAt: typeof c.createdAt === "string" ? c.createdAt : new Date(c.createdAt).toISOString(),
-            authorName: c.authorAgentId
-              ? agentNames.get(c.authorAgentId) ?? "Agent"
-              : "User",
+            authorName: c.authorAgentId ? (agentNames.get(c.authorAgentId) ?? "Agent") : "User",
           })),
         );
       } catch {
@@ -374,22 +360,14 @@ const plugin = definePlugin({
     const warnings: string[] = [];
 
     if (!c.vaultPath && !c.gitRemoteUrl) {
-      warnings.push(
-        "Either vault path or git remote URL should be configured for sync to work.",
-      );
+      warnings.push("Either vault path or git remote URL should be configured for sync to work.");
     }
 
-    if (
-      c.syncIntervalMinutes !== undefined &&
-      (c.syncIntervalMinutes < 1 || c.syncIntervalMinutes > 1440)
-    ) {
+    if (c.syncIntervalMinutes !== undefined && (c.syncIntervalMinutes < 1 || c.syncIntervalMinutes > 1440)) {
       errors.push("Sync interval must be between 1 and 1440 minutes.");
     }
 
-    if (
-      c.maxCommentsPerIssue !== undefined &&
-      (c.maxCommentsPerIssue < 0 || c.maxCommentsPerIssue > 100)
-    ) {
+    if (c.maxCommentsPerIssue !== undefined && (c.maxCommentsPerIssue < 0 || c.maxCommentsPerIssue > 100)) {
       errors.push("Max comments per issue must be between 0 and 100.");
     }
 

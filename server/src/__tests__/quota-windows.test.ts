@@ -39,23 +39,33 @@ describe("toPercent", () => {
     expect(toPercent(0)).toBe(0);
   });
 
-  it("converts 0.5 to 50", () => {
+  it("treats values < 1 as fraction and multiplies by 100 (0.5 → 50%)", () => {
     expect(toPercent(0.5)).toBe(50);
   });
 
-  it("converts 1.0 to 100", () => {
-    expect(toPercent(1.0)).toBe(100);
+  it("treats values >= 1 as already-percentage (34 → 34%)", () => {
+    expect(toPercent(34.0)).toBe(34);
+    expect(toPercent(91.0)).toBe(91);
+  });
+
+  it("treats value exactly 1.0 as 1% (not 100%) — the < 1 heuristic boundary", () => {
+    // 1.0 is NOT < 1, so it is treated as already-percentage → 1%
+    expect(toPercent(1.0)).toBe(1);
   });
 
   it("clamps overshoot to 100", () => {
-    // floating-point utilization can slightly exceed 1.0
-    expect(toPercent(1.001)).toBe(100);
-    expect(toPercent(1.01)).toBe(100);
+    expect(toPercent(105)).toBe(100);
+    expect(toPercent(101)).toBe(100);
   });
 
-  it("rounds to nearest integer", () => {
+  it("rounds to nearest integer for fractions", () => {
     expect(toPercent(0.333)).toBe(33);
     expect(toPercent(0.666)).toBe(67);
+  });
+
+  it("rounds to nearest integer for percentages", () => {
+    expect(toPercent(48.52)).toBe(49);
+    expect(toPercent(23.4)).toBe(23);
   });
 });
 
@@ -73,8 +83,8 @@ describe("secondsToWindowLabel", () => {
   });
 
   it("labels windows under 6 hours as '5h'", () => {
-    expect(secondsToWindowLabel(3600, "fallback")).toBe("5h");   // 1h
-    expect(secondsToWindowLabel(18000, "fallback")).toBe("5h");  // 5h exactly
+    expect(secondsToWindowLabel(3600, "fallback")).toBe("5h"); // 1h
+    expect(secondsToWindowLabel(18000, "fallback")).toBe("5h"); // 5h exactly
   });
 
   it("labels windows up to 24 hours as '24h'", () => {
@@ -83,7 +93,7 @@ describe("secondsToWindowLabel", () => {
   });
 
   it("labels windows up to 7 days as '7d'", () => {
-    expect(secondsToWindowLabel(86401, "fallback")).toBe("7d");   // just over 24h
+    expect(secondsToWindowLabel(86401, "fallback")).toBe("7d"); // just over 24h
     expect(secondsToWindowLabel(604800, "fallback")).toBe("7d"); // 7d exactly
   });
 
@@ -224,9 +234,7 @@ describe("readClaudeToken", () => {
   it("returns null for malformed JSON", async () => {
     const tmpDir = path.join(os.tmpdir(), `paperclip-test-claude-${Date.now()}`);
     await import("node:fs/promises").then((fs) =>
-      fs.mkdir(tmpDir, { recursive: true }).then(() =>
-        fs.writeFile(path.join(tmpDir, "credentials.json"), "not-json"),
-      ),
+      fs.mkdir(tmpDir, { recursive: true }).then(() => fs.writeFile(path.join(tmpDir, "credentials.json"), "not-json")),
     );
     process.env.CLAUDE_CONFIG_DIR = tmpDir;
     const token = await readClaudeToken();
@@ -237,9 +245,9 @@ describe("readClaudeToken", () => {
   it("returns null when claudeAiOauth key is missing", async () => {
     const tmpDir = path.join(os.tmpdir(), `paperclip-test-claude-${Date.now()}`);
     await import("node:fs/promises").then((fs) =>
-      fs.mkdir(tmpDir, { recursive: true }).then(() =>
-        fs.writeFile(path.join(tmpDir, "credentials.json"), JSON.stringify({ other: "data" })),
-      ),
+      fs
+        .mkdir(tmpDir, { recursive: true })
+        .then(() => fs.writeFile(path.join(tmpDir, "credentials.json"), JSON.stringify({ other: "data" }))),
     );
     process.env.CLAUDE_CONFIG_DIR = tmpDir;
     const token = await readClaudeToken();
@@ -251,9 +259,9 @@ describe("readClaudeToken", () => {
     const tmpDir = path.join(os.tmpdir(), `paperclip-test-claude-${Date.now()}`);
     const creds = { claudeAiOauth: { accessToken: "" } };
     await import("node:fs/promises").then((fs) =>
-      fs.mkdir(tmpDir, { recursive: true }).then(() =>
-        fs.writeFile(path.join(tmpDir, "credentials.json"), JSON.stringify(creds)),
-      ),
+      fs
+        .mkdir(tmpDir, { recursive: true })
+        .then(() => fs.writeFile(path.join(tmpDir, "credentials.json"), JSON.stringify(creds))),
     );
     process.env.CLAUDE_CONFIG_DIR = tmpDir;
     const token = await readClaudeToken();
@@ -265,9 +273,9 @@ describe("readClaudeToken", () => {
     const tmpDir = path.join(os.tmpdir(), `paperclip-test-claude-${Date.now()}`);
     const creds = { claudeAiOauth: { accessToken: "my-test-token" } };
     await import("node:fs/promises").then((fs) =>
-      fs.mkdir(tmpDir, { recursive: true }).then(() =>
-        fs.writeFile(path.join(tmpDir, "credentials.json"), JSON.stringify(creds)),
-      ),
+      fs
+        .mkdir(tmpDir, { recursive: true })
+        .then(() => fs.writeFile(path.join(tmpDir, "credentials.json"), JSON.stringify(creds))),
     );
     process.env.CLAUDE_CONFIG_DIR = tmpDir;
     const token = await readClaudeToken();
@@ -279,9 +287,9 @@ describe("readClaudeToken", () => {
     const tmpDir = path.join(os.tmpdir(), `paperclip-test-claude-${Date.now()}`);
     const creds = { claudeAiOauth: { accessToken: "dotfile-token" } };
     await import("node:fs/promises").then((fs) =>
-      fs.mkdir(tmpDir, { recursive: true }).then(() =>
-        fs.writeFile(path.join(tmpDir, ".credentials.json"), JSON.stringify(creds)),
-      ),
+      fs
+        .mkdir(tmpDir, { recursive: true })
+        .then(() => fs.writeFile(path.join(tmpDir, ".credentials.json"), JSON.stringify(creds))),
     );
     process.env.CLAUDE_CONFIG_DIR = tmpDir;
     const token = await readClaudeToken();
@@ -373,9 +381,7 @@ describe("readCodexAuthInfo", () => {
   it("returns null for malformed JSON", async () => {
     const tmpDir = path.join(os.tmpdir(), `paperclip-test-codex-${Date.now()}`);
     await import("node:fs/promises").then((fs) =>
-      fs.mkdir(tmpDir, { recursive: true }).then(() =>
-        fs.writeFile(path.join(tmpDir, "auth.json"), "{bad json"),
-      ),
+      fs.mkdir(tmpDir, { recursive: true }).then(() => fs.writeFile(path.join(tmpDir, "auth.json"), "{bad json")),
     );
     process.env.CODEX_HOME = tmpDir;
     const result = await readCodexAuthInfo();
@@ -386,9 +392,9 @@ describe("readCodexAuthInfo", () => {
   it("returns null when accessToken is absent", async () => {
     const tmpDir = path.join(os.tmpdir(), `paperclip-test-codex-${Date.now()}`);
     await import("node:fs/promises").then((fs) =>
-      fs.mkdir(tmpDir, { recursive: true }).then(() =>
-        fs.writeFile(path.join(tmpDir, "auth.json"), JSON.stringify({ accountId: "acc-1" })),
-      ),
+      fs
+        .mkdir(tmpDir, { recursive: true })
+        .then(() => fs.writeFile(path.join(tmpDir, "auth.json"), JSON.stringify({ accountId: "acc-1" }))),
     );
     process.env.CODEX_HOME = tmpDir;
     const result = await readCodexAuthInfo();
@@ -400,9 +406,9 @@ describe("readCodexAuthInfo", () => {
     const tmpDir = path.join(os.tmpdir(), `paperclip-test-codex-${Date.now()}`);
     const auth = { accessToken: "codex-token", accountId: "acc-123" };
     await import("node:fs/promises").then((fs) =>
-      fs.mkdir(tmpDir, { recursive: true }).then(() =>
-        fs.writeFile(path.join(tmpDir, "auth.json"), JSON.stringify(auth)),
-      ),
+      fs
+        .mkdir(tmpDir, { recursive: true })
+        .then(() => fs.writeFile(path.join(tmpDir, "auth.json"), JSON.stringify(auth))),
     );
     process.env.CODEX_HOME = tmpDir;
     const result = await readCodexAuthInfo();
@@ -436,9 +442,9 @@ describe("readCodexAuthInfo", () => {
       last_refresh: "2026-03-14T12:00:00Z",
     };
     await import("node:fs/promises").then((fs) =>
-      fs.mkdir(tmpDir, { recursive: true }).then(() =>
-        fs.writeFile(path.join(tmpDir, "auth.json"), JSON.stringify(auth)),
-      ),
+      fs
+        .mkdir(tmpDir, { recursive: true })
+        .then(() => fs.writeFile(path.join(tmpDir, "auth.json"), JSON.stringify(auth))),
     );
     process.env.CODEX_HOME = tmpDir;
     const result = await readCodexAuthInfo();
@@ -469,12 +475,15 @@ describe("readCodexToken", () => {
     const tmpDir = path.join(os.tmpdir(), `paperclip-test-codex-${Date.now()}`);
     await import("node:fs/promises").then((fs) =>
       fs.mkdir(tmpDir, { recursive: true }).then(() =>
-        fs.writeFile(path.join(tmpDir, "auth.json"), JSON.stringify({
-          tokens: {
-            access_token: "nested-token",
-            account_id: "acc-nested",
-          },
-        })),
+        fs.writeFile(
+          path.join(tmpDir, "auth.json"),
+          JSON.stringify({
+            tokens: {
+              access_token: "nested-token",
+              account_id: "acc-nested",
+            },
+          }),
+        ),
       ),
     );
     process.env.CODEX_HOME = tmpDir;
@@ -516,37 +525,48 @@ describe("fetchClaudeQuota", () => {
     expect(windows).toEqual([]);
   });
 
-  it("parses five_hour window", async () => {
-    mockFetch({ five_hour: { utilization: 0.4, resets_at: "2026-01-01T00:00:00Z" } });
+  it("parses five_hour window with percentage-range utilization", async () => {
+    mockFetch({ five_hour: { utilization: 34.0, resets_at: "2026-01-01T00:00:00Z" } });
     const windows = await fetchClaudeQuota("token");
     expect(windows).toHaveLength(1);
     expect(windows[0]).toMatchObject({
       label: "Current session",
-      usedPercent: 40,
+      usedPercent: 34,
       resetsAt: "2026-01-01T00:00:00Z",
     });
   });
 
-  it("parses seven_day window", async () => {
-    mockFetch({ seven_day: { utilization: 0.75, resets_at: null } });
+  it("parses seven_day window with percentage-range utilization", async () => {
+    mockFetch({ seven_day: { utilization: 91.0, resets_at: null } });
     const windows = await fetchClaudeQuota("token");
     expect(windows).toHaveLength(1);
     expect(windows[0]).toMatchObject({
       label: "Current week (all models)",
-      usedPercent: 75,
+      usedPercent: 91,
       resetsAt: null,
+    });
+  });
+
+  it("still handles legacy 0-1 fraction utilization", async () => {
+    mockFetch({ five_hour: { utilization: 0.4, resets_at: null } });
+    const windows = await fetchClaudeQuota("token");
+    expect(windows[0]).toMatchObject({
+      label: "Current session",
+      usedPercent: 40,
     });
   });
 
   it("parses seven_day_sonnet and seven_day_opus windows", async () => {
     mockFetch({
-      seven_day_sonnet: { utilization: 0.2, resets_at: null },
-      seven_day_opus: { utilization: 0.9, resets_at: null },
+      seven_day_sonnet: { utilization: 23.0, resets_at: null },
+      seven_day_opus: { utilization: 85.0, resets_at: null },
     });
     const windows = await fetchClaudeQuota("token");
     expect(windows).toHaveLength(2);
     expect(windows[0]!.label).toBe("Current week (Sonnet only)");
+    expect(windows[0]!.usedPercent).toBe(23);
     expect(windows[1]!.label).toBe("Current week (Opus only)");
+    expect(windows[1]!.usedPercent).toBe(85);
   });
 
   it("sets usedPercent to null when utilization is absent", async () => {
@@ -557,10 +577,10 @@ describe("fetchClaudeQuota", () => {
 
   it("includes all four windows when all are present", async () => {
     mockFetch({
-      five_hour: { utilization: 0.1, resets_at: null },
-      seven_day: { utilization: 0.2, resets_at: null },
-      seven_day_sonnet: { utilization: 0.3, resets_at: null },
-      seven_day_opus: { utilization: 0.4, resets_at: null },
+      five_hour: { utilization: 10.0, resets_at: null },
+      seven_day: { utilization: 20.0, resets_at: null },
+      seven_day_sonnet: { utilization: 30.0, resets_at: null },
+      seven_day_opus: { utilization: 40.0, resets_at: null },
     });
     const windows = await fetchClaudeQuota("token");
     expect(windows).toHaveLength(4);
@@ -571,6 +591,7 @@ describe("fetchClaudeQuota", () => {
       "Current week (Sonnet only)",
       "Current week (Opus only)",
     ]);
+    expect(windows.map((w: QuotaWindow) => w.usedPercent)).toEqual([10, 20, 30, 40]);
   });
 
   it("parses extra usage when the OAuth response includes it", async () => {
@@ -590,6 +611,25 @@ describe("fetchClaudeQuota", () => {
         detail: "Extra usage not enabled",
       },
     ]);
+  });
+
+  it("formats extra usage credits from cents to dollars", async () => {
+    mockFetch({
+      extra_usage: {
+        is_enabled: true,
+        monthly_limit: 14000,
+        used_credits: 6793,
+        utilization: 48.52,
+      },
+    });
+    const windows = await fetchClaudeQuota("token");
+    expect(windows).toHaveLength(1);
+    expect(windows[0]).toMatchObject({
+      label: "Extra usage",
+      usedPercent: 49,
+      valueLabel: "$67.93 / $140.00",
+      detail: "Monthly extra usage pool",
+    });
   });
 });
 

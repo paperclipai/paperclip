@@ -1,10 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { paperclipConfigSchema, type PaperclipConfig } from "./schema.js";
-import {
-  resolveDefaultConfigPath,
-  resolvePaperclipInstanceId,
-} from "./home.js";
+import { resolveDefaultConfigPath, resolvePaperclipInstanceId } from "./home.js";
 
 const DEFAULT_CONFIG_BASENAME = "config.json";
 
@@ -95,10 +92,7 @@ export function readConfig(configPath?: string): PaperclipConfig | null {
   return parsed.data;
 }
 
-export function writeConfig(
-  config: PaperclipConfig,
-  configPath?: string,
-): void {
+export function writeConfig(config: PaperclipConfig, configPath?: string): void {
   const filePath = resolveConfigPath(configPath);
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });

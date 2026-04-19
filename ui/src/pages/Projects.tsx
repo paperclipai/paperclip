@@ -22,15 +22,16 @@ export function Projects() {
     setBreadcrumbs([{ label: "Projects" }]);
   }, [setBreadcrumbs]);
 
-  const { data: allProjects, isLoading, error } = useQuery({
+  const {
+    data: allProjects,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const projects = useMemo(
-    () => (allProjects ?? []).filter((p) => !p.archivedAt),
-    [allProjects],
-  );
+  const projects = useMemo(() => (allProjects ?? []).filter((p) => !p.archivedAt), [allProjects]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Hexagon} message="Select a company to view projects." />;
@@ -52,12 +53,7 @@ export function Projects() {
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {!isLoading && projects.length === 0 && (
-        <EmptyState
-          icon={Hexagon}
-          message="No projects yet."
-          action="Add Project"
-          onAction={openNewProject}
-        />
+        <EmptyState icon={Hexagon} message="No projects yet." action="Add Project" onAction={openNewProject} />
       )}
 
       {projects.length > 0 && (
@@ -71,9 +67,7 @@ export function Projects() {
               trailing={
                 <div className="flex items-center gap-3">
                   {project.targetDate && (
-                    <span className="text-xs text-muted-foreground">
-                      {formatDate(project.targetDate)}
-                    </span>
+                    <span className="text-xs text-muted-foreground">{formatDate(project.targetDate)}</span>
                   )}
                   <StatusBadge status={project.status} />
                 </div>

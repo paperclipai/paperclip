@@ -19,10 +19,7 @@
  * @see PLUGIN_SPEC.md §13.10 — `executeTool`
  */
 
-import type {
-  PaperclipPluginManifestV1,
-  PluginToolDeclaration,
-} from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1, PluginToolDeclaration } from "@paperclipai/shared";
 import type { ToolRunContext, ToolResult, ExecuteToolParams } from "@paperclipai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { logger } from "../middleware/logger.js";
@@ -177,11 +174,7 @@ export interface PluginToolRegistry {
    * @returns The execution result with routing metadata
    * @throws {Error} if the tool is not found or the worker is not running
    */
-  executeTool(
-    namespacedName: string,
-    parameters: unknown,
-    runContext: ToolRunContext,
-  ): Promise<ToolExecutionResult>;
+  executeTool(namespacedName: string, parameters: unknown, runContext: ToolRunContext): Promise<ToolExecutionResult>;
 
   /**
    * Get the number of registered tools, optionally scoped to a plugin.
@@ -224,9 +217,7 @@ export interface PluginToolRegistry {
  * );
  * ```
  */
-export function createPluginToolRegistry(
-  workerManager?: PluginWorkerManager,
-): PluginToolRegistry {
+export function createPluginToolRegistry(workerManager?: PluginWorkerManager): PluginToolRegistry {
   const log = logger.child({ service: "plugin-tool-registry" });
 
   // Primary index: namespaced name → tool entry
@@ -301,10 +292,7 @@ export function createPluginToolRegistry(
       // Remove any previously registered tools for this plugin (idempotent)
       const previousCount = removePluginTools(pluginId);
       if (previousCount > 0) {
-        log.debug(
-          { pluginId, previousCount },
-          "cleared previous tool registrations before re-registering",
-        );
+        log.debug({ pluginId, previousCount }, "cleared previous tool registrations before re-registering");
       }
 
       const tools = manifest.tools ?? [];
@@ -330,10 +318,7 @@ export function createPluginToolRegistry(
     unregisterPlugin(pluginId: string): void {
       const removed = removePluginTools(pluginId);
       if (removed > 0) {
-        log.info(
-          { pluginId, removedCount: removed },
-          `unregistered ${removed} tool(s) for plugin`,
-        );
+        log.info({ pluginId, removedCount: removed }, `unregistered ${removed} tool(s) for plugin`);
       }
     },
 
@@ -389,7 +374,7 @@ export function createPluginToolRegistry(
       if (!tool) {
         throw new Error(
           `Tool "${namespacedName}" is not registered. ` +
-          `The plugin may not be installed or its worker may not be running.`,
+            `The plugin may not be installed or its worker may not be running.`,
         );
       }
 
@@ -397,7 +382,7 @@ export function createPluginToolRegistry(
       if (!workerManager) {
         throw new Error(
           `Cannot execute tool "${namespacedName}" — no worker manager configured. ` +
-          `Tool execution requires a PluginWorkerManager.`,
+            `Tool execution requires a PluginWorkerManager.`,
         );
       }
 
@@ -405,8 +390,7 @@ export function createPluginToolRegistry(
       const dbId = tool.pluginDbId;
       if (!workerManager.isRunning(dbId)) {
         throw new Error(
-          `Cannot execute tool "${namespacedName}" — ` +
-          `worker for plugin "${pluginId}" is not running.`,
+          `Cannot execute tool "${namespacedName}" — ` + `worker for plugin "${pluginId}" is not running.`,
         );
       }
 

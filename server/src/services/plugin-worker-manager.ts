@@ -94,13 +94,7 @@ const MAX_STDERR_EXCERPT_CHARS = 8_000;
 /**
  * Status of a managed worker process.
  */
-export type WorkerStatus =
-  | "stopped"
-  | "starting"
-  | "running"
-  | "stopping"
-  | "crashed"
-  | "backoff";
+export type WorkerStatus = "stopped" | "starting" | "running" | "stopping" | "crashed" | "backoff";
 
 /**
  * Worker-to-host method handler. The host registers these to service calls
@@ -122,24 +116,22 @@ export type WorkerToHostHandlers = {
  */
 export interface WorkerHandleEvents {
   /** Worker process started and is ready (initialize succeeded). */
-  "ready": { pluginId: string };
+  ready: { pluginId: string };
   /** Worker process exited. */
-  "exit": { pluginId: string; code: number | null; signal: NodeJS.Signals | null };
+  exit: { pluginId: string; code: number | null; signal: NodeJS.Signals | null };
   /** Worker process crashed unexpectedly. */
-  "crash": { pluginId: string; code: number | null; signal: NodeJS.Signals | null; willRestart: boolean };
+  crash: { pluginId: string; code: number | null; signal: NodeJS.Signals | null; willRestart: boolean };
   /** Worker process errored (e.g. spawn failure). */
-  "error": { pluginId: string; error: Error };
+  error: { pluginId: string; error: Error };
   /** Worker status changed. */
-  "status": { pluginId: string; status: WorkerStatus; previousStatus: WorkerStatus };
+  status: { pluginId: string; status: WorkerStatus; previousStatus: WorkerStatus };
 }
 
 type WorkerHandleEventName = keyof WorkerHandleEvents;
 
 export function appendStderrExcerpt(current: string, chunk: string): string {
   const next = current ? `${current}\n${chunk}` : chunk;
-  return next.length <= MAX_STDERR_EXCERPT_CHARS
-    ? next
-    : next.slice(-MAX_STDERR_EXCERPT_CHARS);
+  return next.length <= MAX_STDERR_EXCERPT_CHARS ? next : next.slice(-MAX_STDERR_EXCERPT_CHARS);
 }
 
 export function formatWorkerFailureMessage(message: string, stderrExcerpt: string): string {
@@ -255,16 +247,10 @@ export interface PluginWorkerHandle {
   notify(method: string, params: unknown): void;
 
   /** Subscribe to worker events. */
-  on<K extends WorkerHandleEventName>(
-    event: K,
-    listener: (payload: WorkerHandleEvents[K]) => void,
-  ): void;
+  on<K extends WorkerHandleEventName>(event: K, listener: (payload: WorkerHandleEvents[K]) => void): void;
 
   /** Unsubscribe from worker events. */
-  off<K extends WorkerHandleEventName>(
-    event: K,
-    listener: (payload: WorkerHandleEvents[K]) => void,
-  ): void;
+  off<K extends WorkerHandleEventName>(event: K, listener: (payload: WorkerHandleEvents[K]) => void): void;
 
   /** Optional methods the worker reported during initialization. */
   readonly supportedMethods: string[];
@@ -354,10 +340,7 @@ export interface PluginWorkerManager {
  *
  * @internal Exported for testing; consumers should use `createPluginWorkerManager`.
  */
-export function createPluginWorkerHandle(
-  pluginId: string,
-  options: WorkerStartOptions,
-): PluginWorkerHandle {
+export function createPluginWorkerHandle(pluginId: string, options: WorkerStartOptions): PluginWorkerHandle {
   const log = logger.child({ service: "plugin-worker", pluginId });
   const emitter = new EventEmitter();
   /**
@@ -478,9 +461,7 @@ export function createPluginWorkerHandle(
    */
   async function handleWorkerRequest(request: JsonRpcRequest): Promise<void> {
     const method = request.method as WorkerToHostMethodName;
-    const handler = options.hostHandlers[method] as
-      | ((params: unknown) => Promise<unknown>)
-      | undefined;
+    const handler = options.hostHandlers[method] as ((params: unknown) => Promise<unknown>) | undefined;
 
     if (!handler) {
       log.warn({ method }, "worker called unregistered host method");
@@ -509,13 +490,7 @@ export function createPluginWorkerHandle(
       const errorMessage = err instanceof Error ? err.message : String(err);
       log.error({ method, err: errorMessage }, "host handler error");
       try {
-        sendMessage(
-          createErrorResponse(
-            request.id,
-            JSONRPC_ERROR_CODES.INTERNAL_ERROR,
-            errorMessage,
-          ),
-        );
+        sendMessage(createErrorResponse(request.id, JSONRPC_ERROR_CODES.INTERNAL_ERROR, errorMessage));
       } catch {
         // Worker may have exited, ignore send error
       }
@@ -655,19 +630,13 @@ export function createPluginWorkerHandle(
       if (status === "starting") {
         setStatus("crashed");
         rejectAllPending(
-          new Error(formatWorkerFailureMessage(
-            `Worker process failed to start: ${err.message}`,
-            stderrExcerpt,
-          )),
+          new Error(formatWorkerFailureMessage(`Worker process failed to start: ${err.message}`, stderrExcerpt)),
         );
       }
     });
   }
 
-  function handleProcessExit(
-    code: number | null,
-    signal: NodeJS.Signals | null,
-  ): void {
+  function handleProcessExit(code: number | null, signal: NodeJS.Signals | null): void {
     const wasIntentional = intentionalStop;
 
     // Clean up readline interfaces
@@ -684,10 +653,7 @@ export function createPluginWorkerHandle(
 
     // Reject all pending requests
     rejectAllPending(
-      new Error(formatWorkerFailureMessage(
-        `Worker process exited (code=${code}, signal=${signal})`,
-        stderrExcerpt,
-      )),
+      new Error(formatWorkerFailureMessage(`Worker process exited (code=${code}, signal=${signal})`, stderrExcerpt)),
     );
 
     // Emit synthetic close for any orphaned stream channels so SSE clients
@@ -723,13 +689,9 @@ export function createPluginWorkerHandle(
     consecutiveCrashes++;
     lastCrashAt = now;
 
-    log.error(
-      { code, signal, consecutiveCrashes, totalCrashes },
-      "worker process crashed",
-    );
+    log.error({ code, signal, consecutiveCrashes, totalCrashes }, "worker process crashed");
 
-    const willRestart =
-      autoRestart && consecutiveCrashes <= MAX_CONSECUTIVE_CRASHES;
+    const willRestart = autoRestart && consecutiveCrashes <= MAX_CONSECUTIVE_CRASHES;
 
     setStatus("crashed");
     emitter.emit("crash", { pluginId, code, signal, willRestart });
@@ -748,11 +710,7 @@ export function createPluginWorkerHandle(
     for (const [id, pending] of pendingRequests) {
       clearTimeout(pending.timer);
       pending.resolve(
-        createErrorResponse(
-          pending.id,
-          PLUGIN_RPC_ERROR_CODES.WORKER_UNAVAILABLE,
-          error.message,
-        ) as JsonRpcResponse,
+        createErrorResponse(pending.id, PLUGIN_RPC_ERROR_CODES.WORKER_UNAVAILABLE, error.message) as JsonRpcResponse,
       );
     }
     pendingRequests.clear();
@@ -764,8 +722,7 @@ export function createPluginWorkerHandle(
 
   function computeBackoffMs(): number {
     // Exponential backoff: MIN_BACKOFF * MULTIPLIER^(consecutiveCrashes - 1)
-    const delay =
-      MIN_BACKOFF_MS * Math.pow(BACKOFF_MULTIPLIER, consecutiveCrashes - 1);
+    const delay = MIN_BACKOFF_MS * Math.pow(BACKOFF_MULTIPLIER, consecutiveCrashes - 1);
     // Add jitter: ±25%
     const jitter = delay * 0.25 * (Math.random() * 2 - 1);
     return Math.min(Math.round(delay + jitter), MAX_BACKOFF_MS);
@@ -777,10 +734,7 @@ export function createPluginWorkerHandle(
 
     setStatus("backoff");
 
-    log.info(
-      { delayMs: delay, consecutiveCrashes },
-      "scheduling restart with backoff",
-    );
+    log.info({ delayMs: delay, consecutiveCrashes }, "scheduling restart with backoff");
 
     backoffTimer = setTimeout(async () => {
       backoffTimer = null;
@@ -788,10 +742,7 @@ export function createPluginWorkerHandle(
       try {
         await startInternal();
       } catch (err) {
-        log.error(
-          { err: err instanceof Error ? err.message : String(err) },
-          "restart after backoff failed",
-        );
+        log.error({ err: err instanceof Error ? err.message : String(err) }, "restart after backoff failed");
       }
     }, delay);
   }
@@ -831,11 +782,9 @@ export function createPluginWorkerHandle(
     };
 
     try {
-      const result = await callInternal(
-        "initialize",
-        initParams,
-        INITIALIZE_TIMEOUT_MS,
-      ) as { ok?: boolean; supportedMethods?: string[] } | undefined;
+      const result = (await callInternal("initialize", initParams, INITIALIZE_TIMEOUT_MS)) as
+        | { ok?: boolean; supportedMethods?: string[] }
+        | undefined;
       if (!result || !result.ok) {
         throw new Error("Worker initialize returned ok=false");
       }
@@ -942,10 +891,7 @@ export function createPluginWorkerHandle(
     });
   }
 
-  function killWithSignal(
-    signal: NodeJS.Signals,
-    waitMs: number,
-  ): Promise<void> {
+  function killWithSignal(signal: NodeJS.Signals, waitMs: number): Promise<void> {
     return new Promise<void>((resolve) => {
       if (!childProcess) {
         resolve();
@@ -1005,11 +951,7 @@ export function createPluginWorkerHandle(
   ): Promise<HostToWorkerMethods[M][1]> {
     return new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
       if (!childProcess?.stdin?.writable) {
-        reject(
-          new Error(
-            `Cannot call "${method}" — worker for "${pluginId}" is not running`,
-          ),
-        );
+        reject(new Error(`Cannot call "${method}" — worker for "${pluginId}" is not running`));
         return;
       }
 
@@ -1064,13 +1006,7 @@ export function createPluginWorkerHandle(
       } catch (err) {
         clearTimeout(timer);
         pendingRequests.delete(id);
-        reject(
-          new Error(
-            `Failed to send "${method}" to worker: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          ),
-        );
+        reject(new Error(`Failed to send "${method}" to worker: ${err instanceof Error ? err.message : String(err)}`));
       }
     });
   }
@@ -1111,11 +1047,7 @@ export function createPluginWorkerHandle(
       timeoutMs?: number,
     ): Promise<HostToWorkerMethods[M][1]> {
       if (status !== "running" && status !== "starting") {
-        return Promise.reject(
-          new Error(
-            `Cannot call "${method}" — worker for "${pluginId}" is ${status}`,
-          ),
-        );
+        return Promise.reject(new Error(`Cannot call "${method}" — worker for "${pluginId}" is ${status}`));
       }
       return callInternal(method, params, timeoutMs);
     },
@@ -1133,17 +1065,11 @@ export function createPluginWorkerHandle(
       }
     },
 
-    on<K extends WorkerHandleEventName>(
-      event: K,
-      listener: (payload: WorkerHandleEvents[K]) => void,
-    ) {
+    on<K extends WorkerHandleEventName>(event: K, listener: (payload: WorkerHandleEvents[K]) => void) {
       emitter.on(event, listener);
     },
 
-    off<K extends WorkerHandleEventName>(
-      event: K,
-      listener: (payload: WorkerHandleEvents[K]) => void,
-    ) {
+    off<K extends WorkerHandleEventName>(event: K, listener: (payload: WorkerHandleEvents[K]) => void) {
       emitter.off(event, listener);
     },
 
@@ -1152,10 +1078,7 @@ export function createPluginWorkerHandle(
         pluginId,
         status,
         pid: childProcess?.pid ?? null,
-        uptime:
-          startedAt !== null && status === "running"
-            ? Date.now() - startedAt
-            : null,
+        uptime: startedAt !== null && status === "running" ? Date.now() - startedAt : null,
         consecutiveCrashes,
         totalCrashes,
         pendingRequests: pendingRequests.size,
@@ -1215,19 +1138,14 @@ export interface PluginWorkerManagerOptions {
  * await manager.stopAll();
  * ```
  */
-export function createPluginWorkerManager(
-  managerOptions?: PluginWorkerManagerOptions,
-): PluginWorkerManager {
+export function createPluginWorkerManager(managerOptions?: PluginWorkerManagerOptions): PluginWorkerManager {
   const log = logger.child({ service: "plugin-worker-manager" });
   const workers = new Map<string, PluginWorkerHandle>();
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
 
   return {
-    async startWorker(
-      pluginId: string,
-      options: WorkerStartOptions,
-    ): Promise<PluginWorkerHandle> {
+    async startWorker(pluginId: string, options: WorkerStartOptions): Promise<PluginWorkerHandle> {
       // Mutex: if a start is already in-flight for this plugin, wait for it
       const inFlight = startupLocks.get(pluginId);
       if (inFlight) {
@@ -1237,9 +1155,7 @@ export function createPluginWorkerManager(
 
       const existing = workers.get(pluginId);
       if (existing && existing.status !== "stopped") {
-        throw new Error(
-          `Worker already registered for plugin "${pluginId}" (status: ${existing.status})`,
-        );
+        throw new Error(`Worker already registered for plugin "${pluginId}" (status: ${existing.status})`);
       }
 
       const handle = createPluginWorkerHandle(pluginId, options);
@@ -1272,9 +1188,12 @@ export function createPluginWorkerManager(
       log.info({ pluginId }, "starting plugin worker");
 
       // Set the lock before awaiting start() to prevent concurrent spawns
-      const startPromise = handle.start().then(() => handle).finally(() => {
-        startupLocks.delete(pluginId);
-      });
+      const startPromise = handle
+        .start()
+        .then(() => handle)
+        .finally(() => {
+          startupLocks.delete(pluginId);
+        });
       startupLocks.set(pluginId, startPromise);
 
       return startPromise;
@@ -1332,9 +1251,7 @@ export function createPluginWorkerManager(
     ): Promise<HostToWorkerMethods[M][1]> {
       const handle = workers.get(pluginId);
       if (!handle) {
-        return Promise.reject(
-          new Error(`No worker registered for plugin "${pluginId}"`),
-        );
+        return Promise.reject(new Error(`No worker registered for plugin "${pluginId}"`));
       }
       return handle.call(method, params, timeoutMs);
     },

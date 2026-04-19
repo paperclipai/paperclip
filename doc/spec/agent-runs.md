@@ -29,9 +29,10 @@ The following intentions are explicitly preserved in this spec:
 10. CLI errors must be visible in full (or as much as possible) in the UI.
 11. Status changes must live-update across task and agent views via server push.
 12. Wakeup triggers should be centralized by a heartbeat/wakeup service with at least:
-   - timer interval
-   - wake on task assignment
-   - explicit ping/request
+
+- timer interval
+- wake on task assignment
+- explicit ping/request
 
 ## 3. Goals and Non-Goals
 
@@ -207,10 +208,7 @@ interface RunLogStore {
     handle: RunLogHandle,
     event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string },
   ): Promise<void>;
-  finalize(
-    handle: RunLogHandle,
-    summary: { bytes: number; sha256?: string; compressed: boolean },
-  ): Promise<void>;
+  finalize(handle: RunLogHandle, summary: { bytes: number; sha256?: string; compressed: boolean }): Promise<void>;
   read(
     handle: RunLogHandle,
     opts?: { offset?: number; limitBytes?: number },
@@ -249,9 +247,9 @@ Runs local `claude` CLI directly.
   "cwd": "/absolute/or/relative/path",
   "promptTemplate": "You are agent {{agent.id}} ...",
   "model": "optional-model-id",
-  "maxTurnsPerRun": 300,
+  "maxTurnsPerRun": 1000,
   "dangerouslySkipPermissions": true,
-  "env": {"KEY": "VALUE"},
+  "env": { "KEY": "VALUE" },
   "extraArgs": [],
   "timeoutSec": 1800,
   "graceSec": 20
@@ -288,7 +286,7 @@ Runs local `codex` CLI directly.
   "model": "optional-model-id",
   "search": false,
   "dangerouslyBypassApprovalsAndSandbox": true,
-  "env": {"KEY": "VALUE"},
+  "env": { "KEY": "VALUE" },
   "extraArgs": [],
   "timeoutSec": 1800,
   "graceSec": 20

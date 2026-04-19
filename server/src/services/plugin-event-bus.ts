@@ -92,9 +92,12 @@ function passesFilter(event: PluginEvent, filter: EventFilter | null): boolean {
   const payload = event.payload as Record<string, unknown> | null;
 
   if (filter.projectId !== undefined) {
-    const projectId = event.entityType === "project"
-      ? event.entityId
-      : (typeof payload?.projectId === "string" ? payload.projectId : undefined);
+    const projectId =
+      event.entityType === "project"
+        ? event.entityId
+        : typeof payload?.projectId === "string"
+          ? payload.projectId
+          : undefined;
     if (projectId !== filter.projectId) return false;
   }
 
@@ -103,9 +106,12 @@ function passesFilter(event: PluginEvent, filter: EventFilter | null): boolean {
   }
 
   if (filter.agentId !== undefined) {
-    const agentId = event.entityType === "agent"
-      ? event.entityId
-      : (typeof payload?.agentId === "string" ? payload.agentId : undefined);
+    const agentId =
+      event.entityType === "agent"
+        ? event.entityId
+        : typeof payload?.agentId === "string"
+          ? payload.agentId
+          : undefined;
     if (agentId !== filter.agentId) return false;
   }
 
@@ -186,9 +192,11 @@ export function createPluginEventBus(): PluginEventBus {
         // exceptions become rejections. Each .catch() swallows the rejection
         // and records it — the promise always resolves, so Promise.all never rejects.
         promises.push(
-          Promise.resolve().then(() => sub.handler(event)).catch((error: unknown) => {
-            errors.push({ pluginId, error });
-          }),
+          Promise.resolve()
+            .then(() => sub.handler(event))
+            .catch((error: unknown) => {
+              errors.push({ pluginId, error });
+            }),
         );
       }
     }
@@ -260,7 +268,7 @@ export function createPluginEventBus(): PluginEventBus {
         if (name.startsWith("plugin.")) {
           throw new Error(
             `Plugin "${pluginId}" must not include the "plugin." prefix when emitting events. ` +
-            `Emit the bare event name (e.g. "sync-done") and the bus will namespace it automatically.`,
+              `Emit the bare event name (e.g. "sync-done") and the bus will namespace it automatically.`,
           );
         }
 
@@ -380,10 +388,7 @@ export interface ScopedPluginEventBus {
    * An optional `EventFilter` can be passed as the second argument to perform
    * server-side pre-filtering; filtered-out events are never delivered to the handler.
    */
-  subscribe(
-    eventPattern: PluginEventType | `plugin.${string}`,
-    fn: (event: PluginEvent) => Promise<void>,
-  ): void;
+  subscribe(eventPattern: PluginEventType | `plugin.${string}`, fn: (event: PluginEvent) => Promise<void>): void;
   subscribe(
     eventPattern: PluginEventType | `plugin.${string}`,
     filter: EventFilter,

@@ -20,10 +20,7 @@ export function trackRecentAssignee(agentId: string): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(recent));
 }
 
-export function sortAgentsByRecency<T extends { id: string; name: string }>(
-  agents: T[],
-  recentIds: string[],
-): T[] {
+export function sortAgentsByRecency<T extends { id: string; name: string }>(agents: T[], recentIds: string[]): T[] {
   const recentIndex = new Map(recentIds.map((id, i) => [id, i]));
   return [...agents].sort((a, b) => {
     const aRecent = recentIndex.get(a.id);

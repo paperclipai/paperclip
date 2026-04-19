@@ -20,7 +20,7 @@ List and filter issues in the workspace.
 | ----------------- | -------- | -------- | ----------------------------------------------------------------------------------------------- |
 | `query`           | string   | no       | Free-text search across title and description                                                   |
 | `teamId`          | string   | no       | Filter by team                                                                                  |
-| `status`         | string   | no       | Filter by specific workflow state                                                               |
+| `status`          | string   | no       | Filter by specific workflow state                                                               |
 | `stateType`       | string   | no       | Filter by state category: `triage`, `backlog`, `unstarted`, `started`, `completed`, `cancelled` |
 | `assigneeId`      | string   | no       | Filter by assignee (agent id)                                                                   |
 | `projectId`       | string   | no       | Filter by project                                                                               |
@@ -66,7 +66,7 @@ Create a new issue.
 | `title`       | string   | yes      |                                               |
 | `teamId`      | string   | yes      | Team the issue belongs to                     |
 | `description` | string   | no       | Markdown                                      |
-| `status`     | string   | no       | Workflow state. Default: team's default state |
+| `status`      | string   | no       | Workflow state. Default: team's default state |
 | `priority`    | number   | no       | 0-4. Default: 0 (none)                        |
 | `estimate`    | number   | no       | Point estimate                                |
 | `dueDate`     | string   | no       | ISO date                                      |
@@ -96,7 +96,7 @@ Update an existing issue.
 | `id`          | string   | yes      | UUID or identifier                           |
 | `title`       | string   | no       |                                              |
 | `description` | string   | no       |                                              |
-| `status`     | string   | no       | Transition to a new workflow state           |
+| `status`      | string   | no       | Transition to a new workflow state           |
 | `priority`    | number   | no       | 0-4                                          |
 | `estimate`    | number   | no       |                                              |
 | `dueDate`     | string   | no       | ISO date, or `null` to clear                 |
@@ -303,7 +303,7 @@ Get a milestone by ID.
 ### `create_milestone`
 
 | Parameter     | Type   | Required |
-| ------------- | ------ | -------- |
+| ------------- | ------ | -------- | --------------------------- |
 | `projectId`   | string | yes      |
 | `name`        | string | yes      |
 | `description` | string | no       |
@@ -317,7 +317,7 @@ Get a milestone by ID.
 ### `update_milestone`
 
 | Parameter     | Type   | Required |
-| ------------- | ------ | -------- |
+| ------------- | ------ | -------- | --------------------------- |
 | `id`          | string | yes      |
 | `name`        | string | no       |
 | `description` | string | no       |

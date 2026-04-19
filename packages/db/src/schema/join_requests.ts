@@ -7,8 +7,12 @@ export const joinRequests = pgTable(
   "join_requests",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    inviteId: uuid("invite_id").notNull().references(() => invites.id),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    inviteId: uuid("invite_id")
+      .notNull()
+      .references(() => invites.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
     requestType: text("request_type").notNull(),
     status: text("status").notNull().default("pending_approval"),
     requestIp: text("request_ip").notNull(),

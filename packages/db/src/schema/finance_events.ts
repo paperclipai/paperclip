@@ -11,7 +11,9 @@ export const financeEvents = pgTable(
   "finance_events",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
     agentId: uuid("agent_id").references(() => agents.id),
     issueId: uuid("issue_id").references(() => issues.id),
     projectId: uuid("project_id").references(() => projects.id),
@@ -55,13 +57,7 @@ export const financeEvents = pgTable(
       table.direction,
       table.occurredAt,
     ),
-    companyHeartbeatRunIdx: index("finance_events_company_heartbeat_run_idx").on(
-      table.companyId,
-      table.heartbeatRunId,
-    ),
-    companyCostEventIdx: index("finance_events_company_cost_event_idx").on(
-      table.companyId,
-      table.costEventId,
-    ),
+    companyHeartbeatRunIdx: index("finance_events_company_heartbeat_run_idx").on(table.companyId, table.heartbeatRunId),
+    companyCostEventIdx: index("finance_events_company_cost_event_idx").on(table.companyId, table.costEventId),
   }),
 );

@@ -5,10 +5,7 @@ function asErrorText(value: unknown): string {
   if (typeof value === "string") return value;
   const rec = parseObject(value);
   const message =
-    asString(rec.message, "") ||
-    asString(rec.error, "") ||
-    asString(rec.code, "") ||
-    asString(rec.detail, "");
+    asString(rec.message, "") || asString(rec.error, "") || asString(rec.code, "") || asString(rec.detail, "");
   if (message) return message;
   try {
     return JSON.stringify(rec);
@@ -79,18 +76,12 @@ export function parseCursorJsonl(stdout: string) {
 
     if (type === "result") {
       const usageObj = parseObject(event.usage);
-      usage.inputTokens += asNumber(
-        usageObj.input_tokens,
-        asNumber(usageObj.inputTokens, 0),
-      );
+      usage.inputTokens += asNumber(usageObj.input_tokens, asNumber(usageObj.inputTokens, 0));
       usage.cachedInputTokens += asNumber(
         usageObj.cached_input_tokens,
         asNumber(usageObj.cachedInputTokens, asNumber(usageObj.cache_read_input_tokens, 0)),
       );
-      usage.outputTokens += asNumber(
-        usageObj.output_tokens,
-        asNumber(usageObj.outputTokens, 0),
-      );
+      usage.outputTokens += asNumber(usageObj.output_tokens, asNumber(usageObj.outputTokens, 0));
       totalCostUsd += asNumber(event.total_cost_usd, asNumber(event.cost_usd, asNumber(event.cost, 0)));
 
       const isError = event.is_error === true || asString(event.subtype, "").toLowerCase() === "error";

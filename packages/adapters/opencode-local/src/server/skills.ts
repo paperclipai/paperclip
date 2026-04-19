@@ -2,10 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  AdapterSkillContext,
-  AdapterSkillSnapshot,
-} from "@paperclipai/adapter-utils";
+import type { AdapterSkillContext, AdapterSkillSnapshot } from "@paperclipai/adapter-utils";
 import {
   buildPersistentSkillSnapshot,
   ensurePaperclipSkillSymlink,
@@ -46,9 +43,7 @@ async function buildOpenCodeSkillSnapshot(config: Record<string, unknown>): Prom
     missingDetail: "Configured but not currently linked into the shared Claude/OpenCode skills home.",
     externalConflictDetail: "Skill name is occupied by an external installation in the shared skills home.",
     externalDetail: "Installed outside Paperclip management in the shared skills home.",
-    warnings: [
-      "OpenCode currently uses the shared Claude skills home (~/.claude/skills).",
-    ],
+    warnings: ["OpenCode currently uses the shared Claude skills home (~/.claude/skills)."],
   });
 }
 

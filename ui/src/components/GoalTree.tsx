@@ -36,9 +36,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
             setExpanded(!expanded);
           }}
         >
-          <ChevronRight
-            className={cn("h-3 w-3 transition-transform", expanded && "rotate-90")}
-          />
+          <ChevronRight className={cn("h-3 w-3 transition-transform", expanded && "rotate-90")} />
         </button>
       ) : (
         <span className="w-4" />
@@ -49,9 +47,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
     </>
   );
 
-  const classes = cn(
-    "flex items-center gap-2 px-3 py-1.5 text-sm transition-colors cursor-pointer hover:bg-accent/50",
-  );
+  const classes = cn("flex items-center gap-2 px-3 py-1.5 text-sm transition-colors cursor-pointer hover:bg-accent/50");
 
   return (
     <div>
@@ -64,11 +60,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
           {inner}
         </Link>
       ) : (
-        <div
-          className={classes}
-          style={{ paddingLeft: `${depth * 16 + 12}px` }}
-          onClick={() => onSelect?.(goal)}
-        >
+        <div className={classes} style={{ paddingLeft: `${depth * 16 + 12}px` }} onClick={() => onSelect?.(goal)}>
           {inner}
         </div>
       )}

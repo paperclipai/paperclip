@@ -1,11 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { plugins, pluginState } from "@paperclipai/db";
-import type {
-  PluginStateScopeKind,
-  SetPluginState,
-  ListPluginState,
-} from "@paperclipai/shared";
+import type { PluginStateScopeKind, SetPluginState, ListPluginState } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 
 // ---------------------------------------------------------------------------
@@ -72,10 +68,7 @@ export function pluginStateStore(db: Db) {
   // -----------------------------------------------------------------------
 
   async function assertPluginExists(pluginId: string): Promise<void> {
-    const rows = await db
-      .select({ id: plugins.id })
-      .from(plugins)
-      .where(eq(plugins.id, pluginId));
+    const rows = await db.select({ id: plugins.id }).from(plugins).where(eq(plugins.id, pluginId));
     if (rows.length === 0) {
       throw notFound(`Plugin not found: ${pluginId}`);
     }
@@ -104,10 +97,7 @@ export function pluginStateStore(db: Db) {
       pluginId: string,
       scopeKind: PluginStateScopeKind,
       stateKey: string,
-      {
-        scopeId,
-        namespace = DEFAULT_NAMESPACE,
-      }: { scopeId?: string; namespace?: string } = {},
+      { scopeId, namespace = DEFAULT_NAMESPACE }: { scopeId?: string; namespace?: string } = {},
     ): Promise<unknown> => {
       const rows = await db
         .select()
@@ -178,14 +168,9 @@ export function pluginStateStore(db: Db) {
       pluginId: string,
       scopeKind: PluginStateScopeKind,
       stateKey: string,
-      {
-        scopeId,
-        namespace = DEFAULT_NAMESPACE,
-      }: { scopeId?: string; namespace?: string } = {},
+      { scopeId, namespace = DEFAULT_NAMESPACE }: { scopeId?: string; namespace?: string } = {},
     ): Promise<void> => {
-      await db
-        .delete(pluginState)
-        .where(scopeConditions(pluginId, scopeKind, scopeId, namespace, stateKey));
+      await db.delete(pluginState).where(scopeConditions(pluginId, scopeKind, scopeId, namespace, stateKey));
     },
 
     /**
@@ -199,7 +184,7 @@ export function pluginStateStore(db: Db) {
      * @param pluginId - UUID of the owning plugin
      * @param filter - Optional scope filters (scopeKind, scopeId, namespace)
      */
-    list: async (pluginId: string, filter: ListPluginState = {}): Promise<typeof pluginState.$inferSelect[]> => {
+    list: async (pluginId: string, filter: ListPluginState = {}): Promise<(typeof pluginState.$inferSelect)[]> => {
       const conditions = [eq(pluginState.pluginId, pluginId)];
 
       if (filter.scopeKind !== undefined) {
@@ -227,9 +212,7 @@ export function pluginStateStore(db: Db) {
      * @param pluginId - UUID of the owning plugin
      */
     deleteAll: async (pluginId: string): Promise<void> => {
-      await db
-        .delete(pluginState)
-        .where(eq(pluginState.pluginId, pluginId));
+      await db.delete(pluginState).where(eq(pluginState.pluginId, pluginId));
     },
   };
 }

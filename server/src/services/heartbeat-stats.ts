@@ -61,19 +61,20 @@ export function heartbeatStatsService(db: Db) {
           succeededRuns: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'succeeded')::int`,
           failedRuns: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'failed')::int`,
           timedOutRuns: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'timed_out')::int`,
-          avgDurationMs: sql<number | null>`avg(extract(epoch from (${heartbeatRuns.finishedAt} - ${heartbeatRuns.startedAt})) * 1000) filter (where ${heartbeatRuns.finishedAt} is not null and ${heartbeatRuns.startedAt} is not null)`,
-          maxDurationMs: sql<number | null>`max(extract(epoch from (${heartbeatRuns.finishedAt} - ${heartbeatRuns.startedAt})) * 1000) filter (where ${heartbeatRuns.finishedAt} is not null and ${heartbeatRuns.startedAt} is not null)`,
-          minDurationMs: sql<number | null>`min(extract(epoch from (${heartbeatRuns.finishedAt} - ${heartbeatRuns.startedAt})) * 1000) filter (where ${heartbeatRuns.finishedAt} is not null and ${heartbeatRuns.startedAt} is not null)`,
+          avgDurationMs: sql<
+            number | null
+          >`avg(extract(epoch from (${heartbeatRuns.finishedAt} - ${heartbeatRuns.startedAt})) * 1000) filter (where ${heartbeatRuns.finishedAt} is not null and ${heartbeatRuns.startedAt} is not null)`,
+          maxDurationMs: sql<
+            number | null
+          >`max(extract(epoch from (${heartbeatRuns.finishedAt} - ${heartbeatRuns.startedAt})) * 1000) filter (where ${heartbeatRuns.finishedAt} is not null and ${heartbeatRuns.startedAt} is not null)`,
+          minDurationMs: sql<
+            number | null
+          >`min(extract(epoch from (${heartbeatRuns.finishedAt} - ${heartbeatRuns.startedAt})) * 1000) filter (where ${heartbeatRuns.finishedAt} is not null and ${heartbeatRuns.startedAt} is not null)`,
           lastRunAt: sql<string | null>`max(${heartbeatRuns.createdAt})`,
         })
         .from(heartbeatRuns)
         .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, companyId),
-            gte(heartbeatRuns.createdAt, since),
-          ),
-        )
+        .where(and(eq(heartbeatRuns.companyId, companyId), gte(heartbeatRuns.createdAt, since)))
         .groupBy(heartbeatRuns.agentId, agents.name, agents.status, agents.adapterType);
 
       // Get last run status and consecutive failures per agent
@@ -125,8 +126,11 @@ export function heartbeatStatsService(db: Db) {
           lastRunAt: row.lastRunAt,
           lastRunStatus,
           consecutiveFailures,
-          isStuck: consecutiveFailures >= 3 || (lastRunStatus === "running" && row.lastRunAt != null &&
-            new Date().getTime() - new Date(row.lastRunAt).getTime() > 30 * 60 * 1000),
+          isStuck:
+            consecutiveFailures >= 3 ||
+            (lastRunStatus === "running" &&
+              row.lastRunAt != null &&
+              new Date().getTime() - new Date(row.lastRunAt).getTime() > 30 * 60 * 1000),
         });
       }
 
@@ -138,15 +142,12 @@ export function heartbeatStatsService(db: Db) {
           failed: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'failed')::int`,
           timedOut: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'timed_out')::int`,
           other: sql<number>`count(*) filter (where ${heartbeatRuns.status} not in ('succeeded', 'failed', 'timed_out'))::int`,
-          avgDurationMs: sql<number | null>`avg(extract(epoch from (${heartbeatRuns.finishedAt} - ${heartbeatRuns.startedAt})) * 1000) filter (where ${heartbeatRuns.finishedAt} is not null and ${heartbeatRuns.startedAt} is not null)`,
+          avgDurationMs: sql<
+            number | null
+          >`avg(extract(epoch from (${heartbeatRuns.finishedAt} - ${heartbeatRuns.startedAt})) * 1000) filter (where ${heartbeatRuns.finishedAt} is not null and ${heartbeatRuns.startedAt} is not null)`,
         })
         .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, companyId),
-            gte(heartbeatRuns.createdAt, since),
-          ),
-        )
+        .where(and(eq(heartbeatRuns.companyId, companyId), gte(heartbeatRuns.createdAt, since)))
         .groupBy(sql`date(${heartbeatRuns.createdAt})`)
         .orderBy(sql`date(${heartbeatRuns.createdAt})`);
 
@@ -164,9 +165,10 @@ export function heartbeatStatsService(db: Db) {
       const succeededRuns = agentsWithDetails.reduce((s, a) => s + a.succeededRuns, 0);
       const failedRuns = agentsWithDetails.reduce((s, a) => s + a.failedRuns, 0);
       const allAvgDurations = agentsWithDetails.filter((a) => a.avgDurationMs != null).map((a) => a.avgDurationMs!);
-      const overallAvgDuration = allAvgDurations.length > 0
-        ? Math.round(allAvgDurations.reduce((s, d) => s + d, 0) / allAvgDurations.length)
-        : null;
+      const overallAvgDuration =
+        allAvgDurations.length > 0
+          ? Math.round(allAvgDurations.reduce((s, d) => s + d, 0) / allAvgDurations.length)
+          : null;
 
       return {
         companyId,

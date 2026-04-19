@@ -1,7 +1,8 @@
 import type { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
-import { Sentry, sentryEnabled } from "../sentry.js";
+import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
+import { getTelemetryClient } from "../telemetry.js";
 
 export interface ErrorContext {
   error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
@@ -12,12 +13,7 @@ export interface ErrorContext {
   reqQuery?: unknown;
 }
 
-function attachErrorContext(
-  req: Request,
-  res: Response,
-  payload: ErrorContext["error"],
-  rawError?: Error,
-) {
+function attachErrorContext(req: Request, res: Response, payload: ErrorContext["error"], rawError?: Error) {
   (res as any).__errorContext = {
     error: payload,
     method: req.method,
@@ -31,26 +27,7 @@ function attachErrorContext(
   }
 }
 
-function captureToSentry(err: Error, req: Request): void {
-  if (!sentryEnabled) return;
-  Sentry.withScope((scope) => {
-    scope.setTag("url", req.originalUrl);
-    scope.setTag("method", req.method);
-    const actor = (req as any).actor;
-    if (actor) {
-      scope.setUser({ id: actor.agentId || actor.userId || undefined });
-      scope.setTag("actorType", actor.type);
-    }
-    Sentry.captureException(err);
-  });
-}
-
-export function errorHandler(
-  err: unknown,
-  req: Request,
-  res: Response,
-  _next: NextFunction,
-) {
+export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction) {
   if (err instanceof HttpError) {
     if (err.status >= 500) {
       attachErrorContext(
@@ -59,7 +36,8 @@ export function errorHandler(
         { message: err.message, stack: err.stack, name: err.name, details: err.details },
         err,
       );
-      captureToSentry(err, req);
+      const tc = getTelemetryClient();
+      if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name });
     }
     res.status(err.status).json({
       error: err.message,
@@ -73,15 +51,6 @@ export function errorHandler(
     return;
   }
 
-  if (
-    err instanceof SyntaxError &&
-    (err as any).status === 400 &&
-    (err as any).type === "entity.parse.failed"
-  ) {
-    res.status(400).json({ error: "Malformed JSON in request body" });
-    return;
-  }
-
   const rootError = err instanceof Error ? err : new Error(String(err));
   attachErrorContext(
     req,
@@ -91,7 +60,9 @@ export function errorHandler(
       : { message: String(err), raw: err, stack: rootError.stack, name: rootError.name },
     rootError,
   );
-  captureToSentry(rootError, req);
+
+  const tc = getTelemetryClient();
+  if (tc) trackErrorHandlerCrash(tc, { errorCode: rootError.name });
 
   res.status(500).json({ error: "Internal server error" });
 }

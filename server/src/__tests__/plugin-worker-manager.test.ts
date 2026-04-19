@@ -6,11 +6,9 @@ describe("plugin-worker-manager stderr failure context", () => {
     expect(
       formatWorkerFailureMessage(
         "Worker process exited (code=1, signal=null)",
-        "TypeError: Unknown file extension \".ts\"",
+        'TypeError: Unknown file extension ".ts"',
       ),
-    ).toBe(
-      "Worker process exited (code=1, signal=null)\n\nWorker stderr:\nTypeError: Unknown file extension \".ts\"",
-    );
+    ).toBe('Worker process exited (code=1, signal=null)\n\nWorker stderr:\nTypeError: Unknown file extension ".ts"');
   });
 
   it("does not duplicate stderr that is already present", () => {
@@ -18,12 +16,10 @@ describe("plugin-worker-manager stderr failure context", () => {
       "Worker process exited (code=1, signal=null)",
       "",
       "Worker stderr:",
-      "TypeError: Unknown file extension \".ts\"",
+      'TypeError: Unknown file extension ".ts"',
     ].join("\n");
 
-    expect(
-      formatWorkerFailureMessage(message, "TypeError: Unknown file extension \".ts\""),
-    ).toBe(message);
+    expect(formatWorkerFailureMessage(message, 'TypeError: Unknown file extension ".ts"')).toBe(message);
   });
 
   it("keeps only the latest stderr excerpt", () => {

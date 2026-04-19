@@ -38,13 +38,11 @@ import { getSdkUiRuntimeValue } from "./runtime.js";
  * @see PLUGIN_SPEC.md §13.8 — `getData`
  * @see PLUGIN_SPEC.md §19.7 — Error Propagation Through The Bridge
  */
-export function usePluginData<T = unknown>(
-  key: string,
-  params?: Record<string, unknown>,
-): PluginDataResult<T> {
-  const impl = getSdkUiRuntimeValue<
-    (nextKey: string, nextParams?: Record<string, unknown>) => PluginDataResult<T>
-  >("usePluginData");
+export function usePluginData<T = unknown>(key: string, params?: Record<string, unknown>): PluginDataResult<T> {
+  const impl =
+    getSdkUiRuntimeValue<(nextKey: string, nextParams?: Record<string, unknown>) => PluginDataResult<T>>(
+      "usePluginData",
+    );
   return impl(key, params);
 }
 
@@ -148,13 +146,11 @@ export function useHostContext(): PluginHostContext {
  *
  * @see PLUGIN_SPEC.md §19.8 — Real-Time Streaming
  */
-export function usePluginStream<T = unknown>(
-  channel: string,
-  options?: { companyId?: string },
-): PluginStreamResult<T> {
-  const impl = getSdkUiRuntimeValue<
-    (nextChannel: string, nextOptions?: { companyId?: string }) => PluginStreamResult<T>
-  >("usePluginStream");
+export function usePluginStream<T = unknown>(channel: string, options?: { companyId?: string }): PluginStreamResult<T> {
+  const impl =
+    getSdkUiRuntimeValue<(nextChannel: string, nextOptions?: { companyId?: string }) => PluginStreamResult<T>>(
+      "usePluginStream",
+    );
   return impl(channel, options);
 }
 

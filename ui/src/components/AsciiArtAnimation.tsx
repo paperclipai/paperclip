@@ -5,26 +5,8 @@ const TARGET_FPS = 24;
 const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
 
 const PAPERCLIP_SPRITES = [
-  [
-    "  ╭────╮ ",
-    " ╭╯╭──╮│ ",
-    " │ │  ││ ",
-    " │ │  ││ ",
-    " │ │  ││ ",
-    " │ │  ││ ",
-    " │ ╰──╯│ ",
-    " ╰─────╯ ",
-  ],
-  [
-    " ╭─────╮ ",
-    " │╭──╮╰╮ ",
-    " ││  │ │ ",
-    " ││  │ │ ",
-    " ││  │ │ ",
-    " ││  │ │ ",
-    " │╰──╯ │ ",
-    " ╰────╯  ",
-  ],
+  ["  ╭────╮ ", " ╭╯╭──╮│ ", " │ │  ││ ", " │ │  ││ ", " │ │  ││ ", " │ │  ││ ", " │ ╰──╯│ ", " ╰─────╯ "],
+  [" ╭─────╮ ", " │╭──╮╰╮ ", " ││  │ │ ", " ││  │ │ ", " ││  │ │ ", " ││  │ │ ", " │╰──╯ │ ", " ╰────╯  "],
 ] as const;
 
 type PaperclipSprite = (typeof PAPERCLIP_SPRITES)[number];
@@ -101,12 +83,7 @@ export function AsciiArtAnimation() {
       rowWave = new Float32Array(rows);
       clipMask = new Uint16Array(cellCount);
       clips = clips.filter((clip) => {
-        return (
-          clip.x > -clip.width - 2 &&
-          clip.x < cols + 2 &&
-          clip.y > -clip.height - 2 &&
-          clip.y < rows + 2
-        );
+        return clip.x > -clip.width - 2 && clip.x < cols + 2 && clip.y > -clip.height - 2 && clip.y < rows + 2;
       });
       lastOutput = "";
     }

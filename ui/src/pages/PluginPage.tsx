@@ -19,7 +19,11 @@ import { NotFoundPage } from "./NotFound";
  * @see doc/plugins/PLUGIN_SPEC.md §24.4 — Company-Context Plugin Page
  */
 export function PluginPage() {
-  const { companyPrefix: routeCompanyPrefix, pluginId, pluginRoutePath } = useParams<{
+  const {
+    companyPrefix: routeCompanyPrefix,
+    pluginId,
+    pluginRoutePath,
+  } = useParams<{
     companyPrefix?: string;
     pluginId?: string;
     pluginRoutePath?: string;
@@ -40,7 +44,7 @@ export function PluginPage() {
   }, [routeCompany, routeCompanyPrefix, selectedCompanyId]);
 
   const companyPrefix = useMemo(
-    () => (resolvedCompanyId ? companies.find((c) => c.id === resolvedCompanyId)?.issuePrefix ?? null : null),
+    () => (resolvedCompanyId ? (companies.find((c) => c.id === resolvedCompanyId)?.issuePrefix ?? null) : null),
     [companies, resolvedCompanyId],
   );
 
@@ -69,13 +73,15 @@ export function PluginPage() {
     const matches = contributions.flatMap((contribution) => {
       const slot = contribution.slots.find((entry) => entry.type === "page" && entry.routePath === pluginRoutePath);
       if (!slot) return [];
-      return [{
-        ...slot,
-        pluginId: contribution.pluginId,
-        pluginKey: contribution.pluginKey,
-        pluginDisplayName: contribution.displayName,
-        pluginVersion: contribution.version,
-      }];
+      return [
+        {
+          ...slot,
+          pluginId: contribution.pluginId,
+          pluginKey: contribution.pluginKey,
+          pluginDisplayName: contribution.displayName,
+          pluginVersion: contribution.version,
+        },
+      ];
     });
     if (matches.length !== 1) return null;
     return matches[0] ?? null;
@@ -91,10 +97,7 @@ export function PluginPage() {
 
   useEffect(() => {
     if (pageSlot) {
-      setBreadcrumbs([
-        { label: "Plugins", href: "/instance/settings/plugins" },
-        { label: pageSlot.pluginDisplayName },
-      ]);
+      setBreadcrumbs([{ label: "Plugins", href: "/instance/settings/plugins" }, { label: pageSlot.pluginDisplayName }]);
     }
   }, [pageSlot, companyPrefix, setBreadcrumbs]);
 
@@ -120,7 +123,8 @@ export function PluginPage() {
     if (duplicateMatches.length > 1) {
       return (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          Multiple plugins declare the route <code>{pluginRoutePath}</code>. Use the plugin-id route until the conflict is resolved.
+          Multiple plugins declare the route <code>{pluginRoutePath}</code>. Use the plugin-id route until the conflict
+          is resolved.
         </div>
       );
     }
@@ -145,12 +149,7 @@ export function PluginPage() {
           </Link>
         </Button>
       </div>
-      <PluginSlotMount
-        slot={pageSlot}
-        context={context}
-        className="min-h-[200px]"
-        missingBehavior="placeholder"
-      />
+      <PluginSlotMount slot={pageSlot} context={context} className="min-h-[200px]" missingBehavior="placeholder" />
     </div>
   );
 }

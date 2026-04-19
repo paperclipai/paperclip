@@ -20,18 +20,20 @@ export const upsertBudgetPolicySchema = z.object({
 
 export type UpsertBudgetPolicy = z.infer<typeof upsertBudgetPolicySchema>;
 
-export const resolveBudgetIncidentSchema = z.object({
-  action: z.enum(BUDGET_INCIDENT_RESOLUTION_ACTIONS),
-  amount: z.number().int().nonnegative().optional(),
-  decisionNote: z.string().optional().nullable(),
-}).superRefine((value, ctx) => {
-  if (value.action === "raise_budget_and_resume" && typeof value.amount !== "number") {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "amount is required when raising a budget",
-      path: ["amount"],
-    });
-  }
-});
+export const resolveBudgetIncidentSchema = z
+  .object({
+    action: z.enum(BUDGET_INCIDENT_RESOLUTION_ACTIONS),
+    amount: z.number().int().nonnegative().optional(),
+    decisionNote: z.string().optional().nullable(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.action === "raise_budget_and_resume" && typeof value.amount !== "number") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "amount is required when raising a budget",
+        path: ["amount"],
+      });
+    }
+  });
 
 export type ResolveBudgetIncident = z.infer<typeof resolveBudgetIncidentSchema>;

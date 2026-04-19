@@ -25,10 +25,9 @@ function dedupeModels(models: AdapterModel[]): AdapterModel[] {
 }
 
 function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
-  return dedupeModels([
-    ...models,
-    ...codexFallbackModels,
-  ]).sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }));
+  return dedupeModels([...models, ...codexFallbackModels]).sort((a, b) =>
+    a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }),
+  );
 }
 
 function resolveOpenAiApiKey(): string | null {

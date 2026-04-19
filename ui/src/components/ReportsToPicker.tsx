@@ -1,10 +1,6 @@
 import { useState } from "react";
 import type { Agent } from "@paperclipai/shared";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { User } from "lucide-react";
 import { cn } from "../lib/utils";
 import { roleLabels } from "./agent-config-primitives";
@@ -29,9 +25,7 @@ export function ReportsToPicker({
 }) {
   const [open, setOpen] = useState(false);
   const exclude = new Set(excludeAgentIds);
-  const rows = agents.filter(
-    (a) => a.status !== "terminated" && !exclude.has(a.id),
-  );
+  const rows = agents.filter((a) => a.status !== "terminated" && !exclude.has(a.id));
   const current = value ? agents.find((a) => a.id === value) : null;
   const terminatedManager = current?.status === "terminated";
   const unknownManager = Boolean(value && !current);
@@ -56,21 +50,14 @@ export function ReportsToPicker({
           ) : current ? (
             <>
               <AgentIcon icon={current.icon} className="h-3 w-3 shrink-0 text-muted-foreground" />
-              <span
-                className={cn(
-                  "min-w-0 truncate",
-                  terminatedManager && "text-amber-900 dark:text-amber-200",
-                )}
-              >
+              <span className={cn("min-w-0 truncate", terminatedManager && "text-amber-900 dark:text-amber-200")}>
                 {`Reports to ${current.name}${terminatedManager ? " (terminated)" : ""}`}
               </span>
             </>
           ) : (
             <>
               <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 truncate">
-                {disabled ? disabledEmptyLabel : chooseLabel}
-              </span>
+              <span className="min-w-0 truncate">{disabled ? disabledEmptyLabel : chooseLabel}</span>
             </>
           )}
         </button>
@@ -92,9 +79,7 @@ export function ReportsToPicker({
         {terminatedManager && (
           <div className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
             <AgentIcon icon={current.icon} className="shrink-0 h-3 w-3" />
-            <span className="min-w-0 truncate">
-              Current: {current.name} (terminated)
-            </span>
+            <span className="min-w-0 truncate">Current: {current.name} (terminated)</span>
           </div>
         )}
         {unknownManager && (

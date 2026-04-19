@@ -38,10 +38,7 @@ function asErrorText(value: unknown): string {
   if (typeof value === "string") return value;
   const rec = parseObject(value);
   const message =
-    asString(rec.message, "") ||
-    asString(rec.error, "") ||
-    asString(rec.code, "") ||
-    asString(rec.detail, "");
+    asString(rec.message, "") || asString(rec.error, "") || asString(rec.code, "") || asString(rec.detail, "");
   if (message) return message;
   try {
     return JSON.stringify(rec);
@@ -125,9 +122,7 @@ export function parseGeminiJsonl(stdout: string) {
       resultEvent = event;
       accumulateUsage(usage, event.usage ?? event.usageMetadata);
       const resultText =
-        asString(event.result, "").trim() ||
-        asString(event.text, "").trim() ||
-        asString(event.response, "").trim();
+        asString(event.result, "").trim() || asString(event.text, "").trim() || asString(event.response, "").trim();
       if (resultText && messages.length === 0) messages.push(resultText);
       costUsd = asNumber(event.total_cost_usd, asNumber(event.cost_usd, asNumber(event.cost, costUsd ?? 0))) || costUsd;
       const isError = event.is_error === true || asString(event.subtype, "").toLowerCase() === "error";
@@ -230,7 +225,8 @@ export function describeGeminiFailure(parsed: Record<string, unknown>): string |
   return parts.length > 1 ? parts.join(": ") : null;
 }
 
-const GEMINI_AUTH_REQUIRED_RE = /(?:not\s+authenticated|please\s+authenticate|api[_ ]?key\s+(?:required|missing|invalid)|authentication\s+required|unauthorized|invalid\s+credentials|not\s+logged\s+in|login\s+required|run\s+`?gemini\s+auth(?:\s+login)?`?\s+first)/i;
+const GEMINI_AUTH_REQUIRED_RE =
+  /(?:not\s+authenticated|please\s+authenticate|api[_ ]?key\s+(?:required|missing|invalid)|authentication\s+required|unauthorized|invalid\s+credentials|not\s+logged\s+in|login\s+required|run\s+`?gemini\s+auth(?:\s+login)?`?\s+first)/i;
 const GEMINI_QUOTA_EXHAUSTED_RE =
   /(?:resource_exhausted|quota|rate[-\s]?limit|too many requests|\b429\b|billing details)/i;
 

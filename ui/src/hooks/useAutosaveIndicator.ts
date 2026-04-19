@@ -35,33 +35,36 @@ export function useAutosaveIndicator() {
     setState("idle");
   }, [clearTimers]);
 
-  const runSave = useCallback(async (save: () => Promise<void>) => {
-    const saveId = saveIdRef.current + 1;
-    saveIdRef.current = saveId;
-    clearTimers();
-    savingTimerRef.current = setTimeout(() => {
-      if (saveIdRef.current === saveId) {
-        setState("saving");
-      }
-    }, SAVING_DELAY_MS);
-
-    try {
-      await save();
-      if (saveIdRef.current !== saveId) return;
+  const runSave = useCallback(
+    async (save: () => Promise<void>) => {
+      const saveId = saveIdRef.current + 1;
+      saveIdRef.current = saveId;
       clearTimers();
-      setState("saved");
-      clearSavedTimerRef.current = setTimeout(() => {
+      savingTimerRef.current = setTimeout(() => {
         if (saveIdRef.current === saveId) {
-          setState("idle");
+          setState("saving");
         }
-      }, SAVED_LINGER_MS);
-    } catch (error) {
-      if (saveIdRef.current !== saveId) throw error;
-      clearTimers();
-      setState("error");
-      throw error;
-    }
-  }, [clearTimers]);
+      }, SAVING_DELAY_MS);
+
+      try {
+        await save();
+        if (saveIdRef.current !== saveId) return;
+        clearTimers();
+        setState("saved");
+        clearSavedTimerRef.current = setTimeout(() => {
+          if (saveIdRef.current === saveId) {
+            setState("idle");
+          }
+        }, SAVED_LINGER_MS);
+      } catch (error) {
+        if (saveIdRef.current !== saveId) throw error;
+        clearTimers();
+        setState("error");
+        throw error;
+      }
+    },
+    [clearTimers],
+  );
 
   return {
     state,

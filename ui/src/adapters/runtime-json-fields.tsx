@@ -9,9 +9,7 @@ const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
 function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function formatJsonObject(value: unknown): string {
@@ -48,18 +46,9 @@ function updateJsonConfig(
   }
 }
 
-type JsonFieldProps = Pick<
-  AdapterConfigFieldsProps,
-  "isCreate" | "values" | "set" | "config" | "mark"
->;
+type JsonFieldProps = Pick<AdapterConfigFieldsProps, "isCreate" | "values" | "set" | "config" | "mark">;
 
-export function RuntimeServicesJsonField({
-  isCreate,
-  values,
-  set,
-  config,
-  mark,
-}: JsonFieldProps) {
+export function RuntimeServicesJsonField({ isCreate, values, set, config, mark }: JsonFieldProps) {
   if (!SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI) {
     return null;
   }
@@ -71,7 +60,7 @@ export function RuntimeServicesJsonField({
     if (!isCreate) setDraft(existing);
   }, [existing, isCreate]);
 
-  const value = isCreate ? values?.runtimeServicesJson ?? "" : draft;
+  const value = isCreate ? (values?.runtimeServicesJson ?? "") : draft;
 
   return (
     <Field label="Runtime services JSON" hint={help.runtimeServicesJson}>
@@ -89,13 +78,7 @@ export function RuntimeServicesJsonField({
   );
 }
 
-export function PayloadTemplateJsonField({
-  isCreate,
-  values,
-  set,
-  config,
-  mark,
-}: JsonFieldProps) {
+export function PayloadTemplateJsonField({ isCreate, values, set, config, mark }: JsonFieldProps) {
   const existing = formatJsonObject(config.payloadTemplate);
   const [draft, setDraft] = useState(existing);
 
@@ -103,7 +86,7 @@ export function PayloadTemplateJsonField({
     if (!isCreate) setDraft(existing);
   }, [existing, isCreate]);
 
-  const value = isCreate ? values?.payloadTemplateJson ?? "" : draft;
+  const value = isCreate ? (values?.payloadTemplateJson ?? "") : draft;
 
   return (
     <Field label="Payload template JSON" hint={help.payloadTemplateJson}>

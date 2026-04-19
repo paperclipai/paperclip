@@ -160,10 +160,7 @@ describe("opencode_local cli formatter", () => {
     const spy = vi.spyOn(console, "log").mockImplementation(() => {});
 
     try {
-      printOpenCodeStreamEvent(
-        JSON.stringify({ type: "step_start", sessionID: "ses_abc" }),
-        false,
-      );
+      printOpenCodeStreamEvent(JSON.stringify({ type: "step_start", sessionID: "ses_abc" }), false);
       printOpenCodeStreamEvent(
         JSON.stringify({
           type: "text",
@@ -203,9 +200,7 @@ describe("opencode_local cli formatter", () => {
         false,
       );
 
-      const lines = spy.mock.calls
-        .map((call) => call.map((v) => String(v)).join(" "))
-        .map(stripAnsi);
+      const lines = spy.mock.calls.map((call) => call.map((v) => String(v)).join(" ")).map(stripAnsi);
 
       expect(lines).toEqual(
         expect.arrayContaining([

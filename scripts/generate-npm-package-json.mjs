@@ -38,9 +38,7 @@ const workspacePaths = [
 
 // Workspace packages that are NOT bundled and must stay as npm dependencies.
 // These get published separately and resolved at runtime.
-const externalWorkspacePackages = new Set([
-  "@paperclipai/server",
-]);
+const externalWorkspacePackages = new Set(["@paperclipai/server"]);
 
 // Collect all external dependencies from all workspace packages
 const allDeps = {};
@@ -73,15 +71,11 @@ for (const pkgPath of workspacePaths) {
 
 // Sort alphabetically
 const sortedDeps = Object.fromEntries(Object.entries(allDeps).sort(([a], [b]) => a.localeCompare(b)));
-const sortedOptDeps = Object.fromEntries(
-  Object.entries(allOptionalDeps).sort(([a], [b]) => a.localeCompare(b)),
-);
+const sortedOptDeps = Object.fromEntries(Object.entries(allOptionalDeps).sort(([a], [b]) => a.localeCompare(b)));
 
 // Read the CLI package metadata — prefer the dev backup if it exists
 const devPkgPath = resolve(repoRoot, "cli/package.dev.json");
-const cliPkg = existsSync(devPkgPath)
-  ? JSON.parse(readFileSync(devPkgPath, "utf8"))
-  : readPkg("cli");
+const cliPkg = existsSync(devPkgPath) ? JSON.parse(readFileSync(devPkgPath, "utf8")) : readPkg("cli");
 
 // Build the publishable package.json
 const publishPkg = {

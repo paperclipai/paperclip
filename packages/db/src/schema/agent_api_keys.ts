@@ -6,8 +6,12 @@ export const agentApiKeys = pgTable(
   "agent_api_keys",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    agentId: uuid("agent_id").notNull().references(() => agents.id),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
     name: text("name").notNull(),
     keyHash: text("key_hash").notNull(),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),

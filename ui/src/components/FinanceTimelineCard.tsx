@@ -29,10 +29,7 @@ export function FinanceTimelineCard({
           <p className="text-sm text-muted-foreground">{emptyMessage}</p>
         ) : (
           rows.map((row) => (
-            <div
-              key={row.id}
-              className="border border-border p-3"
-            >
+            <div key={row.id} className="border border-border p-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
@@ -45,7 +42,9 @@ export function FinanceTimelineCard({
                   <div className="text-sm font-medium">
                     {providerDisplayName(row.biller)}
                     {row.provider ? ` -> ${providerDisplayName(row.provider)}` : ""}
-                    {row.model ? <span className="ml-1 font-mono text-xs text-muted-foreground">{row.model}</span> : null}
+                    {row.model ? (
+                      <span className="ml-1 font-mono text-xs text-muted-foreground">{row.model}</span>
+                    ) : null}
                   </div>
                   {(row.description || row.externalInvoiceId || row.region || row.pricingTier) && (
                     <div className="space-y-1 text-xs text-muted-foreground">
@@ -59,7 +58,9 @@ export function FinanceTimelineCard({
                 <div className="text-right tabular-nums">
                   <div className="text-sm font-semibold">{formatCents(row.amountCents)}</div>
                   <div className="text-xs text-muted-foreground">{row.currency}</div>
-                  {row.estimated ? <div className="text-[11px] uppercase tracking-[0.12em] text-amber-600">estimated</div> : null}
+                  {row.estimated ? (
+                    <div className="text-[11px] uppercase tracking-[0.12em] text-amber-600">estimated</div>
+                  ) : null}
                 </div>
               </div>
             </div>

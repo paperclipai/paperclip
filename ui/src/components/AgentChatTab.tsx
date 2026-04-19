@@ -8,7 +8,20 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "../lib/utils";
-import { Send, X, Loader2, MessageSquare, ChevronDown, ChevronRight, Paperclip, FileText, Download, History, ArrowLeft, CheckCheck } from "lucide-react";
+import {
+  Send,
+  X,
+  Loader2,
+  MessageSquare,
+  ChevronDown,
+  ChevronRight,
+  Paperclip,
+  FileText,
+  Download,
+  History,
+  ArrowLeft,
+  CheckCheck,
+} from "lucide-react";
 import type { Agent, AssetImage } from "@paperclipai/shared";
 import { agentsApi, type ChatHistorySession, type ChatHistoryMessage } from "../api/agents";
 import { assetsApi } from "../api/assets";
@@ -76,27 +89,15 @@ function formatSessionDate(dateStr: string): string {
 
 // ── Attachment chips (preview before sending) ─────────────────────
 
-function PendingAttachmentChip({
-  att,
-  onRemove,
-}: {
-  att: PendingAttachment;
-  onRemove: () => void;
-}) {
+function PendingAttachmentChip({ att, onRemove }: { att: PendingAttachment; onRemove: () => void }) {
   return (
     <div className="relative group inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/50 px-2 py-1 text-xs">
       {isImageType(att.contentType) && att.previewUrl ? (
-        <img
-          src={att.previewUrl}
-          alt={att.originalFilename ?? "attachment"}
-          className="h-8 w-8 rounded object-cover"
-        />
+        <img src={att.previewUrl} alt={att.originalFilename ?? "attachment"} className="h-8 w-8 rounded object-cover" />
       ) : (
         <FileText className="h-4 w-4 text-muted-foreground" />
       )}
-      <span className="max-w-[120px] truncate text-muted-foreground">
-        {att.originalFilename ?? "file"}
-      </span>
+      <span className="max-w-[120px] truncate text-muted-foreground">{att.originalFilename ?? "file"}</span>
       <button
         type="button"
         onClick={onRemove}
@@ -117,13 +118,7 @@ function MessageAttachments({ attachments, isUser }: { attachments: ChatAttachme
     <div className="flex flex-wrap gap-1.5 mt-1.5">
       {attachments.map((att) =>
         isImageType(att.contentType) ? (
-          <a
-            key={att.assetId}
-            href={att.contentPath}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block"
-          >
+          <a key={att.assetId} href={att.contentPath} target="_blank" rel="noopener noreferrer" className="block">
             <img
               src={att.contentPath}
               alt={att.originalFilename ?? "image"}
@@ -189,9 +184,7 @@ function ChatHistorySidebar({
         )}
 
         {!isLoading && sessions.length === 0 && (
-          <div className="px-3 py-6 text-xs text-muted-foreground text-center">
-            No past sessions
-          </div>
+          <div className="px-3 py-6 text-xs text-muted-foreground text-center">No past sessions</div>
         )}
 
         {/* Active session indicator */}
@@ -227,9 +220,7 @@ function ChatHistorySidebar({
               {session.messageCount} msg{session.messageCount !== 1 ? "s" : ""}
             </div>
             {session.firstMessagePreview && (
-              <p className="text-xs text-foreground/80 truncate">
-                {session.firstMessagePreview}
-              </p>
+              <p className="text-xs text-foreground/80 truncate">{session.firstMessagePreview}</p>
             )}
           </button>
         ))}
@@ -279,16 +270,11 @@ function ChatHistoryViewer({
         )}
 
         {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={cn("flex", msg.sender === "user" ? "justify-end" : "justify-start")}
-          >
+          <div key={msg.id} className={cn("flex", msg.sender === "user" ? "justify-end" : "justify-start")}>
             <div
               className={cn(
                 "max-w-[80%] rounded-lg px-3 py-2 text-sm",
-                msg.sender === "user"
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-foreground",
+                msg.sender === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
               )}
             >
               {msg.sender === "agent" ? (
@@ -299,9 +285,7 @@ function ChatHistoryViewer({
               {msg.attachments && msg.attachments.length > 0 && (
                 <MessageAttachments attachments={msg.attachments} isUser={msg.sender === "user"} />
               )}
-              <span className="block text-[10px] opacity-50 mt-1">
-                {new Date(msg.createdAt).toLocaleTimeString()}
-              </span>
+              <span className="block text-[10px] opacity-50 mt-1">{new Date(msg.createdAt).toLocaleTimeString()}</span>
             </div>
           </div>
         ))}
@@ -387,27 +371,33 @@ export function AgentChatTab({ agent, companyId }: { agent: Agent; companyId: st
   }, [messages]);
 
   // Helper: add a message if not already present
-  const addMessageIfNew = useCallback((msg: ChatMessage) => {
-    setMessages((prev) => {
-      if (prev.some((m) => m.id === msg.id)) return prev;
-      return [...prev, msg];
-    });
-    lastMessageIdRef.current = msg.id;
-    if (msg.sender === "agent") {
-      setIsTyping(false);
-      setRemoteTyping(false);
-      // Auto-mark agent messages as read (user is viewing the chat)
-      agentsApi.chatMarkRead(agent.id, [msg.id], companyId).catch(() => {});
-    }
-  }, [agent.id, companyId]);
+  const addMessageIfNew = useCallback(
+    (msg: ChatMessage) => {
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === msg.id)) return prev;
+        return [...prev, msg];
+      });
+      lastMessageIdRef.current = msg.id;
+      if (msg.sender === "agent") {
+        setIsTyping(false);
+        setRemoteTyping(false);
+        // Auto-mark agent messages as read (user is viewing the chat)
+        agentsApi.chatMarkRead(agent.id, [msg.id], companyId).catch(() => {});
+      }
+    },
+    [agent.id, companyId],
+  );
 
   // Signal typing state to the server with debounce
-  const signalTyping = useCallback((typing: boolean) => {
-    if (!sessionId) return;
-    if (typing === isTypingSignaledRef.current) return;
-    isTypingSignaledRef.current = typing;
-    agentsApi.chatTyping(agent.id, typing, companyId).catch(() => {});
-  }, [sessionId, agent.id, companyId]);
+  const signalTyping = useCallback(
+    (typing: boolean) => {
+      if (!sessionId) return;
+      if (typing === isTypingSignaledRef.current) return;
+      isTypingSignaledRef.current = typing;
+      agentsApi.chatTyping(agent.id, typing, companyId).catch(() => {});
+    },
+    [sessionId, agent.id, companyId],
+  );
 
   const handleTypingInput = useCallback(() => {
     signalTyping(true);
@@ -450,7 +440,7 @@ export function AgentChatTab({ agent, companyId }: { agent: Agent; companyId: st
             if (msgId && sender === "agent" && content) {
               addMessageIfNew({
                 id: msgId,
-                sessionId: payload.sessionId as string ?? sessionId,
+                sessionId: (payload.sessionId as string) ?? sessionId,
                 agentId: agent.id,
                 sender,
                 content,
@@ -472,11 +462,7 @@ export function AgentChatTab({ agent, companyId }: { agent: Agent; companyId: st
             const readMsgIds = payload.messageIds as string[];
             const readAt = payload.readAt as string;
             if (readMsgIds && readAt) {
-              setMessages((prev) =>
-                prev.map((m) =>
-                  readMsgIds.includes(m.id) ? { ...m, readAt } : m,
-                ),
-              );
+              setMessages((prev) => prev.map((m) => (readMsgIds.includes(m.id) ? { ...m, readAt } : m)));
             }
           }
 
@@ -623,14 +609,15 @@ export function AgentChatTab({ agent, companyId }: { agent: Agent; companyId: st
       // Attach the pending attachments to the local message for immediate rendering
       const enrichedMsg: ChatMessage = {
         ...msg,
-        attachments: attachments.length > 0
-          ? attachments.map((a) => ({
-              assetId: a.assetId,
-              contentPath: a.contentPath,
-              contentType: a.contentType,
-              originalFilename: a.originalFilename,
-            }))
-          : undefined,
+        attachments:
+          attachments.length > 0
+            ? attachments.map((a) => ({
+                assetId: a.assetId,
+                contentPath: a.contentPath,
+                contentType: a.contentType,
+                originalFilename: a.originalFilename,
+              }))
+            : undefined,
       };
       setMessages((prev) => {
         if (prev.some((m) => m.id === enrichedMsg.id)) return prev;
@@ -722,9 +709,7 @@ export function AgentChatTab({ agent, companyId }: { agent: Agent; companyId: st
             <div className="flex items-center justify-between pb-3 border-b border-border">
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <MessageSquare className="h-4 w-4" />
-                <span>
-                  {sessionId ? "Chat session active" : "Start a conversation"}
-                </span>
+                <span>{sessionId ? "Chat session active" : "Start a conversation"}</span>
               </div>
               <div className="flex items-center gap-1">
                 {/* Mobile history toggle — visible only below lg breakpoint */}
@@ -758,26 +743,16 @@ export function AgentChatTab({ agent, companyId }: { agent: Agent; companyId: st
                 <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-sm">
                   <MessageSquare className="h-8 w-8 mb-3 opacity-40" />
                   <p>Send a message to start chatting with {agent.name}.</p>
-                  <p className="text-xs mt-1 opacity-70">
-                    Chat sessions are saved to history automatically.
-                  </p>
+                  <p className="text-xs mt-1 opacity-70">Chat sessions are saved to history automatically.</p>
                 </div>
               )}
 
               {messages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={cn(
-                    "flex",
-                    msg.sender === "user" ? "justify-end" : "justify-start",
-                  )}
-                >
+                <div key={msg.id} className={cn("flex", msg.sender === "user" ? "justify-end" : "justify-start")}>
                   <div
                     className={cn(
                       "max-w-[80%] rounded-lg px-3 py-2 text-sm",
-                      msg.sender === "user"
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-foreground",
+                      msg.sender === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
                     )}
                   >
                     {msg.sender === "agent" ? (
@@ -790,9 +765,7 @@ export function AgentChatTab({ agent, companyId }: { agent: Agent; companyId: st
                     )}
                     <span className="flex items-center gap-1 text-[10px] opacity-50 mt-1">
                       {new Date(msg.createdAt).toLocaleTimeString()}
-                      {msg.sender === "user" && msg.readAt && (
-                        <CheckCheck className="h-3 w-3 text-blue-400" />
-                      )}
+                      {msg.sender === "user" && msg.readAt && <CheckCheck className="h-3 w-3 text-blue-400" />}
                     </span>
                   </div>
                 </div>
@@ -823,11 +796,12 @@ export function AgentChatTab({ agent, companyId }: { agent: Agent; companyId: st
                     >
                       <Loader2 className="h-3 w-3 animate-spin flex-shrink-0" />
                       <span className="flex-1">{agent.name} is thinking...</span>
-                      {transcript.length > 0 && (
-                        thinkingOpen
-                          ? <ChevronDown className="h-3 w-3 flex-shrink-0" />
-                          : <ChevronRight className="h-3 w-3 flex-shrink-0" />
-                      )}
+                      {transcript.length > 0 &&
+                        (thinkingOpen ? (
+                          <ChevronDown className="h-3 w-3 flex-shrink-0" />
+                        ) : (
+                          <ChevronRight className="h-3 w-3 flex-shrink-0" />
+                        ))}
                     </button>
                     {thinkingOpen && transcript.length > 0 && (
                       <div className="px-3 pb-2 max-h-[300px] overflow-y-auto border-t border-border/50">
@@ -854,11 +828,7 @@ export function AgentChatTab({ agent, companyId }: { agent: Agent; companyId: st
               {(pendingAttachments.length > 0 || uploadingCount > 0) && (
                 <div className="flex flex-wrap gap-1.5 mb-2">
                   {pendingAttachments.map((att, idx) => (
-                    <PendingAttachmentChip
-                      key={att.assetId}
-                      att={att}
-                      onRemove={() => removePendingAttachment(idx)}
-                    />
+                    <PendingAttachmentChip key={att.assetId} att={att} onRemove={() => removePendingAttachment(idx)} />
                   ))}
                   {uploadingCount > 0 && (
                     <div className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/50 px-2 py-1 text-xs text-muted-foreground">
@@ -871,13 +841,7 @@ export function AgentChatTab({ agent, companyId }: { agent: Agent; companyId: st
 
               <div className="flex items-end gap-2">
                 {/* Hidden file input */}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  className="hidden"
-                  onChange={handleFileSelect}
-                />
+                <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
                 {/* Attach button */}
                 <Button
                   type="button"
@@ -892,7 +856,10 @@ export function AgentChatTab({ agent, companyId }: { agent: Agent; companyId: st
                 <textarea
                   ref={inputRef}
                   value={input}
-                  onChange={(e) => { setInput(e.target.value); handleTypingInput(); }}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    handleTypingInput();
+                  }}
                   onKeyDown={handleKeyDown}
                   onPaste={handlePaste}
                   placeholder={`Message ${agent.name}...`}
@@ -915,17 +882,11 @@ export function AgentChatTab({ agent, companyId }: { agent: Agent; companyId: st
                   disabled={(!input.trim() && pendingAttachments.length === 0) || sendMutation.isPending}
                   className="h-[38px] px-3"
                 >
-                  {sendMutation.isPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Send className="h-4 w-4" />
-                  )}
+                  {sendMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 </Button>
               </div>
               {sendMutation.isError && (
-                <p className="text-xs text-destructive mt-1">
-                  Failed to send message. Try again.
-                </p>
+                <p className="text-xs text-destructive mt-1">Failed to send message. Try again.</p>
               )}
             </div>
           </>

@@ -1,4 +1,4 @@
-import { Command } from "commander";
+import { type Command } from "commander";
 import {
   createApprovalSchema,
   requestApprovalRevisionSchema,
@@ -58,9 +58,8 @@ export function registerApprovalCommands(program: Command): void {
           if (opts.status) params.set("status", opts.status);
           const query = params.toString();
           const rows =
-            (await ctx.api.get<Approval[]>(
-              `/api/companies/${ctx.companyId}/approvals${query ? `?${query}` : ""}`,
-            )) ?? [];
+            (await ctx.api.get<Approval[]>(`/api/companies/${ctx.companyId}/approvals${query ? `?${query}` : ""}`)) ??
+            [];
 
           if (ctx.json) {
             printOutput(rows, { json: true });
@@ -242,7 +241,10 @@ export function registerApprovalCommands(program: Command): void {
 
 function parseCsv(value: string | undefined): string[] | undefined {
   if (!value) return undefined;
-  const rows = value.split(",").map((v) => v.trim()).filter(Boolean);
+  const rows = value
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
   return rows.length > 0 ? rows : undefined;
 }
 

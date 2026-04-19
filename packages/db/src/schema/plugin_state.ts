@@ -1,12 +1,4 @@
-import {
-  pgTable,
-  uuid,
-  text,
-  timestamp,
-  jsonb,
-  index,
-  unique,
-} from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, index, unique } from "drizzle-orm/pg-core";
 import type { PluginStateScopeKind } from "@paperclipai/shared";
 import { plugins } from "./plugins.js";
 
@@ -73,18 +65,9 @@ export const pluginState = pgTable(
      * Requires PostgreSQL 15+.
      */
     uniqueEntry: unique("plugin_state_unique_entry_idx")
-      .on(
-        table.pluginId,
-        table.scopeKind,
-        table.scopeId,
-        table.namespace,
-        table.stateKey,
-      )
+      .on(table.pluginId, table.scopeKind, table.scopeId, table.namespace, table.stateKey)
       .nullsNotDistinct(),
     /** Speed up lookups by plugin + scope kind (most common access pattern). */
-    pluginScopeIdx: index("plugin_state_plugin_scope_idx").on(
-      table.pluginId,
-      table.scopeKind,
-    ),
+    pluginScopeIdx: index("plugin_state_plugin_scope_idx").on(table.pluginId, table.scopeKind),
   }),
 );

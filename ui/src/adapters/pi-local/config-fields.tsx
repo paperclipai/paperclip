@@ -1,8 +1,5 @@
 import type { AdapterConfigFieldsProps } from "../types";
-import {
-  Field,
-  DraftInput,
-} from "../../components/agent-config-primitives";
+import { Field, DraftInput } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 
 const inputClass =
@@ -26,17 +23,11 @@ export function PiLocalConfigFields({
         <DraftInput
           value={
             isCreate
-              ? values!.instructionsFilePath ?? ""
-              : eff(
-                  "adapterConfig",
-                  "instructionsFilePath",
-                  String(config.instructionsFilePath ?? ""),
-                )
+              ? (values!.instructionsFilePath ?? "")
+              : eff("adapterConfig", "instructionsFilePath", String(config.instructionsFilePath ?? ""))
           }
           onCommit={(v) =>
-            isCreate
-              ? set!({ instructionsFilePath: v })
-              : mark("adapterConfig", "instructionsFilePath", v || undefined)
+            isCreate ? set!({ instructionsFilePath: v }) : mark("adapterConfig", "instructionsFilePath", v || undefined)
           }
           immediate
           className={inputClass}

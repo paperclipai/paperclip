@@ -274,10 +274,7 @@ body { background: #18181b; }
 .watermark svg { stroke: rgba(255,255,255,0.25); }
 `,
     renderCard: (node, isOg) => {
-      const icon =
-        node.icon && !isOg
-          ? `<div class="icon-wrap">${node.icon}</div>`
-          : "";
+      const icon = node.icon && !isOg ? `<div class="icon-wrap">${node.icon}</div>` : "";
       return `<div class="org-card">${icon}<div class="name">${node.name}</div><div class="role">${node.role}</div></div>`;
     },
   },
@@ -325,10 +322,7 @@ body { background: #0f0c29; }
 .watermark svg { stroke: rgba(255,255,255,0.2); }
 `,
     renderCard: (node, isOg) => {
-      const icon =
-        node.icon && !isOg
-          ? `<div class="icon-wrap">${node.icon}</div>`
-          : "";
+      const icon = node.icon && !isOg ? `<div class="icon-wrap">${node.icon}</div>` : "";
       return `<div class="org-card">${icon}<div class="name">${node.name}</div><div class="role">${node.role}</div></div>`;
     },
   },
@@ -368,10 +362,7 @@ body { background: #0c0c0e; }
 `,
     renderCard: (node, isOg) => {
       const cls = node.tag === "ceo" ? " chief" : "";
-      const icon =
-        node.icon && !isOg
-          ? `<div class="icon-wrap">${node.icon}</div>`
-          : "";
+      const icon = node.icon && !isOg ? `<div class="icon-wrap">${node.icon}</div>` : "";
       return `<div class="org-card${cls}">${icon}<div class="name">${node.name}</div><div class="role">${node.role}</div></div>`;
     },
   },
@@ -430,9 +421,7 @@ body { background: #fafaf9; }
         ops: "⚙️",
       };
       const ic = node.icon || icons[node.tag] || "";
-      const sizeStyle = isOg
-        ? "width:24px;height:24px;font-size:11px;margin-bottom:6px;"
-        : "";
+      const sizeStyle = isOg ? "width:24px;height:24px;font-size:11px;margin-bottom:6px;" : "";
       const avatar = `<div class="avatar r-${node.tag}" style="${sizeStyle}">${ic}</div>`;
       return `<div class="org-card">${avatar}<div class="name">${node.name}</div><div class="role">${node.role}</div></div>`;
     },
@@ -498,16 +487,8 @@ body { background: #0d1117; }
         fin: "finance",
         ops: "operations",
       };
-      const icon =
-        node.icon && !isOg
-          ? `<div class="icon-wrap">${node.icon}</div>`
-          : "";
-      const roleText =
-        isOg
-          ? node.role
-          : node.children
-            ? node.role
-            : schemaRoles[node.tag] || node.role;
+      const icon = node.icon && !isOg ? `<div class="icon-wrap">${node.icon}</div>` : "";
+      const roleText = isOg ? node.role : node.children ? node.role : schemaRoles[node.tag] || node.role;
       return `<div class="org-card t-${node.tag}">${icon}<div class="name">${node.name}</div><div class="role">${roleText}</div></div>`;
     },
   },
@@ -515,26 +496,16 @@ body { background: #0d1117; }
 
 // ── HTML rendering ─────────────────────────────────────────────
 
-function renderNode(
-  node: OrgNode,
-  style: StyleDef,
-  isOg: boolean,
-): string {
+function renderNode(node: OrgNode, style: StyleDef, isOg: boolean): string {
   const cardHtml = style.renderCard(node, isOg);
   if (!node.children || node.children.length === 0) {
     return `<div class="org-node">${cardHtml}</div>`;
   }
-  const childrenHtml = node.children
-    .map((c) => renderNode(c, style, isOg))
-    .join("");
+  const childrenHtml = node.children.map((c) => renderNode(c, style, isOg)).join("");
   return `<div class="org-node">${cardHtml}<div class="org-children">${childrenHtml}</div></div>`;
 }
 
-function renderTree(
-  orgData: OrgNode,
-  style: StyleDef,
-  isOg: boolean,
-): string {
+function renderTree(orgData: OrgNode, style: StyleDef, isOg: boolean): string {
   const compact = isOg ? " og-compact" : "";
   return `<div class="org-tree${compact}">${renderNode(orgData, style, isOg)}</div>`;
 }
@@ -546,11 +517,7 @@ const PAPERCLIP_WATERMARK = `<div class="watermark">
   Paperclip
 </div>`;
 
-function buildHtml(
-  style: StyleDef,
-  orgData: OrgNode,
-  isOg: boolean,
-): string {
+function buildHtml(style: StyleDef, orgData: OrgNode, isOg: boolean): string {
   const tree = renderTree(orgData, style, isOg);
   return `<!DOCTYPE html>
 <html><head>

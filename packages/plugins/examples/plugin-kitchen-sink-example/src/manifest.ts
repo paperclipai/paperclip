@@ -16,7 +16,8 @@ const manifest: PaperclipPluginManifestV1 = {
   apiVersion: 1,
   version: PLUGIN_VERSION,
   displayName: "Kitchen Sink (Example)",
-  description: "Reference plugin that demonstrates the current Paperclip plugin API surface, UI surfaces, bridge actions, events, jobs, webhooks, tools, local workspace access, and runtime diagnostics in one place.",
+  description:
+    "Reference plugin that demonstrates the current Paperclip plugin API surface, UI surfaces, bridge actions, events, jobs, webhooks, tools, local workspace access, and runtime diagnostics in one place.",
   author: "Paperclip",
   categories: ["ui", "automation", "workspace", "connector"],
   capabilities: [
@@ -41,6 +42,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "goals.update",
     "activity.log.write",
     "metrics.write",
+    "telemetry.track",
     "plugin.state.read",
     "plugin.state.write",
     "events.subscribe",

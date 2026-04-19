@@ -67,7 +67,7 @@ async function listFilesRecursive(dir: string): Promise<string[]> {
   for (const entry of entries) {
     const abs = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      out.push(...await listFilesRecursive(abs));
+      out.push(...(await listFilesRecursive(abs)));
     } else if (entry.isFile()) {
       out.push(abs);
     }
@@ -213,16 +213,21 @@ export async function startPluginDevServer(options: PluginDevServerOptions = {})
  * Used by the polling watcher fallback and useful for tests that need to assert
  * whether a UI build has changed between runs.
  */
-export async function getUiBuildSnapshot(rootDir: string, uiDir = "dist/ui"): Promise<Array<{ file: string; mtimeMs: number }>> {
+export async function getUiBuildSnapshot(
+  rootDir: string,
+  uiDir = "dist/ui",
+): Promise<Array<{ file: string; mtimeMs: number }>> {
   const baseDir = path.resolve(rootDir, uiDir);
   if (!existsSync(baseDir)) return [];
   const files = await listFilesRecursive(baseDir);
-  const rows = await Promise.all(files.map(async (filePath) => {
-    const fileStat = await stat(filePath);
-    return {
-      file: path.relative(baseDir, filePath),
-      mtimeMs: fileStat.mtimeMs,
-    };
-  }));
+  const rows = await Promise.all(
+    files.map(async (filePath) => {
+      const fileStat = await stat(filePath);
+      return {
+        file: path.relative(baseDir, filePath),
+        mtimeMs: fileStat.mtimeMs,
+      };
+    }),
+  );
   return rows.sort((a, b) => a.file.localeCompare(b.file));
 }

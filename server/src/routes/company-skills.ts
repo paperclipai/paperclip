@@ -6,10 +6,20 @@ import {
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
 } from "@paperclipai/shared";
+import { trackSkillImported } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, agentService, companySkillService, logActivity } from "../services/index.js";
 import { forbidden } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { getTelemetryClient } from "../telemetry.js";
+
+type SkillTelemetryInput = {
+  key: string;
+  slug: string;
+  sourceType: string;
+  sourceLocator: string | null;
+  metadata: Record<string, unknown> | null;
+};
 
 export function companySkillRoutes(db: Db) {
   const router = Router();
@@ -20,6 +30,26 @@ export function companySkillRoutes(db: Db) {
   function canCreateAgents(agent: { permissions: Record<string, unknown> | null | undefined }) {
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  }
+
+  function asString(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  function deriveTrackedSkillRef(skill: SkillTelemetryInput): string | null {
+    if (skill.sourceType === "skills_sh") {
+      return skill.key;
+    }
+    if (skill.sourceType !== "github") {
+      return null;
+    }
+    const hostname = asString(skill.metadata?.hostname);
+    if (hostname !== "github.com") {
+      return null;
+    }
+    return skill.key;
   }
 
   async function assertCanMutateCompanySkills(req: Request, companyId: string) {
@@ -95,33 +125,29 @@ export function companySkillRoutes(db: Db) {
     res.json(result);
   });
 
-  router.post(
-    "/companies/:companyId/skills",
-    validate(companySkillCreateSchema),
-    async (req, res) => {
-      const companyId = req.params.companyId as string;
-      await assertCanMutateCompanySkills(req, companyId);
-      const result = await svc.createLocalSkill(companyId, req.body);
+  router.post("/companies/:companyId/skills", validate(companySkillCreateSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanMutateCompanySkills(req, companyId);
+    const result = await svc.createLocalSkill(companyId, req.body);
 
-      const actor = getActorInfo(req);
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "company.skill_created",
-        entityType: "company_skill",
-        entityId: result.id,
-        details: {
-          slug: result.slug,
-          name: result.name,
-        },
-      });
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skill_created",
+      entityType: "company_skill",
+      entityId: result.id,
+      details: {
+        slug: result.slug,
+        name: result.name,
+      },
+    });
 
-      res.status(201).json(result);
-    },
-  );
+    res.status(201).json(result);
+  });
 
   router.patch(
     "/companies/:companyId/skills/:skillId/files",
@@ -157,36 +183,41 @@ export function companySkillRoutes(db: Db) {
     },
   );
 
-  router.post(
-    "/companies/:companyId/skills/import",
-    validate(companySkillImportSchema),
-    async (req, res) => {
-      const companyId = req.params.companyId as string;
-      await assertCanMutateCompanySkills(req, companyId);
-      const source = String(req.body.source ?? "");
-      const result = await svc.importFromSource(companyId, source);
+  router.post("/companies/:companyId/skills/import", validate(companySkillImportSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanMutateCompanySkills(req, companyId);
+    const source = String(req.body.source ?? "");
+    const result = await svc.importFromSource(companyId, source);
 
-      const actor = getActorInfo(req);
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "company.skills_imported",
-        entityType: "company",
-        entityId: companyId,
-        details: {
-          source,
-          importedCount: result.imported.length,
-          importedSlugs: result.imported.map((skill) => skill.slug),
-          warningCount: result.warnings.length,
-        },
-      });
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.skills_imported",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        source,
+        importedCount: result.imported.length,
+        importedSlugs: result.imported.map((skill) => skill.slug),
+        warningCount: result.warnings.length,
+      },
+    });
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient) {
+      for (const skill of result.imported) {
+        trackSkillImported(telemetryClient, {
+          sourceType: skill.sourceType,
+          skillRef: deriveTrackedSkillRef(skill),
+        });
+      }
+    }
 
-      res.status(201).json(result);
-    },
-  );
+    res.status(201).json(result);
+  });
 
   router.post(
     "/companies/:companyId/skills/scan-projects",

@@ -42,32 +42,32 @@ POST /api/companies/{companyId}/routines
 
 Fields:
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `title` | yes | Routine name |
-| `description` | no | Human-readable description of the routine |
-| `assigneeAgentId` | yes | Agent who receives each run |
-| `projectId` | yes | Project this routine belongs to |
-| `goalId` | no | Goal to link runs to |
-| `parentIssueId` | no | Parent issue for created run issues |
-| `priority` | no | `critical`, `high`, `medium` (default), `low` |
-| `status` | no | `active` (default), `paused`, `archived` |
-| `concurrencyPolicy` | no | Behaviour when a run fires while a previous one is still active |
-| `catchUpPolicy` | no | Behaviour for missed scheduled runs |
+| Field               | Required | Description                                                     |
+| ------------------- | -------- | --------------------------------------------------------------- |
+| `title`             | yes      | Routine name                                                    |
+| `description`       | no       | Human-readable description of the routine                       |
+| `assigneeAgentId`   | yes      | Agent who receives each run                                     |
+| `projectId`         | yes      | Project this routine belongs to                                 |
+| `goalId`            | no       | Goal to link runs to                                            |
+| `parentIssueId`     | no       | Parent issue for created run issues                             |
+| `priority`          | no       | `critical`, `high`, `medium` (default), `low`                   |
+| `status`            | no       | `active` (default), `paused`, `archived`                        |
+| `concurrencyPolicy` | no       | Behaviour when a run fires while a previous one is still active |
+| `catchUpPolicy`     | no       | Behaviour for missed scheduled runs                             |
 
 **Concurrency policies:**
 
-| Value | Behaviour |
-|-------|-----------|
+| Value                          | Behaviour                                                                                                   |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------- |
 | `coalesce_if_active` (default) | Incoming run is immediately finalised as `coalesced` and linked to the active run — no new issue is created |
-| `skip_if_active` | Incoming run is immediately finalised as `skipped` and linked to the active run — no new issue is created |
-| `always_enqueue` | Always create a new run regardless of active runs |
+| `skip_if_active`               | Incoming run is immediately finalised as `skipped` and linked to the active run — no new issue is created   |
+| `always_enqueue`               | Always create a new run regardless of active runs                                                           |
 
 **Catch-up policies:**
 
-| Value | Behaviour |
-|-------|-----------|
-| `skip_missed` (default) | Missed scheduled runs are dropped |
+| Value                     | Behaviour                                      |
+| ------------------------- | ---------------------------------------------- |
+| `skip_missed` (default)   | Missed scheduled runs are dropped              |
 | `enqueue_missed_with_cap` | Missed runs are enqueued up to an internal cap |
 
 ## Update Routine
@@ -181,15 +181,15 @@ Returns recent run history for the routine. Defaults to 50 most recent runs.
 
 Agents can read all routines in their company but can only create and manage routines assigned to themselves:
 
-| Operation | Agent | Board |
-|-----------|-------|-------|
-| List / Get | ✅ any routine | ✅ |
-| Create | ✅ own only | ✅ |
-| Update / activate | ✅ own only | ✅ |
-| Add / update / delete triggers | ✅ own only | ✅ |
-| Rotate trigger secret | ✅ own only | ✅ |
-| Manual run | ✅ own only | ✅ |
-| Reassign to another agent | ❌ | ✅ |
+| Operation                      | Agent          | Board |
+| ------------------------------ | -------------- | ----- |
+| List / Get                     | ✅ any routine | ✅    |
+| Create                         | ✅ own only    | ✅    |
+| Update / activate              | ✅ own only    | ✅    |
+| Add / update / delete triggers | ✅ own only    | ✅    |
+| Rotate trigger secret          | ✅ own only    | ✅    |
+| Manual run                     | ✅ own only    | ✅    |
+| Reassign to another agent      | ❌             | ✅    |
 
 ## Routine Lifecycle
 

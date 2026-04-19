@@ -6,22 +6,10 @@ import { useCompany } from "../context/CompanyContext";
 import { goalsApi } from "../api/goals";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
-import {
-  Dialog,
-  DialogContent,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-  Maximize2,
-  Minimize2,
-  Target,
-  Layers,
-} from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Maximize2, Minimize2, Target, Layers } from "lucide-react";
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
@@ -59,8 +47,7 @@ export function NewGoalDialog() {
   });
 
   const createGoal = useMutation({
-    mutationFn: (data: Record<string, unknown>) =>
-      goalsApi.create(selectedCompanyId!, data),
+    mutationFn: (data: Record<string, unknown>) => goalsApi.create(selectedCompanyId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.goals.list(selectedCompanyId!) });
       reset();
@@ -143,7 +130,10 @@ export function NewGoalDialog() {
               variant="ghost"
               size="icon-xs"
               className="text-muted-foreground"
-              onClick={() => { reset(); closeNewGoal(); }}
+              onClick={() => {
+                reset();
+                closeNewGoal();
+              }}
             >
               <span className="text-lg leading-none">&times;</span>
             </Button>
@@ -168,7 +158,7 @@ export function NewGoalDialog() {
         </div>
 
         {/* Description */}
-        <div className="px-4 pb-2">
+        <div className="px-4 pb-2 overflow-y-auto max-h-[50vh]">
           <MarkdownEditor
             ref={descriptionEditorRef}
             value={description}
@@ -198,9 +188,12 @@ export function NewGoalDialog() {
                   key={s}
                   className={cn(
                     "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 capitalize",
-                    s === status && "bg-accent"
+                    s === status && "bg-accent",
                   )}
-                  onClick={() => { setStatus(s); setStatusOpen(false); }}
+                  onClick={() => {
+                    setStatus(s);
+                    setStatusOpen(false);
+                  }}
                 >
                   {s}
                 </button>
@@ -222,9 +215,12 @@ export function NewGoalDialog() {
                   key={l}
                   className={cn(
                     "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    l === level && "bg-accent"
+                    l === level && "bg-accent",
                   )}
-                  onClick={() => { setLevel(l); setLevelOpen(false); }}
+                  onClick={() => {
+                    setLevel(l);
+                    setLevelOpen(false);
+                  }}
                 >
                   {levelLabels[l] ?? l}
                 </button>
@@ -244,9 +240,12 @@ export function NewGoalDialog() {
               <button
                 className={cn(
                   "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                  !appliedParentId && "bg-accent"
+                  !appliedParentId && "bg-accent",
                 )}
-                onClick={() => { setParentId(""); setParentOpen(false); }}
+                onClick={() => {
+                  setParentId("");
+                  setParentOpen(false);
+                }}
               >
                 No parent
               </button>
@@ -255,9 +254,12 @@ export function NewGoalDialog() {
                   key={g.id}
                   className={cn(
                     "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 truncate",
-                    g.id === appliedParentId && "bg-accent"
+                    g.id === appliedParentId && "bg-accent",
                   )}
-                  onClick={() => { setParentId(g.id); setParentOpen(false); }}
+                  onClick={() => {
+                    setParentId(g.id);
+                    setParentOpen(false);
+                  }}
                 >
                   {g.title}
                 </button>
@@ -268,11 +270,7 @@ export function NewGoalDialog() {
 
         {/* Footer */}
         <div className="flex items-center justify-end px-4 py-2.5 border-t border-border">
-          <Button
-            size="sm"
-            disabled={!title.trim() || createGoal.isPending}
-            onClick={handleSubmit}
-          >
+          <Button size="sm" disabled={!title.trim() || createGoal.isPending} onClick={handleSubmit}>
             {createGoal.isPending ? "Creating…" : newGoalDefaults.parentId ? "Create sub-goal" : "Create goal"}
           </Button>
         </div>

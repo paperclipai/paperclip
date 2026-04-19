@@ -6,8 +6,12 @@ export const chatMessages = pgTable(
   "chat_messages",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    sessionId: uuid("session_id").notNull().references(() => chatSessions.id, { onDelete: "cascade" }),
-    agentId: uuid("agent_id").notNull().references(() => agents.id),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => chatSessions.id, { onDelete: "cascade" }),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
     sender: text("sender").notNull(), // "user" | "agent"
     content: text("content").notNull(),
     attachments: jsonb("attachments"), // ChatAttachment[] | null

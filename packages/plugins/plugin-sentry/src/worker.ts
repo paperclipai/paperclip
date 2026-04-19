@@ -6,12 +6,7 @@ import {
   type PluginHealthDiagnostics,
   type ToolResult,
 } from "@paperclipai/plugin-sdk";
-import {
-  DATA_KEYS,
-  DEFAULT_CONFIG,
-  PLUGIN_ID,
-  TOOL_NAMES,
-} from "./constants.js";
+import { DATA_KEYS, DEFAULT_CONFIG, PLUGIN_ID, TOOL_NAMES } from "./constants.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -80,11 +75,7 @@ function ensureConfigured(config: SentryConfig): void {
 // Sentry API helpers
 // ---------------------------------------------------------------------------
 
-async function sentryFetch(
-  ctx: PluginContext,
-  config: SentryConfig,
-  path: string,
-): Promise<unknown> {
+async function sentryFetch(ctx: PluginContext, config: SentryConfig, path: string): Promise<unknown> {
   const baseUrl = (config.sentryBaseUrl || "https://sentry.io").replace(/\/$/, "");
   const url = `${baseUrl}/api/0/${path}`;
 
@@ -193,7 +184,11 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
 
       const org = config.organizationSlug;
       const issue = (await sentryFetch(ctx, config, `organizations/${org}/issues/${issueId}/`)) as SentryIssue;
-      const events = (await sentryFetch(ctx, config, `organizations/${org}/issues/${issueId}/events/?limit=5`)) as SentryEvent[];
+      const events = (await sentryFetch(
+        ctx,
+        config,
+        `organizations/${org}/issues/${issueId}/events/?limit=5`,
+      )) as SentryEvent[];
       const latestEvent = events[0];
 
       // Extract stacktrace from latest event entries
@@ -367,7 +362,11 @@ async function registerDataHandlers(ctx: PluginContext): Promise<void> {
 
     const org = config.organizationSlug;
     const issue = (await sentryFetch(ctx, config, `organizations/${org}/issues/${issueId}/`)) as SentryIssue;
-    const events = (await sentryFetch(ctx, config, `organizations/${org}/issues/${issueId}/events/?limit=10`)) as SentryEvent[];
+    const events = (await sentryFetch(
+      ctx,
+      config,
+      `organizations/${org}/issues/${issueId}/events/?limit=10`,
+    )) as SentryEvent[];
     const latestEvent = events[0];
 
     let stacktrace: unknown = null;

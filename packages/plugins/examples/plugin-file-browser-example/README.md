@@ -9,10 +9,10 @@ This is a repo-local example plugin for development. It should not be assumed to
 
 ## Slots
 
-| Slot                | Type                | Description                                      |
-|---------------------|---------------------|--------------------------------------------------|
-| Files (sidebar)     | `projectSidebarItem`| Optional link under each project → project detail + tab. |
-| Files (tab)         | `detailTab`         | Responsive tree/editor layout with save support.|
+| Slot            | Type                 | Description                                              |
+| --------------- | -------------------- | -------------------------------------------------------- |
+| Files (sidebar) | `projectSidebarItem` | Optional link under each project → project detail + tab. |
+| Files (tab)     | `detailTab`          | Responsive tree/editor layout with save support.         |
 
 ## Settings
 

@@ -54,6 +54,7 @@ function defaultConfig(): PaperclipConfig {
     server: {
       deploymentMode: "local_trusted",
       exposure: "private",
+      bind: "loopback",
       host: "127.0.0.1",
       port: 3100,
       allowedHostnames: [],
@@ -63,15 +64,15 @@ function defaultConfig(): PaperclipConfig {
       baseUrlMode: "auto",
       disableSignUp: false,
     },
+    telemetry: {
+      enabled: true,
+    },
     storage: defaultStorageConfig(),
     secrets: defaultSecretsConfig(),
   };
 }
 
-export async function configure(opts: {
-  config?: string;
-  section?: string;
-}): Promise<void> {
+export async function configure(opts: { config?: string; section?: string }): Promise<void> {
   printPaperclipCliBanner();
   p.intro(pc.bgCyan(pc.black(" paperclip configure ")));
   const configPath = resolveConfigPath(opts.config);

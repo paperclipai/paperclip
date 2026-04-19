@@ -126,18 +126,20 @@ export function parseClaudeStdoutLine(line: string, ts: string): TranscriptEntry
     const isError = parsed.is_error === true;
     const errors = Array.isArray(parsed.errors) ? parsed.errors.map(errorText).filter(Boolean) : [];
     const text = typeof parsed.result === "string" ? parsed.result : "";
-    return [{
-      kind: "result",
-      ts,
-      text,
-      inputTokens,
-      outputTokens,
-      cachedTokens,
-      costUsd,
-      subtype,
-      isError,
-      errors,
-    }];
+    return [
+      {
+        kind: "result",
+        ts,
+        text,
+        inputTokens,
+        outputTokens,
+        cachedTokens,
+        costUsd,
+        subtype,
+        isError,
+        errors,
+      },
+    ];
   }
 
   return [{ kind: "stdout", ts, text: line }];

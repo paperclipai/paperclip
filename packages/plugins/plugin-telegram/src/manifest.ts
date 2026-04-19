@@ -60,8 +60,7 @@ const manifest = {
       errorsChatId: {
         type: "string",
         title: "Errors Chat ID",
-        description:
-          "Chat ID for agent error notifications. Falls back to default chat.",
+        description: "Chat ID for agent error notifications. Falls back to default chat.",
         default: DEFAULT_CONFIG.errorsChatId,
       },
       notifyOnIssueCreated: {
@@ -87,8 +86,7 @@ const manifest = {
       enableCommands: {
         type: "boolean",
         title: "Enable bot commands",
-        description:
-          "Allow users to interact with Paperclip via Telegram bot commands (/status, /issues, /agents).",
+        description: "Allow users to interact with Paperclip via Telegram bot commands (/status, /issues, /agents).",
         default: DEFAULT_CONFIG.enableCommands,
       },
       enableInbound: {
@@ -148,22 +146,19 @@ const manifest = {
       escalationHoldMessage: {
         type: "string",
         title: "Escalation Hold Message",
-        description:
-          "Message sent to the user when their conversation is escalated to a human.",
+        description: "Message sent to the user when their conversation is escalated to a human.",
         default: DEFAULT_CONFIG.escalationHoldMessage,
       },
       maxAgentsPerThread: {
         type: "number",
         title: "Max Agents Per Thread",
-        description:
-          "Maximum number of concurrent agent sessions allowed in a single thread.",
+        description: "Maximum number of concurrent agent sessions allowed in a single thread.",
         default: MAX_AGENTS_PER_THREAD,
       },
       briefAgentId: {
         type: "string",
         title: "Brief Agent ID",
-        description:
-          "Agent ID for processing media intake briefs. Leave empty to disable media pipeline.",
+        description: "Agent ID for processing media intake briefs. Leave empty to disable media pipeline.",
         default: DEFAULT_CONFIG.briefAgentId,
       },
       briefAgentChatIds: {
@@ -208,15 +203,13 @@ const manifest = {
     {
       jobKey: "check-escalation-timeouts",
       displayName: "Check Escalation Timeouts",
-      description:
-        "Check for timed-out escalations and apply default actions.",
+      description: "Check for timed-out escalations and apply default actions.",
       schedule: "* * * * *",
     },
     {
       jobKey: "check-watches",
       displayName: "Check Proactive Watches",
-      description:
-        "Evaluate registered watches and send suggestions when conditions are met.",
+      description: "Evaluate registered watches and send suggestions when conditions are met.",
       schedule: "*/15 * * * *",
     },
   ],
@@ -224,8 +217,7 @@ const manifest = {
     {
       name: "escalate_to_human",
       displayName: "Escalate to Human",
-      description:
-        "Escalate a conversation to a human when you cannot handle it confidently",
+      description: "Escalate a conversation to a human when you cannot handle it confidently",
       parametersSchema: { type: "object" },
     },
     {
@@ -237,15 +229,13 @@ const manifest = {
     {
       name: "discuss_with_agent",
       displayName: "Discuss with Agent",
-      description:
-        "Start a back-and-forth conversation with another agent",
+      description: "Start a back-and-forth conversation with another agent",
       parametersSchema: { type: "object" },
     },
     {
       name: "register_watch",
       displayName: "Register Watch",
-      description:
-        "Register a proactive watch that monitors entities and sends suggestions",
+      description: "Register a proactive watch that monitors entities and sends suggestions",
       parametersSchema: { type: "object" },
     },
   ],

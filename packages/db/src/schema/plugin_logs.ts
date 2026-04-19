@@ -1,11 +1,4 @@
-import {
-  pgTable,
-  uuid,
-  text,
-  timestamp,
-  jsonb,
-  index,
-} from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, index } from "drizzle-orm/pg-core";
 import { plugins } from "./plugins.js";
 
 /**
@@ -34,10 +27,7 @@ export const pluginLogs = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    pluginTimeIdx: index("plugin_logs_plugin_time_idx").on(
-      table.pluginId,
-      table.createdAt,
-    ),
+    pluginTimeIdx: index("plugin_logs_plugin_time_idx").on(table.pluginId, table.createdAt),
     levelIdx: index("plugin_logs_level_idx").on(table.level),
   }),
 );

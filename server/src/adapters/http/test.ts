@@ -1,8 +1,4 @@
-import type {
-  AdapterEnvironmentCheck,
-  AdapterEnvironmentTestContext,
-  AdapterEnvironmentTestResult,
-} from "../types.js";
+import type { AdapterEnvironmentCheck, AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "../types.js";
 import { asString, parseObject } from "../utils.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -16,9 +12,7 @@ function normalizeMethod(input: string): string {
   return trimmed.length > 0 ? trimmed.toUpperCase() : "POST";
 }
 
-export async function testEnvironment(
-  ctx: AdapterEnvironmentTestContext,
-): Promise<AdapterEnvironmentTestResult> {
+export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const urlValue = asString(config.url, "");

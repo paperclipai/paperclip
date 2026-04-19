@@ -27,10 +27,8 @@ function parseArgs() {
   };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--url" && args[i + 1]) opts.url = args[++i];
-    if (args[i] === "--concurrency" && args[i + 1])
-      opts.concurrency = parseInt(args[++i], 10);
-    if (args[i] === "--iterations" && args[i + 1])
-      opts.iterations = parseInt(args[++i], 10);
+    if (args[i] === "--concurrency" && args[i + 1]) opts.concurrency = parseInt(args[++i], 10);
+    if (args[i] === "--iterations" && args[i + 1]) opts.iterations = parseInt(args[++i], 10);
   }
   return opts;
 }
@@ -103,10 +101,7 @@ async function runBenchmark(name, fn, { concurrency, iterations }) {
   const wallStart = performance.now();
   // Approximate wall-clock throughput from total time
   const totalMs = durations.reduce((a, b) => a + b, 0);
-  const rps =
-    durations.length > 0
-      ? (durations.length / (totalMs / concurrency)) * 1000
-      : 0;
+  const rps = durations.length > 0 ? (durations.length / (totalMs / concurrency)) * 1000 : 0;
 
   return { name, stats, errors: errors.length, rps, total: durations.length };
 }
@@ -146,10 +141,7 @@ async function discoverFixtures(baseUrl, apiKey) {
 
   if (companyId) {
     try {
-      const issuesRes = await fetch(
-        `${baseUrl}/api/companies/${companyId}/issues?status=done&limit=1`,
-        { headers },
-      );
+      const issuesRes = await fetch(`${baseUrl}/api/companies/${companyId}/issues?status=done&limit=1`, { headers });
       if (issuesRes.ok) {
         const issues = await issuesRes.json();
         if (issues.length > 0) issueId = issues[0].id;
@@ -185,9 +177,7 @@ async function main() {
     const probe = await fetch(`${opts.url}/health`);
     if (!probe.ok) throw new Error(`health returned ${probe.status}`);
   } catch (err) {
-    console.error(
-      `ERROR: Cannot reach ${opts.url}/health — ${err.message}`,
-    );
+    console.error(`ERROR: Cannot reach ${opts.url}/health — ${err.message}`);
     console.error("Make sure the Paperclip server is running.");
     process.exit(1);
   }
@@ -206,24 +196,14 @@ async function main() {
   };
 
   // --- 1. Health check (baseline, unauthenticated) ---
-  benchmarks.push(
-    await runBenchmark(
-      "GET /health",
-      () => timedFetch(`${opts.url}/health`),
-      benchOpts,
-    ),
-  );
+  benchmarks.push(await runBenchmark("GET /health", () => timedFetch(`${opts.url}/health`), benchOpts));
 
   // --- 2. List issues ---
   if (fixtures.companyId) {
     benchmarks.push(
       await runBenchmark(
         "GET /companies/:id/issues (list)",
-        () =>
-          timedFetch(
-            `${opts.url}/api/companies/${fixtures.companyId}/issues?limit=20`,
-            { headers },
-          ),
+        () => timedFetch(`${opts.url}/api/companies/${fixtures.companyId}/issues?limit=20`, { headers }),
         benchOpts,
       ),
     );
@@ -248,11 +228,7 @@ async function main() {
     benchmarks.push(
       await runBenchmark(
         "GET /issues/:id/heartbeat-context",
-        () =>
-          timedFetch(
-            `${opts.url}/api/issues/${fixtures.issueId}/heartbeat-context`,
-            { headers },
-          ),
+        () => timedFetch(`${opts.url}/api/issues/${fixtures.issueId}/heartbeat-context`, { headers }),
         benchOpts,
       ),
     );
@@ -263,11 +239,7 @@ async function main() {
     benchmarks.push(
       await runBenchmark(
         "GET /issues/:id/comments",
-        () =>
-          timedFetch(
-            `${opts.url}/api/issues/${fixtures.issueId}/comments`,
-            { headers },
-          ),
+        () => timedFetch(`${opts.url}/api/issues/${fixtures.issueId}/comments`, { headers }),
         benchOpts,
       ),
     );
@@ -276,11 +248,7 @@ async function main() {
   // --- 6. Agent identity ---
   if (fixtures.agentId) {
     benchmarks.push(
-      await runBenchmark(
-        "GET /agents/me",
-        () => timedFetch(`${opts.url}/api/agents/me`, { headers }),
-        benchOpts,
-      ),
+      await runBenchmark("GET /agents/me", () => timedFetch(`${opts.url}/api/agents/me`, { headers }), benchOpts),
     );
   }
 
@@ -289,8 +257,7 @@ async function main() {
     benchmarks.push(
       await runBenchmark(
         "GET /agents/me/inbox-lite",
-        () =>
-          timedFetch(`${opts.url}/api/agents/me/inbox-lite`, { headers }),
+        () => timedFetch(`${opts.url}/api/agents/me/inbox-lite`, { headers }),
         benchOpts,
       ),
     );
@@ -301,11 +268,7 @@ async function main() {
     benchmarks.push(
       await runBenchmark(
         "GET /companies/:id/dashboard",
-        () =>
-          timedFetch(
-            `${opts.url}/api/companies/${fixtures.companyId}/dashboard`,
-            { headers },
-          ),
+        () => timedFetch(`${opts.url}/api/companies/${fixtures.companyId}/dashboard`, { headers }),
         benchOpts,
       ),
     );
@@ -316,11 +279,7 @@ async function main() {
     benchmarks.push(
       await runBenchmark(
         "GET /companies/:id/issues?q=test (search)",
-        () =>
-          timedFetch(
-            `${opts.url}/api/companies/${fixtures.companyId}/issues?q=test&limit=10`,
-            { headers },
-          ),
+        () => timedFetch(`${opts.url}/api/companies/${fixtures.companyId}/issues?q=test&limit=10`, { headers }),
         benchOpts,
       ),
     );
@@ -339,19 +298,16 @@ async function main() {
       await runBenchmark(
         "POST /companies/:id/issues (create)",
         async () => {
-          const res = await timedFetch(
-            `${opts.url}/api/companies/${fixtures.companyId}/issues`,
-            {
-              method: "POST",
-              headers,
-              body: JSON.stringify({
-                title: `[bench] perf test ${Date.now()}`,
-                description: "Temporary benchmark issue — auto-cleanup",
-                status: "done",
-                priority: "low",
-              }),
-            },
-          );
+          const res = await timedFetch(`${opts.url}/api/companies/${fixtures.companyId}/issues`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              title: `[bench] perf test ${Date.now()}`,
+              description: "Temporary benchmark issue — auto-cleanup",
+              status: "done",
+              priority: "low",
+            }),
+          });
           // Track for cleanup — parse from original fetch
           try {
             const createRes = await fetch(
@@ -400,8 +356,7 @@ async function main() {
             }).catch(() => {}),
           ),
         );
-        if (stale.length > 0)
-          console.log(`  Cleaned up ${stale.length} stale benchmark issues.`);
+        if (stale.length > 0) console.log(`  Cleaned up ${stale.length} stale benchmark issues.`);
       }
     } catch {}
   }

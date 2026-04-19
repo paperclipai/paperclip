@@ -20,7 +20,11 @@ export function Goals() {
     setBreadcrumbs([{ label: "Goals" }]);
   }, [setBreadcrumbs]);
 
-  const { data: goals, isLoading, error } = useQuery({
+  const {
+    data: goals,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -39,12 +43,7 @@ export function Goals() {
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {goals && goals.length === 0 && (
-        <EmptyState
-          icon={Target}
-          message="No goals yet."
-          action="Add Goal"
-          onAction={() => openNewGoal()}
-        />
+        <EmptyState icon={Target} message="No goals yet." action="Add Goal" onAction={() => openNewGoal()} />
       )}
 
       {goals && goals.length > 0 && (

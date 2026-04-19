@@ -67,11 +67,7 @@ function trimToLatestUsagePanel(text: string): string | null {
   const tailLower = tail.toLowerCase();
   if (!tailLower.includes("usage")) return null;
   if (!tailLower.includes("current session") && !tailLower.includes("loading usage")) return null;
-  const stopMarkers = [
-    "status dialog dismissed",
-    "checking for updates",
-    "press ctrl-c again to exit",
-  ];
+  const stopMarkers = ["status dialog dismissed", "checking for updates", "press ctrl-c again to exit"];
   let stopIndex = -1;
   for (const marker of stopMarkers) {
     const markerIndex = tailLower.indexOf(marker);
@@ -187,13 +183,15 @@ function formatExtraUsageLabel(extraUsage: AnthropicExtraUsage): string | null {
   ) {
     return null;
   }
-  return `${formatCurrencyAmount(usedCredits, extraUsage.currency)} / ${formatCurrencyAmount(monthlyLimit, extraUsage.currency)}`;
+  // API returns values in cents — convert to dollars for display
+  return `${formatCurrencyAmount(usedCredits / 100, extraUsage.currency)} / ${formatCurrencyAmount(monthlyLimit / 100, extraUsage.currency)}`;
 }
 
-/** Convert a 0-1 utilization fraction to a 0-100 integer percent. Returns null for null/undefined input. */
+/** Convert a utilization value to a 0-100 integer percent. Returns null for null/undefined input.
+ *  Handles both 0-1 fractions (legacy) and 0-100 percentages (current API). */
 export function toPercent(utilization: number | null | undefined): number | null {
   if (utilization == null) return null;
-  return Math.min(100, Math.round(utilization * 100));
+  return Math.min(100, Math.round(utilization < 1 ? utilization * 100 : utilization));
 }
 
 /** fetch with an abort-based timeout so a hanging provider api doesn't block the response indefinitely */
@@ -259,14 +257,8 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
       label: "Extra usage",
       usedPercent: body.extra_usage.is_enabled === false ? null : toPercent(body.extra_usage.utilization),
       resetsAt: null,
-      valueLabel:
-        body.extra_usage.is_enabled === false
-          ? "Not enabled"
-          : formatExtraUsageLabel(body.extra_usage),
-      detail:
-        body.extra_usage.is_enabled === false
-          ? "Extra usage not enabled"
-          : "Monthly extra usage pool",
+      valueLabel: body.extra_usage.is_enabled === false ? "Not enabled" : formatExtraUsageLabel(body.extra_usage),
+      detail: body.extra_usage.is_enabled === false ? "Extra usage not enabled" : "Monthly extra usage pool",
     });
   }
   return windows;
@@ -274,28 +266,32 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
 
 function usageOutputLooksRelevant(text: string): boolean {
   const normalized = normalizeForLabelSearch(text);
-  return normalized.includes("currentsession")
-    || normalized.includes("currentweek")
-    || normalized.includes("loadingusage")
-    || normalized.includes("failedtoloadusagedata")
-    || normalized.includes("tokenexpired")
-    || normalized.includes("authenticationerror")
-    || normalized.includes("ratelimited");
+  return (
+    normalized.includes("currentsession") ||
+    normalized.includes("currentweek") ||
+    normalized.includes("loadingusage") ||
+    normalized.includes("failedtoloadusagedata") ||
+    normalized.includes("tokenexpired") ||
+    normalized.includes("authenticationerror") ||
+    normalized.includes("ratelimited")
+  );
 }
 
 function usageOutputLooksComplete(text: string): boolean {
   const normalized = normalizeForLabelSearch(text);
   if (
-    normalized.includes("failedtoloadusagedata")
-    || normalized.includes("tokenexpired")
-    || normalized.includes("authenticationerror")
-    || normalized.includes("ratelimited")
+    normalized.includes("failedtoloadusagedata") ||
+    normalized.includes("tokenexpired") ||
+    normalized.includes("authenticationerror") ||
+    normalized.includes("ratelimited")
   ) {
     return true;
   }
-  return normalized.includes("currentsession")
-    && (normalized.includes("currentweek") || normalized.includes("extrausage"))
-    && /[0-9]{1,3}(?:\.[0-9]+)?%/i.test(text);
+  return (
+    normalized.includes("currentsession") &&
+    (normalized.includes("currentweek") || normalized.includes("extrausage")) &&
+    /[0-9]{1,3}(?:\.[0-9]+)?%/i.test(text)
+  );
 }
 
 function extractUsageError(text: string): string | null {
@@ -331,13 +327,15 @@ function percentFromLine(line: string): number | null {
 
 function isQuotaLabel(line: string): boolean {
   const normalized = normalizeForLabelSearch(line);
-  return normalized === "currentsession"
-    || normalized === "currentweekallmodels"
-    || normalized === "currentweeksonnetonly"
-    || normalized === "currentweeksonnet"
-    || normalized === "currentweekopusonly"
-    || normalized === "currentweekopus"
-    || normalized === "extrausage";
+  return (
+    normalized === "currentsession" ||
+    normalized === "currentweekallmodels" ||
+    normalized === "currentweeksonnetonly" ||
+    normalized === "currentweeksonnet" ||
+    normalized === "currentweekopusonly" ||
+    normalized === "currentweekopus" ||
+    normalized === "extrausage"
+  );
 }
 
 function canonicalQuotaLabel(line: string): string {
@@ -428,7 +426,7 @@ function quoteForShell(value: string): string {
 
 function buildClaudeCliShellProbeCommand(): string {
   const feed = "(sleep 2; printf '/usage\\r'; sleep 6; printf '\\033'; sleep 1; printf '\\003')";
-  const claudeCommand = "claude --tools \"\"";
+  const claudeCommand = 'claude --tools ""';
   if (process.platform === "darwin") {
     return `${feed} | script -q /dev/null ${claudeCommand}`;
   }
@@ -477,6 +475,14 @@ function formatProviderError(source: string, error: unknown): string {
 }
 
 export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
+  if (
+    process.env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+    process.env.CLAUDE_CODE_USE_BEDROCK === "true" ||
+    hasNonEmptyProcessEnv("ANTHROPIC_BEDROCK_BASE_URL")
+  ) {
+    return { provider: "anthropic", source: "bedrock", ok: true, windows: [] };
+  }
+
   const authStatus = await readClaudeAuthStatus();
   const authDescription = describeClaudeSubscriptionAuth(authStatus);
   const token = await readClaudeToken();
@@ -504,8 +510,7 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
       provider: "anthropic",
       ok: false,
       error:
-        errors[0]
-        ?? "ANTHROPIC_API_KEY is set and no local Claude subscription session is available for quota polling",
+        errors[0] ?? "ANTHROPIC_API_KEY is set and no local Claude subscription session is available for quota polling",
       windows: [],
     };
   }

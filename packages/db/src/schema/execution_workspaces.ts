@@ -1,12 +1,4 @@
-import {
-  type AnyPgColumn,
-  index,
-  jsonb,
-  pgTable,
-  text,
-  timestamp,
-  uuid,
-} from "drizzle-orm/pg-core";
+import { type AnyPgColumn, index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { projectWorkspaces } from "./project_workspaces.js";
@@ -16,8 +8,12 @@ export const executionWorkspaces = pgTable(
   "execution_workspaces",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
-    projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     sourceIssueId: uuid("source_issue_id").references((): AnyPgColumn => issues.id, { onDelete: "set null" }),
     mode: text("mode").notNull(),
@@ -30,8 +26,10 @@ export const executionWorkspaces = pgTable(
     branchName: text("branch_name"),
     providerType: text("provider_type").notNull().default("local_fs"),
     providerRef: text("provider_ref"),
-    derivedFromExecutionWorkspaceId: uuid("derived_from_execution_workspace_id")
-      .references((): AnyPgColumn => executionWorkspaces.id, { onDelete: "set null" }),
+    derivedFromExecutionWorkspaceId: uuid("derived_from_execution_workspace_id").references(
+      (): AnyPgColumn => executionWorkspaces.id,
+      { onDelete: "set null" },
+    ),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
     openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp("closed_at", { withTimezone: true }),
@@ -56,13 +54,7 @@ export const executionWorkspaces = pgTable(
       table.companyId,
       table.sourceIssueId,
     ),
-    companyLastUsedIdx: index("execution_workspaces_company_last_used_idx").on(
-      table.companyId,
-      table.lastUsedAt,
-    ),
-    companyBranchIdx: index("execution_workspaces_company_branch_idx").on(
-      table.companyId,
-      table.branchName,
-    ),
+    companyLastUsedIdx: index("execution_workspaces_company_last_used_idx").on(table.companyId, table.lastUsedAt),
+    companyBranchIdx: index("execution_workspaces_company_branch_idx").on(table.companyId, table.branchName),
   }),
 );

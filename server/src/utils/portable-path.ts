@@ -18,7 +18,10 @@ import path from "node:path";
  */
 export function normalizePortablePath(input: string): string {
   const parts: string[] = [];
-  const normalized = input.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
+  const normalized = input
+    .replace(/\\/g, "/")
+    .replace(/^\.\/+/, "")
+    .replace(/^\/+/, "");
   for (const segment of normalized.split("/")) {
     if (!segment || segment === ".") continue;
     if (segment === "..") {

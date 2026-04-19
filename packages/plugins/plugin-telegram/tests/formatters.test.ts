@@ -8,11 +8,7 @@ import {
   formatAgentRunStarted,
   formatAgentRunFinished,
 } from "../src/formatters.js";
-import type {
-  IssueEventPayload,
-  ApprovalEventPayload,
-  AgentRunEventPayload,
-} from "../src/types.js";
+import type { IssueEventPayload, ApprovalEventPayload, AgentRunEventPayload } from "../src/types.js";
 
 function makeEvent<T>(payload: T, entityId = "ent_1"): PluginEvent<T> {
   return {
@@ -60,10 +56,7 @@ describe("formatIssueCreated", () => {
   });
 
   it("falls back to entityId when identifier is missing", () => {
-    const event = makeEvent<IssueEventPayload>(
-      { title: "No ID task" },
-      "fallback_id",
-    );
+    const event = makeEvent<IssueEventPayload>({ title: "No ID task" }, "fallback_id");
 
     const result = formatIssueCreated(event);
 
@@ -145,10 +138,7 @@ describe("formatApprovalCreated", () => {
   });
 
   it("falls back to entityId when approvalId is missing", () => {
-    const event = makeEvent<ApprovalEventPayload>(
-      { title: "Some approval" },
-      "entity_fallback",
-    );
+    const event = makeEvent<ApprovalEventPayload>({ title: "Some approval" }, "entity_fallback");
 
     const result = formatApprovalCreated(event);
 

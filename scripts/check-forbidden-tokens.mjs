@@ -43,10 +43,7 @@ export function readForbiddenTokensFile(tokensFile) {
 }
 
 export function resolveForbiddenTokens(tokensFile, env = process.env, osModule = os) {
-  return uniqueNonEmpty([
-    ...resolveDynamicForbiddenTokens(env, osModule),
-    ...readForbiddenTokensFile(tokensFile),
-  ]);
+  return uniqueNonEmpty([...resolveDynamicForbiddenTokens(env, osModule), ...readForbiddenTokensFile(tokensFile)]);
 }
 
 export function runForbiddenTokenCheck({
@@ -65,10 +62,11 @@ export function runForbiddenTokenCheck({
 
   for (const token of tokens) {
     try {
-      const result = exec(
-        `git grep -in --no-color -- ${JSON.stringify(token)} -- ':!pnpm-lock.yaml' ':!.git'`,
-        { encoding: "utf8", cwd: repoRoot, stdio: ["pipe", "pipe", "pipe"] },
-      );
+      const result = exec(`git grep -in --no-color -- ${JSON.stringify(token)} -- ':!pnpm-lock.yaml' ':!.git'`, {
+        encoding: "utf8",
+        cwd: repoRoot,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
       if (result.trim()) {
         if (!found) {
           error("ERROR: Forbidden tokens found in tracked files:\n");

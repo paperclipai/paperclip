@@ -166,10 +166,7 @@ function printLegacyToolEvent(part: Record<string, unknown>): void {
   const metadata = asRecord(state?.metadata);
   const exit = asNumber(metadata?.exit, NaN);
   const isError =
-    status === "failed" ||
-    status === "error" ||
-    status === "cancelled" ||
-    (Number.isFinite(exit) && exit !== 0);
+    status === "failed" || status === "error" || status === "cancelled" || (Number.isFinite(exit) && exit !== 0);
 
   console.log(pc.yellow(`tool_call: ${tool}${callId ? ` (${callId})` : ""}`));
   if (input !== undefined) {
@@ -181,11 +178,7 @@ function printLegacyToolEvent(part: Record<string, unknown>): void {
   }
 
   if (status || output) {
-    const summary = [
-      "tool_result",
-      status ? `status=${status}` : "",
-      Number.isFinite(exit) ? `exit=${exit}` : "",
-    ]
+    const summary = ["tool_result", status ? `status=${status}` : "", Number.isFinite(exit) ? `exit=${exit}` : ""]
       .filter(Boolean)
       .join(" ");
     console.log((isError ? pc.red : pc.cyan)(summary));
@@ -212,10 +205,7 @@ export function printCursorStreamEvent(raw: string, _debug: boolean): void {
   if (type === "system") {
     const subtype = asString(parsed.subtype);
     if (subtype === "init") {
-      const sessionId =
-        asString(parsed.session_id) ||
-        asString(parsed.sessionId) ||
-        asString(parsed.sessionID);
+      const sessionId = asString(parsed.session_id) || asString(parsed.sessionId) || asString(parsed.sessionID);
       const model = asString(parsed.model);
       const details = [sessionId ? `session: ${sessionId}` : "", model ? `model: ${model}` : ""]
         .filter(Boolean)
@@ -264,7 +254,9 @@ export function printCursorStreamEvent(raw: string, _debug: boolean): void {
     console.log(pc.blue(`tokens: in=${input} out=${output} cached=${cached} cost=$${cost.toFixed(6)}`));
     const resultText = asString(parsed.result).trim();
     if (resultText) console.log((isError ? pc.red : pc.green)(`assistant: ${resultText}`));
-    const errors = Array.isArray(parsed.errors) ? parsed.errors.map((value) => stringifyUnknown(value)).filter(Boolean) : [];
+    const errors = Array.isArray(parsed.errors)
+      ? parsed.errors.map((value) => stringifyUnknown(value)).filter(Boolean)
+      : [];
     if (errors.length > 0) console.log(pc.red(`errors: ${errors.join(" | ")}`));
     return;
   }

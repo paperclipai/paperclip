@@ -1,6 +1,6 @@
 ---
 title: Tailscale Private Access
-summary: Run Paperclip with Tailscale-friendly host binding and connect from other devices
+summary: Run Paperclip with Tailscale-friendly bind presets and connect from other devices
 ---
 
 Use this when you want to access Paperclip over Tailscale (or a private LAN/VPN) instead of only `localhost`.
@@ -8,21 +8,27 @@ Use this when you want to access Paperclip over Tailscale (or a private LAN/VPN)
 ## 1. Start Paperclip in private authenticated mode
 
 ```sh
-pnpm dev --tailscale-auth
+pnpm dev --bind tailnet
 ```
 
-This configures:
+Recommended behavior:
 
 - `PAPERCLIP_DEPLOYMENT_MODE=authenticated`
 - `PAPERCLIP_DEPLOYMENT_EXPOSURE=private`
-- `PAPERCLIP_AUTH_BASE_URL_MODE=auto`
-- `HOST=0.0.0.0` (bind on all interfaces)
+- `PAPERCLIP_BIND=tailnet`
 
-Equivalent flag:
+If you want the old broad private-network behavior instead, use:
 
 ```sh
-pnpm dev --authenticated-private
+pnpm dev --bind lan
 ```
+
+Legacy aliases still map to `authenticated/private + bind=lan`:
+
+pnpm dev --authenticated-private
+pnpm dev --tailscale-auth
+
+````
 
 ## 2. Find your reachable Tailscale address
 
@@ -30,7 +36,7 @@ From the machine running Paperclip:
 
 ```sh
 tailscale ip -4
-```
+````
 
 You can also use your Tailscale MagicDNS hostname (for example `my-macbook.tailnet.ts.net`).
 
@@ -67,11 +73,11 @@ curl http://<tailscale-host-or-ip>:3100/api/health
 Expected result:
 
 ```json
-{"status":"ok"}
+{ "status": "ok" }
 ```
 
 ## Troubleshooting
 
 - Login or redirect errors on a private hostname: add it with `paperclipai allowed-hostname`.
-- App only works on `localhost`: make sure you started with `--tailscale-auth` (or set `HOST=0.0.0.0` in private mode).
+- App only works on `localhost`: make sure you started with `--bind lan` or `--bind tailnet` instead of plain `pnpm dev`.
 - Can connect locally but not remotely: verify both devices are on the same Tailscale network and port `3100` is reachable.

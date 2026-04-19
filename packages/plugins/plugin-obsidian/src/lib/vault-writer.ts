@@ -46,10 +46,7 @@ export function renderNote(note: ObsidianNote): string {
  * Creates directories as needed.
  * Returns the list of file paths written.
  */
-export async function writeNotesToVault(
-  vaultPath: string,
-  notes: ObsidianNote[],
-): Promise<string[]> {
+export async function writeNotesToVault(vaultPath: string, notes: ObsidianNote[]): Promise<string[]> {
   const written: string[] = [];
 
   for (const note of notes) {

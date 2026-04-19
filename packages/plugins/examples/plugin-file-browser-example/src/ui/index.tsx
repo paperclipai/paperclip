@@ -21,8 +21,7 @@ const editorBaseTheme = {
   },
   ".cm-scroller": {
     overflow: "auto",
-    fontFamily:
-      "ui-monospace, SFMono-Regular, SF Mono, Menlo, Monaco, Consolas, Liberation Mono, monospace",
+    fontFamily: "ui-monospace, SFMono-Regular, SF Mono, Menlo, Monaco, Consolas, Liberation Mono, monospace",
     fontSize: "13px",
     lineHeight: "1.6",
   },
@@ -31,39 +30,42 @@ const editorBaseTheme = {
   },
 };
 
-const editorDarkTheme = EditorView.theme({
-  ...editorBaseTheme,
-  "&": {
-    ...editorBaseTheme["&"],
-    backgroundColor: "oklch(0.23 0.02 255)",
-    color: "oklch(0.93 0.01 255)",
+const editorDarkTheme = EditorView.theme(
+  {
+    ...editorBaseTheme,
+    "&": {
+      ...editorBaseTheme["&"],
+      backgroundColor: "oklch(0.23 0.02 255)",
+      color: "oklch(0.93 0.01 255)",
+    },
+    ".cm-gutters": {
+      backgroundColor: "oklch(0.25 0.015 255)",
+      color: "oklch(0.74 0.015 255)",
+      borderRight: "1px solid oklch(0.34 0.01 255)",
+    },
+    ".cm-activeLine, .cm-activeLineGutter": {
+      backgroundColor: "oklch(0.30 0.012 255 / 0.55)",
+    },
+    ".cm-selectionBackground, .cm-content ::selection": {
+      backgroundColor: "oklch(0.42 0.02 255 / 0.45)",
+    },
+    "&.cm-focused .cm-selectionBackground": {
+      backgroundColor: "oklch(0.47 0.025 255 / 0.5)",
+    },
+    ".cm-cursor, .cm-dropCursor": {
+      borderLeftColor: "oklch(0.93 0.01 255)",
+    },
+    ".cm-matchingBracket": {
+      backgroundColor: "oklch(0.37 0.015 255 / 0.5)",
+      color: "oklch(0.95 0.01 255)",
+      outline: "none",
+    },
+    ".cm-nonmatchingBracket": {
+      color: "oklch(0.70 0.08 24)",
+    },
   },
-  ".cm-gutters": {
-    backgroundColor: "oklch(0.25 0.015 255)",
-    color: "oklch(0.74 0.015 255)",
-    borderRight: "1px solid oklch(0.34 0.01 255)",
-  },
-  ".cm-activeLine, .cm-activeLineGutter": {
-    backgroundColor: "oklch(0.30 0.012 255 / 0.55)",
-  },
-  ".cm-selectionBackground, .cm-content ::selection": {
-    backgroundColor: "oklch(0.42 0.02 255 / 0.45)",
-  },
-  "&.cm-focused .cm-selectionBackground": {
-    backgroundColor: "oklch(0.47 0.025 255 / 0.5)",
-  },
-  ".cm-cursor, .cm-dropCursor": {
-    borderLeftColor: "oklch(0.93 0.01 255)",
-  },
-  ".cm-matchingBracket": {
-    backgroundColor: "oklch(0.37 0.015 255 / 0.5)",
-    color: "oklch(0.95 0.01 255)",
-    outline: "none",
-  },
-  ".cm-nonmatchingBracket": {
-    color: "oklch(0.70 0.08 24)",
-  },
-}, { dark: true });
+  { dark: true },
+);
 
 const editorLightTheme = EditorView.theme({
   ...editorBaseTheme,
@@ -179,8 +181,8 @@ function useIsMobile(breakpointPx = 768): boolean {
 }
 
 function useIsDarkMode(): boolean {
-  const [isDarkMode, setIsDarkMode] = useState(() =>
-    typeof document !== "undefined" && document.documentElement.classList.contains("dark"),
+  const [isDarkMode, setIsDarkMode] = useState(
+    () => typeof document !== "undefined" && document.documentElement.classList.contains("dark"),
   );
 
   useEffect(() => {
@@ -220,9 +222,7 @@ function useAvailableHeight(
     window.addEventListener("resize", update);
     window.addEventListener("orientationchange", update);
 
-    const observer = typeof ResizeObserver !== "undefined"
-      ? new ResizeObserver(() => update())
-      : null;
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => update()) : null;
     if (observer && ref.current) observer.observe(ref.current);
 
     return () => {
@@ -350,31 +350,32 @@ export function FilesLink({ context }: PluginProjectSidebarItemProps) {
   }
 
   const projectId = context.entityId;
-  const projectRef = (context as PluginProjectSidebarItemProps["context"] & { projectRef?: string | null })
-    .projectRef
-    ?? projectId;
+  const projectRef =
+    (context as PluginProjectSidebarItemProps["context"] & { projectRef?: string | null }).projectRef ?? projectId;
   const prefix = context.companyPrefix ? `/${context.companyPrefix}` : "";
   const tabValue = `plugin:${PLUGIN_KEY}:${FILES_TAB_SLOT_ID}`;
   const href = `${prefix}/projects/${projectRef}?tab=${encodeURIComponent(tabValue)}`;
-  const isActive = typeof window !== "undefined" && (() => {
-    const pathname = window.location.pathname.replace(/\/+$/, "");
-    const segments = pathname.split("/").filter(Boolean);
-    const projectsIndex = segments.indexOf("projects");
-    const activeProjectRef = projectsIndex >= 0 ? segments[projectsIndex + 1] ?? null : null;
-    const activeTab = new URLSearchParams(window.location.search).get("tab");
-    if (activeTab !== tabValue) return false;
-    if (!activeProjectRef) return false;
-    return activeProjectRef === projectId || activeProjectRef === projectRef;
-  })();
+  const isActive =
+    typeof window !== "undefined" &&
+    (() => {
+      const pathname = window.location.pathname.replace(/\/+$/, "");
+      const segments = pathname.split("/").filter(Boolean);
+      const projectsIndex = segments.indexOf("projects");
+      const activeProjectRef = projectsIndex >= 0 ? (segments[projectsIndex + 1] ?? null) : null;
+      const activeTab = new URLSearchParams(window.location.search).get("tab");
+      if (activeTab !== tabValue) return false;
+      if (!activeProjectRef) return false;
+      return activeProjectRef === projectId || activeProjectRef === projectRef;
+    })();
 
   const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
     if (
-      event.defaultPrevented
-      || event.button !== 0
-      || event.metaKey
-      || event.ctrlKey
-      || event.altKey
-      || event.shiftKey
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.altKey ||
+      event.shiftKey
     ) {
       return;
     }
@@ -711,12 +712,12 @@ function buildFileBrowserHref(prefix: string, projectId: string | null, filePath
 
 function navigateToFileBrowser(href: string, event: MouseEvent<HTMLAnchorElement>) {
   if (
-    event.defaultPrevented
-    || event.button !== 0
-    || event.metaKey
-    || event.ctrlKey
-    || event.altKey
-    || event.shiftKey
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.altKey ||
+    event.shiftKey
   ) {
     return;
   }
@@ -792,9 +793,7 @@ export function CommentOpenFiles({ context }: PluginCommentContextMenuItemProps)
 
   return (
     <div>
-      <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-        Files
-      </div>
+      <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Files</div>
       {data.links.map((link) => {
         const href = buildFileBrowserHref(prefix, projectId, link);
         const fileName = link.split("/").pop() ?? link;

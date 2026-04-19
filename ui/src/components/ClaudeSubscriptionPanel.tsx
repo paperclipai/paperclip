@@ -51,11 +51,7 @@ function fillClass(usedPercent: number | null): string {
   return "bg-primary/70";
 }
 
-export function ClaudeSubscriptionPanel({
-  windows,
-  source = null,
-  error = null,
-}: ClaudeSubscriptionPanelProps) {
+export function ClaudeSubscriptionPanel({ windows, source = null, error = null }: ClaudeSubscriptionPanelProps) {
   const ordered = orderedWindows(windows);
 
   return (
@@ -65,9 +61,7 @@ export function ClaudeSubscriptionPanel({
           <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
             Anthropic subscription
           </div>
-          <div className="mt-1 text-sm text-muted-foreground">
-            Live Claude quota windows.
-          </div>
+          <div className="mt-1 text-sm text-muted-foreground">Live Claude quota windows.</div>
         </div>
         {source ? (
           <span className="shrink-0 border border-border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
@@ -88,35 +82,25 @@ export function ClaudeSubscriptionPanel({
           const detail = detailText(window);
           if (normalized === "extrausage") {
             return (
-              <div
-                key={window.label}
-                className="border border-border px-3.5 py-3"
-              >
+              <div key={window.label} className="border border-border px-3.5 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-sm font-medium text-foreground">{window.label}</div>
                   {window.valueLabel ? (
                     <div className="text-sm font-medium text-foreground">{window.valueLabel}</div>
                   ) : null}
                 </div>
-                {detail ? (
-                  <div className="mt-2 text-sm text-muted-foreground">{detail}</div>
-                ) : null}
+                {detail ? <div className="mt-2 text-sm text-muted-foreground">{detail}</div> : null}
               </div>
             );
           }
 
           const width = Math.min(100, Math.max(0, window.usedPercent ?? 0));
           return (
-            <div
-              key={window.label}
-              className="border border-border px-3.5 py-3"
-            >
+            <div key={window.label} className="border border-border px-3.5 py-3">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="text-sm font-medium text-foreground">{window.label}</div>
-                  {detail ? (
-                    <div className="mt-1 text-xs text-muted-foreground">{detail}</div>
-                  ) : null}
+                  {detail ? <div className="mt-1 text-xs text-muted-foreground">{detail}</div> : null}
                 </div>
                 {window.usedPercent != null ? (
                   <div className="shrink-0 text-sm font-semibold tabular-nums text-foreground">

@@ -11,9 +11,7 @@ import {
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import {
-  asStringArray,
-} from "@paperclipai/adapter-utils/server-utils";
+import { asStringArray } from "@paperclipai/adapter-utils/server-utils";
 import { discoverPiModelsCached } from "./models.js";
 import { parsePiJsonl } from "./parse.js";
 
@@ -72,9 +70,7 @@ function buildPiModelDiscoveryFailureCheck(message: string): AdapterEnvironmentC
   };
 }
 
-export async function testEnvironment(
-  ctx: AdapterEnvironmentTestContext,
-): Promise<AdapterEnvironmentTestResult> {
+export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "pi");
@@ -129,8 +125,9 @@ export async function testEnvironment(
     }
   }
 
-  const canRunProbe =
-    checks.every((check) => check.code !== "pi_cwd_invalid" && check.code !== "pi_command_unresolvable");
+  const canRunProbe = checks.every(
+    (check) => check.code !== "pi_cwd_invalid" && check.code !== "pi_command_unresolvable",
+  );
 
   if (canRunProbe) {
     try {
@@ -150,11 +147,7 @@ export async function testEnvironment(
         });
       }
     } catch (err) {
-      checks.push(
-        buildPiModelDiscoveryFailureCheck(
-          err instanceof Error ? err.message : "Pi model discovery failed.",
-        ),
-      );
+      checks.push(buildPiModelDiscoveryFailureCheck(err instanceof Error ? err.message : "Pi model discovery failed."));
     }
   }
 
@@ -197,9 +190,7 @@ export async function testEnvironment(
 
   if (canRunProbe && configuredModel) {
     // Parse model for probe
-    const provider = configuredModel.includes("/") 
-      ? configuredModel.slice(0, configuredModel.indexOf("/")) 
-      : "";
+    const provider = configuredModel.includes("/") ? configuredModel.slice(0, configuredModel.indexOf("/")) : "";
     const modelId = configuredModel.includes("/")
       ? configuredModel.slice(configuredModel.indexOf("/") + 1)
       : configuredModel;
@@ -248,9 +239,7 @@ export async function testEnvironment(
         checks.push({
           code: hasHello ? "pi_hello_probe_passed" : "pi_hello_probe_unexpected_output",
           level: hasHello ? "info" : "warn",
-          message: hasHello
-            ? "Pi hello probe succeeded."
-            : "Pi probe ran but did not return `hello` as expected.",
+          message: hasHello ? "Pi hello probe succeeded." : "Pi probe ran but did not return `hello` as expected.",
           ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
           ...(hasHello
             ? {}

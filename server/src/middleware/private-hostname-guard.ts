@@ -68,7 +68,8 @@ export function privateHostnameGuard(opts: {
     const wantsJson = req.path.startsWith("/api") || req.accepts(["json", "html", "text"]) === "json";
 
     if (!hostname) {
-      const error = "Missing Host header. If you want to allow a hostname, run pnpm paperclipai allowed-hostname <host>.";
+      const error =
+        "Missing Host header. If you want to allow a hostname, run pnpm paperclipai allowed-hostname <host>.";
       if (wantsJson) {
         res.status(403).json({ error });
       } else {

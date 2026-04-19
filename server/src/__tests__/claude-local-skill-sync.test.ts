@@ -2,10 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  listClaudeSkills,
-  syncClaudeSkills,
-} from "@paperclipai/adapter-claude-local/server";
+import { listClaudeSkills, syncClaudeSkills } from "@paperclipai/adapter-claude-local/server";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -44,16 +41,19 @@ describe("claude local skill sync", () => {
   });
 
   it("respects an explicit desired skill list without mutating a persistent home", async () => {
-    const snapshot = await syncClaudeSkills({
-      agentId: "agent-2",
-      companyId: "company-1",
-      adapterType: "claude_local",
-      config: {
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
+    const snapshot = await syncClaudeSkills(
+      {
+        agentId: "agent-2",
+        companyId: "company-1",
+        adapterType: "claude_local",
+        config: {
+          paperclipSkillSync: {
+            desiredSkills: [paperclipKey],
+          },
         },
       },
-    }, [paperclipKey]);
+      [paperclipKey],
+    );
 
     expect(snapshot.desiredSkills).toContain(paperclipKey);
     expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
@@ -95,16 +95,18 @@ describe("claude local skill sync", () => {
       },
     });
 
-    expect(snapshot.entries).toContainEqual(expect.objectContaining({
-      key: "crack-python",
-      runtimeName: "crack-python",
-      state: "external",
-      managed: false,
-      origin: "user_installed",
-      originLabel: "User-installed",
-      locationLabel: "~/.claude/skills",
-      readOnly: true,
-      detail: "Installed outside Paperclip management in the Claude skills home.",
-    }));
+    expect(snapshot.entries).toContainEqual(
+      expect.objectContaining({
+        key: "crack-python",
+        runtimeName: "crack-python",
+        state: "external",
+        managed: false,
+        origin: "user_installed",
+        originLabel: "User-installed",
+        locationLabel: "~/.claude/skills",
+        readOnly: true,
+        detail: "Installed outside Paperclip management in the Claude skills home.",
+      }),
+    );
   });
 });

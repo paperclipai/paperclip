@@ -121,9 +121,7 @@ const focusableElementSelector = [
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 const launcherOverlayBaseZIndex = 1000;
-const supportedLauncherBounds = new Set<PluginLauncherBounds>(
-  PLUGIN_LAUNCHER_BOUNDS,
-);
+const supportedLauncherBounds = new Set<PluginLauncherBounds>(PLUGIN_LAUNCHER_BOUNDS);
 
 const PluginLauncherRuntimeContext = createContext<PluginLauncherRuntimeContextValue | null>(null);
 
@@ -140,7 +138,7 @@ function buildLauncherHostContext(
   return {
     companyId: context.companyId ?? null,
     companyPrefix: context.companyPrefix ?? null,
-    projectId: context.projectId ?? (context.entityType === "project" ? context.entityId ?? null : null),
+    projectId: context.projectId ?? (context.entityType === "project" ? (context.entityId ?? null) : null),
     entityId: context.entityId ?? null,
     entityType: context.entityType ?? null,
     userId,
@@ -160,9 +158,9 @@ function focusFirstElement(container: HTMLElement | null): void {
 
 function trapFocus(container: HTMLElement, event: KeyboardEvent): void {
   if (event.key !== "Tab") return;
-  const focusable = Array.from(
-    container.querySelectorAll<HTMLElement>(focusableElementSelector),
-  ).filter((el) => !el.hasAttribute("disabled") && el.tabIndex !== -1);
+  const focusable = Array.from(container.querySelectorAll<HTMLElement>(focusableElementSelector)).filter(
+    (el) => !el.hasAttribute("disabled") && el.tabIndex !== -1,
+  );
 
   if (focusable.length === 0) {
     event.preventDefault();
@@ -234,10 +232,7 @@ function launcherPopoverStyle(instance: LauncherInstance): CSSProperties {
   }
 
   const top = Math.min(rect.bottom + 8, window.innerHeight - 32);
-  const left = Math.min(
-    Math.max(rect.left, 16),
-    Math.max(16, window.innerWidth - 360),
-  );
+  const left = Math.min(Math.max(rect.left, 16), Math.max(16, window.innerWidth - 360));
 
   return {
     width: baseWidth,
@@ -260,9 +255,7 @@ function isPluginLauncherBounds(value: unknown): value is PluginLauncherBounds {
  * returns both the sorted launcher list and a contribution map so activation
  * can stay on cached metadata.
  */
-export function usePluginLaunchers(
-  filters: UsePluginLaunchersFilters,
-): UsePluginLaunchersResult {
+export function usePluginLaunchers(filters: UsePluginLaunchersFilters): UsePluginLaunchersResult {
   const queryEnabled = filters.enabled ?? true;
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.plugins.uiContributions,
@@ -270,10 +263,7 @@ export function usePluginLaunchers(
     enabled: queryEnabled,
   });
 
-  const placementZonesKey = useMemo(
-    () => [...filters.placementZones].sort().join("|"),
-    [filters.placementZones],
-  );
+  const placementZonesKey = useMemo(() => [...filters.placementZones].sort().join("|"), [filters.placementZones]);
 
   const contributionsByPluginId = useMemo(() => {
     const byPluginId = new Map<string, PluginUiContribution>();
@@ -284,9 +274,7 @@ export function usePluginLaunchers(
   }, [data]);
 
   const launchers = useMemo(() => {
-    const placementZones = new Set(
-      placementZonesKey.split("|").filter(Boolean) as PluginLauncherPlacementZone[],
-    );
+    const placementZones = new Set(placementZonesKey.split("|").filter(Boolean) as PluginLauncherPlacementZone[]);
     const rows: ResolvedPluginLauncher[] = [];
     for (const contribution of data ?? []) {
       for (const launcher of contribution.launchers) {
@@ -355,11 +343,7 @@ function PluginLauncherBridgeScope({
 }) {
   const value = useMemo(() => ({ pluginId, hostContext }), [pluginId, hostContext]);
 
-  return (
-    <PluginBridgeContext.Provider value={value}>
-      {children}
-    </PluginBridgeContext.Provider>
-  );
+  return <PluginBridgeContext.Provider value={value}>{children}</PluginBridgeContext.Provider>;
 }
 
 type LauncherErrorBoundaryProps = {
@@ -443,10 +427,13 @@ function LauncherRenderContent({
     });
   }
 
-  const node = createElement(component.component as never, {
-    launcher: instance.launcher,
-    context: hostContext,
-  } as never);
+  const node = createElement(
+    component.component as never,
+    {
+      launcher: instance.launcher,
+      context: hostContext,
+    } as never,
+  );
 
   return (
     <LauncherErrorBoundary launcher={instance.launcher}>
@@ -496,36 +483,39 @@ function LauncherModalShell({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [closeLauncher, instance.key, isTopmost]);
 
-  const renderEnvironment = useMemo<PluginRenderEnvironmentContext>(() => ({
-    environment: instance.launcher.render?.environment ?? "hostOverlay",
-    launcherId: instance.launcher.id,
-    bounds: instance.bounds,
-    requestModalBounds: (request) => requestBounds(instance.key, request),
-    closeLifecycle: {
-      onBeforeClose: (handler) => {
-        instance.beforeCloseHandlers.add(handler);
-        return () => instance.beforeCloseHandlers.delete(handler);
+  const renderEnvironment = useMemo<PluginRenderEnvironmentContext>(
+    () => ({
+      environment: instance.launcher.render?.environment ?? "hostOverlay",
+      launcherId: instance.launcher.id,
+      bounds: instance.bounds,
+      requestModalBounds: (request) => requestBounds(instance.key, request),
+      closeLifecycle: {
+        onBeforeClose: (handler) => {
+          instance.beforeCloseHandlers.add(handler);
+          return () => instance.beforeCloseHandlers.delete(handler);
+        },
+        onClose: (handler) => {
+          instance.closeHandlers.add(handler);
+          return () => instance.closeHandlers.delete(handler);
+        },
       },
-      onClose: (handler) => {
-        instance.closeHandlers.add(handler);
-        return () => instance.closeHandlers.delete(handler);
-      },
-    },
-  }), [instance, requestBounds]);
+    }),
+    [instance, requestBounds],
+  );
 
   const baseZ = launcherOverlayBaseZIndex + stackIndex * 20;
   // Keep each launcher in a deterministic z-index band so every stacked modal,
   // drawer, or popover retains its own backdrop/panel pairing.
   const shellType = instance.launcher.action.type;
-  const containerStyle = shellType === "openPopover"
-    ? launcherPopoverStyle(instance)
-    : launcherShellBoundsStyle(instance.bounds);
+  const containerStyle =
+    shellType === "openPopover" ? launcherPopoverStyle(instance) : launcherShellBoundsStyle(instance.bounds);
 
-  const panelClassName = shellType === "openDrawer"
-    ? "fixed right-0 top-0 h-full max-w-[min(44rem,100vw)] overflow-hidden border-l border-border bg-background shadow-2xl"
-    : shellType === "openPopover"
-      ? "fixed overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
-      : "fixed left-1/2 top-1/2 max-h-[calc(100vh-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-background shadow-2xl";
+  const panelClassName =
+    shellType === "openDrawer"
+      ? "fixed right-0 top-0 h-full max-w-[min(44rem,100vw)] overflow-hidden border-l border-border bg-background shadow-2xl"
+      : shellType === "openPopover"
+        ? "fixed overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
+        : "fixed left-1/2 top-1/2 max-h-[calc(100vh-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-background shadow-2xl";
 
   return (
     <>
@@ -548,9 +538,7 @@ function LauncherModalShell({
         className={panelClassName}
         style={{
           zIndex: baseZ + 1,
-          ...(shellType === "openDrawer"
-            ? { width: containerStyle.width ?? "min(44rem, 100vw)" }
-            : containerStyle),
+          ...(shellType === "openDrawer" ? { width: containerStyle.width ?? "min(44rem, 100vw)" } : containerStyle),
         }}
         onMouseDown={(event) => event.stopPropagation()}
       >
@@ -559,9 +547,7 @@ function LauncherModalShell({
             <h2 id={titleId} className="truncate text-sm font-semibold">
               {instance.launcher.displayName}
             </h2>
-            <p className="truncate text-xs text-muted-foreground">
-              {instance.launcher.pluginDisplayName}
-            </p>
+            <p className="truncate text-xs text-muted-foreground">{instance.launcher.pluginDisplayName}</p>
           </div>
           <Button
             type="button"
@@ -593,55 +579,41 @@ export function PluginLauncherProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const closeLauncher = useCallback(
-    async (key: string, event: PluginRenderCloseEvent) => {
-      const instance = stackRef.current.find((entry) => entry.key === key);
-      if (!instance) return;
+  const closeLauncher = useCallback(async (key: string, event: PluginRenderCloseEvent) => {
+    const instance = stackRef.current.find((entry) => entry.key === key);
+    if (!instance) return;
 
-      for (const handler of [...instance.beforeCloseHandlers]) {
-        await handler(event);
+    for (const handler of [...instance.beforeCloseHandlers]) {
+      await handler(event);
+    }
+
+    setStack((current) => current.filter((entry) => entry.key !== key));
+
+    queueMicrotask(() => {
+      for (const handler of [...instance.closeHandlers]) {
+        void handler(event);
       }
-
-      setStack((current) => current.filter((entry) => entry.key !== key));
-
-      queueMicrotask(() => {
-        for (const handler of [...instance.closeHandlers]) {
-          void handler(event);
-        }
-        if (instance.sourceElement && document.contains(instance.sourceElement)) {
-          instance.sourceElement.focus();
-        }
-      });
-    },
-    [],
-  );
+      if (instance.sourceElement && document.contains(instance.sourceElement)) {
+        instance.sourceElement.focus();
+      }
+    });
+  }, []);
 
   useEffect(() => {
     if (stack.length === 0) return;
-    void Promise.all(
-      stack.map((entry) => closeLauncher(entry.key, { reason: "hostNavigation" })),
-    );
+    void Promise.all(stack.map((entry) => closeLauncher(entry.key, { reason: "hostNavigation" })));
     // Only react to navigation changes, not stack churn.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.key]);
 
-  const requestBounds = useCallback(
-    async (key: string, request: PluginModalBoundsRequest) => {
-      // Bounds changes are host-validated. Unsupported presets are ignored so
-      // plugin UI cannot push the shell into an undefined layout state.
-      if (!isPluginLauncherBounds(request.bounds)) {
-        return;
-      }
-      setStack((current) =>
-        current.map((entry) =>
-          entry.key === key
-            ? { ...entry, bounds: request.bounds }
-            : entry,
-        ),
-      );
-    },
-    [],
-  );
+  const requestBounds = useCallback(async (key: string, request: PluginModalBoundsRequest) => {
+    // Bounds changes are host-validated. Unsupported presets are ignored so
+    // plugin UI cannot push the shell into an undefined layout state.
+    if (!isPluginLauncherBounds(request.bounds)) {
+      return;
+    }
+    setStack((current) => current.map((entry) => (entry.key === key ? { ...entry, bounds: request.bounds } : entry)));
+  }, []);
 
   const activateLauncher = useCallback(
     async (
@@ -694,10 +666,7 @@ export function PluginLauncherProvider({ children }: { children: ReactNode }) {
     [navigate],
   );
 
-  const value = useMemo<PluginLauncherRuntimeContextValue>(
-    () => ({ activateLauncher }),
-    [activateLauncher],
-  );
+  const value = useMemo<PluginLauncherRuntimeContextValue>(() => ({ activateLauncher }), [activateLauncher]);
 
   return (
     <PluginLauncherRuntimeContext.Provider value={value}>
@@ -773,7 +742,12 @@ export function PluginLauncherOutlet({
 
   if (errorMessage) {
     return (
-      <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", errorClassName)}>
+      <div
+        className={cn(
+          "rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive",
+          errorClassName,
+        )}
+      >
         Plugin launchers unavailable: {errorMessage}
       </div>
     );

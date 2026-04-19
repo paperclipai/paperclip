@@ -1,15 +1,8 @@
 import { useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import type { AdapterConfigFieldsProps } from "../types";
-import {
-  Field,
-  DraftInput,
-  help,
-} from "../../components/agent-config-primitives";
-import {
-  PayloadTemplateJsonField,
-  RuntimeServicesJsonField,
-} from "../runtime-json-fields";
+import { Field, DraftInput, help } from "../../components/agent-config-primitives";
+import { PayloadTemplateJsonField, RuntimeServicesJsonField } from "../runtime-json-fields";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -56,26 +49,19 @@ function parseScopes(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-export function OpenClawGatewayConfigFields({
-  isCreate,
-  values,
-  set,
-  config,
-  eff,
-  mark,
-}: AdapterConfigFieldsProps) {
+export function OpenClawGatewayConfigFields({ isCreate, values, set, config, eff, mark }: AdapterConfigFieldsProps) {
   const configuredHeaders =
     config.headers && typeof config.headers === "object" && !Array.isArray(config.headers)
       ? (config.headers as Record<string, unknown>)
       : {};
-  const effectiveHeaders =
-    (eff("adapterConfig", "headers", configuredHeaders) as Record<string, unknown>) ?? {};
+  const effectiveHeaders = (eff("adapterConfig", "headers", configuredHeaders) as Record<string, unknown>) ?? {};
 
-  const effectiveGatewayToken = typeof effectiveHeaders["x-openclaw-token"] === "string"
-    ? String(effectiveHeaders["x-openclaw-token"])
-    : typeof effectiveHeaders["x-openclaw-auth"] === "string"
-      ? String(effectiveHeaders["x-openclaw-auth"])
-      : "";
+  const effectiveGatewayToken =
+    typeof effectiveHeaders["x-openclaw-token"] === "string"
+      ? String(effectiveHeaders["x-openclaw-token"])
+      : typeof effectiveHeaders["x-openclaw-auth"] === "string"
+        ? String(effectiveHeaders["x-openclaw-auth"])
+        : "";
 
   const commitGatewayToken = (rawValue: string) => {
     const nextValue = rawValue.trim();
@@ -90,63 +76,43 @@ export function OpenClawGatewayConfigFields({
     mark("adapterConfig", "headers", Object.keys(nextHeaders).length > 0 ? nextHeaders : undefined);
   };
 
-  const sessionStrategy = eff(
-    "adapterConfig",
-    "sessionKeyStrategy",
-    String(config.sessionKeyStrategy ?? "fixed"),
-  );
+  const sessionStrategy = eff("adapterConfig", "sessionKeyStrategy", String(config.sessionKeyStrategy ?? "fixed"));
 
   return (
     <>
       <Field label="Gateway URL" hint={help.webhookUrl}>
         <DraftInput
-          value={
-            isCreate
-              ? values!.url
-              : eff("adapterConfig", "url", String(config.url ?? ""))
-          }
-          onCommit={(v) =>
-            isCreate
-              ? set!({ url: v })
-              : mark("adapterConfig", "url", v || undefined)
-          }
+          value={isCreate ? values!.url : eff("adapterConfig", "url", String(config.url ?? ""))}
+          onCommit={(v) => (isCreate ? set!({ url: v }) : mark("adapterConfig", "url", v || undefined))}
           immediate
           className={inputClass}
           placeholder="ws://127.0.0.1:18789"
         />
       </Field>
 
-      <PayloadTemplateJsonField
-        isCreate={isCreate}
-        values={values}
-        set={set}
-        config={config}
-        mark={mark}
-      />
+      <PayloadTemplateJsonField isCreate={isCreate} values={values} set={set} config={config} mark={mark} />
 
-      <RuntimeServicesJsonField
-        isCreate={isCreate}
-        values={values}
-        set={set}
-        config={config}
-        mark={mark}
-      />
+      <RuntimeServicesJsonField isCreate={isCreate} values={values} set={set} config={config} mark={mark} />
 
       {!isCreate && (
         <>
           <Field label="Paperclip API URL override">
             <DraftInput
-              value={
-                eff(
-                  "adapterConfig",
-                  "paperclipApiUrl",
-                  String(config.paperclipApiUrl ?? ""),
-                )
-              }
+              value={eff("adapterConfig", "paperclipApiUrl", String(config.paperclipApiUrl ?? ""))}
               onCommit={(v) => mark("adapterConfig", "paperclipApiUrl", v || undefined)}
               immediate
               className={inputClass}
               placeholder="https://paperclip.example"
+            />
+          </Field>
+
+          <Field label="Claimed API key path">
+            <DraftInput
+              value={eff("adapterConfig", "claimedApiKeyPath", String(config.claimedApiKeyPath ?? ""))}
+              onCommit={(v) => mark("adapterConfig", "claimedApiKeyPath", v || undefined)}
+              immediate
+              className={inputClass}
+              placeholder="~/.openclaw/workspace/paperclip-claimed-api-key.json"
             />
           </Field>
 
@@ -212,11 +178,7 @@ export function OpenClawGatewayConfigFields({
               value={eff("adapterConfig", "waitTimeoutMs", String(config.waitTimeoutMs ?? "120000"))}
               onCommit={(v) => {
                 const parsed = Number.parseInt(v.trim(), 10);
-                mark(
-                  "adapterConfig",
-                  "waitTimeoutMs",
-                  Number.isFinite(parsed) && parsed > 0 ? parsed : undefined,
-                );
+                mark("adapterConfig", "waitTimeoutMs", Number.isFinite(parsed) && parsed > 0 ? parsed : undefined);
               }}
               immediate
               className={inputClass}

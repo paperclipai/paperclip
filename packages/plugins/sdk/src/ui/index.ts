@@ -45,13 +45,7 @@
  * - `useHostContext()` — read the current active company, project, entity, and user IDs
  * - `usePluginStream(channel)` — subscribe to real-time SSE events from the worker
  */
-export {
-  usePluginData,
-  usePluginAction,
-  useHostContext,
-  usePluginStream,
-  usePluginToast,
-} from "./hooks.js";
+export { usePluginData, usePluginAction, useHostContext, usePluginStream, usePluginToast } from "./hooks.js";
 
 // Bridge error and host context types
 export type {

@@ -1,8 +1,6 @@
 import { lazy, Suspense, type ComponentProps } from "react";
 
-const FileEditor = lazy(() =>
-  import("./FileEditor").then((m) => ({ default: m.FileEditor })),
-);
+const FileEditor = lazy(() => import("./FileEditor").then((m) => ({ default: m.FileEditor })));
 
 type FileEditorProps = ComponentProps<typeof FileEditor>;
 

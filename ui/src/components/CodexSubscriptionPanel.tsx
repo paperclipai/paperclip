@@ -7,11 +7,7 @@ interface CodexSubscriptionPanelProps {
   error?: string | null;
 }
 
-const WINDOW_PRIORITY = [
-  "5hlimit",
-  "weeklylimit",
-  "credits",
-] as const;
+const WINDOW_PRIORITY = ["5hlimit", "weeklylimit", "credits"] as const;
 
 function normalizeLabel(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -52,11 +48,7 @@ function isModelSpecific(label: string): boolean {
   return normalized.includes("gpt53codexspark") || normalized.includes("gpt5");
 }
 
-export function CodexSubscriptionPanel({
-  windows,
-  source = null,
-  error = null,
-}: CodexSubscriptionPanelProps) {
+export function CodexSubscriptionPanel({ windows, source = null, error = null }: CodexSubscriptionPanelProps) {
   const ordered = orderedWindows(windows);
   const accountWindows = ordered.filter((window) => !isModelSpecific(window.label));
   const modelWindows = ordered.filter((window) => isModelSpecific(window.label));
@@ -68,9 +60,7 @@ export function CodexSubscriptionPanel({
           <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
             Codex subscription
           </div>
-          <div className="mt-1 text-sm text-muted-foreground">
-            Live Codex quota windows.
-          </div>
+          <div className="mt-1 text-sm text-muted-foreground">Live Codex quota windows.</div>
         </div>
         {source ? (
           <span className="shrink-0 border border-border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
@@ -125,9 +115,7 @@ function QuotaWindowRow({ window }: { window: QuotaWindow }) {
             <div className="text-sm font-semibold tabular-nums text-foreground">{window.valueLabel}</div>
           ) : null}
         </div>
-        {detail ? (
-          <div className="mt-2 text-xs text-muted-foreground">{detail}</div>
-        ) : null}
+        {detail ? <div className="mt-2 text-xs text-muted-foreground">{detail}</div> : null}
       </div>
     );
   }
@@ -137,13 +125,9 @@ function QuotaWindowRow({ window }: { window: QuotaWindow }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-medium text-foreground">{window.label}</div>
-          {detail ? (
-            <div className="mt-1 text-xs text-muted-foreground">{detail}</div>
-          ) : null}
+          {detail ? <div className="mt-1 text-xs text-muted-foreground">{detail}</div> : null}
         </div>
-        <div className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
-          {window.usedPercent}% used
-        </div>
+        <div className="shrink-0 text-sm font-semibold tabular-nums text-foreground">{window.usedPercent}% used</div>
       </div>
 
       <div className="mt-3 h-2 overflow-hidden bg-muted">

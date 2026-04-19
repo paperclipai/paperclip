@@ -20,7 +20,7 @@ function isSafeIdentifier(value: string): boolean {
 
 function quoteIdentifier(value: string): string {
   if (!isSafeIdentifier(value)) throw new Error(`Unsafe SQL identifier: ${value}`);
-  return `"${value.replaceAll("\"", "\"\"")}"`;
+  return `"${value.replaceAll('"', '""')}"`;
 }
 
 function quoteLiteral(value: string): string {
@@ -141,10 +141,7 @@ async function runInTransaction(sql: SqlExecutor, action: () => Promise<void>): 
   }
 }
 
-async function latestMigrationCreatedAt(
-  sql: SqlExecutor,
-  qualifiedTable: string,
-): Promise<number | null> {
+async function latestMigrationCreatedAt(sql: SqlExecutor, qualifiedTable: string): Promise<number | null> {
   const rows = await sql.unsafe<{ created_at: string | number | null }[]>(
     `SELECT created_at FROM ${qualifiedTable} ORDER BY created_at DESC NULLS LAST LIMIT 1`,
   );
@@ -216,24 +213,20 @@ async function recordMigrationHistoryEntry(
   }
   if (columnNames.has("created_at")) {
     const latestCreatedAt = await latestMigrationCreatedAt(sql, qualifiedTable);
-    const createdAt = latestCreatedAt === null
-      ? normalizeFolderMillis(folderMillis)
-      : Math.max(latestCreatedAt + 1, normalizeFolderMillis(folderMillis));
+    const createdAt =
+      latestCreatedAt === null
+        ? normalizeFolderMillis(folderMillis)
+        : Math.max(latestCreatedAt + 1, normalizeFolderMillis(folderMillis));
     insertColumns.push(quoteIdentifier("created_at"));
     insertValues.push(quoteLiteral(String(createdAt)));
   }
 
   if (insertColumns.length === 0) return;
 
-  await sql.unsafe(
-    `INSERT INTO ${qualifiedTable} (${insertColumns.join(", ")}) VALUES (${insertValues.join(", ")})`,
-  );
+  await sql.unsafe(`INSERT INTO ${qualifiedTable} (${insertColumns.join(", ")}) VALUES (${insertValues.join(", ")})`);
 }
 
-async function applyPendingMigrationsManually(
-  url: string,
-  pendingMigrations: string[],
-): Promise<void> {
+async function applyPendingMigrationsManually(url: string, pendingMigrations: string[]): Promise<void> {
   if (pendingMigrations.length === 0) return;
 
   const orderedPendingMigrations = await orderMigrationsByJournal(pendingMigrations);
@@ -250,13 +243,7 @@ async function applyPendingMigrationsManually(
     for (const migrationFile of orderedPendingMigrations) {
       const migrationContent = await readMigrationFileContent(migrationFile);
       const hash = createHash("sha256").update(migrationContent).digest("hex");
-      const existingEntry = await migrationHistoryEntryExists(
-        sql,
-        qualifiedTable,
-        columnNames,
-        migrationFile,
-        hash,
-      );
+      const existingEntry = await migrationHistoryEntryExists(sql, qualifiedTable, columnNames, migrationFile, hash);
       if (existingEntry) continue;
 
       await runInTransaction(sql, async () => {
@@ -308,10 +295,7 @@ async function getMigrationTableColumnNames(
   return new Set(columns.map((column) => column.column_name));
 }
 
-async function tableExists(
-  sql: ReturnType<typeof postgres>,
-  tableName: string,
-): Promise<boolean> {
+async function tableExists(sql: ReturnType<typeof postgres>, tableName: string): Promise<boolean> {
   const rows = await sql<{ exists: boolean }[]>`
     SELECT EXISTS (
       SELECT 1
@@ -323,11 +307,7 @@ async function tableExists(
   return rows[0]?.exists ?? false;
 }
 
-async function columnExists(
-  sql: ReturnType<typeof postgres>,
-  tableName: string,
-  columnName: string,
-): Promise<boolean> {
+async function columnExists(sql: ReturnType<typeof postgres>, tableName: string, columnName: string): Promise<boolean> {
   const rows = await sql<{ exists: boolean }[]>`
     SELECT EXISTS (
       SELECT 1
@@ -340,10 +320,7 @@ async function columnExists(
   return rows[0]?.exists ?? false;
 }
 
-async function indexExists(
-  sql: ReturnType<typeof postgres>,
-  indexName: string,
-): Promise<boolean> {
+async function indexExists(sql: ReturnType<typeof postgres>, indexName: string): Promise<boolean> {
   const rows = await sql<{ exists: boolean }[]>`
     SELECT EXISTS (
       SELECT 1
@@ -357,10 +334,7 @@ async function indexExists(
   return rows[0]?.exists ?? false;
 }
 
-async function constraintExists(
-  sql: ReturnType<typeof postgres>,
-  constraintName: string,
-): Promise<boolean> {
+async function constraintExists(sql: ReturnType<typeof postgres>, constraintName: string): Promise<boolean> {
   const rows = await sql<{ exists: boolean }[]>`
     SELECT EXISTS (
       SELECT 1
@@ -373,10 +347,7 @@ async function constraintExists(
   return rows[0]?.exists ?? false;
 }
 
-async function migrationStatementAlreadyApplied(
-  sql: ReturnType<typeof postgres>,
-  statement: string,
-): Promise<boolean> {
+async function migrationStatementAlreadyApplied(sql: ReturnType<typeof postgres>, statement: string): Promise<boolean> {
   const normalized = statement.replace(/\s+/g, " ").trim();
 
   const createTableMatch = normalized.match(/^CREATE TABLE(?: IF NOT EXISTS)? "([^"]+)"/i);
@@ -384,9 +355,7 @@ async function migrationStatementAlreadyApplied(
     return tableExists(sql, createTableMatch[1]);
   }
 
-  const addColumnMatch = normalized.match(
-    /^ALTER TABLE "([^"]+)" ADD COLUMN(?: IF NOT EXISTS)? "([^"]+)"/i,
-  );
+  const addColumnMatch = normalized.match(/^ALTER TABLE "([^"]+)" ADD COLUMN(?: IF NOT EXISTS)? "([^"]+)"/i);
   if (addColumnMatch) {
     return columnExists(sql, addColumnMatch[1], addColumnMatch[2]);
   }
@@ -483,9 +452,7 @@ export type MigrationHistoryReconcileResult = {
   remainingMigrations: string[];
 };
 
-export async function reconcilePendingMigrationHistory(
-  url: string,
-): Promise<MigrationHistoryReconcileResult> {
+export async function reconcilePendingMigrationHistory(url: string): Promise<MigrationHistoryReconcileResult> {
   const state = await inspectMigrations(url);
   if (state.status !== "needsMigrations" || state.reason !== "pending-migrations") {
     return { repairedMigrations: [], remainingMigrations: [] };
@@ -525,14 +492,22 @@ export async function reconcilePendingMigrationHistory(
       if (existingByHash.length > 0 || existingByName.length > 0) {
         if (columnNames.has("created_at")) {
           const existingHashCreatedAt = Number(existingByHash[0]?.created_at ?? -1);
-          if (existingByHash.length > 0 && Number.isFinite(existingHashCreatedAt) && existingHashCreatedAt < folderMillis) {
+          if (
+            existingByHash.length > 0 &&
+            Number.isFinite(existingHashCreatedAt) &&
+            existingHashCreatedAt < folderMillis
+          ) {
             await sql.unsafe(
               `UPDATE ${qualifiedTable} SET created_at = ${quoteLiteral(String(folderMillis))} WHERE hash = ${quoteLiteral(hash)} AND created_at < ${quoteLiteral(String(folderMillis))}`,
             );
           }
 
           const existingNameCreatedAt = Number(existingByName[0]?.created_at ?? -1);
-          if (existingByName.length > 0 && Number.isFinite(existingNameCreatedAt) && existingNameCreatedAt < folderMillis) {
+          if (
+            existingByName.length > 0 &&
+            Number.isFinite(existingNameCreatedAt) &&
+            existingNameCreatedAt < folderMillis
+          ) {
             await sql.unsafe(
               `UPDATE ${qualifiedTable} SET created_at = ${quoteLiteral(String(folderMillis))} WHERE name = ${quoteLiteral(migrationFile)} AND created_at < ${quoteLiteral(String(folderMillis))}`,
             );
@@ -573,8 +548,7 @@ export async function reconcilePendingMigrationHistory(
   const refreshed = await inspectMigrations(url);
   return {
     repairedMigrations,
-    remainingMigrations:
-      refreshed.status === "needsMigrations" ? refreshed.pendingMigrations : [],
+    remainingMigrations: refreshed.status === "needsMigrations" ? refreshed.pendingMigrations : [],
   };
 }
 
@@ -683,9 +657,7 @@ export async function applyPendingMigrations(url: string): Promise<void> {
       }
     }
     if (bootstrappedState.status === "upToDate") return;
-    throw new Error(
-      `Failed to bootstrap migrations: ${bootstrappedState.pendingMigrations.join(", ")}`,
-    );
+    throw new Error(`Failed to bootstrap migrations: ${bootstrappedState.pendingMigrations.join(", ")}`);
   }
 
   if (initialState.reason === "no-migration-journal-non-empty-db") {
@@ -704,16 +676,16 @@ export async function applyPendingMigrations(url: string): Promise<void> {
   }
 
   if (state.status !== "needsMigrations" || state.reason !== "pending-migrations") {
-    throw new Error("Migrations are still pending after migration-history reconciliation; run inspectMigrations for details.");
+    throw new Error(
+      "Migrations are still pending after migration-history reconciliation; run inspectMigrations for details.",
+    );
   }
 
   await applyPendingMigrationsManually(url, state.pendingMigrations);
 
   const finalState = await inspectMigrations(url);
   if (finalState.status !== "upToDate") {
-    throw new Error(
-      `Failed to apply pending migrations: ${finalState.pendingMigrations.join(", ")}`,
-    );
+    throw new Error(`Failed to apply pending migrations: ${finalState.pendingMigrations.join(", ")}`);
   }
 }
 
@@ -754,10 +726,7 @@ export async function migratePostgresIfEmpty(url: string): Promise<MigrationBoot
   }
 }
 
-export async function ensurePostgresDatabase(
-  url: string,
-  databaseName: string,
-): Promise<"created" | "exists"> {
+export async function ensurePostgresDatabase(url: string, databaseName: string): Promise<"created" | "exists"> {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(databaseName)) {
     throw new Error(`Unsafe database name: ${databaseName}`);
   }
@@ -769,7 +738,9 @@ export async function ensurePostgresDatabase(
     `;
     if (existing.length > 0) return "exists";
 
-    await sql.unsafe(`create database "${databaseName}" encoding 'UTF8' lc_collate 'C' lc_ctype 'C' template template0`);
+    await sql.unsafe(
+      `create database "${databaseName}" encoding 'UTF8' lc_collate 'C' lc_ctype 'C' template template0`,
+    );
     return "created";
   } finally {
     await sql.end();

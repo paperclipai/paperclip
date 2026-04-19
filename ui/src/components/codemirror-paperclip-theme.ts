@@ -9,8 +9,7 @@ export const paperclipDarkTheme = EditorView.theme(
     "&": {
       backgroundColor: "oklch(0.145 0 0)", // --background (dark)
       color: "oklch(0.985 0 0)", // --foreground (dark)
-      fontFamily:
-        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+      fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
       fontSize: "14px",
     },
     ".cm-content": {
@@ -52,8 +51,7 @@ export const paperclipLightTheme = EditorView.theme(
     "&": {
       backgroundColor: "oklch(1 0 0)", // --background (light)
       color: "oklch(0.145 0 0)", // --foreground (light)
-      fontFamily:
-        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+      fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
       fontSize: "14px",
     },
     ".cm-content": {

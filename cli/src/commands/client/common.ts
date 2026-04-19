@@ -56,16 +56,11 @@ export function resolveCommandContext(
     inferApiBaseFromConfig(options.config);
 
   const explicitApiKey =
-    options.apiKey?.trim() ||
-    process.env.PAPERCLIP_API_KEY?.trim() ||
-    readKeyFromProfileEnv(profile);
+    options.apiKey?.trim() || process.env.PAPERCLIP_API_KEY?.trim() || readKeyFromProfileEnv(profile);
   const storedBoardCredential = explicitApiKey ? null : getStoredBoardCredential(apiBase);
   const apiKey = explicitApiKey || storedBoardCredential?.token;
 
-  const companyId =
-    options.companyId?.trim() ||
-    process.env.PAPERCLIP_COMPANY_ID?.trim() ||
-    profile.companyId;
+  const companyId = options.companyId?.trim() || process.env.PAPERCLIP_COMPANY_ID?.trim() || profile.companyId;
 
   if (opts?.requireCompany && !companyId) {
     throw new Error(
@@ -76,23 +71,24 @@ export function resolveCommandContext(
   const api = new PaperclipApiClient({
     apiBase,
     apiKey,
-    recoverAuth: explicitApiKey || !canAttemptInteractiveBoardAuth()
-      ? undefined
-      : async ({ error }) => {
-          const requestedAccess = error.message.includes("Instance admin required")
-            ? "instance_admin_required"
-            : "board";
-          if (!shouldRecoverBoardAuth(error)) {
-            return null;
-          }
-          const login = await loginBoardCli({
-            apiBase,
-            requestedAccess,
-            requestedCompanyId: companyId ?? null,
-            command: buildCliCommandLabel(),
-          });
-          return login.token;
-        },
+    recoverAuth:
+      explicitApiKey || !canAttemptInteractiveBoardAuth()
+        ? undefined
+        : async ({ error }) => {
+            const requestedAccess = error.message.includes("Instance admin required")
+              ? "instance_admin_required"
+              : "board";
+            if (!shouldRecoverBoardAuth(error)) {
+              return null;
+            }
+            const login = await loginBoardCli({
+              apiBase,
+              requestedAccess,
+              requestedCompanyId: companyId ?? null,
+              command: buildCliCommandLabel(),
+            });
+            return login.token;
+          },
   });
   return {
     api,

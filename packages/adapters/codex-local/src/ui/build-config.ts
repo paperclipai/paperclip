@@ -1,8 +1,5 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
-import {
-  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL,
-} from "../index.js";
+import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX, DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 
 function parseCommaArgs(value: string): string[] {
   return value
@@ -45,9 +42,7 @@ function parseEnvBindings(bindings: unknown): Record<string, unknown> {
       env[key] = {
         type: "secret_ref",
         secretId: rec.secretId,
-        ...(typeof rec.version === "number" || rec.version === "latest"
-          ? { version: rec.version }
-          : {}),
+        ...(typeof rec.version === "number" || rec.version === "latest" ? { version: rec.version } : {}),
       };
     }
   }
@@ -85,6 +80,7 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   }
   if (Object.keys(env).length > 0) ac.env = env;
   ac.search = v.search;
+  ac.fastMode = v.fastMode;
   ac.dangerouslyBypassApprovalsAndSandbox =
     typeof v.dangerouslyBypassSandbox === "boolean"
       ? v.dangerouslyBypassSandbox

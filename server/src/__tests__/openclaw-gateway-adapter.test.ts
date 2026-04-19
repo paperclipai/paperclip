@@ -2,10 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { execute, testEnvironment } from "@paperclipai/adapter-openclaw-gateway/server";
-import {
-  buildOpenClawGatewayConfig,
-  parseOpenClawGatewayStdoutLine,
-} from "@paperclipai/adapter-openclaw-gateway/ui";
+import { buildOpenClawGatewayConfig, parseOpenClawGatewayStdoutLine } from "@paperclipai/adapter-openclaw-gateway/ui";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
 function buildContext(
@@ -39,9 +36,7 @@ function buildContext(
   };
 }
 
-async function createMockGatewayServer(options?: {
-  waitPayload?: Record<string, unknown>;
-}) {
+async function createMockGatewayServer(options?: { waitPayload?: Record<string, unknown> }) {
   const server = createServer();
   const wss = new WebSocketServer({ server });
 
@@ -88,10 +83,7 @@ async function createMockGatewayServer(options?: {
 
       if (frame.method === "agent") {
         agentPayload = frame.params ?? null;
-        const runId =
-          typeof frame.params?.idempotencyKey === "string"
-            ? frame.params.idempotencyKey
-            : "run-123";
+        const runId = typeof frame.params?.idempotencyKey === "string" ? frame.params.idempotencyKey : "run-123";
 
         socket.send(
           JSON.stringify({
@@ -178,7 +170,7 @@ async function createMockGatewayServerWithPairing() {
 
   let agentPayload: Record<string, unknown> | null = null;
   let approved = false;
-  let pendingRequestId = "req-1";
+  const pendingRequestId = "req-1";
   let lastSeenDeviceId: string | null = null;
 
   wss.on("connection", (socket) => {
@@ -304,10 +296,7 @@ async function createMockGatewayServerWithPairing() {
 
       if (frame.method === "agent") {
         agentPayload = frame.params ?? null;
-        const runId =
-          typeof frame.params?.idempotencyKey === "string"
-            ? frame.params.idempotencyKey
-            : "run-123";
+        const runId = typeof frame.params?.idempotencyKey === "string" ? frame.params.idempotencyKey : "run-123";
 
         socket.send(
           JSON.stringify({
@@ -381,8 +370,7 @@ afterEach(() => {
 describe("openclaw gateway ui stdout parser", () => {
   it("parses assistant deltas from gateway event lines", () => {
     const ts = "2026-03-06T15:00:00.000Z";
-    const line =
-      '[openclaw-gateway:event] run=run-1 stream=assistant data={"delta":"hello"}';
+    const line = '[openclaw-gateway:event] run=run-1 stream=assistant data={"delta":"hello"}';
 
     expect(parseOpenClawGatewayStdoutLine(line, ts)).toEqual([
       {
@@ -439,6 +427,43 @@ describe("openclaw gateway adapter execute", () => {
                   lifecycle: "ephemeral",
                 },
               ],
+              paperclipWake: {
+                reason: "issue_commented",
+                issue: {
+                  id: "issue-123",
+                  identifier: "PAP-874",
+                  title: "chat-speed issues",
+                  status: "in_progress",
+                  priority: "medium",
+                },
+                commentIds: ["comment-1", "comment-2"],
+                latestCommentId: "comment-2",
+                comments: [
+                  {
+                    id: "comment-1",
+                    issueId: "issue-123",
+                    body: "First comment",
+                    bodyTruncated: false,
+                    createdAt: "2026-03-28T14:35:00.000Z",
+                    author: { type: "user", id: "user-1" },
+                  },
+                  {
+                    id: "comment-2",
+                    issueId: "issue-123",
+                    body: "Second comment",
+                    bodyTruncated: false,
+                    createdAt: "2026-03-28T14:35:10.000Z",
+                    author: { type: "user", id: "user-1" },
+                  },
+                ],
+                commentWindow: {
+                  requestedCount: 2,
+                  includedCount: 2,
+                  missingCount: 0,
+                },
+                truncated: false,
+                fallbackFetchNeeded: false,
+              },
             },
           },
         ),
@@ -456,6 +481,21 @@ describe("openclaw gateway adapter execute", () => {
       expect(String(payload?.message ?? "")).toContain("wake now");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
+      expect(String(payload?.message ?? "")).toContain("## Paperclip Wake Payload");
+      expect(String(payload?.message ?? "")).toContain(
+        "Treat this wake payload as the highest-priority change for the current heartbeat.",
+      );
+      expect(String(payload?.message ?? "")).toContain(
+        "Do not switch to another issue until you have handled this wake.",
+      );
+      expect(String(payload?.message ?? "")).toContain("First comment");
+      expect(String(payload?.message ?? "")).toContain('"commentIds":["comment-1","comment-2"]');
+      expect(payload?.paperclip).toMatchObject({
+        wake: {
+          latestCommentId: "comment-2",
+          commentIds: ["comment-1", "comment-2"],
+        },
+      });
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
     } finally {

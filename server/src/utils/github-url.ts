@@ -73,7 +73,10 @@ export interface ParsedGitHubCompanyUrl extends ParsedGitHubSourceUrl {
 
 function normalizeSourcePath(value: string | null | undefined): string {
   if (!value) return "";
-  return value.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  return value
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "");
 }
 
 /**
@@ -136,10 +139,7 @@ export function parseGitHubCompanyUrl(rawUrl: string): ParsedGitHubCompanyUrl {
   const queryCompanyPath = normalizeSourcePath(url.searchParams.get("companyPath"));
 
   if (queryRef || queryPath || queryCompanyPath) {
-    const companyPath =
-      queryCompanyPath ||
-      [queryPath, "COMPANY.md"].filter(Boolean).join("/") ||
-      "COMPANY.md";
+    const companyPath = queryCompanyPath || [queryPath, "COMPANY.md"].filter(Boolean).join("/") || "COMPANY.md";
     let basePath = queryPath;
     if (!basePath && companyPath !== "COMPANY.md") {
       basePath = path.posix.dirname(companyPath);
@@ -176,12 +176,7 @@ export function parseGitHubCompanyUrl(rawUrl: string): ParsedGitHubCompanyUrl {
 /**
  * Build a raw.githubusercontent.com URL for fetching file content directly.
  */
-export function buildRawGitHubUrl(
-  owner: string,
-  repo: string,
-  ref: string,
-  filePath: string,
-): string {
+export function buildRawGitHubUrl(owner: string, repo: string, ref: string, filePath: string): string {
   const normalized = filePath.replace(/^\/+/, "");
   return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${normalized}`;
 }

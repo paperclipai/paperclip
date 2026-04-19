@@ -68,6 +68,7 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "issue.comments.create": ["issue.comments.create"],
   "activity.log": ["activity.log.write"],
   "metrics.write": ["metrics.write"],
+  "telemetry.track": ["telemetry.track"],
 
   // Plugin state operations
   "plugin.state.get": ["plugin.state.read"],
@@ -114,10 +115,7 @@ const UI_SLOT_CAPABILITIES: Record<PluginUiSlotType, PluginCapability> = {
  * Launcher placement zones align with host UI surfaces and therefore inherit
  * the same capability requirements as the equivalent slot type.
  */
-const LAUNCHER_PLACEMENT_CAPABILITIES: Record<
-  PluginLauncherPlacementZone,
-  PluginCapability
-> = {
+const LAUNCHER_PLACEMENT_CAPABILITIES: Record<PluginLauncherPlacementZone, PluginCapability> = {
   page: "ui.page.register",
   detailTab: "ui.detailTab.register",
   taskDetailView: "ui.detailTab.register",
@@ -165,26 +163,17 @@ export interface PluginCapabilityValidator {
   /**
    * Check whether a plugin has a specific capability.
    */
-  hasCapability(
-    manifest: PaperclipPluginManifestV1,
-    capability: PluginCapability,
-  ): boolean;
+  hasCapability(manifest: PaperclipPluginManifestV1, capability: PluginCapability): boolean;
 
   /**
    * Check whether a plugin has all of the specified capabilities.
    */
-  hasAllCapabilities(
-    manifest: PaperclipPluginManifestV1,
-    capabilities: PluginCapability[],
-  ): CapabilityCheckResult;
+  hasAllCapabilities(manifest: PaperclipPluginManifestV1, capabilities: PluginCapability[]): CapabilityCheckResult;
 
   /**
    * Check whether a plugin has at least one of the specified capabilities.
    */
-  hasAnyCapability(
-    manifest: PaperclipPluginManifestV1,
-    capabilities: PluginCapability[],
-  ): boolean;
+  hasAnyCapability(manifest: PaperclipPluginManifestV1, capabilities: PluginCapability[]): boolean;
 
   /**
    * Check whether a plugin is allowed to perform the named operation.
@@ -192,36 +181,24 @@ export interface PluginCapabilityValidator {
    * Operations are mapped to required capabilities via OPERATION_CAPABILITIES.
    * Unknown operations are rejected by default.
    */
-  checkOperation(
-    manifest: PaperclipPluginManifestV1,
-    operation: string,
-  ): CapabilityCheckResult;
+  checkOperation(manifest: PaperclipPluginManifestV1, operation: string): CapabilityCheckResult;
 
   /**
    * Assert that a plugin is allowed to perform an operation.
    * Throws a 403 HttpError if the capability check fails.
    */
-  assertOperation(
-    manifest: PaperclipPluginManifestV1,
-    operation: string,
-  ): void;
+  assertOperation(manifest: PaperclipPluginManifestV1, operation: string): void;
 
   /**
    * Assert that a plugin has a specific capability.
    * Throws a 403 HttpError if the capability is missing.
    */
-  assertCapability(
-    manifest: PaperclipPluginManifestV1,
-    capability: PluginCapability,
-  ): void;
+  assertCapability(manifest: PaperclipPluginManifestV1, capability: PluginCapability): void;
 
   /**
    * Check whether a plugin can register the given UI slot type.
    */
-  checkUiSlot(
-    manifest: PaperclipPluginManifestV1,
-    slotType: PluginUiSlotType,
-  ): CapabilityCheckResult;
+  checkUiSlot(manifest: PaperclipPluginManifestV1, slotType: PluginUiSlotType): CapabilityCheckResult;
 
   /**
    * Validate that a manifest's declared capabilities are consistent with its
@@ -230,9 +207,7 @@ export interface PluginCapabilityValidator {
    * Returns all missing capabilities rather than failing on the first one.
    * This is useful for install-time validation to give comprehensive feedback.
    */
-  validateManifestCapabilities(
-    manifest: PaperclipPluginManifestV1,
-  ): CapabilityCheckResult;
+  validateManifestCapabilities(manifest: PaperclipPluginManifestV1): CapabilityCheckResult;
 
   /**
    * Get the capabilities required for a named operation.
@@ -322,10 +297,7 @@ export function pluginCapabilityValidator(): PluginCapabilityValidator {
       const required = OPERATION_CAPABILITIES[operation];
 
       if (!required) {
-        log.warn(
-          { pluginId: manifest.id, operation },
-          "capability check for unknown operation – rejecting by default",
-        );
+        log.warn({ pluginId: manifest.id, operation }, "capability check for unknown operation – rejecting by default");
         return {
           allowed: false,
           missing: [],
@@ -338,10 +310,7 @@ export function pluginCapabilityValidator(): PluginCapabilityValidator {
       const missing = required.filter((cap) => !declared.has(cap));
 
       if (missing.length > 0) {
-        log.debug(
-          { pluginId: manifest.id, operation, missing },
-          "capability check failed",
-        );
+        log.debug({ pluginId: manifest.id, operation, missing }, "capability check failed");
       }
 
       return {
@@ -355,18 +324,17 @@ export function pluginCapabilityValidator(): PluginCapabilityValidator {
     assertOperation(manifest, operation) {
       const result = this.checkOperation(manifest, operation);
       if (!result.allowed) {
-        const msg = result.missing.length > 0
-          ? buildForbiddenMessage(manifest, operation, result.missing)
-          : `Plugin '${manifest.id}' attempted unknown operation '${operation}'`;
+        const msg =
+          result.missing.length > 0
+            ? buildForbiddenMessage(manifest, operation, result.missing)
+            : `Plugin '${manifest.id}' attempted unknown operation '${operation}'`;
         throw forbidden(msg);
       }
     },
 
     assertCapability(manifest, capability) {
       if (!this.hasCapability(manifest, capability)) {
-        throw forbidden(
-          `Plugin '${manifest.id}' lacks required capability '${capability}'`,
-        );
+        throw forbidden(`Plugin '${manifest.id}' lacks required capability '${capability}'`);
       }
     },
 
@@ -418,10 +386,7 @@ export function pluginCapabilityValidator(): PluginCapabilityValidator {
       }
 
       // Check launcher declarations → required capabilities
-      const launchers = [
-        ...(manifest.launchers ?? []),
-        ...(manifest.ui?.launchers ?? []),
-      ];
+      const launchers = [...(manifest.launchers ?? []), ...(manifest.ui?.launchers ?? [])];
       if (launchers.length > 0) {
         for (const launcher of launchers) {
           const requiredCap = LAUNCHER_PLACEMENT_CAPABILITIES[launcher.placementZone];

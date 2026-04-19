@@ -3,7 +3,10 @@ import { sendMessage, escapeMarkdownV2 } from "./telegram-api.js";
 import { METRIC_NAMES } from "./constants.js";
 import type { Watch, WatchCondition, RegisterWatchParams } from "./types.js";
 
-const BUILTIN_TEMPLATES: Record<string, Omit<Watch, "watchId" | "chatId" | "threadId" | "companyId" | "createdBy" | "createdAt">> = {
+const BUILTIN_TEMPLATES: Record<
+  string,
+  Omit<Watch, "watchId" | "chatId" | "threadId" | "companyId" | "createdBy" | "createdAt">
+> = {
   "invoice-overdue": {
     name: "Invoice Overdue",
     description: "Alert when invoices are past due",
@@ -44,10 +47,30 @@ export async function handleRegisterWatch(ctx: PluginContext, params: RegisterWa
 
   if (useBuiltin && BUILTIN_TEMPLATES[useBuiltin]) {
     const builtin = BUILTIN_TEMPLATES[useBuiltin];
-    watch = { ...builtin, watchId, chatId, threadId, companyId, createdBy: "agent", createdAt: new Date().toISOString() };
+    watch = {
+      ...builtin,
+      watchId,
+      chatId,
+      threadId,
+      companyId,
+      createdBy: "agent",
+      createdAt: new Date().toISOString(),
+    };
   } else {
     if (!template) return { error: "'template' is required for custom watches" };
-    watch = { watchId, name, description, entityType, conditions, template, chatId, threadId, companyId, createdBy: "agent", createdAt: new Date().toISOString() };
+    watch = {
+      watchId,
+      name,
+      description,
+      entityType,
+      conditions,
+      template,
+      chatId,
+      threadId,
+      companyId,
+      createdBy: "agent",
+      createdAt: new Date().toISOString(),
+    };
   }
 
   const watches = await getWatchRegistry(ctx, companyId);
@@ -56,7 +79,11 @@ export async function handleRegisterWatch(ctx: PluginContext, params: RegisterWa
   return { content: JSON.stringify({ status: "registered", watchId, name: watch.name }) };
 }
 
-export async function checkWatches(ctx: PluginContext, token: string, config: { maxSuggestionsPerHourPerCompany: number; watchDeduplicationWindowMs: number }) {
+export async function checkWatches(
+  ctx: PluginContext,
+  token: string,
+  config: { maxSuggestionsPerHourPerCompany: number; watchDeduplicationWindowMs: number },
+) {
   const companies = await ctx.companies.list();
   for (const company of companies) {
     try {
@@ -67,7 +94,12 @@ export async function checkWatches(ctx: PluginContext, token: string, config: { 
   }
 }
 
-async function checkWatchesForCompany(ctx: PluginContext, token: string, companyId: string, config: { maxSuggestionsPerHourPerCompany: number; watchDeduplicationWindowMs: number }) {
+async function checkWatchesForCompany(
+  ctx: PluginContext,
+  token: string,
+  companyId: string,
+  config: { maxSuggestionsPerHourPerCompany: number; watchDeduplicationWindowMs: number },
+) {
   const watches = await getWatchRegistry(ctx, companyId);
   if (watches.length === 0) return;
 
@@ -87,10 +119,16 @@ async function checkWatchesForCompany(ctx: PluginContext, token: string, company
         const isDuplicate = await checkDedup(ctx, watch.watchId, entity.id, config.watchDeduplicationWindowMs);
         if (isDuplicate) continue;
         const message = interpolateTemplate(watch.template, entity);
-        await sendMessage(ctx, token, watch.chatId, `${escapeMarkdownV2("\u{1f4a1}")} *Suggestion:* ${escapeMarkdownV2(watch.name)}\n\n${escapeMarkdownV2(message)}`, {
-          parseMode: "MarkdownV2",
-          messageThreadId: watch.threadId,
-        });
+        await sendMessage(
+          ctx,
+          token,
+          watch.chatId,
+          `${escapeMarkdownV2("\u{1f4a1}")} *Suggestion:* ${escapeMarkdownV2(watch.name)}\n\n${escapeMarkdownV2(message)}`,
+          {
+            parseMode: "MarkdownV2",
+            messageThreadId: watch.threadId,
+          },
+        );
         await recordSuggestion(ctx, watch.watchId, entity.id);
         sentThisRun++;
         watch.lastTriggeredAt = new Date().toISOString();
@@ -118,19 +156,25 @@ async function evaluateWatch(ctx: PluginContext, watch: Watch, companyId: string
     case "issue": {
       const issues = await ctx.issues.list({ companyId, limit: 100 });
       for (const issue of issues) {
-        if (matchesConditions(issue as unknown as Record<string, unknown>, watch.conditions)) matches.push({ id: issue.id, ...(issue as unknown as Record<string, unknown>) });
+        if (matchesConditions(issue as unknown as Record<string, unknown>, watch.conditions))
+          matches.push({ id: issue.id, ...(issue as unknown as Record<string, unknown>) });
       }
       break;
     }
     case "agent": {
       const agents = await ctx.agents.list({ companyId });
       for (const agent of agents) {
-        if (matchesConditions(agent as unknown as Record<string, unknown>, watch.conditions)) matches.push({ id: agent.id, ...(agent as unknown as Record<string, unknown>) });
+        if (matchesConditions(agent as unknown as Record<string, unknown>, watch.conditions))
+          matches.push({ id: agent.id, ...(agent as unknown as Record<string, unknown>) });
       }
       break;
     }
     case "custom": {
-      const customData = await ctx.state.get({ scopeKind: "company", scopeId: companyId, stateKey: `watch_data_${watch.watchId}` });
+      const customData = await ctx.state.get({
+        scopeKind: "company",
+        scopeId: companyId,
+        stateKey: `watch_data_${watch.watchId}`,
+      });
       if (customData) {
         for (const item of customData as Array<Record<string, unknown>>) {
           if (matchesConditions(item, watch.conditions)) matches.push({ id: String(item.id ?? "unknown"), ...item });
@@ -151,12 +195,24 @@ function matchesConditions(record: Record<string, unknown>, conditions: WatchCon
     if (compareValue === "{{now}}") compareValue = new Date().toISOString();
     if (compareValue === "{{7daysAgo}}") compareValue = new Date(sevenDaysAgo).toISOString();
     switch (condition.operator) {
-      case "eq": if (fieldValue !== compareValue) return false; break;
-      case "ne": if (fieldValue === compareValue) return false; break;
-      case "gt": if (!(Number(fieldValue) > Number(compareValue))) return false; break;
-      case "lt": if (!(String(fieldValue) < String(compareValue))) return false; break;
-      case "contains": if (!String(fieldValue ?? "").includes(String(compareValue))) return false; break;
-      case "exists": if ((fieldValue == null) !== !compareValue) return false; break;
+      case "eq":
+        if (fieldValue !== compareValue) return false;
+        break;
+      case "ne":
+        if (fieldValue === compareValue) return false;
+        break;
+      case "gt":
+        if (!(Number(fieldValue) > Number(compareValue))) return false;
+        break;
+      case "lt":
+        if (!(String(fieldValue) < String(compareValue))) return false;
+        break;
+      case "contains":
+        if (!String(fieldValue ?? "").includes(String(compareValue))) return false;
+        break;
+      case "exists":
+        if ((fieldValue == null) !== !compareValue) return false;
+        break;
     }
   }
   return true;
@@ -171,13 +227,18 @@ function interpolateTemplate(template: string, entity: Record<string, unknown>):
 }
 
 async function checkDedup(ctx: PluginContext, watchId: string, entityId: string, windowMs: number): Promise<boolean> {
-  const log = await ctx.state.get({ scopeKind: "instance", stateKey: `suggestion_log_${watchId}_${entityId}` }) as { sentAt: string } | null;
+  const log = (await ctx.state.get({ scopeKind: "instance", stateKey: `suggestion_log_${watchId}_${entityId}` })) as {
+    sentAt: string;
+  } | null;
   if (!log) return false;
   return Date.now() - new Date(log.sentAt).getTime() < windowMs;
 }
 
 async function recordSuggestion(ctx: PluginContext, watchId: string, entityId: string) {
-  await ctx.state.set({ scopeKind: "instance", stateKey: `suggestion_log_${watchId}_${entityId}` }, { watchId, entityId, sentAt: new Date().toISOString() });
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey: `suggestion_log_${watchId}_${entityId}` },
+    { watchId, entityId, sentAt: new Date().toISOString() },
+  );
 }
 
 async function getHourlySuggestionCount(ctx: PluginContext, companyId: string): Promise<number> {

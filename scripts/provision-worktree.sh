@@ -31,18 +31,57 @@ source_env_path="$(dirname "$source_config_path")/.env"
 
 mkdir -p "$paperclip_dir"
 
-run_isolated_worktree_init() {
+run_paperclipai_command() {
+  local command_args=("$@")
   if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
-    pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+    pnpm paperclipai "${command_args[@]}"
+    return 0
+  fi
+
+  local base_cli_tsx_path="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
+  local base_cli_entry_path="$base_cwd/cli/src/index.ts"
+  if command -v node >/dev/null 2>&1 && [[ -f "$base_cli_tsx_path" ]] && [[ -f "$base_cli_entry_path" ]]; then
+    node "$base_cli_tsx_path" "$base_cli_entry_path" "${command_args[@]}"
     return 0
   fi
 
   if command -v paperclipai >/dev/null 2>&1; then
-    paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+    paperclipai "${command_args[@]}"
     return 0
   fi
 
   return 1
+}
+
+paperclipai_command_available() {
+  if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local base_cli_tsx_path="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
+  local base_cli_entry_path="$base_cwd/cli/src/index.ts"
+  if command -v node >/dev/null 2>&1 && [[ -f "$base_cli_tsx_path" ]] && [[ -f "$base_cli_entry_path" ]]; then
+    return 0
+  fi
+
+  if command -v paperclipai >/dev/null 2>&1; then
+    return 0
+  fi
+
+  return 1
+}
+
+run_isolated_worktree_init() {
+  run_paperclipai_command \
+    worktree \
+    init \
+    --force \
+    --seed-mode \
+    minimal \
+    --name \
+    "$worktree_name" \
+    --from-config \
+    "$source_config_path"
 }
 
 write_fallback_worktree_config() {
@@ -216,6 +255,8 @@ async function main() {
     server: {
       deploymentMode: sourceConfig?.server?.deploymentMode ?? "local_trusted",
       exposure: sourceConfig?.server?.exposure ?? "private",
+      ...(sourceConfig?.server?.bind ? { bind: sourceConfig.server.bind } : {}),
+      ...(sourceConfig?.server?.customBindHost ? { customBindHost: sourceConfig.server.customBindHost } : {}),
       host: sourceConfig?.server?.host ?? "127.0.0.1",
       port: serverPort,
       allowedHostnames: sourceConfig?.server?.allowedHostnames ?? [],
@@ -295,9 +336,121 @@ main().catch((error) => {
 EOF
 }
 
-if ! run_isolated_worktree_init; then
+if paperclipai_command_available; then
+  run_isolated_worktree_init
+else
   echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
   write_fallback_worktree_config
+fi
+
+list_base_node_modules_paths() {
+  cd "$base_cwd" &&
+    find . \
+      -mindepth 1 \
+      -maxdepth 4 \
+      -type d \
+      -name node_modules \
+      ! -path './.git/*' \
+      ! -path './.paperclip/*' \
+      | sed 's#^\./##'
+}
+if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; then
+  needs_install=0
+
+  while IFS= read -r relative_path; do
+    [[ -n "$relative_path" ]] || continue
+    target_path="$worktree_cwd/$relative_path"
+
+    if [[ -L "$target_path" || ! -e "$target_path" ]]; then
+      needs_install=1
+      break
+    fi
+  done < <(list_base_node_modules_paths)
+
+  if [[ "$needs_install" -eq 1 ]]; then
+    backup_suffix=".paperclip-backup-${BASHPID:-$$}"
+    moved_symlink_paths=()
+
+    while IFS= read -r relative_path; do
+      [[ -n "$relative_path" ]] || continue
+      target_path="$worktree_cwd/$relative_path"
+      if [[ -L "$target_path" ]]; then
+        backup_path="${target_path}${backup_suffix}"
+        rm -rf "$backup_path"
+        mv "$target_path" "$backup_path"
+        moved_symlink_paths+=("$relative_path")
+      fi
+    done < <(list_base_node_modules_paths)
+
+    restore_moved_symlinks() {
+      local relative_path target_path backup_path
+      [[ ${#moved_symlink_paths[@]} -gt 0 ]] || return 0
+      for relative_path in "${moved_symlink_paths[@]}"; do
+        target_path="$worktree_cwd/$relative_path"
+        backup_path="${target_path}${backup_suffix}"
+        [[ -L "$backup_path" ]] || continue
+        rm -rf "$target_path"
+        mv "$backup_path" "$target_path"
+      done
+    }
+
+    cleanup_moved_symlinks() {
+      local relative_path target_path backup_path
+      [[ ${#moved_symlink_paths[@]} -gt 0 ]] || return 0
+      for relative_path in "${moved_symlink_paths[@]}"; do
+        target_path="$worktree_cwd/$relative_path"
+        backup_path="${target_path}${backup_suffix}"
+        [[ -L "$backup_path" ]] && rm "$backup_path"
+      done
+    }
+
+    run_pnpm_install() {
+      local stdout_path stderr_path
+      stdout_path="$(mktemp)"
+      stderr_path="$(mktemp)"
+
+      if (
+        cd "$worktree_cwd"
+        pnpm install "$@"
+      ) >"$stdout_path" 2>"$stderr_path"; then
+        cat "$stdout_path"
+        cat "$stderr_path" >&2
+        rm -f "$stdout_path" "$stderr_path"
+        return 0
+      fi
+
+      local exit_code=$?
+      cat "$stdout_path"
+      cat "$stderr_path" >&2
+      if grep -q "ERR_PNPM_OUTDATED_LOCKFILE" "$stdout_path" "$stderr_path"; then
+        rm -f "$stdout_path" "$stderr_path"
+        return 90
+      fi
+
+      rm -f "$stdout_path" "$stderr_path"
+      return "$exit_code"
+    }
+
+    if run_pnpm_install --frozen-lockfile; then
+      :
+    else
+      install_exit_code=$?
+      if [[ "$install_exit_code" -eq 90 ]]; then
+        echo "pnpm-lock.yaml is out of date in this execution workspace; retrying install without --frozen-lockfile." >&2
+        run_pnpm_install --no-frozen-lockfile || {
+          restore_moved_symlinks
+          exit 1
+        }
+      else
+        restore_moved_symlinks
+        exit "$install_exit_code"
+      fi
+    fi
+
+    cleanup_moved_symlinks
+  fi
+
+  exit 0
 fi
 
 while IFS= read -r relative_path; do
@@ -311,13 +464,5 @@ while IFS= read -r relative_path; do
   mkdir -p "$(dirname "$target_path")"
   ln -s "$source_path" "$target_path"
 done < <(
-  cd "$base_cwd" &&
-    find . \
-      -mindepth 1 \
-      -maxdepth 3 \
-      -type d \
-      -name node_modules \
-      ! -path './.git/*' \
-      ! -path './.paperclip/*' \
-      | sed 's#^\./##'
+  list_base_node_modules_paths
 )

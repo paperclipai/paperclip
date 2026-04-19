@@ -162,22 +162,19 @@ export const pluginsApi = {
    * @param status - Optional filter; must be a valid `PluginStatus` value.
    *   Invalid values are rejected by the server with HTTP 400.
    */
-  list: (status?: PluginStatus) =>
-    api.get<PluginRecord[]>(`/plugins${status ? `?status=${status}` : ""}`),
+  list: (status?: PluginStatus) => api.get<PluginRecord[]>(`/plugins${status ? `?status=${status}` : ""}`),
 
   /**
    * List bundled example plugins available from the current repo checkout.
    */
-  listExamples: () =>
-    api.get<AvailablePluginExample[]>("/plugins/examples"),
+  listExamples: () => api.get<AvailablePluginExample[]>("/plugins/examples"),
 
   /**
    * Fetch a single plugin record by its UUID or plugin key.
    *
    * @param pluginId - The plugin's UUID (from `PluginRecord.id`) or plugin key.
    */
-  get: (pluginId: string) =>
-    api.get<PluginRecord>(`/plugins/${pluginId}`),
+  get: (pluginId: string) => api.get<PluginRecord>(`/plugins/${pluginId}`),
 
   /**
    * Install a plugin from npm or a local path.
@@ -209,8 +206,7 @@ export const pluginsApi = {
    *
    * @param pluginId - UUID of the plugin to enable.
    */
-  enable: (pluginId: string) =>
-    api.post<{ ok: boolean }>(`/plugins/${pluginId}/enable`, {}),
+  enable: (pluginId: string) => api.post<{ ok: boolean }>(`/plugins/${pluginId}/enable`, {}),
 
   /**
    * Disable a plugin (transition to `error` state with an operator sentinel).
@@ -231,8 +227,7 @@ export const pluginsApi = {
    *
    * @param pluginId - UUID of the plugin to health-check.
    */
-  health: (pluginId: string) =>
-    api.get<PluginHealthCheckResult>(`/plugins/${pluginId}/health`),
+  health: (pluginId: string) => api.get<PluginHealthCheckResult>(`/plugins/${pluginId}/health`),
 
   /**
    * Fetch aggregated health dashboard data for a plugin.
@@ -243,8 +238,7 @@ export const pluginsApi = {
    *
    * @param pluginId - UUID of the plugin.
    */
-  dashboard: (pluginId: string) =>
-    api.get<PluginDashboardData>(`/plugins/${pluginId}/dashboard`),
+  dashboard: (pluginId: string) => api.get<PluginDashboardData>(`/plugins/${pluginId}/dashboard`),
 
   /**
    * Fetch recent log entries for a plugin.
@@ -258,9 +252,16 @@ export const pluginsApi = {
     if (options?.level) params.set("level", options.level);
     if (options?.since) params.set("since", options.since);
     const qs = params.toString();
-    return api.get<Array<{ id: string; pluginId: string; level: string; message: string; meta: Record<string, unknown> | null; createdAt: string }>>(
-      `/plugins/${pluginId}/logs${qs ? `?${qs}` : ""}`,
-    );
+    return api.get<
+      Array<{
+        id: string;
+        pluginId: string;
+        level: string;
+        message: string;
+        meta: Record<string, unknown> | null;
+        createdAt: string;
+      }>
+    >(`/plugins/${pluginId}/logs${qs ? `?${qs}` : ""}`);
   },
 
   /**
@@ -292,8 +293,7 @@ export const pluginsApi = {
    * );
    * ```
    */
-  listUiContributions: () =>
-    api.get<PluginUiContribution[]>("/plugins/ui-contributions"),
+  listUiContributions: () => api.get<PluginUiContribution[]>("/plugins/ui-contributions"),
 
   // ===========================================================================
   // Plugin configuration endpoints
@@ -307,8 +307,7 @@ export const pluginsApi = {
    *
    * @param pluginId - UUID of the plugin.
    */
-  getConfig: (pluginId: string) =>
-    api.get<PluginConfig | null>(`/plugins/${pluginId}/config`),
+  getConfig: (pluginId: string) => api.get<PluginConfig | null>(`/plugins/${pluginId}/config`),
 
   /**
    * Save (create or update) the configuration for a plugin.

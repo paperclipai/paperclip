@@ -117,10 +117,7 @@ export function resolvePluginUiDir(
     const resolvedPackagePath = path.resolve(packagePath);
     if (fs.existsSync(resolvedPackagePath)) {
       const uiDirFromPackagePath = path.resolve(resolvedPackagePath, entrypointsUi);
-      if (
-        uiDirFromPackagePath.startsWith(resolvedPackagePath)
-        && fs.existsSync(uiDirFromPackagePath)
-      ) {
+      if (uiDirFromPackagePath.startsWith(resolvedPackagePath) && fs.existsSync(uiDirFromPackagePath)) {
         return uiDirFromPackagePath;
       }
     }
@@ -168,11 +165,7 @@ export function resolvePluginUiDir(
  */
 function computeETag(size: number, mtimeMs: number): string {
   const ETAG_VERSION = "v2";
-  const hash = crypto
-    .createHash("md5")
-    .update(`${ETAG_VERSION}:${size}-${mtimeMs}`)
-    .digest("hex")
-    .slice(0, 16);
+  const hash = crypto.createHash("md5").update(`${ETAG_VERSION}:${size}-${mtimeMs}`).digest("hex").slice(0, 16);
   return `"${hash}"`;
 }
 
@@ -232,9 +225,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     // In Express 5 with path-to-regexp v8, named wildcards may return
     // an array of path segments or a single string.
     const rawParam = req.params.filePath;
-    const rawFilePath = Array.isArray(rawParam)
-      ? rawParam.join("/")
-      : rawParam as string | undefined;
+    const rawFilePath = Array.isArray(rawParam) ? rawParam.join("/") : (rawParam as string | undefined);
 
     if (!rawFilePath || rawFilePath.length === 0) {
       res.status(400).json({ error: "File path is required" });
@@ -247,9 +238,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
       plugin = await registry.getById(pluginId);
     } catch (error) {
       const maybeCode =
-        typeof error === "object" && error !== null && "code" in error
-          ? (error as { code?: unknown }).code
-          : undefined;
+        typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : undefined;
       if (maybeCode !== "22P02") {
         throw error;
       }
@@ -291,10 +280,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
       if (typeof devUiUrl === "string" && devUiUrl.length > 0) {
         // Dev proxy is only available in development mode
         if (process.env.NODE_ENV === "production") {
-          log.warn(
-            { pluginId: plugin.id },
-            "plugin-ui-static: devUiUrl ignored in production",
-          );
+          log.warn({ pluginId: plugin.id }, "plugin-ui-static: devUiUrl ignored in production");
           // Fall through to static file serving below
         } else {
           // Guard against rawFilePath overriding the base URL via protocol
@@ -310,11 +296,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
             res.status(400).json({ error: "Invalid file path" });
             return;
           }
-          if (
-            decodedPath.includes("://") ||
-            decodedPath.startsWith("//") ||
-            decodedPath.startsWith("\\\\")
-          ) {
+          if (decodedPath.includes("://") || decodedPath.startsWith("//") || decodedPath.startsWith("\\\\")) {
             res.status(400).json({ error: "Invalid file path" });
             return;
           }
@@ -333,10 +315,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
           // catch any path-based override that slipped past the checks above.
           const devHost = targetUrl.hostname;
           const isLoopback =
-            devHost === "localhost" ||
-            devHost === "127.0.0.1" ||
-            devHost === "::1" ||
-            devHost === "[::1]";
+            devHost === "localhost" || devHost === "127.0.0.1" || devHost === "::1" || devHost === "[::1]";
           if (!isLoopback) {
             log.warn(
               { pluginId: plugin.id, devUiUrl, host: devHost },
@@ -480,10 +459,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     // not found. We already enforce traversal safety above, so allow dot paths.
     res.sendFile(resolvedFilePath, { dotfiles: "allow" }, (err) => {
       if (err) {
-        log.error(
-          { err, pluginId: plugin.id, filePath: resolvedFilePath },
-          "plugin-ui-static: error sending file",
-        );
+        log.error({ err, pluginId: plugin.id, filePath: resolvedFilePath }, "plugin-ui-static: error sending file");
         // Only send error if headers haven't been sent yet
         if (!res.headersSent) {
           res.status(500).json({ error: "Failed to serve file" });

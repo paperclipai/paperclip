@@ -38,12 +38,12 @@ Import using a **skills.sh URL**, a key-style source string, a GitHub URL, or a 
 
 ### Source types (in order of preference)
 
-| Source format | Example | When to use |
-|---|---|---|
-| **skills.sh URL** | `https://skills.sh/google-labs-code/stitch-skills/design-md` | When a user gives you a `skills.sh` link. This is the managed skill registry — **always prefer it when available**. |
-| **Key-style string** | `google-labs-code/stitch-skills/design-md` | Shorthand for the same skill — `org/repo/skill-name` format. Equivalent to the skills.sh URL. |
-| **GitHub URL** | `https://github.com/vercel-labs/agent-browser` | When the skill is in a GitHub repo but not on skills.sh. |
-| **Local path** | `/abs/path/to/skill-dir` | When the skill is on disk (dev/testing only). |
+| Source format        | Example                                                      | When to use                                                                                                         |
+| -------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| **skills.sh URL**    | `https://skills.sh/google-labs-code/stitch-skills/design-md` | When a user gives you a `skills.sh` link. This is the managed skill registry — **always prefer it when available**. |
+| **Key-style string** | `google-labs-code/stitch-skills/design-md`                   | Shorthand for the same skill — `org/repo/skill-name` format. Equivalent to the skills.sh URL.                       |
+| **GitHub URL**       | `https://github.com/vercel-labs/agent-browser`               | When the skill is in a GitHub repo but not on skills.sh.                                                            |
+| **Local path**       | `/abs/path/to/skill-dir`                                     | When the skill is on disk (dev/testing only).                                                                       |
 
 **Critical:** If a user gives you a `https://skills.sh/...` URL, use that URL or its key-style equivalent (`org/repo/skill-name`) as the `source`. Do **not** convert it to a GitHub URL — skills.sh is the managed registry and the source of truth for versioning, discovery, and updates.
 

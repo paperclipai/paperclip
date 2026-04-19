@@ -22,7 +22,9 @@ export const issues = pgTable(
   "issues",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
     projectId: uuid("project_id").references(() => projects.id),
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
@@ -47,8 +49,11 @@ export const issues = pgTable(
     requestDepth: integer("request_depth").notNull().default(0),
     billingCode: text("billing_code"),
     assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<Record<string, unknown>>(),
-    executionWorkspaceId: uuid("execution_workspace_id")
-      .references((): AnyPgColumn => executionWorkspaces.id, { onDelete: "set null" }),
+    executionPolicy: jsonb("execution_policy").$type<Record<string, unknown>>(),
+    executionState: jsonb("execution_state").$type<Record<string, unknown>>(),
+    executionWorkspaceId: uuid("execution_workspace_id").references((): AnyPgColumn => executionWorkspaces.id, {
+      onDelete: "set null",
+    }),
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     startedAt: timestamp("started_at", { withTimezone: true }),
@@ -74,8 +79,14 @@ export const issues = pgTable(
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
-    executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
+    executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(
+      table.companyId,
+      table.executionWorkspaceId,
+    ),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
+    titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
+    identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),
+    descriptionSearchIdx: index("issues_description_search_idx").using("gin", table.description.op("gin_trgm_ops")),
     openRoutineExecutionIdx: uniqueIndex("issues_open_routine_execution_uq")
       .on(table.companyId, table.originKind, table.originId)
       .where(

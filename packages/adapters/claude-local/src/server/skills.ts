@@ -1,11 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  AdapterSkillContext,
-  AdapterSkillEntry,
-  AdapterSkillSnapshot,
-} from "@paperclipai/adapter-utils";
+import type { AdapterSkillContext, AdapterSkillEntry, AdapterSkillSnapshot } from "@paperclipai/adapter-utils";
 import {
   readPaperclipRuntimeSkillEntries,
   readInstalledSkillTargets,
@@ -47,7 +43,7 @@ async function buildClaudeSkillSnapshot(config: Record<string, unknown>): Promis
     sourcePath: entry.source,
     targetPath: null,
     detail: desiredSet.has(entry.key)
-      ? "Will be mounted into the ephemeral Claude skill directory on the next run."
+      ? "Will be materialized into the stable Paperclip-managed Claude prompt bundle on the next run."
       : null,
     required: Boolean(entry.required),
     requiredReason: entry.requiredReason ?? null,

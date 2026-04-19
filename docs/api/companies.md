@@ -75,14 +75,14 @@ Archives a company. Archived companies are hidden from default listings.
 
 ## Company Fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | Unique identifier |
-| `name` | string | Company name |
-| `description` | string | Company description |
-| `status` | string | `active`, `paused`, `archived` |
-| `logoAssetId` | string | Optional asset id for the stored logo image |
-| `logoUrl` | string | Optional Paperclip asset content path for the stored logo image |
-| `budgetMonthlyCents` | number | Monthly budget limit |
-| `createdAt` | string | ISO timestamp |
-| `updatedAt` | string | ISO timestamp |
+| Field                | Type   | Description                                                     |
+| -------------------- | ------ | --------------------------------------------------------------- |
+| `id`                 | string | Unique identifier                                               |
+| `name`               | string | Company name                                                    |
+| `description`        | string | Company description                                             |
+| `status`             | string | `active`, `paused`, `archived`                                  |
+| `logoAssetId`        | string | Optional asset id for the stored logo image                     |
+| `logoUrl`            | string | Optional Paperclip asset content path for the stored logo image |
+| `budgetMonthlyCents` | number | Monthly budget limit                                            |
+| `createdAt`          | string | ISO timestamp                                                   |
+| `updatedAt`          | string | ISO timestamp                                                   |

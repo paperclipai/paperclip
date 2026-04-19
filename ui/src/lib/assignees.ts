@@ -64,11 +64,13 @@ export function parseAssigneeValue(value: string): AssigneeSelection {
 
 export function currentUserAssigneeOption(currentUserId: string | null | undefined): AssigneeOption[] {
   if (!currentUserId) return [];
-  return [{
-    id: assigneeValueFromSelection({ assigneeUserId: currentUserId }),
-    label: "Me",
-    searchText: currentUserId === "local-board" ? "me board human local-board" : `me human ${currentUserId}`,
-  }];
+  return [
+    {
+      id: assigneeValueFromSelection({ assigneeUserId: currentUserId }),
+      label: "Me",
+      searchText: currentUserId === "local-board" ? "me board human local-board" : `me human ${currentUserId}`,
+    },
+  ];
 }
 
 export function formatAssigneeUserLabel(
@@ -76,7 +78,7 @@ export function formatAssigneeUserLabel(
   currentUserId: string | null | undefined,
 ): string | null {
   if (!userId) return null;
-  if (currentUserId && userId === currentUserId) return "Me";
+  if (currentUserId && userId === currentUserId) return "You";
   if (userId === "local-board") return "Board";
   return userId.slice(0, 5);
 }

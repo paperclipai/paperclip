@@ -75,20 +75,15 @@ export async function handleMediaMessage(
       ctx.logger.info("Media routed to brief agent", { runId, briefAgentId: config.briefAgentId });
     } catch (err) {
       ctx.logger.error("Failed to invoke brief agent", { error: String(err) });
-      await sendMessage(
-        ctx,
-        token,
-        chatId,
-        `Failed to route media to brief agent: ${String(err)}`,
-        { messageThreadId: threadId },
-      );
+      await sendMessage(ctx, token, chatId, `Failed to route media to brief agent: ${String(err)}`, {
+        messageThreadId: threadId,
+      });
     }
   } else if (hasActiveSession && threadId) {
     const sessions = await getSessions(ctx, chatId, threadId);
     const activeSessions = sessions.filter((s) => s.status === "active");
     const target = activeSessions.sort(
-      (a, b) =>
-        new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
+      (a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
     )[0];
 
     if (target) {
@@ -126,9 +121,8 @@ function extractFileId(msg: TelegramMessage): string | null {
   if (msg.video_note) return msg.video_note.file_id;
   if (msg.document) return msg.document.file_id;
   if (msg.photo && msg.photo.length > 0) {
-    return msg.photo.sort(
-      (a: TelegramPhotoSize, b: TelegramPhotoSize) => b.width * b.height - a.width * a.height,
-    )[0].file_id;
+    return msg.photo.sort((a: TelegramPhotoSize, b: TelegramPhotoSize) => b.width * b.height - a.width * a.height)[0]
+      .file_id;
   }
   return null;
 }
@@ -139,10 +133,7 @@ async function transcribeAudio(
   fileId: string,
   transcriptionApiKeyRef: string,
 ): Promise<string | null> {
-  const fileRes = await ctx.http.fetch(
-    `${TELEGRAM_API}/bot${botToken}/getFile?file_id=${fileId}`,
-    { method: "GET" },
-  );
+  const fileRes = await ctx.http.fetch(`${TELEGRAM_API}/bot${botToken}/getFile?file_id=${fileId}`, { method: "GET" });
   const fileData = (await fileRes.json()) as TelegramApiResponse<{ file_path: string }>;
   if (!fileData.ok || !fileData.result?.file_path) {
     ctx.logger.error("Failed to get file path from Telegram", { fileId });

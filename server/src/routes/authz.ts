@@ -5,6 +5,12 @@ import type { accessService } from "../services/access.js";
 
 type AccessService = ReturnType<typeof accessService>;
 
+export function assertAuthenticated(req: Request) {
+  if (req.actor.type === "none") {
+    throw unauthorized();
+  }
+}
+
 export function assertBoard(req: Request) {
   if (req.actor.type !== "board") {
     throw forbidden("Board access required");
@@ -20,9 +26,7 @@ export function assertInstanceAdmin(req: Request) {
 }
 
 export function assertCompanyAccess(req: Request, companyId: string) {
-  if (req.actor.type === "none") {
-    throw unauthorized();
-  }
+  assertAuthenticated(req);
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
     throw forbidden("Agent key cannot access another company");
   }
@@ -70,9 +74,7 @@ export async function requirePermission(
 }
 
 export function getActorInfo(req: Request) {
-  if (req.actor.type === "none") {
-    throw unauthorized();
-  }
+  assertAuthenticated(req);
   if (req.actor.type === "agent") {
     return {
       actorType: "agent" as const,

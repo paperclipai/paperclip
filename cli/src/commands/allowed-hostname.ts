@@ -13,7 +13,9 @@ export async function addAllowedHostname(host: string, opts: { config?: string }
   }
 
   const normalized = normalizeHostnameInput(host);
-  const current = new Set((config.server.allowedHostnames ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean));
+  const current = new Set(
+    (config.server.allowedHostnames ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean),
+  );
   const existed = current.has(normalized);
   current.add(normalized);
 
@@ -26,15 +28,10 @@ export async function addAllowedHostname(host: string, opts: { config?: string }
     p.log.info(`Hostname ${pc.cyan(normalized)} is already allowed.`);
   } else {
     p.log.success(`Added allowed hostname: ${pc.cyan(normalized)}`);
-    p.log.message(
-      pc.dim("Restart the Paperclip server for this change to take effect."),
-    );
+    p.log.message(pc.dim("Restart the Paperclip server for this change to take effect."));
   }
 
   if (!(config.server.deploymentMode === "authenticated" && config.server.exposure === "private")) {
-    p.log.message(
-      pc.dim("Note: allowed hostnames are enforced only in authenticated/private mode."),
-    );
+    p.log.message(pc.dim("Note: allowed hostnames are enforced only in authenticated/private mode."));
   }
 }
-

@@ -3,13 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { useToast } from "../context/ToastContext";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { LazyFileEditor } from "./LazyFileEditor";
 import { Pencil, Send, Loader2 } from "lucide-react";
@@ -28,11 +22,7 @@ const FILENAME_OPTIONS = [
   { value: "intervention.js", label: "JavaScript" },
 ];
 
-export function BoardInterventionPanel({
-  issueId,
-  open,
-  onOpenChange,
-}: BoardInterventionPanelProps) {
+export function BoardInterventionPanel({ issueId, open, onOpenChange }: BoardInterventionPanelProps) {
   const [content, setContent] = useState("");
   const [filename, setFilename] = useState("intervention.md");
   const queryClient = useQueryClient();
@@ -40,10 +30,7 @@ export function BoardInterventionPanel({
 
   const postComment = useMutation({
     mutationFn: async () => {
-      const wrappedBody =
-        filename.endsWith(".md")
-          ? content
-          : `\`\`\`${filename.split(".").pop()}\n${content}\n\`\`\``;
+      const wrappedBody = filename.endsWith(".md") ? content : `\`\`\`${filename.split(".").pop()}\n${content}\n\`\`\``;
       await issuesApi.addComment(issueId, wrappedBody, false, true);
     },
     onSuccess: () => {
@@ -66,19 +53,14 @@ export function BoardInterventionPanel({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        className="w-full sm:max-w-xl lg:max-w-2xl flex flex-col"
-        showCloseButton
-      >
+      <SheetContent side="right" className="w-full sm:max-w-xl lg:max-w-2xl flex flex-col" showCloseButton>
         <SheetHeader className="shrink-0">
           <SheetTitle className="flex items-center gap-2">
             <Pencil className="h-4 w-4" />
             Board Intervention
           </SheetTitle>
           <SheetDescription>
-            Write code or instructions to redirect the agent. Posted as a
-            comment with interrupt flag.
+            Write code or instructions to redirect the agent. Posted as a comment with interrupt flag.
           </SheetDescription>
         </SheetHeader>
 
@@ -147,13 +129,7 @@ export function BoardInterventionPanel({
  * Small button to trigger the intervention panel.
  * Can be placed alongside other run action buttons.
  */
-export function InterventionButton({
-  onClick,
-  className,
-}: {
-  onClick: () => void;
-  className?: string;
-}) {
+export function InterventionButton({ onClick, className }: { onClick: () => void; className?: string }) {
   return (
     <button
       onClick={onClick}

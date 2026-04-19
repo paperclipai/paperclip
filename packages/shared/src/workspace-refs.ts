@@ -59,18 +59,12 @@ export function resolveWorkspaceFileRef(
  * Replace workspace file references in text with resolved absolute paths.
  * References that cannot be resolved are left as-is.
  */
-export function expandWorkspaceFileRefs(
-  text: string,
-  workspaceMap: Map<string, { cwd: string }>,
-): string {
-  return text.replace(
-    new RegExp(WORKSPACE_REF_REGEX.source, "g"),
-    (match, workspaceName: string, filePath: string) => {
-      const workspace = workspaceMap.get(workspaceName);
-      if (!workspace) return match;
-      const cwd = workspace.cwd.endsWith("/") ? workspace.cwd : workspace.cwd + "/";
-      const normalizedPath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
-      return cwd + normalizedPath;
-    },
-  );
+export function expandWorkspaceFileRefs(text: string, workspaceMap: Map<string, { cwd: string }>): string {
+  return text.replace(new RegExp(WORKSPACE_REF_REGEX.source, "g"), (match, workspaceName: string, filePath: string) => {
+    const workspace = workspaceMap.get(workspaceName);
+    if (!workspace) return match;
+    const cwd = workspace.cwd.endsWith("/") ? workspace.cwd : workspace.cwd + "/";
+    const normalizedPath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
+    return cwd + normalizedPath;
+  });
 }

@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 import manifest from "../src/manifest.js";
-import {
-  PLUGIN_ID,
-  PLUGIN_VERSION,
-  TOOL_NAMES,
-  DATA_KEYS,
-  DEFAULT_CONFIG,
-} from "../src/constants.js";
+import { PLUGIN_ID, PLUGIN_VERSION, TOOL_NAMES, DATA_KEYS, DEFAULT_CONFIG } from "../src/constants.js";
 
 // ---------------------------------------------------------------------------
 // Constants

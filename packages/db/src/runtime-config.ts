@@ -56,12 +56,7 @@ function resolvePaperclipInstanceId(): string {
 }
 
 function resolveDefaultConfigPath(): string {
-  return path.resolve(
-    resolvePaperclipHomeDir(),
-    "instances",
-    resolvePaperclipInstanceId(),
-    CONFIG_BASENAME,
-  );
+  return path.resolve(resolvePaperclipHomeDir(), "instances", resolvePaperclipInstanceId(), CONFIG_BASENAME);
 }
 
 function resolveDefaultEmbeddedPostgresDir(): string {
@@ -113,10 +108,7 @@ function parseEnvFile(contents: string): Record<string, string> {
       continue;
     }
 
-    if (
-      (value.startsWith("\"") && value.endsWith("\"")) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       entries[key] = value.slice(1, -1);
       continue;
     }
@@ -145,10 +137,7 @@ function migrateLegacyConfig(raw: unknown): PartialConfig | null {
   if (database.mode === "pglite") {
     database.mode = "embedded-postgres";
 
-    if (
-      typeof database.embeddedPostgresDataDir !== "string" &&
-      typeof database.pgliteDataDir === "string"
-    ) {
+    if (typeof database.embeddedPostgresDataDir !== "string" && typeof database.pgliteDataDir === "string") {
       database.embeddedPostgresDataDir = database.pgliteDataDir;
     }
     if (
@@ -177,9 +166,7 @@ function readConfig(configPath: string): PartialConfig | null {
   try {
     parsed = JSON.parse(readFileSync(configPath, "utf8"));
   } catch (err) {
-    throw new Error(
-      `Failed to parse config at ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new Error(`Failed to parse config at ${configPath}: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   const migrated = migrateLegacyConfig(parsed);
@@ -188,9 +175,7 @@ function readConfig(configPath: string): PartialConfig | null {
   }
 
   const database =
-    typeof migrated.database === "object" &&
-    migrated.database !== null &&
-    !Array.isArray(migrated.database)
+    typeof migrated.database === "object" && migrated.database !== null && !Array.isArray(migrated.database)
       ? migrated.database
       : undefined;
 
@@ -198,12 +183,9 @@ function readConfig(configPath: string): PartialConfig | null {
     database: database
       ? {
           mode: database.mode === "postgres" ? "postgres" : "embedded-postgres",
-          connectionString:
-            typeof database.connectionString === "string" ? database.connectionString : undefined,
+          connectionString: typeof database.connectionString === "string" ? database.connectionString : undefined,
           embeddedPostgresDataDir:
-            typeof database.embeddedPostgresDataDir === "string"
-              ? database.embeddedPostgresDataDir
-              : undefined,
+            typeof database.embeddedPostgresDataDir === "string" ? database.embeddedPostgresDataDir : undefined,
           embeddedPostgresPort: asPositiveInt(database.embeddedPostgresPort) ?? undefined,
           pgliteDataDir: typeof database.pgliteDataDir === "string" ? database.pgliteDataDir : undefined,
           pglitePort: asPositiveInt(database.pglitePort) ?? undefined,

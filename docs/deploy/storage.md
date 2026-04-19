@@ -27,10 +27,10 @@ pnpm paperclipai configure --section storage
 
 ## Configuration
 
-| Provider | Best For |
-|----------|----------|
+| Provider     | Best For                                      |
+| ------------ | --------------------------------------------- |
 | `local_disk` | Local development, single-machine deployments |
-| `s3` | Production, multi-node, cloud deployments |
+| `s3`         | Production, multi-node, cloud deployments     |
 
 Storage configuration is stored in the instance config file:
 

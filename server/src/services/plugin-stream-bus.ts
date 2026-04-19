@@ -25,24 +25,13 @@ export interface PluginStreamBus {
    * Subscribe to stream events for a specific (pluginId, channel, companyId).
    * Returns an unsubscribe function.
    */
-  subscribe(
-    pluginId: string,
-    channel: string,
-    companyId: string,
-    listener: StreamSubscriber,
-  ): () => void;
+  subscribe(pluginId: string, channel: string, companyId: string, listener: StreamSubscriber): () => void;
 
   /**
    * Publish an event to all subscribers of (pluginId, channel, companyId).
    * Called by the worker manager when it receives a stream notification.
    */
-  publish(
-    pluginId: string,
-    channel: string,
-    companyId: string,
-    event: unknown,
-    eventType?: StreamEventType,
-  ): void;
+  publish(pluginId: string, channel: string, companyId: string, event: unknown, eventType?: StreamEventType): void;
 }
 
 /**

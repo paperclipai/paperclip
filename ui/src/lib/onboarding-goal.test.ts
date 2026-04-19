@@ -10,11 +10,7 @@ describe("parseOnboardingGoalInput", () => {
   });
 
   it("splits a multiline goal into title and description", () => {
-    expect(
-      parseOnboardingGoalInput(
-        "Ship the MVP\nLaunch to 10 design partners\nMeasure retention",
-      ),
-    ).toEqual({
+    expect(parseOnboardingGoalInput("Ship the MVP\nLaunch to 10 design partners\nMeasure retention")).toEqual({
       title: "Ship the MVP",
       description: "Launch to 10 design partners\nMeasure retention",
     });

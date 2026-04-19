@@ -380,10 +380,10 @@ Repo verification before merge:
 ## 13. Open Decisions (Default Recommendation)
 
 1. Should board direct-create bypass approval setting?
-Recommendation: yes, board is explicit governance override.
+   Recommendation: yes, board is explicit governance override.
 
 2. Should non-authorized agents still see basic agent metadata?
-Recommendation: yes (name/role/status), but configuration fields stay restricted.
+   Recommendation: yes (name/role/status), but configuration fields stay restricted.
 
 3. On rejection, should limbo agent remain `pending_approval` or move to `terminated`?
-Recommendation: move to `terminated` on final reject; keep optional hard delete action for cleanup.
+   Recommendation: move to `terminated` on final reject; keep optional hard delete action for cleanup.

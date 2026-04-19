@@ -1,9 +1,4 @@
-import {
-  usePluginAction,
-  usePluginData,
-  usePluginToast,
-  type PluginWidgetProps,
-} from "@paperclipai/plugin-sdk/ui";
+import { usePluginAction, usePluginData, usePluginToast, type PluginWidgetProps } from "@paperclipai/plugin-sdk/ui";
 import React, { useCallback, useState } from "react";
 
 /* ------------------------------------------------------------------ */
@@ -39,8 +34,7 @@ interface SyncResult {
 
 const styles = {
   container: {
-    fontFamily:
-      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     fontSize: "13px",
     lineHeight: "1.5",
     color: "#e0e0e0",
@@ -102,10 +96,7 @@ const styles = {
 /* ------------------------------------------------------------------ */
 
 export function ObsidianDashboardWidget({ context }: PluginWidgetProps) {
-  const { data, loading, error, refresh } = usePluginData<SyncHealth>(
-    "sync-health",
-    { companyId: context.companyId },
-  );
+  const { data, loading, error, refresh } = usePluginData<SyncHealth>("sync-health", { companyId: context.companyId });
   const triggerSync = usePluginAction("trigger-sync");
   const toast = usePluginToast();
   const [syncing, setSyncing] = useState(false);
@@ -147,8 +138,7 @@ export function ObsidianDashboardWidget({ context }: PluginWidgetProps) {
     );
   }
 
-  const statusColor =
-    data?.status === "configured" ? "#2ea043" : "#888";
+  const statusColor = data?.status === "configured" ? "#2ea043" : "#888";
 
   return (
     <div style={styles.container}>
@@ -156,9 +146,7 @@ export function ObsidianDashboardWidget({ context }: PluginWidgetProps) {
         <h3 style={styles.heading}>Obsidian Vault Sync</h3>
 
         <div style={styles.row}>
-          <span style={styles.badge(statusColor)}>
-            {data?.status ?? "unknown"}
-          </span>
+          <span style={styles.badge(statusColor)}>{data?.status ?? "unknown"}</span>
           {data?.syncEntities?.map((e) => (
             <span key={e} style={styles.badge("#4c6ef5")}>
               {e}
@@ -170,15 +158,12 @@ export function ObsidianDashboardWidget({ context }: PluginWidgetProps) {
           <div style={{ marginBottom: "8px" }}>
             <span style={styles.label}>Last sync</span>
             <span style={styles.value}>
-              {new Date(data.lastSync.lastSyncAt).toLocaleString()} —{" "}
-              {data.lastSync.issueCount} issues, {data.lastSync.goalCount}{" "}
-              goals
+              {new Date(data.lastSync.lastSyncAt).toLocaleString()} — {data.lastSync.issueCount} issues,{" "}
+              {data.lastSync.goalCount} goals
             </span>
           </div>
         ) : (
-          <div style={{ marginBottom: "8px", color: "#888" }}>
-            No sync recorded yet.
-          </div>
+          <div style={{ marginBottom: "8px", color: "#888" }}>No sync recorded yet.</div>
         )}
 
         {data?.vaultPath && (
@@ -225,17 +210,13 @@ export function ObsidianSettingsPage({ context }: PluginWidgetProps) {
       <div style={styles.card}>
         <h3 style={styles.heading}>Obsidian Vault Sync — Settings</h3>
         <p style={{ color: "#aaa", margin: "0 0 16px 0" }}>
-          Configure vault path and sync options using the instance config form
-          above. This page shows the current sync status.
+          Configure vault path and sync options using the instance config form above. This page shows the current sync
+          status.
         </p>
 
         <div style={{ marginBottom: "12px" }}>
           <span style={styles.label}>Status</span>
-          <span
-            style={styles.badge(
-              data?.status === "configured" ? "#2ea043" : "#888",
-            )}
-          >
+          <span style={styles.badge(data?.status === "configured" ? "#2ea043" : "#888")}>
             {data?.status ?? "unknown"}
           </span>
         </div>
@@ -258,9 +239,8 @@ export function ObsidianSettingsPage({ context }: PluginWidgetProps) {
           <div style={{ marginBottom: "12px" }}>
             <span style={styles.label}>Last Sync</span>
             <span style={styles.value}>
-              {new Date(data.lastSync.lastSyncAt).toLocaleString()} —{" "}
-              {data.lastSync.issueCount} issues, {data.lastSync.goalCount}{" "}
-              goals
+              {new Date(data.lastSync.lastSyncAt).toLocaleString()} — {data.lastSync.issueCount} issues,{" "}
+              {data.lastSync.goalCount} goals
             </span>
           </div>
         )}

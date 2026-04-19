@@ -67,11 +67,7 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
     b = x;
   }
 
-  return [
-    Math.round((r + m) * 255),
-    Math.round((g + m) * 255),
-    Math.round((b + m) * 255),
-  ];
+  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
 }
 
 function hexToHue(hex: string): number {
@@ -86,7 +82,7 @@ function hexToHue(hex: string): number {
   if (max === r) h = ((g - b) / d) % 6;
   else if (max === g) h = (b - r) / d + 2;
   else h = (r - g) / d + 4;
-  return ((h * 60) + 360) % 360;
+  return (h * 60 + 360) % 360;
 }
 
 function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, logicalSize = 22, cellSize = 2): string {
@@ -102,11 +98,7 @@ function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, log
   const rand = mulberry32(hashString(seed));
 
   const hue = brandColor ? hexToHue(brandColor) : Math.floor(rand() * 360);
-  const [offR, offG, offB] = hslToRgb(
-    hue,
-    54 + Math.floor(rand() * 14),
-    36 + Math.floor(rand() * 12),
-  );
+  const [offR, offG, offB] = hslToRgb(hue, 54 + Math.floor(rand() * 14), 36 + Math.floor(rand() * 12));
   const [onR, onG, onB] = hslToRgb(
     hue + (rand() > 0.5 ? 10 : -10),
     86 + Math.floor(rand() * 10),
@@ -160,12 +152,7 @@ function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, log
   return canvas.toDataURL("image/png");
 }
 
-export function CompanyPatternIcon({
-  companyName,
-  logoUrl,
-  brandColor,
-  className,
-}: CompanyPatternIconProps) {
+export function CompanyPatternIcon({ companyName, logoUrl, brandColor, className }: CompanyPatternIconProps) {
   const initial = companyName.trim().charAt(0).toUpperCase() || "?";
   const [imageError, setImageError] = useState(false);
   const logo = !imageError && typeof logoUrl === "string" && logoUrl.trim().length > 0 ? logoUrl : null;
@@ -202,11 +189,7 @@ export function CompanyPatternIcon({
       ) : (
         <div className="absolute inset-0 bg-muted" />
       )}
-      {!logo && (
-        <span className="relative z-10 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]">
-          {initial}
-        </span>
-      )}
+      {!logo && <span className="relative z-10 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]">{initial}</span>}
     </div>
   );
 }

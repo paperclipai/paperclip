@@ -3,9 +3,7 @@ import { hasAgentShortnameCollision, deduplicateAgentName } from "../services/ag
 
 describe("hasAgentShortnameCollision", () => {
   it("detects collisions by normalized shortname", () => {
-    const collision = hasAgentShortnameCollision("Codex Coder", [
-      { id: "a1", name: "codex-coder", status: "idle" },
-    ]);
+    const collision = hasAgentShortnameCollision("Codex Coder", [{ id: "a1", name: "codex-coder", status: "idle" }]);
     expect(collision).toBe(true);
   });
 
@@ -29,25 +27,19 @@ describe("hasAgentShortnameCollision", () => {
   });
 
   it("does not collide when candidate has no shortname", () => {
-    const collision = hasAgentShortnameCollision("!!!", [
-      { id: "a1", name: "codex-coder", status: "idle" },
-    ]);
+    const collision = hasAgentShortnameCollision("!!!", [{ id: "a1", name: "codex-coder", status: "idle" }]);
     expect(collision).toBe(false);
   });
 });
 
 describe("deduplicateAgentName", () => {
   it("returns original name when no collision", () => {
-    const name = deduplicateAgentName("OpenClaw", [
-      { id: "a1", name: "other-agent", status: "idle" },
-    ]);
+    const name = deduplicateAgentName("OpenClaw", [{ id: "a1", name: "other-agent", status: "idle" }]);
     expect(name).toBe("OpenClaw");
   });
 
   it("appends suffix when name collides", () => {
-    const name = deduplicateAgentName("OpenClaw", [
-      { id: "a1", name: "openclaw", status: "idle" },
-    ]);
+    const name = deduplicateAgentName("OpenClaw", [{ id: "a1", name: "openclaw", status: "idle" }]);
     expect(name).toBe("OpenClaw 2");
   });
 
@@ -61,9 +53,7 @@ describe("deduplicateAgentName", () => {
   });
 
   it("ignores terminated agents for collision", () => {
-    const name = deduplicateAgentName("OpenClaw", [
-      { id: "a1", name: "openclaw", status: "terminated" },
-    ]);
+    const name = deduplicateAgentName("OpenClaw", [{ id: "a1", name: "openclaw", status: "terminated" }]);
     expect(name).toBe("OpenClaw");
   });
 });

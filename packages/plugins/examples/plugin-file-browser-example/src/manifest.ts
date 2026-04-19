@@ -11,7 +11,8 @@ const manifest: PaperclipPluginManifestV1 = {
   apiVersion: 1,
   version: "0.2.0",
   displayName: "File Browser (Example)",
-  description: "Example plugin that adds a Files link under each project in the sidebar, a file browser + editor tab on the project detail page, and per-comment file link annotations with a context menu action to open referenced files.",
+  description:
+    "Example plugin that adds a Files link under each project in the sidebar, a file browser + editor tab on the project detail page, and per-comment file link annotations with a context menu action to open referenced files.",
   author: "Paperclip",
   categories: ["workspace", "ui"],
   capabilities: [
@@ -38,7 +39,8 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Comment File Links",
         enum: ["annotation", "contextMenu", "both", "none"],
         default: "both",
-        description: "Controls which comment extensions are active: 'annotation' shows file links below each comment, 'contextMenu' adds an \"Open in Files\" action to the comment menu, 'both' enables both, 'none' disables comment features.",
+        description:
+          "Controls which comment extensions are active: 'annotation' shows file links below each comment, 'contextMenu' adds an \"Open in Files\" action to the comment menu, 'both' enables both, 'none' disables comment features.",
       },
     },
   },

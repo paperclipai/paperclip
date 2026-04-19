@@ -6,17 +6,7 @@ import { useToast } from "../context/ToastContext";
 import { LazyFileEditor } from "./LazyFileEditor";
 import { Button } from "@/components/ui/button";
 import { cn } from "../lib/utils";
-import {
-  AlertTriangle,
-  ChevronRight,
-  File,
-  Folder,
-  GitCommit,
-  Loader2,
-  RefreshCw,
-  Save,
-  X,
-} from "lucide-react";
+import { AlertTriangle, ChevronRight, File, Folder, GitCommit, Loader2, RefreshCw, Save, X } from "lucide-react";
 
 interface GitHubFileEditorProps {
   projectId: string;
@@ -33,14 +23,22 @@ export function GitHubFileEditor({ projectId }: GitHubFileEditorProps) {
   const { pushToast } = useToast();
 
   // Fetch directory listing
-  const { data: tree, isLoading: treeLoading, error: treeError } = useQuery({
+  const {
+    data: tree,
+    isLoading: treeLoading,
+    error: treeError,
+  } = useQuery({
     queryKey: queryKeys.githubFiles.tree(projectId, currentPath),
     queryFn: () => githubFilesApi.listFiles(projectId, currentPath || undefined),
     enabled: !!projectId,
   });
 
   // Fetch selected file content
-  const { data: fileData, isLoading: fileLoading, error: fileError } = useQuery({
+  const {
+    data: fileData,
+    isLoading: fileLoading,
+    error: fileError,
+  } = useQuery({
     queryKey: queryKeys.githubFiles.file(projectId, selectedFile ?? ""),
     queryFn: () => githubFilesApi.getFile(projectId, selectedFile!),
     enabled: !!projectId && !!selectedFile,
@@ -168,9 +166,7 @@ export function GitHubFileEditor({ projectId }: GitHubFileEditorProps) {
         {selectedFile && (
           <>
             <ChevronRight className="h-3 w-3 shrink-0" />
-            <span className="text-foreground font-medium">
-              {selectedFile.split("/").pop()}
-            </span>
+            <span className="text-foreground font-medium">{selectedFile.split("/").pop()}</span>
           </>
         )}
       </div>
@@ -219,9 +215,7 @@ export function GitHubFileEditor({ projectId }: GitHubFileEditorProps) {
                 <span className="truncate">{entry.name}</span>
                 {entry.type === "file" && entry.size > 0 && (
                   <span className="ml-auto text-[11px] text-muted-foreground tabular-nums shrink-0">
-                    {entry.size < 1024
-                      ? `${entry.size} B`
-                      : `${(entry.size / 1024).toFixed(1)} KB`}
+                    {entry.size < 1024 ? `${entry.size} B` : `${(entry.size / 1024).toFixed(1)} KB`}
                   </span>
                 )}
               </button>
@@ -240,8 +234,7 @@ export function GitHubFileEditor({ projectId }: GitHubFileEditorProps) {
             <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/[0.08] px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
               <AlertTriangle className="h-4 w-4 shrink-0" />
               <span className="flex-1">
-                Version conflict: the file was modified since you loaded it. Reload to
-                get the latest version.
+                Version conflict: the file was modified since you loaded it. Reload to get the latest version.
               </span>
               <Button variant="outline" size="sm" onClick={handleReload} className="shrink-0 gap-1.5">
                 <RefreshCw className="h-3.5 w-3.5" />

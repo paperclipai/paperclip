@@ -15,42 +15,50 @@ If this document conflicts with prior exploratory notes, this document wins for 
 ## 2. Locked V1 decisions
 
 1. Two deployment modes remain:
+
 - `local_trusted`
 - `cloud_hosted`
 
 2. `local_trusted`:
+
 - no login UX
 - implicit local instance admin actor
 - loopback-only server binding
 - full admin/settings/invite/approval capabilities available locally
 
 3. `cloud_hosted`:
+
 - Better Auth for humans
 - email/password only
 - no email verification requirement in V1
 
 4. Permissions:
+
 - one shared authorization system for humans and agents
 - normalized grants table (`principal_permission_grants`)
 - no separate “agent permissions engine”
 
 5. Invites:
+
 - copy-link only (no outbound email sending in V1)
 - unified `company_join` link that supports human or agent path
 - acceptance creates `pending_approval` join request
 - no access until admin approval
 
 6. Join review metadata:
+
 - source IP required
 - no GeoIP/country lookup in V1
 
 7. Agent API keys:
+
 - indefinite by default
 - hash at rest
 - display once on claim
 - revoke/regenerate supported
 
 8. Local ingress:
+
 - public/untrusted ingress is out of scope for V1
 - no `--dangerous-agent-ingress` in V1
 
@@ -235,8 +243,10 @@ Migration ordering:
 
 1. add new tables/columns/indexes
 2. backfill minimum memberships/grants for existing data:
+
 - create local implicit admin membership context in local mode at runtime (not persisted as Better Auth user)
 - for cloud, bootstrap creates first admin user role on acceptance
+
 3. switch authz reads to new tables
 4. remove legacy board-only checks
 
@@ -255,15 +265,18 @@ All under `/api`.
 ## 6.2 Invites
 
 1. `POST /api/companies/:companyId/invites`
+
 - create `company_join` invite
 - copy-link value returned once
 
 2. `GET /api/invites/:token`
+
 - validate token
 - return invite landing payload
 - includes `allowedJoinTypes`
 
 3. `POST /api/invites/:token/accept`
+
 - body:
   - `requestType: human | agent`
   - human path: no extra payload beyond authenticated user
@@ -272,6 +285,7 @@ All under `/api`.
 - creates `join_requests(status=pending_approval)`
 
 4. `POST /api/invites/:inviteId/revoke`
+
 - revokes non-consumed invite
 
 ## 6.3 Join requests
@@ -279,6 +293,7 @@ All under `/api`.
 1. `GET /api/companies/:companyId/join-requests?status=pending_approval&requestType=...`
 
 2. `POST /api/companies/:companyId/join-requests/:requestId/approve`
+
 - human:
   - create/activate `company_memberships`
   - apply default grants
@@ -291,6 +306,7 @@ All under `/api`.
 3. `POST /api/companies/:companyId/join-requests/:requestId/reject`
 
 4. `POST /api/join-requests/:requestId/claim-api-key`
+
 - approved agent request only
 - returns plaintext key once
 - stores hash in `agent_api_keys`
@@ -298,12 +314,15 @@ All under `/api`.
 ## 6.4 Membership and grants
 
 1. `GET /api/companies/:companyId/members`
+
 - returns both principal types
 
 2. `PATCH /api/companies/:companyId/members/:memberId/permissions`
+
 - upsert/remove grants
 
 3. `PUT /api/admin/users/:userId/company-access`
+
 - instance admin only
 
 4. `GET /api/admin/users/:userId/company-access`
@@ -456,10 +475,12 @@ Files:
 Commands:
 
 1. `paperclipai auth bootstrap-ceo`
+
 - create bootstrap invite
 - print one-time URL
 
 2. `paperclipai onboard`
+
 - in cloud mode with `bootstrap_pending`, print bootstrap URL and next steps
 - in local mode, skip bootstrap requirement
 
@@ -485,21 +506,26 @@ Files:
 Required UX:
 
 1. Cloud unauthenticated user:
+
 - redirect to login/signup
 
 2. Cloud bootstrap pending:
+
 - block app with setup command guidance
 
 3. Invite landing:
+
 - choose human vs agent path (respect `allowedJoinTypes`)
 - submit join request
 - show pending approval confirmation
 
 4. Inbox:
+
 - show join approval cards with approve/reject actions
 - include source IP and human email snapshot when applicable
 
 5. Local mode:
+
 - no login prompts
 - full settings/invite/approval UI available
 

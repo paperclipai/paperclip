@@ -86,6 +86,7 @@ pnpm paperclipai allowed-hostname host.docker.internal
 ```
 
 Then restart Paperclip and rerun the smoke script.
+
 - Docker/remote OpenClaw: prefer a reachable hostname (Docker host alias, Tailscale hostname, or public domain).
 - Authenticated/private mode: ensure hostnames are in the allowed list when required:
 
@@ -325,6 +326,7 @@ The Node.js gateway needs time to initialize. Wait 15 seconds before hitting `ht
 ### CLAUDE_AI_SESSION_KEY warnings (Compose only)
 
 These Docker Compose warnings are harmless and can be ignored:
+
 ```
 level=warning msg="The \"CLAUDE_AI_SESSION_KEY\" variable is not set. Defaulting to a blank string."
 ```
@@ -334,6 +336,7 @@ level=warning msg="The \"CLAUDE_AI_SESSION_KEY\" variable is not set. Defaulting
 Config file: `~/.openclaw/openclaw.json` (JSON5 format)
 
 Key settings:
+
 - `gateway.auth.token` — the auth token for the web UI and API
 - `agents.defaults.model.primary` — the AI model (use `openai/gpt-5.2` or newer)
 - `env.OPENAI_API_KEY` — references the `OPENAI_API_KEY` env var (Compose approach)

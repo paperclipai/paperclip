@@ -32,10 +32,14 @@ function statusColor(status: string | null): string {
 }
 
 function StatusDot({ status }: { status: string | null }) {
-  const color = status === "succeeded" ? "bg-emerald-500"
-    : (status === "failed" || status === "timed_out") ? "bg-red-500"
-    : status === "running" ? "bg-blue-500"
-    : "bg-muted-foreground/50";
+  const color =
+    status === "succeeded"
+      ? "bg-emerald-500"
+      : status === "failed" || status === "timed_out"
+        ? "bg-red-500"
+        : status === "running"
+          ? "bg-blue-500"
+          : "bg-muted-foreground/50";
   return <span className={cn("inline-block h-2 w-2 rounded-full shrink-0", color)} />;
 }
 
@@ -66,9 +70,16 @@ function DailyRunChart({ dailyStats, periodDays }: { dailyStats: DailyStats[]; p
           const total = succeeded + failed + other;
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} runs (${succeeded} ok, ${failed} failed)`}>
+            <div
+              key={day}
+              className="flex-1 h-full flex flex-col justify-end"
+              title={`${day}: ${total} runs (${succeeded} ok, ${failed} failed)`}
+            >
               {total > 0 ? (
-                <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
+                <div
+                  className="flex flex-col-reverse gap-px overflow-hidden"
+                  style={{ height: `${heightPct}%`, minHeight: 2 }}
+                >
                   {succeeded > 0 && <div className="bg-emerald-500" style={{ flex: succeeded }} />}
                   {failed > 0 && <div className="bg-red-500" style={{ flex: failed }} />}
                   {other > 0 && <div className="bg-neutral-500" style={{ flex: other }} />}
@@ -111,7 +122,11 @@ function DailyDurationChart({ dailyStats, periodDays }: { dailyStats: DailyStats
           const dur = statsMap.get(day)?.avgDurationMs ?? 0;
           const heightPct = (dur / maxDuration) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: avg ${formatDuration(dur || null)}`}>
+            <div
+              key={day}
+              className="flex-1 h-full flex flex-col justify-end"
+              title={`${day}: avg ${formatDuration(dur || null)}`}
+            >
               {dur > 0 ? (
                 <div className="bg-blue-500" style={{ height: `${heightPct}%`, minHeight: 2 }} />
               ) : (
@@ -138,10 +153,14 @@ function DailySuccessRateChart({ dailyStats, periodDays }: { dailyStats: DailySt
         {days.map((day) => {
           const s = statsMap.get(day);
           const total = s ? s.succeeded + s.failed + s.timedOut + s.other : 0;
-          const rate = total > 0 ? (s!.succeeded / total) : 0;
+          const rate = total > 0 ? s!.succeeded / total : 0;
           const color = total === 0 ? undefined : rate >= 0.8 ? "#10b981" : rate >= 0.5 ? "#eab308" : "#ef4444";
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total > 0 ? Math.round(rate * 100) : 0}%`}>
+            <div
+              key={day}
+              className="flex-1 h-full flex flex-col justify-end"
+              title={`${day}: ${total > 0 ? Math.round(rate * 100) : 0}%`}
+            >
               {total > 0 ? (
                 <div style={{ height: `${rate * 100}%`, minHeight: 2, backgroundColor: color }} />
               ) : (
@@ -169,7 +188,7 @@ function DayLabels({ days }: { days: string[] }) {
     <div className="flex gap-[3px] mt-1.5">
       {days.map((day, i) => (
         <div key={day} className="flex-1 text-center">
-          {(i === 0 || i === Math.floor(days.length / 2) || i === days.length - 1) ? (
+          {i === 0 || i === Math.floor(days.length / 2) || i === days.length - 1 ? (
             <span className="text-[9px] text-muted-foreground tabular-nums">
               {`${new Date(day + "T12:00:00").getMonth() + 1}/${new Date(day + "T12:00:00").getDate()}`}
             </span>
@@ -219,12 +238,20 @@ function AgentStatsTable({ agents }: { agents: AgentHeartbeatStats[] }) {
               </td>
               <td className="py-2.5 pr-4 text-right tabular-nums">{agent.totalRuns}</td>
               <td className="py-2.5 pr-4 text-right tabular-nums text-emerald-500">{agent.succeededRuns}</td>
-              <td className="py-2.5 pr-4 text-right tabular-nums text-red-500">{agent.failedRuns + agent.timedOutRuns}</td>
+              <td className="py-2.5 pr-4 text-right tabular-nums text-red-500">
+                {agent.failedRuns + agent.timedOutRuns}
+              </td>
               <td className="py-2.5 pr-4 text-right">
-                <span className={cn(
-                  "tabular-nums font-medium",
-                  agent.successRate >= 80 ? "text-emerald-500" : agent.successRate >= 50 ? "text-yellow-500" : "text-red-500",
-                )}>
+                <span
+                  className={cn(
+                    "tabular-nums font-medium",
+                    agent.successRate >= 80
+                      ? "text-emerald-500"
+                      : agent.successRate >= 50
+                        ? "text-yellow-500"
+                        : "text-red-500",
+                  )}
+                >
                   {agent.successRate}%
                 </span>
               </td>
@@ -275,8 +302,7 @@ function StuckAgentsAlert({ agents }: { agents: AgentHeartbeatStats[] }) {
               <li key={agent.agentId} className="text-xs text-muted-foreground">
                 <Link to={`/agents/${agent.agentId}`} className="font-medium hover:underline text-foreground">
                   {agent.agentName}
-                </Link>
-                {" "}
+                </Link>{" "}
                 {agent.consecutiveFailures >= 3
                   ? `${agent.consecutiveFailures} consecutive failures`
                   : "run appears stuck (>30min)"}
@@ -297,13 +323,14 @@ export function HeartbeatMonitoring() {
   const [periodDays, setPeriodDays] = useState(14);
 
   useEffect(() => {
-    setBreadcrumbs([
-      { label: "Dashboard", href: "/dashboard" },
-      { label: "Heartbeat Monitoring" },
-    ]);
+    setBreadcrumbs([{ label: "Dashboard", href: "/dashboard" }, { label: "Heartbeat Monitoring" }]);
   }, [setBreadcrumbs]);
 
-  const { data: stats, isLoading, error } = useQuery({
+  const {
+    data: stats,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: queryKeys.heartbeatStats(selectedCompanyId!, periodDays),
     queryFn: () => heartbeatsApi.stats(selectedCompanyId!, periodDays),
     enabled: !!selectedCompanyId,
@@ -356,14 +383,26 @@ export function HeartbeatMonitoring() {
           icon={Zap}
           value={stats.totalRuns}
           label="Total Runs"
-          description={<span>{stats.succeededRuns} succeeded, {stats.failedRuns} failed</span>}
+          description={
+            <span>
+              {stats.succeededRuns} succeeded, {stats.failedRuns} failed
+            </span>
+          }
         />
         <MetricCard
           icon={CheckCircle}
           value={`${stats.overallSuccessRate}%`}
           label="Success Rate"
           description={
-            <span className={stats.overallSuccessRate >= 80 ? "text-emerald-500" : stats.overallSuccessRate >= 50 ? "text-yellow-500" : "text-red-500"}>
+            <span
+              className={
+                stats.overallSuccessRate >= 80
+                  ? "text-emerald-500"
+                  : stats.overallSuccessRate >= 50
+                    ? "text-yellow-500"
+                    : "text-red-500"
+              }
+            >
               Last {periodDays} days
             </span>
           }
@@ -401,9 +440,7 @@ export function HeartbeatMonitoring() {
 
       {/* Agent breakdown table */}
       <div className="border border-border rounded-lg p-4">
-        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-          Agent Breakdown
-        </h3>
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">Agent Breakdown</h3>
         <AgentStatsTable agents={stats.agents} />
       </div>
     </div>

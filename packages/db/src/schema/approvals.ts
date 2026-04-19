@@ -6,7 +6,9 @@ export const approvals = pgTable(
   "approvals",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
     type: text("type").notNull(),
     requestedByAgentId: uuid("requested_by_agent_id").references(() => agents.id),
     requestedByUserId: text("requested_by_user_id"),
@@ -19,10 +21,6 @@ export const approvals = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    companyStatusTypeIdx: index("approvals_company_status_type_idx").on(
-      table.companyId,
-      table.status,
-      table.type,
-    ),
+    companyStatusTypeIdx: index("approvals_company_status_type_idx").on(table.companyId, table.status, table.type),
   }),
 );

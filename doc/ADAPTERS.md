@@ -56,19 +56,19 @@ import type {
 
 interface ServerAdapterModule {
   // ── Required ──────────────────────────────────────────────
-  type: string;                                         // Unique identifier, e.g. "my_adapter"
+  type: string; // Unique identifier, e.g. "my_adapter"
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
 
   // ── Optional ──────────────────────────────────────────────
-  models?: AdapterModel[];                              // Static model catalog
-  listModels?: () => Promise<AdapterModel[]>;           // Dynamic model discovery
-  agentConfigurationDoc?: string;                       // Markdown docs for agent config UI
-  supportsLocalAgentJwt?: boolean;                      // Accept Paperclip-issued JWTs
+  models?: AdapterModel[]; // Static model catalog
+  listModels?: () => Promise<AdapterModel[]>; // Dynamic model discovery
+  agentConfigurationDoc?: string; // Markdown docs for agent config UI
+  supportsLocalAgentJwt?: boolean; // Accept Paperclip-issued JWTs
 
   // Session management
-  sessionCodec?: AdapterSessionCodec;                   // Serialize/deserialize session params
-  sessionManagement?: AdapterSessionManagement;         // Session compaction policy
+  sessionCodec?: AdapterSessionCodec; // Serialize/deserialize session params
+  sessionManagement?: AdapterSessionManagement; // Session compaction policy
 
   // Skill management
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
@@ -100,40 +100,40 @@ The `execute` function receives:
 
 ```typescript
 interface AdapterExecutionContext {
-  runId: string;                                    // Unique run identifier
+  runId: string; // Unique run identifier
   agent: {
     id: string;
     companyId: string;
     name: string;
     adapterType: string | null;
-    adapterConfig: unknown;                         // Raw agent config from DB
+    adapterConfig: unknown; // Raw agent config from DB
   };
   runtime: {
-    sessionId: string | null;                       // Legacy session ID
-    sessionParams: Record<string, unknown> | null;  // Session state from previous run
-    sessionDisplayId: string | null;                // Human-readable session ref
-    taskKey: string | null;                         // Issue identifier, e.g. "PAP-42"
+    sessionId: string | null; // Legacy session ID
+    sessionParams: Record<string, unknown> | null; // Session state from previous run
+    sessionDisplayId: string | null; // Human-readable session ref
+    taskKey: string | null; // Issue identifier, e.g. "PAP-42"
   };
-  config: Record<string, unknown>;                  // Resolved adapter config
-  context: Record<string, unknown>;                 // Execution context (workspace, env vars, etc.)
-  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;  // Stream logs to UI
-  onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;               // Report invocation metadata
+  config: Record<string, unknown>; // Resolved adapter config
+  context: Record<string, unknown>; // Execution context (workspace, env vars, etc.)
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>; // Stream logs to UI
+  onMeta?: (meta: AdapterInvocationMeta) => Promise<void>; // Report invocation metadata
   onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>; // Report spawned process
-  authToken?: string;                               // Paperclip JWT for the agent
+  authToken?: string; // Paperclip JWT for the agent
 }
 ```
 
 ### Key fields to use
 
-| Field | Purpose |
-|-------|---------|
-| `ctx.runId` | Pass to child processes as `PAPERCLIP_RUN_ID` env var |
-| `ctx.agent` | Agent identity — use for env vars and logging |
-| `ctx.runtime.sessionParams` | Resume a previous session if your runtime supports it |
-| `ctx.config` | Agent-specific configuration (model, cwd, env, etc.) |
-| `ctx.context` | Server-provided context (prompt, workspace info, wake reason) |
-| `ctx.onLog` | Stream stdout/stderr to the Paperclip UI in real time |
-| `ctx.authToken` | Short-lived JWT the agent can use to call the Paperclip API |
+| Field                       | Purpose                                                       |
+| --------------------------- | ------------------------------------------------------------- |
+| `ctx.runId`                 | Pass to child processes as `PAPERCLIP_RUN_ID` env var         |
+| `ctx.agent`                 | Agent identity — use for env vars and logging                 |
+| `ctx.runtime.sessionParams` | Resume a previous session if your runtime supports it         |
+| `ctx.config`                | Agent-specific configuration (model, cwd, env, etc.)          |
+| `ctx.context`               | Server-provided context (prompt, workspace info, wake reason) |
+| `ctx.onLog`                 | Stream stdout/stderr to the Paperclip UI in real time         |
+| `ctx.authToken`             | Short-lived JWT the agent can use to call the Paperclip API   |
 
 ## Execution Result
 
@@ -142,9 +142,9 @@ Return this from `execute`:
 ```typescript
 interface AdapterExecutionResult {
   // ── Required ──────────────────────────────────────
-  exitCode: number | null;        // Process exit code (0 = success)
-  signal: string | null;          // Signal that killed the process, if any
-  timedOut: boolean;              // Whether the run hit the timeout
+  exitCode: number | null; // Process exit code (0 = success)
+  signal: string | null; // Signal that killed the process, if any
+  timedOut: boolean; // Whether the run hit the timeout
 
   // ── Error reporting ───────────────────────────────
   errorMessage?: string | null;
@@ -152,17 +152,17 @@ interface AdapterExecutionResult {
   errorMeta?: Record<string, unknown>;
 
   // ── Session persistence ───────────────────────────
-  sessionId?: string | null;                        // Legacy
-  sessionParams?: Record<string, unknown> | null;   // Opaque state for next run
-  sessionDisplayId?: string | null;                 // Human-readable session ref
-  clearSession?: boolean;                           // Force session reset
+  sessionId?: string | null; // Legacy
+  sessionParams?: Record<string, unknown> | null; // Opaque state for next run
+  sessionDisplayId?: string | null; // Human-readable session ref
+  clearSession?: boolean; // Force session reset
 
   // ── Billing / usage ───────────────────────────────
-  provider?: string | null;       // e.g. "anthropic", "openai"
+  provider?: string | null; // e.g. "anthropic", "openai"
   biller?: string | null;
-  model?: string | null;          // Model used for this run
+  model?: string | null; // Model used for this run
   billingType?: AdapterBillingType | null;
-  costUsd?: number | null;        // Estimated cost
+  costUsd?: number | null; // Estimated cost
   usage?: {
     inputTokens: number;
     outputTokens: number;
@@ -170,10 +170,11 @@ interface AdapterExecutionResult {
   };
 
   // ── Output ────────────────────────────────────────
-  resultJson?: Record<string, unknown> | null;  // Structured output
-  summary?: string | null;                       // Human-readable summary
+  resultJson?: Record<string, unknown> | null; // Structured output
+  summary?: string | null; // Human-readable summary
   runtimeServices?: AdapterRuntimeServiceReport[];
-  question?: {                                   // Interactive question for board
+  question?: {
+    // Interactive question for board
     prompt: string;
     choices: Array<{ key: string; label: string; description?: string }>;
   } | null;
@@ -210,13 +211,13 @@ interface AdapterEnvironmentTestResult {
   adapterType: string;
   status: "pass" | "warn" | "fail";
   checks: Array<{
-    code: string;                              // Machine-readable check ID
+    code: string; // Machine-readable check ID
     level: "info" | "warn" | "error";
-    message: string;                           // Human-readable result
+    message: string; // Human-readable result
     detail?: string | null;
-    hint?: string | null;                      // Suggested fix
+    hint?: string | null; // Suggested fix
   }>;
-  testedAt: string;                            // ISO timestamp
+  testedAt: string; // ISO timestamp
 }
 ```
 
@@ -242,9 +243,7 @@ export const myAdapter: ServerAdapterModule = {
   type: "my_adapter",
   execute,
   testEnvironment,
-  models: [
-    { id: "default", label: "Default Model" },
-  ],
+  models: [{ id: "default", label: "Default Model" }],
   agentConfigurationDoc: `# my_adapter agent configuration
 
 Adapter: my_adapter
@@ -274,7 +273,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   // 2. Build environment variables
   const env: Record<string, string> = {
-    ...buildPaperclipEnv(agent),  // Injects PAPERCLIP_AGENT_ID, PAPERCLIP_COMPANY_ID, etc.
+    ...buildPaperclipEnv(agent), // Injects PAPERCLIP_AGENT_ID, PAPERCLIP_COMPANY_ID, etc.
   };
 
   // Add custom env from config
@@ -315,9 +314,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     exitCode: proc.exitCode,
     signal: proc.signal,
     timedOut: proc.timedOut,
-    errorMessage: proc.exitCode !== 0
-      ? `Process exited with code ${proc.exitCode}`
-      : null,
+    errorMessage: proc.exitCode !== 0 ? `Process exited with code ${proc.exitCode}` : null,
     model,
     provider: "my-provider",
   };
@@ -327,16 +324,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 ### `server/src/adapters/my-adapter/test.ts`
 
 ```typescript
-import type {
-  AdapterEnvironmentCheck,
-  AdapterEnvironmentTestContext,
-  AdapterEnvironmentTestResult,
-} from "../types.js";
+import type { AdapterEnvironmentCheck, AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "../types.js";
 import { asString, parseObject, ensureAbsoluteDirectory, ensureCommandResolvable } from "../utils.js";
 
-export async function testEnvironment(
-  ctx: AdapterEnvironmentTestContext,
-): Promise<AdapterEnvironmentTestResult> {
+export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "my-tool");
@@ -363,9 +354,11 @@ export async function testEnvironment(
     });
   }
 
-  const status = checks.some(c => c.level === "error") ? "fail"
-    : checks.some(c => c.level === "warn") ? "warn"
-    : "pass";
+  const status = checks.some((c) => c.level === "error")
+    ? "fail"
+    : checks.some((c) => c.level === "warn")
+      ? "warn"
+      : "pass";
 
   return { adapterType: ctx.adapterType, status, checks, testedAt: new Date().toISOString() };
 }
@@ -469,7 +462,7 @@ Core fields:
 ```typescript
 export { execute } from "./execute.js";
 export { testEnvironment } from "./test.js";
-export { listSkills, syncSkills } from "./skills.js";  // if supported
+export { listSkills, syncSkills } from "./skills.js"; // if supported
 ```
 
 **`src/ui/index.ts`** — parse stdout lines into transcript entries for the board UI:
@@ -548,7 +541,7 @@ export const sessionCodec: AdapterSessionCodec = {
 
   // Human-readable session label for UI
   getDisplayId(params: Record<string, unknown> | null): string | null {
-    return params?.sessionId as string ?? null;
+    return (params?.sessionId as string) ?? null;
   },
 };
 ```
@@ -588,17 +581,16 @@ export async function listSkills(ctx: AdapterSkillContext): Promise<AdapterSkill
   return {
     adapterType: ctx.adapterType,
     supported: true,
-    mode: "ephemeral",   // or "persistent"
+    mode: "ephemeral", // or "persistent"
     desiredSkills: [],
-    entries: [/* ... AdapterSkillEntry[] ... */],
+    entries: [
+      /* ... AdapterSkillEntry[] ... */
+    ],
     warnings: [],
   };
 }
 
-export async function syncSkills(
-  ctx: AdapterSkillContext,
-  desiredSkills: string[],
-): Promise<AdapterSkillSnapshot> {
+export async function syncSkills(ctx: AdapterSkillContext, desiredSkills: string[]): Promise<AdapterSkillSnapshot> {
   // Install/remove skills to match the desired set.
   // Most adapters use symlinks from the Paperclip skill source to the runtime's skill directory.
   // ...
@@ -616,32 +608,32 @@ Skill sync modes:
 
 The `@paperclipai/adapter-utils` package and `server/src/adapters/utils.ts` provide helpers:
 
-| Utility | Purpose |
-|---------|---------|
-| `buildPaperclipEnv(agent)` | Build standard `PAPERCLIP_*` env vars from agent identity |
-| `runChildProcess(runId, cmd, args, opts)` | Spawn a child process with log streaming and timeout |
-| `asString(val, default)` | Safely extract string from config |
-| `asNumber(val, default)` | Safely extract number from config |
-| `asStringArray(val)` | Safely extract string array from config |
-| `parseObject(val)` | Safely parse unknown to `Record<string, unknown>` |
-| `ensureAbsoluteDirectory(path)` | Validate directory exists |
-| `ensureCommandResolvable(cmd, cwd, env?)` | Validate command is on PATH |
-| `redactEnvForLogs(env)` | Redact sensitive env vars for metadata reporting |
+| Utility                                   | Purpose                                                   |
+| ----------------------------------------- | --------------------------------------------------------- |
+| `buildPaperclipEnv(agent)`                | Build standard `PAPERCLIP_*` env vars from agent identity |
+| `runChildProcess(runId, cmd, args, opts)` | Spawn a child process with log streaming and timeout      |
+| `asString(val, default)`                  | Safely extract string from config                         |
+| `asNumber(val, default)`                  | Safely extract number from config                         |
+| `asStringArray(val)`                      | Safely extract string array from config                   |
+| `parseObject(val)`                        | Safely parse unknown to `Record<string, unknown>`         |
+| `ensureAbsoluteDirectory(path)`           | Validate directory exists                                 |
+| `ensureCommandResolvable(cmd, cwd, env?)` | Validate command is on PATH                               |
+| `redactEnvForLogs(env)`                   | Redact sensitive env vars for metadata reporting          |
 
 ## Paperclip Environment Variables
 
 Adapters should inject these env vars into the agent process (use `buildPaperclipEnv`):
 
-| Variable | Description |
-|----------|-------------|
-| `PAPERCLIP_AGENT_ID` | Agent's UUID |
-| `PAPERCLIP_COMPANY_ID` | Company UUID |
-| `PAPERCLIP_RUN_ID` | Current run UUID |
-| `PAPERCLIP_API_URL` | Paperclip API base URL |
-| `PAPERCLIP_API_KEY` | Short-lived JWT for API access |
-| `PAPERCLIP_TASK_ID` | Issue ID that triggered this run (if applicable) |
-| `PAPERCLIP_WAKE_REASON` | Why this run was triggered |
-| `PAPERCLIP_WAKE_COMMENT_ID` | Comment that triggered this run (if applicable) |
+| Variable                    | Description                                      |
+| --------------------------- | ------------------------------------------------ |
+| `PAPERCLIP_AGENT_ID`        | Agent's UUID                                     |
+| `PAPERCLIP_COMPANY_ID`      | Company UUID                                     |
+| `PAPERCLIP_RUN_ID`          | Current run UUID                                 |
+| `PAPERCLIP_API_URL`         | Paperclip API base URL                           |
+| `PAPERCLIP_API_KEY`         | Short-lived JWT for API access                   |
+| `PAPERCLIP_TASK_ID`         | Issue ID that triggered this run (if applicable) |
+| `PAPERCLIP_WAKE_REASON`     | Why this run was triggered                       |
+| `PAPERCLIP_WAKE_COMMENT_ID` | Comment that triggered this run (if applicable)  |
 
 ## Testing Your Adapter
 
@@ -673,17 +665,17 @@ pnpm paperclipai heartbeat run --agent-id <agent-id>
 
 ## Existing Adapters Reference
 
-| Adapter | Type | Transport | Session | Skills | Description |
-|---------|------|-----------|---------|--------|-------------|
-| Claude Local | `claude_local` | Process (CLI) | Yes | Yes | Claude Code CLI |
-| Codex Local | `codex_local` | Process (CLI) | Yes | Yes | OpenAI Codex CLI |
-| Cursor Local | `cursor` | Process (CLI) | Yes | Yes | Cursor Agent CLI |
-| Gemini Local | `gemini_local` | Process (CLI) | Yes | Yes | Google Gemini CLI |
-| OpenCode Local | `opencode_local` | Process (CLI) | Yes | Yes | Multi-provider OpenCode |
-| Pi Local | `pi_local` | Process (CLI) | Yes | Yes | Pi AI coding agent |
-| Hermes Local | `hermes_local` | Process (CLI) | Yes | No | Hermes agent |
-| OpenClaw Gateway | `openclaw_gateway` | WebSocket | Yes | No | Remote agent gateway |
-| Process | `process` | Process (shell) | No | No | Generic shell command |
-| HTTP | `http` | HTTP POST | No | No | Webhook invocation |
+| Adapter          | Type               | Transport       | Session | Skills | Description             |
+| ---------------- | ------------------ | --------------- | ------- | ------ | ----------------------- |
+| Claude Local     | `claude_local`     | Process (CLI)   | Yes     | Yes    | Claude Code CLI         |
+| Codex Local      | `codex_local`      | Process (CLI)   | Yes     | Yes    | OpenAI Codex CLI        |
+| Cursor Local     | `cursor`           | Process (CLI)   | Yes     | Yes    | Cursor Agent CLI        |
+| Gemini Local     | `gemini_local`     | Process (CLI)   | Yes     | Yes    | Google Gemini CLI       |
+| OpenCode Local   | `opencode_local`   | Process (CLI)   | Yes     | Yes    | Multi-provider OpenCode |
+| Pi Local         | `pi_local`         | Process (CLI)   | Yes     | Yes    | Pi AI coding agent      |
+| Hermes Local     | `hermes_local`     | Process (CLI)   | Yes     | No     | Hermes agent            |
+| OpenClaw Gateway | `openclaw_gateway` | WebSocket       | Yes     | No     | Remote agent gateway    |
+| Process          | `process`          | Process (shell) | No      | No     | Generic shell command   |
+| HTTP             | `http`             | HTTP POST       | No      | No     | Webhook invocation      |
 
 Use the `process` adapter as a minimal starting point and `claude_local` as a reference for a full-featured implementation.

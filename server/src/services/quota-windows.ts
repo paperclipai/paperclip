@@ -39,10 +39,7 @@ export async function fetchAllQuotaWindows(): Promise<ProviderQuotaResult[]> {
   });
 }
 
-async function withQuotaTimeout(
-  adapterType: string,
-  task: Promise<ProviderQuotaResult>,
-): Promise<ProviderQuotaResult> {
+async function withQuotaTimeout(adapterType: string, task: Promise<ProviderQuotaResult>): Promise<ProviderQuotaResult> {
   let timeoutId: NodeJS.Timeout | null = null;
   try {
     return await Promise.race([

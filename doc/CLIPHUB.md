@@ -20,14 +20,14 @@ The tagline: **you can literally download a company.**
 
 A ClipHub package is a **company template export** — the portable artifact format defined in the Paperclip spec. It contains:
 
-| Component | Description |
-|---|---|
-| **Company metadata** | Name, description, intended use case, category |
-| **Org chart** | Full reporting hierarchy — who reports to whom |
-| **Agent definitions** | Every agent: name, role, title, capabilities description |
-| **Adapter configs** | Per-agent adapter type and configuration (SOUL.md, HEARTBEAT.md, CLAUDE.md, process commands, webhook URLs — whatever the adapter needs) |
-| **Seed tasks** | Optional starter tasks and initiatives to bootstrap the company's first run |
-| **Budget defaults** | Suggested token/cost budgets per agent and per company |
+| Component             | Description                                                                                                                              |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **Company metadata**  | Name, description, intended use case, category                                                                                           |
+| **Org chart**         | Full reporting hierarchy — who reports to whom                                                                                           |
+| **Agent definitions** | Every agent: name, role, title, capabilities description                                                                                 |
+| **Adapter configs**   | Per-agent adapter type and configuration (SOUL.md, HEARTBEAT.md, CLAUDE.md, process commands, webhook URLs — whatever the adapter needs) |
+| **Seed tasks**        | Optional starter tasks and initiatives to bootstrap the company's first run                                                              |
+| **Budget defaults**   | Suggested token/cost budgets per agent and per company                                                                                   |
 
 Templates are **structure, not state.** No in-progress tasks, no historical cost data, no runtime artifacts. Just the blueprint.
 
@@ -84,9 +84,11 @@ Clicking into a company template shows:
 Two ways to use a template:
 
 **Install (fresh start):**
+
 ```
 paperclip install cliphub:<publisher>/<company-slug>
 ```
+
 Downloads the template and creates a new company in your local Paperclip instance. You add your own API keys, set budgets, customize agents, and hit go.
 
 **Fork:**
@@ -131,17 +133,17 @@ Or use the web UI to upload a template export directly.
 
 When publishing, you specify:
 
-| Field | Required | Description |
-|---|---|---|
-| `slug` | yes | URL-safe identifier (e.g. `lean-dev-shop`) |
-| `name` | yes | Display name |
-| `description` | yes | What this company does and who it's for |
-| `category` | yes | Primary category (see below) |
-| `tags` | no | Additional tags for discovery |
-| `version` | yes | Semver (e.g. `1.0.0`) |
-| `changelog` | no | What changed in this version |
-| `readme` | no | Extended documentation (markdown) |
-| `license` | no | Usage terms |
+| Field         | Required | Description                                |
+| ------------- | -------- | ------------------------------------------ |
+| `slug`        | yes      | URL-safe identifier (e.g. `lean-dev-shop`) |
+| `name`        | yes      | Display name                               |
+| `description` | yes      | What this company does and who it's for    |
+| `category`    | yes      | Primary category (see below)               |
+| `tags`        | no       | Additional tags for discovery              |
+| `version`     | yes      | Semver (e.g. `1.0.0`)                      |
+| `changelog`   | no       | What changed in this version               |
+| `readme`      | no       | Extended documentation (markdown)          |
+| `license`     | no       | Usage terms                                |
 
 ### Versioning
 
@@ -163,17 +165,17 @@ Scans your local exported templates and publishes any that are new or updated. U
 
 Company templates are organized by use case:
 
-| Category | Examples |
-|---|---|
-| **Software Development** | Full-stack dev shop, API development team, mobile app studio |
-| **Marketing & Growth** | Performance marketing agency, content marketing team, SEO shop |
-| **Content & Media** | Content studio, podcast production, newsletter operation |
-| **Research & Analysis** | Market research firm, competitive intelligence, data analysis team |
-| **Operations** | Customer support org, internal ops team, QA/testing shop |
-| **Sales** | Outbound sales team, lead generation, account management |
-| **Finance & Legal** | Bookkeeping service, compliance monitoring, financial analysis |
-| **Creative** | Design agency, copywriting studio, brand development |
-| **General Purpose** | Starter templates, minimal orgs, single-agent setups |
+| Category                 | Examples                                                           |
+| ------------------------ | ------------------------------------------------------------------ |
+| **Software Development** | Full-stack dev shop, API development team, mobile app studio       |
+| **Marketing & Growth**   | Performance marketing agency, content marketing team, SEO shop     |
+| **Content & Media**      | Content studio, podcast production, newsletter operation           |
+| **Research & Analysis**  | Market research firm, competitive intelligence, data analysis team |
+| **Operations**           | Customer support org, internal ops team, QA/testing shop           |
+| **Sales**                | Outbound sales team, lead generation, account management           |
+| **Finance & Legal**      | Bookkeeping service, compliance monitoring, financial analysis     |
+| **Creative**             | Design agency, copywriting studio, brand development               |
+| **General Purpose**      | Starter templates, minimal orgs, single-agent setups               |
 
 Categories are not exclusive — a template can have one primary category plus tags for cross-cutting concerns.
 
@@ -205,23 +207,23 @@ ClipHub is a **separate service** from Paperclip itself. Paperclip is self-hoste
 
 ### Integration Points
 
-| Layer | Role |
-|---|---|
-| **ClipHub Web** | Browse, search, discover, comment, star — the website |
-| **ClipHub API** | Registry API for publishing, downloading, searching programmatically |
-| **Paperclip CLI** | `paperclipai install`, `paperclipai publish`, `paperclipai cliphub sync` — built into Paperclip |
-| **Paperclip UI** | "Browse ClipHub" panel in the Paperclip web UI for discovering templates without leaving the app |
+| Layer             | Role                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------ |
+| **ClipHub Web**   | Browse, search, discover, comment, star — the website                                            |
+| **ClipHub API**   | Registry API for publishing, downloading, searching programmatically                             |
+| **Paperclip CLI** | `paperclipai install`, `paperclipai publish`, `paperclipai cliphub sync` — built into Paperclip  |
+| **Paperclip UI**  | "Browse ClipHub" panel in the Paperclip web UI for discovering templates without leaving the app |
 
 ### Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Frontend | React + Vite (consistent with Paperclip) |
-| Backend | TypeScript + Hono (consistent with Paperclip) |
-| Database | PostgreSQL |
-| Search | Vector embeddings for semantic search |
-| Auth | GitHub OAuth |
-| Storage | Template zips stored in object storage (S3 or equivalent) |
+| Layer    | Technology                                                |
+| -------- | --------------------------------------------------------- |
+| Frontend | React + Vite (consistent with Paperclip)                  |
+| Backend  | TypeScript + Hono (consistent with Paperclip)             |
+| Database | PostgreSQL                                                |
+| Search   | Vector embeddings for semantic search                     |
+| Auth     | GitHub OAuth                                              |
+| Storage  | Template zips stored in object storage (S3 or equivalent) |
 
 ### Data Model (Sketch)
 

@@ -1,12 +1,4 @@
-import {
-  boolean,
-  index,
-  jsonb,
-  pgTable,
-  text,
-  timestamp,
-  uuid,
-} from "drizzle-orm/pg-core";
+import { boolean, index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -18,13 +10,19 @@ export const issueWorkProducts = pgTable(
   "issue_work_products",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
-    issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
-    executionWorkspaceId: uuid("execution_workspace_id")
-      .references(() => executionWorkspaces.id, { onDelete: "set null" }),
-    runtimeServiceId: uuid("runtime_service_id")
-      .references(() => workspaceRuntimeServices.id, { onDelete: "set null" }),
+    issueId: uuid("issue_id")
+      .notNull()
+      .references(() => issues.id, { onDelete: "cascade" }),
+    executionWorkspaceId: uuid("execution_workspace_id").references(() => executionWorkspaces.id, {
+      onDelete: "set null",
+    }),
+    runtimeServiceId: uuid("runtime_service_id").references(() => workspaceRuntimeServices.id, {
+      onDelete: "set null",
+    }),
     type: text("type").notNull(),
     provider: text("provider").notNull(),
     externalId: text("external_id"),
@@ -56,9 +54,6 @@ export const issueWorkProducts = pgTable(
       table.provider,
       table.externalId,
     ),
-    companyUpdatedIdx: index("issue_work_products_company_updated_idx").on(
-      table.companyId,
-      table.updatedAt,
-    ),
+    companyUpdatedIdx: index("issue_work_products_company_updated_idx").on(table.companyId, table.updatedAt),
   }),
 );

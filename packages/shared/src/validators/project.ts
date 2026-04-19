@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PROJECT_STATUSES } from "../constants.js";
+import { envConfigSchema } from "./secret.js";
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -31,6 +32,10 @@ export const projectWorkspaceRuntimeConfigSchema = z
   .object({
     workspaceRuntime: z.record(z.unknown()).optional().nullable(),
     desiredState: z.enum(["running", "stopped"]).optional().nullable(),
+    serviceStates: z
+      .record(z.enum(["running", "stopped"]))
+      .optional()
+      .nullable(),
   })
   .strict();
 
@@ -108,6 +113,7 @@ const projectFields = {
   leadAgentId: z.string().uuid().optional().nullable(),
   targetDate: z.string().optional().nullable(),
   color: z.string().optional().nullable(),
+  env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
 };

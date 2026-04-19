@@ -52,8 +52,13 @@ export function ProviderQuotaCard({
   // recomputed on every parent render tick (providers tab polls every 30s, and each
   // card is mounted twice: once in the "all" tab grid and once in its per-provider tab).
   const totals = useMemo(() => {
-    let inputTokens = 0, outputTokens = 0, costCents = 0;
-    let apiRunCount = 0, subRunCount = 0, subInputTokens = 0, subOutputTokens = 0;
+    let inputTokens = 0,
+      outputTokens = 0,
+      costCents = 0;
+    let apiRunCount = 0,
+      subRunCount = 0,
+      subInputTokens = 0,
+      subOutputTokens = 0;
     for (const r of rows) {
       inputTokens += r.inputTokens;
       outputTokens += r.outputTokens;
@@ -102,27 +107,17 @@ export function ProviderQuotaCard({
       ? (totalCostCents / totalCompanySpendCents) * budgetMonthlyCents
       : budgetMonthlyCents;
 
-  const budgetPct =
-    providerBudgetShare > 0
-      ? Math.min(100, (totalCostCents / providerBudgetShare) * 100)
-      : 0;
+  const budgetPct = providerBudgetShare > 0 ? Math.min(100, (totalCostCents / providerBudgetShare) * 100) : 0;
 
   // 4.33 = average weeks per calendar month (52 / 12)
   const weeklyBudgetShare = providerBudgetShare > 0 ? providerBudgetShare / 4.33 : 0;
-  const weekPct =
-    weeklyBudgetShare > 0 ? Math.min(100, (weekSpendCents / weeklyBudgetShare) * 100) : 0;
+  const weekPct = weeklyBudgetShare > 0 ? Math.min(100, (weekSpendCents / weeklyBudgetShare) * 100) : 0;
 
   const hasBudget = budgetMonthlyCents > 0;
 
   // memoized so the Map and max are not reconstructed on every parent render tick
-  const windowMap = useMemo(
-    () => new Map(windowRows.map((r) => [r.window, r])),
-    [windowRows],
-  );
-  const maxWindowCents = useMemo(
-    () => Math.max(...windowRows.map((r) => r.costCents), 0),
-    [windowRows],
-  );
+  const windowMap = useMemo(() => new Map(windowRows.map((r) => [r.window, r])), [windowRows]);
+  const maxWindowCents = useMemo(() => Math.max(...windowRows.map((r) => r.costCents), 0), [windowRows]);
   const isClaudeQuotaPanel = provider === "anthropic";
   const isCodexQuotaPanel = provider === "openai" && quotaSource?.startsWith("codex-");
   const supportsSubscriptionQuota = provider === "anthropic" || provider === "openai";
@@ -134,17 +129,14 @@ export function ProviderQuotaCard({
       <CardHeader className="px-4 pt-4 pb-0 gap-1">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <CardTitle className="text-sm font-semibold">
-              {providerDisplayName(provider)}
-            </CardTitle>
+            <CardTitle className="text-sm font-semibold">{providerDisplayName(provider)}</CardTitle>
             <CardDescription className="text-xs mt-0.5">
               <span className="font-mono">{formatTokens(totalInputTokens)}</span> in
               {" · "}
               <span className="font-mono">{formatTokens(totalOutputTokens)}</span> out
               {(totalApiRuns > 0 || totalSubRuns > 0) && (
                 <span className="ml-1.5">
-                  ·{" "}
-                  {totalApiRuns > 0 && `~${totalApiRuns} api`}
+                  · {totalApiRuns > 0 && `~${totalApiRuns} api`}
                   {totalApiRuns > 0 && totalSubRuns > 0 && " / "}
                   {totalSubRuns > 0 && `~${totalSubRuns} sub`}
                   {" runs"}
@@ -152,9 +144,7 @@ export function ProviderQuotaCard({
               )}
             </CardDescription>
           </div>
-          <span className="text-xl font-bold tabular-nums shrink-0">
-            {formatCents(totalCostCents)}
-          </span>
+          <span className="text-xl font-bold tabular-nums shrink-0">{formatCents(totalCostCents)}</span>
         </div>
       </CardHeader>
 
@@ -183,9 +173,7 @@ export function ProviderQuotaCard({
           <>
             <div className="border-t border-border" />
             <div className="space-y-2">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Rolling windows
-              </p>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Rolling windows</p>
               <div className="space-y-2.5">
                 {ROLLING_WINDOWS.map((w) => {
                   const row = windowMap.get(w);
@@ -198,9 +186,7 @@ export function ProviderQuotaCard({
                     <div key={w} className="space-y-1">
                       <div className="flex items-center justify-between gap-2 text-xs">
                         <span className="font-mono text-muted-foreground w-6 shrink-0">{w}</span>
-                        <span className="text-muted-foreground font-mono flex-1">
-                          {formatTokens(tokens)} tok
-                        </span>
+                        <span className="text-muted-foreground font-mono flex-1">{formatTokens(tokens)} tok</span>
                         <span className="font-medium tabular-nums">{formatCents(cents)}</span>
                       </div>
                       <div className="h-2 w-full border border-border overflow-hidden">
@@ -222,9 +208,7 @@ export function ProviderQuotaCard({
           <>
             <div className="border-t border-border" />
             <div className="space-y-2">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Subscription
-              </p>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Subscription</p>
               <p className="text-xs text-muted-foreground">
                 <span className="font-mono text-foreground">{totalSubRuns}</span> runs
                 {" · "}
@@ -269,17 +253,13 @@ export function ProviderQuotaCard({
                     {/* model name and cost */}
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
-                        <span className="text-xs text-muted-foreground truncate font-mono block">
-                          {row.model}
-                        </span>
+                        <span className="text-xs text-muted-foreground truncate font-mono block">{row.model}</span>
                         <span className="text-[11px] text-muted-foreground truncate block">
                           {providerDisplayName(row.biller)} · {billingTypeDisplayName(row.billingType)}
                         </span>
                       </div>
                       <div className="flex items-center gap-3 shrink-0 tabular-nums text-xs">
-                        <span className="text-muted-foreground">
-                          {formatTokens(rowTokens)} tok
-                        </span>
+                        <span className="text-muted-foreground">{formatTokens(rowTokens)} tok</span>
                         <span className="font-medium">{formatCents(row.costCents)}</span>
                       </div>
                     </div>
@@ -327,11 +307,7 @@ export function ProviderQuotaCard({
                 <CodexSubscriptionPanel windows={quotaWindows} source={quotaSource} error={quotaError} />
               ) : (
                 <>
-                  {quotaError ? (
-                    <p className="text-xs text-destructive">
-                      {quotaError}
-                    </p>
-                  ) : null}
+                  {quotaError ? <p className="text-xs text-destructive">{quotaError}</p> : null}
                   <div className="space-y-2.5">
                     {quotaWindows.map((qw) => {
                       const fillColor =
@@ -362,12 +338,11 @@ export function ProviderQuotaCard({
                             </div>
                           )}
                           {qw.detail ? (
-                            <p className="text-xs text-muted-foreground">
-                              {qw.detail}
-                            </p>
+                            <p className="text-xs text-muted-foreground">{qw.detail}</p>
                           ) : qw.resetsAt ? (
                             <p className="text-xs text-muted-foreground">
-                              resets {new Date(qw.resetsAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                              resets{" "}
+                              {new Date(qw.resetsAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                             </p>
                           ) : null}
                         </div>
@@ -396,10 +371,7 @@ function QuotaPanelSkeleton() {
       </div>
       <div className="mt-4 space-y-3">
         {Array.from({ length: 3 }).map((_, index) => (
-          <div
-            key={index}
-            className="border border-border px-3.5 py-3"
-          >
+          <div key={index} className="border border-border px-3.5 py-3">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 space-y-2">
                 <Skeleton className="h-4 w-32" />

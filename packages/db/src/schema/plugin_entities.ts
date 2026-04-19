@@ -1,12 +1,4 @@
-import {
-  pgTable,
-  uuid,
-  text,
-  timestamp,
-  jsonb,
-  index,
-  uniqueIndex,
-} from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { plugins } from "./plugins.js";
 import type { PluginStateScopeKind } from "@paperclipai/shared";
 
@@ -45,10 +37,6 @@ export const pluginEntities = pgTable(
     pluginIdx: index("plugin_entities_plugin_idx").on(table.pluginId),
     typeIdx: index("plugin_entities_type_idx").on(table.entityType),
     scopeIdx: index("plugin_entities_scope_idx").on(table.scopeKind, table.scopeId),
-    externalIdx: uniqueIndex("plugin_entities_external_idx").on(
-      table.pluginId,
-      table.entityType,
-      table.externalId,
-    ),
+    externalIdx: uniqueIndex("plugin_entities_external_idx").on(table.pluginId, table.entityType, table.externalId),
   }),
 );

@@ -13,11 +13,7 @@ for (let i = 0; i < 256; i++) {
 }
 
 function normalizeArchivePath(pathValue: string) {
-  return pathValue
-    .replace(/\\/g, "/")
-    .split("/")
-    .filter(Boolean)
-    .join("/");
+  return pathValue.replace(/\\/g, "/").split("/").filter(Boolean).join("/");
 }
 
 function crc32(bytes: Uint8Array) {
@@ -46,11 +42,8 @@ function readUint16(source: Uint8Array, offset: number) {
 
 function readUint32(source: Uint8Array, offset: number) {
   return (
-    source[offset]! |
-    (source[offset + 1]! << 8) |
-    (source[offset + 2]! << 16) |
-    (source[offset + 3]! << 24)
-  ) >>> 0;
+    (source[offset]! | (source[offset + 1]! << 8) | (source[offset + 2]! << 16) | (source[offset + 3]! << 24)) >>> 0
+  );
 }
 
 function getDosDateTime(date: Date) {
@@ -85,9 +78,7 @@ function sharedArchiveRoot(paths: string[]) {
     .filter((parts) => parts.length > 0);
   if (firstSegments.length === 0) return null;
   const candidate = firstSegments[0]![0]!;
-  return firstSegments.every((parts) => parts.length > 1 && parts[0] === candidate)
-    ? candidate
-    : null;
+  return firstSegments.every((parts) => parts.length > 1 && parts[0] === candidate) ? candidate : null;
 }
 
 const binaryContentTypeByExtension: Record<string, string> = {
@@ -204,9 +195,7 @@ export async function readZipArchive(source: ArrayBuffer | Uint8Array): Promise<
   const files: Record<string, CompanyPortabilityFileEntry> = {};
   for (const entry of entries) {
     const normalizedPath =
-      rootPath && entry.path.startsWith(`${rootPath}/`)
-        ? entry.path.slice(rootPath.length + 1)
-        : entry.path;
+      rootPath && entry.path.startsWith(`${rootPath}/`) ? entry.path.slice(rootPath.length + 1) : entry.path;
     if (!normalizedPath) continue;
     files[normalizedPath] = entry.body;
   }
