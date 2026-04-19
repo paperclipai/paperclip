@@ -35,7 +35,7 @@ Implications:
 - `useTranslation()` hook → the universal access point from components.
 - `i18n.changeLanguage()` → wired to `LanguageSwitcher` and persisted by the detector.
 - `interpolation: { escapeValue: false }` → React already escapes; double-escaping corrupts template values.
-- `LanguageDetector` with `order: ["localStorage", "navigator"]`, `lookupLocalStorage: "paperclip.lang"`, `caches: ["localStorage"]` → user choice survives reload and defaults to browser language on first visit.
+- `LanguageDetector` with `order: ["localStorage", "navigator"]`, `lookupLocalStorage: "paperclip.lang"`, `caches: ["localStorage"]` → first visit picks up the operator's OS/browser locale automatically; the explicit `LanguageSwitcher` choice survives reload. No per-locale rollout plan is needed — `SUPPORTED_LANGS` gates the set, and any locale outside that set falls back to `en` via `fallbackLng`.
 
 ## Bundle layout and namespace strategy
 
@@ -125,16 +125,6 @@ handleLiveEvent(..., tRef.current);
 **Rule:** callers use `relativeTime(ts)` and `formatDate(ts)`. They do **not** branch on locale themselves. The locale dispatch is a single choke-point inside `utils.ts`; that's what lets `InstanceSettings` and `Agents` be locale-correct without per-page changes.
 
 **For future locales:** replace `isLangKo()` with a `currentLocale()` lookup once a third locale lands. Keep the choke-point in `utils.ts`.
-
-## Which locale is next
-
-Korean was chosen as the second locale because:
-
-- The primary operator cohort for the current deployment is Korean-speaking.
-- Korean exercises the parts of the i18n pipeline that English does not (CJK text width, different `Intl.RelativeTimeFormat` output shape, right-to-left we don't have yet — but worth noting).
-- It is a real-use locale, not a test locale — missing strings cause real friction, which is the fastest way to find them.
-
-This is not a commitment that Korean will always be the most-complete non-English locale. Any future PR adding (say) Japanese or Portuguese should target the same completeness bar (every key present, date helpers exercised) and update this document's "which locale is next" section if the intended ordering changes.
 
 ## Checklist for a new locale PR
 
