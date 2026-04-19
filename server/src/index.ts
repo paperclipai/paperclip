@@ -652,6 +652,14 @@ export async function startServer(): Promise<StartedServer> {
         }),
       );
 
+      // Aggressive no-progress detector: runs >10m old with zero events in
+      // last 8m get killed immediately. Stops stuck-opencode budget bleed.
+      tickPromises.push(
+        heartbeat.enforceStallTimeouts().catch((err) => {
+          logger.error({ err }, "enforceStallTimeouts failed");
+        }),
+      );
+
       // Sync wakeup_requests whose linked run reached a terminal state but
       // weren't updated (e.g. direct DB cancels, upgrade path bugs).
       tickPromises.push(

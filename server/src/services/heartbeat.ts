@@ -5232,6 +5232,91 @@ export function heartbeatService(db: Db) {
     return { timedOut: timedOut.length, runIds: timedOut };
   }
 
+  // Aggressive stall detector. enforceRunTimeouts only fires at the big
+  // 60-min ceiling. A model that never responds (opencode stuck in ep_poll
+  // on a hung provider) wastes the full budget before it's reaped. This
+  // catches those runs much earlier by checking for event silence: any run
+  // older than `minAgeMs` that has produced zero heartbeat_run_events in
+  // the last `silenceWindowMs` is killed. Normal progress produces an event
+  // every few seconds (tool call, text, step_finish), so silence ≥ 8 min
+  // is a definitive stall signal.
+  async function enforceStallTimeouts(opts?: {
+    minAgeMs?: number;
+    silenceWindowMs?: number;
+  }) {
+    const minAgeMs = opts?.minAgeMs ?? 10 * 60 * 1000;
+    const silenceWindowMs = opts?.silenceWindowMs ?? 8 * 60 * 1000;
+    const now = new Date();
+    const ageCutoff = new Date(now.getTime() - minAgeMs);
+    const silenceCutoff = new Date(now.getTime() - silenceWindowMs);
+
+    // Find all running runs older than minAgeMs.
+    const candidates = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.status, "running"), lt(heartbeatRuns.startedAt, ageCutoff)));
+
+    if (candidates.length === 0) return { stalled: 0, runIds: [] as string[] };
+
+    // For each candidate, check whether it produced any event recently.
+    const stalledIds: string[] = [];
+    for (const run of candidates) {
+      const [latest] = await db
+        .select({ seq: heartbeatRunEvents.seq })
+        .from(heartbeatRunEvents)
+        .where(and(eq(heartbeatRunEvents.runId, run.id), gt(heartbeatRunEvents.createdAt, silenceCutoff)))
+        .limit(1);
+      if (latest) continue; // produced an event recently — not stalled
+
+      const ageMin = run.startedAt ? Math.round((now.getTime() - new Date(run.startedAt).getTime()) / 60000) : 0;
+      const silenceMin = Math.round(silenceWindowMs / 60000);
+      const message = `Run stalled — zero events for ${silenceMin}m (run age ${ageMin}m). Terminated by no-progress detector.`;
+
+      const running = runningProcesses.get(run.id);
+      if (running) {
+        await terminateHeartbeatRunProcess({
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs: Math.max(1, running.graceSec) * 1000,
+        });
+        runningProcesses.delete(run.id);
+      } else if (run.processPid || run.processGroupId) {
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      }
+
+      const finalized = await setRunStatus(run.id, "failed", {
+        error: message,
+        errorCode: "stalled",
+        finishedAt: now,
+      });
+      await setWakeupStatus(run.wakeupRequestId, "failed", {
+        finishedAt: now,
+        error: message,
+      });
+      if (finalized) {
+        await appendRunEvent(finalized, await nextRunEventSeq(finalized.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "error",
+          message,
+          payload: { ageMin, silenceMin, ...(run.processPid ? { processPid: run.processPid } : {}) },
+        });
+        await releaseIssueExecutionAndPromote(finalized);
+      }
+      await finalizeAgentStatus(run.agentId, "failed");
+      await startNextQueuedRunForAgent(run.agentId);
+      stalledIds.push(run.id);
+    }
+
+    if (stalledIds.length > 0) {
+      logger.warn({ stalledCount: stalledIds.length, runIds: stalledIds }, "killed stalled (no-event) heartbeat runs");
+    }
+    return { stalled: stalledIds.length, runIds: stalledIds };
+  }
+
   // Prune long-lived telemetry rows that accumulate indefinitely.
   // agent_wakeup_requests grows ~10-20k/day (most are short-lived coalesced
   // entries) and is the largest row-count table in the schema. Keeping rows
@@ -5550,6 +5635,8 @@ export function heartbeatService(db: Db) {
     reapOrphanedRuns,
 
     enforceRunTimeouts,
+
+    enforceStallTimeouts,
 
     reconcileStaleWakeupRequests,
 
