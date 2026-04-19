@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  classifyUmbrellaWakeState: vi.fn().mockResolvedValue({ kind: "leaf", totalChildren: 0 }),
   listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
 }));

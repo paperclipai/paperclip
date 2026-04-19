@@ -12,6 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  classifyUmbrellaWakeState: vi.fn().mockResolvedValue({ kind: "leaf", totalChildren: 0 }),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -250,6 +251,70 @@ describe("issue update comment wakeups", () => {
           source: "issue.comment",
         }),
       }),
+    );
+  });
+
+  // AJL-548 — umbrella wake suppression via PATCH /issues/:id comment path.
+  it("AJL-548: suppresses comment wake when the target is an idle umbrella", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-suppress",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "bump",
+    });
+    mockIssueService.classifyUmbrellaWakeState.mockResolvedValue({
+      kind: "umbrella_idle_no_child",
+      totalChildren: 3,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: "bump" });
+
+    expect(res.status).toBe(200);
+    // Classifier was consulted, wakeup was NOT dispatched.
+    expect(mockIssueService.classifyUmbrellaWakeState).toHaveBeenCalledWith(existing.id);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("AJL-548: still wakes when the umbrella has an open executable child", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-allow",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "keep going",
+    });
+    mockIssueService.classifyUmbrellaWakeState.mockResolvedValue({
+      kind: "has_open_executable_child",
+      totalChildren: 2,
+      openExecutableChildCount: 1,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: "keep going" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ reason: "issue_commented" }),
     );
   });
 });

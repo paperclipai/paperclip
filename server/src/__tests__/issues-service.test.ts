@@ -1573,3 +1573,118 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
     ]);
   });
 });
+
+// AJL-548 — umbrella wake suppression classifier.
+describeEmbeddedPostgres("issueService.classifyUmbrellaWakeState", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-service-umbrella-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  async function seedIssue(companyId: string, overrides: Partial<typeof issues.$inferInsert> = {}) {
+    const id = overrides.id ?? randomUUID();
+    await db.insert(issues).values({
+      id,
+      companyId,
+      title: "Issue",
+      status: "todo",
+      priority: "medium",
+      ...overrides,
+    });
+    return id;
+  }
+
+  it("returns leaf when the issue has no children", async () => {
+    const companyId = await seedCompany();
+    const leaf = await seedIssue(companyId, { status: "in_progress" });
+
+    const state = await svc.classifyUmbrellaWakeState(leaf);
+    expect(state).toEqual({ kind: "leaf", totalChildren: 0 });
+  });
+
+  it("returns umbrella_idle_no_child when all children are done/cancelled", async () => {
+    const companyId = await seedCompany();
+    const umbrella = await seedIssue(companyId, { status: "in_progress" });
+    await seedIssue(companyId, { status: "done", parentId: umbrella });
+    await seedIssue(companyId, { status: "cancelled", parentId: umbrella });
+
+    const state = await svc.classifyUmbrellaWakeState(umbrella);
+    expect(state.kind).toBe("umbrella_idle_no_child");
+    if (state.kind === "umbrella_idle_no_child") {
+      expect(state.totalChildren).toBe(2);
+    }
+  });
+
+  it("returns has_open_executable_child when at least one child is todo/in_progress/blocked/in_review", async () => {
+    const companyId = await seedCompany();
+    const umbrella = await seedIssue(companyId, { status: "in_progress" });
+    await seedIssue(companyId, { status: "done", parentId: umbrella });
+    await seedIssue(companyId, { status: "in_progress", parentId: umbrella });
+
+    const state = await svc.classifyUmbrellaWakeState(umbrella);
+    expect(state.kind).toBe("has_open_executable_child");
+    if (state.kind === "has_open_executable_child") {
+      expect(state.totalChildren).toBe(2);
+      expect(state.openExecutableChildCount).toBe(1);
+    }
+  });
+
+  it("treats blocked and in_review children as open executable children", async () => {
+    const companyId = await seedCompany();
+
+    const umbrellaA = await seedIssue(companyId, { status: "in_progress" });
+    await seedIssue(companyId, { status: "blocked", parentId: umbrellaA });
+    const stateA = await svc.classifyUmbrellaWakeState(umbrellaA);
+    expect(stateA.kind).toBe("has_open_executable_child");
+
+    const umbrellaB = await seedIssue(companyId, { status: "in_progress" });
+    await seedIssue(companyId, { status: "in_review", parentId: umbrellaB });
+    const stateB = await svc.classifyUmbrellaWakeState(umbrellaB);
+    expect(stateB.kind).toBe("has_open_executable_child");
+  });
+
+  it("treats backlog children as idle for suppression purposes", async () => {
+    // Backlog children are not yet active work — they shouldn't prevent suppression
+    // because the umbrella isn't supervising anything runnable.
+    const companyId = await seedCompany();
+    const umbrella = await seedIssue(companyId, { status: "in_progress" });
+    await seedIssue(companyId, { status: "done", parentId: umbrella });
+    await seedIssue(companyId, { status: "backlog", parentId: umbrella });
+
+    const state = await svc.classifyUmbrellaWakeState(umbrella);
+    expect(state.kind).toBe("umbrella_idle_no_child");
+  });
+
+  it("returns leaf for an unknown issue id (defensive default)", async () => {
+    const state = await svc.classifyUmbrellaWakeState(randomUUID());
+    expect(state).toEqual({ kind: "leaf", totalChildren: 0 });
+  });
+});

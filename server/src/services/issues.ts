@@ -1421,6 +1421,50 @@ export function issueService(db: Db) {
       };
     },
 
+    /**
+     * AJL-548 — umbrella-wake suppression classifier.
+     *
+     * Classifies an issue's child topology to decide whether a heartbeat wake
+     * triggered by a comment / mention on that issue should actually run, or
+     * be suppressed because the umbrella is idle with no executable child.
+     *
+     * Returns one of:
+     *  - leaf: no children at all → normal execution (unchanged)
+     *  - has_open_executable_child: ≥1 child is todo|in_progress|blocked|in_review → normal wake
+     *  - umbrella_idle_no_child: has children but all are done|cancelled → suppress wake
+     */
+    classifyUmbrellaWakeState: async (issueId: string) => {
+      const issueRow = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issueRow) {
+        return { kind: "leaf" as const, totalChildren: 0 };
+      }
+
+      const children = await db
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.companyId, issueRow.companyId), eq(issues.parentId, issueId)));
+
+      if (children.length === 0) {
+        return { kind: "leaf" as const, totalChildren: 0 };
+      }
+
+      const openExecutableStatuses = new Set(["todo", "in_progress", "blocked", "in_review"]);
+      const openCount = children.filter((c) => openExecutableStatuses.has(c.status)).length;
+      if (openCount > 0) {
+        return {
+          kind: "has_open_executable_child" as const,
+          totalChildren: children.length,
+          openExecutableChildCount: openCount,
+        };
+      }
+
+      return { kind: "umbrella_idle_no_child" as const, totalChildren: children.length };
+    },
+
     create: async (
       companyId: string,
       data: IssueCreateInput,

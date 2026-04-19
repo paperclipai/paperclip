@@ -13,6 +13,7 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  classifyUmbrellaWakeState: vi.fn().mockResolvedValue({ kind: "leaf", totalChildren: 0 }),
   findMentionedAgents: vi.fn(async () => []),
 }));
 

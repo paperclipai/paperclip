@@ -71,6 +71,34 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
 
+// AJL-548 — wake reasons that originate from a comment/mention event and
+// are eligible for umbrella-idle suppression. Structural signals (assignment,
+// status change, child completion, execution review, etc.) are never
+// suppressed because they carry real board-state deltas.
+const COMMENT_DERIVED_WAKE_REASONS = new Set<string>([
+  "issue_commented",
+  "issue_comment_mentioned",
+  "issue_reopened_via_comment",
+]);
+
+function readWakeReason(wakeup: unknown): string | null {
+  if (!wakeup || typeof wakeup !== "object") return null;
+  const snapshot = (wakeup as Record<string, unknown>).contextSnapshot;
+  if (!snapshot || typeof snapshot !== "object") return null;
+  const reason = (snapshot as Record<string, unknown>).wakeReason;
+  return typeof reason === "string" && reason.length > 0 ? reason : null;
+}
+
+function readWakeTargetIssueId(wakeup: unknown, fallback: string): string {
+  if (!wakeup || typeof wakeup !== "object") return fallback;
+  const payload = (wakeup as Record<string, unknown>).payload;
+  if (payload && typeof payload === "object") {
+    const pid = (payload as Record<string, unknown>).issueId;
+    if (typeof pid === "string" && pid.length > 0) return pid;
+  }
+  return fallback;
+}
+
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type ActivityIssueRelationSummary = {
@@ -1955,7 +1983,35 @@ export function issueRoutes(
         }
       }
 
+      // AJL-548 — suppress comment-derived wakes on idle umbrella issues.
+      const umbrellaCache = new Map<string, Awaited<ReturnType<typeof svc.classifyUmbrellaWakeState>>>();
       for (const { agentId, wakeup } of wakeups.values()) {
+        const wakeReason = readWakeReason(wakeup);
+        if (wakeReason && COMMENT_DERIVED_WAKE_REASONS.has(wakeReason)) {
+          const targetIssueId = readWakeTargetIssueId(wakeup, issue.id);
+          let state = umbrellaCache.get(targetIssueId);
+          if (!state) {
+            try {
+              state = await svc.classifyUmbrellaWakeState(targetIssueId);
+              umbrellaCache.set(targetIssueId, state);
+            } catch (err) {
+              logger.warn({ err, issueId: targetIssueId }, "umbrella wake classifier failed");
+            }
+          }
+          if (state && state.kind === "umbrella_idle_no_child") {
+            logger.info(
+              {
+                issueId: targetIssueId,
+                agentId,
+                wakeReason,
+                totalChildren: state.totalChildren,
+                source: "routes.issues.update",
+              },
+              "wake.suppressed reason=umbrella_idle_no_child",
+            );
+            continue;
+          }
+        }
         heartbeat
           .wakeup(agentId, wakeup)
           .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
@@ -2516,7 +2572,35 @@ export function issueRoutes(
         });
       }
 
+      // AJL-548 — suppress comment-derived wakes on idle umbrella issues.
+      const umbrellaCache = new Map<string, Awaited<ReturnType<typeof svc.classifyUmbrellaWakeState>>>();
       for (const [agentId, wakeup] of wakeups.entries()) {
+        const wakeReason = readWakeReason(wakeup);
+        if (wakeReason && COMMENT_DERIVED_WAKE_REASONS.has(wakeReason)) {
+          const targetIssueId = readWakeTargetIssueId(wakeup, currentIssue.id);
+          let state = umbrellaCache.get(targetIssueId);
+          if (!state) {
+            try {
+              state = await svc.classifyUmbrellaWakeState(targetIssueId);
+              umbrellaCache.set(targetIssueId, state);
+            } catch (err) {
+              logger.warn({ err, issueId: targetIssueId }, "umbrella wake classifier failed");
+            }
+          }
+          if (state && state.kind === "umbrella_idle_no_child") {
+            logger.info(
+              {
+                issueId: targetIssueId,
+                agentId,
+                wakeReason,
+                totalChildren: state.totalChildren,
+                source: "routes.issues.comment",
+              },
+              "wake.suppressed reason=umbrella_idle_no_child",
+            );
+            continue;
+          }
+        }
         heartbeat
           .wakeup(agentId, wakeup)
           .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
