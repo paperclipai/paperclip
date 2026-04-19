@@ -814,7 +814,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {/* Edit-only: timeout + grace period */}
               {!isCreate && (
                 <>
-                  <Field label="Timeout (sec)" hint={help.timeoutSec}>
+                  <Field label="Wall timeout (sec)" hint={help.timeoutSec}>
                     <DraftNumberInput
                       value={eff(
                         "adapterConfig",
@@ -822,6 +822,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         Number(config.timeoutSec ?? 0),
                       )}
                       onCommit={(v) => mark("adapterConfig", "timeoutSec", v)}
+                      immediate
+                      className={inputClass}
+                    />
+                  </Field>
+                  <Field label="Idle output timeout (sec)" hint={help.idleTimeoutSec}>
+                    <DraftNumberInput
+                      value={eff(
+                        "adapterConfig",
+                        "idleTimeoutSec",
+                        Number(config.idleTimeoutSec ?? 0),
+                      )}
+                      onCommit={(v) => mark("adapterConfig", "idleTimeoutSec", v)}
                       immediate
                       className={inputClass}
                     />

@@ -49,6 +49,7 @@ describe("runChildProcess", () => {
     const finishedAt = Date.now();
 
     expect(result.exitCode).toBe(0);
+    expect(result.timedOutReason).toBeNull();
     expect(result.stdout).toBe("hello from stdin");
     expect(onSpawnCompletedAt).toBeGreaterThanOrEqual(startedAt + spawnDelayMs);
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
@@ -81,6 +82,7 @@ describe("runChildProcess", () => {
 
     descendantPid = Number.parseInt(result.stdout.trim(), 10);
     expect(result.timedOut).toBe(true);
+    expect(result.timedOutReason).toBe("wall");
     expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
 
     expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
@@ -112,8 +114,51 @@ describe("runChildProcess", () => {
     );
 
     expect(result.timedOut).toBe(false);
+    expect(result.timedOutReason).toBeNull();
     expect(result.exitCode).toBe(0);
     expect(logCalls).toBeGreaterThan(0);
     expect(result.stdout.length).toBe(chunkSize * numChunks);
+  });
+
+  it("idle watchdog kills a child that emits no stdout/stderr", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "setInterval(() => {}, 500);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        idleTimeoutSec: 1,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.timedOut).toBe(true);
+    expect(result.timedOutReason).toBe("idle");
+  });
+
+  it("idle watchdog resets on child output", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        "let n=0; setInterval(() => { process.stdout.write('.'); n++; if (n>=12) process.exit(0); }, 250);",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 30,
+        idleTimeoutSec: 1,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.timedOut).toBe(false);
+    expect(result.timedOutReason).toBeNull();
+    expect(result.exitCode).toBe(0);
   });
 });

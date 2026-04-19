@@ -18,7 +18,8 @@ Core fields:
 - env (object, optional): KEY=VALUE environment variables
 
 Operational fields:
-- timeoutSec (number, optional): run timeout in seconds
+- timeoutSec (number, optional): wall-clock run timeout in seconds (from spawn); 0 disables
+- idleTimeoutSec (number, optional): kill if no stdout/stderr for this many seconds; 0 disables
 - graceSec (number, optional): SIGTERM grace period in seconds
 `,
 };

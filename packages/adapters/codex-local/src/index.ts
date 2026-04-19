@@ -44,7 +44,8 @@ Core fields:
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
 
 Operational fields:
-- timeoutSec (number, optional): run timeout in seconds
+- timeoutSec (number, optional): wall-clock run timeout in seconds (0 disables)
+- idleTimeoutSec (number, optional): kill if no stdout/stderr for this many seconds (0 disables)
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:

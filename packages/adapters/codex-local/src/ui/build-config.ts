@@ -75,6 +75,7 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   ac.model = v.model || DEFAULT_CODEX_LOCAL_MODEL;
   if (v.thinkingEffort) ac.modelReasoningEffort = v.thinkingEffort;
   ac.timeoutSec = 0;
+  ac.idleTimeoutSec = 0;
   ac.graceSec = 15;
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);

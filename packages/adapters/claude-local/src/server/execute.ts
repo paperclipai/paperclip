@@ -22,6 +22,7 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  formatRunChildProcessTimedOutErrorMessage,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseClaudeStreamJson,
@@ -54,6 +55,7 @@ interface ClaudeRuntimeConfig {
   env: Record<string, string>;
   loggedEnv: Record<string, string>;
   timeoutSec: number;
+  idleTimeoutSec: number;
   graceSec: number;
   extraArgs: string[];
 }
@@ -236,6 +238,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
+  const idleTimeoutSec = asNumber(config.idleTimeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
@@ -253,6 +256,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env,
     loggedEnv,
     timeoutSec,
+    idleTimeoutSec,
     graceSec,
     extraArgs,
   };
@@ -279,6 +283,7 @@ export async function runClaudeLogin(input: {
     cwd: runtime.cwd,
     env: runtime.env,
     timeoutSec: runtime.timeoutSec,
+    idleTimeoutSec: runtime.idleTimeoutSec,
     graceSec: runtime.graceSec,
     onLog,
   });
@@ -326,6 +331,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env,
     loggedEnv,
     timeoutSec,
+    idleTimeoutSec,
     graceSec,
     extraArgs,
   } = runtimeConfig;
@@ -499,6 +505,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env,
       stdin: prompt,
       timeoutSec,
+      idleTimeoutSec,
       graceSec,
       onSpawn,
       onLog,
@@ -535,7 +542,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorMessage:
+          formatRunChildProcessTimedOutErrorMessage(proc, { wallTimeoutSec: timeoutSec, idleTimeoutSec }) ??
+          "Timed out",
         errorCode: "timeout",
         errorMeta,
         clearSession: Boolean(opts.clearSessionOnMissingSession),

@@ -23,6 +23,7 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  formatRunChildProcessTimedOutErrorMessage,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
@@ -225,6 +226,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
+  const idleTimeoutSec = asNumber(config.idleTimeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
@@ -409,6 +411,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       cwd,
       env: runtimeEnv,
       timeoutSec,
+      idleTimeoutSec,
       graceSec,
       onSpawn,
       onLog: bufferedOnLog,
@@ -428,7 +431,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const toResult = (
     attempt: {
-      proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
+      proc: {
+        exitCode: number | null;
+        signal: string | null;
+        timedOut: boolean;
+        timedOutReason: "wall" | "idle" | null;
+        stdout: string;
+        stderr: string;
+      };
       rawStderr: string;
       parsed: ReturnType<typeof parsePiJsonl>;
     },
@@ -439,7 +449,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorMessage:
+          formatRunChildProcessTimedOutErrorMessage(attempt.proc, { wallTimeoutSec: timeoutSec, idleTimeoutSec }) ??
+          "Timed out",
         clearSession: clearSessionOnMissingSession,
       };
     }

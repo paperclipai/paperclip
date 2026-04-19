@@ -596,22 +596,27 @@ const RUNTIME_DEFAULT_RULES: Array<{ path: string[]; value: unknown }> = [
 const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; value: unknown }>> = {
   codex_local: [
     { path: ["timeoutSec"], value: 0 },
+    { path: ["idleTimeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
   ],
   gemini_local: [
     { path: ["timeoutSec"], value: 0 },
+    { path: ["idleTimeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
   ],
   opencode_local: [
     { path: ["timeoutSec"], value: 0 },
+    { path: ["idleTimeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
   ],
   cursor: [
     { path: ["timeoutSec"], value: 0 },
+    { path: ["idleTimeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
   ],
   claude_local: [
     { path: ["timeoutSec"], value: 0 },
+    { path: ["idleTimeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
     { path: ["maxTurnsPerRun"], value: 1000 },
   ],

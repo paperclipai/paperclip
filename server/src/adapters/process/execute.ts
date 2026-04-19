@@ -9,6 +9,7 @@ import {
   ensurePathInEnv,
   resolveCommandForLogs,
   runChildProcess,
+  formatRunChildProcessTimedOutErrorMessage,
 } from "../utils.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -32,6 +33,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
+  const idleTimeoutSec = asNumber(config.idleTimeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 15);
 
   if (onMeta) {
@@ -48,6 +50,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     cwd,
     env,
     timeoutSec,
+    idleTimeoutSec,
     graceSec,
     onLog,
   });
@@ -57,7 +60,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: true,
-      errorMessage: `Timed out after ${timeoutSec}s`,
+      errorMessage:
+        formatRunChildProcessTimedOutErrorMessage(proc, { wallTimeoutSec: timeoutSec, idleTimeoutSec }) ??
+        "Timed out",
     };
   }
 

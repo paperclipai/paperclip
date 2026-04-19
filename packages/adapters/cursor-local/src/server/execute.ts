@@ -23,6 +23,7 @@ import {
   stringifyPaperclipWakePayload,
   joinPromptSections,
   runChildProcess,
+  formatRunChildProcessTimedOutErrorMessage,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
@@ -286,6 +287,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
+  const idleTimeoutSec = asNumber(config.idleTimeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
@@ -439,6 +441,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       cwd,
       env,
       timeoutSec,
+      idleTimeoutSec,
       graceSec,
       stdin: prompt,
       onSpawn,
@@ -466,6 +469,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: number | null;
         signal: string | null;
         timedOut: boolean;
+        timedOutReason: "wall" | "idle" | null;
         stdout: string;
         stderr: string;
       };
@@ -478,7 +482,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorMessage:
+          formatRunChildProcessTimedOutErrorMessage(attempt.proc, { wallTimeoutSec: timeoutSec, idleTimeoutSec }) ??
+          "Timed out",
         clearSession: clearSessionOnMissingSession,
       };
     }
