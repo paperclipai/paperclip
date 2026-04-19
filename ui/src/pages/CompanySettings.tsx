@@ -992,26 +992,16 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                       />
                     </Field>
                     <Field
-                      label={cred.type === "claude_oauth" ? "Replace credentials JSON (or bare access token)" : "Replace token"}
+                      label="Replace token"
                       hint="Leave empty to keep the existing token."
                     >
-                      {cred.type === "claude_oauth" ? (
-                        <textarea
-                          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none min-h-[6rem]"
-                          value={editToken}
-                          placeholder={'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-...","refreshToken":"...","expiresAt":1776...,"subscriptionType":"max"}}'}
-                          onChange={(e) => setEditToken(e.target.value)}
-                          spellCheck={false}
-                        />
-                      ) : (
-                        <input
-                          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
-                          type="password"
-                          value={editToken}
-                          placeholder={credentialPlaceholder(cred.type)}
-                          onChange={(e) => setEditToken(e.target.value)}
-                        />
-                      )}
+                      <input
+                        className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                        type="password"
+                        value={editToken}
+                        placeholder={credentialPlaceholder(cred.type)}
+                        onChange={(e) => setEditToken(e.target.value)}
+                      />
                     </Field>
                     <ToggleField
                       label="Default credential"
@@ -1203,38 +1193,21 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                 ))}
               </select>
             </Field>
-            {addType === "claude_oauth" && (
-              <div className="rounded-md bg-blue-500/5 border border-blue-500/20 px-3 py-2.5 space-y-1.5">
-                <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
-                  How to get your Claude subscription OAuth token:
-                </p>
-                <ol className="text-[11px] text-blue-600/80 dark:text-blue-400/80 space-y-1 list-decimal list-inside">
-                  <li>Run <code className="bg-blue-500/10 px-1 rounded">claude</code> on your local machine and complete browser login</li>
-                  <li>Run <code className="bg-blue-500/10 px-1 rounded">cat ~/.claude/.credentials.json</code></li>
-                  <li>Paste the entire JSON output below (the full <code className="bg-blue-500/10 px-1 rounded">{"{...}"}</code> blob, not just the access token)</li>
-                </ol>
-              </div>
-            )}
             <Field
-              label={addType === "claude_oauth" ? "Credentials JSON (or bare access token)" : "API Key"}
+              label={addType === "claude_oauth" ? "Access Token" : "API Key"}
+              hint={
+                addType === "claude_oauth"
+                  ? "Run `claude` locally, then cat ~/.claude/.credentials.json and paste the accessToken value (starts with sk-ant-oat01-)."
+                  : undefined
+              }
             >
-              {addType === "claude_oauth" ? (
-                <textarea
-                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none min-h-[7rem]"
-                  value={addToken}
-                  placeholder={'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-...","refreshToken":"sk-ant-ort01-...","expiresAt":1776...,"subscriptionType":"max"}}'}
-                  onChange={(e) => setAddToken(e.target.value)}
-                  spellCheck={false}
-                />
-              ) : (
-                <input
-                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
-                  type="password"
-                  value={addToken}
-                  placeholder={credentialPlaceholder(addType)}
-                  onChange={(e) => setAddToken(e.target.value)}
-                />
-              )}
+              <input
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                type="password"
+                value={addToken}
+                placeholder={credentialPlaceholder(addType)}
+                onChange={(e) => setAddToken(e.target.value)}
+              />
             </Field>
             <ToggleField
               label="Set as default"
