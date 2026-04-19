@@ -280,6 +280,45 @@ describe("issue comment reopen routes", () => {
     );
   });
 
+  it("wakes the newly assigned agent after reassignment even when stale execution metadata exists", async () => {
+    const previousAssigneeId = "22222222-2222-4222-8222-222222222222";
+    const nextAssigneeId = "33333333-3333-4333-8333-333333333333";
+    const issue = {
+      ...makeIssue("todo"),
+      assigneeAgentId: previousAssigneeId,
+      executionRunId: "run-stale",
+      executionAgentNameKey: "previousagent",
+    };
+
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      assigneeAgentId: nextAssigneeId,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ assigneeAgentId: nextAssigneeId });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      nextAssigneeId,
+      expect.objectContaining({
+        reason: "issue_assigned",
+        payload: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          mutation: "update",
+        }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(previousAssigneeId, expect.anything());
+  });
+
   it("writes decision ids into executionState and inserts the decision inside the transaction", async () => {
     const policy = await normalizePolicy({
       stages: [

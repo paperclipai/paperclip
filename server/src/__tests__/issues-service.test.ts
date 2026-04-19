@@ -8,6 +8,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -328,6 +330,102 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         identifier: "PAP-1064",
       }),
     );
+  });
+
+  it("clears stale execution ownership on reassignment so the new assignee can check out", async () => {
+    const companyId = randomUUID();
+    const previousAgentId = randomUUID();
+    const nextAgentId = randomUUID();
+    const issueId = randomUUID();
+    const staleRunId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: previousAgentId,
+        companyId,
+        name: "PreviousAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: nextAgentId,
+        companyId,
+        name: "NextAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId: previousAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-19T13:00:00.000Z"),
+      },
+      {
+        id: checkoutRunId,
+        companyId,
+        agentId: nextAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-19T13:05:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned issue with stale execution ownership",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: previousAgentId,
+      executionRunId: staleRunId,
+      executionAgentNameKey: "previousagent",
+      executionLockedAt: new Date("2026-04-19T13:00:00.000Z"),
+    });
+
+    const reassigned = await svc.update(issueId, { assigneeAgentId: nextAgentId });
+
+    expect(reassigned).toEqual(expect.objectContaining({
+      assigneeAgentId: nextAgentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    }));
+
+    const checkedOut = await svc.checkout(issueId, nextAgentId, ["todo"], checkoutRunId);
+
+    expect(checkedOut).toEqual(expect.objectContaining({
+      id: issueId,
+      assigneeAgentId: nextAgentId,
+      status: "in_progress",
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+    }));
   });
 
   it("returns null instead of throwing for malformed non-uuid issue refs", async () => {

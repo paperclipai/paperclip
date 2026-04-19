@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  agentRuntimeState,
   agentWakeupRequests,
   companies,
   createDb,
@@ -70,6 +71,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -253,6 +255,70 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
     expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("cancels a stale queued issue_assigned run after the issue is reassigned", async () => {
+    const { companyId, issueId, runId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+    });
+    const otherAgentId = randomUUID();
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db
+      .update(issues)
+      .set({
+        status: "todo",
+        assigneeAgentId: otherAgentId,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      })
+      .where(eq(issues.id, issueId));
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await heartbeat.resumeQueuedRuns();
+
+    const queuedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(queuedRun?.status).toBe("cancelled");
+    expect(queuedRun?.error).toContain("reassigned");
+    expect(issue?.assigneeAgentId).toBe(otherAgentId);
+    expect(issue?.executionRunId).toBeNull();
+    expect(wakeup?.status).toBe("cancelled");
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
