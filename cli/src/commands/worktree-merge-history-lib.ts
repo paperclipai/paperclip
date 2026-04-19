@@ -26,8 +26,6 @@ export type {
   IssueRow,
   CommentRow,
   IssueDocumentRow as IssueDocumentLinkRow,
-  DocumentRevisionTableRow as DocumentRevisionRow,
-  IssueAttachmentTableRow as IssueAttachmentRow,
   ProjectRow,
   ProjectWorkspaceRow,
   AgentRow,

@@ -112,6 +112,7 @@ function createAgent(): Agent {
     pauseReason: null,
     pausedAt: null,
     permissions: { canCreateAgents: false },
+    workspaceConfig: {},
   };
 }
 

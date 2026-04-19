@@ -238,7 +238,7 @@ export function costRoutes(db: Db) {
   router.get("/companies/:companyId/costs/by-billing-code", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const range = parseDateRange(req.query);
+    const range = parseCostDateRange(req.query);
     const rows = await costs.byBillingCode(companyId, range);
     res.json(rows);
   });

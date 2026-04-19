@@ -3803,307 +3803,6 @@ export function heartbeatService(db: Db) {
         taskKey,
       };
 
-      const seq = 1;
-      const handle: RunLogHandle | null = null;
-      const stdoutExcerpt = "";
-      const stderrExcerpt = "";
-      try {
-        const startedAt = run.startedAt ?? new Date();
-        const runningWithSession = await db
-          .update(heartbeatRuns)
-          .set({
-            startedAt,
-            sessionIdBefore: runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
-            contextSnapshot: context,
-            updatedAt: new Date(),
-          })
-          .where(eq(heartbeatRuns.id, run.id))
-          .returning()
-          .then((rows) => rows[0] ?? null);
-        if (runningWithSession) run = runningWithSession;
-
-        const runningAgent = await db
-          .update(agents)
-          .set({ status: "running", updatedAt: new Date() })
-          .where(eq(agents.id, agent.id))
-          .returning()
-          .then((rows) => rows[0] ?? null);
-
-        if (runningAgent) {
-          publishLiveEvent({
-            companyId: runningAgent.companyId,
-            type: "agent.status",
-            payload: {
-              agentId: runningAgent.id,
-              status: runningAgent.status,
-              outcome: "running",
-            },
-          });
-        }
-
-        const currentRun = run;
-        await appendRunEvent(currentRun, seq++, {
-          eventType: "lifecycle",
-          stream: "system",
-          level: "info",
-          message: "run started",
-        });
-
-        handle = await runLogStore.begin({
-          companyId: run.companyId,
-          agentId: run.agentId,
-          runId,
-        });
-
-        await db
-          .update(heartbeatRuns)
-          .set({
-            logStore: handle.store,
-            logRef: handle.logRef,
-            updatedAt: new Date(),
-          })
-          .where(eq(heartbeatRuns.id, runId));
-
-        const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-        const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
-          const sanitizedChunk = compactRunLogChunk(redactCurrentUserText(chunk, currentUserRedactionOptions));
-          if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
-          if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
-          const ts = new Date().toISOString();
-
-          if (handle) {
-            await runLogStore.append(handle, {
-              stream,
-              chunk: sanitizedChunk,
-              ts,
-            });
-          }
-
-          const payloadChunk =
-            sanitizedChunk.length > MAX_LIVE_LOG_CHUNK_BYTES
-              ? sanitizedChunk.slice(sanitizedChunk.length - MAX_LIVE_LOG_CHUNK_BYTES)
-              : sanitizedChunk;
-
-          publishLiveEvent({
-            companyId: run.companyId,
-            type: "heartbeat.run.log",
-            payload: {
-              runId: run.id,
-              agentId: run.agentId,
-              ts,
-              stream,
-              chunk: payloadChunk,
-              truncated: payloadChunk.length !== sanitizedChunk.length,
-            },
-          });
-        };
-        if (runScopedMentionedSkillKeys.length > 0) {
-          await onLog(
-            "stdout",
-            `[paperclip] Enabled run-scoped skills from issue mentions: ${runScopedMentionedSkillKeys.join(", ")}\n`,
-          );
-        }
-        for (const warning of runtimeWorkspaceWarnings) {
-          const logEntry = formatRuntimeWorkspaceWarningLog(warning);
-          await onLog(logEntry.stream, logEntry.chunk);
-        }
-        const adapterEnv = Object.fromEntries(
-          Object.entries(parseObject(resolvedConfig.env)).filter(
-            (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
-          ),
-        );
-        const runtimeServices = await ensureRuntimeServicesForRun({
-          db,
-          runId: run.id,
-          agent: {
-            id: agent.id,
-            name: agent.name,
-            companyId: agent.companyId,
-          },
-          issue: issueRef,
-          workspace: executionWorkspace,
-          executionWorkspaceId: persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
-          config: effectiveResolvedConfig,
-          adapterEnv,
-          onLog,
-        });
-        if (runtimeServices.length > 0) {
-          context.paperclipRuntimeServices = runtimeServices;
-          context.paperclipRuntimePrimaryUrl =
-            runtimeServices.find((service) => readNonEmptyString(service.url))?.url ?? null;
-          await db
-            .update(heartbeatRuns)
-            .set({
-              contextSnapshot: context,
-              updatedAt: new Date(),
-            })
-            .where(eq(heartbeatRuns.id, run.id));
-        }
-        if (issueId && (executionWorkspace.created || runtimeServices.some((service) => !service.reused))) {
-          try {
-            await issuesSvc.addComment(
-              issueId,
-              buildWorkspaceReadyComment({
-                workspace: executionWorkspace,
-                runtimeServices,
-              }),
-              { agentId: agent.id, runId: run.id },
-            );
-          } catch (err) {
-            await onLog(
-              "stderr",
-              `[paperclip] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
-            );
-          }
-        }
-        const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
-          if (meta.env && secretKeys.size > 0) {
-            for (const key of secretKeys) {
-              if (key in meta.env) meta.env[key] = "***REDACTED***";
-            }
-          }
-          throw error;
-        };
-        const adapterResult = await adapter.execute({
-          runId: run.id,
-          agent,
-          runtime: runtimeForAdapter,
-          config: runtimeConfig,
-          context,
-          onLog,
-          onMeta: onAdapterMeta,
-          onSpawn: async (meta) => {
-            await persistRunProcessMetadata(run.id, {
-              pid: meta.pid,
-              processGroupId:
-                "processGroupId" in meta && typeof meta.processGroupId === "number" ? meta.processGroupId : null,
-              startedAt: meta.startedAt,
-            });
-          },
-          authToken: authToken ?? undefined,
-        });
-        const adapterManagedRuntimeServices = adapterResult.runtimeServices
-          ? await persistAdapterManagedRuntimeServices({
-              db,
-              adapterType: agent.adapterType,
-              runId: run.id,
-              agent: {
-                id: agent.id,
-                name: agent.name,
-                companyId: agent.companyId,
-              },
-              issue: issueRef,
-              workspace: executionWorkspace,
-              reports: adapterResult.runtimeServices,
-            })
-          : [];
-        if (adapterManagedRuntimeServices.length > 0) {
-          const combinedRuntimeServices = [...runtimeServices, ...adapterManagedRuntimeServices];
-          context.paperclipRuntimeServices = combinedRuntimeServices;
-          context.paperclipRuntimePrimaryUrl =
-            combinedRuntimeServices.find((service) => readNonEmptyString(service.url))?.url ?? null;
-          await db
-            .update(heartbeatRuns)
-            .set({
-              contextSnapshot: context,
-              updatedAt: new Date(),
-            })
-            .where(eq(heartbeatRuns.id, run.id));
-        }
-        const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
-          agentId: agent.id,
-          previousSessionParams,
-          resolvedWorkspace: {
-            ...resolvedWorkspace,
-            cwd: executionWorkspace.cwd,
-          },
-        });
-        const runtimeSessionParams = runtimeSessionResolution.sessionParams;
-        const runtimeWorkspaceWarnings = [
-          ...resolvedWorkspace.warnings,
-          ...executionWorkspace.warnings,
-          ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),
-          ...(resetTaskSession && sessionResetReason
-            ? [
-                taskKey
-                  ? `Skipping saved session resume for task "${taskKey}" because ${sessionResetReason}.`
-                  : `Skipping saved session resume because ${sessionResetReason}.`,
-              ]
-            : []),
-        ];
-        context.paperclipWorkspace = {
-          cwd: executionWorkspace.cwd,
-          source: executionWorkspace.source,
-          mode: effectiveExecutionWorkspaceMode,
-          strategy: executionWorkspace.strategy,
-          projectId: executionWorkspace.projectId,
-          workspaceId: executionWorkspace.workspaceId,
-          repoUrl: executionWorkspace.repoUrl,
-          repoRef: executionWorkspace.repoRef,
-          branchName: executionWorkspace.branchName,
-          worktreePath: executionWorkspace.worktreePath,
-          agentHome: await (async () => {
-            const home = resolveDefaultAgentWorkspaceDir(agent.id);
-            await fs.mkdir(home, { recursive: true });
-            return home;
-          })(),
-        };
-        context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
-        const runtimeServiceIntents = (() => {
-          const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
-          return Array.isArray(runtimeConfig.services)
-            ? runtimeConfig.services.filter(
-                (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
-              )
-            : [];
-        })();
-        if (runtimeServiceIntents.length > 0) {
-          context.paperclipRuntimeServiceIntents = runtimeServiceIntents;
-        } else {
-          delete context.paperclipRuntimeServiceIntents;
-        }
-        if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
-          context.projectId = executionWorkspace.projectId;
-        }
-        const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
-        let previousSessionDisplayId = truncateDisplayId(
-          explicitResumeSessionDisplayId ??
-            taskSessionForRun?.sessionDisplayId ??
-            (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
-            readNonEmptyString(runtimeSessionParams?.sessionId) ??
-            runtimeSessionFallback,
-        );
-        let runtimeSessionIdForAdapter = readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
-        let runtimeSessionParamsForAdapter = runtimeSessionParams;
-
-        const sessionCompaction = await evaluateSessionCompaction({
-          agent,
-          sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
-          issueId,
-        });
-        if (sessionCompaction.rotate) {
-          context.paperclipSessionHandoffMarkdown = sessionCompaction.handoffMarkdown;
-          context.paperclipSessionRotationReason = sessionCompaction.reason;
-          context.paperclipPreviousSessionId = previousSessionDisplayId ?? runtimeSessionIdForAdapter;
-          runtimeSessionIdForAdapter = null;
-          runtimeSessionParamsForAdapter = null;
-          previousSessionDisplayId = null;
-          if (sessionCompaction.reason) {
-            runtimeWorkspaceWarnings.push(`Starting a fresh session because ${sessionCompaction.reason}.`);
-          }
-        } else {
-          delete context.paperclipSessionHandoffMarkdown;
-          delete context.paperclipSessionRotationReason;
-          delete context.paperclipPreviousSessionId;
-        }
-
-        const runtimeForAdapter = {
-          sessionId: runtimeSessionIdForAdapter,
-          sessionParams: runtimeSessionParamsForAdapter,
-          sessionDisplayId: previousSessionDisplayId,
-          taskKey,
-        };
-
         let seq = 1;
         let handle: RunLogHandle | null = null;
         let stdoutExcerpt = "";
@@ -4411,28 +4110,6 @@ export function heartbeatService(db: Db) {
             adapterResult.summary ?? null,
           );
 
-          await setRunStatus(run.id, status, {
-            finishedAt: new Date(),
-            error:
-              outcome === "succeeded"
-                ? "succeeded"
-                : outcome === "cancelled"
-                  ? "cancelled"
-                  : outcome === "failed"
-                    ? (adapterResult.errorCode ?? "adapter_failed")
-                    : null,
-            exitCode: adapterResult.exitCode,
-            signal: adapterResult.signal,
-            usageJson,
-            resultJson: persistedResultJson,
-            sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
-            stdoutExcerpt,
-            stderrExcerpt,
-            logBytes: logSummary?.bytes,
-            logSha256: logSummary?.sha256,
-            logCompressed: logSummary?.compressed ?? false,
-          });
-
           const usageJson =
             normalizedUsage || adapterResult.costUsd != null
               ? ({
@@ -4739,36 +4416,12 @@ export function heartbeatService(db: Db) {
             stream: "system",
             level: "error",
             message,
-          });
-          await finalizeIssueCommentPolicy(failedRun, agent);
-          await releaseIssueExecutionAndPromote(failedRun);
-
-          await updateRuntimeState(
-            agent,
-            failedRun,
-            {
-              exitCode: null,
-              signal: null,
-              timedOut: false,
-              errorMessage: message,
-            },
-            {
-              legacySessionId: runtimeForAdapter.sessionId,
-            },
-          );
-
-          if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
-            await upsertTaskSession({
-              companyId: agent.companyId,
-              agentId: agent.id,
-              adapterType: agent.adapterType,
-              taskKey,
-              sessionParamsJson: previousSessionParams,
-              sessionDisplayId: previousSessionDisplayId,
-              lastRunId: failedRun.id,
-              lastError: message,
-            });
+          }).catch(() => undefined);
+          const failedAgent = await getAgent(run.agentId).catch(() => null);
+          if (failedAgent) {
+            await finalizeIssueCommentPolicy(failedRun, failedAgent).catch(() => undefined);
           }
+          await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
         }
         // Ensure the agent is not left stuck in "running" if the inner catch handler's
         // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
@@ -4778,44 +4431,6 @@ export function heartbeatService(db: Db) {
         activeRunExecutions.delete(run.id);
         await startNextQueuedRunForAgent(run.agentId);
       }
-    } catch (outerErr) {
-      // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
-      // The inner catch did not fire, so we must record the failure here.
-      const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
-      logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
-      await setRunStatus(runId, "failed", {
-        error: message,
-        errorCode: "adapter_failed",
-        finishedAt: new Date(),
-      }).catch(() => undefined);
-      await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: new Date(),
-        error: message,
-      }).catch(() => undefined);
-      const failedRun = await getRun(runId).catch(() => null);
-      if (failedRun) {
-        // Emit a run-log event so the failure is visible in the run timeline,
-        // consistent with what the inner catch block does for adapter failures.
-        await appendRunEvent(failedRun, 1, {
-          eventType: "error",
-          stream: "system",
-          level: "error",
-          message,
-        }).catch(() => undefined);
-        const failedAgent = await getAgent(run.agentId).catch(() => null);
-        if (failedAgent) {
-          await finalizeIssueCommentPolicy(failedRun, failedAgent).catch(() => undefined);
-        }
-        await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
-      }
-      // Ensure the agent is not left stuck in "running" if the inner catch handler's
-      // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
-      await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
-    } finally {
-      await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
-      activeRunExecutions.delete(run.id);
-      await startNextQueuedRunForAgent(run.agentId);
-    }
   }
 
   async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
@@ -5924,6 +5539,30 @@ export function heartbeatService(db: Db) {
     getRun,
 
     getRunLogAccess,
+
+    listTodos: async (runId: string) => {
+      return db
+        .select()
+        .from(runTodos)
+        .where(eq(runTodos.runId, runId))
+        .orderBy(runTodos.seq);
+    },
+
+    upsertTodos: async (
+      run: typeof heartbeatRuns.$inferSelect,
+      todos: Array<{ label: string; status: "pending" | "in_progress" | "completed"; seq: number }>,
+      issueId: string | null,
+    ) => {
+      return upsertTodosForRun(run, todos, issueId);
+    },
+
+    listTodosForIssue: async (issueId: string) => {
+      return db
+        .select()
+        .from(runTodos)
+        .where(eq(runTodos.issueId, issueId))
+        .orderBy(runTodos.seq);
+    },
 
     getRuntimeState: async (agentId: string) => {
       const state = await getRuntimeState(agentId);
