@@ -1545,8 +1545,18 @@ export function issueService(db: Db) {
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
         }
-        // Self-correcting counter: use MAX(issue_number) + 1 if the counter
-        // has drifted below the actual max, preventing identifier collisions.
+        // Serialise identifier allocation per-company with an explicit row
+        // lock so two concurrent creates cannot both land on the same
+        // issue_number. Under READ COMMITTED the existing GREATEST-based
+        // self-correction was insufficient — duplicate_key on
+        // issues_identifier_idx still fired 5 times in a 40s window on
+        // 2026-04-18. The FOR UPDATE forces the second transaction to wait
+        // until the first has committed its INSERT, so the re-read of
+        // companies.issue_counter reflects the advance.
+        await tx.execute(
+          sql`select id from ${companies} where id = ${companyId} for update`,
+        );
+
         const [maxRow] = await tx
           .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
           .from(issues)
