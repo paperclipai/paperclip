@@ -6,6 +6,7 @@ export interface AgentConfigOverlay {
   adapterConfig: Record<string, unknown>;
   heartbeat: Record<string, unknown>;
   runtime: Record<string, unknown>;
+  credentialId?: string | null;
 }
 
 const ADAPTER_AGNOSTIC_KEYS = [
@@ -64,6 +65,10 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
 
   if (Object.keys(overlay.runtime).length > 0) {
     Object.assign(patch, overlay.runtime);
+  }
+
+  if (overlay.credentialId !== undefined) {
+    patch.credentialId = overlay.credentialId;
   }
 
   return patch;

@@ -27,6 +27,7 @@ function makeAgent(id: string, name: string): Agent {
     permissions: { canCreateAgents: false },
     lastHeartbeatAt: null,
     metadata: null,
+      credentialId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     urlKey: name.toLowerCase(),

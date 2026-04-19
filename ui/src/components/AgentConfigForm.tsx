@@ -4,12 +4,15 @@ import type {
   Agent,
   AdapterEnvironmentTestResult,
   CompanySecret,
+  CredentialType,
   EnvBinding,
 } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
+import { credentialsApi, type ProviderCredential } from "../api/credentials";
+import { Link } from "@/lib/router";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -22,7 +25,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
+import { FolderOpen, Heart, ChevronDown, X, KeyRound } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
@@ -107,7 +110,8 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     o.adapterType !== undefined ||
     Object.keys(o.adapterConfig).length > 0 ||
     Object.keys(o.heartbeat).length > 0 ||
-    Object.keys(o.runtime).length > 0
+    Object.keys(o.runtime).length > 0 ||
+    o.credentialId !== undefined
   );
 }
 
@@ -223,14 +227,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const isDirty = !isCreate && isOverlayDirty(overlay);
 
   /** Read effective value: overlay if dirty, else original */
-  function eff<T>(group: keyof Omit<AgentConfigOverlay, "adapterType">, field: string, original: T): T {
+  function eff<T>(
+    group: keyof Omit<AgentConfigOverlay, "adapterType" | "credentialId">,
+    field: string,
+    original: T,
+  ): T {
     const o = overlay[group];
     if (field in o) return o[field] as T;
     return original;
   }
 
   /** Mark field dirty in overlay */
-  function mark(group: keyof Omit<AgentConfigOverlay, "adapterType">, field: string, value: unknown) {
+  function mark(
+    group: keyof Omit<AgentConfigOverlay, "adapterType" | "credentialId">,
+    field: string,
+    value: unknown,
+  ) {
     setOverlay((prev) => ({
       ...prev,
       [group]: { ...prev[group], [field]: value },
@@ -316,6 +328,42 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(!isCreate && selectedCompanyId),
   });
 
+  const { data: credentials = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.credentials.list(selectedCompanyId)
+      : ["credentials", "none"],
+    queryFn: () => credentialsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+
+  const credentialTypesForAdapter = useMemo(
+    () => credentialTypesForAdapterType(adapterType),
+    [adapterType],
+  );
+  const availableCredentials = useMemo(
+    () => credentials.filter((c) => credentialTypesForAdapter.has(c.type)),
+    [credentials, credentialTypesForAdapter],
+  );
+
+  const selectedCredentialId = isCreate
+    ? (props.values.credentialId ?? null)
+    : overlay.credentialId !== undefined
+      ? overlay.credentialId
+      : (props.agent.credentialId ?? null);
+
+  const autoSelectedCredentialRef = useRef(false);
+  useEffect(() => {
+    if (!isCreate) return;
+    if (autoSelectedCredentialRef.current) return;
+    if (availableCredentials.length === 0) return;
+    if (props.values.credentialId) return;
+    const defaultCred = availableCredentials.find((c) => c.isDefault);
+    if (defaultCred) {
+      autoSelectedCredentialRef.current = true;
+      props.onChange({ credentialId: defaultCred.id });
+    }
+  }, [isCreate, availableCredentials]); // eslint-disable-line react-hooks/exhaustive-deps
+
   /** Props passed to adapter-specific config field components */
   const adapterFieldProps = {
     mode,
@@ -335,6 +383,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
+  const [credentialOpen, setCredentialOpen] = useState(false);
 
   // Create mode helpers
   const val = isCreate ? props.values : null;
@@ -542,6 +591,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 value={adapterType}
                 disabledTypes={disabledTypes}
                 onChange={(t) => {
+                  const nextCompatible = credentialTypesForAdapterType(t);
+                  const currentCredType = credentials.find(
+                    (c) => c.id === selectedCredentialId,
+                  )?.type;
+                  const shouldClearCred =
+                    !!selectedCredentialId &&
+                    (!currentCredType || !nextCompatible.has(currentCredType));
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type
                     const { adapterType: _at, ...defaults } = defaultCreateValues;
@@ -557,6 +613,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     } else if (t === "opencode_local") {
                       nextValues.model = "";
                     }
+                    if (shouldClearCred) nextValues.credentialId = null;
                     set!(nextValues);
                   } else {
                     // Clear all adapter config and explicitly blank out model + effort/mode keys
@@ -564,6 +621,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
+                      ...(shouldClearCred ? { credentialId: null } : {}),
                       adapterConfig: {
                         model:
                           t === "codex_local"
@@ -590,6 +648,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               />
             </Field>
           )}
+
+          {availableCredentials.length > 0 || selectedCredentialId ? (
+            <CredentialDropdown
+              credentials={availableCredentials}
+              value={selectedCredentialId}
+              onChange={(id) => {
+                if (isCreate) {
+                  set!({ credentialId: id });
+                } else {
+                  setOverlay((prev) => ({ ...prev, credentialId: id }));
+                }
+              }}
+              open={credentialOpen}
+              onOpenChange={setCredentialOpen}
+            />
+          ) : null}
 
           {testEnvironment.error && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -1374,6 +1448,121 @@ function ThinkingEffortDropdown({
               {option.id ? <span className="text-xs text-muted-foreground font-mono">{option.id}</span> : null}
             </button>
           ))}
+        </PopoverContent>
+      </Popover>
+    </Field>
+  );
+}
+
+const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
+  claude_oauth: "Claude OAuth",
+  claude_api_key: "Claude API Key",
+  gemini_api_key: "Gemini API Key",
+  openai_api_key: "OpenAI API Key",
+};
+
+function credentialTypesForAdapterType(adapterType: string): Set<CredentialType> {
+  switch (adapterType) {
+    case "claude_local":
+      return new Set<CredentialType>(["claude_oauth", "claude_api_key"]);
+    case "gemini_local":
+      return new Set<CredentialType>(["gemini_api_key"]);
+    case "codex_local":
+    case "cursor":
+      return new Set<CredentialType>(["openai_api_key"]);
+    default:
+      return new Set<CredentialType>();
+  }
+}
+
+function CredentialDropdown({
+  credentials,
+  value,
+  onChange,
+  open,
+  onOpenChange,
+}: {
+  credentials: ProviderCredential[];
+  value: string | null;
+  onChange: (id: string | null) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const selected = credentials.find((c) => c.id === value);
+
+  return (
+    <Field label="Credential" hint="Provider credential to inject into the adapter environment at run time. Manage in Company Settings.">
+      <Popover open={open} onOpenChange={onOpenChange}>
+        <PopoverTrigger asChild>
+          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+            <span className="inline-flex items-center gap-1.5">
+              <KeyRound className="h-3 w-3 text-muted-foreground" />
+              <span className={cn(!selected && "text-muted-foreground")}>
+                {selected ? selected.name : "No credential (use env vars)"}
+              </span>
+              {selected && (
+                <span className="rounded bg-muted px-1 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  {CREDENTIAL_TYPE_LABELS[selected.type] ?? selected.type}
+                </span>
+              )}
+              {selected?.isDefault && (
+                <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-600">
+                  default
+                </span>
+              )}
+            </span>
+            <ChevronDown className="h-3 w-3 text-muted-foreground" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
+          <div className="max-h-[240px] overflow-y-auto">
+            <button
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                !value && "bg-accent",
+              )}
+              onClick={() => {
+                onChange(null);
+                onOpenChange(false);
+              }}
+            >
+              No credential (use env vars)
+            </button>
+            {credentials.map((cred) => (
+              <button
+                key={cred.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                  cred.id === value && "bg-accent",
+                )}
+                onClick={() => {
+                  onChange(cred.id);
+                  onOpenChange(false);
+                }}
+              >
+                <span className="truncate">{cred.name}</span>
+                <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  {CREDENTIAL_TYPE_LABELS[cred.type] ?? cred.type}
+                </span>
+                {cred.isDefault && (
+                  <span className="shrink-0 rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-600">
+                    default
+                  </span>
+                )}
+              </button>
+            ))}
+            {credentials.length === 0 && (
+              <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                No compatible credentials.{" "}
+                <Link
+                  to="/company/settings"
+                  className="text-blue-600 dark:text-blue-400 underline underline-offset-2"
+                >
+                  Manage in Company Settings
+                </Link>
+              </p>
+            )}
+          </div>
         </PopoverContent>
       </Popover>
     </Field>

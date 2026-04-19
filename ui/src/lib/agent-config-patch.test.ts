@@ -44,6 +44,7 @@ function makeAgent(): Agent {
       canCreateAgents: false,
     },
     metadata: null,
+      credentialId: null,
   };
 }
 

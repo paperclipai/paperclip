@@ -34,6 +34,7 @@ function createAgent(
     spentMonthlyCents: 0,
     lastHeartbeatAt: null,
     metadata: null,
+      credentialId: null,
     createdAt: now,
     updatedAt: now,
     pauseReason: null,
