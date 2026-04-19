@@ -386,6 +386,14 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function isStaleIssueAssignedRunForAssignee(
+  run: { agentId: string; contextSnapshot: unknown },
+  assigneeAgentId: string | null | undefined,
+) {
+  return readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) === "issue_assigned" &&
+    assigneeAgentId !== run.agentId;
+}
+
 function normalizeLedgerBillingType(value: unknown): BillingType {
   const raw = readNonEmptyString(value);
   switch (raw) {
@@ -2239,22 +2247,66 @@ export function heartbeatService(db: Db) {
 
     try {
       claimed = await db.transaction(async (tx) => {
-        if (issueId && wakeReason === "issue_assigned") {
+        let issue:
+          | {
+              id: string;
+              status: string;
+              assigneeAgentId: string | null;
+              checkoutRunId: string | null;
+              executionRunId: string | null;
+            }
+          | null = null;
+        let currentExecutionRun: { id: string; status: string } | null = null;
+
+        if (issueId) {
           await tx.execute(
             sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
           );
 
-          const issue = await tx
-            .select({ assigneeAgentId: issues.assigneeAgentId })
+          issue = await tx
+            .select({
+              id: issues.id,
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              checkoutRunId: issues.checkoutRunId,
+              executionRunId: issues.executionRunId,
+            })
             .from(issues)
             .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
             .then((rows) => rows[0] ?? null);
 
-          if (!issue) {
+          if (wakeReason === "issue_assigned" && !issue) {
             throw new CancelQueuedRunError("Cancelled because the issue no longer exists");
           }
-          if (issue.assigneeAgentId !== run.agentId) {
+
+          currentExecutionRun = issue?.executionRunId
+            ? await tx
+                .select({
+                  id: heartbeatRuns.id,
+                  status: heartbeatRuns.status,
+                })
+                .from(heartbeatRuns)
+                .where(eq(heartbeatRuns.id, issue.executionRunId))
+                .then((rows) => rows[0] ?? null)
+            : null;
+
+          if (issue && isStaleIssueAssignedRunForAssignee(run, issue.assigneeAgentId)) {
             throw new CancelQueuedRunError("Cancelled because the issue was reassigned before this wake ran");
+          }
+
+          if (currentExecutionRun && currentExecutionRun.id !== run.id) {
+            throw new CancelQueuedRunError("Cancelled because the issue is already owned by another execution run");
+          }
+
+          if (
+            issue &&
+            issue.executionRunId == null &&
+            issue.status === "in_progress" &&
+            issue.checkoutRunId == null
+          ) {
+            throw new CancelQueuedRunError(
+              "Cancelled because the issue execution lock was cleared before this queued run was claimed",
+            );
           }
         }
 
@@ -3823,6 +3875,7 @@ export function heartbeatService(db: Db) {
           .select({
             id: issues.id,
             companyId: issues.companyId,
+            assigneeAgentId: issues.assigneeAgentId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
           })
@@ -3859,6 +3912,10 @@ export function heartbeatService(db: Db) {
           activeExecutionRun = null;
         }
 
+        if (activeExecutionRun && isStaleIssueAssignedRunForAssignee(activeExecutionRun, issue.assigneeAgentId)) {
+          activeExecutionRun = null;
+        }
+
         if (!activeExecutionRun && issue.executionRunId) {
           await tx
             .update(issues)
@@ -3886,8 +3943,7 @@ export function heartbeatService(db: Db) {
               sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
               asc(heartbeatRuns.createdAt),
             )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
+            .then((rows) => rows.find((candidate) => !isStaleIssueAssignedRunForAssignee(candidate, issue.assigneeAgentId)) ?? null);
 
           if (legacyRun) {
             activeExecutionRun = legacyRun;

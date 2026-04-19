@@ -425,6 +425,184 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBeNull();
   });
 
+  it("cancels a stale queued issue_assigned run after the issue is reassigned", async () => {
+    const { companyId, issueId, runId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+    });
+    const otherAgentId = randomUUID();
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db
+      .update(issues)
+      .set({
+        status: "todo",
+        assigneeAgentId: otherAgentId,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      })
+      .where(eq(issues.id, issueId));
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await heartbeat.resumeQueuedRuns();
+
+    const queuedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(queuedRun?.status).toBe("cancelled");
+    expect(queuedRun?.error).toContain("reassigned");
+    expect(issue?.assigneeAgentId).toBe(otherAgentId);
+    expect(issue?.executionRunId).toBeNull();
+    expect(wakeup?.status).toBe("cancelled");
+  });
+
+  it("does not restamp a stale queued issue_assigned run when waking the new assignee", async () => {
+    const { companyId, issueId, runId: staleRunId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+    });
+    const otherAgentId = randomUUID();
+    const blockerWakeupRequestId = randomUUID();
+    const blockerRunId = randomUUID();
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: blockerWakeupRequestId,
+      companyId,
+      agentId: otherAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {},
+      status: "claimed",
+      runId: blockerRunId,
+      claimedAt: new Date("2026-03-19T00:03:00.000Z"),
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: blockerRunId,
+      companyId,
+      agentId: otherAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: blockerWakeupRequestId,
+      contextSnapshot: { taskKey: "other-task" },
+      startedAt: new Date("2026-03-19T00:03:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:03:00.000Z"),
+    });
+
+    await db
+      .update(issues)
+      .set({
+        status: "todo",
+        assigneeAgentId: otherAgentId,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      })
+      .where(eq(issues.id, issueId));
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      })
+      .where(eq(heartbeatRuns.id, staleRunId));
+
+    const promotedRun = await heartbeat.wakeup(otherAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "update" },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+
+    expect(promotedRun).toEqual(expect.objectContaining({
+      agentId: otherAgentId,
+      status: "queued",
+    }));
+    expect(promotedRun?.id).not.toBe(staleRunId);
+
+    const issueAfterWake = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    const deferredWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, otherAgentId))
+      .then((rows) => rows.find((row) => row.status === "deferred_issue_execution") ?? null);
+
+    expect(issueAfterWake?.assigneeAgentId).toBe(otherAgentId);
+    expect(issueAfterWake?.executionRunId).toBe(promotedRun?.id ?? null);
+    expect(deferredWake).toBeNull();
+
+    await heartbeat.resumeQueuedRuns();
+
+    const staleRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, staleRunId))
+      .then((rows) => rows[0] ?? null);
+    const issueAfterResume = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(staleRun?.status).toBe("cancelled");
+    expect(staleRun?.error).toContain("reassigned");
+    expect(issueAfterResume?.executionRunId).toBe(promotedRun?.id ?? null);
+  });
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,
