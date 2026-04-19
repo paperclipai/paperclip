@@ -61,6 +61,45 @@ export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
+
+/**
+ * Patterns matching env var names that must NOT be passed to spawned agent
+ * CLI children. These are Paperclip-internal secrets (DB URL, Better Auth,
+ * Telegram) that an agent has no legitimate reason to read and which, if
+ * leaked, would let a misbehaving agent connect to production infra.
+ *
+ * Intentionally does NOT cover provider API keys (ANTHROPIC_API_KEY,
+ * OPENAI_API_KEY, CURSOR_API_KEY, etc.) — those are what the agent needs
+ * in order to call its model provider.
+ */
+const SENSITIVE_ENV_KEY_PATTERNS: RegExp[] = [
+  /^DATABASE_URL$/i,
+  /^POSTGRES_/i,
+  /^PG/i,
+  /^BETTER_AUTH_/i,
+  /^PAPERCLIP_AGENT_JWT_SECRET$/i,
+  /^PAPERCLIP_RUNTIME_DB_PASSWORD$/i,
+  /^PAPERCLIP_.*_SECRET$/i,
+  /^TELEGRAM_BOT_TOKEN$/i,
+  /^TELEGRAM_CHAT_ID$/i,
+  /^TELEGRAM_WEBHOOK_SECRET$/i,
+  /^DOKPLOY_API_KEY$/i,
+];
+
+/**
+ * Returns a copy of `parentEnv` with Paperclip-internal secrets stripped out
+ * so the result is safe to pass to spawned agent CLI children.
+ */
+export function sanitizeChildEnv(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(parentEnv)) {
+    if (value === undefined) continue;
+    if (SENSITIVE_ENV_KEY_PATTERNS.some((re) => re.test(key))) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
@@ -1078,7 +1117,7 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const rawMerged: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
+    const rawMerged: NodeJS.ProcessEnv = { ...sanitizeChildEnv(process.env), ...opts.env };
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".
