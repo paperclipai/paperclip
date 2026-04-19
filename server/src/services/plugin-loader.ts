@@ -24,7 +24,7 @@
  * @see PLUGIN_SPEC.md §10 — Package Contract
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
@@ -1892,7 +1892,7 @@ function resolveWorkerEntrypoint(
   if (plugin.packagePath && existsSync(plugin.packagePath)) {
     const entrypoint = path.resolve(plugin.packagePath, workerRelPath);
     if (entrypoint.startsWith(path.resolve(plugin.packagePath)) && existsSync(entrypoint)) {
-      return entrypoint;
+      return realpathSync(entrypoint);
     }
   }
 
@@ -1922,14 +1922,16 @@ function resolveWorkerEntrypoint(
     }
 
     if (existsSync(entrypoint)) {
-      return entrypoint;
+      // Resolve symlinks so process.argv[1] in the forked worker matches import.meta.url
+      // (Node.js resolves symlinks in import.meta.url but fork() passes the path as-is)
+      return realpathSync(entrypoint);
     }
   }
 
   // Fallback: try the worker path as-is (absolute or relative to cwd)
   // ONLY if it's already an absolute path and we trust the manifest (which we've already validated)
   if (path.isAbsolute(workerRelPath) && existsSync(workerRelPath)) {
-    return workerRelPath;
+    return realpathSync(workerRelPath);
   }
 
   throw new Error(
