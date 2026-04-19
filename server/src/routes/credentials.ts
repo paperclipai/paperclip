@@ -43,6 +43,14 @@ export function credentialRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       await requireCredentialManage(req, companyId);
 
+      if (req.query.skipTest !== "true") {
+        const probe = await probeCredential(req.body.type, req.body.credential);
+        if (!probe.ok) {
+          res.status(400).json({ error: `Credential test failed: ${probe.message}` });
+          return;
+        }
+      }
+
       const created = await svc.create(companyId, {
         name: req.body.name,
         type: req.body.type,
@@ -77,6 +85,14 @@ export function credentialRoutes(db: Db) {
       }
       assertCompanyAccess(req, existing.companyId);
       await requireCredentialManage(req, existing.companyId);
+
+      if (req.body.credential !== undefined && req.query.skipTest !== "true") {
+        const probe = await probeCredential(existing.type, req.body.credential);
+        if (!probe.ok) {
+          res.status(400).json({ error: `Credential test failed: ${probe.message}` });
+          return;
+        }
+      }
 
       const updated = await svc.update(id, {
         name: req.body.name,
