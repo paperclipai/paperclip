@@ -95,6 +95,7 @@ import {
   MoreHorizontal,
   MoreVertical,
   Paperclip,
+  PauseCircle,
   Plus,
   Repeat,
   SlidersHorizontal,
@@ -983,6 +984,19 @@ export function IssueDetail() {
     enabled: !!resolvedCompanyId && !!issue?.id,
     placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(issue?.id ?? "pending"),
   });
+
+  // AJL-552 — umbrella wake suppression state. Loaded only for non-terminal
+  // issues, since done/cancelled umbrellas can't be waked anyway.
+  const umbrellaStateEnabled =
+    !!issue?.id &&
+    issue.status !== "done" &&
+    issue.status !== "cancelled";
+  const { data: umbrellaState } = useQuery({
+    queryKey: issue?.id ? queryKeys.issues.umbrellaState(issue.id) : ["issues", "umbrella-state", "pending"],
+    queryFn: () => issuesApi.getUmbrellaState(issue!.id),
+    enabled: umbrellaStateEnabled,
+  });
+  const isUmbrellaIdleNoChild = umbrellaState?.kind === "umbrella_idle_no_child";
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -2198,6 +2212,31 @@ export function IssueDetail() {
         <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <EyeOff className="h-4 w-4 shrink-0" />
           This issue is hidden
+        </div>
+      )}
+
+      {isUmbrellaIdleNoChild && (
+        <div
+          data-testid="umbrella-idle-banner"
+          className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/40 dark:text-amber-100"
+        >
+          <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="font-medium">
+              Umbrella idle — no open executable child
+            </p>
+            <p className="text-xs text-amber-800/90 dark:text-amber-200/80">
+              All {umbrellaState?.totalChildren ?? 0} children are done or cancelled. Comment
+              wakes on this issue are suppressed. Close it, move to review, or open a new child
+              to resume supervision.{" "}
+              <Link
+                to="/docs/guides/board-operator/umbrella-wake-suppression"
+                className="underline underline-offset-2 hover:opacity-80"
+              >
+                Why?
+              </Link>
+            </p>
+          </div>
         </div>
       )}
 

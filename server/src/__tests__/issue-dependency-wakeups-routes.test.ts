@@ -13,6 +13,9 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  classifyUmbrellaWakeState: vi.fn().mockResolvedValue({ kind: "leaf", totalChildren: 0 }),
+  getSupervisorySummaryOnlyStreakForUmbrella: vi.fn().mockResolvedValue({ streak: 0, inspected: 0 }),
+  detectSameOwnerParentChildOverlap: vi.fn().mockResolvedValue({ kind: "no_overlap", reason: "no_parent" }),
   findMentionedAgents: vi.fn(async () => []),
 }));
 

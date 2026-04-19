@@ -21,7 +21,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { AlertTriangle, Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -94,6 +94,15 @@ export function Dashboard() {
     () => buildCompanyUserProfileMap(companyMembers?.users),
     [companyMembers?.users],
   );
+
+  // AJL-552 — board-hygiene surface: idle umbrellas where all children are
+  // done or cancelled, so comment wakes are suppressed. Recommend close or move
+  // to review.
+  const { data: idleUmbrellas } = useQuery({
+    queryKey: queryKeys.issues.idleUmbrellas(selectedCompanyId!),
+    queryFn: () => issuesApi.listIdleUmbrellas(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
@@ -312,6 +321,51 @@ export function Dashboard() {
               <SuccessRateChart runs={runs ?? []} />
             </ChartCard>
           </div>
+
+          {idleUmbrellas && idleUmbrellas.length > 0 && (
+            <div
+              data-testid="dashboard-idle-umbrellas"
+              className="rounded-xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-950/30"
+            >
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-amber-900 dark:text-amber-100">
+                    {idleUmbrellas.length} idle umbrella{idleUmbrellas.length === 1 ? "" : "s"} — close or move to review
+                  </p>
+                  <p className="text-xs text-amber-800/90 dark:text-amber-200/80">
+                    These issues are still in progress but every child is done or cancelled. Comment wakes are suppressed until an operator acts.{" "}
+                    <Link
+                      to="/docs/guides/board-operator/umbrella-wake-suppression"
+                      className="underline underline-offset-2 hover:opacity-80"
+                    >
+                      Why this doctrine exists
+                    </Link>
+                  </p>
+                </div>
+              </div>
+              <ul className="mt-3 divide-y divide-amber-200 border-t border-amber-200 dark:divide-amber-500/20 dark:border-amber-500/20">
+                {idleUmbrellas.slice(0, 10).map((u) => (
+                  <li key={u.id} className="py-2">
+                    <Link
+                      to={`/issues/${u.identifier ?? u.id}`}
+                      className="flex items-center gap-2 text-sm no-underline text-inherit hover:opacity-80"
+                    >
+                      <span className="text-xs font-mono text-amber-900/80 dark:text-amber-200/80 shrink-0">
+                        {u.identifier ?? u.id.slice(0, 8)}
+                      </span>
+                      <span className="truncate flex-1 text-amber-900 dark:text-amber-100">
+                        {u.title}
+                      </span>
+                      <span className="text-xs text-amber-800/70 dark:text-amber-200/60 shrink-0">
+                        {u.totalChildren} child{u.totalChildren === 1 ? "" : "ren"} · {u.status}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <PluginSlotOutlet
             slotTypes={["dashboardWidget"]}

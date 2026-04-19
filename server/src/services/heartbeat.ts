@@ -94,6 +94,14 @@ const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const ACTIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
+// AJL-551 — terminal statuses for a heartbeat run. resultClass is computed
+// once when a run first enters one of these statuses.
+const HEARTBEAT_RUN_TERMINAL_STATUSES = new Set([
+  "succeeded",
+  "failed",
+  "cancelled",
+  "timed_out",
+]);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -2153,6 +2161,43 @@ export function heartbeatService(db: Db) {
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
+    }
+
+    // AJL-551 — compute and persist resultClass on terminal transitions.
+    if (updated && HEARTBEAT_RUN_TERMINAL_STATUSES.has(updated.status) && updated.resultClass == null) {
+      try {
+        const context = parseObject(updated.contextSnapshot);
+        const issueId = readNonEmptyString(context.issueId);
+        const finishedAt = updated.finishedAt ?? new Date();
+        const startedAt = updated.startedAt ?? updated.createdAt ?? finishedAt;
+        const classification = await issuesSvc.classifyHeartbeatRunResult({
+          issueId,
+          runStartedAt: startedAt,
+          runFinishedAt: finishedAt,
+          runId: updated.id,
+        });
+        const patched = await db
+          .update(heartbeatRuns)
+          .set({ resultClass: classification.kind, updatedAt: new Date() })
+          .where(eq(heartbeatRuns.id, updated.id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        logger.info(
+          {
+            runId: updated.id,
+            agentId: updated.agentId,
+            issueId: issueId ?? null,
+            runStatus: updated.status,
+            resultClass: classification.kind,
+            signals: classification.signals,
+            source: "services.heartbeat.setRunStatus",
+          },
+          "heartbeat.run.result_classified",
+        );
+        if (patched) return patched;
+      } catch (err) {
+        logger.warn({ err, runId: updated.id }, "failed to classify heartbeat run result (AJL-551)");
+      }
     }
 
     return updated;

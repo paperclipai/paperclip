@@ -71,6 +71,67 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
 
+// AJL-548 — wake reasons that originate from a comment/mention event and
+// are eligible for umbrella-idle suppression. Structural signals (assignment,
+// status change, child completion, execution review, etc.) are never
+// suppressed because they carry real board-state deltas.
+const COMMENT_DERIVED_WAKE_REASONS = new Set<string>([
+  "issue_commented",
+  "issue_comment_mentioned",
+  "issue_reopened_via_comment",
+]);
+
+function readWakeReason(wakeup: unknown): string | null {
+  if (!wakeup || typeof wakeup !== "object") return null;
+  const snapshot = (wakeup as Record<string, unknown>).contextSnapshot;
+  if (!snapshot || typeof snapshot !== "object") return null;
+  const reason = (snapshot as Record<string, unknown>).wakeReason;
+  return typeof reason === "string" && reason.length > 0 ? reason : null;
+}
+
+function readWakeTargetIssueId(wakeup: unknown, fallback: string): string {
+  if (!wakeup || typeof wakeup !== "object") return fallback;
+  const payload = (wakeup as Record<string, unknown>).payload;
+  if (payload && typeof payload === "object") {
+    const pid = (payload as Record<string, unknown>).issueId;
+    if (typeof pid === "string" && pid.length > 0) return pid;
+  }
+  return fallback;
+}
+
+// AJL-550 — non-blocking same-owner parent+child overlap detector.
+// Fires a structured warn log when the pre-loop topology from AJL-444 → AJL-446
+// is detected on a child issue: both parent and child assigned to the same
+// supervisory owner, both in_progress, child has zero open grandchildren.
+// Fire-and-forget by contract: never rejects the mutation, never throws.
+function runOverlapDetector(
+  svc: ReturnType<typeof issueService>,
+  childIssueId: string,
+  source: string,
+): void {
+  try {
+    void Promise.resolve(svc.detectSameOwnerParentChildOverlap(childIssueId))
+      .then((overlap) => {
+        if (overlap && overlap.kind === "same_owner_parent_child_idle_grandchildren") {
+          logger.warn(
+            {
+              issueId: overlap.childId,
+              parentId: overlap.parentId,
+              ownerAgentId: overlap.ownerAgentId,
+              ownerUserId: overlap.ownerUserId,
+              totalGrandchildren: overlap.totalGrandchildren,
+              source,
+            },
+            "overlap.detected kind=same_owner_parent_child_idle_grandchildren",
+          );
+        }
+      })
+      .catch((err) => logger.warn({ err, issueId: childIssueId, source }, "overlap detector failed"));
+  } catch (err) {
+    logger.warn({ err, issueId: childIssueId, source }, "overlap detector failed synchronously");
+  }
+}
+
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type ActivityIssueRelationSummary = {
@@ -755,6 +816,25 @@ export function issueRoutes(
     });
   });
 
+  router.get("/issues/:id/umbrella-state", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const state = await svc.classifyUmbrellaWakeState(issue.id);
+    res.json({ issueId: issue.id, ...state });
+  });
+
+  router.get("/companies/:companyId/idle-umbrellas", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const rows = await svc.listIdleUmbrellasForCompany(companyId);
+    res.json(rows);
+  });
+
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -1369,6 +1449,9 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
+    // AJL-550 — overlap detector (non-blocking).
+    runOverlapDetector(svc, issue.id, "routes.issues.create");
+
     res.status(201).json(issue);
   });
 
@@ -1955,11 +2038,79 @@ export function issueRoutes(
         }
       }
 
+      // AJL-548 — suppress comment-derived wakes on idle umbrella issues.
+      const umbrellaCache = new Map<string, Awaited<ReturnType<typeof svc.classifyUmbrellaWakeState>>>();
+      const streakCache = new Map<string, Awaited<ReturnType<typeof svc.getSupervisorySummaryOnlyStreakForUmbrella>>>();
       for (const { agentId, wakeup } of wakeups.values()) {
+        const wakeReason = readWakeReason(wakeup);
+        if (wakeReason && COMMENT_DERIVED_WAKE_REASONS.has(wakeReason)) {
+          const targetIssueId = readWakeTargetIssueId(wakeup, issue.id);
+          let state = umbrellaCache.get(targetIssueId);
+          if (!state) {
+            try {
+              state = await svc.classifyUmbrellaWakeState(targetIssueId);
+              umbrellaCache.set(targetIssueId, state);
+            } catch (err) {
+              logger.warn({ err, issueId: targetIssueId }, "umbrella wake classifier failed");
+            }
+          }
+          if (state && state.kind === "umbrella_idle_no_child") {
+            logger.info(
+              {
+                issueId: targetIssueId,
+                agentId,
+                wakeReason,
+                totalChildren: state.totalChildren,
+                source: "routes.issues.update",
+              },
+              "wake.suppressed reason=umbrella_idle_no_child",
+            );
+            continue;
+          }
+          // AJL-551 — reinforce phase-1: if classifier says there is an open
+          // executable child but the last 2 heartbeat runs on this umbrella
+          // were supervisory_summary_only, force-suppress this wake too. This
+          // is the pre-loop topology from AJL-407 / AJL-444 / AJL-446 where
+          // the umbrella keeps churning supervisory summaries without any
+          // real child delta.
+          if (state && state.kind === "has_open_executable_child") {
+            let streakInfo = streakCache.get(targetIssueId);
+            if (!streakInfo) {
+              try {
+                streakInfo = await svc.getSupervisorySummaryOnlyStreakForUmbrella(targetIssueId, 5);
+                streakCache.set(targetIssueId, streakInfo);
+              } catch (err) {
+                logger.warn(
+                  { err, issueId: targetIssueId },
+                  "supervisory-summary streak lookup failed",
+                );
+              }
+            }
+            if (streakInfo && streakInfo.streak >= 2) {
+              logger.info(
+                {
+                  issueId: targetIssueId,
+                  agentId,
+                  wakeReason,
+                  totalChildren: state.totalChildren,
+                  openExecutableChildCount: state.openExecutableChildCount,
+                  supervisorySummaryOnlyStreak: streakInfo.streak,
+                  runsInspected: streakInfo.inspected,
+                  source: "routes.issues.update",
+                },
+                "wake.suppressed reason=supervisory_summary_only_streak",
+              );
+              continue;
+            }
+          }
+        }
         heartbeat
           .wakeup(agentId, wakeup)
           .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
       }
+
+      // AJL-550 — overlap detector (non-blocking).
+      runOverlapDetector(svc, issue.id, "routes.issues.update");
     })();
 
     res.json({ ...issueResponse, comment });
@@ -2516,7 +2667,67 @@ export function issueRoutes(
         });
       }
 
+      // AJL-548 — suppress comment-derived wakes on idle umbrella issues.
+      const umbrellaCache = new Map<string, Awaited<ReturnType<typeof svc.classifyUmbrellaWakeState>>>();
+      const streakCache = new Map<string, Awaited<ReturnType<typeof svc.getSupervisorySummaryOnlyStreakForUmbrella>>>();
       for (const [agentId, wakeup] of wakeups.entries()) {
+        const wakeReason = readWakeReason(wakeup);
+        if (wakeReason && COMMENT_DERIVED_WAKE_REASONS.has(wakeReason)) {
+          const targetIssueId = readWakeTargetIssueId(wakeup, currentIssue.id);
+          let state = umbrellaCache.get(targetIssueId);
+          if (!state) {
+            try {
+              state = await svc.classifyUmbrellaWakeState(targetIssueId);
+              umbrellaCache.set(targetIssueId, state);
+            } catch (err) {
+              logger.warn({ err, issueId: targetIssueId }, "umbrella wake classifier failed");
+            }
+          }
+          if (state && state.kind === "umbrella_idle_no_child") {
+            logger.info(
+              {
+                issueId: targetIssueId,
+                agentId,
+                wakeReason,
+                totalChildren: state.totalChildren,
+                source: "routes.issues.comment",
+              },
+              "wake.suppressed reason=umbrella_idle_no_child",
+            );
+            continue;
+          }
+          // AJL-551 — last-2-runs reinforcement on has_open_executable_child.
+          if (state && state.kind === "has_open_executable_child") {
+            let streakInfo = streakCache.get(targetIssueId);
+            if (!streakInfo) {
+              try {
+                streakInfo = await svc.getSupervisorySummaryOnlyStreakForUmbrella(targetIssueId, 5);
+                streakCache.set(targetIssueId, streakInfo);
+              } catch (err) {
+                logger.warn(
+                  { err, issueId: targetIssueId },
+                  "supervisory-summary streak lookup failed",
+                );
+              }
+            }
+            if (streakInfo && streakInfo.streak >= 2) {
+              logger.info(
+                {
+                  issueId: targetIssueId,
+                  agentId,
+                  wakeReason,
+                  totalChildren: state.totalChildren,
+                  openExecutableChildCount: state.openExecutableChildCount,
+                  supervisorySummaryOnlyStreak: streakInfo.streak,
+                  runsInspected: streakInfo.inspected,
+                  source: "routes.issues.comment",
+                },
+                "wake.suppressed reason=supervisory_summary_only_streak",
+              );
+              continue;
+            }
+          }
+        }
         heartbeat
           .wakeup(agentId, wakeup)
           .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));

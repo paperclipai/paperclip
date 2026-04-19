@@ -8,6 +8,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -1571,5 +1572,841 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
       titleProjectId,
       commentProjectId,
     ]);
+  });
+});
+
+// AJL-548 — umbrella wake suppression classifier.
+describeEmbeddedPostgres("issueService.classifyUmbrellaWakeState", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-service-umbrella-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  async function seedIssue(companyId: string, overrides: Partial<typeof issues.$inferInsert> = {}) {
+    const id = overrides.id ?? randomUUID();
+    await db.insert(issues).values({
+      id,
+      companyId,
+      title: "Issue",
+      status: "todo",
+      priority: "medium",
+      ...overrides,
+    });
+    return id;
+  }
+
+  it("returns leaf when the issue has no children", async () => {
+    const companyId = await seedCompany();
+    const leaf = await seedIssue(companyId, { status: "in_progress" });
+
+    const state = await svc.classifyUmbrellaWakeState(leaf);
+    expect(state).toEqual({ kind: "leaf", totalChildren: 0 });
+  });
+
+  it("returns umbrella_idle_no_child when all children are done/cancelled", async () => {
+    const companyId = await seedCompany();
+    const umbrella = await seedIssue(companyId, { status: "in_progress" });
+    await seedIssue(companyId, { status: "done", parentId: umbrella });
+    await seedIssue(companyId, { status: "cancelled", parentId: umbrella });
+
+    const state = await svc.classifyUmbrellaWakeState(umbrella);
+    expect(state.kind).toBe("umbrella_idle_no_child");
+    if (state.kind === "umbrella_idle_no_child") {
+      expect(state.totalChildren).toBe(2);
+    }
+  });
+
+  it("returns has_open_executable_child when at least one child is todo/in_progress/blocked/in_review", async () => {
+    const companyId = await seedCompany();
+    const umbrella = await seedIssue(companyId, { status: "in_progress" });
+    await seedIssue(companyId, { status: "done", parentId: umbrella });
+    await seedIssue(companyId, { status: "in_progress", parentId: umbrella });
+
+    const state = await svc.classifyUmbrellaWakeState(umbrella);
+    expect(state.kind).toBe("has_open_executable_child");
+    if (state.kind === "has_open_executable_child") {
+      expect(state.totalChildren).toBe(2);
+      expect(state.openExecutableChildCount).toBe(1);
+    }
+  });
+
+  it("treats blocked and in_review children as open executable children", async () => {
+    const companyId = await seedCompany();
+
+    const umbrellaA = await seedIssue(companyId, { status: "in_progress" });
+    await seedIssue(companyId, { status: "blocked", parentId: umbrellaA });
+    const stateA = await svc.classifyUmbrellaWakeState(umbrellaA);
+    expect(stateA.kind).toBe("has_open_executable_child");
+
+    const umbrellaB = await seedIssue(companyId, { status: "in_progress" });
+    await seedIssue(companyId, { status: "in_review", parentId: umbrellaB });
+    const stateB = await svc.classifyUmbrellaWakeState(umbrellaB);
+    expect(stateB.kind).toBe("has_open_executable_child");
+  });
+
+  it("treats backlog children as idle for suppression purposes", async () => {
+    // Backlog children are not yet active work — they shouldn't prevent suppression
+    // because the umbrella isn't supervising anything runnable.
+    const companyId = await seedCompany();
+    const umbrella = await seedIssue(companyId, { status: "in_progress" });
+    await seedIssue(companyId, { status: "done", parentId: umbrella });
+    await seedIssue(companyId, { status: "backlog", parentId: umbrella });
+
+    const state = await svc.classifyUmbrellaWakeState(umbrella);
+    expect(state.kind).toBe("umbrella_idle_no_child");
+  });
+
+  it("returns leaf for an unknown issue id (defensive default)", async () => {
+    const state = await svc.classifyUmbrellaWakeState(randomUUID());
+    expect(state).toEqual({ kind: "leaf", totalChildren: 0 });
+  });
+});
+
+// AJL-552 — list idle umbrellas for dashboard surface.
+describeEmbeddedPostgres("issueService.listIdleUmbrellasForCompany", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-service-idle-umbrellas-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  async function seedIssue(companyId: string, overrides: Partial<typeof issues.$inferInsert> = {}) {
+    const id = overrides.id ?? randomUUID();
+    await db.insert(issues).values({
+      id,
+      companyId,
+      title: "Issue",
+      status: "todo",
+      priority: "medium",
+      ...overrides,
+    });
+    return id;
+  }
+
+  it("returns only in_progress/in_review parents whose children are all terminal", async () => {
+    const companyId = await seedCompany();
+
+    // Idle umbrella — in_progress with only done/cancelled children → should surface.
+    const idleA = await seedIssue(companyId, { status: "in_progress", title: "Idle A" });
+    await seedIssue(companyId, { status: "done", parentId: idleA });
+    await seedIssue(companyId, { status: "cancelled", parentId: idleA });
+
+    // Idle in_review — also surfaces.
+    const idleB = await seedIssue(companyId, { status: "in_review", title: "Idle B" });
+    await seedIssue(companyId, { status: "done", parentId: idleB });
+
+    // Active umbrella — has at least one open executable child → skipped.
+    const activeUmbrella = await seedIssue(companyId, { status: "in_progress", title: "Active" });
+    await seedIssue(companyId, { status: "done", parentId: activeUmbrella });
+    await seedIssue(companyId, { status: "in_progress", parentId: activeUmbrella });
+
+    // Leaf issue — no children → skipped.
+    await seedIssue(companyId, { status: "in_progress", title: "Leaf" });
+
+    // Closed umbrella — status done, not a candidate → skipped.
+    const closedUmbrella = await seedIssue(companyId, { status: "done", title: "Closed" });
+    await seedIssue(companyId, { status: "done", parentId: closedUmbrella });
+
+    const idle = await svc.listIdleUmbrellasForCompany(companyId);
+    const titles = idle.map((row) => row.title).sort();
+    expect(titles).toEqual(["Idle A", "Idle B"]);
+
+    const idleARow = idle.find((row) => row.title === "Idle A");
+    expect(idleARow?.totalChildren).toBe(2);
+  });
+
+  it("scopes results to the requested company", async () => {
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+
+    const idleA = await seedIssue(companyA, { status: "in_progress", title: "A idle" });
+    await seedIssue(companyA, { status: "done", parentId: idleA });
+
+    const idleB = await seedIssue(companyB, { status: "in_progress", title: "B idle" });
+    await seedIssue(companyB, { status: "done", parentId: idleB });
+
+    const resultA = await svc.listIdleUmbrellasForCompany(companyA);
+    expect(resultA.map((row) => row.title)).toEqual(["A idle"]);
+
+    const resultB = await svc.listIdleUmbrellasForCompany(companyB);
+    expect(resultB.map((row) => row.title)).toEqual(["B idle"]);
+  });
+
+  it("returns empty array when the company has no idle umbrellas", async () => {
+    const companyId = await seedCompany();
+    await seedIssue(companyId, { status: "in_progress", title: "Leaf only" });
+    const result = await svc.listIdleUmbrellasForCompany(companyId);
+    expect(result).toEqual([]);
+  });
+});
+
+// AJL-550 — same-owner parent+child overlap detector.
+describeEmbeddedPostgres("issueService.detectSameOwnerParentChildOverlap", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-service-overlap-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  async function seedAgent(companyId: string, id: string = randomUUID()) {
+    await db.insert(agents).values({
+      id,
+      companyId,
+      name: `Agent-${id.slice(0, 8)}`,
+      role: "engineer",
+      status: "paused",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return id;
+  }
+
+  async function seedIssue(companyId: string, overrides: Partial<typeof issues.$inferInsert> = {}) {
+    const id = overrides.id ?? randomUUID();
+    await db.insert(issues).values({
+      id,
+      companyId,
+      title: "Issue",
+      status: "todo",
+      priority: "medium",
+      ...overrides,
+    });
+    return id;
+  }
+
+  it("detects overlap when same-owner parent+child are in_progress with no open grandchildren", async () => {
+    const companyId = await seedCompany();
+    const ownerAgentId = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+    });
+    const child = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parent,
+      assigneeAgentId: ownerAgentId,
+    });
+    // grandchild is closed → doesn't rescue the overlap
+    await seedIssue(companyId, { status: "done", parentId: child });
+
+    const result = await svc.detectSameOwnerParentChildOverlap(child);
+    expect(result.kind).toBe("same_owner_parent_child_idle_grandchildren");
+    if (result.kind === "same_owner_parent_child_idle_grandchildren") {
+      expect(result.parentId).toBe(parent);
+      expect(result.childId).toBe(child);
+      expect(result.ownerAgentId).toBe(ownerAgentId);
+      expect(result.ownerUserId).toBeNull();
+      expect(result.totalGrandchildren).toBe(1);
+    }
+  });
+
+  it("detects overlap with no grandchildren at all", async () => {
+    const companyId = await seedCompany();
+    const ownerAgentId = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+    });
+    const child = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parent,
+      assigneeAgentId: ownerAgentId,
+    });
+
+    const result = await svc.detectSameOwnerParentChildOverlap(child);
+    expect(result.kind).toBe("same_owner_parent_child_idle_grandchildren");
+  });
+
+  it("does not flag overlap when the child has an open grandchild (executable work)", async () => {
+    const companyId = await seedCompany();
+    const ownerAgentId = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+    });
+    const child = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parent,
+      assigneeAgentId: ownerAgentId,
+    });
+    await seedIssue(companyId, { status: "in_progress", parentId: child });
+
+    const result = await svc.detectSameOwnerParentChildOverlap(child);
+    expect(result.kind).toBe("no_overlap");
+    if (result.kind === "no_overlap") {
+      expect(result.reason).toBe("child_has_open_grandchildren");
+    }
+  });
+
+  it("treats blocked and in_review grandchildren as open (no overlap)", async () => {
+    const companyId = await seedCompany();
+    const ownerAgentId = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+    });
+    const child = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parent,
+      assigneeAgentId: ownerAgentId,
+    });
+    await seedIssue(companyId, { status: "blocked", parentId: child });
+    await seedIssue(companyId, { status: "in_review", parentId: child });
+
+    const result = await svc.detectSameOwnerParentChildOverlap(child);
+    expect(result.kind).toBe("no_overlap");
+    if (result.kind === "no_overlap") {
+      expect(result.reason).toBe("child_has_open_grandchildren");
+    }
+  });
+
+  it("does not flag overlap when assignees differ (different_owners)", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: await seedAgent(companyId),
+    });
+    const child = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parent,
+      assigneeAgentId: await seedAgent(companyId),
+    });
+
+    const result = await svc.detectSameOwnerParentChildOverlap(child);
+    expect(result.kind).toBe("no_overlap");
+    if (result.kind === "no_overlap") {
+      expect(result.reason).toBe("different_owners");
+    }
+  });
+
+  it("matches overlap on shared assigneeUserId (human supervisor)", async () => {
+    const companyId = await seedCompany();
+    const ownerUserId = `user-${randomUUID()}`;
+    const parent = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeUserId: ownerUserId,
+    });
+    const child = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parent,
+      assigneeUserId: ownerUserId,
+    });
+
+    const result = await svc.detectSameOwnerParentChildOverlap(child);
+    expect(result.kind).toBe("same_owner_parent_child_idle_grandchildren");
+    if (result.kind === "same_owner_parent_child_idle_grandchildren") {
+      expect(result.ownerAgentId).toBeNull();
+      expect(result.ownerUserId).toBe(ownerUserId);
+    }
+  });
+
+  it("does not flag overlap when parent or child is not in_progress", async () => {
+    const companyId = await seedCompany();
+    const ownerAgentId = await seedAgent(companyId);
+
+    const parentTodo = await seedIssue(companyId, {
+      status: "todo",
+      assigneeAgentId: ownerAgentId,
+    });
+    const childA = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parentTodo,
+      assigneeAgentId: ownerAgentId,
+    });
+    const resultA = await svc.detectSameOwnerParentChildOverlap(childA);
+    expect(resultA.kind).toBe("no_overlap");
+    if (resultA.kind === "no_overlap") {
+      expect(resultA.reason).toBe("parent_not_in_progress");
+    }
+
+    const parentOk = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+    });
+    const childB = await seedIssue(companyId, {
+      status: "todo",
+      parentId: parentOk,
+      assigneeAgentId: ownerAgentId,
+    });
+    const resultB = await svc.detectSameOwnerParentChildOverlap(childB);
+    expect(resultB.kind).toBe("no_overlap");
+    if (resultB.kind === "no_overlap") {
+      expect(resultB.reason).toBe("child_not_in_progress");
+    }
+  });
+
+  it("returns no_overlap for an issue with no parent", async () => {
+    const companyId = await seedCompany();
+    const leaf = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: await seedAgent(companyId),
+    });
+    const result = await svc.detectSameOwnerParentChildOverlap(leaf);
+    expect(result.kind).toBe("no_overlap");
+    if (result.kind === "no_overlap") {
+      expect(result.reason).toBe("no_parent");
+    }
+  });
+
+  it("returns no_overlap for an unknown issue id (defensive default)", async () => {
+    const result = await svc.detectSameOwnerParentChildOverlap(randomUUID());
+    expect(result.kind).toBe("no_overlap");
+    if (result.kind === "no_overlap") {
+      expect(result.reason).toBe("child_not_found");
+    }
+  });
+});
+
+// AJL-551 — heartbeat run result classifier.
+describeEmbeddedPostgres("issueService.classifyHeartbeatRunResult", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-service-resultclass-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(heartbeatRuns);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompanyAndAgent() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "SysOps",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  async function seedIssue(
+    companyId: string,
+    overrides: Partial<typeof issues.$inferInsert> = {},
+  ) {
+    const id = overrides.id ?? randomUUID();
+    await db.insert(issues).values({
+      id,
+      companyId,
+      title: "Issue",
+      status: "in_progress",
+      priority: "medium",
+      ...overrides,
+    });
+    return id;
+  }
+
+  async function seedRun(
+    companyId: string,
+    agentId: string,
+    issueId: string | null,
+    overrides: Partial<typeof heartbeatRuns.$inferInsert> = {},
+  ) {
+    const id = overrides.id ?? randomUUID();
+    const startedAt = overrides.startedAt ?? new Date(Date.now() - 60_000);
+    const finishedAt = overrides.finishedAt ?? new Date();
+    await db.insert(heartbeatRuns).values({
+      id,
+      companyId,
+      agentId,
+      status: overrides.status ?? "running",
+      startedAt,
+      finishedAt,
+      contextSnapshot: issueId ? { issueId } : {},
+      ...overrides,
+    });
+    return id;
+  }
+
+  it("returns supervisory_summary_only when issueId is missing", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const runId = await seedRun(companyId, agentId, null);
+    const result = await svc.classifyHeartbeatRunResult({
+      issueId: null,
+      runStartedAt: new Date(Date.now() - 60_000),
+      runFinishedAt: new Date(),
+      runId,
+    });
+    expect(result.kind).toBe("supervisory_summary_only");
+  });
+
+  it("returns executable_progress when a new subtask is created in the run window", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const umbrellaId = await seedIssue(companyId, { status: "in_progress" });
+    // Umbrella already existed before the window.
+    await db
+      .update(issues)
+      .set({ updatedAt: new Date(Date.now() - 120_000) })
+      .where(eq(issues.id, umbrellaId));
+    const runStartedAt = new Date(Date.now() - 60_000);
+    // New child created inside the window.
+    await seedIssue(companyId, { parentId: umbrellaId, status: "todo" });
+    const runId = await seedRun(companyId, agentId, umbrellaId, {
+      startedAt: runStartedAt,
+      finishedAt: new Date(),
+    });
+
+    const result = await svc.classifyHeartbeatRunResult({
+      issueId: umbrellaId,
+      runStartedAt,
+      runFinishedAt: new Date(),
+      runId,
+    });
+    expect(result.kind).toBe("executable_progress");
+    expect(result.signals.childSubtasksCreatedInWindow).toBe(1);
+  });
+
+  it("returns executable_progress when an existing child is touched in the run window", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const umbrellaId = await seedIssue(companyId, { status: "in_progress" });
+    const childId = await seedIssue(companyId, { parentId: umbrellaId, status: "todo" });
+    // Backdate both issues to before the window.
+    const before = new Date(Date.now() - 120_000);
+    await db.update(issues).set({ createdAt: before, updatedAt: before }).where(eq(issues.id, umbrellaId));
+    await db.update(issues).set({ createdAt: before, updatedAt: before }).where(eq(issues.id, childId));
+    const runStartedAt = new Date(Date.now() - 60_000);
+    // Touch the child inside the window.
+    await db.update(issues).set({ status: "in_progress", updatedAt: new Date() }).where(eq(issues.id, childId));
+    const runId = await seedRun(companyId, agentId, umbrellaId, {
+      startedAt: runStartedAt,
+      finishedAt: new Date(),
+    });
+
+    const result = await svc.classifyHeartbeatRunResult({
+      issueId: umbrellaId,
+      runStartedAt,
+      runFinishedAt: new Date(),
+      runId,
+    });
+    expect(result.kind).toBe("executable_progress");
+    expect(result.signals.childSubtasksTouchedInWindow).toBe(1);
+    expect(result.signals.childSubtasksCreatedInWindow).toBe(0);
+  });
+
+  it("returns bounded_handoff when the issue transitions to blocked during the run", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = await seedIssue(companyId, { status: "in_progress" });
+    const before = new Date(Date.now() - 120_000);
+    await db.update(issues).set({ createdAt: before, updatedAt: before }).where(eq(issues.id, issueId));
+    const runStartedAt = new Date(Date.now() - 60_000);
+    await db.update(issues).set({ status: "blocked", updatedAt: new Date() }).where(eq(issues.id, issueId));
+    const runId = await seedRun(companyId, agentId, issueId, {
+      startedAt: runStartedAt,
+      finishedAt: new Date(),
+    });
+
+    const result = await svc.classifyHeartbeatRunResult({
+      issueId,
+      runStartedAt,
+      runFinishedAt: new Date(),
+      runId,
+    });
+    expect(result.kind).toBe("bounded_handoff");
+    expect(result.signals.currentIssueStatus).toBe("blocked");
+  });
+
+  it("returns review_gate when the issue transitions to in_review during the run", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = await seedIssue(companyId, { status: "in_progress" });
+    const before = new Date(Date.now() - 120_000);
+    await db.update(issues).set({ createdAt: before, updatedAt: before }).where(eq(issues.id, issueId));
+    const runStartedAt = new Date(Date.now() - 60_000);
+    await db.update(issues).set({ status: "in_review", updatedAt: new Date() }).where(eq(issues.id, issueId));
+    const runId = await seedRun(companyId, agentId, issueId, {
+      startedAt: runStartedAt,
+      finishedAt: new Date(),
+    });
+
+    const result = await svc.classifyHeartbeatRunResult({
+      issueId,
+      runStartedAt,
+      runFinishedAt: new Date(),
+      runId,
+    });
+    expect(result.kind).toBe("review_gate");
+  });
+
+  it("returns supervisory_summary_only when only comments were posted with no issue/child delta", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const umbrellaId = await seedIssue(companyId, { status: "in_progress" });
+    const childId = await seedIssue(companyId, { parentId: umbrellaId, status: "in_progress" });
+    // Backdate both to before the window so updatedAt doesn't leak into it.
+    const before = new Date(Date.now() - 120_000);
+    await db.update(issues).set({ createdAt: before, updatedAt: before }).where(eq(issues.id, umbrellaId));
+    await db.update(issues).set({ createdAt: before, updatedAt: before }).where(eq(issues.id, childId));
+    const runStartedAt = new Date(Date.now() - 60_000);
+    const runId = await seedRun(companyId, agentId, umbrellaId, {
+      startedAt: runStartedAt,
+      finishedAt: new Date(),
+    });
+    // Posting comments alone should not count as progress.
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId: umbrellaId,
+      authorAgentId: agentId,
+      createdByRunId: runId,
+      body: "supervisory ping",
+    });
+
+    const result = await svc.classifyHeartbeatRunResult({
+      issueId: umbrellaId,
+      runStartedAt,
+      runFinishedAt: new Date(),
+      runId,
+    });
+    expect(result.kind).toBe("supervisory_summary_only");
+    expect(result.signals.commentsAuthoredByRun).toBe(1);
+    expect(result.signals.childSubtasksCreatedInWindow).toBe(0);
+    expect(result.signals.childSubtasksTouchedInWindow).toBe(0);
+  });
+});
+
+// AJL-551 — supervisory-summary-only streak lookup for last-2-runs gate.
+describeEmbeddedPostgres("issueService.getSupervisorySummaryOnlyStreakForUmbrella", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-service-streak-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(heartbeatRuns);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedBaseRow() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "SysOps",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const umbrellaId = randomUUID();
+    await db.insert(issues).values({
+      id: umbrellaId,
+      companyId,
+      title: "Umbrella",
+      status: "in_progress",
+      priority: "medium",
+    });
+    return { companyId, agentId, umbrellaId };
+  }
+
+  async function insertRun(
+    companyId: string,
+    agentId: string,
+    umbrellaId: string,
+    resultClass: string | null,
+    finishedAt: Date,
+  ) {
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      status: resultClass ? "succeeded" : "running",
+      startedAt: new Date(finishedAt.getTime() - 30_000),
+      finishedAt,
+      contextSnapshot: { issueId: umbrellaId },
+      resultClass,
+    });
+  }
+
+  it("returns 0 when there are no finished runs on the umbrella", async () => {
+    const { umbrellaId } = await seedBaseRow();
+    const result = await svc.getSupervisorySummaryOnlyStreakForUmbrella(umbrellaId);
+    expect(result).toEqual({ streak: 0, inspected: 0 });
+  });
+
+  it("counts 2 when the last 2 runs were supervisory_summary_only", async () => {
+    const { companyId, agentId, umbrellaId } = await seedBaseRow();
+    const now = Date.now();
+    await insertRun(companyId, agentId, umbrellaId, "executable_progress", new Date(now - 180_000));
+    await insertRun(companyId, agentId, umbrellaId, "supervisory_summary_only", new Date(now - 120_000));
+    await insertRun(companyId, agentId, umbrellaId, "supervisory_summary_only", new Date(now - 60_000));
+
+    const result = await svc.getSupervisorySummaryOnlyStreakForUmbrella(umbrellaId);
+    expect(result.streak).toBe(2);
+    expect(result.inspected).toBe(3);
+  });
+
+  it("breaks the streak at the first non-supervisory run (most recent win)", async () => {
+    const { companyId, agentId, umbrellaId } = await seedBaseRow();
+    const now = Date.now();
+    await insertRun(companyId, agentId, umbrellaId, "supervisory_summary_only", new Date(now - 180_000));
+    await insertRun(companyId, agentId, umbrellaId, "supervisory_summary_only", new Date(now - 120_000));
+    // Most recent run produced real progress — streak must reset to 0.
+    await insertRun(companyId, agentId, umbrellaId, "executable_progress", new Date(now - 60_000));
+
+    const result = await svc.getSupervisorySummaryOnlyStreakForUmbrella(umbrellaId);
+    expect(result.streak).toBe(0);
+  });
+
+  it("ignores runs that have not been classified yet (null resultClass)", async () => {
+    const { companyId, agentId, umbrellaId } = await seedBaseRow();
+    const now = Date.now();
+    await insertRun(companyId, agentId, umbrellaId, null, new Date(now - 30_000));
+    await insertRun(companyId, agentId, umbrellaId, "supervisory_summary_only", new Date(now - 90_000));
+    await insertRun(companyId, agentId, umbrellaId, "supervisory_summary_only", new Date(now - 150_000));
+
+    const result = await svc.getSupervisorySummaryOnlyStreakForUmbrella(umbrellaId);
+    expect(result.streak).toBe(2);
+    expect(result.inspected).toBe(2);
+  });
+
+  it("ignores runs whose contextSnapshot issueId does not match the umbrella", async () => {
+    const { companyId, agentId, umbrellaId } = await seedBaseRow();
+    const otherUmbrellaId = randomUUID();
+    await db.insert(issues).values({
+      id: otherUmbrellaId,
+      companyId,
+      title: "Other umbrella",
+      status: "in_progress",
+      priority: "medium",
+    });
+    const now = Date.now();
+    await insertRun(companyId, agentId, otherUmbrellaId, "supervisory_summary_only", new Date(now - 30_000));
+    await insertRun(companyId, agentId, otherUmbrellaId, "supervisory_summary_only", new Date(now - 60_000));
+    // The target umbrella has a single executable_progress run.
+    await insertRun(companyId, agentId, umbrellaId, "executable_progress", new Date(now - 90_000));
+
+    const result = await svc.getSupervisorySummaryOnlyStreakForUmbrella(umbrellaId);
+    expect(result.streak).toBe(0);
+    expect(result.inspected).toBe(1);
   });
 });

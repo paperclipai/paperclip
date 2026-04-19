@@ -1421,6 +1421,406 @@ export function issueService(db: Db) {
       };
     },
 
+    /**
+     * AJL-548 — umbrella-wake suppression classifier.
+     *
+     * Classifies an issue's child topology to decide whether a heartbeat wake
+     * triggered by a comment / mention on that issue should actually run, or
+     * be suppressed because the umbrella is idle with no executable child.
+     *
+     * Returns one of:
+     *  - leaf: no children at all → normal execution (unchanged)
+     *  - has_open_executable_child: ≥1 child is todo|in_progress|blocked|in_review → normal wake
+     *  - umbrella_idle_no_child: has children but all are done|cancelled → suppress wake
+     */
+    classifyUmbrellaWakeState: async (issueId: string) => {
+      const issueRow = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issueRow) {
+        return { kind: "leaf" as const, totalChildren: 0 };
+      }
+
+      const children = await db
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.companyId, issueRow.companyId), eq(issues.parentId, issueId)));
+
+      if (children.length === 0) {
+        return { kind: "leaf" as const, totalChildren: 0 };
+      }
+
+      const openExecutableStatuses = new Set(["todo", "in_progress", "blocked", "in_review"]);
+      const openCount = children.filter((c) => openExecutableStatuses.has(c.status)).length;
+      if (openCount > 0) {
+        return {
+          kind: "has_open_executable_child" as const,
+          totalChildren: children.length,
+          openExecutableChildCount: openCount,
+        };
+      }
+
+      return { kind: "umbrella_idle_no_child" as const, totalChildren: children.length };
+    },
+
+    /**
+     * AJL-552 — list umbrella issues for a company that are currently
+     * in an `umbrella_idle_no_child` state: still in_progress / in_review,
+     * but every child is done or cancelled. These are candidates for the
+     * board-hygiene "close or move to review" recommendation.
+     *
+     * Returns a compact summary for the dashboard surface. Limited to
+     * `in_progress` and `in_review` parents so we do not recommend closing
+     * already-closed umbrellas.
+     */
+    listIdleUmbrellasForCompany: async (companyId: string) => {
+      const parentRows = await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.status, ["in_progress", "in_review"]),
+            isNull(issues.hiddenAt),
+          ),
+        );
+
+      if (parentRows.length === 0) return [] as const;
+
+      const parentIds = parentRows.map((p) => p.id);
+      const childRows = await db
+        .select({ parentId: issues.parentId, status: issues.status })
+        .from(issues)
+        .where(
+          and(eq(issues.companyId, companyId), inArray(issues.parentId, parentIds)),
+        );
+
+      const openExecutableStatuses = new Set(["todo", "in_progress", "blocked", "in_review"]);
+      const totalByParent = new Map<string, number>();
+      const openByParent = new Map<string, number>();
+      for (const c of childRows) {
+        if (!c.parentId) continue;
+        totalByParent.set(c.parentId, (totalByParent.get(c.parentId) ?? 0) + 1);
+        if (openExecutableStatuses.has(c.status)) {
+          openByParent.set(c.parentId, (openByParent.get(c.parentId) ?? 0) + 1);
+        }
+      }
+
+      const idle = parentRows
+        .filter((p) => {
+          const total = totalByParent.get(p.id) ?? 0;
+          const open = openByParent.get(p.id) ?? 0;
+          return total > 0 && open === 0;
+        })
+        .map((p) => ({
+          id: p.id,
+          identifier: p.identifier,
+          title: p.title,
+          status: p.status,
+          priority: p.priority,
+          assigneeAgentId: p.assigneeAgentId,
+          updatedAt: p.updatedAt,
+          totalChildren: totalByParent.get(p.id) ?? 0,
+        }));
+
+      idle.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      return idle;
+    },
+
+    /**
+     * AJL-551 — heartbeat run result classifier.
+     *
+     * Computes a `resultClass` value for a finished heartbeat run by inspecting
+     * issue/run deltas inside the run's execution window. Supports four values:
+     *
+     *  - executable_progress         real forward motion: the issue's status
+     *                                moved to done/cancelled/in_progress, a new
+     *                                subtask was created, or a pre-existing
+     *                                child's status was touched during the run
+     *  - bounded_handoff             the run explicitly handed the issue off:
+     *                                status moved to `blocked` during the run
+     *  - review_gate                 the run closed a review cycle: status
+     *                                moved to `in_review` during the run
+     *  - supervisory_summary_only    the run only produced comments / logs with
+     *                                no issue or child delta — the exact shape
+     *                                of the AJL-444 → AJL-446 loop family
+     *
+     * The window is [runStartedAt, runFinishedAt]. We use the issue's
+     * updatedAt as a proxy for "mutated during this run" because every
+     * status/assignee/description write bumps updatedAt and the run is the
+     * only actor on that issue for the window (`agentId` + row lock on
+     * current issues service).
+     *
+     * If `issueId` is null (non-issue-anchored run), we can't compute issue
+     * deltas, so we return `supervisory_summary_only` with an empty signals
+     * block.
+     */
+    classifyHeartbeatRunResult: async (input: {
+      issueId: string | null | undefined;
+      runStartedAt: Date | null | undefined;
+      runFinishedAt: Date | null | undefined;
+      runId: string;
+    }) => {
+      const baseSignals = {
+        issueMutatedInWindow: false,
+        currentIssueStatus: null as string | null,
+        childSubtasksCreatedInWindow: 0,
+        childSubtasksTouchedInWindow: 0,
+        commentsAuthoredByRun: 0,
+        windowStart: input.runStartedAt ? new Date(input.runStartedAt).toISOString() : null,
+        windowEnd: input.runFinishedAt ? new Date(input.runFinishedAt).toISOString() : null,
+      } as const;
+
+      if (!input.issueId) {
+        return { kind: "supervisory_summary_only" as const, signals: baseSignals };
+      }
+      if (!input.runStartedAt || !input.runFinishedAt) {
+        return { kind: "supervisory_summary_only" as const, signals: baseSignals };
+      }
+
+      const windowStart = new Date(input.runStartedAt);
+      const windowEnd = new Date(input.runFinishedAt);
+
+      const issueRow = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issueRow) {
+        return { kind: "supervisory_summary_only" as const, signals: baseSignals };
+      }
+
+      const issueUpdatedAt = issueRow.updatedAt ? new Date(issueRow.updatedAt) : null;
+      const issueMutatedInWindow =
+        !!issueUpdatedAt && issueUpdatedAt.getTime() >= windowStart.getTime();
+
+      const childRows = await db
+        .select({
+          id: issues.id,
+          createdAt: issues.createdAt,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, issueRow.companyId), eq(issues.parentId, input.issueId)));
+
+      let childSubtasksCreatedInWindow = 0;
+      let childSubtasksTouchedInWindow = 0;
+      for (const child of childRows) {
+        const createdAt = child.createdAt ? new Date(child.createdAt) : null;
+        const updatedAt = child.updatedAt ? new Date(child.updatedAt) : null;
+        const createdInWindow =
+          !!createdAt && createdAt.getTime() >= windowStart.getTime();
+        const touchedInWindow =
+          !!updatedAt && updatedAt.getTime() >= windowStart.getTime();
+        if (createdInWindow) {
+          childSubtasksCreatedInWindow += 1;
+        } else if (touchedInWindow) {
+          childSubtasksTouchedInWindow += 1;
+        }
+      }
+
+      const commentsAuthoredByRun = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.issueId, input.issueId),
+            eq(issueComments.createdByRunId, input.runId),
+          ),
+        )
+        .then((rows) => Number(rows[0]?.count ?? 0));
+
+      const signals = {
+        issueMutatedInWindow,
+        currentIssueStatus: issueRow.status ?? null,
+        childSubtasksCreatedInWindow,
+        childSubtasksTouchedInWindow,
+        commentsAuthoredByRun,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+      };
+
+      // review_gate dominates: in_review is the handoff-for-review shape.
+      if (issueMutatedInWindow && issueRow.status === "in_review") {
+        return { kind: "review_gate" as const, signals };
+      }
+      // bounded_handoff: explicit blocked transition.
+      if (issueMutatedInWindow && issueRow.status === "blocked") {
+        return { kind: "bounded_handoff" as const, signals };
+      }
+      // executable_progress: any real child/task delta or terminal progress on
+      // the owning issue.
+      if (
+        childSubtasksCreatedInWindow > 0 ||
+        childSubtasksTouchedInWindow > 0 ||
+        (issueMutatedInWindow && (issueRow.status === "done" || issueRow.status === "cancelled" || issueRow.status === "in_progress"))
+      ) {
+        return { kind: "executable_progress" as const, signals };
+      }
+      return { kind: "supervisory_summary_only" as const, signals };
+    },
+
+    /**
+     * AJL-551 — phase-1 reinforcement: count the tail streak of heartbeat
+     * runs on this umbrella issue whose `resultClass` is
+     * `supervisory_summary_only`. Runs are identified by
+     * `contextSnapshot->>issueId = umbrellaIssueId`, scoped to the umbrella's
+     * own company, and considered in reverse chronological order of their
+     * finalized `finishedAt` (with `createdAt` as the tiebreak for races).
+     *
+     * Only runs that have finished (non-null `resultClass`) are counted.
+     * The first finished run whose resultClass is NOT
+     * `supervisory_summary_only` breaks the streak.
+     */
+    getSupervisorySummaryOnlyStreakForUmbrella: async (
+      umbrellaIssueId: string,
+      limit = 5,
+    ) => {
+      const umbrella = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, umbrellaIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!umbrella) return { streak: 0, inspected: 0 };
+
+      const rows = await db
+        .select({
+          id: heartbeatRuns.id,
+          resultClass: heartbeatRuns.resultClass,
+          finishedAt: heartbeatRuns.finishedAt,
+          createdAt: heartbeatRuns.createdAt,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, umbrella.companyId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${umbrellaIssueId}`,
+            sql`${heartbeatRuns.resultClass} IS NOT NULL`,
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.createdAt))
+        .limit(Math.max(1, Math.min(50, limit)));
+
+      let streak = 0;
+      for (const row of rows) {
+        if (row.resultClass === "supervisory_summary_only") {
+          streak += 1;
+        } else {
+          break;
+        }
+      }
+      return { streak, inspected: rows.length };
+    },
+
+    /**
+     * AJL-550 — same-owner parent+child overlap detector.
+     *
+     * Detects the exact pre-loop topology from AJL-444 → AJL-446:
+     *  - child and its parent are both assigned to the same supervisory owner
+     *    (same agentId OR same userId, whichever is set)
+     *  - both are in_progress
+     *  - the child has zero open grandchildren
+     *    (open = status in {todo, in_progress, blocked, in_review})
+     *
+     * Returns either `no_overlap` with a structured reason, or
+     * `same_owner_parent_child_idle_grandchildren` with ownership identifiers
+     * suitable for a structured warn log.
+     *
+     * Non-blocking: callers fire-and-forget and emit a log on match.
+     */
+    detectSameOwnerParentChildOverlap: async (childIssueId: string) => {
+      const child = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          parentId: issues.parentId,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issues)
+        .where(eq(issues.id, childIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!child) {
+        return { kind: "no_overlap" as const, reason: "child_not_found" as const };
+      }
+      if (!child.parentId) {
+        return { kind: "no_overlap" as const, reason: "no_parent" as const };
+      }
+      if (child.status !== "in_progress") {
+        return { kind: "no_overlap" as const, reason: "child_not_in_progress" as const };
+      }
+
+      const parent = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, child.companyId), eq(issues.id, child.parentId)))
+        .then((rows) => rows[0] ?? null);
+      if (!parent) {
+        return { kind: "no_overlap" as const, reason: "parent_not_found" as const };
+      }
+      if (parent.status !== "in_progress") {
+        return { kind: "no_overlap" as const, reason: "parent_not_in_progress" as const };
+      }
+
+      const agentMatch =
+        parent.assigneeAgentId !== null &&
+        child.assigneeAgentId !== null &&
+        parent.assigneeAgentId === child.assigneeAgentId;
+      const userMatch =
+        parent.assigneeUserId !== null &&
+        child.assigneeUserId !== null &&
+        parent.assigneeUserId === child.assigneeUserId;
+      if (!agentMatch && !userMatch) {
+        return { kind: "no_overlap" as const, reason: "different_owners" as const };
+      }
+
+      const grandchildren = await db
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.companyId, child.companyId), eq(issues.parentId, child.id)));
+
+      const openExecutableStatuses = new Set(["todo", "in_progress", "blocked", "in_review"]);
+      const openGrandchildCount = grandchildren.filter((g) => openExecutableStatuses.has(g.status)).length;
+      if (openGrandchildCount > 0) {
+        return {
+          kind: "no_overlap" as const,
+          reason: "child_has_open_grandchildren" as const,
+          totalGrandchildren: grandchildren.length,
+          openGrandchildCount,
+        };
+      }
+
+      return {
+        kind: "same_owner_parent_child_idle_grandchildren" as const,
+        parentId: parent.id,
+        childId: child.id,
+        ownerAgentId: agentMatch ? parent.assigneeAgentId : null,
+        ownerUserId: userMatch ? parent.assigneeUserId : null,
+        totalGrandchildren: grandchildren.length,
+      };
+    },
+
     create: async (
       companyId: string,
       data: IssueCreateInput,

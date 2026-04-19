@@ -5,6 +5,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  classifyUmbrellaWakeState: vi.fn().mockResolvedValue({ kind: "leaf", totalChildren: 0 }),
+  getSupervisorySummaryOnlyStreakForUmbrella: vi.fn().mockResolvedValue({ streak: 0, inspected: 0 }),
+  detectSameOwnerParentChildOverlap: vi.fn().mockResolvedValue({ kind: "no_overlap", reason: "no_parent" }),
   listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
 }));
