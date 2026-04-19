@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
@@ -19,6 +20,7 @@ import { NotFoundPage } from "./NotFound";
  * @see doc/plugins/PLUGIN_SPEC.md §24.4 — Company-Context Plugin Page
  */
 export function PluginPage() {
+  const { t } = useTranslation();
   const { companyPrefix: routeCompanyPrefix, pluginId, pluginRoutePath } = useParams<{
     companyPrefix?: string;
     pluginId?: string;
@@ -92,11 +94,11 @@ export function PluginPage() {
   useEffect(() => {
     if (pageSlot) {
       setBreadcrumbs([
-        { label: "Plugins", href: "/instance/settings/plugins" },
+        { label: t("pluginPage.breadcrumbPlugins"), href: "/instance/settings/plugins" },
         { label: pageSlot.pluginDisplayName },
       ]);
     }
-  }, [pageSlot, companyPrefix, setBreadcrumbs]);
+  }, [pageSlot, companyPrefix, setBreadcrumbs, t]);
 
   if (!resolvedCompanyId) {
     if (hasInvalidCompanyPrefix) {
@@ -104,13 +106,13 @@ export function PluginPage() {
     }
     return (
       <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">Select a company to view this page.</p>
+        <p className="text-sm text-muted-foreground">{t("pluginPage.selectCompany")}</p>
       </div>
     );
   }
 
   if (!contributions) {
-    return <div className="text-sm text-muted-foreground">Loading…</div>;
+    return <div className="text-sm text-muted-foreground">{t("pluginPage.loading")}</div>;
   }
 
   if (!pluginId && pluginRoutePath) {
@@ -120,7 +122,7 @@ export function PluginPage() {
     if (duplicateMatches.length > 1) {
       return (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          Multiple plugins declare the route <code>{pluginRoutePath}</code>. Use the plugin-id route until the conflict is resolved.
+          {t("pluginPage.duplicateRoutePrefix")} <code>{pluginRoutePath}</code>{t("pluginPage.duplicateRouteSuffix")}
         </div>
       );
     }
@@ -141,7 +143,7 @@ export function PluginPage() {
         <Button variant="ghost" size="sm" asChild>
           <Link to={companyPrefix ? `/${companyPrefix}/dashboard` : "/dashboard"}>
             <ArrowLeft className="h-4 w-4 mr-1" />
-            Back
+            {t("pluginPage.back")}
           </Link>
         </Button>
       </div>

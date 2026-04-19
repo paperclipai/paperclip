@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { goalsApi } from "../api/goals";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
@@ -12,13 +13,14 @@ import { Button } from "@/components/ui/button";
 import { Target, Plus } from "lucide-react";
 
 export function Goals() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { openNewGoal } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Goals" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("pages.goals") }]);
+  }, [setBreadcrumbs, t]);
 
   const { data: goals, isLoading, error } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
@@ -41,8 +43,8 @@ export function Goals() {
       {goals && goals.length === 0 && (
         <EmptyState
           icon={Target}
-          message="No goals yet."
-          action="Add Goal"
+          message={t("goals.emptyTitle")}
+          action={t("goals.addGoal")}
           onAction={() => openNewGoal()}
         />
       )}

@@ -999,3 +999,4 @@ All routes are company-scoped after company selection (company context stored in
 23. Empty states and loading skeletons
 24. Error handling and toasts
 25. Saved views (custom filters)
+26. Internationalization — see [ui-i18n.md](ui-i18n.md) for library choice, bundle layout, and the `TFunction`-via-ref pattern used by live-event toasts

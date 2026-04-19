@@ -598,6 +598,17 @@ describe("LiveUpdatesProvider visible issue toast suppression", () => {
 });
 
 describe("LiveUpdatesProvider run lifecycle toasts", () => {
+  const tMock = ((key: string, opts?: Record<string, unknown>) => {
+    if (key === "liveToasts.agentStatus.started" && opts?.name) return `${opts.name} started`;
+    if (key === "liveToasts.agentStatus.errored" && opts?.name) return `${opts.name} errored`;
+    if (key === "liveToasts.runStatus.status.succeeded") return "run succeeded";
+    if (key === "liveToasts.runStatus.status.failed") return "run failed";
+    if (key === "liveToasts.runStatus.status.timed_out") return "run timed out";
+    if (key === "liveToasts.runStatus.status.cancelled") return "run cancelled";
+    if (key === "liveToasts.runStatus.title" && opts?.name && opts?.status) return `${opts.name} ${opts.status}`;
+    return key;
+  }) as never;
+
   it("does not build start or success toasts for agent runs", () => {
     const queryClient = {
       getQueryData: () => [],
@@ -612,6 +623,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
         () => "CodexCoder",
         queryClient as never,
         "company-1",
+        tMock,
       ),
     ).toBeNull();
 
@@ -623,6 +635,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
           status: "succeeded",
         },
         () => "CodexCoder",
+        tMock,
       ),
     ).toBeNull();
   });
@@ -646,6 +659,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
         () => "CodexCoder",
         queryClient as never,
         "company-1",
+        tMock,
       ),
     ).toMatchObject({
       title: "CodexCoder errored",
@@ -662,6 +676,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
           error: "boom",
         },
         () => "CodexCoder",
+        tMock,
       ),
     ).toMatchObject({
       title: "CodexCoder run failed",

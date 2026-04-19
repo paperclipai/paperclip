@@ -72,7 +72,7 @@ export function CompanyAccess() {
   const joinRequestsQuery = useQuery({
     queryKey: queryKeys.access.joinRequests(selectedCompanyId ?? "", "pending_approval"),
     queryFn: () => accessApi.listJoinRequests(selectedCompanyId!, "pending_approval"),
-    enabled: !!selectedCompanyId && !!membersQuery.data?.access.canApproveJoinRequests,
+    enabled: !!selectedCompanyId && !!membersQuery.data?.access?.canApproveJoinRequests,
   });
 
   const refreshAccessData = async () => {
