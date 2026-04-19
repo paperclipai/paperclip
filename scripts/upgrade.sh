@@ -315,6 +315,15 @@ rollback() {
   fi
   log "Rolling back repo to $ref..."
   cd "$REPO_DIR"
+  # Re-protect any uncommitted local changes before the hard reset so operator
+  # customizations (skill patches, config overrides) popped from stash earlier
+  # in the swap phase are not permanently lost.
+  local wt_changes
+  wt_changes=$(git status --porcelain 2>/dev/null | head -1)
+  if [ -n "$wt_changes" ]; then
+    log "WARN: Stashing uncommitted changes before rollback to prevent data loss"
+    git stash push -m "paperclip-rollback-$(date +%s)" 2>>"$LOG_FILE" || true
+  fi
   git reset --hard "$ref"
   pnpm install --frozen-lockfile 2>>"$LOG_FILE" || pnpm install 2>>"$LOG_FILE" || true
   pnpm build 2>>"$LOG_FILE" || true
