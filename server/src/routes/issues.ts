@@ -640,18 +640,56 @@ export function issueRoutes(
       return;
     }
 
+    // Validate/normalise UUID-shaped filters. Clients were hitting 500s by
+    // passing identifiers (KIT-622), PostgREST-style operators (eq.<uuid>),
+    // numbers (625), or the string "null"; Postgres rejected the cast and
+    // crashed the request. Accept:
+    //   - empty/missing   -> undefined (no filter)
+    //   - valid UUID      -> as-is
+    //   - identifier XYZ-N -> resolve to UUID via getByIdentifier
+    //   - anything else   -> 400
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const IDENTIFIER_RE = /^[A-Z]+-\d+$/i;
+    const resolveUuidFilter = async (value: unknown, label: string, allowIdentifier = false): Promise<string | undefined> => {
+      if (value === undefined || value === null) return undefined;
+      if (typeof value !== "string" || value.length === 0) return undefined;
+      const trimmed = value.trim();
+      if (trimmed.length === 0 || trimmed === "null" || trimmed === "undefined") return undefined;
+      if (UUID_RE.test(trimmed)) return trimmed;
+      if (allowIdentifier && IDENTIFIER_RE.test(trimmed)) {
+        const issue = await svc.getByIdentifier(trimmed);
+        if (issue) return issue.id;
+        return undefined; // identifier did not resolve — treat as "no match"
+      }
+      res.status(400).json({ error: `${label} must be a UUID${allowIdentifier ? " or identifier like KIT-123" : ""}, got "${value}"` });
+      return Symbol("abort") as unknown as string;
+    };
+
+    const assigneeAgentId = await resolveUuidFilter(req.query.assigneeAgentId, "assigneeAgentId");
+    if (typeof assigneeAgentId === "symbol") return;
+    const participantAgentId = await resolveUuidFilter(req.query.participantAgentId, "participantAgentId");
+    if (typeof participantAgentId === "symbol") return;
+    const projectId = await resolveUuidFilter(req.query.projectId, "projectId");
+    if (typeof projectId === "symbol") return;
+    const executionWorkspaceId = await resolveUuidFilter(req.query.executionWorkspaceId, "executionWorkspaceId");
+    if (typeof executionWorkspaceId === "symbol") return;
+    const parentId = await resolveUuidFilter(req.query.parentId, "parentId", true);
+    if (typeof parentId === "symbol") return;
+    const labelId = await resolveUuidFilter(req.query.labelId, "labelId");
+    if (typeof labelId === "symbol") return;
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      assigneeAgentId,
+      participantAgentId,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
-      projectId: req.query.projectId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
-      parentId: req.query.parentId as string | undefined,
-      labelId: req.query.labelId as string | undefined,
+      projectId,
+      executionWorkspaceId,
+      parentId,
+      labelId,
       originKind: req.query.originKind as string | undefined,
       originId: req.query.originId as string | undefined,
       includeRoutineExecutions:
