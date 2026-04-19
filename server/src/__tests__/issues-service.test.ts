@@ -855,6 +855,155 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("does not let a stale repair overwrite newer execution ownership", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+    const staleExecutionRunId = randomUUID();
+    const newerExecutionRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Release Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: checkoutRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        wakeupRequestId: randomUUID(),
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-19T17:00:00.000Z"),
+        updatedAt: new Date("2026-04-19T17:00:00.000Z"),
+      },
+      {
+        id: staleExecutionRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        wakeupRequestId: randomUUID(),
+        contextSnapshot: { issueId: randomUUID() },
+        startedAt: new Date("2026-04-19T16:59:00.000Z"),
+        updatedAt: new Date("2026-04-19T16:59:00.000Z"),
+      },
+      {
+        id: newerExecutionRunId,
+        companyId,
+        agentId,
+        invocationSource: "issue.continuation_recovery",
+        triggerDetail: "system",
+        status: "running",
+        wakeupRequestId: randomUUID(),
+        retryOfRunId: checkoutRunId,
+        contextSnapshot: { issueId, retryReason: "issue_continuation_needed" },
+        startedAt: new Date("2026-04-19T17:01:00.000Z"),
+        updatedAt: new Date("2026-04-19T17:01:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1071,
+      identifier: "PAP-1071",
+      title: "Concurrent repair does not clobber newer execution owner",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId,
+      executionRunId: staleExecutionRunId,
+      executionAgentNameKey: null,
+      createdByUserId: "user-1",
+    });
+
+    let injectedConcurrentUpdate = false;
+    const proxiedDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop !== "update") {
+          return Reflect.get(target, prop, receiver);
+        }
+        return (table: unknown) => {
+          const builder = target.update(table as never) as {
+            set: (values: Record<string, unknown>) => { where: (condition: unknown) => Promise<unknown> };
+          };
+          return {
+            ...builder,
+            set: (values: Record<string, unknown>) => {
+              const setBuilder = builder.set(values);
+              return {
+                ...setBuilder,
+                where: async (condition: unknown) => {
+                  if (
+                    !injectedConcurrentUpdate &&
+                    table === issues &&
+                    values.executionRunId === checkoutRunId &&
+                    values.executionAgentNameKey === "release engineer"
+                  ) {
+                    injectedConcurrentUpdate = true;
+                    await db
+                      .update(issues)
+                      .set({
+                        executionRunId: newerExecutionRunId,
+                        executionAgentNameKey: "release engineer",
+                      })
+                      .where(eq(issues.id, issueId));
+                  }
+                  return setBuilder.where(condition);
+                },
+              };
+            },
+          };
+        };
+      },
+    });
+
+    const proxiedSvc = issueService(proxiedDb as typeof db);
+    const detail = await proxiedSvc.getById("PAP-1071");
+    const persisted = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(injectedConcurrentUpdate).toBe(true);
+    expect(detail).toEqual(expect.objectContaining({
+      id: issueId,
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      executionAgentNameKey: "release engineer",
+    }));
+    expect(persisted).toEqual({
+      checkoutRunId,
+      executionRunId: newerExecutionRunId,
+      executionAgentNameKey: "release engineer",
+    });
+  });
+
   it("filters issues by execution workspace id", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
