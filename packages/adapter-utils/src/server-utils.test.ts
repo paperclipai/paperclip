@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { runChildProcess } from "./server-utils.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildPaperclipEnv, runChildProcess } from "./server-utils.js";
 
 function isPidAlive(pid: number) {
   try {
@@ -84,5 +84,63 @@ describe("runChildProcess", () => {
     expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
 
     expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
+  });
+});
+
+describe("buildPaperclipEnv PAPERCLIP_API_URL resolution", () => {
+  const keys = [
+    "PAPERCLIP_API_URL",
+    "PAPERCLIP_PUBLIC_URL",
+    "PAPERCLIP_LISTEN_HOST",
+    "PAPERCLIP_LISTEN_PORT",
+    "HOST",
+    "PORT",
+  ] as const;
+  const saved: Partial<Record<(typeof keys)[number], string>> = {};
+
+  beforeEach(() => {
+    for (const k of keys) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+
+  afterEach(() => {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  const AGENT = { id: "a-1", companyId: "co-1" };
+
+  it("prefers PAPERCLIP_API_URL when explicitly set", () => {
+    process.env.PAPERCLIP_API_URL = "http://internal-api.example:9000";
+    process.env.PAPERCLIP_PUBLIC_URL = "https://public.example";
+    expect(buildPaperclipEnv(AGENT).PAPERCLIP_API_URL).toBe(
+      "http://internal-api.example:9000",
+    );
+  });
+
+  it("falls back to PAPERCLIP_PUBLIC_URL when PAPERCLIP_API_URL is unset", () => {
+    // Setting only PAPERCLIP_PUBLIC_URL is the common operator case — an
+    // externally-reachable HTTPS URL that agents + adapters should use to
+    // call back to Paperclip. Previously buildPaperclipEnv ignored this
+    // variable and fell through to the loopback default, which leaked
+    // `http://127.0.0.1:<port>` into envelope bodies and (in paths that
+    // sit behind a WAF) tripped SSRF detection rules.
+    process.env.PAPERCLIP_PUBLIC_URL = "https://public.example";
+    expect(buildPaperclipEnv(AGENT).PAPERCLIP_API_URL).toBe("https://public.example");
+  });
+
+  it("falls back to the runtime host:port loopback URL when neither is set", () => {
+    process.env.PAPERCLIP_LISTEN_PORT = "3100";
+    expect(buildPaperclipEnv(AGENT).PAPERCLIP_API_URL).toBe("http://localhost:3100");
+  });
+
+  it("ignores empty-string values and continues the fallback chain", () => {
+    process.env.PAPERCLIP_API_URL = "";
+    process.env.PAPERCLIP_PUBLIC_URL = "https://public.example";
+    expect(buildPaperclipEnv(AGENT).PAPERCLIP_API_URL).toBe("https://public.example");
   });
 });

@@ -555,7 +555,15 @@ export async function startServer(): Promise<StartedServer> {
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
   if (!process.env.PAPERCLIP_API_URL) {
-    process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
+    // Prefer the operator-supplied public URL when present — it's the URL
+    // the operator already advertises for auth callbacks, and it's what
+    // agents + adapters should call back to. The loopback fallback stays
+    // as a convenience for pure local dev when neither var is set.
+    const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim();
+    process.env.PAPERCLIP_API_URL =
+      publicUrl && publicUrl.length > 0
+        ? publicUrl
+        : `http://${runtimeApiHost}:${listenPort}`;
   }
   
   setupLiveEventsWebSocketServer(server, db as any, {
