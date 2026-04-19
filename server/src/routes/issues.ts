@@ -746,6 +746,9 @@ export function issueRoutes(
       ancestors,
       blockedBy: relations.blockedBy,
       blocks: relations.blocks,
+      unresolvedBlockerCount: relations.blockedBy.filter(
+        (blocker) => blocker.status !== "done" && blocker.status !== "cancelled",
+      ).length,
       ...documentPayload,
       project: project ?? null,
       goal: goal ?? null,
@@ -2034,6 +2037,39 @@ export function issueRoutes(
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+      return;
+    }
+
+    const blockerSummaries = await svc.getRelationSummaries(issue.id);
+    const unresolvedBlockers = blockerSummaries.blockedBy.filter(
+      (blocker) => blocker.status !== "done" && blocker.status !== "cancelled",
+    );
+    if (unresolvedBlockers.length > 0) {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.checkout_rejected_blocked",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          agentId: req.body.agentId,
+          unresolvedBlockerIds: unresolvedBlockers.map((blocker) => blocker.id),
+        },
+      });
+      res.status(409).json({
+        error: "issue_blocked_by_unresolved_dependencies",
+        message: "Cannot check out an issue that has unresolved blocker dependencies",
+        unresolvedBlockers: unresolvedBlockers.map((blocker) => ({
+          id: blocker.id,
+          identifier: blocker.identifier,
+          title: blocker.title,
+          status: blocker.status,
+        })),
+      });
       return;
     }
 

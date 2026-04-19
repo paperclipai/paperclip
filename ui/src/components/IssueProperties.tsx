@@ -16,6 +16,7 @@ import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
 import { StatusIcon } from "./StatusIcon";
+import { BlockerWarningDialog, shouldWarnOnStatusChange } from "./BlockerWarningDialog";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import { formatDate, cn, projectUrl } from "../lib/utils";
@@ -162,6 +163,7 @@ export function IssueProperties({
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
+  const [pendingBlockedStatus, setPendingBlockedStatus] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
@@ -926,8 +928,30 @@ export function IssueProperties({
         <PropertyRow label="Status">
           <StatusIcon
             status={issue.status}
-            onChange={(status) => onUpdate({ status })}
+            unresolvedBlockerCount={issue.unresolvedBlockerCount}
+            onChange={(status) => {
+              if (status === issue.status) return;
+              if (shouldWarnOnStatusChange(status, issue.blockedBy)) {
+                setPendingBlockedStatus(status);
+                return;
+              }
+              onUpdate({ status });
+            }}
             showLabel
+          />
+          <BlockerWarningDialog
+            open={pendingBlockedStatus !== null}
+            onOpenChange={(open) => {
+              if (!open) setPendingBlockedStatus(null);
+            }}
+            nextStatus={pendingBlockedStatus ?? ""}
+            blockedBy={issue.blockedBy ?? []}
+            onConfirm={() => {
+              if (pendingBlockedStatus) {
+                onUpdate({ status: pendingBlockedStatus });
+                setPendingBlockedStatus(null);
+              }
+            }}
           />
         </PropertyRow>
 

@@ -214,6 +214,7 @@ export interface Issue {
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
+  unresolvedBlockerCount?: number;
   planDocument?: IssueDocument | null;
   documentSummaries?: IssueDocumentSummary[];
   legacyPlanDocument?: LegacyPlanDocument | null;
