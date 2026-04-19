@@ -2320,8 +2320,10 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    const actorAgentId = req.actor.type === "agent" ? req.actor.agentId : null;
     const isPmCommentAuthority = req.actor.type === "agent"
-      && req.actor.agentId === issue.assigneeAgentId
+      && !!actorAgentId
+      && actorAgentId === issue.assigneeAgentId
       && req.body.reopen !== true
       && req.body.interrupt !== true;
     if (!isPmCommentAuthority && !(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
