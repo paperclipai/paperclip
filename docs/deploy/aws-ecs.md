@@ -408,6 +408,24 @@ curl -sf https://$PAPERCLIP_DOMAIN/api/health
 - Logs show `plugin job coordinator started` and `plugin-loader: loadAll complete`
 - `/api/health` returns 200
 
+## Post-Deploy Security Hardening
+
+After the first user has signed up (which grants admin role), lock down the instance:
+
+```bash
+# Disable public sign-up (prevents unauthorized users from creating accounts)
+# Add to the task definition environment section, then redeploy:
+#   { "name": "PAPERCLIP_AUTH_DISABLE_SIGN_UP", "value": "true" }
+
+# Or update via Secrets Manager / task def override, then force new deployment
+aws ecs update-service \
+  --cluster paperclip \
+  --service paperclip-server \
+  --force-new-deployment
+```
+
+Use the invite flow (added in v2026.416.0) to grant access to additional users after sign-up is disabled.
+
 ## Deploying Updates
 
 Build, push, and force a new deployment:
