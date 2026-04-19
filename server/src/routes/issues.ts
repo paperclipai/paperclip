@@ -2021,6 +2021,7 @@ export function issueRoutes(
 
       // AJL-548 — suppress comment-derived wakes on idle umbrella issues.
       const umbrellaCache = new Map<string, Awaited<ReturnType<typeof svc.classifyUmbrellaWakeState>>>();
+      const streakCache = new Map<string, Awaited<ReturnType<typeof svc.getSupervisorySummaryOnlyStreakForUmbrella>>>();
       for (const { agentId, wakeup } of wakeups.values()) {
         const wakeReason = readWakeReason(wakeup);
         if (wakeReason && COMMENT_DERIVED_WAKE_REASONS.has(wakeReason)) {
@@ -2046,6 +2047,42 @@ export function issueRoutes(
               "wake.suppressed reason=umbrella_idle_no_child",
             );
             continue;
+          }
+          // AJL-551 — reinforce phase-1: if classifier says there is an open
+          // executable child but the last 2 heartbeat runs on this umbrella
+          // were supervisory_summary_only, force-suppress this wake too. This
+          // is the pre-loop topology from AJL-407 / AJL-444 / AJL-446 where
+          // the umbrella keeps churning supervisory summaries without any
+          // real child delta.
+          if (state && state.kind === "has_open_executable_child") {
+            let streakInfo = streakCache.get(targetIssueId);
+            if (!streakInfo) {
+              try {
+                streakInfo = await svc.getSupervisorySummaryOnlyStreakForUmbrella(targetIssueId, 5);
+                streakCache.set(targetIssueId, streakInfo);
+              } catch (err) {
+                logger.warn(
+                  { err, issueId: targetIssueId },
+                  "supervisory-summary streak lookup failed",
+                );
+              }
+            }
+            if (streakInfo && streakInfo.streak >= 2) {
+              logger.info(
+                {
+                  issueId: targetIssueId,
+                  agentId,
+                  wakeReason,
+                  totalChildren: state.totalChildren,
+                  openExecutableChildCount: state.openExecutableChildCount,
+                  supervisorySummaryOnlyStreak: streakInfo.streak,
+                  runsInspected: streakInfo.inspected,
+                  source: "routes.issues.update",
+                },
+                "wake.suppressed reason=supervisory_summary_only_streak",
+              );
+              continue;
+            }
           }
         }
         heartbeat
@@ -2613,6 +2650,7 @@ export function issueRoutes(
 
       // AJL-548 — suppress comment-derived wakes on idle umbrella issues.
       const umbrellaCache = new Map<string, Awaited<ReturnType<typeof svc.classifyUmbrellaWakeState>>>();
+      const streakCache = new Map<string, Awaited<ReturnType<typeof svc.getSupervisorySummaryOnlyStreakForUmbrella>>>();
       for (const [agentId, wakeup] of wakeups.entries()) {
         const wakeReason = readWakeReason(wakeup);
         if (wakeReason && COMMENT_DERIVED_WAKE_REASONS.has(wakeReason)) {
@@ -2638,6 +2676,37 @@ export function issueRoutes(
               "wake.suppressed reason=umbrella_idle_no_child",
             );
             continue;
+          }
+          // AJL-551 — last-2-runs reinforcement on has_open_executable_child.
+          if (state && state.kind === "has_open_executable_child") {
+            let streakInfo = streakCache.get(targetIssueId);
+            if (!streakInfo) {
+              try {
+                streakInfo = await svc.getSupervisorySummaryOnlyStreakForUmbrella(targetIssueId, 5);
+                streakCache.set(targetIssueId, streakInfo);
+              } catch (err) {
+                logger.warn(
+                  { err, issueId: targetIssueId },
+                  "supervisory-summary streak lookup failed",
+                );
+              }
+            }
+            if (streakInfo && streakInfo.streak >= 2) {
+              logger.info(
+                {
+                  issueId: targetIssueId,
+                  agentId,
+                  wakeReason,
+                  totalChildren: state.totalChildren,
+                  openExecutableChildCount: state.openExecutableChildCount,
+                  supervisorySummaryOnlyStreak: streakInfo.streak,
+                  runsInspected: streakInfo.inspected,
+                  source: "routes.issues.comment",
+                },
+                "wake.suppressed reason=supervisory_summary_only_streak",
+              );
+              continue;
+            }
           }
         }
         heartbeat

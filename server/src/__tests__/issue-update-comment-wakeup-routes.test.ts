@@ -13,6 +13,7 @@ const mockIssueService = vi.hoisted(() => ({
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   classifyUmbrellaWakeState: vi.fn().mockResolvedValue({ kind: "leaf", totalChildren: 0 }),
+  getSupervisorySummaryOnlyStreakForUmbrella: vi.fn().mockResolvedValue({ streak: 0, inspected: 0 }),
   detectSameOwnerParentChildOverlap: vi.fn().mockResolvedValue({ kind: "no_overlap", reason: "no_parent" }),
 }));
 
@@ -317,5 +318,77 @@ describe("issue update comment wakeups", () => {
       ASSIGNEE_AGENT_ID,
       expect.objectContaining({ reason: "issue_commented" }),
     );
+  });
+
+  it("AJL-551: suppresses wake on has_open_executable_child when last 2 runs were supervisory_summary_only", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-streak-suppress",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "ping",
+    });
+    mockIssueService.classifyUmbrellaWakeState.mockResolvedValue({
+      kind: "has_open_executable_child",
+      totalChildren: 2,
+      openExecutableChildCount: 1,
+    });
+    mockIssueService.getSupervisorySummaryOnlyStreakForUmbrella.mockResolvedValue({
+      streak: 2,
+      inspected: 2,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: "ping" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.getSupervisorySummaryOnlyStreakForUmbrella).toHaveBeenCalledWith(
+      existing.id,
+      5,
+    );
+    // Even with an open executable child, the 2-run supervisory streak
+    // force-suppresses the comment-derived wake (AJL-551).
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("AJL-551: still wakes when has_open_executable_child and streak is below threshold", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-streak-allow",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "ping",
+    });
+    mockIssueService.classifyUmbrellaWakeState.mockResolvedValue({
+      kind: "has_open_executable_child",
+      totalChildren: 2,
+      openExecutableChildCount: 1,
+    });
+    mockIssueService.getSupervisorySummaryOnlyStreakForUmbrella.mockResolvedValue({
+      streak: 1,
+      inspected: 3,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: "ping" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
   });
 });

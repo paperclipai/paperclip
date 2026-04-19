@@ -1466,6 +1466,196 @@ export function issueService(db: Db) {
     },
 
     /**
+     * AJL-551 — heartbeat run result classifier.
+     *
+     * Computes a `resultClass` value for a finished heartbeat run by inspecting
+     * issue/run deltas inside the run's execution window. Supports four values:
+     *
+     *  - executable_progress         real forward motion: the issue's status
+     *                                moved to done/cancelled/in_progress, a new
+     *                                subtask was created, or a pre-existing
+     *                                child's status was touched during the run
+     *  - bounded_handoff             the run explicitly handed the issue off:
+     *                                status moved to `blocked` during the run
+     *  - review_gate                 the run closed a review cycle: status
+     *                                moved to `in_review` during the run
+     *  - supervisory_summary_only    the run only produced comments / logs with
+     *                                no issue or child delta — the exact shape
+     *                                of the AJL-444 → AJL-446 loop family
+     *
+     * The window is [runStartedAt, runFinishedAt]. We use the issue's
+     * updatedAt as a proxy for "mutated during this run" because every
+     * status/assignee/description write bumps updatedAt and the run is the
+     * only actor on that issue for the window (`agentId` + row lock on
+     * current issues service).
+     *
+     * If `issueId` is null (non-issue-anchored run), we can't compute issue
+     * deltas, so we return `supervisory_summary_only` with an empty signals
+     * block.
+     */
+    classifyHeartbeatRunResult: async (input: {
+      issueId: string | null | undefined;
+      runStartedAt: Date | null | undefined;
+      runFinishedAt: Date | null | undefined;
+      runId: string;
+    }) => {
+      const baseSignals = {
+        issueMutatedInWindow: false,
+        currentIssueStatus: null as string | null,
+        childSubtasksCreatedInWindow: 0,
+        childSubtasksTouchedInWindow: 0,
+        commentsAuthoredByRun: 0,
+        windowStart: input.runStartedAt ? new Date(input.runStartedAt).toISOString() : null,
+        windowEnd: input.runFinishedAt ? new Date(input.runFinishedAt).toISOString() : null,
+      } as const;
+
+      if (!input.issueId) {
+        return { kind: "supervisory_summary_only" as const, signals: baseSignals };
+      }
+      if (!input.runStartedAt || !input.runFinishedAt) {
+        return { kind: "supervisory_summary_only" as const, signals: baseSignals };
+      }
+
+      const windowStart = new Date(input.runStartedAt);
+      const windowEnd = new Date(input.runFinishedAt);
+
+      const issueRow = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issueRow) {
+        return { kind: "supervisory_summary_only" as const, signals: baseSignals };
+      }
+
+      const issueUpdatedAt = issueRow.updatedAt ? new Date(issueRow.updatedAt) : null;
+      const issueMutatedInWindow =
+        !!issueUpdatedAt && issueUpdatedAt.getTime() >= windowStart.getTime();
+
+      const childRows = await db
+        .select({
+          id: issues.id,
+          createdAt: issues.createdAt,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, issueRow.companyId), eq(issues.parentId, input.issueId)));
+
+      let childSubtasksCreatedInWindow = 0;
+      let childSubtasksTouchedInWindow = 0;
+      for (const child of childRows) {
+        const createdAt = child.createdAt ? new Date(child.createdAt) : null;
+        const updatedAt = child.updatedAt ? new Date(child.updatedAt) : null;
+        const createdInWindow =
+          !!createdAt && createdAt.getTime() >= windowStart.getTime();
+        const touchedInWindow =
+          !!updatedAt && updatedAt.getTime() >= windowStart.getTime();
+        if (createdInWindow) {
+          childSubtasksCreatedInWindow += 1;
+        } else if (touchedInWindow) {
+          childSubtasksTouchedInWindow += 1;
+        }
+      }
+
+      const commentsAuthoredByRun = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.issueId, input.issueId),
+            eq(issueComments.createdByRunId, input.runId),
+          ),
+        )
+        .then((rows) => Number(rows[0]?.count ?? 0));
+
+      const signals = {
+        issueMutatedInWindow,
+        currentIssueStatus: issueRow.status ?? null,
+        childSubtasksCreatedInWindow,
+        childSubtasksTouchedInWindow,
+        commentsAuthoredByRun,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+      };
+
+      // review_gate dominates: in_review is the handoff-for-review shape.
+      if (issueMutatedInWindow && issueRow.status === "in_review") {
+        return { kind: "review_gate" as const, signals };
+      }
+      // bounded_handoff: explicit blocked transition.
+      if (issueMutatedInWindow && issueRow.status === "blocked") {
+        return { kind: "bounded_handoff" as const, signals };
+      }
+      // executable_progress: any real child/task delta or terminal progress on
+      // the owning issue.
+      if (
+        childSubtasksCreatedInWindow > 0 ||
+        childSubtasksTouchedInWindow > 0 ||
+        (issueMutatedInWindow && (issueRow.status === "done" || issueRow.status === "cancelled" || issueRow.status === "in_progress"))
+      ) {
+        return { kind: "executable_progress" as const, signals };
+      }
+      return { kind: "supervisory_summary_only" as const, signals };
+    },
+
+    /**
+     * AJL-551 — phase-1 reinforcement: count the tail streak of heartbeat
+     * runs on this umbrella issue whose `resultClass` is
+     * `supervisory_summary_only`. Runs are identified by
+     * `contextSnapshot->>issueId = umbrellaIssueId`, scoped to the umbrella's
+     * own company, and considered in reverse chronological order of their
+     * finalized `finishedAt` (with `createdAt` as the tiebreak for races).
+     *
+     * Only runs that have finished (non-null `resultClass`) are counted.
+     * The first finished run whose resultClass is NOT
+     * `supervisory_summary_only` breaks the streak.
+     */
+    getSupervisorySummaryOnlyStreakForUmbrella: async (
+      umbrellaIssueId: string,
+      limit = 5,
+    ) => {
+      const umbrella = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, umbrellaIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!umbrella) return { streak: 0, inspected: 0 };
+
+      const rows = await db
+        .select({
+          id: heartbeatRuns.id,
+          resultClass: heartbeatRuns.resultClass,
+          finishedAt: heartbeatRuns.finishedAt,
+          createdAt: heartbeatRuns.createdAt,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, umbrella.companyId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${umbrellaIssueId}`,
+            sql`${heartbeatRuns.resultClass} IS NOT NULL`,
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.createdAt))
+        .limit(Math.max(1, Math.min(50, limit)));
+
+      let streak = 0;
+      for (const row of rows) {
+        if (row.resultClass === "supervisory_summary_only") {
+          streak += 1;
+        } else {
+          break;
+        }
+      }
+      return { streak, inspected: rows.length };
+    },
+
+    /**
      * AJL-550 — same-owner parent+child overlap detector.
      *
      * Detects the exact pre-loop topology from AJL-444 → AJL-446:
