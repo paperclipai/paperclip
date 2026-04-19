@@ -4001,8 +4001,15 @@ export function heartbeatService(db: Db) {
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
       const latestRun = await getRun(run.id);
+      // If another code path (cancelRun, enforceRunTimeouts, reapOrphanedRuns)
+      // has already finalised this run to a terminal status, preserve it.
+      // Previously only "cancelled" was respected, so an enforceRunTimeouts
+      // SIGTERM that produced a clean exit-0 from the child would be
+      // overwritten with "succeeded", hiding the timeout entirely.
       if (latestRun?.status === "cancelled") {
         outcome = "cancelled";
+      } else if (latestRun?.status === "failed") {
+        outcome = latestRun.errorCode === "timeout" ? "timed_out" : "failed";
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
@@ -4016,14 +4023,16 @@ export function heartbeatService(db: Db) {
         logSummary = await runLogStore.finalize(handle);
       }
 
+      // Note: timed_out is a semantic outcome; the persisted status column
+      // only uses the enum {succeeded, failed, cancelled}. timed_out runs
+      // land as failed with errorCode=timeout (set either by this handler
+      // via adapterResult.timedOut or upstream by enforceRunTimeouts).
       const status =
         outcome === "succeeded"
           ? "succeeded"
           : outcome === "cancelled"
             ? "cancelled"
-            : outcome === "timed_out"
-              ? "timed_out"
-              : "failed";
+            : "failed";
 
       const usageJson =
         normalizedUsage || adapterResult.costUsd != null
