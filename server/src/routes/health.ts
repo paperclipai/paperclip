@@ -130,5 +130,20 @@ export function healthRoutes(
     });
   });
 
+  router.get("/db", async (_req, res) => {
+    if (!db) {
+      res.status(503).json({ status: "unhealthy", error: "no_database_configured" });
+      return;
+    }
+
+    try {
+      await db.execute(sql`SELECT 1`);
+      res.json({ status: "ok" });
+    } catch (error) {
+      logger.warn({ err: error }, "DB health-check probe failed");
+      res.status(503).json({ status: "unhealthy", error: "database_unreachable" });
+    }
+  });
+
   return router;
 }
