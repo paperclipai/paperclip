@@ -211,7 +211,7 @@ function launcherShellBoundsStyle(bounds: PluginLauncherBounds | null): CSSPrope
     case "wide":
       return { width: "min(64rem, calc(100vw - 2rem))" };
     case "full":
-      return { width: "calc(100vw - 2rem)", height: "calc(100vh - 2rem)" };
+      return { width: "calc(100vw - 2rem)", height: "calc(100dvh - 2rem)" };
     case "inline":
       return { width: "min(24rem, calc(100vw - 2rem))" };
     case "default":
@@ -525,7 +525,7 @@ function LauncherModalShell({
     ? "fixed right-0 top-0 h-full max-w-[min(44rem,100vw)] overflow-hidden border-l border-border bg-background shadow-2xl"
     : shellType === "openPopover"
       ? "fixed overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
-      : "fixed left-1/2 top-1/2 max-h-[calc(100vh-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-background shadow-2xl";
+      : "fixed left-1/2 top-1/2 max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-background shadow-2xl";
 
   return (
     <>
@@ -576,7 +576,7 @@ function LauncherModalShell({
         <div
           className={cn(
             "overflow-auto p-4",
-            shellType === "openDrawer" ? "h-[calc(100%-3.5rem)]" : "max-h-[calc(100vh-7rem)]",
+            shellType === "openDrawer" ? "h-[calc(100%-3.5rem)]" : "max-h-[calc(100dvh-7rem)]",
           )}
         >
           <LauncherRenderContent instance={instance} renderEnvironment={renderEnvironment} />

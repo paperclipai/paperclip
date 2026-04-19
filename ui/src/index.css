@@ -125,7 +125,14 @@
   body {
     @apply bg-background text-foreground antialiased;
     height: 100%;
-    overflow: hidden;
+  }
+  #root {
+    height: 100%;
+  }
+  @media (min-width: 768px) {
+    body {
+      overflow: hidden;
+    }
   }
   h1,
   h2,
