@@ -719,6 +719,12 @@ Terminal states: `done`, `cancelled`
 
 ### Issues (Tasks)
 
+**Route shape — when to use `/api/companies/:companyId/...` vs `/api/issues/:issueId/...`:**
+
+- **List and create** are company-scoped: `GET` / `POST /api/companies/:companyId/issues`. Attachment create is also company-scoped.
+- **All other per-issue operations are flat**: `GET` / `PATCH` / `DELETE /api/issues/:issueId`, and every sub-resource (`/comments`, `/checkout`, `/approvals`, `/documents`, `/read`, etc.).
+- The flat shape is preferred. Nested aliases also work for per-issue operations — e.g. `POST /api/companies/:companyId/issues/:issueId/comments` routes to the flat handler — so agents that over-generalize from the create endpoint won't 404. The URL `:companyId` is advisory on aliased routes; authorization comes from the caller's actor context, not the URL.
+
 | Method | Path                               | Description                                                                              |
 | ------ | ---------------------------------- | ---------------------------------------------------------------------------------------- |
 | GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |

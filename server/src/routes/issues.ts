@@ -585,6 +585,27 @@ export function issueRoutes(
     }
   });
 
+  // Alias: accept /companies/:companyId/issues/:issueId/* and route to the flat
+  // /issues/:issueId/* handlers below. Fixes #3993: agents over-generalize from
+  // the nested create endpoint and 404 on modify/comment paths.
+  router.use((req, _res, next) => {
+    const queryIdx = req.url.indexOf("?");
+    const pathname = queryIdx === -1 ? req.url : req.url.slice(0, queryIdx);
+    const query = queryIdx === -1 ? "" : req.url.slice(queryIdx);
+
+    const match = pathname.match(/^\/companies\/[^/]+\/issues\/([^/]+)(\/.*)?$/);
+    if (!match) return next();
+
+    const [, issueId, subpath = ""] = match;
+
+    // POST /companies/:companyId/issues/:issueId/attachments has a native
+    // nested handler (no flat equivalent for create). Let it through unchanged.
+    if (subpath === "/attachments" && req.method === "POST") return next();
+
+    req.url = `/issues/${issueId}${subpath}${query}`;
+    next();
+  });
+
   // Common malformed path when companyId is empty in "/api/companies/{companyId}/issues".
   router.get("/issues", (_req, res) => {
     res.status(400).json({
