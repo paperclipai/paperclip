@@ -1,8 +1,9 @@
 name: "Build: Production"
 
 on:
-  push:
-    branches: [master]
+  # Auto-trigger disabled until dev is promoted into master
+  # push:
+  #   branches: [master]
   workflow_dispatch:
 
 permissions:
