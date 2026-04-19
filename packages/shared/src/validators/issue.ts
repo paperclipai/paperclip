@@ -122,7 +122,40 @@ export const createIssueSchema = z.object({
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: z.string().optional().nullable(),
-  status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
+  // LLM agents frequently send "completed", "closed", "wip" etc. Normalise
+  // common synonyms to the canonical ISSUE_STATUSES enum so they don't 400
+  // on field-name guesses.
+  status: z
+    .preprocess((val) => {
+      if (typeof val !== "string") return val;
+      const v = val.trim().toLowerCase();
+      const map: Record<string, string> = {
+        completed: "done",
+        complete: "done",
+        finished: "done",
+        closed: "done",
+        resolved: "done",
+        open: "todo",
+        new: "todo",
+        pending: "todo",
+        wip: "in_progress",
+        "in-progress": "in_progress",
+        "in progress": "in_progress",
+        working: "in_progress",
+        doing: "in_progress",
+        review: "in_review",
+        reviewing: "in_review",
+        "in-review": "in_review",
+        "in review": "in_review",
+        ready_for_review: "in_review",
+        "ready-for-review": "in_review",
+        cancel: "cancelled",
+        canceled: "cancelled",
+      };
+      return map[v] ?? val;
+    }, z.enum(ISSUE_STATUSES))
+    .optional()
+    .default("backlog"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
@@ -163,11 +196,26 @@ export const checkoutIssueSchema = z.object({
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 
-export const addIssueCommentSchema = z.object({
-  body: z.string().min(1),
-  reopen: z.boolean().optional(),
-  interrupt: z.boolean().optional(),
-});
+// LLM agents routinely send `content` or `comment` instead of `body`,
+// producing 400s that don't teach them anything. Accept all three forms
+// and normalise to `body` via a transform so downstream code stays clean.
+export const addIssueCommentSchema = z
+  .object({
+    body: z.string().min(1).optional(),
+    content: z.string().min(1).optional(),
+    comment: z.string().min(1).optional(),
+    reopen: z.boolean().optional(),
+    interrupt: z.boolean().optional(),
+  })
+  .refine(
+    (data) => Boolean(data.body ?? data.content ?? data.comment),
+    { message: "body (or content/comment) is required", path: ["body"] },
+  )
+  .transform((data) => ({
+    body: (data.body ?? data.content ?? data.comment) as string,
+    reopen: data.reopen,
+    interrupt: data.interrupt,
+  }));
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
