@@ -392,6 +392,114 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
+  it("does not stamp execution metadata from another agent's queued mention wake when checkout is absent", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const wakingAgentId = randomUUID();
+    const issueId = randomUUID();
+    const staleRunId = randomUUID();
+    const staleWakeupRequestId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "Release Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: wakingAgentId,
+        companyId,
+        name: "Staff Engineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Mention wake should not mint ownership",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: staleWakeupRequestId,
+      companyId,
+      agentId: wakingAgentId,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "issue_comment_mentioned",
+      payload: { issueId },
+      status: "queued",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: staleRunId,
+      companyId,
+      agentId: wakingAgentId,
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      status: "queued",
+      wakeupRequestId: staleWakeupRequestId,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_comment_mentioned",
+      },
+      updatedAt: new Date("2026-04-19T17:00:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.wakeup(wakingAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "issue_comment_mentioned",
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_comment_mentioned",
+      },
+    });
+
+    const issue = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(issue).toEqual({
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+    });
+  });
+
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
