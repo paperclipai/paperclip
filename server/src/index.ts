@@ -667,9 +667,9 @@ export async function startServer(): Promise<StartedServer> {
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeatScheduler
       .reapOrphanedRuns()
-      .then(() => heartbeat.resumeQueuedRuns())
+      .then(() => heartbeatScheduler.resumeQueuedRuns())
       .then(async () => {
-        const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+        const reconciled = await heartbeatScheduler.reconcileStrandedAssignedIssues();
         if (
           reconciled.dispatchRequeued > 0 ||
           reconciled.continuationRequeued > 0 ||
@@ -708,9 +708,9 @@ export async function startServer(): Promise<StartedServer> {
       // persisted queued work is still being driven forward.
       void heartbeatScheduler
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-        .then(() => heartbeat.resumeQueuedRuns())
+        .then(() => heartbeatScheduler.resumeQueuedRuns())
         .then(async () => {
-          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+          const reconciled = await heartbeatScheduler.reconcileStrandedAssignedIssues();
           if (
             reconciled.dispatchRequeued > 0 ||
             reconciled.continuationRequeued > 0 ||
