@@ -17,6 +17,7 @@ import {
   upsertIssueFeedbackVoteSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
+  issueDueDateSchema,
   restoreIssueDocumentRevisionSchema,
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
@@ -66,6 +67,20 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+
+function parseDateOnlyQuery(value: unknown, name: string, res: Response): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    res.status(400).json({ error: `${name} must be a valid YYYY-MM-DD date` });
+    return undefined;
+  }
+  const parsed = issueDueDateSchema.safeParse(value.trim());
+  if (!parsed.success) {
+    res.status(400).json({ error: `${name} must be a valid YYYY-MM-DD date` });
+    return undefined;
+  }
+  return parsed.data;
+}
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -551,6 +566,12 @@ export function issueRoutes(
     const rawLimit = req.query.limit as string | undefined;
     const parsedLimit = rawLimit ? Number.parseInt(rawLimit, 10) : null;
     const limit = parsedLimit ?? undefined;
+    const dueDate = parseDateOnlyQuery(req.query.dueDate, "dueDate", res);
+    if (res.headersSent) return;
+    const dueFrom = parseDateOnlyQuery(req.query.dueFrom, "dueFrom", res);
+    if (res.headersSent) return;
+    const dueTo = parseDateOnlyQuery(req.query.dueTo, "dueTo", res);
+    if (res.headersSent) return;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -591,6 +612,9 @@ export function issueRoutes(
         req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
       q: req.query.q as string | undefined,
       limit,
+      dueDate,
+      dueFrom,
+      dueTo,
     });
     res.json(result);
   });

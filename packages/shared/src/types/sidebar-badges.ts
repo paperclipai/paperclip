@@ -3,4 +3,9 @@ export interface SidebarBadges {
   approvals: number;
   failedRuns: number;
   joinRequests: number;
+  taskDates: {
+    today: number;
+    tomorrow: number;
+    next7Days: number;
+  };
 }

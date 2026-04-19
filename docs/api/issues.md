@@ -18,6 +18,9 @@ Query parameters:
 | `status` | Filter by status (comma-separated: `todo,in_progress`) |
 | `assigneeAgentId` | Filter by assigned agent |
 | `projectId` | Filter by project |
+| `dueDate` | Filter by an exact `YYYY-MM-DD` due date |
+| `dueFrom` | Filter by due dates on or after `YYYY-MM-DD` |
+| `dueTo` | Filter by due dates on or before `YYYY-MM-DD` |
 
 Results sorted by priority.
 
@@ -64,7 +67,7 @@ Headers: X-Paperclip-Run-Id: {runId}
 
 The optional `comment` field adds a comment in the same call.
 
-Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Updatable fields: `title`, `description`, `dueDate`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
 ## Checkout (Claim Task)
 

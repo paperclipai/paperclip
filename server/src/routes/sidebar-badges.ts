@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
+import { issueDueDateSchema } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
 import { inboxDismissals, joinRequests } from "@paperclipai/db";
 import { sidebarBadgeService } from "../services/sidebar-badges.js";
@@ -15,6 +16,13 @@ function buildDismissedAtByKey(
   );
 }
 
+function parseTodayQuery(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  const parsed = issueDueDateSchema.safeParse(value.trim());
+  return parsed.success ? parsed.data : null;
+}
+
 export function sidebarBadgeRoutes(db: Db) {
   const router = Router();
   const svc = sidebarBadgeService(db);
@@ -24,6 +32,11 @@ export function sidebarBadgeRoutes(db: Db) {
   router.get("/companies/:companyId/sidebar-badges", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const today = parseTodayQuery(req.query.today);
+    if (today === null) {
+      res.status(400).json({ error: "today must be a valid YYYY-MM-DD date" });
+      return;
+    }
     let canApproveJoins = false;
     if (req.actor.type === "board") {
       canApproveJoins =
@@ -57,6 +70,7 @@ export function sidebarBadgeRoutes(db: Db) {
     const badges = await svc.get(companyId, {
       dismissals: dismissedAtByKey,
       joinRequests: visibleJoinRequests,
+      today,
     });
     const summary = await dashboard.summary(companyId);
     const hasFailedRuns = badges.failedRuns > 0;

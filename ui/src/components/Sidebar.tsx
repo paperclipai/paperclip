@@ -11,6 +11,9 @@ import {
   Boxes,
   Repeat,
   Settings,
+  Calendar,
+  CalendarDays,
+  CalendarRange,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -20,7 +23,9 @@ import { SidebarAgents } from "./SidebarAgents";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
+import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { queryKeys } from "../lib/queryKeys";
+import { formatDateOnly } from "../lib/issue-date-ranges";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
@@ -29,13 +34,23 @@ export function Sidebar() {
   const { openNewIssue } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const inboxBadge = useInboxBadge(selectedCompanyId);
+  const today = formatDateOnly();
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
     refetchInterval: 10_000,
   });
+  const { data: sidebarBadges } = useQuery({
+    queryKey: [...queryKeys.sidebarBadges(selectedCompanyId!), today],
+    queryFn: () => sidebarBadgesApi.get(selectedCompanyId!, { today }),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 15_000,
+  });
   const liveRunCount = liveRuns?.length ?? 0;
+  const todayCount = sidebarBadges?.taskDates?.today ?? 0;
+  const tomorrowCount = sidebarBadges?.taskDates?.tomorrow ?? 0;
+  const next7DaysCount = sidebarBadges?.taskDates?.next7Days ?? 0;
 
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
@@ -98,6 +113,10 @@ export function Sidebar() {
         </div>
 
         <SidebarSection label="Work">
+          <SidebarNavItem to="/tasks/today" label="Today" icon={Calendar} badge={todayCount} />
+          <SidebarNavItem to="/tasks/tomorrow" label="Tomorrow" icon={CalendarDays} badge={tomorrowCount} />
+          <SidebarNavItem to="/tasks/next-7-days" label="Next 7 Days" icon={CalendarRange} badge={next7DaysCount} />
+          <SidebarNavItem to="/tasks/calendar" label="Calendar" icon={CalendarDays} />
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />

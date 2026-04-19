@@ -2,9 +2,9 @@ import { useMemo } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import {
   House,
-  CircleDot,
+  Calendar,
   SquarePen,
-  Users,
+  CalendarDays,
   Inbox,
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
@@ -43,9 +43,9 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const items = useMemo<MobileNavItem[]>(
     () => [
       { type: "link", to: "/dashboard", label: "Home", icon: House },
-      { type: "link", to: "/issues", label: "Issues", icon: CircleDot },
-      { type: "action", label: "Create", icon: SquarePen, onClick: () => openNewIssue() },
-      { type: "link", to: "/agents/all", label: "Agents", icon: Users },
+      { type: "link", to: "/tasks/today", label: "Today", icon: Calendar },
+      { type: "action", label: "New Task", icon: SquarePen, onClick: () => openNewIssue() },
+      { type: "link", to: "/tasks/calendar", label: "Calendar", icon: CalendarDays },
       {
         type: "link",
         to: "/inbox",

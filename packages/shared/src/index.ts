@@ -459,6 +459,7 @@ export {
   projectExecutionWorkspacePolicySchema,
   createIssueSchema,
   createIssueLabelSchema,
+  issueDueDateSchema,
   updateIssueSchema,
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
