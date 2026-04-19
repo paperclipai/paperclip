@@ -212,3 +212,19 @@ export const restoreIssueDocumentRevisionSchema = z.object({});
 export type IssueDocumentFormat = z.infer<typeof issueDocumentFormatSchema>;
 export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;
 export type RestoreIssueDocumentRevision = z.infer<typeof restoreIssueDocumentRevisionSchema>;
+
+export const questionOptionSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  description: z.string().optional(),
+});
+
+export const questionDataSchema = z.object({
+  prompt: z.string(),
+  context: z.string().optional().nullable(),
+  options: z.array(questionOptionSchema).optional().nullable(),
+  timeoutHours: z.number().optional().nullable(),
+  fallbackOption: z.string().optional().nullable(),
+});
+
+export type QuestionData = z.infer<typeof questionDataSchema>;

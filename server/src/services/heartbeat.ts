@@ -4380,6 +4380,32 @@ export function heartbeatService(db: Db) {
           });
           const normalizedUsage = sessionUsageResolution.normalizedUsage;
 
+          let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+          const latestRun = await getRun(run.id);
+          if (latestRun?.status === "cancelled") {
+            outcome = "cancelled";
+          } else if (adapterResult.timedOut) {
+            outcome = "timed_out";
+          } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
+            outcome = "succeeded";
+          } else {
+            outcome = "failed";
+          }
+
+          let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
+          if (handle) {
+            logSummary = await runLogStore.finalize(handle);
+          }
+
+          const status =
+            outcome === "succeeded"
+              ? "succeeded"
+              : outcome === "cancelled"
+                ? "cancelled"
+                : outcome === "timed_out"
+                  ? "timed_out"
+                  : "failed";
+
           const persistedResultJson = mergeHeartbeatRunResultJson(
             adapterResult.resultJson ?? null,
             adapterResult.summary ?? null,
