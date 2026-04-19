@@ -465,6 +465,97 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("surfaces a coherent active execution owner on the checked-out issue only", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const activeIssueId = randomUUID();
+    const siblingIssueId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Release Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: randomUUID(),
+      contextSnapshot: { issueId: activeIssueId },
+      startedAt: new Date("2026-04-19T17:00:00.000Z"),
+      updatedAt: new Date("2026-04-19T17:00:00.000Z"),
+    });
+
+    await db.insert(issues).values([
+      {
+        id: activeIssueId,
+        companyId,
+        issueNumber: 1066,
+        identifier: "PAP-1066",
+        title: "Active execution ownership",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        createdByUserId: "user-1",
+      },
+      {
+        id: siblingIssueId,
+        companyId,
+        issueNumber: 1067,
+        identifier: "PAP-1067",
+        title: "Blocked sibling",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        createdByUserId: "user-1",
+      },
+    ]);
+
+    await svc.checkout(activeIssueId, agentId, ["todo"], checkoutRunId);
+
+    const detail = await svc.getById("PAP-1066");
+    const listed = await svc.list(companyId, {});
+    const activeListed = listed.find((issue) => issue.id === activeIssueId);
+    const siblingListed = listed.find((issue) => issue.id === siblingIssueId);
+
+    expect(detail).toEqual(expect.objectContaining({
+      id: activeIssueId,
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      executionAgentNameKey: "release engineer",
+    }));
+    expect(activeListed).toEqual(expect.objectContaining({
+      id: activeIssueId,
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      executionAgentNameKey: "release engineer",
+    }));
+    expect(siblingListed).toEqual(expect.objectContaining({
+      id: siblingIssueId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+    }));
+  });
+
   it("filters issues by execution workspace id", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
