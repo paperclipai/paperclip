@@ -433,6 +433,7 @@ Bun.serve({
       const runId = (body.runId || "") as string;
       const wakeReason = context.wakeReason || "manual";
       const commentId = context.wakeCommentId || "";
+      const routineId = context.routineId || "";
 
       // Snapshot the current JSONL tail so cost-tracking can diff on flush.
       if (runId) {
@@ -456,6 +457,19 @@ Bun.serve({
           taskInfo = `Task: ${(issue as any).identifier || taskId}\nTitle: ${(issue as any).title}\nStatus: ${(issue as any).status}\n\nDescription:\n${(issue as any).description || "No description"}`;
         } catch {
           taskInfo = `Task ${taskId} assigned but could not fetch details.`;
+        }
+      } else if (routineId && wakeReason === "routine_heartbeat") {
+        // Routine wake with skipIssueCreation=true — fetch the routine itself
+        // so its description (the actual instructions) reaches claude+. Without
+        // this, claude+ only sees "Heartbeat received. Wake reason: routine_heartbeat."
+        // and falls back to defaults from AGENTS.md.
+        try {
+          const routine = (await paperclipFetch("GET", `/routines/${routineId}`)) as Record<string, unknown>;
+          const title = (routine as any).title || "(untitled routine)";
+          const desc = (routine as any).description || "(no description set)";
+          taskInfo = `Routine fired: ${title}\n\nDescription / procedure:\n${desc}`;
+        } catch {
+          taskInfo = `Routine ${routineId} fired but description could not be fetched.`;
         }
       }
 
@@ -494,6 +508,7 @@ Bun.serve({
             task_id: taskId,
             wake_reason: wakeReason,
             ...(commentId ? { comment_id: commentId } : {}),
+            ...(routineId ? { routine_id: routineId } : {}),
             ...(messageText ? { message_text: messageText } : {}),
           },
         },
