@@ -1178,6 +1178,151 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("records operator-visible history when Personal OS reroutes implementation work to Ork", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const personalOsAgentId = randomUUID();
+    const orkAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: personalOsAgentId,
+        companyId,
+        name: "Personal OS",
+        role: "operator",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: orkAgentId,
+        companyId,
+        name: "Ork",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Implement the mission-control operator queue refinement",
+      status: "todo",
+      priority: "high",
+      ownerAgentId: personalOsAgentId,
+      assigneeAgentId: personalOsAgentId,
+      missionControl: {
+        collaboratorAgentIds: [],
+        nextStep: "Clarify the operator follow-up",
+      },
+    });
+
+    const updatedIssue = await svc.updateWithActivity(issueId, {
+      ownerAgentId: orkAgentId,
+      assigneeAgentId: orkAgentId,
+      missionControl: {
+        collaboratorAgentIds: [personalOsAgentId],
+        nextStep: "Implement the operator queue refinement and report verification results.",
+        workflowState: {
+          kind: "handed_off",
+          enteredAt: "2026-04-19T09:00:00.000Z",
+        },
+        handoff: {
+          fromAgentId: personalOsAgentId,
+          toAgentId: orkAgentId,
+          reason: "Engineering ownership is clear",
+          requestedNextStep: "Take over the implementation and verification slice.",
+          unblockCondition: "Patch and targeted verification are complete.",
+          timestamp: "2026-04-19T09:00:00.000Z",
+        },
+      },
+    }, {
+      actorType: "agent",
+      actorId: personalOsAgentId,
+      agentId: personalOsAgentId,
+    });
+
+    expect(updatedIssue).toMatchObject({
+      id: issueId,
+      ownerAgentId: orkAgentId,
+      assigneeAgentId: orkAgentId,
+      missionControl: {
+        collaboratorAgentIds: [personalOsAgentId],
+        nextStep: "Implement the operator queue refinement and report verification results.",
+        workflowState: {
+          kind: "handed_off",
+        },
+        handoff: {
+          fromAgentId: personalOsAgentId,
+          toAgentId: orkAgentId,
+          reason: "Engineering ownership is clear",
+          requestedNextStep: "Take over the implementation and verification slice.",
+          unblockCondition: "Patch and targeted verification are complete.",
+          context: {
+            issueId,
+            title: "Implement the mission-control operator queue refinement",
+          },
+        },
+      },
+    });
+
+    const [listedIssue] = await svc.list(companyId, {});
+    const activityEntries = await db
+      .select({
+        action: activityLog.action,
+        actorId: activityLog.actorId,
+        agentId: activityLog.agentId,
+      })
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .orderBy(activityLog.createdAt);
+
+    expect(listedIssue).toMatchObject({
+      id: issueId,
+      ownerAgentId: orkAgentId,
+      assigneeAgentId: orkAgentId,
+      latestActivitySummary: {
+        text: "Created handoff",
+        action: "issue.handoff_updated",
+        actorType: "agent",
+        actorId: personalOsAgentId,
+        agentId: personalOsAgentId,
+      },
+      latestHandoffSummary: {
+        text: "Created handoff",
+        action: "issue.handoff_updated",
+        actorType: "agent",
+        actorId: personalOsAgentId,
+        agentId: personalOsAgentId,
+      },
+    });
+    expect(activityEntries).toEqual([
+      {
+        action: "issue.updated",
+        actorId: personalOsAgentId,
+        agentId: personalOsAgentId,
+      },
+      {
+        action: "issue.handoff_updated",
+        actorId: personalOsAgentId,
+        agentId: personalOsAgentId,
+      },
+    ]);
+  });
+
   it("trims list payload fields that can grow large on issue index routes", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();

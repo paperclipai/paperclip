@@ -124,6 +124,12 @@ type IssueActivitySummaryRow = {
   createdAt: Date;
   details: Record<string, unknown> | null;
 };
+type IssueActivityActor = {
+  actorType: "agent" | "user" | "system";
+  actorId: string;
+  agentId?: string | null;
+  runId?: string | null;
+};
 type IssueActivitySummary = {
   kind: "handoff" | "activity";
   action: string;
@@ -718,18 +724,28 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function summarizeIssueUpdate(details: Record<string, unknown> | null): string | null {
+function summarizeIssueUpdate(
+  details: Record<string, unknown> | null,
+  options?: { preferHandoff?: boolean },
+): string | null {
   const record = asRecord(details);
   if (!record) return null;
   const previous = asRecord(record._previous);
+  const preferHandoff = options?.preferHandoff === true;
+  const handoff = asRecord(asRecord(record.missionControl)?.handoff);
+  const previousHandoff = asRecord(asRecord(previous?.missionControl)?.handoff);
+  if (preferHandoff && (handoff || previousHandoff)) {
+    if (handoff && !previousHandoff) return "Created handoff";
+    if (!handoff && previousHandoff) return "Cleared handoff";
+    if ((handoff?.toAgentId ?? null) !== (previousHandoff?.toAgentId ?? null)) return "Updated handoff target";
+    return "Updated handoff";
+  }
   const workflowState = asRecord(asRecord(record.missionControl)?.workflowState);
   const previousWorkflowState = asRecord(asRecord(previous?.missionControl)?.workflowState);
   const workflowStateSummary = summarizeMissionControlWorkflowStateChange(workflowState, previousWorkflowState);
   if (workflowStateSummary) {
     return workflowStateSummary;
   }
-  const handoff = asRecord(asRecord(record.missionControl)?.handoff);
-  const previousHandoff = asRecord(asRecord(previous?.missionControl)?.handoff);
   if (handoff || previousHandoff) {
     if (handoff && !previousHandoff) return "Created handoff";
     if (!handoff && previousHandoff) return "Cleared handoff";
@@ -781,7 +797,7 @@ function summarizeIssueActivity(action: string, details: Record<string, unknown>
   if (action === "issue.attachment_added") return "Added attachment";
   if (action === "issue.attachment_removed") return "Removed attachment";
   if (action === "issue.updated") return summarizeIssueUpdate(details);
-  if (action === "issue.handoff_updated") return summarizeIssueUpdate(details);
+  if (action === "issue.handoff_updated") return summarizeIssueUpdate(details, { preferHandoff: true });
   return null;
 }
 
@@ -871,6 +887,75 @@ function withActiveRuns(
 
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
+
+  function buildPreviousIssueValues(
+    existing: typeof issues.$inferSelect,
+    updateFields: Record<string, unknown>,
+  ) {
+    const previous: Record<string, unknown> = {};
+    for (const [key, nextValue] of Object.entries(updateFields)) {
+      const previousValue = (existing as Record<string, unknown>)[key];
+      if (JSON.stringify(previousValue ?? null) !== JSON.stringify(nextValue ?? null)) {
+        previous[key] = previousValue;
+      }
+    }
+    return previous;
+  }
+
+  async function recordIssueUpdateActivity(
+    issue: typeof issues.$inferSelect,
+    existing: typeof issues.$inferSelect,
+    updateFields: Record<string, unknown>,
+    actor: IssueActivityActor,
+    dbOrTx: Db,
+  ) {
+    const previous = buildPreviousIssueValues(existing, updateFields);
+    const hasFieldChanges = Object.keys(previous).length > 0;
+
+    await dbOrTx.insert(activityLog).values({
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId ?? null,
+      runId: actor.runId ?? null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        ...updateFields,
+        identifier: issue.identifier,
+        _previous: hasFieldChanges ? previous : undefined,
+      },
+    });
+
+    const previousMissionControl = (existing.missionControl ?? null) as Record<string, unknown> | null;
+    const nextMissionControl = (issue.missionControl ?? null) as Record<string, unknown> | null;
+    const previousHandoff = previousMissionControl && typeof previousMissionControl === "object"
+      ? previousMissionControl.handoff
+      : undefined;
+    const nextHandoff = nextMissionControl && typeof nextMissionControl === "object"
+      ? nextMissionControl.handoff
+      : undefined;
+    if (JSON.stringify(previousHandoff ?? null) !== JSON.stringify(nextHandoff ?? null)) {
+      await dbOrTx.insert(activityLog).values({
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId ?? null,
+        runId: actor.runId ?? null,
+        action: "issue.handoff_updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          missionControl: nextMissionControl,
+          _previous: {
+            missionControl: previousMissionControl,
+          },
+        },
+      });
+    }
+  }
 
   async function withIssueActivitySummaries<T extends { id: string; companyId: string; updatedAt: Date }>(
     issue: T | null,
@@ -2096,6 +2181,34 @@ export function issueService(db: Db) {
       };
 
       return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
+    },
+
+    updateWithActivity: async (
+      id: string,
+      data: Partial<typeof issues.$inferInsert> & {
+        labelIds?: string[];
+        blockedByIssueIds?: string[];
+        actorAgentId?: string | null;
+        actorUserId?: string | null;
+      },
+      actor: IssueActivityActor,
+      dbOrTx: any = db,
+    ) => {
+      const existing = await dbOrTx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+      if (!existing) return null;
+
+      const runUpdateWithActivity = async (tx: any) => {
+        const updated = await issueService(tx).update(id, data, tx);
+        if (!updated) return null;
+        await recordIssueUpdateActivity(updated, existing, data as Record<string, unknown>, actor, tx);
+        return updated;
+      };
+
+      return dbOrTx === db ? db.transaction(runUpdateWithActivity) : runUpdateWithActivity(dbOrTx);
     },
 
     remove: (id: string) =>
