@@ -5570,6 +5570,32 @@ export function heartbeatService(db: Db) {
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
+      let skippedNoWork = 0;
+
+      // Batch-load each active company's open-issue picture once, so the per-agent
+      // "do I have work" check is O(1) not O(queries).
+      const activeCompanyIds = Array.from(
+        new Set(rows.filter((r) => r.companyStatus === "active").map((r) => r.agent.companyId)),
+      );
+      const assignedByAgent = new Map<string, number>();
+      const unassignedCount = new Map<string, number>();
+      if (activeCompanyIds.length > 0) {
+        const assignedRows = await db
+          .select({ agentId: issues.assigneeAgentId, count: sql<number>`count(*)` })
+          .from(issues)
+          .where(
+            and(
+              inArray(issues.companyId, activeCompanyIds),
+              inArray(issues.status, ["todo", "in_progress", "in_review"]),
+              isNull(issues.hiddenAt),
+            ),
+          )
+          .groupBy(issues.assigneeAgentId);
+        for (const row of assignedRows) {
+          if (row.agentId) assignedByAgent.set(row.agentId, Number(row.count));
+          else unassignedCount.set("__unassigned__", Number(row.count));
+        }
+      }
 
       for (const { agent, companyStatus } of rows) {
         if (companyStatus !== "active") continue;
@@ -5581,6 +5607,20 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Don't fire a timer heartbeat for agents with zero real work. Without
+        // this gate, idle agents (no assigned issues) wake on every interval
+        // and generate meta noise like "[BOARD] Request guidance" and
+        // "Heartbeat N: no assigned tasks" — wasting budget and drowning out
+        // actual product work. Leadership roles (CEO, Team Lead, Chief of
+        // Staff, CTO, CMO, CFO) still tick because coordination is their job;
+        // everyone else stays silent until assigned.
+        const LEADERSHIP_ROLES = new Set(["ceo", "cto", "cmo", "cfo", "manager"]);
+        const assigned = assignedByAgent.get(agent.id) ?? 0;
+        if (assigned === 0 && !LEADERSHIP_ROLES.has(agent.role)) {
+          skippedNoWork += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
@@ -5598,7 +5638,7 @@ export function heartbeatService(db: Db) {
         else skipped += 1;
       }
 
-      return { checked, enqueued, skipped };
+      return { checked, enqueued, skipped, skippedNoWork };
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
