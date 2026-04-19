@@ -550,9 +550,30 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
+  // Resolution order for `PAPERCLIP_API_URL` consumed by agents/adapters:
+  //   1. `PAPERCLIP_API_URL`   — explicit override (e.g. an internal-only URL
+  //       that differs from the public one).
+  //   2. `PAPERCLIP_PUBLIC_URL` — the operator's publicly-advertised URL,
+  //       which config.ts already consumes for auth callbacks. Preferring
+  //       it over the loopback default keeps outbound invoke envelopes
+  //       from leaking `http://127.0.0.1:<port>` into bodies that leave
+  //       the host — a leak that breaks any reverse-proxy or WAF path
+  //       fronting the receiving service.
+  //   3. Runtime host:port loopback fallback for pure-local dev when
+  //      neither is set.
+  const explicitApiUrl = readNonEmptyEnv("PAPERCLIP_API_URL");
+  const publicUrl = readNonEmptyEnv("PAPERCLIP_PUBLIC_URL");
+  const apiUrl =
+    explicitApiUrl ?? publicUrl ?? `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
+}
+
+function readNonEmptyEnv(name: string): string | null {
+  const v = process.env[name];
+  if (typeof v !== "string") return null;
+  const trimmed = v.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 export function defaultPathForPlatform() {
