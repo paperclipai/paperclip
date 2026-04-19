@@ -388,7 +388,14 @@ export function issueRoutes(
       const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
       if (allowedByGrant) return;
       const actorAgent = await agentsSvc.getById(req.actor.agentId);
-      if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
+      if (actorAgent && actorAgent.companyId === companyId) {
+        // Any agent in the company can assign tasks to teammates. This is
+        // required for the autonomous fleet's self-routing (Security Reviewer
+        // creates [FIX] for Engineer, Team Lead re-assigns blocked issues,
+        // etc). The legacy canCreateAgents flag gated this too narrowly and
+        // produced dozens of 403s per day.
+        return;
+      }
       throw forbidden("Missing permission: tasks:assign");
     }
     throw unauthorized();
