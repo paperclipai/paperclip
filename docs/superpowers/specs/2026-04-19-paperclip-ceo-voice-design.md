@@ -88,10 +88,12 @@ Walter will Aufgaben an seinen Paperclip-CEO-Agenten per Sprache und Text steuer
 
 | Tool | Methode | URL | Body / Query |
 |---|---|---|---|
-| `create_task` | POST | `http://127.0.0.1:3100/api/companies/9cebf3cf-efe8-4597-a400-f06488900a87/issues` | `{ "title": "{title}", "description": "{description}", "status": "todo", "priority": "{priority\|medium}", "assigneeAgentId": "506c873e-3a40-4483-9a45-0eb0fa1554bb" }` |
-| `list_tasks` | GET | `http://127.0.0.1:3100/api/companies/9cebf3cf-.../issues` | `?assigneeAgentId=fca63798-...&status=todo,in_progress,in_review,blocked` |
+| `create_task` | POST | `http://127.0.0.1:3100/api/companies/9cebf3cf-efe8-4597-a400-f06488900a87/issues` | `{ "title": "{title}", "description": "{description}", "status": "todo", "priority": "medium", "assigneeAgentId": "506c873e-3a40-4483-9a45-0eb0fa1554bb" }` |
+| `list_tasks` | GET | `http://127.0.0.1:3100/api/companies/9cebf3cf-.../issues` | `?assigneeAgentId=506c873e-…&status=todo,in_progress,in_review,blocked` |
 | `get_task` | GET | `http://127.0.0.1:3100/api/issues/{issueId}` | — |
-| `comment_task` | POST | `http://127.0.0.1:3100/api/issues/{issueId}/comments` | `{ "body": "{body}" }` |
+| `comment_task` | POST | `http://127.0.0.1:3100/api/issues/{issueId}/comments` | `{ "body": "{body}" }` + Header `X-Paperclip-Run-Id: 7e8b9d2f-4a5c-4b6e-9d1f-0e2f4a6b8c10` (siehe §7.1) |
+
+Parameter werden vom AI-Agent-LLM via `$fromAI('name', 'description', 'string')` gefüllt. URL-Parameter (z.B. `{issueId}`) werden per String-Concat im Expression-Modus gesetzt.
 
 ## 6. Response-Router
 
@@ -113,6 +115,26 @@ AI Agent output → Extract assistantText → IF source:
   ```
 - Der Output enthält `export PAPERCLIP_API_KEY=…` — dieser Wert wandert in den n8n-Credential.
 - Wiederverwendung: `Telegram account`, `LM Studio M4 Max`, `ElevenLabs`, `Postgres Memory` — alle schon in Luna vorhanden.
+
+### 7.1 Bridge-Run für mutierende Endpoints
+
+Paperclip verlangt bei Issue-Mutationen (Comments, PATCH, Checkout) den Header `X-Paperclip-Run-Id` als **Foreign Key** gegen die `heartbeat_runs`-Tabelle. n8n ist kein echter Agent-Run, deshalb legen wir einmalig einen "Bridge-Run" an, den alle mutierenden Tools nutzen:
+
+```sql
+INSERT INTO heartbeat_runs (id, company_id, agent_id, invocation_source, status, started_at, finished_at)
+VALUES (
+  '7e8b9d2f-4a5c-4b6e-9d1f-0e2f4a6b8c10',
+  '9cebf3cf-efe8-4597-a400-f06488900a87',
+  '506c873e-3a40-4483-9a45-0eb0fa1554bb',
+  'external_bridge',
+  'completed',
+  now(),
+  now()
+)
+ON CONFLICT (id) DO NOTHING;
+```
+
+Diese UUID wird im `comment_task`-Tool als fester Header `X-Paperclip-Run-Id` gesetzt. Alle Comments via Bridge sind in Paperclip-UI dadurch als zu diesem Run gehörig markiert — sauberes Audit. In V2, wenn wir einen echten Messenger-Agent haben, kann pro Call ein frischer Run erzeugt werden (`POST /api/heartbeat-runs`).
 
 ## 8. Datenbank
 
