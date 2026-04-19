@@ -1670,8 +1670,31 @@ export function heartbeatService(db: Db) {
     }
 
     const context = parseObject(run.contextSnapshot);
+    const contextIssueId = readNonEmptyString(context.issueId);
+    if (contextIssueId) {
+      const [targetIssue] = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, contextIssueId))
+        .limit(1);
+      if (!targetIssue) {
+        await cancelRunInternal(run.id, "Cancelled because the target issue no longer exists");
+        return null;
+      }
+      if (targetIssue.status === "done" || targetIssue.status === "cancelled") {
+        // Race: the run was queued while the issue was still active, but the
+        // issue reached a terminal state before the agent had capacity to claim
+        // it. Executing now would burn a Claude call on finished work.
+        await cancelRunInternal(
+          run.id,
+          `Cancelled because the target issue is already ${targetIssue.status}`,
+        );
+        return null;
+      }
+    }
+
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
-      issueId: readNonEmptyString(context.issueId),
+      issueId: contextIssueId,
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
