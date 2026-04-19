@@ -774,7 +774,7 @@ const CREDENTIAL_TYPE_OPTIONS: CredentialType[] = [
 function credentialPlaceholder(type: CredentialType): string {
   switch (type) {
     case "claude_oauth":
-      return "Paste OAuth access token...";
+      return "Paste {\"claudeAiOauth\": {...}} JSON or sk-ant-oat01-... token";
     case "claude_api_key":
       return "Paste sk-ant-... key...";
     case "gemini_api_key":
@@ -1249,10 +1249,10 @@ function CredentialsSection({ companyId }: { companyId: string }) {
               </select>
             </Field>
             <Field
-              label={addType === "claude_oauth" ? "Access Token" : "API Key"}
+              label={addType === "claude_oauth" ? "Access Token or OAuth JSON" : "API Key"}
               hint={
                 addType === "claude_oauth"
-                  ? "Run `claude` locally, then cat ~/.claude/.credentials.json and paste the accessToken value (starts with sk-ant-oat01-)."
+                  ? "Paste the FULL ~/.claude/.credentials.json contents (the {\"claudeAiOauth\": {...}} block) to include refreshToken — credentials auto-renew and don't expire. Or paste just the accessToken (sk-ant-oat01-...) for a short-lived session."
                   : undefined
               }
             >
