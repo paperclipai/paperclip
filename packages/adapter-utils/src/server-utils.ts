@@ -35,6 +35,104 @@ type ChildProcessWithEvents = ChildProcess & {
 };
 
 export const runningProcesses = new Map<string, RunningProcess>();
+
+/** SIGTERM every tracked child, wait up to `graceMs`, then SIGKILL stragglers.
+ *  Called from the server shutdown path so child `claude` processes don't
+ *  get reparented to init and keep burning tokens. */
+export async function killAllRunningProcesses(graceMs = 5000): Promise<void> {
+  const entries = Array.from(runningProcesses.values());
+  if (entries.length === 0) return;
+  for (const { child } of entries) {
+    try { child.kill("SIGTERM"); } catch { /* already dead */ }
+  }
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline) {
+    if (!entries.some(({ child }) => !child.killed)) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  for (const { child } of entries) {
+    try { if (!child.killed) child.kill("SIGKILL"); } catch { /* already dead */ }
+  }
+}
+
+/** Sweep `/proc` for orphaned `claude --print` subprocesses (PPID=1) whose
+ *  command line references a `paperclip-skills-*` tempdir, plus stale tempdirs
+ *  themselves. Linux-only — other platforms no-op. Catches the hard-crash
+ *  case where the Node parent died without running its shutdown handler and
+ *  left Claude CLI children alive. Intended to run once at server startup. */
+export async function sweepOrphanedClaudeProcesses(
+  log: (msg: string, meta?: Record<string, unknown>) => void,
+): Promise<{ killedPids: number[]; removedTempdirs: string[] }> {
+  const killedPids: number[] = [];
+  const removedTempdirs: string[] = [];
+  if (process.platform !== "linux") return { killedPids, removedTempdirs };
+
+  let procEntries: Dirent[] = [];
+  try {
+    procEntries = await fs.readdir("/proc", { withFileTypes: true });
+  } catch {
+    return { killedPids, removedTempdirs };
+  }
+
+  for (const entry of procEntries) {
+    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+    const pid = Number(entry.name);
+    if (pid === process.pid) continue;
+
+    try {
+      const cmdlineBuf = await fs.readFile(`/proc/${pid}/cmdline`);
+      const cmdline = cmdlineBuf.toString().replace(/\0/g, " ").trim();
+      if (!/(^|\/)claude(\s|$)/.test(cmdline) || !cmdline.includes("--print")) continue;
+      if (!cmdline.includes("/tmp/paperclip-skills-")) continue;
+
+      const status = await fs.readFile(`/proc/${pid}/status`, "utf-8");
+      const ppidLine = status.split("\n").find((l) => l.startsWith("PPid:"));
+      const ppid = ppidLine ? Number(ppidLine.split(/\s+/)[1]) : 0;
+      if (ppid !== 1) continue; // only orphans reparented to init
+
+      try {
+        process.kill(pid, "SIGTERM");
+        killedPids.push(pid);
+        log(`killed orphan claude process at startup`, { pid, cmdline: cmdline.slice(0, 200) });
+      } catch { /* already gone */ }
+    } catch { /* process vanished mid-scan or permission denied */ }
+  }
+
+  // Give SIGTERM a moment, then SIGKILL anything still alive.
+  if (killedPids.length > 0) {
+    await new Promise((r) => setTimeout(r, 2000));
+    for (const pid of killedPids) {
+      try {
+        process.kill(pid, 0); // probe liveness
+        process.kill(pid, "SIGKILL");
+      } catch { /* dead — good */ }
+    }
+  }
+
+  // Clean stale skills tempdirs regardless of whether we killed anything.
+  // Generous threshold: only remove dirs idle >1h so we don't race a live run.
+  let tmpEntries: Dirent[] = [];
+  try {
+    tmpEntries = await fs.readdir("/tmp", { withFileTypes: true });
+  } catch {
+    return { killedPids, removedTempdirs };
+  }
+  const staleCutoff = Date.now() - 60 * 60 * 1000;
+  for (const entry of tmpEntries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("paperclip-skills-")) continue;
+    const full = `/tmp/${entry.name}`;
+    try {
+      const stat = await fs.stat(full);
+      if (stat.mtimeMs >= staleCutoff) continue;
+      await fs.rm(full, { recursive: true, force: true });
+      removedTempdirs.push(full);
+      log(`removed stale skills tempdir`, { path: full, mtime: stat.mtime.toISOString() });
+    } catch { /* ignore */ }
+  }
+
+  return { killedPids, removedTempdirs };
+}
+
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;

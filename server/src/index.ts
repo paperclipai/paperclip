@@ -29,6 +29,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup, routineService } from "./services/index.js";
+import { killAllRunningProcesses, sweepOrphanedClaudeProcesses } from "./adapters/utils.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -559,6 +560,22 @@ export async function startServer(): Promise<StartedServer> {
     const heartbeat = heartbeatService(db as any);
     const routines = routineService(db as any);
   
+    // Before the DB-side reap, kill any claude CLI subprocesses that outlived
+    // the prior Node process (reparented to PID 1 with our skills-tempdir
+    // still on their command line). The DB reap reconciles heartbeat_runs
+    // records but won't touch the OS; without this sweep, an orphaned child
+    // keeps running (burning tokens) until it finishes or a human notices.
+    void sweepOrphanedClaudeProcesses((msg, meta) => logger.warn(meta ?? {}, msg))
+      .then((result) => {
+        if (result.killedPids.length > 0 || result.removedTempdirs.length > 0) {
+          logger.info(
+            { killed: result.killedPids, tempdirs: result.removedTempdirs.length },
+            "swept orphan claude processes at startup",
+          );
+        }
+      })
+      .catch((err) => logger.warn({ err }, "orphan claude sweep failed"));
+
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
@@ -709,25 +726,29 @@ export async function startServer(): Promise<StartedServer> {
     });
   });
   
-  if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
-    const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      logger.info({ signal }, "Stopping embedded PostgreSQL");
+  // Always register shutdown handlers, regardless of embedded-postgres mode —
+  // otherwise child `claude` subprocesses get reparented to init and keep
+  // running after the Node parent exits. Kill tracked children first so
+  // they can't outlive us, then stop embedded Postgres if we started it.
+  const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+    logger.info({ signal }, "Shutting down");
+    try {
+      await killAllRunningProcesses();
+    } catch (err) {
+      logger.warn({ err }, "Failed to kill tracked child processes cleanly");
+    }
+    if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
       try {
-        await embeddedPostgres?.stop();
+        await embeddedPostgres.stop();
       } catch (err) {
         logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-      } finally {
-        process.exit(0);
       }
-    };
-  
-    process.once("SIGINT", () => {
-      void shutdown("SIGINT");
-    });
-    process.once("SIGTERM", () => {
-      void shutdown("SIGTERM");
-    });
-  }
+    }
+    process.exit(0);
+  };
+
+  process.once("SIGINT", () => { void shutdown("SIGINT"); });
+  process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
 
   return {
     server,
