@@ -1074,6 +1074,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
+  // BLOCKING: model MUST be a fully-versioned identifier. openclaw-gateway has empty models[]
+  // (model resolved on the remote gateway), so empty/wildcard model would let the gateway
+  // auto-resolve to whatever upstream defaults to — a silent auto-upgrade vector. Reject early.
+  const gatewayModel = asString(ctx.config.model, "").trim();
+  if (!gatewayModel || /\b(latest|auto|\*)\b/i.test(gatewayModel)) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: `openclaw_gateway model_pin_required: agent ${ctx.agent.id} (${ctx.agent.name ?? "unnamed"}) has invalid model="${gatewayModel}". adapter_config.model MUST be a fully-versioned identifier; the gateway forwards this verbatim and will silently auto-resolve wildcards or "latest" to upstream's current default.`,
+      errorCode: "openclaw_gateway_model_pin_required",
+    };
+  }
+
   const timeoutSec = Math.max(0, Math.floor(asNumber(ctx.config.timeoutSec, 120)));
   const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 0;
   const connectTimeoutMs = timeoutMs > 0 ? Math.min(timeoutMs, 15_000) : 10_000;

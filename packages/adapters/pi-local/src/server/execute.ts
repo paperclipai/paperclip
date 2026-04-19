@@ -117,6 +117,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "pi");
   const model = asString(config.model, "").trim();
+  // BLOCKING: same defense as claude-local. pi-local validated in test.ts but not in execute.ts;
+  // close that gap. Reject empty/wildcard/auto/latest to prevent silent provider auto-resolution.
+  if (!model || /\b(latest|auto|\*)\b/i.test(model)) {
+    throw new Error(
+      `pi_local model_pin_required: agent ${agent.id} (${agent.name ?? "unnamed"}) has invalid model="${model}". ` +
+        `adapter_config.model MUST be a fully-versioned provider/model id (e.g. "xai/grok-4"). ` +
+        `Wildcards, "latest", "auto", and empty values are forbidden.`,
+    );
+  }
   const thinking = asString(config.thinking, "").trim();
 
   // Parse model into provider and model id

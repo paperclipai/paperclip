@@ -517,7 +517,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
               "content-type": "application/json",
             },
             body: JSON.stringify({
-              model: "claude-sonnet-4-5-20250929",
+              model: "claude-sonnet-4-6",
               max_tokens: 1,
               messages: [{ role: "user", content: "hi" }],
             }),

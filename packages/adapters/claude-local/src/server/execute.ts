@@ -303,6 +303,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
   const model = asString(config.model, "");
+  // BLOCKING: model MUST be a fully-versioned identifier. Empty / "latest" / "auto" / wildcard
+  // would let the underlying `claude` CLI auto-resolve to whatever Anthropic ships next, which
+  // can silently break instruction-following when a new Claude version comes online.
+  if (!model || /\b(latest|auto|\*)\b/i.test(model)) {
+    throw new Error(
+      `claude_local model_pin_required: agent ${agent.id} (${agent.name ?? "unnamed"}) has invalid model="${model}". ` +
+        `adapter_config.model MUST be a fully-versioned Anthropic model id ` +
+        `(e.g. "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"). ` +
+        `Wildcards, "latest", "auto", and empty values are forbidden — they enable silent model auto-upgrades.`,
+    );
+  }
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);

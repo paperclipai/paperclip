@@ -101,6 +101,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "opencode");
   const model = asString(config.model, "").trim();
+  // BLOCKING: same defense as claude-local. Reject empty/wildcard/auto/latest to prevent
+  // silent provider auto-resolution. The docstring previously said "model required" but
+  // execution didn't enforce it.
+  if (!model || /\b(latest|auto|\*)\b/i.test(model)) {
+    throw new Error(
+      `opencode_local model_pin_required: agent ${agent.id} (${agent.name ?? "unnamed"}) has invalid model="${model}". ` +
+        `adapter_config.model MUST be a fully-versioned provider/model id (e.g. "anthropic/claude-sonnet-4-6"). ` +
+        `Wildcards, "latest", "auto", and empty values are forbidden.`,
+    );
+  }
   const variant = asString(config.variant, "").trim();
 
   const workspaceContext = parseObject(context.paperclipWorkspace);

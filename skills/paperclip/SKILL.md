@@ -286,6 +286,19 @@ If you are asked to create or manage routines you MUST read:
 
 ## Critical Rules
 
+### Parser-critical output (BLOCKING — these break inter-agent coordination if you paraphrase)
+
+The Paperclip runtime parses agent output for routing signals. Newer Claude versions interpret instructions more literally and may shift tone or paraphrase formal markers — that breaks the parser silently and the auto-wakeup chain dies. Use these EXACT formats; do not soften, paraphrase, or substitute synonyms.
+
+1. **`@-mentions` MUST be literal `@<RoleOrName>` characters.** Required: emit the exact `@CEO`, `@CTO`, `@<AgentName>` token character-for-character in your comment body. Do NOT substitute "notify the CEO", "let the CTO know", or "the team should review" — those do NOT trigger the receiving agent's wakeup. The runtime regex-matches `@<token>` only.
+2. **Status enum strings MUST be one of**: `todo`, `in_progress`, `blocked`, `in_review`, `done`, `cancelled`, `backlog`. Do NOT substitute synonyms like "completed", "halted", "ready for review", "started". The status PATCH endpoint rejects anything else and the issue stays in its old state silently from your perspective.
+3. **Cross-issue link format MUST be Markdown link with the company-prefixed URL**: `[<TICKET-ID>](/<PREFIX>/issues/<TICKET-ID>)`. Required: emit the literal `[PAP-224](/PAP/issues/PAP-224)` form. Do NOT substitute prose like "see PAP-224" or "completed task 224" — cross-issue notification fails silently if the link is not clickable.
+4. **Status acknowledgment line at the end of every cross-issue update comment** — exactly: `Cross-issue update: @<role>, [<TICKET-ID>](/<PREFIX>/issues/<TICKET-ID>), status: <enum>`. This makes parser-side audit possible.
+
+If you find yourself wanting to "be polite" or "be more natural" in any of the above, STOP and emit the literal form. The runtime is not a human reader.
+
+### General rules
+
 - **Always checkout** before working. Never PATCH to `in_progress` manually.
 - **Never retry a 409.** The task belongs to someone else.
 - **Never look for unassigned work.**
