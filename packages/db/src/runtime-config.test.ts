@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveDatabaseTarget } from "./runtime-config.js";
 
 const ORIGINAL_CWD = process.cwd();
@@ -16,6 +16,14 @@ function writeText(filePath: string, value: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, value);
 }
+
+beforeEach(() => {
+  // Clear env vars that would interfere with config-path-based resolution
+  delete process.env.DATABASE_URL;
+  delete process.env.PAPERCLIP_CONFIG;
+  delete process.env.PAPERCLIP_HOME;
+  delete process.env.PAPERCLIP_INSTANCE_ID;
+});
 
 afterEach(() => {
   process.chdir(ORIGINAL_CWD);

@@ -76,13 +76,26 @@ function isPidAlive(pid: number | null | undefined) {
   }
 }
 
+function isPidZombie(pid: number): boolean {
+  // On Linux, check /proc/{pid}/status for zombie state.
+  // In containers where PID 1 is not a proper init, orphaned processes can
+  // linger as zombies after being killed. Zombies are effectively dead.
+  try {
+    const fs = require("node:fs") as typeof import("node:fs");
+    const status = fs.readFileSync(`/proc/${pid}/status`, "utf8");
+    return status.split("\n").some((line) => line.startsWith("State:") && line.includes("Z"));
+  } catch {
+    return false;
+  }
+}
+
 async function waitForPidExit(pid: number, timeoutMs = 2_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!isPidAlive(pid)) return true;
+    if (!isPidAlive(pid) || isPidZombie(pid)) return true;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  return !isPidAlive(pid);
+  return !isPidAlive(pid) || isPidZombie(pid);
 }
 
 async function waitForRunToSettle(heartbeat: ReturnType<typeof heartbeatService>, runId: string, timeoutMs = 3_000) {
