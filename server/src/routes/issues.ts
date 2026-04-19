@@ -816,6 +816,25 @@ export function issueRoutes(
     });
   });
 
+  router.get("/issues/:id/umbrella-state", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const state = await svc.classifyUmbrellaWakeState(issue.id);
+    res.json({ issueId: issue.id, ...state });
+  });
+
+  router.get("/companies/:companyId/idle-umbrellas", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const rows = await svc.listIdleUmbrellasForCompany(companyId);
+    res.json(rows);
+  });
+
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);

@@ -18,6 +18,29 @@ export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
 };
 
+export type IssueUmbrellaWakeStateKind =
+  | "leaf"
+  | "has_open_executable_child"
+  | "umbrella_idle_no_child";
+
+export type IssueUmbrellaState = {
+  issueId: string;
+  kind: IssueUmbrellaWakeStateKind;
+  totalChildren: number;
+  openExecutableChildCount?: number;
+};
+
+export type IdleUmbrellaIssue = {
+  id: string;
+  identifier: string;
+  title: string;
+  status: Issue["status"];
+  priority: Issue["priority"];
+  assigneeAgentId: string | null;
+  updatedAt: string;
+  totalChildren: number;
+};
+
 export const issuesApi = {
   list: (
     companyId: string,
@@ -65,6 +88,10 @@ export const issuesApi = {
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
+  getUmbrellaState: (id: string) =>
+    api.get<IssueUmbrellaState>(`/issues/${id}/umbrella-state`),
+  listIdleUmbrellas: (companyId: string) =>
+    api.get<IdleUmbrellaIssue[]>(`/companies/${companyId}/idle-umbrellas`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   markUnread: (id: string) => api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>

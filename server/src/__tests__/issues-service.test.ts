@@ -1690,6 +1690,111 @@ describeEmbeddedPostgres("issueService.classifyUmbrellaWakeState", () => {
   });
 });
 
+// AJL-552 — list idle umbrellas for dashboard surface.
+describeEmbeddedPostgres("issueService.listIdleUmbrellasForCompany", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-service-idle-umbrellas-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  async function seedIssue(companyId: string, overrides: Partial<typeof issues.$inferInsert> = {}) {
+    const id = overrides.id ?? randomUUID();
+    await db.insert(issues).values({
+      id,
+      companyId,
+      title: "Issue",
+      status: "todo",
+      priority: "medium",
+      ...overrides,
+    });
+    return id;
+  }
+
+  it("returns only in_progress/in_review parents whose children are all terminal", async () => {
+    const companyId = await seedCompany();
+
+    // Idle umbrella — in_progress with only done/cancelled children → should surface.
+    const idleA = await seedIssue(companyId, { status: "in_progress", title: "Idle A" });
+    await seedIssue(companyId, { status: "done", parentId: idleA });
+    await seedIssue(companyId, { status: "cancelled", parentId: idleA });
+
+    // Idle in_review — also surfaces.
+    const idleB = await seedIssue(companyId, { status: "in_review", title: "Idle B" });
+    await seedIssue(companyId, { status: "done", parentId: idleB });
+
+    // Active umbrella — has at least one open executable child → skipped.
+    const activeUmbrella = await seedIssue(companyId, { status: "in_progress", title: "Active" });
+    await seedIssue(companyId, { status: "done", parentId: activeUmbrella });
+    await seedIssue(companyId, { status: "in_progress", parentId: activeUmbrella });
+
+    // Leaf issue — no children → skipped.
+    await seedIssue(companyId, { status: "in_progress", title: "Leaf" });
+
+    // Closed umbrella — status done, not a candidate → skipped.
+    const closedUmbrella = await seedIssue(companyId, { status: "done", title: "Closed" });
+    await seedIssue(companyId, { status: "done", parentId: closedUmbrella });
+
+    const idle = await svc.listIdleUmbrellasForCompany(companyId);
+    const titles = idle.map((row) => row.title).sort();
+    expect(titles).toEqual(["Idle A", "Idle B"]);
+
+    const idleARow = idle.find((row) => row.title === "Idle A");
+    expect(idleARow?.totalChildren).toBe(2);
+  });
+
+  it("scopes results to the requested company", async () => {
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+
+    const idleA = await seedIssue(companyA, { status: "in_progress", title: "A idle" });
+    await seedIssue(companyA, { status: "done", parentId: idleA });
+
+    const idleB = await seedIssue(companyB, { status: "in_progress", title: "B idle" });
+    await seedIssue(companyB, { status: "done", parentId: idleB });
+
+    const resultA = await svc.listIdleUmbrellasForCompany(companyA);
+    expect(resultA.map((row) => row.title)).toEqual(["A idle"]);
+
+    const resultB = await svc.listIdleUmbrellasForCompany(companyB);
+    expect(resultB.map((row) => row.title)).toEqual(["B idle"]);
+  });
+
+  it("returns empty array when the company has no idle umbrellas", async () => {
+    const companyId = await seedCompany();
+    await seedIssue(companyId, { status: "in_progress", title: "Leaf only" });
+    const result = await svc.listIdleUmbrellasForCompany(companyId);
+    expect(result).toEqual([]);
+  });
+});
+
 // AJL-550 — same-owner parent+child overlap detector.
 describeEmbeddedPostgres("issueService.detectSameOwnerParentChildOverlap", () => {
   let db!: ReturnType<typeof createDb>;

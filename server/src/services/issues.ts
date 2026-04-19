@@ -1466,6 +1466,78 @@ export function issueService(db: Db) {
     },
 
     /**
+     * AJL-552 — list umbrella issues for a company that are currently
+     * in an `umbrella_idle_no_child` state: still in_progress / in_review,
+     * but every child is done or cancelled. These are candidates for the
+     * board-hygiene "close or move to review" recommendation.
+     *
+     * Returns a compact summary for the dashboard surface. Limited to
+     * `in_progress` and `in_review` parents so we do not recommend closing
+     * already-closed umbrellas.
+     */
+    listIdleUmbrellasForCompany: async (companyId: string) => {
+      const parentRows = await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.status, ["in_progress", "in_review"]),
+            isNull(issues.hiddenAt),
+          ),
+        );
+
+      if (parentRows.length === 0) return [] as const;
+
+      const parentIds = parentRows.map((p) => p.id);
+      const childRows = await db
+        .select({ parentId: issues.parentId, status: issues.status })
+        .from(issues)
+        .where(
+          and(eq(issues.companyId, companyId), inArray(issues.parentId, parentIds)),
+        );
+
+      const openExecutableStatuses = new Set(["todo", "in_progress", "blocked", "in_review"]);
+      const totalByParent = new Map<string, number>();
+      const openByParent = new Map<string, number>();
+      for (const c of childRows) {
+        if (!c.parentId) continue;
+        totalByParent.set(c.parentId, (totalByParent.get(c.parentId) ?? 0) + 1);
+        if (openExecutableStatuses.has(c.status)) {
+          openByParent.set(c.parentId, (openByParent.get(c.parentId) ?? 0) + 1);
+        }
+      }
+
+      const idle = parentRows
+        .filter((p) => {
+          const total = totalByParent.get(p.id) ?? 0;
+          const open = openByParent.get(p.id) ?? 0;
+          return total > 0 && open === 0;
+        })
+        .map((p) => ({
+          id: p.id,
+          identifier: p.identifier,
+          title: p.title,
+          status: p.status,
+          priority: p.priority,
+          assigneeAgentId: p.assigneeAgentId,
+          updatedAt: p.updatedAt,
+          totalChildren: totalByParent.get(p.id) ?? 0,
+        }));
+
+      idle.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      return idle;
+    },
+
+    /**
      * AJL-551 — heartbeat run result classifier.
      *
      * Computes a `resultClass` value for a finished heartbeat run by inspecting
