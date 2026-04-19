@@ -53,6 +53,19 @@ describe("buildHeartbeatRunIssueComment", () => {
     expect(buildHeartbeatRunIssueComment({ message: "completed" })).toBe("completed");
   });
 
+  it("filters command-result boilerplate out of issue comments", () => {
+    expect(
+      buildHeartbeatRunIssueComment({
+        summary: [
+          "Updated prompt budget metrics.",
+          "command: pnpm vitest run server/src/__tests__/heartbeat-run-summary.test.ts",
+          "status: completed",
+          "exit_code: 0",
+        ].join("\n"),
+      }),
+    ).toBe("Updated prompt budget metrics.");
+  });
+
   it("returns null when the run already created an issue comment", () => {
     const comment = (buildHeartbeatRunIssueComment as (...args: unknown[]) => string | null)(
       { summary: "## Summary\n\n- already posted manually" },

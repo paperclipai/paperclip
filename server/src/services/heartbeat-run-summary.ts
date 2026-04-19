@@ -13,6 +13,23 @@ function readCommentText(value: unknown) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function cleanIssueCommentText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const filtered = value
+    .split(/\r?\n/)
+    .filter((line) => {
+      const trimmed = line.trim();
+      return (
+        trimmed.length === 0
+        || !/^command:\s+/i.test(trimmed)
+          && !/^status:\s+/i.test(trimmed)
+          && !/^exit_?code:\s+/i.test(trimmed)
+      );
+    })
+    .join("\n");
+  return readCommentText(filtered);
+}
+
 function stripTrailingSessionIdLine(value: string) {
   return value.replace(/\n+session_id:\s*\S+\s*$/i, "").trim();
 }
@@ -131,9 +148,9 @@ export function buildHeartbeatRunIssueComment(
   }
 
   return (
-    readCommentText(resultJson.summary)
-    ?? readCommentText(resultJson.result)
-    ?? readCommentText(resultJson.message)
+    cleanIssueCommentText(resultJson.summary)
+    ?? cleanIssueCommentText(resultJson.result)
+    ?? cleanIssueCommentText(resultJson.message)
     ?? null
   );
 }
