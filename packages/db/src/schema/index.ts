@@ -58,3 +58,8 @@ export { pluginEntities } from "./plugin_entities.js";
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { userLocations } from "./user_locations.js";
+export { environmentalReadings } from "./environmental_readings.js";
+export { healthScores } from "./health_scores.js";
+export { creditLedger, creditEventTypeEnum } from "./credit_ledger.js";
+export { creditBurnRates } from "./credit_burn_rates.js";

@@ -25,6 +25,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { creditLedgerService } from "./credit-ledger.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -898,6 +899,7 @@ export function heartbeatService(db: Db) {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const creditLedger = creditLedgerService(db);
 
   async function getAgent(agentId: string) {
     return db
@@ -1763,6 +1765,21 @@ export function heartbeatService(db: Db) {
     });
     if (budgetBlock) {
       await cancelRunInternal(run.id, budgetBlock.reason);
+      return null;
+    }
+
+    // Credit pre-flight: reject if balance exhausted and account has no overage allowance.
+    // WS-3 will populate real subscription data; until then we default to no overage (trial behavior).
+    const creditPreflight = await creditLedger.preflight(
+      run.companyId,
+      "heartbeat_light",
+      { overageAllowed: false },
+    );
+    if (!creditPreflight.allowed) {
+      await cancelRunInternal(
+        run.id,
+        `Insufficient credits: ${creditPreflight.reason ?? "balance exhausted"}`,
+      );
       return null;
     }
 

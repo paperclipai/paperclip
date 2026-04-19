@@ -351,6 +351,20 @@
       "when": 1775521733009,
       "tag": "0049_wild_spencer_smythe",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1775600000000,
+      "tag": "0050_health_longevity",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1745107200000,
+      "tag": "0051_credit_ledger_burn_engine",
+      "breakpoints": true
     }
   ]
 }
