@@ -1085,11 +1085,19 @@ export async function runChildProcess(
     // These vars leak in when the Paperclip server itself is started from
     // within a Claude Code session (e.g. `npx paperclipai run` in a terminal
     // owned by Claude Code) or when cron inherits a contaminated shell env.
+    //
+    // Also strip CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_API_KEY: when Claude
+    // Desktop launches the Paperclip server, it injects a baked-in OAuth token
+    // that the claude CLI prioritizes over the macOS keychain. When that token
+    // expires/rotates, subprocesses fail with 401 even though the keychain has
+    // a fresh token. Deleting these forces claude CLI to read keychain.
     const CLAUDE_CODE_NESTING_VARS = [
       "CLAUDECODE",
       "CLAUDE_CODE_ENTRYPOINT",
       "CLAUDE_CODE_SESSION",
       "CLAUDE_CODE_PARENT_SESSION",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "ANTHROPIC_API_KEY",
     ] as const;
     for (const key of CLAUDE_CODE_NESTING_VARS) {
       delete rawMerged[key];
