@@ -471,6 +471,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     const activeIssueId = randomUUID();
     const siblingIssueId = randomUUID();
     const checkoutRunId = randomUUID();
+    const unrelatedRunId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -504,6 +505,19 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       updatedAt: new Date("2026-04-19T17:00:00.000Z"),
     });
 
+    await db.insert(heartbeatRuns).values({
+      id: unrelatedRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: randomUUID(),
+      contextSnapshot: { issueId: randomUUID() },
+      startedAt: new Date("2026-04-19T17:01:00.000Z"),
+      updatedAt: new Date("2026-04-19T17:01:00.000Z"),
+    });
+
     await db.insert(issues).values([
       {
         id: activeIssueId,
@@ -525,6 +539,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         status: "blocked",
         priority: "medium",
         assigneeAgentId: agentId,
+        executionRunId: unrelatedRunId,
+        executionAgentNameKey: "release engineer",
         createdByUserId: "user-1",
       },
     ]);
@@ -554,6 +570,90 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       executionRunId: null,
       executionAgentNameKey: null,
     }));
+  });
+
+  it("backfills a live execution tuple from checkoutRunId when execution fields are missing", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Staff Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: randomUUID(),
+      contextSnapshot: { issueId },
+      startedAt: new Date("2026-04-19T17:00:00.000Z"),
+      updatedAt: new Date("2026-04-19T17:00:00.000Z"),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1068,
+      identifier: "PAP-1068",
+      title: "Missing execution tuple",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      createdByUserId: "user-1",
+    });
+
+    const detail = await svc.getById("PAP-1068");
+    const [listed] = await svc.list(companyId, { identifier: "PAP-1068" });
+    const persisted = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(detail).toEqual(expect.objectContaining({
+      id: issueId,
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      executionAgentNameKey: "staff engineer",
+    }));
+    expect(listed).toEqual(expect.objectContaining({
+      id: issueId,
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      executionAgentNameKey: "staff engineer",
+    }));
+    expect(persisted).toEqual({
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      executionAgentNameKey: "staff engineer",
+    });
   });
 
   it("filters issues by execution workspace id", async () => {

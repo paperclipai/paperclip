@@ -507,49 +507,78 @@ async function reconcileExecutionStateForIssues(
     return issueRows;
   }
 
-  const rowsWithExecution = issueRows.filter((row) => row.executionRunId != null);
-  if (rowsWithExecution.length === 0) {
+  const rowsWithExecutionState = issueRows.filter((row) => row.executionRunId != null || row.checkoutRunId != null);
+  if (rowsWithExecutionState.length === 0) {
     return issueRows;
   }
 
   const runIds = [...new Set(
-    rowsWithExecution
-      .map((row) => row.executionRunId)
+    rowsWithExecutionState
+      .flatMap((row) => [row.executionRunId, row.checkoutRunId])
       .filter((id): id is string => id != null),
   )];
-  const runRows: Array<{ id: string; status: string; agentId: string }> = runIds.length === 0
+  const runRows: Array<{ id: string; status: string; agentId: string; agentName: string | null; issueId: string | null }> = runIds.length === 0
     ? []
     : await dbOrTx
-      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, agentId: heartbeatRuns.agentId })
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        agentId: heartbeatRuns.agentId,
+        agentName: agents.name,
+        issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+      })
       .from(heartbeatRuns)
+      .leftJoin(agents, eq(agents.id, heartbeatRuns.agentId))
       .where(inArray(heartbeatRuns.id, runIds));
-  const runMap = new Map<string, { id: string; status: string; agentId: string }>(
-    runRows.map((row: { id: string; status: string; agentId: string }) => [row.id, row]),
+  const runMap = new Map<string, { id: string; status: string; agentId: string; agentName: string | null; issueId: string | null }>(
+    runRows.map((row: { id: string; status: string; agentId: string; agentName: string | null; issueId: string | null }) => [row.id, row]),
   );
 
   const staleWithoutCheckoutIds: string[] = [];
   const staleRunIssueIds: string[] = [];
   const staleRunIds: string[] = [];
-  const missingExecutionAgentNameByIssueId = new Map<string, string>();
+  const backfilledExecutionStateByIssueId = new Map<string, { executionRunId: string; executionAgentNameKey: string | null }>();
 
   const normalizedRows = issueRows.map((row) => {
-    if (!row.executionRunId) {
+    if (!row.executionRunId && !row.checkoutRunId) {
       return row;
     }
 
-    const activeRun = runMap.get(row.executionRunId);
+    const activeCheckoutRun = row.checkoutRunId ? runMap.get(row.checkoutRunId) : null;
+    const hasMatchingActiveCheckout =
+      Boolean(row.checkoutRunId)
+      && Boolean(activeCheckoutRun)
+      && activeCheckoutRun?.agentId === row.assigneeAgentId
+      && activeCheckoutRun?.issueId === row.id;
+    if (hasMatchingActiveCheckout && row.checkoutRunId && activeCheckoutRun) {
+      const executionAgentNameKey =
+        row.executionAgentNameKey ?? normalizeAgentNameKey(activeCheckoutRun.agentName);
+      if (row.executionRunId !== row.checkoutRunId || row.executionAgentNameKey !== executionAgentNameKey) {
+        backfilledExecutionStateByIssueId.set(row.id, {
+          executionRunId: row.checkoutRunId,
+          executionAgentNameKey,
+        });
+      }
+      return {
+        ...row,
+        executionRunId: row.checkoutRunId,
+        executionAgentNameKey,
+      };
+    }
+
+    const activeExecutionRun = row.executionRunId ? runMap.get(row.executionRunId) : null;
     const shouldClear =
       row.checkoutRunId == null
-      || !activeRun
-      || !ACTIVE_RUN_STATUSES.includes(activeRun.status);
+      || row.executionRunId !== row.checkoutRunId
+      || !activeExecutionRun
+      || activeExecutionRun.agentId !== row.assigneeAgentId
+      || activeExecutionRun.issueId !== row.id
+      || !ACTIVE_RUN_STATUSES.includes(activeExecutionRun.status);
     if (!shouldClear) {
-      if (!row.executionAgentNameKey && activeRun) {
-        missingExecutionAgentNameByIssueId.set(row.id, activeRun.agentId);
-      }
       return row;
     }
 
-    if (row.checkoutRunId == null) {
+    if (row.checkoutRunId == null || !row.executionRunId) {
       staleWithoutCheckoutIds.push(row.id);
     } else {
       staleRunIssueIds.push(row.id);
@@ -593,44 +622,29 @@ async function reconcileExecutionStateForIssues(
       ));
   }
 
-  const backfilledExecutionAgentNameKeys = new Map<string, string>();
-  if (missingExecutionAgentNameByIssueId.size > 0) {
-    const agentRows = await dbOrTx
-      .select({ id: agents.id, name: agents.name })
-      .from(agents)
-      .where(inArray(agents.id, [...new Set(missingExecutionAgentNameByIssueId.values())]));
-    const agentNameKeyById = new Map(
-      agentRows.map((row: { id: string; name: string }) => [row.id, normalizeAgentNameKey(row.name)]),
-    );
-    for (const [issueId, agentId] of missingExecutionAgentNameByIssueId.entries()) {
-      const executionAgentNameKey = agentNameKeyById.get(agentId);
-      if (executionAgentNameKey) {
-        backfilledExecutionAgentNameKeys.set(issueId, executionAgentNameKey);
-      }
-    }
-  }
-
-  if (backfilledExecutionAgentNameKeys.size > 0) {
+  if (backfilledExecutionStateByIssueId.size > 0) {
     const now = new Date();
-    for (const [issueId, executionAgentNameKey] of backfilledExecutionAgentNameKeys.entries()) {
+    for (const [issueId, executionState] of backfilledExecutionStateByIssueId.entries()) {
       await dbOrTx
         .update(issues)
         .set({
-          executionAgentNameKey,
+          executionRunId: executionState.executionRunId,
+          executionAgentNameKey: executionState.executionAgentNameKey,
           updatedAt: now,
         })
-        .where(and(eq(issues.id, issueId), isNull(issues.executionAgentNameKey)));
+        .where(and(eq(issues.id, issueId), eq(issues.checkoutRunId, executionState.executionRunId)));
     }
   }
 
   return normalizedRows.map((row) => {
-    const executionAgentNameKey = backfilledExecutionAgentNameKeys.get(row.id);
-    if (!executionAgentNameKey) {
+    const executionState = backfilledExecutionStateByIssueId.get(row.id);
+    if (!executionState) {
       return row;
     }
     return {
       ...row,
-      executionAgentNameKey,
+      executionRunId: executionState.executionRunId,
+      executionAgentNameKey: executionState.executionAgentNameKey,
     };
   });
 }
