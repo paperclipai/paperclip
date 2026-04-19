@@ -5330,6 +5330,11 @@ export function heartbeatService(db: Db) {
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
+      let idleSkipped = 0;
+
+      // Statuses that indicate an agent has actionable work.
+      // Declared outside the loop to avoid per-iteration allocation.
+      const actionableStatuses = ["todo", "in_progress", "in_review"];
 
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
@@ -5345,7 +5350,6 @@ export function heartbeatService(db: Db) {
         // This prevents burning tokens on timer wakes where the agent would just check
         // its inbox, find nothing, and exit. Only applies to timer wakes — assignment
         // and on_demand wakes always proceed.
-        const actionableStatuses = ["todo", "in_progress", "in_review"];
         const [actionableCount] = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(issues)
@@ -5363,7 +5367,7 @@ export function heartbeatService(db: Db) {
             .update(agents)
             .set({ lastHeartbeatAt: now })
             .where(eq(agents.id, agent.id));
-          skipped += 1;
+          idleSkipped += 1;
           continue;
         }
 
@@ -5383,7 +5387,7 @@ export function heartbeatService(db: Db) {
         else skipped += 1;
       }
 
-      return { checked, enqueued, skipped };
+      return { checked, enqueued, skipped, idleSkipped };
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
