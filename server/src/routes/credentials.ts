@@ -6,9 +6,12 @@ import {
   updateProviderCredentialSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
+import { logger } from "../middleware/logger.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { forbidden } from "../errors.js";
 import { accessService, credentialService, logActivity } from "../services/index.js";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function credentialRoutes(db: Db) {
   const router = Router();
@@ -44,10 +47,16 @@ export function credentialRoutes(db: Db) {
       await requireCredentialManage(req, companyId);
 
       if (req.query.skipTest !== "true") {
-        const probe = await probeCredential(req.body.type, req.body.credential);
-        if (!probe.ok) {
+        const probe = await safeProbe(req.body.type, req.body.credential);
+        if (!probe.ok && probe.reason === "invalid") {
           res.status(400).json({ error: `Credential test failed: ${probe.message}` });
           return;
+        }
+        if (!probe.ok && probe.reason === "infra") {
+          logger.warn(
+            { companyId, type: req.body.type, message: probe.message },
+            "credential probe unreachable — saving without validation",
+          );
         }
       }
 
@@ -87,10 +96,16 @@ export function credentialRoutes(db: Db) {
       await requireCredentialManage(req, existing.companyId);
 
       if (req.body.credential !== undefined && req.query.skipTest !== "true") {
-        const probe = await probeCredential(existing.type, req.body.credential);
-        if (!probe.ok) {
+        const probe = await safeProbe(existing.type, req.body.credential);
+        if (!probe.ok && probe.reason === "invalid") {
           res.status(400).json({ error: `Credential test failed: ${probe.message}` });
           return;
+        }
+        if (!probe.ok && probe.reason === "infra") {
+          logger.warn(
+            { credentialId: id, type: existing.type, message: probe.message },
+            "credential probe unreachable — updating without validation",
+          );
         }
       }
 
@@ -160,6 +175,10 @@ export function credentialRoutes(db: Db) {
 
   router.post("/credentials/:id/test", async (req, res) => {
     const id = req.params.id as string;
+    if (!UUID_RE.test(id)) {
+      res.status(400).json({ error: "Invalid credential id" });
+      return;
+    }
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Credential not found" });
@@ -172,8 +191,8 @@ export function credentialRoutes(db: Db) {
       res.status(404).json({ error: "Credential not found" });
       return;
     }
-    const result = await probeCredential(existing.type, payload);
-    res.json(result);
+    const result = await safeProbe(existing.type, payload);
+    res.json({ ok: result.ok, message: result.message });
   });
 
   // ── Reveal credential value (audit-logged, rate-limited) ──────────────
@@ -227,94 +246,121 @@ export function credentialRoutes(db: Db) {
   return router;
 }
 
-type ProbeResult = { ok: boolean; message: string };
+type ProbeResult =
+  | { ok: true; message: string }
+  | { ok: false; reason: "invalid" | "infra"; message: string };
+
+const PROBE_TIMEOUT_MS = 10_000;
+
+function probeFetch(url: string, init?: RequestInit): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+}
+
+function classifyStatus(status: number): "invalid" | "infra" {
+  // 401/403 from provider = bad credential. Everything else (5xx, 429, etc.) = infra/transient.
+  return status === 401 || status === 403 ? "invalid" : "infra";
+}
+
+async function safeProbe(type: string, payload: Record<string, unknown>): Promise<ProbeResult> {
+  try {
+    return await probeCredential(type, payload);
+  } catch (err) {
+    logger.error(
+      { type, err: err instanceof Error ? err.message : String(err) },
+      "probeCredential threw unexpectedly",
+    );
+    return {
+      ok: false,
+      reason: "infra",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
 
 async function probeCredential(type: string, payload: Record<string, unknown>): Promise<ProbeResult> {
-  try {
-    switch (type) {
-      case "claude_oauth": {
-        const accessToken = typeof payload.accessToken === "string" ? payload.accessToken : "";
-        if (!accessToken) return { ok: false, message: "Missing accessToken in stored credential" };
-        const res = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01",
-            "anthropic-beta": "oauth-2025-04-20",
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            model: "claude-haiku-4-5",
-            max_tokens: 1,
-            messages: [{ role: "user", content: "hi" }],
-          }),
-        });
-        if (res.ok) {
-          const refreshToken = typeof payload.refreshToken === "string" ? payload.refreshToken : "";
-          const expiresAt = typeof payload.expiresAt === "number" ? payload.expiresAt : 0;
-          const expiresSoon = expiresAt > 0 && expiresAt - Date.now() < 24 * 3600 * 1000;
-          const warnings: string[] = [];
-          if (!refreshToken) warnings.push("no refreshToken (will break when access token expires)");
-          if (expiresSoon) warnings.push(`access token expires ${new Date(expiresAt).toISOString()}`);
-          return {
-            ok: true,
-            message: warnings.length > 0 ? `OAuth token valid. Warning: ${warnings.join("; ")}` : "OAuth token valid",
-          };
-        }
-        const body = await res.text().catch(() => "");
-        return { ok: false, message: `Anthropic API returned ${res.status}: ${body.slice(0, 200)}` };
+  switch (type) {
+    case "claude_oauth": {
+      const accessToken = typeof payload.accessToken === "string" ? payload.accessToken : "";
+      if (!accessToken) return { ok: false, reason: "invalid", message: "Missing accessToken" };
+      const res = await probeFetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "oauth-2025-04-20",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5",
+          max_tokens: 1,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
+      if (res.ok) {
+        const refreshToken = typeof payload.refreshToken === "string" ? payload.refreshToken : "";
+        const expiresAt = typeof payload.expiresAt === "number" ? payload.expiresAt : 0;
+        const expiresSoon = expiresAt > 0 && expiresAt - Date.now() < 24 * 3600 * 1000;
+        const warnings: string[] = [];
+        if (!refreshToken) warnings.push("no refreshToken (will break when access token expires)");
+        if (expiresSoon) warnings.push(`access token expires ${new Date(expiresAt).toISOString()}`);
+        return {
+          ok: true,
+          message: warnings.length > 0 ? `OAuth token valid. Warning: ${warnings.join("; ")}` : "OAuth token valid",
+        };
       }
-      case "claude_api_key": {
-        const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
-        if (!apiKey) return { ok: false, message: "Missing apiKey in stored credential" };
-        const res = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01",
-            "x-api-key": apiKey,
-          },
-          body: JSON.stringify({
-            model: "claude-haiku-4-5",
-            max_tokens: 1,
-            messages: [{ role: "user", content: "hi" }],
-          }),
-        });
-        if (res.ok) return { ok: true, message: "API key valid" };
-        const body = await res.text().catch(() => "");
-        return { ok: false, message: `Anthropic API returned ${res.status}: ${body.slice(0, 200)}` };
-      }
-      case "openai_api_key": {
-        const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
-        if (!apiKey) return { ok: false, message: "Missing apiKey in stored credential" };
-        const res = await fetch("https://api.openai.com/v1/models", {
-          headers: { Authorization: `Bearer ${apiKey}` },
-        });
-        if (res.ok) return { ok: true, message: "API key valid" };
-        return { ok: false, message: `OpenAI API returned ${res.status}` };
-      }
-      case "openrouter_api_key": {
-        const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
-        if (!apiKey) return { ok: false, message: "Missing apiKey in stored credential" };
-        const res = await fetch("https://openrouter.ai/api/v1/auth/key", {
-          headers: { Authorization: `Bearer ${apiKey}` },
-        });
-        if (res.ok) return { ok: true, message: "API key valid" };
-        return { ok: false, message: `OpenRouter API returned ${res.status}` };
-      }
-      case "gemini_api_key": {
-        const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
-        if (!apiKey) return { ok: false, message: "Missing apiKey in stored credential" };
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
-        );
-        if (res.ok) return { ok: true, message: "API key valid" };
-        return { ok: false, message: `Gemini API returned ${res.status}` };
-      }
-      default:
-        return { ok: false, message: `Unknown credential type: ${type}` };
+      const body = await res.text().catch(() => "");
+      return { ok: false, reason: classifyStatus(res.status), message: `Anthropic API returned ${res.status}: ${body.slice(0, 200)}` };
     }
-  } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    case "claude_api_key": {
+      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
+      if (!apiKey) return { ok: false, reason: "invalid", message: "Missing apiKey" };
+      const res = await probeFetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "anthropic-version": "2023-06-01",
+          "x-api-key": apiKey,
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5",
+          max_tokens: 1,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
+      if (res.ok) return { ok: true, message: "API key valid" };
+      const body = await res.text().catch(() => "");
+      return { ok: false, reason: classifyStatus(res.status), message: `Anthropic API returned ${res.status}: ${body.slice(0, 200)}` };
+    }
+    case "openai_api_key": {
+      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
+      if (!apiKey) return { ok: false, reason: "invalid", message: "Missing apiKey" };
+      const res = await probeFetch("https://api.openai.com/v1/models", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (res.ok) return { ok: true, message: "API key valid" };
+      return { ok: false, reason: classifyStatus(res.status), message: `OpenAI API returned ${res.status}` };
+    }
+    case "openrouter_api_key": {
+      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
+      if (!apiKey) return { ok: false, reason: "invalid", message: "Missing apiKey" };
+      const res = await probeFetch("https://openrouter.ai/api/v1/auth/key", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (res.ok) return { ok: true, message: "API key valid" };
+      return { ok: false, reason: classifyStatus(res.status), message: `OpenRouter API returned ${res.status}` };
+    }
+    case "gemini_api_key": {
+      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
+      if (!apiKey) return { ok: false, reason: "invalid", message: "Missing apiKey" };
+      const res = await probeFetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+      );
+      if (res.ok) return { ok: true, message: "API key valid" };
+      // Gemini returns 400 for bad keys; treat 400 like 401.
+      const reason: "invalid" | "infra" = res.status === 400 ? "invalid" : classifyStatus(res.status);
+      return { ok: false, reason, message: `Gemini API returned ${res.status}` };
+    }
+    default:
+      return { ok: false, reason: "invalid", message: `Unknown credential type: ${type}` };
   }
 }
