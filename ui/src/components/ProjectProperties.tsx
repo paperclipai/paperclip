@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
+import { agentsApi } from "../api/agents";
+import { issuesApi } from "../api/issues";
 import { StatusBadge } from "./StatusBadge";
 import { cn, formatDate } from "../lib/utils";
 import { goalsApi } from "../api/goals";
@@ -21,6 +23,10 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
 import { EnvVarEditor } from "./EnvVarEditor";
+import { AgentIcon } from "./AgentIconPicker";
+import { ReportsToPicker } from "./ReportsToPicker";
+import { CompanyLabelEditor } from "./CompanyLabelEditor";
+import { ProjectLabelPills } from "./ProjectLabelPills";
 
 const PROJECT_STATUSES = [
   { value: "backlog", label: "Backlog" },
@@ -43,7 +49,9 @@ export type ProjectFieldSaveState = "idle" | "saving" | "saved" | "error";
 export type ProjectConfigFieldKey =
   | "name"
   | "description"
+  | "labels"
   | "status"
+  | "lead_agent"
   | "goals"
   | "env"
   | "execution_workspace_enabled"
@@ -109,9 +117,9 @@ function PropertyRow({
   valueClassName?: string;
 }) {
   return (
-    <div className={cn("flex gap-3 py-1.5 items-start")}>
-      <div className="shrink-0 w-20 mt-0.5">{label}</div>
-      <div className={cn("min-w-0 flex-1", alignStart ? "pt-0.5" : "flex items-center gap-1.5 flex-wrap", valueClassName)}>
+    <div className={cn("flex gap-3 py-1.5", alignStart ? "items-start" : "items-center")}>
+      <div className="shrink-0 w-20">{label}</div>
+      <div className={cn("min-w-0 flex-1", alignStart ? "pt-0.5" : "flex items-center gap-1.5", valueClassName)}>
         {children}
       </div>
     </div>
@@ -223,6 +231,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [goalOpen, setGoalOpen] = useState(false);
+  const [labelsOpen, setLabelsOpen] = useState(false);
   const [executionWorkspaceAdvancedOpen, setExecutionWorkspaceAdvancedOpen] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<"local" | "repo" | null>(null);
   const [workspaceCwd, setWorkspaceCwd] = useState("");
@@ -237,16 +246,27 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     onUpdate?.(data);
   };
   const fieldState = (field: ProjectConfigFieldKey): ProjectFieldSaveState => getFieldSaveState?.(field) ?? "idle";
+  const companyId = project.companyId ?? selectedCompanyId;
 
   const { data: allGoals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: agents = [] } = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none"],
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
+  });
+  const { data: labels = [] } = useQuery({
+    queryKey: queryKeys.issues.labels(companyId!),
+    queryFn: () => issuesApi.listLabels(companyId!),
+    enabled: Boolean(companyId),
   });
   const { data: availableSecrets = [] } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
@@ -261,6 +281,17 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     onSuccess: () => {
       if (!selectedCompanyId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    },
+  });
+  const createLabel = useMutation({
+    mutationFn: (data: { name: string; color: string }) => issuesApi.createLabel(companyId!, data),
+  });
+  const deleteLabel = useMutation({
+    mutationFn: (labelId: string) => issuesApi.deleteLabel(labelId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
+      queryClient.invalidateQueries({ queryKey: ["issues"] });
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
   });
 
@@ -278,6 +309,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       }));
 
   const availableGoals = (allGoals ?? []).filter((g) => !linkedGoalIds.includes(g.id));
+  const activeAgents = agents.filter((agent) => agent.status !== "terminated");
+  const leadAgent = agents.find((agent) => agent.id === project.leadAgentId) ?? null;
   const workspaces = project.workspaces ?? [];
   const codebase = project.codebase;
   const primaryCodebaseWorkspace = project.primaryWorkspace ?? null;
@@ -346,6 +379,13 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     if ((!onUpdate && !onFieldUpdate) || linkedGoalIds.includes(goalId)) return;
     commitField("goals", { goalIds: [...linkedGoalIds, goalId] });
     setGoalOpen(false);
+  };
+
+  const toggleLabel = (labelId: string) => {
+    const nextLabelIds = (project.labelIds ?? []).includes(labelId)
+      ? (project.labelIds ?? []).filter((id) => id !== labelId)
+      : [...(project.labelIds ?? []), labelId];
+    commitField("labels", { labelIds: nextLabelIds });
   };
 
   const updateExecutionWorkspacePolicy = (patch: Record<string, unknown>) => {
@@ -534,11 +574,24 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             <StatusBadge status={project.status} />
           )}
         </PropertyRow>
-        {project.leadAgentId && (
-          <PropertyRow label="Lead">
-            <span className="text-sm font-mono">{project.leadAgentId.slice(0, 8)}</span>
-          </PropertyRow>
-        )}
+        <PropertyRow label={<FieldLabel label="Lead" state={fieldState("lead_agent")} />}>
+          {onUpdate || onFieldUpdate ? (
+            <ReportsToPicker
+              agents={activeAgents}
+              value={project.leadAgentId}
+              onChange={(leadAgentId) => commitField("lead_agent", { leadAgentId })}
+              disabledEmptyLabel="No lead agent"
+              chooseLabel="Lead agent..."
+            />
+          ) : leadAgent ? (
+            <>
+              <AgentIcon icon={leadAgent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="text-sm truncate">{leadAgent.name}</span>
+            </>
+          ) : (
+            <span className="text-sm text-muted-foreground">No lead agent</span>
+          )}
+        </PropertyRow>
         <PropertyRow
           label={<FieldLabel label="Goals" state={fieldState("goals")} />}
           alignStart
@@ -551,7 +604,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   key={goal.id}
                   className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs"
                 >
-                  <Link to={`/goals/${goal.id}`} className="hover:underline break-words min-w-0">
+                  <Link to={`/goals/${goal.id}`} className="hover:underline max-w-[220px] truncate">
                     {goal.title}
                   </Link>
                   {(onUpdate || onFieldUpdate) && (
@@ -601,6 +654,38 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             </Popover>
           )}
         </PropertyRow>
+        <PropertyRow label={<FieldLabel label="Labels" state={fieldState("labels")} />}>
+          {onUpdate || onFieldUpdate ? (
+            <Popover open={labelsOpen} onOpenChange={setLabelsOpen}>
+              <PopoverTrigger asChild>
+                <button className="inline-flex min-w-0 items-center gap-2 rounded px-1 py-0.5 text-left transition-colors hover:bg-accent/50">
+                  {(project.labels ?? []).length > 0 ? (
+                    <ProjectLabelPills labels={project.labels} />
+                  ) : (
+                    <span className="text-sm text-muted-foreground">No labels</span>
+                  )}
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-64 p-1" align="end">
+                <CompanyLabelEditor
+                  labels={labels}
+                  selectedLabelIds={project.labelIds ?? []}
+                  onToggleLabel={toggleLabel}
+                  onCreateLabel={async (data) => {
+                    const created = await createLabel.mutateAsync(data);
+                    await queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
+                    commitField("labels", { labelIds: [...new Set([...(project.labelIds ?? []), created.id])] });
+                  }}
+                  onDeleteLabel={(labelId) => deleteLabel.mutateAsync(labelId)}
+                />
+              </PopoverContent>
+            </Popover>
+          ) : (project.labels ?? []).length > 0 ? (
+            <ProjectLabelPills labels={project.labels} />
+          ) : (
+            <span className="text-sm text-muted-foreground">No labels</span>
+          )}
+        </PropertyRow>
         <PropertyRow
           label={<FieldLabel label="Env" state={fieldState("env")} />}
           alignStart
@@ -617,7 +702,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               onChange={(env) => commitField("env", { env: env ?? null })}
             />
             <p className="text-[11px] text-muted-foreground">
-              Applied to all runs for issues in this project. Project values override agent env on key conflicts.
+              Applied to all runs for tasks in this project. Project values override agent env on key conflicts.
             </p>
           </div>
         </PropertyRow>
@@ -668,13 +753,13 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                       className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:underline"
                     >
                       <Github className="h-3 w-3 shrink-0" />
-                      <span className="break-all min-w-0">{formatRepoUrl(codebase.repoUrl)}</span>
+                      <span className="truncate">{formatRepoUrl(codebase.repoUrl)}</span>
                       <ExternalLink className="h-3 w-3 shrink-0" />
                     </a>
                   ) : (
                     <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
                       <Github className="h-3 w-3 shrink-0" />
-                      <span className="break-all min-w-0">{codebase.repoUrl}</span>
+                      <span className="truncate">{codebase.repoUrl}</span>
                     </div>
                   )}
                   <div className="flex items-center gap-1">
@@ -723,7 +808,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Local folder</div>
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0 space-y-1">
-                  <div className="min-w-0 break-all font-mono text-xs text-muted-foreground">
+                  <div className="min-w-0 truncate font-mono text-xs text-muted-foreground">
                     {codebase.effectiveLocalFolder}
                   </div>
                   {codebase.origin === "managed_checkout" && (
@@ -910,7 +995,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top">
-                    Project-owned defaults for isolated issue checkouts and execution workspace behavior.
+                    Project-owned defaults for isolated task checkouts and execution workspace behavior.
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -918,11 +1003,11 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                 <div className="flex items-center justify-between gap-3">
                   <div className="space-y-0.5">
                     <div className="flex items-center gap-2 text-sm font-medium">
-                      <span>Enable isolated issue checkouts</span>
+                      <span>Enable isolated task checkouts</span>
                       <SaveIndicator state={fieldState("execution_workspace_enabled")} />
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      Let issues choose between the project's primary checkout and an isolated execution workspace.
+                      Let tasks choose between the project's primary checkout and an isolated execution workspace.
                     </div>
                   </div>
                   {onUpdate || onFieldUpdate ? (
@@ -946,11 +1031,11 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     <div className="flex items-center justify-between gap-3">
                       <div className="space-y-0.5">
                         <div className="flex items-center gap-2 text-sm">
-                          <span>New issues default to isolated checkout</span>
+                          <span>New tasks default to isolated checkout</span>
                           <SaveIndicator state={fieldState("execution_workspace_default_mode")} />
                         </div>
                         <div className="text-[11px] text-muted-foreground">
-                          If disabled, new issues stay on the project's primary checkout unless someone opts in.
+                          If disabled, new tasks stay on the project's primary checkout unless someone opts in.
                         </div>
                       </div>
                       <ToggleSwitch

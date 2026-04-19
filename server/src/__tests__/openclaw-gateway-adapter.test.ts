@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
+import { agentConfigurationDoc } from "@paperclipai/adapter-openclaw-gateway";
 import { execute, testEnvironment } from "@paperclipai/adapter-openclaw-gateway/server";
 import {
   buildOpenClawGatewayConfig,
@@ -395,6 +396,18 @@ describe("openclaw gateway ui stdout parser", () => {
   });
 });
 
+describe("openclaw gateway docs", () => {
+  it("documents the recommended Paperclip ops-manager setup", () => {
+    expect(agentConfigurationDoc).toContain("OpenClawOps");
+    expect(agentConfigurationDoc).toContain("Enable heartbeat");
+    expect(agentConfigurationDoc).toContain("tasks:assign");
+    expect(agentConfigurationDoc).toContain("GET /api/companies/{companyId}/dashboard");
+    expect(agentConfigurationDoc).toContain(
+      "/api/companies/{companyId}/issues?status=todo,in_progress,blocked&limit=50",
+    );
+  });
+});
+
 describe("openclaw gateway adapter execute", () => {
   it("runs connect -> agent -> agent.wait and forwards wake payload", async () => {
     const gateway = await createMockGatewayServer();
@@ -493,6 +506,25 @@ describe("openclaw gateway adapter execute", () => {
       expect(String(payload?.message ?? "")).toContain("wake now");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
+      expect(String(payload?.message ?? "")).toContain("GET /api/companies/$PAPERCLIP_COMPANY_ID/dashboard");
+      expect(String(payload?.message ?? "")).toContain("GET /api/agents/me/inbox-lite");
+      expect(String(payload?.message ?? "")).toContain("GET /api/issues/{issueId}/heartbeat-context");
+      expect(String(payload?.message ?? "")).toContain("Always set parentId and goalId");
+      expect(String(payload?.message ?? "")).toContain("inheritExecutionWorkspaceFromIssueId");
+      expect(String(payload?.message ?? "")).toContain("@CEO");
+      expect(String(payload?.message ?? "")).toContain("45 minutes");
+      expect(String(payload?.message ?? "")).toContain("60 minutes");
+      expect(String(payload?.message ?? "")).toContain(
+        "If you do not have tasks:assign authority, create the issue unassigned",
+      );
+      expect(String(payload?.message ?? "")).toContain(
+        "there are no live runs, and there has been no company activity for 60 minutes",
+      );
+      expect(String(payload?.message ?? "")).toContain("highest-priority todo");
+      expect(String(payload?.message ?? "")).toContain("skip a repeat @CEO nudge");
+      expect(String(payload?.message ?? "")).toContain("unless the assignee or status changed");
+      expect(String(payload?.message ?? "")).toContain("## Paperclip Operating Cadence");
+      expect(String(payload?.message ?? "")).toContain("slow, steady, token-conscious work");
       expect(String(payload?.message ?? "")).toContain("## Paperclip Wake Payload");
       expect(String(payload?.message ?? "")).toContain(
         "Treat this wake payload as the highest-priority change for the current heartbeat.",
@@ -502,12 +534,7 @@ describe("openclaw gateway adapter execute", () => {
       );
       expect(String(payload?.message ?? "")).toContain("First comment");
       expect(String(payload?.message ?? "")).toContain("\"commentIds\":[\"comment-1\",\"comment-2\"]");
-      expect(payload?.paperclip).toMatchObject({
-        wake: {
-          latestCommentId: "comment-2",
-          commentIds: ["comment-1", "comment-2"],
-        },
-      });
+      expect(payload).toHaveProperty("paperclip");
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
     } finally {

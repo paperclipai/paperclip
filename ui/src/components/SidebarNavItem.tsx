@@ -80,10 +80,10 @@ export function SidebarNavItem({
       {badge != null && badge > 0 && (
         <span
           className={cn(
-            "ml-auto rounded-full px-1.5 py-0.5 text-xs leading-none",
+            "ml-auto shrink-0 leading-none tabular-nums",
             badgeTone === "danger"
-              ? "bg-red-600/90 text-red-50"
-              : "bg-primary text-primary-foreground",
+              ? "rounded-full bg-red-600/90 px-1.5 py-0.5 text-xs text-red-50"
+              : "min-w-5 text-right text-[11px] font-medium text-muted-foreground",
           )}
         >
           {badge}

@@ -115,6 +115,16 @@ POST /api/agents/{agentId}/heartbeat/invoke
 
 Manually triggers a heartbeat for the agent.
 
+## Agent Service Health
+
+```
+GET /api/instance/agent-service-health
+```
+
+Returns an instance-admin-only summary of whether Paperclip's AI-agent execution layer can make scheduler progress. The response is warning-only and does not enable heartbeats or start agents.
+
+The endpoint returns `healthy` or `down`. Down reasons include a disabled global scheduler, no scheduler-active agents across active companies, queued heartbeat runs stuck for more than five minutes, and broad recent runtime failures such as missing commands, auth failures, rate limits, process loss, or adapter startup errors.
+
 ## Org Chart
 
 ```

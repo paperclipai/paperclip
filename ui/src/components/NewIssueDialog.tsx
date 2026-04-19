@@ -58,6 +58,8 @@ import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDe
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { ProjectLabelPills } from "./ProjectLabelPills";
+import { formatIssueDueDateShort } from "../lib/issue-due-date";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -66,9 +68,11 @@ const DEBOUNCE_MS = 800;
 interface IssueDraft {
   title: string;
   description: string;
+  dueDate: string;
   status: string;
   priority: string;
   assigneeValue: string;
+  assigneeManuallyEdited?: boolean;
   reviewerValue: string;
   approverValue: string;
   assigneeId?: string;
@@ -230,7 +234,9 @@ const statuses = [
   { value: "todo", label: "Todo", color: issueStatusText.todo ?? issueStatusTextDefault },
   { value: "in_progress", label: "In Progress", color: issueStatusText.in_progress ?? issueStatusTextDefault },
   { value: "in_review", label: "In Review", color: issueStatusText.in_review ?? issueStatusTextDefault },
+  { value: "blocked", label: "Blocked", color: issueStatusText.blocked ?? issueStatusTextDefault },
   { value: "done", label: "Done", color: issueStatusText.done ?? issueStatusTextDefault },
+  { value: "cancelled", label: "Cancelled", color: issueStatusText.cancelled ?? issueStatusTextDefault },
 ];
 
 const priorities = [
@@ -266,6 +272,18 @@ function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePo
   return "shared_workspace";
 }
 
+function defaultAssigneeValueForCurrentUser(currentUserId: string | null | undefined) {
+  return currentUserId ? assigneeValueFromSelection({ assigneeUserId: currentUserId }) : "";
+}
+
+function automaticAssigneeValueForStatus(input: {
+  status: string | null | undefined;
+  project: { leadAgentId?: string | null } | null | undefined;
+  currentUserId: string | null | undefined;
+}) {
+  return defaultAssigneeValueForCurrentUser(input.currentUserId);
+}
+
 function issueExecutionWorkspaceModeForExistingWorkspace(mode: string | null | undefined) {
   if (mode === "isolated_workspace" || mode === "operator_branch" || mode === "shared_workspace") {
     return mode;
@@ -283,9 +301,11 @@ export function NewIssueDialog() {
   const { pushToast } = useToast();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [dueDate, setDueDate] = useState("");
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
   const [assigneeValue, setAssigneeValue] = useState("");
+  const [assigneeManuallyEdited, setAssigneeManuallyEdited] = useState(false);
   const [reviewerValue, setReviewerValue] = useState("");
   const [approverValue, setApproverValue] = useState("");
   const [showReviewerRow, setShowReviewerRow] = useState(false);
@@ -305,6 +325,7 @@ export function NewIssueDialog() {
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
+  const dueDateEditedRef = useRef(false);
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
@@ -317,7 +338,7 @@ export function NewIssueDialog() {
   // Popover states
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
+  const [dueDateOpen, setDueDateOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const stageFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -491,9 +512,11 @@ export function NewIssueDialog() {
     scheduleSave({
       title,
       description,
+      dueDate,
       status,
       priority,
       assigneeValue,
+      assigneeManuallyEdited,
       reviewerValue,
       approverValue,
       projectId,
@@ -507,9 +530,11 @@ export function NewIssueDialog() {
   }, [
     title,
     description,
+    dueDate,
     status,
     priority,
     assigneeValue,
+    assigneeManuallyEdited,
     reviewerValue,
     approverValue,
     projectId,
@@ -525,11 +550,17 @@ export function NewIssueDialog() {
 
   // Restore draft or apply defaults when dialog opens
   useEffect(() => {
-    if (!newIssueOpen) return;
+    if (!newIssueOpen) {
+      dueDateEditedRef.current = false;
+      return;
+    }
     setDialogCompanyId(selectedCompanyId);
     executionWorkspaceDefaultProjectId.current = null;
 
     const draft = loadDraft();
+    const applyDueDate = (value: string) => {
+      if (!dueDateEditedRef.current) setDueDate(value);
+    };
     if (newIssueDefaults.parentId) {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
@@ -538,13 +569,20 @@ export function NewIssueDialog() {
       const defaultExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceId
         ? "reuse_existing"
         : (newIssueDefaults.executionWorkspaceMode ?? defaultExecutionWorkspaceModeForProject(defaultProject));
+      const defaultStatus = newIssueDefaults.status ?? "todo";
       setTitle(newIssueDefaults.title ?? "");
       setDescription(newIssueDefaults.description ?? "");
-      setStatus(newIssueDefaults.status ?? "todo");
+      applyDueDate(newIssueDefaults.dueDate ?? "");
+      setStatus(defaultStatus);
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceId);
-      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      const defaultAssigneeValue = assigneeValueFromSelection(newIssueDefaults);
+      setAssigneeValue(
+        defaultAssigneeValue
+          || automaticAssigneeValueForStatus({ status: defaultStatus, project: defaultProject, currentUserId }),
+      );
+      setAssigneeManuallyEdited(Boolean(defaultAssigneeValue));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
@@ -552,15 +590,22 @@ export function NewIssueDialog() {
       setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     } else if (newIssueDefaults.title) {
+      const defaultStatus = newIssueDefaults.status ?? "todo";
       setTitle(newIssueDefaults.title);
       setDescription(newIssueDefaults.description ?? "");
-      setStatus(newIssueDefaults.status ?? "todo");
+      applyDueDate(newIssueDefaults.dueDate ?? "");
+      setStatus(defaultStatus);
       setPriority(newIssueDefaults.priority ?? "");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
-      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      const defaultAssigneeValue = assigneeValueFromSelection(newIssueDefaults);
+      setAssigneeValue(
+        defaultAssigneeValue
+          || automaticAssigneeValueForStatus({ status: defaultStatus, project: defaultProject, currentUserId }),
+      );
+      setAssigneeManuallyEdited(Boolean(defaultAssigneeValue));
       setReviewerValue("");
       setApproverValue("");
       setShowReviewerRow(false);
@@ -574,15 +619,25 @@ export function NewIssueDialog() {
     } else if (draft && draft.title.trim()) {
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
+      const restoredStatus = draft.status || "todo";
       setTitle(draft.title);
       setDescription(draft.description);
-      setStatus(draft.status || "todo");
+      applyDueDate(newIssueDefaults.dueDate ?? draft.dueDate ?? "");
+      setStatus(restoredStatus);
       setPriority(draft.priority);
+      const hasExplicitAssigneeDefault = Boolean(newIssueDefaults.assigneeAgentId || newIssueDefaults.assigneeUserId);
+      const draftAssigneeValue = draft.assigneeValue ?? draft.assigneeId ?? "";
+      const restoredAssigneeValue = hasExplicitAssigneeDefault
+        ? assigneeValueFromSelection(newIssueDefaults)
+        : draftAssigneeValue;
+      const shouldUseRestoredAssignee =
+        hasExplicitAssigneeDefault || draft.assigneeManuallyEdited === true;
       setAssigneeValue(
-        newIssueDefaults.assigneeAgentId || newIssueDefaults.assigneeUserId
-          ? assigneeValueFromSelection(newIssueDefaults)
-          : (draft.assigneeValue ?? draft.assigneeId ?? ""),
+        shouldUseRestoredAssignee
+          ? restoredAssigneeValue
+          : automaticAssigneeValueForStatus({ status: restoredStatus, project: restoredProject, currentUserId }),
       );
+      setAssigneeManuallyEdited(shouldUseRestoredAssignee);
       setReviewerValue(draft.reviewerValue ?? "");
       setApproverValue(draft.approverValue ?? "");
       setShowReviewerRow(!!(draft.reviewerValue));
@@ -601,11 +656,18 @@ export function NewIssueDialog() {
     } else {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
-      setStatus(newIssueDefaults.status ?? "todo");
+      const defaultStatus = newIssueDefaults.status ?? "todo";
+      setStatus(defaultStatus);
+      applyDueDate(newIssueDefaults.dueDate ?? "");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
-      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      const defaultAssigneeValue = assigneeValueFromSelection(newIssueDefaults);
+      setAssigneeValue(
+        defaultAssigneeValue
+          || automaticAssigneeValueForStatus({ status: defaultStatus, project: defaultProject, currentUserId }),
+      );
+      setAssigneeManuallyEdited(Boolean(defaultAssigneeValue));
       setReviewerValue("");
       setApproverValue("");
       setShowReviewerRow(false);
@@ -649,9 +711,12 @@ export function NewIssueDialog() {
   function reset() {
     setTitle("");
     setDescription("");
+    setDueDate("");
+    dueDateEditedRef.current = false;
     setStatus("todo");
     setPriority("");
     setAssigneeValue("");
+    setAssigneeManuallyEdited(false);
     setReviewerValue("");
     setApproverValue("");
     setShowReviewerRow(false);
@@ -669,6 +734,7 @@ export function NewIssueDialog() {
     setStagedFiles([]);
     setIsFileDragOver(false);
     setCompanyOpen(false);
+    setDueDateOpen(false);
     executionWorkspaceDefaultProjectId.current = null;
   }
 
@@ -677,6 +743,7 @@ export function NewIssueDialog() {
     if (companyId === effectiveCompanyId) return;
     setDialogCompanyId(companyId);
     setAssigneeValue("");
+    setAssigneeManuallyEdited(false);
     setReviewerValue("");
     setApproverValue("");
     setShowReviewerRow(false);
@@ -728,6 +795,7 @@ export function NewIssueDialog() {
       stagedFiles,
       title: title.trim(),
       description: description.trim() || undefined,
+      ...(dueDate ? { dueDate } : {}),
       status,
       priority: priority || "medium",
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
@@ -816,7 +884,7 @@ export function NewIssueDialog() {
     setStagedFiles((current) => current.filter((file) => file.id !== id));
   }
 
-  const hasDraft = title.trim().length > 0 || description.trim().length > 0 || stagedFiles.length > 0;
+  const hasDraft = title.trim().length > 0 || description.trim().length > 0 || dueDate.length > 0 || stagedFiles.length > 0;
   const currentStatus = statuses.find((s) => s.value === status) ?? statuses[1]!;
   const currentPriority = priorities.find((p) => p.value === priority);
   const currentAssignee = selectedAssigneeAgentId
@@ -884,7 +952,7 @@ export function NewIssueDialog() {
       orderedProjects.map((project) => ({
         id: project.id,
         label: project.name,
-        searchText: project.description ?? "",
+        searchText: `${project.description ?? ""} ${(project.labels ?? []).map((label) => label.name).join(" ")}`,
       })),
     [orderedProjects],
   );
@@ -892,7 +960,7 @@ export function NewIssueDialog() {
   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
   const createIssueErrorMessage =
-    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create issue. Try again.";
+    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create task. Try again.";
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
   const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
 
@@ -903,7 +971,10 @@ export function NewIssueDialog() {
     setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
     setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
     setSelectedExecutionWorkspaceId("");
-  }, [orderedProjects]);
+    if (!assigneeManuallyEdited) {
+      setAssigneeValue(automaticAssigneeValueForStatus({ status, project: nextProject, currentUserId }));
+    }
+  }, [assigneeManuallyEdited, currentUserId, orderedProjects, status]);
 
   useEffect(() => {
     if (!newIssueOpen || !projectId || executionWorkspaceDefaultProjectId.current === projectId) {
@@ -916,6 +987,15 @@ export function NewIssueDialog() {
     setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(project));
     setSelectedExecutionWorkspaceId("");
   }, [newIssueOpen, orderedProjects, projectId]);
+
+  useEffect(() => {
+    if (!newIssueOpen || assigneeManuallyEdited) return;
+    const project = orderedProjects.find((entry) => entry.id === projectId);
+    const nextAssigneeValue = automaticAssigneeValueForStatus({ status, project, currentUserId });
+    if (assigneeValue !== nextAssigneeValue) {
+      setAssigneeValue(nextAssigneeValue);
+    }
+  }, [assigneeManuallyEdited, assigneeValue, currentUserId, newIssueOpen, orderedProjects, projectId, status]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
     () => {
       return [...(assigneeAdapterModels ?? [])]
@@ -946,9 +1026,9 @@ export function NewIssueDialog() {
         showCloseButton={false}
         aria-describedby={undefined}
         className={cn(
-          "flex h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:h-auto",
+          "p-0 gap-0 flex flex-col max-h-[calc(100dvh-2rem)]",
           expanded
-            ? "sm:max-w-2xl sm:h-[calc(100dvh-2rem)]"
+            ? "sm:max-w-2xl h-[calc(100dvh-2rem)]"
             : "sm:max-w-lg"
         )}
         onKeyDown={handleKeyDown}
@@ -1032,7 +1112,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{isSubIssueMode ? "New sub-issue" : "New issue"}</span>
+            <span>{isSubIssueMode ? "New sub-task" : "New task"}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -1056,12 +1136,11 @@ export function NewIssueDialog() {
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-          {/* Title */}
-          <div className="px-4 pt-4 pb-2">
-            <textarea
+        {/* Title */}
+        <div className="px-4 pt-4 pb-2 shrink-0">
+          <textarea
             className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-            placeholder="Issue title"
+            placeholder="Task title"
             rows={1}
             value={title}
             onChange={(e) => {
@@ -1095,12 +1174,12 @@ export function NewIssueDialog() {
               }
             }}
             autoFocus
-            />
-          </div>
+          />
+        </div>
 
-          <div className="px-4 pb-2">
-            <div className="overflow-x-auto overscroll-x-contain">
-              <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
+        <div className="px-4 pb-2 shrink-0">
+          <div className="overflow-x-auto overscroll-x-contain">
+            <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
               <span className="w-6 shrink-0 text-center">For</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
@@ -1116,6 +1195,7 @@ export function NewIssueDialog() {
                   if (nextAssignee.assigneeAgentId) {
                     trackRecentAssignee(nextAssignee.assigneeAgentId);
                   }
+                  setAssigneeManuallyEdited(true);
                   setAssigneeValue(value);
                 }}
                 onConfirm={() => {
@@ -1173,7 +1253,8 @@ export function NewIssueDialog() {
                         className="h-3.5 w-3.5 shrink-0 rounded-sm"
                         style={{ backgroundColor: currentProject.color ?? "#6366f1" }}
                       />
-                      <span className="truncate">{option.label}</span>
+                      <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                      <ProjectLabelPills labels={currentProject.labels} variant="dense" />
                     </>
                   ) : (
                     <span className="text-muted-foreground">Project</span>
@@ -1188,7 +1269,8 @@ export function NewIssueDialog() {
                         className="h-3.5 w-3.5 shrink-0 rounded-sm"
                         style={{ backgroundColor: project?.color ?? "#6366f1" }}
                       />
-                      <span className="truncate">{option.label}</span>
+                      <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                      <ProjectLabelPills labels={project?.labels} variant="dense" />
                     </>
                   );
                 }}
@@ -1236,14 +1318,14 @@ export function NewIssueDialog() {
                   </button>
                 </PopoverContent>
               </Popover>
-              </div>
             </div>
+          </div>
 
-            {/* Reviewer row */}
-            {showReviewerRow && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
-                <span className="w-6 shrink-0 flex items-center justify-center"><Eye className="h-3.5 w-3.5" /></span>
-                <InlineEntitySelector
+          {/* Reviewer row */}
+          {showReviewerRow && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
+              <span className="w-6 shrink-0 flex items-center justify-center"><Eye className="h-3.5 w-3.5" /></span>
+              <InlineEntitySelector
                 value={reviewerValue}
                 options={assigneeOptions}
                 placeholder="Reviewer"
@@ -1279,15 +1361,15 @@ export function NewIssueDialog() {
                     </>
                   );
                 }}
-                />
-              </div>
-            )}
+              />
+            </div>
+          )}
 
-            {/* Approver row */}
-            {showApproverRow && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
-                <span className="w-6 shrink-0 flex items-center justify-center"><ShieldCheck className="h-3.5 w-3.5" /></span>
-                <InlineEntitySelector
+          {/* Approver row */}
+          {showApproverRow && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
+              <span className="w-6 shrink-0 flex items-center justify-center"><ShieldCheck className="h-3.5 w-3.5" /></span>
+              <InlineEntitySelector
                 value={approverValue}
                 options={assigneeOptions}
                 placeholder="Approver"
@@ -1323,17 +1405,17 @@ export function NewIssueDialog() {
                     </>
                   );
                 }}
-                />
-              </div>
-            )}
-          </div>
+              />
+            </div>
+          )}
+        </div>
 
-          {isSubIssueMode ? (
-            <div className="px-4 pb-2">
+        {isSubIssueMode ? (
+          <div className="px-4 pb-2 shrink-0">
             <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
               <div className="flex items-center gap-1.5">
                 <ListTree className="h-3.5 w-3.5 shrink-0" />
-                <span className="shrink-0">Sub-issue of</span>
+                <span className="shrink-0">Sub-task of</span>
                 <span className="font-medium text-foreground">{parentIssueLabel}</span>
               </div>
               {newIssueDefaults.parentTitle ? (
@@ -1342,15 +1424,15 @@ export function NewIssueDialog() {
                 </div>
               ) : null}
             </div>
-            </div>
-          ) : null}
+          </div>
+        ) : null}
 
-          {currentProject && currentProjectSupportsExecutionWorkspace && (
-            <div className="px-4 py-3 space-y-2">
+        {currentProject && currentProjectSupportsExecutionWorkspace && (
+          <div className="px-4 py-3 shrink-0 space-y-2">
             <div className="space-y-1.5">
               <div className="text-xs font-medium">Execution workspace</div>
               <div className="text-[11px] text-muted-foreground">
-                Control whether this issue runs in the shared workspace, a new isolated workspace, or an existing one.
+                Control whether this task runs in the shared workspace, a new isolated workspace, or an existing one.
               </div>
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
@@ -1389,15 +1471,15 @@ export function NewIssueDialog() {
               )}
               {showParentWorkspaceWarning ? (
                 <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
-                  Warning: this sub-issue will no longer use the parent issue workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                  Warning: this sub-task will no longer use the parent task workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
                 </div>
               ) : null}
             </div>
-            </div>
-          )}
+          </div>
+        )}
 
-          {supportsAssigneeOverrides && (
-            <div className="px-4 pb-2">
+        {supportsAssigneeOverrides && (
+          <div className="px-4 pb-2 shrink-0">
             <button
               className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setAssigneeOptionsOpen((open) => !open)}
@@ -1448,39 +1530,39 @@ export function NewIssueDialog() {
                 )}
               </div>
             )}
-            </div>
-          )}
+          </div>
+        )}
 
-          {/* Description */}
+        {/* Description */}
+        <div
+          className={cn("px-4 pb-2 overflow-y-auto min-h-0 border-t border-border/60 pt-3", expanded ? "flex-1" : "")}
+          onDragEnter={handleFileDragEnter}
+          onDragOver={handleFileDragOver}
+          onDragLeave={handleFileDragLeave}
+          onDrop={handleFileDrop}
+        >
           <div
-            className="border-t border-border/60 px-4 pb-2 pt-3"
-            onDragEnter={handleFileDragEnter}
-            onDragOver={handleFileDragOver}
-            onDragLeave={handleFileDragLeave}
-            onDrop={handleFileDrop}
+            className={cn(
+              "rounded-md transition-colors",
+              isFileDragOver && "bg-accent/20",
+            )}
           >
-            <div
-              className={cn(
-                "rounded-md transition-colors",
-                isFileDragOver && "bg-accent/20",
-              )}
-            >
-              <MarkdownEditor
-                ref={descriptionEditorRef}
-                value={description}
-                onChange={setDescription}
-                placeholder="Add description..."
-                bordered={false}
-                mentions={mentionOptions}
-                contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
-                imageUploadHandler={async (file) => {
-                  const asset = await uploadDescriptionImage.mutateAsync(file);
-                  return asset.contentPath;
-                }}
-              />
-            </div>
-            {stagedFiles.length > 0 ? (
-              <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
+            <MarkdownEditor
+              ref={descriptionEditorRef}
+              value={description}
+              onChange={setDescription}
+              placeholder="Add description..."
+              bordered={false}
+              mentions={mentionOptions}
+              contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+              imageUploadHandler={async (file) => {
+                const asset = await uploadDescriptionImage.mutateAsync(file);
+                return asset.contentPath;
+              }}
+            />
+          </div>
+          {stagedFiles.length > 0 ? (
+            <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
               {stagedDocuments.length > 0 ? (
                 <div className="space-y-2">
                   <div className="text-xs font-medium text-muted-foreground">Documents</div>
@@ -1547,9 +1629,8 @@ export function NewIssueDialog() {
                   </div>
                 </div>
               ) : null}
-              </div>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
         </div>
 
         {/* Property chips bar */}
@@ -1636,22 +1717,39 @@ export function NewIssueDialog() {
             Upload
           </button>
 
-          {/* More (dates) */}
-          <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+          <Popover open={dueDateOpen} onOpenChange={setDueDateOpen}>
             <PopoverTrigger asChild>
-              <button className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
-                <MoreHorizontal className="h-3 w-3" />
+              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
+                <Calendar className="h-3 w-3" />
+                {dueDate ? formatIssueDueDateShort(dueDate) : "Due"}
               </button>
             </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="start">
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Start date
-              </button>
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Due date
-              </button>
+            <PopoverContent className="w-56 p-3" align="start">
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-muted-foreground">Due date</div>
+                <input
+                  type="date"
+                  aria-label="Due date"
+                  className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                  value={dueDate}
+                  onChange={(event) => {
+                    dueDateEditedRef.current = true;
+                    setDueDate(event.target.value);
+                  }}
+                />
+                {dueDate ? (
+                  <button
+                    type="button"
+                    className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                    onClick={() => {
+                      dueDateEditedRef.current = true;
+                      setDueDate("");
+                    }}
+                  >
+                    Clear due date
+                  </button>
+                ) : null}
+              </div>
             </PopoverContent>
           </Popover>
         </div>
@@ -1672,7 +1770,7 @@ export function NewIssueDialog() {
               {createIssue.isPending ? (
                 <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  Creating issue...
+                  Creating task...
                 </span>
               ) : createIssue.isError ? (
                 <span className="text-xs text-destructive">{createIssueErrorMessage}</span>
@@ -1687,7 +1785,7 @@ export function NewIssueDialog() {
             >
               <span className="inline-flex items-center justify-center gap-1.5">
                 {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Issue" : "Create Issue"}</span>
+                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-task" : "Create Task"}</span>
               </span>
             </Button>
           </div>

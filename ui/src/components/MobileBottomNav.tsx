@@ -3,15 +3,13 @@ import { NavLink, useLocation } from "@/lib/router";
 import {
   House,
   Calendar,
-  SquarePen,
   CalendarDays,
+  SquarePen,
   Inbox,
 } from "lucide-react";
-import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn } from "../lib/utils";
-import { useInboxBadge } from "../hooks/useInboxBadge";
 
 interface MobileBottomNavProps {
   visible: boolean;
@@ -36,9 +34,7 @@ type MobileNavItem = MobileNavLinkItem | MobileNavActionItem;
 
 export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const location = useLocation();
-  const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
-  const inboxBadge = useInboxBadge(selectedCompanyId);
 
   const items = useMemo<MobileNavItem[]>(
     () => [
@@ -51,10 +47,9 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         to: "/inbox",
         label: "Inbox",
         icon: Inbox,
-        badge: inboxBadge.inbox,
       },
     ],
-    [openNewIssue, inboxBadge.inbox],
+    [openNewIssue],
   );
 
   return (

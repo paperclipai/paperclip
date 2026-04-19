@@ -8,6 +8,7 @@ import {
   heartbeatRuns,
   inboxDismissals,
   invites,
+  issues,
   joinRequests,
 } from "@paperclipai/db";
 import {
@@ -43,6 +44,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     await db.delete(inboxDismissals);
     await db.delete(joinRequests);
     await db.delete(invites);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(approvals);
     await db.delete(agents);
@@ -203,10 +205,133 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     });
 
     expect(badges).toEqual({
-      inbox: 3,
+      inbox: 0,
+      blockers: 0,
       approvals: 1,
       failedRuns: 1,
       joinRequests: 0,
+      taskDates: {
+        today: 0,
+        tomorrow: 0,
+        next7Days: 0,
+      },
+    });
+  });
+
+  it("counts only visible non-routine blocked issues as blockers", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        companyId,
+        title: "Visible blocker",
+        status: "blocked",
+      },
+      {
+        companyId,
+        title: "Hidden blocker",
+        status: "blocked",
+        hiddenAt: new Date("2026-03-11T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        title: "Routine blocker",
+        status: "blocked",
+        originKind: "routine_execution",
+      },
+      {
+        companyId,
+        title: "Todo task",
+        status: "todo",
+      },
+    ]);
+
+    const badges = await badgesSvc.get(companyId);
+
+    expect(badges).toEqual({
+      inbox: 0,
+      blockers: 1,
+      approvals: 0,
+      failedRuns: 0,
+      joinRequests: 0,
+      taskDates: {
+        today: 0,
+        tomorrow: 0,
+        next7Days: 0,
+      },
+    });
+  });
+
+  it("counts active due-dated task shortcuts and skips hidden, routine, and terminal issues", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        companyId,
+        title: "Today",
+        status: "todo",
+        dueDate: "2026-04-19",
+      },
+      {
+        companyId,
+        title: "Tomorrow",
+        status: "in_progress",
+        dueDate: "2026-04-20",
+      },
+      {
+        companyId,
+        title: "Later this week",
+        status: "blocked",
+        dueDate: "2026-04-25",
+      },
+      {
+        companyId,
+        title: "Terminal today",
+        status: "done",
+        dueDate: "2026-04-19",
+      },
+      {
+        companyId,
+        title: "Routine today",
+        status: "todo",
+        dueDate: "2026-04-19",
+        originKind: "routine_execution",
+      },
+      {
+        companyId,
+        title: "Hidden today",
+        status: "todo",
+        dueDate: "2026-04-19",
+        hiddenAt: new Date("2026-04-19T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        title: "Outside range",
+        status: "todo",
+        dueDate: "2026-04-26",
+      },
+    ]);
+
+    const badges = await badgesSvc.get(companyId, { today: "2026-04-19" });
+
+    expect(badges.taskDates).toEqual({
+      today: 1,
+      tomorrow: 1,
+      next7Days: 3,
     });
   });
 });

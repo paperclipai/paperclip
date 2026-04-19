@@ -52,11 +52,19 @@ export function loadPaperclipEnvFile(configPath?: string): void {
 }
 
 export function loadAgentJwtEnvFile(filePath = resolveEnvFilePath()): void {
-  if (loadedEnvFiles.has(filePath)) return;
-
   if (!fs.existsSync(filePath)) return;
-  loadedEnvFiles.add(filePath);
-  loadDotenv({ path: filePath, override: false, quiet: true });
+  if (!loadedEnvFiles.has(filePath)) {
+    loadDotenv({ path: filePath, override: false, quiet: true });
+    loadedEnvFiles.add(filePath);
+  }
+
+  const values = parseEnvFile(fs.readFileSync(filePath, "utf-8"));
+  for (const [key, value] of Object.entries(values)) {
+    if (!isNonEmpty(value)) continue;
+    if (!isNonEmpty(process.env[key])) {
+      process.env[key] = value.trim();
+    }
+  }
 }
 
 export function readAgentJwtSecretFromEnv(configPath?: string): string | null {

@@ -55,7 +55,7 @@ export function useKeyboardShortcuts({
         return;
       }
 
-      // C → New Issue
+      // C → New Task
       if (e.key === "c" && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         onNewIssue?.();

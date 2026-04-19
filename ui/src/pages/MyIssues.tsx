@@ -1,72 +1,140 @@
-import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo } from "react";
+import { useLocation, useSearchParams } from "@/lib/router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CircleUserRound } from "lucide-react";
+import { agentsApi } from "../api/agents";
+import { authApi } from "../api/auth";
+import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
-import { useCompany } from "../context/CompanyContext";
-import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { queryKeys } from "../lib/queryKeys";
-import { StatusIcon } from "../components/StatusIcon";
-
-import { EntityRow } from "../components/EntityRow";
+import { projectsApi } from "../api/projects";
 import { EmptyState } from "../components/EmptyState";
-import { PageSkeleton } from "../components/PageSkeleton";
-import { formatDate } from "../lib/utils";
-import { ListTodo } from "lucide-react";
+import { IssuesList } from "../components/IssuesList";
+import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useCompany } from "../context/CompanyContext";
+import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
+import { queryKeys } from "../lib/queryKeys";
 
 export function MyIssues() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const queryClient = useQueryClient();
+  const initialSearch = searchParams.get("q") ?? "";
+
+  const handleSearchChange = useCallback((search: string) => {
+    const trimmedSearch = search.trim();
+    const currentSearch = new URLSearchParams(window.location.search).get("q") ?? "";
+    if (currentSearch === trimmedSearch) return;
+
+    const url = new URL(window.location.href);
+    if (trimmedSearch) {
+      url.searchParams.set("q", trimmedSearch);
+    } else {
+      url.searchParams.delete("q");
+    }
+
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, "", nextUrl);
+  }, []);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "My Issues" }]);
+    setBreadcrumbs([{ label: "My Tasks" }]);
   }, [setBreadcrumbs]);
 
-  const { data: issues, isLoading, error } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
-  if (!selectedCompanyId) {
-    return <EmptyState icon={ListTodo} message="Select a company to view your issues." />;
-  }
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
-  if (isLoading) {
-    return <PageSkeleton variant="list" />;
-  }
+  const { data: liveRuns } = useQuery({
+    queryKey: queryKeys.liveRuns(selectedCompanyId!),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 5000,
+  });
 
-  // Show issues that are not assigned (user-created or unassigned)
-  const myIssues = (issues ?? []).filter(
-    (i) => !i.assigneeAgentId && !["done", "cancelled"].includes(i.status)
+  const liveIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of liveRuns ?? []) {
+      if (run.issueId) ids.add(run.issueId);
+    }
+    return ids;
+  }, [liveRuns]);
+
+  const issueLinkState = useMemo(
+    () =>
+      createIssueDetailLocationState(
+        "My Tasks",
+        `${location.pathname}${location.search}${location.hash}`,
+        "issues",
+      ),
+    [location.pathname, location.search, location.hash],
   );
 
+  const { data: issues, isLoading, error } = useQuery({
+    queryKey: queryKeys.issues.listAssignedToMe(selectedCompanyId!),
+    queryFn: () => issuesApi.list(selectedCompanyId!, { assigneeUserId: "me" }),
+    enabled: !!selectedCompanyId,
+  });
+
+  const updateIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      issuesApi.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listAssignedToMe(selectedCompanyId!) });
+    },
+  });
+
+  const reorderIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { status: string; beforeIssueId?: string | null } }) =>
+      issuesApi.reorder(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listAssignedToMe(selectedCompanyId!) });
+    },
+  });
+
+  const defaultNewIssueValues = useMemo(
+    () => (currentUserId ? { assigneeUserId: currentUserId } : undefined),
+    [currentUserId],
+  );
+
+  if (!selectedCompanyId) {
+    return <EmptyState icon={CircleUserRound} message="Select a company to view your tasks." />;
+  }
+
   return (
-    <div className="space-y-4">
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
-
-      {myIssues.length === 0 && (
-        <EmptyState icon={ListTodo} message="No issues assigned to you." />
-      )}
-
-      {myIssues.length > 0 && (
-        <div className="border border-border">
-          {myIssues.map((issue) => (
-            <EntityRow
-              key={issue.id}
-              identifier={issue.identifier ?? issue.id.slice(0, 8)}
-              title={issue.title}
-              to={`/issues/${issue.identifier ?? issue.id}`}
-              leading={
-                <StatusIcon status={issue.status} />
-              }
-              trailing={
-                <span className="text-xs text-muted-foreground">
-                  {formatDate(issue.createdAt)}
-                </span>
-              }
-            />
-          ))}
-        </div>
-      )}
-    </div>
+    <IssuesList
+      issues={issues ?? []}
+      isLoading={isLoading}
+      error={error as Error | null}
+      agents={agents}
+      projects={projects}
+      liveIssueIds={liveIssueIds}
+      viewStateKey="paperclip:my-issues-view"
+      issueLinkState={issueLinkState}
+      initialSearch={initialSearch}
+      searchFilters={{ assigneeUserId: "me" }}
+      defaultNewIssueValues={defaultNewIssueValues}
+      emptyMessage="No tasks assigned to you."
+      onSearchChange={handleSearchChange}
+      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+      onReorderIssue={(id, data) => reorderIssue.mutate({ id, data })}
+    />
   );
 }

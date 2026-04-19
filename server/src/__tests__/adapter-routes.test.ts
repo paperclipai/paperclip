@@ -75,4 +75,24 @@ describe("adapter routes", () => {
     expect(builtin.status, JSON.stringify(builtin.body)).toBe(404);
     expect(String(builtin.body.error ?? "")).toContain("does not provide a config schema");
   });
+
+  it("reports whether adapters support local agent runtime auth", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "codex_local",
+          supportsLocalAgentJwt: true,
+        }),
+        expect.objectContaining({
+          type: "process",
+          supportsLocalAgentJwt: false,
+        }),
+      ]),
+    );
+  });
 });

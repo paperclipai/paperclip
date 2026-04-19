@@ -30,7 +30,13 @@ function registerRouteMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(actor: Record<string, unknown> = {
+  type: "board",
+  userId: "user-1",
+  companyIds: ["company-1"],
+  source: "session",
+  isInstanceAdmin: false,
+}) {
   const [{ errorHandler }, { activityRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/activity.js"),
@@ -38,13 +44,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "user-1",
-      companyIds: ["company-1"],
-      source: "session",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", activityRoutes({} as any));
@@ -94,6 +94,29 @@ describe("activity routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockActivityService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows same-company agents to read company activity", async () => {
+    mockActivityService.list.mockResolvedValue([
+      { id: "event-1", action: "issue.updated" },
+    ]);
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    });
+    const res = await request(app).get("/api/companies/company-1/activity");
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledWith({
+      companyId: "company-1",
+      agentId: undefined,
+      entityType: undefined,
+      entityId: undefined,
+    });
+    expect(res.body).toEqual([{ id: "event-1", action: "issue.updated" }]);
   });
 
   it("requires company access before listing issues for another company's run", async () => {

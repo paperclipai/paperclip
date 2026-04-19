@@ -6,15 +6,15 @@ import { authApi } from "../api/auth";
 import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
-
-type JoinType = "human" | "agent";
-const joinAdapterOptions: AgentAdapterType[] = [...AGENT_ADAPTER_TYPES];
-
+import { useAdaptersSync } from "../adapters/use-disabled-adapters";
+import {
+  listLocalAgentAdapterOptions,
+  resolveDefaultLocalAgentAdapterType,
+} from "../adapters/metadata";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
-const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor"]);
+type JoinType = "human" | "agent";
 
 function dateTime(value: string) {
   return new Date(value).toLocaleString();
@@ -39,6 +39,11 @@ export function InviteLandingPage() {
   const [capabilities, setCapabilities] = useState("");
   const [result, setResult] = useState<{ kind: "bootstrap" | "join"; payload: unknown } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { adapters: registeredAdapters } = useAdaptersSync();
+  const joinAdapterOptions = useMemo(
+    () => listLocalAgentAdapterOptions(registeredAdapters, getAdapterLabel),
+    [registeredAdapters],
+  );
 
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
@@ -71,6 +76,12 @@ export function InviteLandingPage() {
       setJoinType(availableJoinTypes[0] ?? "human");
     }
   }, [availableJoinTypes, joinType]);
+
+  useEffect(() => {
+    if (joinType !== "agent" || joinAdapterOptions.length === 0) return;
+    if (joinAdapterOptions.some((option) => option.value === adapterType)) return;
+    setAdapterType(resolveDefaultLocalAgentAdapterType(joinAdapterOptions) as AgentAdapterType);
+  }, [adapterType, joinAdapterOptions, joinType]);
 
   const requiresAuthForHuman =
     joinType === "human" &&
@@ -266,9 +277,17 @@ export function InviteLandingPage() {
                 value={adapterType}
                 onChange={(event) => setAdapterType(event.target.value as AgentAdapterType)}
               >
-                {joinAdapterOptions.map((type) => (
-                  <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
-                    {getAdapterLabel(type)}{!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
+                {(joinAdapterOptions.length > 0
+                  ? joinAdapterOptions
+                  : [{
+                      value: adapterType,
+                      label: getAdapterLabel(adapterType),
+                      comingSoon: false,
+                      hidden: false,
+                    }]
+                ).map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
                   </option>
                 ))}
               </select>
@@ -303,6 +322,7 @@ export function InviteLandingPage() {
           disabled={
             acceptMutation.isPending ||
             (joinType === "agent" && invite.inviteType !== "bootstrap_ceo" && agentName.trim().length === 0) ||
+            (joinType === "agent" && invite.inviteType !== "bootstrap_ceo" && joinAdapterOptions.length === 0) ||
             requiresAuthForHuman
           }
           onClick={() => acceptMutation.mutate()}

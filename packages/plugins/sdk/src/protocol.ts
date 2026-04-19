@@ -29,6 +29,10 @@ import type {
   IssueDocumentSummary,
   Agent,
   Goal,
+  ContextSource,
+  ContextSourceItem,
+  ContextSourceSearchResult,
+  ContextSourceStatus,
 } from "@paperclipai/shared";
 export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 
@@ -561,6 +565,56 @@ export interface WorkerToHostMethods {
   "projects.getWorkspaceForIssue": [
     params: { issueId: string; companyId: string },
     result: PluginWorkspace | null,
+  ];
+
+  // Project Context Sources
+  "contextSources.create": [
+    params: {
+      companyId: string;
+      projectId: string;
+      sourceType: string;
+      title: string;
+      uri?: string | null;
+      provider?: string | null;
+      externalId?: string | null;
+      bodyText?: string | null;
+      metadata?: Record<string, unknown> | null;
+    },
+    result: ContextSource,
+  ];
+  "contextSources.upsertItem": [
+    params: {
+      companyId: string;
+      sourceId: string;
+      externalId?: string | null;
+      title: string;
+      uri?: string | null;
+      mimeType?: string | null;
+      bodyText?: string | null;
+      status?: string;
+      statusMessage?: string | null;
+      metadata?: Record<string, unknown> | null;
+      sourceModifiedAt?: string | null;
+    },
+    result: ContextSourceItem,
+  ];
+  "contextSources.setStatus": [
+    params: {
+      companyId: string;
+      sourceId: string;
+      status: ContextSourceStatus;
+      statusMessage?: string | null;
+    },
+    result: ContextSource,
+  ];
+  "contextSources.search": [
+    params: {
+      companyId: string;
+      projectId: string;
+      query: string;
+      limit?: number;
+    },
+    result: ContextSourceSearchResult[],
   ];
 
   // Issues

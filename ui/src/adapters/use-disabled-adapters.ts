@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { adaptersApi } from "@/api/adapters";
+import { adaptersApi, type AdapterInfo } from "@/api/adapters";
 import { setDisabledAdapterTypes } from "@/adapters/disabled-store";
 import { syncExternalAdapters } from "@/adapters/registry";
 import { queryKeys } from "@/lib/queryKeys";
@@ -13,10 +13,14 @@ import { queryKeys } from "@/lib/queryKeys";
  *   dropdowns (done eagerly during render — idempotent, no React state).
  * - Syncs the disabled-adapter store for non-React consumers (useEffect).
  *
- * Returns a reactive Set of disabled types for use as useMemo dependencies.
+ * Returns adapter metadata plus a reactive Set of disabled types for use as
+ * useMemo dependencies.
  * Call this at the top of any component that renders adapter menus.
  */
-export function useDisabledAdaptersSync(): Set<string> {
+export function useAdaptersSync(): {
+  adapters: AdapterInfo[] | undefined;
+  disabledTypes: Set<string>;
+} {
   const { data: adapters } = useQuery({
     queryKey: queryKeys.adapters.all,
     queryFn: () => adaptersApi.list(),
@@ -47,8 +51,14 @@ export function useDisabledAdaptersSync(): Set<string> {
     );
   }, [adapters]);
 
-  return useMemo(
+  const disabledTypes = useMemo(
     () => new Set(adapters?.filter((a) => a.disabled).map((a) => a.type) ?? []),
     [adapters],
   );
+
+  return { adapters, disabledTypes };
+}
+
+export function useDisabledAdaptersSync(): Set<string> {
+  return useAdaptersSync().disabledTypes;
 }

@@ -7,6 +7,8 @@ import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
+import { costsApi } from "../api/costs";
+import { ApiError } from "../api/client";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -14,21 +16,118 @@ import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
 import { StatusIcon } from "../components/StatusIcon";
-
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
-import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { formatCents, formatTokens } from "../lib/utils";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Gauge, TrendingUp } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
-import type { Agent, Issue } from "@paperclipai/shared";
+import { DashboardCodexLimitsCard } from "../components/DashboardCodexLimitsCard";
+import type { Agent, CostByBiller, CostByProviderModel, Issue, ProviderQuotaResult } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import {
+  findCodexCreditsQuotaWindow,
+  formatCodexQuotaErrorMessage,
+  findCodexQuotaResult,
+  pickPrimaryCodexQuotaWindow,
+} from "@/lib/codexQuota";
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+const SUBSCRIPTION_BILLING_TYPES = new Set(["subscription_included", "subscription_overage"]);
+
+type CodexUsageMetric = {
+  usedTokens: number;
+  usedPercent: number | null;
+  remainingPercent: number | null;
+  windowLabel: string | null;
+  creditsLabel: string | null;
+};
+
+type OpenRouterSpendMetric = {
+  spendCents: number;
+  totalTokens: number;
+  apiRunCount: number;
+  subscriptionRunCount: number;
+};
+
+function buildCodexUsageMetric(
+  providerRows: CostByProviderModel[] | undefined,
+  quotaResults: ProviderQuotaResult[] | undefined,
+): CodexUsageMetric | null {
+  const providerUsage = providerRows ?? [];
+  const codexRows = providerUsage.filter((row) =>
+    row.provider === "openai" &&
+    row.biller === "chatgpt" &&
+    SUBSCRIPTION_BILLING_TYPES.has(row.billingType),
+  );
+  const fallbackCodexRows = codexRows.length > 0
+    ? codexRows
+    : providerUsage.filter((row) => row.provider === "openai" && row.biller === "chatgpt");
+
+  const codexQuota = findCodexQuotaResult(quotaResults);
+
+  if (fallbackCodexRows.length === 0 && !codexQuota?.ok) {
+    return null;
+  }
+
+  const usedTokens = fallbackCodexRows.reduce(
+    (sum, row) => sum + row.inputTokens + row.cachedInputTokens + row.outputTokens,
+    0,
+  );
+  const primaryWindow = codexQuota?.ok ? pickPrimaryCodexQuotaWindow(codexQuota.windows) : null;
+  const creditsWindow = codexQuota?.ok ? findCodexCreditsQuotaWindow(codexQuota.windows) : null;
+  const usedPercent = primaryWindow?.usedPercent ?? null;
+  const remainingPercent = typeof usedPercent === "number" ? Math.max(0, 100 - usedPercent) : null;
+
+  return {
+    usedTokens,
+    usedPercent,
+    remainingPercent,
+    windowLabel: primaryWindow?.label ?? null,
+    creditsLabel: creditsWindow?.valueLabel ?? null,
+  };
+}
+
+function buildOpenRouterSpendMetric(
+  billerRows: CostByBiller[] | undefined,
+): OpenRouterSpendMetric | null {
+  const openRouterRow = (billerRows ?? []).find((row) => row.biller === "openrouter");
+  if (!openRouterRow) return null;
+
+  const totalTokens =
+    openRouterRow.inputTokens +
+    openRouterRow.cachedInputTokens +
+    openRouterRow.outputTokens;
+
+  if (openRouterRow.costCents <= 0 && totalTokens <= 0) {
+    return null;
+  }
+
+  return {
+    spendCents: openRouterRow.costCents,
+    totalTokens,
+    apiRunCount: openRouterRow.apiRunCount,
+    subscriptionRunCount: openRouterRow.subscriptionRunCount,
+  };
+}
+
+function formatDevHours(hours: number): string {
+  if (!Number.isFinite(hours) || hours <= 0) return "0h";
+  if (hours < 1) return `${hours.toFixed(2)}h`;
+  if (hours < 10) return `${hours.toFixed(1)}h`;
+  return `${Math.round(hours)}h`;
+}
+
+function formatRoiMultiple(roi: number | null): string {
+  if (roi === null) return "no billed spend";
+  if (!Number.isFinite(roi)) return "0x ROI";
+  return `${roi.toFixed(roi >= 10 ? 0 : 1)}x ROI`;
 }
 
 export function Dashboard() {
@@ -80,8 +179,86 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
+  const monthStartIso = useMemo(() => {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  }, []);
+
+  const { data: providerUsageRows } = useQuery({
+    queryKey: queryKeys.usageByProvider(selectedCompanyId!, monthStartIso),
+    queryFn: () => costsApi.byProvider(selectedCompanyId!, monthStartIso),
+    enabled: !!selectedCompanyId,
+    staleTime: 30_000,
+  });
+
+  const { data: billerUsageRows } = useQuery({
+    queryKey: queryKeys.usageByBiller(selectedCompanyId!, monthStartIso),
+    queryFn: () => costsApi.byBiller(selectedCompanyId!, monthStartIso),
+    enabled: !!selectedCompanyId,
+    staleTime: 30_000,
+  });
+
+  const { data: quotaRows, isLoading: quotaLoading, error: quotaError } = useQuery({
+    queryKey: queryKeys.usageQuotaWindows(selectedCompanyId!),
+    queryFn: async () => {
+      try {
+        return await costsApi.quotaWindows(selectedCompanyId!);
+      } catch (err) {
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          return [];
+        }
+        throw err;
+      }
+    },
+    enabled: !!selectedCompanyId,
+    retry: false,
+    refetchInterval: 300_000,
+    staleTime: 60_000,
+  });
+
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+  const codexUsageMetric = useMemo(() => {
+    return buildCodexUsageMetric(providerUsageRows, quotaRows);
+  }, [providerUsageRows, quotaRows]);
+  const openRouterSpendMetric = useMemo(() => {
+    return buildOpenRouterSpendMetric(billerUsageRows);
+  }, [billerUsageRows]);
+  const codexQuotaResult = useMemo(() => findCodexQuotaResult(quotaRows), [quotaRows]);
+  const codexQuotaWindows = codexQuotaResult?.ok ? codexQuotaResult.windows : [];
+  const codexQuotaSource = codexQuotaResult?.source ?? null;
+  const hasCodexUsageEvidence = useMemo(() => {
+    return (providerUsageRows ?? []).some((row) =>
+      row.provider === "openai" && row.biller === "chatgpt",
+    );
+  }, [providerUsageRows]);
+  const codexQuotaErrorMessage = useMemo(() => {
+    if (codexQuotaResult && !codexQuotaResult.ok) {
+      return formatCodexQuotaErrorMessage(codexQuotaResult.error) ??
+        "Paperclip could not load live Codex rate limits.";
+    }
+    if (quotaError instanceof Error) return formatCodexQuotaErrorMessage(quotaError.message);
+    return null;
+  }, [codexQuotaResult, quotaError]);
+  const shouldShowCodexLimitsCard = codexQuotaWindows.length > 0 || hasCodexUsageEvidence;
+  const codexUsageDescription = useMemo(() => {
+    if (!codexUsageMetric) return "No ChatGPT Codex usage tracked yet.";
+    const quotaSummary =
+      codexUsageMetric.usedPercent != null && codexUsageMetric.remainingPercent != null
+        ? `${codexUsageMetric.usedPercent}% used · ${codexUsageMetric.remainingPercent}% left (${codexUsageMetric.windowLabel ?? "active window"})`
+        : (codexUsageMetric.creditsLabel ?? "Live quota unavailable");
+    return `MTD usage · ${quotaSummary}`;
+  }, [codexUsageMetric]);
+  const openRouterSpendDescription = useMemo(() => {
+    if (!openRouterSpendMetric) return "No OpenRouter activity tracked yet.";
+
+    const parts = [`${formatTokens(openRouterSpendMetric.totalTokens)} tok`];
+    if (openRouterSpendMetric.apiRunCount > 0 || openRouterSpendMetric.subscriptionRunCount > 0) {
+      parts.push(`${openRouterSpendMetric.apiRunCount} metered`);
+      parts.push(`${openRouterSpendMetric.subscriptionRunCount} subscription`);
+    }
+    return `MTD usage · ${parts.join(" · ")}`;
+  }, [openRouterSpendMetric]);
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -184,6 +361,9 @@ export function Dashboard() {
   }
 
   const hasNoAgents = agents !== undefined && agents.length === 0;
+  const metricGridClassName = openRouterSpendMetric
+    ? "grid grid-cols-2 gap-1 sm:gap-2 md:grid-cols-3 xl:grid-cols-6 2xl:grid-cols-7"
+    : "grid grid-cols-2 gap-1 sm:gap-2 md:grid-cols-3 xl:grid-cols-6";
 
   return (
     <div className="space-y-6">
@@ -229,7 +409,7 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+          <div className={metricGridClassName}>
             <MetricCard
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
@@ -269,6 +449,20 @@ export function Dashboard() {
               }
             />
             <MetricCard
+              icon={TrendingUp}
+              value={formatCents(data.costs.workValue.estimatedDevValueCents)}
+              label="Estimated Dev Value"
+              to="/costs"
+              description={
+                <span>
+                  {formatDevHours(data.costs.workValue.estimatedDevHours)} est. dev time{", "}
+                  {formatTokens(data.costs.workValue.totalTokens)} tokens{", "}
+                  {formatCents(data.costs.workValue.estimatedSavingsCents)} saved{", "}
+                  {formatRoiMultiple(data.costs.workValue.roiMultiple)}
+                </span>
+              }
+            />
+            <MetricCard
               icon={ShieldCheck}
               value={data.pendingApprovals + data.budgets.pendingApprovals}
               label="Pending Approvals"
@@ -281,16 +475,41 @@ export function Dashboard() {
                 </span>
               }
             />
+            <MetricCard
+              icon={Gauge}
+              value={codexUsageMetric ? formatTokens(codexUsageMetric.usedTokens) : "—"}
+              label="Codex Tokens (MTD)"
+              to="/costs"
+              description={<span>{codexUsageDescription}</span>}
+            />
+            {openRouterSpendMetric ? (
+              <MetricCard
+                icon={DollarSign}
+                value={formatCents(openRouterSpendMetric.spendCents)}
+                label="OpenRouter Spend (MTD)"
+                to="/costs"
+                description={<span>{openRouterSpendDescription}</span>}
+              />
+            ) : null}
           </div>
+
+          {shouldShowCodexLimitsCard ? (
+            <DashboardCodexLimitsCard
+              windows={codexQuotaWindows}
+              source={codexQuotaSource}
+              error={codexQuotaErrorMessage}
+              loading={quotaLoading && codexQuotaWindows.length === 0}
+            />
+          ) : null}
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
               <RunActivityChart runs={runs ?? []} />
             </ChartCard>
-            <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+            <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
               <PriorityChart issues={issues ?? []} />
             </ChartCard>
-            <ChartCard title="Issues by Status" subtitle="Last 14 days">
+            <ChartCard title="Tasks by Status" subtitle="Last 14 days">
               <IssueStatusChart issues={issues ?? []} />
             </ChartCard>
             <ChartCard title="Success Rate" subtitle="Last 14 days">

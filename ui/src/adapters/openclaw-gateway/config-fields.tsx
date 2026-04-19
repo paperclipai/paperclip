@@ -167,7 +167,7 @@ export function OpenClawGatewayConfigFields({
               className={inputClass}
             >
               <option value="fixed">Fixed</option>
-              <option value="issue">Per issue</option>
+              <option value="issue">Per task</option>
               <option value="run">Per run</option>
             </select>
           </Field>

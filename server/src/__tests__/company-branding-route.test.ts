@@ -49,6 +49,18 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
 }));
 
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    budgetService: () => mockBudgetService,
+    companyPortabilityService: () => mockCompanyPortabilityService,
+    companyService: () => mockCompanyService,
+    feedbackService: () => mockFeedbackService,
+    logActivity: mockLogActivity,
+  }));
+}
+
 function createCompany() {
   const now = new Date("2026-03-19T02:00:00.000Z");
   return {
@@ -70,6 +82,8 @@ function createCompany() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
+  vi.resetModules();
+  registerModuleMocks();
   const [{ companyRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/companies.js"),
     import("../middleware/index.js"),

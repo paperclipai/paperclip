@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
@@ -19,14 +19,18 @@ import { cn, agentUrl } from "../lib/utils";
 import { roleLabels } from "../components/agent-config-primitives";
 import { AgentConfigForm, type CreateConfigValues } from "../components/AgentConfigForm";
 import { defaultCreateValues } from "../components/agent-config-defaults";
-import { getUIAdapter, listUIAdapters } from "../adapters";
-import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
-import { isValidAdapterType } from "../adapters/metadata";
+import { getUIAdapter } from "../adapters";
+import { useAdaptersSync } from "../adapters/use-disabled-adapters";
+import {
+  listLocalAgentAdapterOptions,
+  resolveDefaultLocalAgentAdapterType,
+} from "../adapters/metadata";
 import { ReportsToPicker } from "../components/ReportsToPicker";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
+  DEFAULT_CODEX_LOCAL_MODEL_REASONING_EFFORT,
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -38,6 +42,7 @@ function createValuesForAdapterType(
   const nextValues: CreateConfigValues = { ...defaults, adapterType };
   if (adapterType === "codex_local") {
     nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
+    nextValues.thinkingEffort = DEFAULT_CODEX_LOCAL_MODEL_REASONING_EFFORT;
     nextValues.dangerouslyBypassSandbox =
       DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
   } else if (adapterType === "gemini_local") {
@@ -66,6 +71,15 @@ export function NewAgent() {
   const [selectedSkillKeys, setSelectedSkillKeys] = useState<string[]>([]);
   const [roleOpen, setRoleOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const { adapters: registeredAdapters } = useAdaptersSync();
+  const localAdapterOptions = useMemo(
+    () => listLocalAgentAdapterOptions(registeredAdapters),
+    [registeredAdapters],
+  );
+  const localAdapterTypes = useMemo(
+    () => new Set(localAdapterOptions.map((option) => option.value)),
+    [localAdapterOptions],
+  );
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -110,14 +124,19 @@ export function NewAgent() {
   }, [isFirstAgent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    if (localAdapterOptions.length === 0) return;
     const requested = presetAdapterType;
-    if (!requested) return;
-    if (!isValidAdapterType(requested)) return;
+    const nextAdapterType = requested && localAdapterTypes.has(requested)
+      ? requested
+      : localAdapterTypes.has(configValues.adapterType)
+        ? null
+        : resolveDefaultLocalAgentAdapterType(localAdapterOptions);
+    if (!nextAdapterType) return;
     setConfigValues((prev) => {
-      if (prev.adapterType === requested) return prev;
-      return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
+      if (prev.adapterType === nextAdapterType) return prev;
+      return createValuesForAdapterType(nextAdapterType as CreateConfigValues["adapterType"]);
     });
-  }, [presetAdapterType]);
+  }, [configValues.adapterType, localAdapterOptions, localAdapterTypes, presetAdapterType]);
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>

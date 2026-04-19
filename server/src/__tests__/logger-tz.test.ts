@@ -51,6 +51,7 @@ vi.mock("../home-paths.js", () => ({
 describe("logger translateTime respects TZ environment variable", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.unstubAllEnvs();
     mockTransport.mockClear();
     mockPino.mockClear();
   });
@@ -65,6 +66,21 @@ describe("logger translateTime respects TZ environment variable", () => {
     for (const target of targets) {
       expect(target.options.translateTime).toBe("SYS:HH:MM:ss");
     }
+  });
+
+  it("routes Vitest file logs away from the shared instance log path", async () => {
+    vi.stubEnv("VITEST", "1");
+    vi.stubEnv("VITEST_WORKER_ID", "7");
+
+    await import("../middleware/logger.js");
+
+    expect(mockTransport).toHaveBeenCalledOnce();
+    const { targets } = mockTransport.mock.calls[0][0] as {
+      targets: Array<{ options: Record<string, unknown> }>;
+    };
+    const fileTarget = targets[1];
+    expect(fileTarget?.options.destination).not.toBe("/tmp/paperclip-test-logs/server.log");
+    expect(String(fileTarget?.options.destination)).toContain("paperclip-vitest-logs");
   });
 
   it("SYS: prefix produces timezone-sensitive output: UTC epoch formats differently under UTC vs UTC+8", () => {

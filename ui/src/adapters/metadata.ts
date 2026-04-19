@@ -9,6 +9,7 @@ import type { UIAdapterModule } from "./types";
 import { listUIAdapters } from "./registry";
 import { isAdapterTypeHidden } from "./disabled-store";
 import { getAdapterLabel, getAdapterDisplay } from "./adapter-display-registry";
+import type { AdapterInfo } from "../api/adapters";
 
 export interface AdapterOptionMetadata {
   value: string;
@@ -16,6 +17,13 @@ export interface AdapterOptionMetadata {
   comingSoon: boolean;
   hidden: boolean;
 }
+
+export interface LocalAgentAdapterOptionMetadata extends AdapterOptionMetadata {
+  source: "builtin" | "external";
+  supportsLocalAgentJwt: true;
+}
+
+const DEFAULT_LOCAL_AGENT_ADAPTER_PRIORITY = ["claude_local", "codex_local"] as const;
 
 export function listKnownAdapterTypes(): string[] {
   return listUIAdapters().map((adapter) => adapter.type);
@@ -58,6 +66,50 @@ export function listAdapterOptions(
     comingSoon: !!getAdapterDisplay(adapter.type).comingSoon,
     hidden: isAdapterTypeHidden(adapter.type),
   }));
+}
+
+export function isLocalAgentAdapterInfo(
+  adapter: Pick<AdapterInfo, "type" | "disabled" | "supportsLocalAgentJwt">,
+): boolean {
+  if (adapter.disabled) return false;
+  if (!adapter.supportsLocalAgentJwt) return false;
+  if (getAdapterDisplay(adapter.type).comingSoon) return false;
+  return true;
+}
+
+export function listLocalAgentAdapterOptions(
+  adapters: AdapterInfo[] | undefined,
+  labelFor?: (type: string) => string,
+): LocalAgentAdapterOptionMetadata[] {
+  const getLabel = labelFor ?? getAdapterLabel;
+  return (adapters ?? [])
+    .filter(isLocalAgentAdapterInfo)
+    .map((adapter) => ({
+      value: adapter.type,
+      label: getLabel(adapter.type),
+      comingSoon: false,
+      hidden: false,
+      source: adapter.source,
+      supportsLocalAgentJwt: true as const,
+    }));
+}
+
+export function resolveDefaultLocalAgentAdapterType(
+  options: Pick<AdapterOptionMetadata, "value" | "comingSoon" | "hidden">[],
+  ceoAdapterType?: string | null,
+): string {
+  const available = options.filter((option) => !option.hidden && !option.comingSoon);
+  const availableTypes = new Set(available.map((option) => option.value));
+
+  if (ceoAdapterType && availableTypes.has(ceoAdapterType)) {
+    return ceoAdapterType;
+  }
+
+  for (const adapterType of DEFAULT_LOCAL_AGENT_ADAPTER_PRIORITY) {
+    if (availableTypes.has(adapterType)) return adapterType;
+  }
+
+  return available[0]?.value ?? DEFAULT_LOCAL_AGENT_ADAPTER_PRIORITY[0];
 }
 
 /**

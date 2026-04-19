@@ -141,3 +141,47 @@ export interface InstanceSchedulerHeartbeatAgent {
   schedulerActive: boolean;
   lastHeartbeatAt: Date | null;
 }
+
+export type AgentServiceHealthStatus = "healthy" | "down";
+
+export type AgentServiceHealthReason =
+  | "scheduler_disabled"
+  | "no_scheduler_active_agents"
+  | "queued_runs_stuck"
+  | "recent_runtime_failures";
+
+export interface AgentServiceHealthFailureExample {
+  runId: string;
+  companyId: string;
+  companyName: string;
+  agentId: string;
+  agentName: string;
+  adapterType: string;
+  status: HeartbeatRunStatus;
+  error: string | null;
+  errorCode: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export interface AgentServiceHealth {
+  status: AgentServiceHealthStatus;
+  reason: AgentServiceHealthReason | null;
+  message: string;
+  checkedAt: string;
+  scheduler: {
+    enabled: boolean;
+    intervalMs: number;
+  };
+  counts: {
+    activeCompanyCount: number;
+    eligibleAgentCount: number;
+    schedulerActiveAgentCount: number;
+    liveRunCount: number;
+    stuckQueuedRunCount: number;
+    recentHealthyRunCount: number;
+    recentRuntimeFailureAgentCount: number;
+  };
+  latestHeartbeatAt: string | null;
+  failureExamples: AgentServiceHealthFailureExample[];
+}

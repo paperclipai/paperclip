@@ -65,6 +65,7 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
 ];
+const PAPERCLIP_BUNDLED_REQUIRED_REASON = "Bundled Paperclip skills are always available for local adapters.";
 
 export interface PaperclipSkillEntry {
   key: string;
@@ -381,6 +382,147 @@ export function stringifyPaperclipWakePayload(value: unknown): string | null {
   return JSON.stringify(normalized);
 }
 
+type PaperclipProjectContextSource = {
+  sourceId: string | null;
+  itemId: string | null;
+  chunkId: string | null;
+  sourceTitle: string;
+  itemTitle: string;
+  uri: string | null;
+  excerpt: string;
+};
+
+type PaperclipProjectContextPayload = {
+  projectId: string | null;
+  companyId: string | null;
+  goalMarkdown: string;
+  instructionsMarkdown: string;
+  defaultSkillKeys: string[];
+  sources: PaperclipProjectContextSource[];
+  warnings: string[];
+  generatedAt: string | null;
+  query: string | null;
+};
+
+function normalizePaperclipProjectContextSource(value: unknown): PaperclipProjectContextSource | null {
+  const source = parseObject(value);
+  const excerpt = asString(source.excerpt, "").trim();
+  if (!excerpt) return null;
+  return {
+    sourceId: asString(source.sourceId, "").trim() || null,
+    itemId: asString(source.itemId, "").trim() || null,
+    chunkId: asString(source.chunkId, "").trim() || null,
+    sourceTitle: asString(source.sourceTitle, "Source").trim() || "Source",
+    itemTitle: asString(source.itemTitle, "Item").trim() || "Item",
+    uri: asString(source.uri, "").trim() || null,
+    excerpt,
+  };
+}
+
+export function normalizePaperclipProjectContextPayload(value: unknown): PaperclipProjectContextPayload | null {
+  const payload = parseObject(value);
+  const goalMarkdown = asString(payload.goalMarkdown, "");
+  const instructionsMarkdown = asString(payload.instructionsMarkdown, "");
+  const defaultSkillKeys = Array.isArray(payload.defaultSkillKeys)
+    ? payload.defaultSkillKeys
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+    : [];
+  const sources = Array.isArray(payload.sources)
+    ? payload.sources
+        .map((entry) => normalizePaperclipProjectContextSource(entry))
+        .filter((entry): entry is PaperclipProjectContextSource => Boolean(entry))
+    : [];
+  const warnings = Array.isArray(payload.warnings)
+    ? payload.warnings
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+    : [];
+
+  if (
+    !goalMarkdown.trim() &&
+    !instructionsMarkdown.trim() &&
+    defaultSkillKeys.length === 0 &&
+    sources.length === 0 &&
+    warnings.length === 0
+  ) {
+    return null;
+  }
+
+  return {
+    projectId: asString(payload.projectId, "").trim() || null,
+    companyId: asString(payload.companyId, "").trim() || null,
+    goalMarkdown,
+    instructionsMarkdown,
+    defaultSkillKeys: Array.from(new Set(defaultSkillKeys)),
+    sources,
+    warnings,
+    generatedAt: asString(payload.generatedAt, "").trim() || null,
+    query: asString(payload.query, "").trim() || null,
+  };
+}
+
+export function stringifyPaperclipProjectContextPayload(value: unknown): string | null {
+  const normalized = normalizePaperclipProjectContextPayload(value);
+  if (!normalized) return null;
+  return JSON.stringify(normalized);
+}
+
+export function renderPaperclipOperatingCadencePrompt(): string {
+  return [
+    "## Paperclip Operating Cadence",
+    "",
+    "Default to slow, steady, token-conscious work unless this run is urgent.",
+    "- Work in focused, incremental steps before broad exploration.",
+    "- Avoid repeated retries, large searches, or token-heavy work unless they are needed for the task.",
+    "- Spend tokens faster only when issue priority is `critical` or the board/user explicitly says it is urgent, ASAP, or immediate.",
+    "- Keep progress and completion comments concise so the board can track status without extra runs.",
+  ].join("\n");
+}
+
+export function renderPaperclipProjectContextPrompt(value: unknown): string {
+  const normalized = normalizePaperclipProjectContextPayload(value);
+  if (!normalized) return "";
+
+  const lines = [
+    "## Paperclip Project Context",
+    "",
+    "Use this project context as durable background for the current Paperclip issue/run.",
+    "Prefer the inline snippets below before broad external searches, and cite source titles when you rely on them.",
+    `- project id: ${normalized.projectId ?? "unknown"}`,
+  ];
+
+  if (normalized.defaultSkillKeys.length > 0) {
+    lines.push(`- inherited project skills available to use when useful: ${normalized.defaultSkillKeys.join(", ")}`);
+  }
+  if (normalized.generatedAt) {
+    lines.push(`- generated at: ${normalized.generatedAt}`);
+  }
+  if (normalized.warnings.length > 0) {
+    lines.push("", "Warnings:");
+    for (const warning of normalized.warnings) lines.push(`- ${warning}`);
+  }
+  if (normalized.goalMarkdown.trim()) {
+    lines.push("", "Project goal:", normalized.goalMarkdown.trim());
+  }
+  if (normalized.instructionsMarkdown.trim()) {
+    lines.push("", "Project instructions:", normalized.instructionsMarkdown.trim());
+  }
+  if (normalized.sources.length > 0) {
+    lines.push("", "Retrieved source snippets:");
+    for (const [index, source] of normalized.sources.entries()) {
+      const ref = [source.sourceTitle, source.itemTitle].filter(Boolean).join(" / ");
+      lines.push(
+        `${index + 1}. ${ref}${source.uri ? ` (${source.uri})` : ""}`,
+        source.excerpt,
+        "",
+      );
+    }
+  }
+
+  return lines.join("\n").trim();
+}
+
 export function renderPaperclipWakePrompt(
   value: unknown,
   options: { resumedSession?: boolean } = {},
@@ -402,6 +544,7 @@ export function renderPaperclipWakePrompt(
         "You are resuming an existing Paperclip session.",
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
+        "If the latest request is for a plan or plan revision, gather the needed context, update the issue plan document, comment with the plan link, leave the issue open, and stop short of implementation unless execution is explicitly requested.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
@@ -416,6 +559,7 @@ export function renderPaperclipWakePrompt(
         "Treat this wake payload as the highest-priority change for the current heartbeat.",
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
         "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action.",
+        "If the latest request is for a plan or plan revision, gather the needed context, update the issue plan document, comment with the plan link, leave the issue open, and stop short of implementation unless execution is explicitly requested.",
         "Use this inline wake data first before refetching the issue thread.",
         "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
@@ -694,6 +838,62 @@ export async function resolvePaperclipSkillsDir(
   return null;
 }
 
+function extractSkillFrontmatter(markdown: string): string | null {
+  const normalized = markdown.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return null;
+  const closing = normalized.indexOf("\n---\n", 4);
+  if (closing < 0) return null;
+  return normalized.slice(4, closing);
+}
+
+function bundledSkillRequiredByDefault(markdown: string): boolean {
+  const frontmatter = extractSkillFrontmatter(markdown);
+  if (!frontmatter) return true;
+
+  let inMetadata = false;
+  let metadataIndent = -1;
+  let inPaperclip = false;
+  let paperclipIndent = -1;
+
+  for (const rawLine of frontmatter.split("\n")) {
+    const trimmed = rawLine.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const indent = rawLine.match(/^ */)?.[0].length ?? 0;
+
+    if (inPaperclip && indent <= paperclipIndent) {
+      inPaperclip = false;
+    }
+    if (inMetadata && indent <= metadataIndent) {
+      inMetadata = false;
+      inPaperclip = false;
+    }
+
+    if (indent === 0 && /^metadata:\s*$/.test(trimmed)) {
+      inMetadata = true;
+      metadataIndent = indent;
+      continue;
+    }
+
+    if (inMetadata && indent > metadataIndent && /^paperclip:\s*$/.test(trimmed)) {
+      inPaperclip = true;
+      paperclipIndent = indent;
+      continue;
+    }
+
+    if (inPaperclip && indent > paperclipIndent) {
+      const match = trimmed.match(/^requiredByDefault:\s*(true|false)\s*$/i);
+      if (match) return match[1]!.toLowerCase() !== "false";
+    }
+  }
+
+  return true;
+}
+
+async function readBundledSkillRequiredByDefault(skillDir: string): Promise<boolean> {
+  const markdown = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8").catch(() => null);
+  return markdown ? bundledSkillRequiredByDefault(markdown) : true;
+}
+
 export async function listPaperclipSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
@@ -703,15 +903,20 @@ export async function listPaperclipSkillEntries(
 
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
-    return entries
+    const skillEntries = await Promise.all(entries
       .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
-        key: `paperclipai/paperclip/${entry.name}`,
-        runtimeName: entry.name,
-        source: path.join(root, entry.name),
-        required: true,
-        requiredReason: "Bundled Paperclip skills are always available for local adapters.",
+      .map(async (entry) => {
+        const source = path.join(root, entry.name);
+        const required = await readBundledSkillRequiredByDefault(source);
+        return {
+          key: `paperclipai/paperclip/${entry.name}`,
+          runtimeName: entry.name,
+          source,
+          required,
+          requiredReason: required ? PAPERCLIP_BUNDLED_REQUIRED_REASON : null,
+        };
       }));
+    return skillEntries.sort((left, right) => left.key.localeCompare(right.key));
   } catch {
     return [];
   }

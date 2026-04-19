@@ -1,5 +1,7 @@
 Use this exact checklist.
 
+This checklist is the standard local/manual smoke path. Do not use the live Mac mini `localhost:3100` surface for Devin's remaining OpenClaw validation drills. For that work, boot an isolated tailnet instance with its own `PAPERCLIP_HOME`, `PAPERCLIP_INSTANCE_ID`, and port, then follow [packages/adapters/openclaw-gateway/doc/ONBOARDING_AND_TEST_PLAN.md](/Users/robertdawson/AI/Paperclip-live/packages/adapters/openclaw-gateway/doc/ONBOARDING_AND_TEST_PLAN.md).
+
 1. Start Paperclip in auth mode.
 ```bash
 cd <paperclip-repo-root>

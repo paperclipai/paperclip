@@ -6,9 +6,11 @@ import type {
   FeedbackVote,
   Issue,
   IssueAttachment,
+  IssueChecklistItem,
   IssueComment,
   IssueDocument,
   IssueLabel,
+  IssueLink,
   IssueWorkProduct,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
@@ -81,6 +83,8 @@ export const issuesApi = {
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
+  reorder: (id: string, data: { status: string; beforeIssueId?: string | null }) =>
+    api.post<Issue>(`/issues/${id}/reorder`, data),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {
@@ -88,6 +92,19 @@ export const issuesApi = {
       expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
     }),
   release: (id: string) => api.post<Issue>(`/issues/${id}/release`, {}),
+  listChecklistItems: (id: string) =>
+    api.get<IssueChecklistItem[]>(`/issues/${id}/checklist-items`),
+  createChecklistItem: (id: string, data: { title: string; position?: number }) =>
+    api.post<IssueChecklistItem>(`/issues/${id}/checklist-items`, data),
+  updateChecklistItem: (id: string, data: { title?: string; completed?: boolean; position?: number }) =>
+    api.patch<IssueChecklistItem>(`/issue-checklist-items/${id}`, data),
+  deleteChecklistItem: (id: string) => api.delete<IssueChecklistItem>(`/issue-checklist-items/${id}`),
+  listLinks: (id: string) => api.get<IssueLink[]>(`/issues/${id}/links`),
+  createLink: (id: string, data: { url: string; title?: string | null; position?: number }) =>
+    api.post<IssueLink>(`/issues/${id}/links`, data),
+  updateLink: (id: string, data: { url?: string; title?: string | null; position?: number }) =>
+    api.patch<IssueLink>(`/issue-links/${id}`, data),
+  deleteLink: (id: string) => api.delete<IssueLink>(`/issue-links/${id}`),
   listComments: (
     id: string,
     filters?: {
@@ -156,6 +173,8 @@ export const issuesApi = {
     }
     return api.postForm<IssueAttachment>(`/companies/${companyId}/issues/${issueId}/attachments`, form);
   },
+  updateAttachment: (id: string, data: { isCover?: boolean }) =>
+    api.patch<IssueAttachment>(`/attachments/${id}`, data),
   deleteAttachment: (id: string) => api.delete<{ ok: true }>(`/attachments/${id}`),
   listApprovals: (id: string) => api.get<Approval[]>(`/issues/${id}/approvals`),
   linkApproval: (id: string, approvalId: string) =>

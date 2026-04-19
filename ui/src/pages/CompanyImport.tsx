@@ -33,7 +33,13 @@ import {
 import { Field, adapterLabels } from "../components/agent-config-primitives";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "../components/agent-config-defaults";
-import { getUIAdapter, listUIAdapters } from "../adapters";
+import { getUIAdapter } from "../adapters";
+import { useAdaptersSync } from "../adapters/use-disabled-adapters";
+import {
+  listLocalAgentAdapterOptions,
+  resolveDefaultLocalAgentAdapterType,
+  type AdapterOptionMetadata,
+} from "../adapters/metadata";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import {
   type FileTreeNode,
@@ -511,13 +517,6 @@ function ConflictResolutionList({
   );
 }
 
-// ── Adapter type options for import ───────────────────────────────────
-
-const IMPORT_ADAPTER_OPTIONS: { value: string; label: string }[] = listUIAdapters().map((adapter) => ({
-  value: adapter.type,
-  label: adapterLabels[adapter.type] ?? getAdapterLabel(adapter.type),
-}));
-
 // ── Adapter picker for imported agents ───────────────────────────────
 
 interface AdapterPickerItem {
@@ -531,6 +530,8 @@ function AdapterPickerList({
   adapterOverrides,
   expandedSlugs,
   configValues,
+  adapterOptions,
+  defaultAdapterType,
   onChangeAdapter,
   onToggleExpand,
   onChangeConfig,
@@ -539,11 +540,21 @@ function AdapterPickerList({
   adapterOverrides: Record<string, string>;
   expandedSlugs: Set<string>;
   configValues: Record<string, CreateConfigValues>;
+  adapterOptions: AdapterOptionMetadata[];
+  defaultAdapterType: string;
   onChangeAdapter: (slug: string, adapterType: string) => void;
   onToggleExpand: (slug: string) => void;
   onChangeConfig: (slug: string, patch: Partial<CreateConfigValues>) => void;
 }) {
   if (agents.length === 0) return null;
+  const selectableAdapterOptions = adapterOptions.length > 0
+    ? adapterOptions
+    : [{
+        value: defaultAdapterType,
+        label: adapterLabels[defaultAdapterType] ?? getAdapterLabel(defaultAdapterType),
+        comingSoon: false,
+        hidden: false,
+      }];
 
   return (
     <div className="mx-5 mt-3">
@@ -556,7 +567,7 @@ function AdapterPickerList({
         </div>
         <div className="divide-y divide-border">
           {agents.map((agent) => {
-            const selectedType = adapterOverrides[agent.slug] ?? agent.adapterType;
+            const selectedType = adapterOverrides[agent.slug] ?? defaultAdapterType;
             const isExpanded = expandedSlugs.has(agent.slug);
             const vals = configValues[agent.slug] ?? { ...defaultCreateValues, adapterType: selectedType };
 
@@ -578,7 +589,7 @@ function AdapterPickerList({
                     value={selectedType}
                     onChange={(e) => onChangeAdapter(agent.slug, e.target.value)}
                   >
-                    {IMPORT_ADAPTER_OPTIONS.map((opt) => (
+                    {selectableAdapterOptions.map((opt) => (
                       <option key={opt.value} value={opt.value}>
                         {opt.label}
                       </option>
@@ -690,6 +701,15 @@ export function CompanyImport() {
   const [adapterOverrides, setAdapterOverrides] = useState<Record<string, string>>({});
   const [adapterExpandedSlugs, setAdapterExpandedSlugs] = useState<Set<string>>(new Set());
   const [adapterConfigValues, setAdapterConfigValues] = useState<Record<string, CreateConfigValues>>({});
+  const { adapters: registeredAdapters } = useAdaptersSync();
+  const importAdapterOptions = useMemo(
+    () =>
+      listLocalAgentAdapterOptions(
+        registeredAdapters,
+        (type) => adapterLabels[type] ?? getAdapterLabel(type),
+      ),
+    [registeredAdapters],
+  );
 
   // Fetch current company agents to find CEO adapter type
   const { data: companyAgents } = useQuery({
@@ -699,9 +719,22 @@ export function CompanyImport() {
   });
   const ceoAdapterType = useMemo(() => {
     if (!companyAgents) return "claude_local";
-    const ceo = companyAgents.find((a) => a.role === "ceo");
+    const ceo = companyAgents.find(
+      (a) =>
+        a.role === "ceo" &&
+        a.status !== "terminated" &&
+        a.status !== "pending_approval",
+    );
     return ceo?.adapterType ?? "claude_local";
   }, [companyAgents]);
+  const defaultImportAdapterType = useMemo(
+    () =>
+      resolveDefaultLocalAgentAdapterType(
+        importAdapterOptions,
+        targetMode === "existing" ? ceoAdapterType : null,
+      ),
+    [ceoAdapterType, importAdapterOptions, targetMode],
+  );
 
   const localZipHelpText =
     "Upload a .zip exported directly from Paperclip. Re-zipped archives created by Finder, Explorer, or other zip tools may not import correctly.";
@@ -761,12 +794,7 @@ export function CompanyImport() {
       setSkippedSlugs(new Set());
       setConfirmedSlugs(new Set());
 
-      // Initialize adapter overrides — default all agents to the CEO's adapter type
-      const defaultAdapters: Record<string, string> = {};
-      for (const agent of result.manifest.agents) {
-        defaultAdapters[agent.slug] = ceoAdapterType;
-      }
-      setAdapterOverrides(defaultAdapters);
+      setAdapterOverrides({});
       setAdapterExpandedSlugs(new Set());
       setAdapterConfigValues({});
 
@@ -1043,7 +1071,7 @@ export function CompanyImport() {
   function handleAdapterConfigChange(slug: string, patch: Partial<CreateConfigValues>) {
     setAdapterConfigValues((prev) => ({
       ...prev,
-      [slug]: { ...(prev[slug] ?? { ...defaultCreateValues, adapterType: adapterOverrides[slug] ?? "claude_local" }), ...patch },
+      [slug]: { ...(prev[slug] ?? { ...defaultCreateValues, adapterType: adapterOverrides[slug] ?? defaultImportAdapterType }), ...patch },
     }));
   }
 
@@ -1062,7 +1090,7 @@ export function CompanyImport() {
     if (adapterAgents.length === 0) return undefined;
     const overrides: Record<string, CompanyPortabilityAdapterOverride> = {};
     for (const agent of adapterAgents) {
-      const selectedType = adapterOverrides[agent.slug] ?? agent.adapterType;
+      const selectedType = adapterOverrides[agent.slug] ?? defaultImportAdapterType;
       const configVals = adapterConfigValues[agent.slug];
       const override: CompanyPortabilityAdapterOverride = { adapterType: selectedType };
       if (configVals) {
@@ -1281,6 +1309,8 @@ export function CompanyImport() {
             adapterOverrides={adapterOverrides}
             expandedSlugs={adapterExpandedSlugs}
             configValues={adapterConfigValues}
+            adapterOptions={importAdapterOptions}
+            defaultAdapterType={defaultImportAdapterType}
             onChangeAdapter={handleAdapterChange}
             onToggleExpand={handleAdapterToggleExpand}
             onChangeConfig={handleAdapterConfigChange}

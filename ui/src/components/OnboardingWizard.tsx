@@ -23,9 +23,12 @@ import {
   extractProviderIdWithFallback
 } from "../lib/model-utils";
 import { getUIAdapter } from "../adapters";
-import { listUIAdapters } from "../adapters";
-import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
+import { useAdaptersSync } from "../adapters/use-disabled-adapters";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
+import {
+  listLocalAgentAdapterOptions,
+  resolveDefaultLocalAgentAdapterType
+} from "../adapters/metadata";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import {
@@ -36,7 +39,8 @@ import {
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL
+  DEFAULT_CODEX_LOCAL_MODEL,
+  DEFAULT_CODEX_LOCAL_MODEL_REASONING_EFFORT
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -74,8 +78,9 @@ export function OnboardingWizard() {
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
   const [routeDismissed, setRouteDismissed] = useState(false);
 
-  // Sync disabled adapter types from server so adapter grid filters them out
-  const disabledTypes = useDisabledAdaptersSync();
+  // Sync adapter metadata from the server so the adapter grid reflects the
+  // active registry instead of a stale client-side list.
+  const { adapters: registeredAdapters } = useAdaptersSync();
 
   const routeOnboardingOptions =
     companyPrefix && companiesLoading
@@ -201,19 +206,23 @@ export function OnboardingWizard() {
   const NONLOCAL_TYPES = new Set(["process", "http", "openclaw_gateway"]);
   const isLocalAdapter = !NONLOCAL_TYPES.has(adapterType);
 
-  // Build adapter grids dynamically from the UI registry + display metadata.
-  // External/plugin adapters automatically appear with generic defaults.
+  // Build adapter grids dynamically from server registry metadata.
+  // External/plugin adapters appear when this instance has loaded them.
   const { recommendedAdapters, moreAdapters } = useMemo(() => {
-    const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
-    const all = listUIAdapters()
-      .filter((a) => !SYSTEM_ADAPTER_TYPES.has(a.type) && !disabledTypes.has(a.type))
-      .map((a) => ({ ...getAdapterDisplay(a.type), type: a.type }));
+    const all = listLocalAgentAdapterOptions(registeredAdapters).map((adapter) => ({
+      ...getAdapterDisplay(adapter.value),
+      type: adapter.value,
+    }));
 
     return {
       recommendedAdapters: all.filter((a) => a.recommended),
       moreAdapters: all.filter((a) => !a.recommended),
     };
-  }, [disabledTypes]);
+  }, [registeredAdapters]);
+  const localAdapterTypes = useMemo(
+    () => new Set([...recommendedAdapters, ...moreAdapters].map((adapter) => adapter.type)),
+    [moreAdapters, recommendedAdapters],
+  );
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
     codex_local: "codex",
@@ -231,6 +240,28 @@ export function OnboardingWizard() {
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
   }, [step, adapterType, model, command, args, url]);
+
+  useEffect(() => {
+    if (step !== 2 || localAdapterTypes.size === 0 || localAdapterTypes.has(adapterType)) return;
+    const nextAdapterType = resolveDefaultLocalAgentAdapterType(
+      [...recommendedAdapters, ...moreAdapters].map((adapter) => ({
+        value: adapter.type,
+        label: adapter.label,
+        comingSoon: Boolean(adapter.comingSoon),
+        hidden: false,
+      })),
+    );
+    setAdapterType(nextAdapterType);
+    if (nextAdapterType === "codex_local") {
+      setModel(DEFAULT_CODEX_LOCAL_MODEL);
+    } else if (nextAdapterType === "gemini_local") {
+      setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+    } else if (nextAdapterType === "cursor") {
+      setModel(DEFAULT_CURSOR_LOCAL_MODEL);
+    } else {
+      setModel("");
+    }
+  }, [adapterType, localAdapterTypes, moreAdapters, recommendedAdapters, step]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =
@@ -323,6 +354,10 @@ export function OnboardingWizard() {
           : adapterType === "cursor"
           ? model || DEFAULT_CURSOR_LOCAL_MODEL
           : model,
+      thinkingEffort:
+        adapterType === "codex_local"
+          ? DEFAULT_CODEX_LOCAL_MODEL_REASONING_EFFORT
+          : defaultCreateValues.thinkingEffort,
       command,
       args,
       url,
@@ -1137,7 +1172,7 @@ export function OnboardingWizard() {
                       <h3 className="font-medium">Ready to launch</h3>
                       <p className="text-xs text-muted-foreground">
                         Everything is set up. Launching now will create the
-                        starter task, wake the agent, and open the issue.
+                        starter task, wake the agent, and open the task.
                       </p>
                     </div>
                   </div>
@@ -1252,7 +1287,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Create & Open Issue"}
+                      {loading ? "Creating..." : "Create & Open Task"}
                     </Button>
                   )}
                 </div>

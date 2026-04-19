@@ -18,6 +18,7 @@ import { issueService } from "./issues.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
+import { projectContextService } from "./project-context.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { randomUUID } from "node:crypto";
 import { activityService } from "./activity.js";
@@ -452,6 +453,7 @@ export function buildHostServices(
   const agents = agentService(db);
   const heartbeat = heartbeatService(db);
   const projects = projectService(db);
+  const projectContexts = projectContextService(db);
   const issues = issueService(db);
   const documents = documentService(db);
   const goals = goalService(db);
@@ -768,6 +770,77 @@ export function buildHostServices(
           createdAt: (row?.createdAt ?? project.createdAt).toISOString(),
           updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
         };
+      },
+    },
+
+    contextSources: {
+      async create(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const source = await projectContexts.createSource(companyId, params.projectId, {
+          sourceType: params.sourceType as any,
+          title: params.title,
+          uri: params.uri,
+          provider: params.provider,
+          externalId: params.externalId,
+          bodyText: params.bodyText,
+          metadata: {
+            ...(params.metadata ?? {}),
+            pluginKey,
+          },
+        });
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: pluginId,
+          action: "project.context_source_created",
+          entityType: "context_source",
+          entityId: source.id,
+          details: { projectId: source.projectId, sourceType: source.sourceType, pluginKey },
+        });
+        return source;
+      },
+      async upsertItem(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const result = await projectContexts.upsertSourceItem(companyId, params.sourceId, params as any);
+        const item = result.item;
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: pluginId,
+          action: "project.context_source_item_upserted",
+          entityType: "context_source_item",
+          entityId: item.id,
+          details: { sourceId: params.sourceId, projectId: item.projectId, pluginKey },
+        });
+        return item;
+      },
+      async setStatus(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const source = await projectContexts.setSourceStatus(
+          companyId,
+          params.sourceId,
+          params.status,
+          params.statusMessage,
+        );
+        if (!source) throw new Error(`Context source not found: ${params.sourceId}`);
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: pluginId,
+          action: "project.context_source_status_updated",
+          entityType: "context_source",
+          entityId: source.id,
+          details: { projectId: source.projectId, status: source.status, pluginKey },
+        });
+        return source;
+      },
+      async search(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projectContexts.search(companyId, params.projectId, params.query, params.limit);
       },
     },
 

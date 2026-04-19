@@ -303,7 +303,7 @@ function createTimelineEventMessage(args: {
       ? "System"
       : (formatAssigneeUserLabel(event.actorId, currentUserId) ?? "Board");
 
-  const lines: string[] = [`${actorName} updated this issue`];
+  const lines: string[] = [`${actorName} updated this task`];
   if (event.statusChange) {
     lines.push(
       `Status: ${event.statusChange.from ?? "none"} -> ${event.statusChange.to ?? "none"}`,

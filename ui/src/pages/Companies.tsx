@@ -241,7 +241,7 @@ export function Companies() {
                 <div className="flex items-center gap-1.5">
                   <CircleDot className="h-3.5 w-3.5" />
                   <span>
-                    {issueCount} {issueCount === 1 ? "issue" : "issues"}
+                    {issueCount} {issueCount === 1 ? "task" : "tasks"}
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 tabular-nums">

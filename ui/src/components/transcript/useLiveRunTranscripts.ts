@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { LiveEvent } from "@paperclipai/shared";
+import { HEARTBEAT_RUN_STATUSES, type HeartbeatRunStatus, type LiveEvent } from "@paperclipai/shared";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { heartbeatsApi } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
@@ -8,6 +8,8 @@ import { queryKeys } from "../../lib/queryKeys";
 
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
+const ACTIVE_HEARTBEAT_RUN_STATUSES = new Set<HeartbeatRunStatus>(["queued", "running"]);
+const KNOWN_HEARTBEAT_RUN_STATUSES = new Set<HeartbeatRunStatus>(HEARTBEAT_RUN_STATUSES);
 
 export interface RunTranscriptSource {
   id: string;
@@ -26,8 +28,16 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function isKnownHeartbeatRunStatus(status: string): status is HeartbeatRunStatus {
+  return KNOWN_HEARTBEAT_RUN_STATUSES.has(status as HeartbeatRunStatus);
+}
+
+function isActiveRunStatus(status: string): status is HeartbeatRunStatus {
+  return ACTIVE_HEARTBEAT_RUN_STATUSES.has(status as HeartbeatRunStatus);
+}
+
 function isTerminalStatus(status: string): boolean {
-  return status === "failed" || status === "timed_out" || status === "cancelled" || status === "succeeded";
+  return isKnownHeartbeatRunStatus(status) && !isActiveRunStatus(status);
 }
 
 function parsePersistedLogContent(
@@ -85,6 +95,7 @@ export function useLiveRunTranscripts({
   const seenChunkKeysRef = useRef(new Set<string>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
+  const exhaustedPersistedRunIdsRef = useRef(new Set<string>());
   // Tick counter to force transcript recomputation when dynamic parser loads
   const [parserTick, setParserTick] = useState(0);
   useEffect(() => {
@@ -160,6 +171,11 @@ export function useLiveRunTranscripts({
         logOffsetByRunRef.current.delete(runId);
       }
     }
+    for (const runId of exhaustedPersistedRunIdsRef.current.keys()) {
+      if (!knownRunIds.has(runId)) {
+        exhaustedPersistedRunIdsRef.current.delete(runId);
+      }
+    }
   }, [normalizedRuns]);
 
   useEffect(() => {
@@ -168,19 +184,31 @@ export function useLiveRunTranscripts({
     let cancelled = false;
 
     const readRunLog = async (run: RunTranscriptSource) => {
+      if (!isActiveRunStatus(run.status) && exhaustedPersistedRunIdsRef.current.has(run.id)) {
+        return;
+      }
       const offset = logOffsetByRunRef.current.get(run.id) ?? 0;
       try {
         const result = await heartbeatsApi.log(run.id, offset, LOG_READ_LIMIT_BYTES);
         if (cancelled) return;
 
+        if (result.pending) {
+          exhaustedPersistedRunIdsRef.current.delete(run.id);
+          return;
+        }
+
         appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
 
         if (result.nextOffset !== undefined) {
           logOffsetByRunRef.current.set(run.id, result.nextOffset);
+          exhaustedPersistedRunIdsRef.current.delete(run.id);
           return;
         }
         if (result.content.length > 0) {
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
+        }
+        if (!isActiveRunStatus(run.status)) {
+          exhaustedPersistedRunIdsRef.current.add(run.id);
         }
       } catch {
         // Ignore log read errors while output is initializing.

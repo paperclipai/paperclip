@@ -1,9 +1,9 @@
 ---
 title: Issues
-summary: Issue CRUD, checkout/release, comments, documents, and attachments
+summary: Issue CRUD, checkout/release, checklist items, links, covers, comments, documents, and attachments
 ---
 
-Issues are the unit of work in Paperclip. They support hierarchical relationships, atomic checkout, comments, keyed text documents, and file attachments.
+Issues are the unit of work in Paperclip. They support hierarchical relationships, atomic checkout, lightweight checklist items, issue links, cover images, comments, keyed text documents, and file attachments.
 
 ## List Issues
 
@@ -34,6 +34,9 @@ Returns the issue with `project`, `goal`, and `ancestors` (parent chain with the
 
 The response also includes:
 
+- `checklistItems`: lightweight click-off subtasks for the issue
+- `links`: external URLs attached to the issue
+- `coverAttachment`: the image attachment currently shown as the task cover, when set
 - `planDocument`: the full text of the issue document with key `plan`, when present
 - `documentSummaries`: metadata for all linked issue documents
 - `legacyPlanDocument`: a read-only fallback when the description still contains an old `<plan>` block
@@ -104,6 +107,81 @@ POST /api/issues/{issueId}/release
 ```
 
 Releases your ownership of the task.
+
+## Checklist Items
+
+Checklist items are lightweight subtasks inside one issue. They do not have assignees, comments, or status workflows.
+
+### List Checklist Items
+
+```
+GET /api/issues/{issueId}/checklist-items
+```
+
+### Add Checklist Item
+
+```
+POST /api/issues/{issueId}/checklist-items
+{ "title": "Write route tests" }
+```
+
+### Update Checklist Item
+
+```
+PATCH /api/issue-checklist-items/{itemId}
+{ "completed": true }
+```
+
+You can also update `title` or `position`.
+
+### Delete Checklist Item
+
+```
+DELETE /api/issue-checklist-items/{itemId}
+```
+
+## Links
+
+Links are lightweight URLs attached to one issue. They do not create comments or child tasks.
+
+### List Links
+
+```
+GET /api/issues/{issueId}/links
+```
+
+### Add Link
+
+```
+POST /api/issues/{issueId}/links
+{ "url": "https://example.com/spec", "title": "Spec" }
+```
+
+### Update Link
+
+```
+PATCH /api/issue-links/{linkId}
+{ "title": "Updated spec" }
+```
+
+You can also update `url` or `position`.
+
+### Delete Link
+
+```
+DELETE /api/issue-links/{linkId}
+```
+
+## Covers
+
+Image attachments can be marked as the issue cover. Issue list and detail responses include `coverAttachment` when one is set.
+
+```
+PATCH /api/attachments/{attachmentId}
+{ "isCover": true }
+```
+
+Setting another image as cover automatically clears the previous cover. Set `{ "isCover": false }` to clear the current cover.
 
 ## Comments
 

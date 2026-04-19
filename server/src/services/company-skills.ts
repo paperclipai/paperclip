@@ -85,6 +85,7 @@ type SkillSourceMeta = {
   workspaceId?: string;
   workspaceName?: string;
   workspaceCwd?: string;
+  paperclip?: Record<string, unknown>;
 };
 
 export type LocalSkillInventoryMode = "full" | "project_root";
@@ -1163,6 +1164,13 @@ function getSkillMeta(skill: CompanySkill): SkillSourceMeta {
   return isPlainRecord(skill.metadata) ? skill.metadata as SkillSourceMeta : {};
 }
 
+export function isPaperclipBundledSkillRequiredByDefault(metadata: unknown) {
+  if (!isPlainRecord(metadata)) return false;
+  if (metadata.sourceKind !== "paperclip_bundled") return false;
+  const paperclip = isPlainRecord(metadata.paperclip) ? metadata.paperclip : null;
+  return paperclip?.requiredByDefault !== false;
+}
+
 function resolveSkillReference(
   skills: CompanySkill[],
   reference: string,
@@ -2061,7 +2069,7 @@ export function companySkillService(db: Db) {
 
     const out: PaperclipSkillEntry[] = [];
     for (const skill of skills) {
-      const sourceKind = asString(getSkillMeta(skill).sourceKind);
+      const metadata = getSkillMeta(skill);
       let source = normalizeSkillDirectory(skill);
       if (!source) {
         source = options.materializeMissing === false
@@ -2070,7 +2078,7 @@ export function companySkillService(db: Db) {
       }
       if (!source) continue;
 
-      const required = sourceKind === "paperclip_bundled";
+      const required = isPaperclipBundledSkillRequiredByDefault(metadata);
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),

@@ -121,7 +121,8 @@ If the connection drops, the UI reconnects automatically.
 
 1. Disable timer or set a long interval
 2. Keep wake-on-assignment enabled
-3. Use on-demand wakeups for manual nudges
+3. Use project leads or explicit assignees so new issues actually produce assignment wakes
+4. Use on-demand wakeups for manual nudges
 
 ## 7.3 Safety-first loop
 

@@ -178,6 +178,13 @@ export const updateIssueSchema = createIssueSchema.partial().extend({
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
 
+export const reorderIssueSchema = z.object({
+  status: z.enum(ISSUE_STATUSES),
+  beforeIssueId: z.string().uuid().nullable().optional(),
+});
+
+export type ReorderIssue = z.infer<typeof reorderIssueSchema>;
+
 export const checkoutIssueSchema = z.object({
   agentId: z.string().uuid(),
   expectedStatuses: z.array(z.enum(ISSUE_STATUSES)).nonempty(),
@@ -193,17 +200,83 @@ export const addIssueCommentSchema = z.object({
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
+export const createIssueChecklistItemSchema = z.object({
+  title: z.string().trim().min(1).max(500),
+  position: z.number().int().nonnegative().optional(),
+});
+
+export type CreateIssueChecklistItem = z.infer<typeof createIssueChecklistItemSchema>;
+
+export const updateIssueChecklistItemSchema = z.object({
+  title: z.string().trim().min(1).max(500).optional(),
+  completed: z.boolean().optional(),
+  position: z.number().int().nonnegative().optional(),
+}).refine(
+  (value) => value.title !== undefined || value.completed !== undefined || value.position !== undefined,
+  "At least one checklist item field is required",
+);
+
+export type UpdateIssueChecklistItem = z.infer<typeof updateIssueChecklistItemSchema>;
+
+const issueLinkUrlSchema = z
+  .string()
+  .trim()
+  .url()
+  .max(2048)
+  .refine((value) => {
+    try {
+      return ["http:", "https:"].includes(new URL(value).protocol);
+    } catch {
+      return false;
+    }
+  }, "Link URL must start with http:// or https://");
+
+export const createIssueLinkSchema = z.object({
+  url: issueLinkUrlSchema,
+  title: z.string().trim().min(1).max(240).optional().nullable(),
+  position: z.number().int().nonnegative().optional(),
+});
+
+export type CreateIssueLink = z.infer<typeof createIssueLinkSchema>;
+
+export const updateIssueLinkSchema = z.object({
+  url: issueLinkUrlSchema.optional(),
+  title: z.string().trim().min(1).max(240).optional().nullable(),
+  position: z.number().int().nonnegative().optional(),
+}).refine(
+  (value) => value.url !== undefined || value.title !== undefined || value.position !== undefined,
+  "At least one issue link field is required",
+);
+
+export type UpdateIssueLink = z.infer<typeof updateIssueLinkSchema>;
+
 export const linkIssueApprovalSchema = z.object({
   approvalId: z.string().uuid(),
 });
 
 export type LinkIssueApproval = z.infer<typeof linkIssueApprovalSchema>;
 
+const formBooleanSchema = z.preprocess((value) => {
+  if (value === "true" || value === "1" || value === true) return true;
+  if (value === "false" || value === "0" || value === false) return false;
+  return value;
+}, z.boolean());
+
 export const createIssueAttachmentMetadataSchema = z.object({
   issueCommentId: z.string().uuid().optional().nullable(),
+  isCover: formBooleanSchema.optional(),
 });
 
 export type CreateIssueAttachmentMetadata = z.infer<typeof createIssueAttachmentMetadataSchema>;
+
+export const updateIssueAttachmentSchema = z.object({
+  isCover: z.boolean().optional(),
+}).refine(
+  (value) => value.isCover !== undefined,
+  "At least one attachment field is required",
+);
+
+export type UpdateIssueAttachment = z.infer<typeof updateIssueAttachmentSchema>;
 
 export const ISSUE_DOCUMENT_FORMATS = ["markdown"] as const;
 

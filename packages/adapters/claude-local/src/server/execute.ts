@@ -19,8 +19,11 @@ import {
   ensurePathInEnv,
   resolveCommandForLogs,
   renderTemplate,
+  renderPaperclipOperatingCadencePrompt,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
+  renderPaperclipProjectContextPrompt,
+  stringifyPaperclipProjectContextPayload,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -156,6 +159,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
+  const projectContextJson = stringifyPaperclipProjectContextPayload(context.paperclipProjectContext);
 
   if (wakeTaskId) {
     env.PAPERCLIP_TASK_ID = wakeTaskId;
@@ -177,6 +181,9 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
+  }
+  if (projectContextJson) {
+    env.PAPERCLIP_PROJECT_CONTEXT_JSON = projectContextJson;
   }
   if (effectiveWorkspaceCwd) {
     env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
@@ -408,19 +415,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const projectContextPrompt = renderPaperclipProjectContextPrompt(context.paperclipProjectContext);
+  const operatingCadencePrompt = renderPaperclipOperatingCadencePrompt();
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
+    operatingCadencePrompt,
     wakePrompt,
+    projectContextPrompt,
     sessionHandoffNote,
     renderedPrompt,
   ]);
   const promptMetrics = {
     promptChars: prompt.length,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
+    operatingCadencePromptChars: operatingCadencePrompt.length,
     wakePromptChars: wakePrompt.length,
+    projectContextPromptChars: projectContextPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };

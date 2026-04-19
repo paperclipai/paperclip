@@ -5,10 +5,28 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useLiveRunTranscripts } from "./useLiveRunTranscripts";
 
-const { useQueryMock, logMock } = vi.hoisted(() => ({
-  useQueryMock: vi.fn(() => ({ data: { censorUsernameInLogs: false } })),
-  logMock: vi.fn(async () => ({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 })),
-}));
+const { useQueryMock, logMock } = vi.hoisted(() => {
+  type MockRunLogResult = {
+    runId: string;
+    store: string | null;
+    logRef: string | null;
+    pending: boolean;
+    content: string;
+    nextOffset?: number;
+  };
+
+  return {
+    useQueryMock: vi.fn(() => ({ data: { censorUsernameInLogs: false } })),
+    logMock: vi.fn<(...args: unknown[]) => Promise<MockRunLogResult>>(async () => ({
+      runId: "run-1",
+      store: "memory",
+      logRef: "log-1",
+      pending: false,
+      content: "",
+      nextOffset: 0,
+    })),
+  };
+});
 
 vi.mock("@tanstack/react-query", () => ({
   useQuery: useQueryMock,
@@ -147,7 +165,14 @@ describe("useLiveRunTranscripts", () => {
 
   it("reports initial hydration until the first persisted-log read completes", async () => {
     let latestIsInitialHydrating = false;
-    type RunLogResult = { runId: string; store: string; logRef: string; content: string; nextOffset: number };
+    type RunLogResult = {
+      runId: string;
+      store: string | null;
+      logRef: string | null;
+      pending: boolean;
+      content: string;
+      nextOffset: number;
+    };
     let resolveLog: ((value: RunLogResult | PromiseLike<RunLogResult>) => void) | null = null;
     logMock.mockImplementationOnce(
       () =>
@@ -177,11 +202,89 @@ describe("useLiveRunTranscripts", () => {
     expect(latestIsInitialHydrating).toBe(true);
 
     await act(async () => {
-      resolveLog?.({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 });
+      resolveLog?.({ runId: "run-1", store: "memory", logRef: "log-1", pending: false, content: "", nextOffset: 0 });
       await Promise.resolve();
     });
 
     expect(latestIsInitialHydrating).toBe(false);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("treats pending log initialization as a normal empty state", async () => {
+    let latestHasOutput = true;
+    logMock.mockResolvedValueOnce({
+      runId: "run-1",
+      store: null,
+      logRef: null,
+      pending: true,
+      content: "",
+    });
+
+    function Harness() {
+      const { hasOutputForRun } = useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "codex_local" }],
+      });
+      latestHasOutput = hasOutputForRun("run-1");
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(latestHasOutput).toBe(false);
+    expect(logMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("does not reread exhausted terminal run logs after effect restarts", async () => {
+    logMock.mockResolvedValueOnce({
+      runId: "run-1",
+      store: "memory",
+      logRef: "log-1",
+      pending: false,
+      content: "",
+    });
+
+    function Harness(props: { hasStoredOutput: boolean }) {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local", hasStoredOutput: props.hasStoredOutput }],
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness hasStoredOutput={false} />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.render(<Harness hasStoredOutput />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).toHaveBeenCalledTimes(1);
 
     act(() => {
       root.unmount();

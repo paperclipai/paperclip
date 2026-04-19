@@ -16,7 +16,6 @@ import {
   Cpu,
 } from "lucide-react";
 import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
-import { HermesIcon } from "@/components/HermesIcon";
 
 // ---------------------------------------------------------------------------
 // Type suffix parsing
@@ -73,11 +72,6 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "OpenCode",
     description: "Local multi-provider agent",
     icon: OpenCodeLogoIcon,
-  },
-  hermes_local: {
-    label: "Hermes Agent",
-    description: "Local Hermes CLI agent",
-    icon: HermesIcon,
   },
   pi_local: {
     label: "Pi",

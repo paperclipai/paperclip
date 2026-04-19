@@ -28,6 +28,21 @@ export interface CostSummary {
   utilizationPercent: number;
 }
 
+export interface CostWorkValueSummary {
+  companyId: string;
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  aiSpendCents: number;
+  estimatedDevHours: number;
+  estimatedDevValueCents: number;
+  estimatedSavingsCents: number;
+  roiMultiple: number | null;
+  devValueHourlyRateCents: number;
+  devValueTokensPerHour: number;
+}
+
 export interface CostByAgent {
   agentId: string;
   agentName: string | null;

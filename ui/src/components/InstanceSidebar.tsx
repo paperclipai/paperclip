@@ -1,19 +1,27 @@
 import { useQuery } from "@tanstack/react-query";
-import { Clock3, Cpu, FlaskConical, Puzzle, Settings, SlidersHorizontal } from "lucide-react";
+import { Clock3, Cpu, FlaskConical, Puzzle, RefreshCw, Settings, SlidersHorizontal } from "lucide-react";
 import { NavLink } from "@/lib/router";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import { SIDEBAR_SCROLL_RESET_STATE } from "@/lib/navigation-scroll";
+import { useSidebar } from "@/context/SidebarContext";
+import { cn } from "@/lib/utils";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 export function InstanceSidebar() {
+  const { isMobile, sidebarSide } = useSidebar();
   const { data: plugins } = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
 
   return (
-    <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
+    <aside
+      className={cn(
+        "w-full min-w-0 h-full min-h-0 border-border bg-background flex flex-col",
+        !isMobile && sidebarSide === "right" ? "border-l" : "border-r",
+      )}
+    >
       <div className="flex items-center gap-2 px-3 h-12 shrink-0">
         <Settings className="h-4 w-4 text-muted-foreground shrink-0 ml-1" />
         <span className="flex-1 text-sm font-bold text-foreground truncate">
@@ -24,6 +32,7 @@ export function InstanceSidebar() {
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/instance/settings/general" label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem to="/instance/settings/updates" label="Updates" icon={RefreshCw} end />
           <SidebarNavItem to="/instance/settings/heartbeats" label="Heartbeats" icon={Clock3} end />
           <SidebarNavItem to="/instance/settings/experimental" label="Experimental" icon={FlaskConical} />
           <SidebarNavItem to="/instance/settings/plugins" label="Plugins" icon={Puzzle} />

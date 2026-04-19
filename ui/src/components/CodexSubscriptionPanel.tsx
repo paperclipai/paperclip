@@ -1,5 +1,11 @@
 import type { QuotaWindow } from "@paperclipai/shared";
 import { cn, quotaSourceDisplayName } from "@/lib/utils";
+import {
+  formatCodexQuotaDetail,
+  getCodexRemainingPercent,
+  normalizeCodexQuotaLabel,
+  splitCodexQuotaWindows,
+} from "@/lib/codexQuota";
 
 interface CodexSubscriptionPanelProps {
   windows: QuotaWindow[];
@@ -7,49 +13,17 @@ interface CodexSubscriptionPanelProps {
   error?: string | null;
 }
 
-const WINDOW_PRIORITY = [
-  "5hlimit",
-  "weeklylimit",
-  "credits",
-] as const;
-
-function normalizeLabel(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, "");
+function fillClass(remainingPercent: number | null): string {
+  if (remainingPercent == null) return "bg-zinc-700";
+  if (remainingPercent <= 10) return "bg-red-400";
+  if (remainingPercent <= 30) return "bg-amber-400";
+  return "bg-emerald-400";
 }
 
-function orderedWindows(windows: QuotaWindow[]): QuotaWindow[] {
-  return [...windows].sort((a, b) => {
-    const aBase = normalizeLabel(a.label).replace(/^gpt53codexspark/, "");
-    const bBase = normalizeLabel(b.label).replace(/^gpt53codexspark/, "");
-    const aIndex = WINDOW_PRIORITY.indexOf(aBase as (typeof WINDOW_PRIORITY)[number]);
-    const bIndex = WINDOW_PRIORITY.indexOf(bBase as (typeof WINDOW_PRIORITY)[number]);
-    return (aIndex === -1 ? WINDOW_PRIORITY.length : aIndex) - (bIndex === -1 ? WINDOW_PRIORITY.length : bIndex);
-  });
-}
-
-function detailText(window: QuotaWindow): string | null {
-  if (typeof window.detail === "string" && window.detail.trim().length > 0) return window.detail.trim();
-  if (!window.resetsAt) return null;
-  const formatted = new Date(window.resetsAt).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
-  return `Resets ${formatted}`;
-}
-
-function fillClass(usedPercent: number | null): string {
-  if (usedPercent == null) return "bg-zinc-700";
-  if (usedPercent >= 90) return "bg-red-400";
-  if (usedPercent >= 70) return "bg-amber-400";
-  return "bg-primary/70";
-}
-
-function isModelSpecific(label: string): boolean {
-  const normalized = normalizeLabel(label);
-  return normalized.includes("gpt53codexspark") || normalized.includes("gpt5");
+function isVisibleAccountWindow(window: QuotaWindow): boolean {
+  if (normalizeCodexQuotaLabel(window.label) !== "credits") return true;
+  const valueLabel = typeof window.valueLabel === "string" ? window.valueLabel.trim() : "";
+  return valueLabel.length > 0 && valueLabel.toLowerCase() !== "n/a";
 }
 
 export function CodexSubscriptionPanel({
@@ -57,9 +31,8 @@ export function CodexSubscriptionPanel({
   source = null,
   error = null,
 }: CodexSubscriptionPanelProps) {
-  const ordered = orderedWindows(windows);
-  const accountWindows = ordered.filter((window) => !isModelSpecific(window.label));
-  const modelWindows = ordered.filter((window) => isModelSpecific(window.label));
+  const { accountWindows, modelWindows } = splitCodexQuotaWindows(windows);
+  const visibleAccountWindows = accountWindows.filter(isVisibleAccountWindow);
 
   return (
     <div className="border border-border px-4 py-4">
@@ -86,16 +59,18 @@ export function CodexSubscriptionPanel({
       ) : null}
 
       <div className="mt-4 space-y-5">
-        <div className="space-y-3">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-            Account windows
-          </div>
+        {visibleAccountWindows.length > 0 ? (
           <div className="space-y-3">
-            {accountWindows.map((window) => (
-              <QuotaWindowRow key={window.label} window={window} />
-            ))}
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              Account windows
+            </div>
+            <div className="space-y-3">
+              {visibleAccountWindows.map((window) => (
+                <QuotaWindowRow key={window.label} window={window} />
+              ))}
+            </div>
           </div>
-        </div>
+        ) : null}
 
         {modelWindows.length > 0 ? (
           <div className="space-y-3">
@@ -115,7 +90,8 @@ export function CodexSubscriptionPanel({
 }
 
 function QuotaWindowRow({ window }: { window: QuotaWindow }) {
-  const detail = detailText(window);
+  const detail = formatCodexQuotaDetail(window);
+  const remainingPercent = getCodexRemainingPercent(window);
   if (window.usedPercent == null) {
     return (
       <div className="border border-border px-3.5 py-3">
@@ -142,14 +118,14 @@ function QuotaWindowRow({ window }: { window: QuotaWindow }) {
           ) : null}
         </div>
         <div className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
-          {window.usedPercent}% used
+          {remainingPercent != null ? `${remainingPercent}% remaining` : "—"}
         </div>
       </div>
 
       <div className="mt-3 h-2 overflow-hidden bg-muted">
         <div
-          className={cn("h-full transition-[width] duration-200", fillClass(window.usedPercent))}
-          style={{ width: `${Math.max(0, Math.min(100, window.usedPercent))}%` }}
+          className={cn("h-full transition-[width] duration-200", fillClass(remainingPercent))}
+          style={{ width: `${Math.max(0, Math.min(100, remainingPercent ?? 0))}%` }}
         />
       </div>
     </div>

@@ -151,6 +151,8 @@ describe("claude execute", () => {
       });
       const captured = JSON.parse(await fs.readFile(capturePath, "utf-8"));
       expect(captured.argv).toContain("--append-system-prompt-file");
+      expect(captured.prompt).toContain("## Paperclip Operating Cadence");
+      expect(captured.prompt).toContain("slow, steady, token-conscious work");
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });
@@ -532,6 +534,7 @@ describe("claude execute", () => {
       expect(capture2.argv).toContain("--resume");
       expect(capture2.argv).toContain("claude-session-1");
       expect(capture2.prompt).toContain("## Paperclip Resume Delta");
+      expect(capture2.prompt).toContain("## Paperclip Operating Cadence");
       expect(capture2.prompt).not.toContain("Follow the paperclip heartbeat.");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;

@@ -26,9 +26,9 @@ const surfaceOptions: Array<{
   },
   {
     id: "live",
-    label: "Issue Widget",
+    label: "Task Widget",
     eyebrow: "Live stream",
-    description: "The issue-detail live run widget, optimized for following an active run without leaving the task page.",
+    description: "The task-detail live run widget, optimized for following an active run without leaving the task page.",
     icon: RadioTower,
   },
   {
@@ -103,7 +103,7 @@ function LiveWidgetPreview({
           Live Runs
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
-          Compact live transcript stream for the issue detail page.
+          Compact live transcript stream for the task detail page.
         </div>
       </div>
       <div className="px-5 py-4">

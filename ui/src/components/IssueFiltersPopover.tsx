@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Filter, X, User, HardDrive } from "lucide-react";
+import { Calendar, Filter, X, User, HardDrive } from "lucide-react";
 import { PriorityIcon } from "./PriorityIcon";
 import { StatusIcon } from "./StatusIcon";
 import {
@@ -14,6 +14,7 @@ import {
   toggleIssueFilterValue,
   type IssueFilterState,
 } from "../lib/issue-filters";
+import type { IssueDueFilterState } from "../lib/issue-due-date";
 
 type AgentOption = {
   id: string;
@@ -35,6 +36,13 @@ type WorkspaceOption = {
   id: string;
   name: string;
 };
+
+const dueFilterOptions: Array<{ value: IssueDueFilterState; label: string }> = [
+  { value: "overdue", label: "Overdue" },
+  { value: "today", label: "Today" },
+  { value: "upcoming", label: "Upcoming" },
+  { value: "none", label: "No due date" },
+];
 
 export function IssueFiltersPopover({
   state,
@@ -149,6 +157,22 @@ export function IssueFiltersPopover({
                       />
                       <PriorityIcon priority={priority} />
                       <span className="text-sm">{issueFilterLabel(priority)}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-xs text-muted-foreground">Due date</span>
+                <div className="space-y-0.5">
+                  {dueFilterOptions.map((option) => (
+                    <label key={option.value} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                      <Checkbox
+                        checked={state.dueStates.includes(option.value)}
+                        onCheckedChange={() => onChange({ dueStates: toggleIssueFilterValue<IssueDueFilterState>(state.dueStates, option.value) })}
+                      />
+                      <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="text-sm">{option.label}</span>
                     </label>
                   ))}
                 </div>

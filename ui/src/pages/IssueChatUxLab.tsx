@@ -24,7 +24,7 @@ const noop = async () => {};
 
 const highlights = [
   "Running assistant replies with streamed text, reasoning, tool cards, and background status notes",
-  "Historical issue events and linked runs rendered inline with the chat timeline",
+  "Historical task events and linked runs rendered inline with the chat timeline",
   "Queued user messages, settled assistant comments, and feedback controls",
   "Submitting (pending) message bubble with Sending... label and reduced opacity",
   "Empty and disabled-composer states without relying on live backend data",
@@ -143,11 +143,11 @@ export function IssueChatUxLab() {
               <FlaskConical className="h-3.5 w-3.5" />
               Chat UX Lab
             </div>
-            <h1 className="mt-4 text-3xl font-semibold tracking-tight">Issue chat review surface</h1>
+            <h1 className="mt-4 text-3xl font-semibold tracking-tight">Task chat review surface</h1>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
-              This page exercises the real assistant-ui issue chat with fixture-backed messages. Use it to review
+              This page exercises the real assistant-ui task chat with fixture-backed messages. Use it to review
               spacing, chronology, running states, tool rendering, activity rows, queueing, and composer behavior
-              without needing a live issue in progress.
+              without needing a live task in progress.
             </p>
 
             <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -346,7 +346,7 @@ export function IssueChatUxLab() {
               agentMap={issueChatUxAgentMap}
               currentUserId="user-1"
               onAdd={noop}
-              composerDisabledReason="This workspace is closed, so new chat replies are disabled until the issue is reopened."
+              composerDisabledReason="This workspace is closed, so new chat replies are disabled until the task is reopened."
               draftKey="issue-chat-ux-lab-empty"
               enableLiveTranscriptPolling={false}
             />

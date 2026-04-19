@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   discoverProjectWorkspaceSkillDirectories,
   findMissingLocalSkillIds,
+  isPaperclipBundledSkillRequiredByDefault,
   normalizeGitHubSkillDirectory,
   parseSkillImportSourceInput,
   readLocalSkillImportFromDirectory,
@@ -29,6 +30,21 @@ async function writeSkillDir(skillDir: string, name: string) {
 }
 
 describe("company skill import source parsing", () => {
+  it("treats bundled Paperclip skills as required unless metadata opts out", () => {
+    expect(isPaperclipBundledSkillRequiredByDefault({
+      sourceKind: "paperclip_bundled",
+    })).toBe(true);
+    expect(isPaperclipBundledSkillRequiredByDefault({
+      sourceKind: "paperclip_bundled",
+      paperclip: {
+        requiredByDefault: false,
+      },
+    })).toBe(false);
+    expect(isPaperclipBundledSkillRequiredByDefault({
+      sourceKind: "local_path",
+    })).toBe(false);
+  });
+
   it("parses a skills.sh command without executing shell input", () => {
     const parsed = parseSkillImportSourceInput(
       "npx skills add https://github.com/vercel-labs/skills --skill find-skills",

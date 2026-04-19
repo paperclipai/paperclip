@@ -706,6 +706,7 @@ describe("company portability", () => {
         identifier: "PAP-1",
         title: "Write launch task",
         description: "Task body",
+        dueDate: "2026-05-01",
         projectId: "project-1",
         assigneeAgentId: "agent-1",
         status: "todo",
@@ -805,6 +806,7 @@ describe("company portability", () => {
         identifier: "PAP-1",
         title: "Write launch task",
         description: "Task body",
+        dueDate: "2026-05-01",
         projectId: "project-1",
         projectWorkspaceId: "workspace-1",
         assigneeAgentId: "agent-1",
@@ -834,9 +836,11 @@ describe("company portability", () => {
     expect(extension).toContain('repoUrl: "https://github.com/paperclipai/paperclip.git"');
     expect(extension).toContain('defaultProjectWorkspaceKey: "main-repo"');
     expect(extension).toContain('projectWorkspaceKey: "main-repo"');
+    expect(extension).toContain('dueDate: "2026-05-01"');
     expect(extension).not.toContain("/Users/dotta/paperclip");
     expect(extension).not.toContain("workspace-1");
     expect(exported.warnings).toContain("Project launch workspace Local Scratch was omitted from export because it does not have a portable repoUrl.");
+    expect(exported.manifest.issues[0]?.dueDate).toBe("2026-05-01");
 
     companySvc.create.mockResolvedValue({
       id: "company-imported",
@@ -920,6 +924,7 @@ describe("company portability", () => {
       projectId: "project-imported",
       projectWorkspaceId: "workspace-imported",
       title: "Write launch task",
+      dueDate: "2026-05-01",
     }));
   });
 

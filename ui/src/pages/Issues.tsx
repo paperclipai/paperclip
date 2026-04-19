@@ -11,14 +11,26 @@ import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
-import { CircleDot } from "lucide-react";
+import { AlertTriangle, CircleDot } from "lucide-react";
 
 export function Issues() {
+  return <IssuesView mode="issues" />;
+}
+
+export function Blockers() {
+  return <IssuesView mode="blockers" />;
+}
+
+function IssuesView({ mode }: { mode: "issues" | "blockers" }) {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const isBlockers = mode === "blockers";
+  const pageLabel = isBlockers ? "Blockers" : "Tasks (Issues)";
+  const statusFilter = isBlockers ? "blocked" : undefined;
+  const EmptyIcon = isBlockers ? AlertTriangle : CircleDot;
 
   const initialSearch = searchParams.get("q") ?? "";
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
@@ -68,25 +80,32 @@ export function Issues() {
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Issues",
+        pageLabel,
         `${location.pathname}${location.search}${location.hash}`,
         "issues",
       ),
-    [location.pathname, location.search, location.hash],
+    [location.pathname, location.search, location.hash, pageLabel],
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Issues" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: pageLabel }]);
+  }, [pageLabel, setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({
     queryKey: [
       ...queryKeys.issues.list(selectedCompanyId!),
       "participant-agent",
       participantAgentId ?? "__all__",
-      "with-routine-executions",
+      "status",
+      statusFilter ?? "__all__",
+      isBlockers ? "without-routine-executions" : "with-routine-executions",
     ],
-    queryFn: () => issuesApi.list(selectedCompanyId!, { participantAgentId, includeRoutineExecutions: true }),
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, {
+        participantAgentId,
+        status: statusFilter,
+        includeRoutineExecutions: !isBlockers,
+      }),
     enabled: !!selectedCompanyId,
   });
 
@@ -98,8 +117,21 @@ export function Issues() {
     },
   });
 
+  const reorderIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { status: string; beforeIssueId?: string | null } }) =>
+      issuesApi.reorder(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+    },
+  });
+
   if (!selectedCompanyId) {
-    return <EmptyState icon={CircleDot} message="Select a company to view issues." />;
+    return (
+      <EmptyState
+        icon={EmptyIcon}
+        message={isBlockers ? "Select a company to view blockers." : "Select a company to view tasks."}
+      />
+    );
   }
 
   return (
@@ -110,14 +142,15 @@ export function Issues() {
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
-      viewStateKey="paperclip:issues-view"
+      viewStateKey={isBlockers ? "paperclip:blockers-view" : "paperclip:issues-view"}
       issueLinkState={issueLinkState}
       initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
       initialSearch={initialSearch}
       onSearchChange={handleSearchChange}
-      enableRoutineVisibilityFilter
+      enableRoutineVisibilityFilter={!isBlockers}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId ? { participantAgentId } : undefined}
+      onReorderIssue={(id, data) => reorderIssue.mutate({ id, data })}
+      searchFilters={participantAgentId || statusFilter ? { participantAgentId, status: statusFilter } : undefined}
     />
   );
 }

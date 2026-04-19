@@ -56,6 +56,18 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 More detailed task structure TBD.
 
+### Project Context
+
+Projects can carry shared operating context for the work that belongs to them:
+
+- project goal markdown, separate from the formal company goal hierarchy
+- project instructions markdown
+- inherited default skills selected from the company skill library
+- linked/uploaded/manual sources
+- connector-backed sources such as Google Drive folders
+
+This context is applied to issue work, heartbeat wakeups, and runs. It is not a standalone chat or knowledge-base product; it is a project-scoped layer that helps agents execute existing Paperclip work with better instructions and cited source snippets.
+
 ## Principles
 
 1. **Unopinionated about how you run your agents.** Your agents could be OpenClaw bots, Python scripts, Node scripts, Claude Code sessions, Codex instances — we don't care. Paperclip defines the control plane for communication and provides utility infrastructure for heartbeats. It does not mandate an agent runtime.
@@ -106,10 +118,12 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
 - Stay **board-level and company-level**. Users should manage goals, orgs, budgets, approvals, and outputs.
 - Make the first five minutes feel magical: install, answer a few questions, see a CEO do something real.
 - Keep work anchored to **issues/comments/projects/goals**, even if the surface feels conversational.
+- Let projects carry durable context, source snippets, and inherited skills so repeated work does not depend on ad hoc prompt copying.
 - Treat **agency / internal team / startup** as the same underlying abstraction with different templates and labels.
 - Make outputs first-class: files, docs, reports, previews, links, screenshots.
 - Provide **hooks into engineering workflows**: worktrees, preview servers, PR links, external review tools.
 - Use **plugins** for edge cases like rich chat, knowledge bases, doc editors, custom tracing.
+- Use **plugins/connectors** for external source sync such as Google Drive; core stores normalized project context and provenance, not connector credentials.
 
 **Do not**
 
@@ -140,7 +154,7 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
    The mental model should not change between local solo use and shared/private or public/cloud deployment.
 
 7. **Safe autonomy**
-   Auto mode is allowed; hidden token burn is not.
+   Auto mode is allowed; hidden token burn is not. Agents should work slowly and steadily by default, conserving tokens on normal work and spending faster only for `critical` priority issues or explicit board/user urgency wording such as urgent, ASAP, or immediate.
 
 8. **Thin core, rich edges**
    Put optional chat, knowledge, and special surfaces into plugins/extensions rather than bloating the control plane.

@@ -27,6 +27,8 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.comment_added": "commented on",
   "issue.attachment_added": "attached file to",
   "issue.attachment_removed": "removed attachment from",
+  "issue.checklist_item_created": "added checklist item to",
+  "issue.checklist_item_deleted": "deleted checklist item from",
   "issue.document_created": "created document for",
   "issue.document_updated": "updated document on",
   "issue.document_deleted": "deleted document from",
@@ -60,18 +62,20 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
 };
 
 const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
-  "issue.created": "created the issue",
-  "issue.updated": "updated the issue",
-  "issue.checked_out": "checked out the issue",
-  "issue.released": "released the issue",
+  "issue.created": "created the task",
+  "issue.updated": "updated the task",
+  "issue.checked_out": "checked out the task",
+  "issue.released": "released the task",
   "issue.comment_added": "added a comment",
   "issue.feedback_vote_saved": "saved feedback on an AI output",
   "issue.attachment_added": "added an attachment",
   "issue.attachment_removed": "removed an attachment",
+  "issue.checklist_item_created": "added checklist item",
+  "issue.checklist_item_deleted": "deleted checklist item",
   "issue.document_created": "created a document",
   "issue.document_updated": "updated a document",
   "issue.document_deleted": "deleted a document",
-  "issue.deleted": "deleted the issue",
+  "issue.deleted": "deleted the task",
   "agent.created": "created an agent",
   "agent.updated": "updated the agent",
   "agent.paused": "paused the agent",
@@ -134,7 +138,7 @@ function formatIssueReferenceLabel(reference: ActivityIssueReference): string {
   if (reference.identifier) return reference.identifier;
   if (reference.title) return reference.title;
   if (reference.id) return reference.id.slice(0, 8);
-  return "issue";
+  return "task";
 }
 
 function formatChangedEntityLabel(
@@ -187,7 +191,7 @@ function formatIssueUpdatedAction(details: ActivityDetails): string | null {
     );
   }
   if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
-    parts.push(details.assigneeAgentId || details.assigneeUserId ? "assigned the issue" : "unassigned the issue");
+    parts.push(details.assigneeAgentId || details.assigneeUserId ? "assigned the task" : "unassigned the task");
   }
   if (details.title !== undefined) parts.push("updated the title");
   if (details.description !== undefined) parts.push("updated the description");
@@ -237,6 +241,31 @@ function formatStructuredIssueChange(input: {
   return null;
 }
 
+function formatChecklistItemUpdate(details: ActivityDetails, forIssueDetail: boolean): string | null {
+  const previous = asRecord(details?._previous) ?? {};
+  const prefix = forIssueDetail ? "" : " on";
+
+  if (details?.completed !== undefined) {
+    const wasCompleted = previous.completed;
+    if (wasCompleted === false && details.completed === true) {
+      return `completed checklist item${prefix}`;
+    }
+    if (wasCompleted === true && details.completed === false) {
+      return `reopened checklist item${prefix}`;
+    }
+  }
+
+  if (details?.title !== undefined && previous.title !== undefined) {
+    return `renamed checklist item${prefix}`;
+  }
+
+  if (details?.position !== undefined && previous.position !== undefined) {
+    return `reordered checklist item${prefix}`;
+  }
+
+  return null;
+}
+
 export function formatActivityVerb(
   action: string,
   details?: Record<string, unknown> | null,
@@ -245,6 +274,9 @@ export function formatActivityVerb(
   if (action === "issue.updated") {
     const issueUpdatedVerb = formatIssueUpdatedVerb(details);
     if (issueUpdatedVerb) return issueUpdatedVerb;
+  }
+  if (action === "issue.checklist_item_updated") {
+    return formatChecklistItemUpdate(details, false) ?? "updated checklist item on";
   }
 
   const structuredChange = formatStructuredIssueChange({
@@ -266,6 +298,9 @@ export function formatIssueActivityAction(
   if (action === "issue.updated") {
     const issueUpdatedAction = formatIssueUpdatedAction(details);
     if (issueUpdatedAction) return issueUpdatedAction;
+  }
+  if (action === "issue.checklist_item_updated") {
+    return formatChecklistItemUpdate(details, true) ?? "updated checklist item";
   }
 
   const structuredChange = formatStructuredIssueChange({

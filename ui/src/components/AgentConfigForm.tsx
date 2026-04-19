@@ -13,6 +13,7 @@ import { assetsApi } from "../api/assets";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
+  DEFAULT_CODEX_LOCAL_MODEL_REASONING_EFFORT,
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -46,9 +47,13 @@ import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import { EnvVarEditor } from "./EnvVarEditor";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
-import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
+import {
+  type AdapterOptionMetadata,
+  listAdapterOptions,
+  listLocalAgentAdapterOptions,
+} from "../adapters/metadata";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
-import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
+import { useAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, type AgentConfigOverlay } from "../lib/agent-config-patch";
 
 /* ---- Create mode values ---- */
@@ -177,7 +182,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const queryClient = useQueryClient();
 
   // Sync disabled adapter types from server so dropdown filters them out
-  const disabledTypes = useDisabledAdaptersSync();
+  const { adapters: registeredAdapters, disabledTypes } = useAdaptersSync();
 
   const { data: availableSecrets = [] } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
@@ -275,6 +280,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
+  const adapterTypeOptions = useMemo(
+    () => {
+      const labelFor = (type: string) => adapterLabels[type] ?? getAdapterLabel(type);
+      return isCreate
+        ? listLocalAgentAdapterOptions(registeredAdapters, labelFor)
+        : listAdapterOptions(labelFor).filter((item) => !disabledTypes.has(item.value));
+    },
+    [disabledTypes, isCreate, registeredAdapters],
+  );
 
   // Fetch adapter models for the effective adapter type
   const {
@@ -536,7 +550,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <Field label="Adapter type" hint={help.adapterType}>
               <AdapterTypeDropdown
                 value={adapterType}
-                disabledTypes={disabledTypes}
+                options={adapterTypeOptions}
                 onChange={(t) => {
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type
@@ -544,6 +558,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     const nextValues: CreateConfigValues = { ...defaults, adapterType: t };
                     if (t === "codex_local") {
                       nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
+                      nextValues.thinkingEffort = DEFAULT_CODEX_LOCAL_MODEL_REASONING_EFFORT;
                       nextValues.dangerouslyBypassSandbox =
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
                     } else if (t === "gemini_local") {
@@ -570,7 +585,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               ? DEFAULT_CURSOR_LOCAL_MODEL
                             : "",
                         effort: "",
-                        modelReasoningEffort: "",
+                        modelReasoningEffort:
+                          t === "codex_local"
+                            ? DEFAULT_CODEX_LOCAL_MODEL_REASONING_EFFORT
+                            : "",
                         variant: "",
                         mode: "",
                         ...(t === "codex_local"
@@ -730,6 +748,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     open={thinkingEffortOpen}
                     onOpenChange={setThinkingEffortOpen}
                   />
+                  {adapterType === "codex_local" && (
+                    <p className="text-xs text-muted-foreground">
+                      Codex thinking effort maps to <code>model_reasoning_effort</code>.
+                      Paperclip defaults Codex to <code>gpt-5.4</code> with <code>xhigh</code> thinking;
+                      faster variants like <code>gpt-5.3-codex-spark</code> remain manual model overrides.
+                      Paperclip still runs <code>codex exec</code> in its default collaboration
+                      mode rather than true Codex Plan Mode.
+                    </p>
+                  )}
                   {adapterType === "codex_local" &&
                     codexSearchEnabled &&
                     currentThinkingEffort === "minimal" && (
@@ -976,20 +1003,13 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 function AdapterTypeDropdown({
   value,
   onChange,
-  disabledTypes,
+  options,
 }: {
   value: string;
   onChange: (type: string) => void;
-  disabledTypes: Set<string>;
+  options: AdapterOptionMetadata[];
 }) {
   const [open, setOpen] = useState(false);
-  const adapterList = useMemo(
-    () =>
-      listAdapterOptions((type) => adapterLabels[type] ?? getAdapterLabel(type)).filter(
-        (item) => !disabledTypes.has(item.value),
-      ),
-    [disabledTypes],
-  );
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -1003,7 +1023,7 @@ function AdapterTypeDropdown({
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
-        {adapterList.map((item) => (
+        {options.map((item) => (
           <button
             key={item.value}
             disabled={item.comingSoon}

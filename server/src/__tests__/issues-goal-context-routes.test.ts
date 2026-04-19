@@ -12,6 +12,9 @@ const mockIssueService = vi.hoisted(() => ({
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
   listAttachments: vi.fn(),
+  listChecklistItems: vi.fn(),
+  listLinks: vi.fn(),
+  listCoverAttachmentsForIssues: vi.fn(),
 }));
 
 const mockProjectService = vi.hoisted(() => ({
@@ -119,6 +122,19 @@ const projectGoal = {
   updatedAt: new Date("2026-03-20T00:00:00Z"),
 };
 
+const companyGoal = {
+  id: "66666666-6666-4666-8666-666666666666",
+  companyId: "company-1",
+  title: "Keep home network changes safe and reversible",
+  description: null,
+  level: "company",
+  status: "active",
+  parentId: null,
+  ownerAgentId: null,
+  createdAt: new Date("2026-03-18T00:00:00Z"),
+  updatedAt: new Date("2026-03-18T00:00:00Z"),
+};
+
 describe("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -133,6 +149,9 @@ describe("issue goal context routes", () => {
     });
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.listAttachments.mockResolvedValue([]);
+    mockIssueService.listChecklistItems.mockResolvedValue([]);
+    mockIssueService.listLinks.mockResolvedValue([]);
+    mockIssueService.listCoverAttachmentsForIssues.mockResolvedValue(new Map());
     mockProjectService.getById.mockResolvedValue({
       id: legacyProjectLinkedIssue.projectId,
       companyId: "company-1",
@@ -170,10 +189,10 @@ describe("issue goal context routes", () => {
     mockGoalService.getById.mockImplementation(async (id: string) =>
       id === projectGoal.id ? projectGoal : null,
     );
-    mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
+    mockGoalService.getDefaultCompanyGoal.mockResolvedValue(companyGoal);
   });
 
-  it("surfaces the project goal from GET /issues/:id when the issue has no direct goal", async () => {
+  it("surfaces project goals and the company goal from GET /issues/:id", async () => {
     const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
 
     expect(res.status).toBe(200);
@@ -184,23 +203,51 @@ describe("issue goal context routes", () => {
         title: projectGoal.title,
       }),
     );
-    expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
+    expect(res.body.projectGoals).toEqual([
+      expect.objectContaining({
+        id: projectGoal.id,
+        title: projectGoal.title,
+      }),
+    ]);
+    expect(res.body.companyGoal).toEqual(
+      expect.objectContaining({
+        id: companyGoal.id,
+        title: companyGoal.title,
+      }),
+    );
+    expect(res.body.checklistItems).toEqual([]);
+    expect(res.body.links).toEqual([]);
+    expect(res.body.coverAttachment).toBeNull();
   });
 
-  it("surfaces the project goal from GET /issues/:id/heartbeat-context", async () => {
+  it("surfaces project goals and company goal from GET /issues/:id/heartbeat-context", async () => {
     const res = await request(createApp()).get(
       "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
     );
 
     expect(res.status).toBe(200);
     expect(res.body.issue.goalId).toBe(projectGoal.id);
+    expect(res.body.issue.checklistItems).toEqual([]);
+    expect(res.body.issue.links).toEqual([]);
+    expect(res.body.issue.coverAttachment).toBeNull();
     expect(res.body.goal).toEqual(
       expect.objectContaining({
         id: projectGoal.id,
         title: projectGoal.title,
       }),
     );
-    expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
+    expect(res.body.projectGoals).toEqual([
+      expect.objectContaining({
+        id: projectGoal.id,
+        title: projectGoal.title,
+      }),
+    ]);
+    expect(res.body.companyGoal).toEqual(
+      expect.objectContaining({
+        id: companyGoal.id,
+        title: companyGoal.title,
+      }),
+    );
     expect(res.body.attachments).toEqual([]);
   });
 

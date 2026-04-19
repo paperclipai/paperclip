@@ -45,6 +45,24 @@ GET /api/companies/{companyId}/costs/by-project
 
 Returns per-project cost breakdown for the current month.
 
+## Work Value Estimate
+
+```
+GET /api/companies/{companyId}/costs/work-value?from=2026-04-01T00:00:00.000Z&to=2026-04-19T23:59:59.999Z
+```
+
+Returns tracked agent tokens, AI spend, and an estimated human developer equivalent for the selected range.
+
+The estimate uses company settings:
+
+```
+estimatedDevHours = totalTokens / devValueTokensPerHour
+estimatedDevValueCents = estimatedDevHours * devValueHourlyRateCents
+estimatedSavingsCents = max(0, estimatedDevValueCents - aiSpendCents)
+```
+
+Defaults are `$150/hr` and `100,000` tokens per developer hour. The estimate includes cached input tokens because Paperclip treats them as tracked agent workload, even when billing differs.
+
 ## Budget Management
 
 ### Set Company Budget

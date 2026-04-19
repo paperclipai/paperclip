@@ -181,6 +181,13 @@ This is a fork of `paperclipai/paperclip` with QoL patches and an **external-onl
 - Server startup from NTFS takes 30-60s — don't assume failure immediately
 - Kill ALL paperclip processes before starting: `pkill -f "paperclip"; pkill -f "tsx.*index.ts"`
 - Vite cache survives `rm -rf dist` — delete both: `rm -rf ui/dist ui/node_modules/.vite`
+- Live Mac mini checkout currently serving port `3100`: `/Users/robertdawson/AI/Paperclip-live`
+- `~/Documents/AI` is only a convenience symlink to the same local `~/AI` tree on this Mac.
+- Verified Tailscale URL for that live checkout on `2026-04-12`: `http://roberts-mac-mini-2.tail3dddf6.ts.net:3100/`
+- When iterating on UI in this live checkout, prefer `pnpm dev` so source edits show up immediately; if using `paperclipai run` static mode, rebuild `ui/dist` before restart
+- Quick sanity check for static-mode restarts: confirm the served HTML asset hash matches the latest `ui/dist/index.html` before assuming a UI change is live
+- If a Paperclip change must reach another Mac, move it by Git or a deliberate copy/sync step rather than relying on iCloud Documents.
+- For the current live Tailscale instance, verify against `http://roberts-mac-mini-2.tail3dddf6.ts.net:3100/` or the matching `localhost:3100` response before telling the user a UI change is visible
 
 ### Fork QoL Patches (not in upstream)
 

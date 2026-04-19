@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyRuntimePortSelectionToConfig,
   maybePersistWorktreeRuntimePorts,
@@ -422,5 +422,57 @@ describe("worktree config repair", () => {
     expect(config.server.port).toBe(3100);
     expect(config.database.embeddedPostgresPort).toBe(54340);
     expect(config.auth.publicBaseUrl).toBe("http://127.0.0.1:3104/");
+  });
+
+  it("ignores stale worktree flags for shared instance configs", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-shared-instance-"));
+    const homeDir = path.join(tempRoot, ".paperclip");
+    const instanceRoot = path.join(homeDir, "instances", "default");
+    const configPath = path.join(instanceRoot, "config.json");
+    const envPath = path.join(instanceRoot, ".env");
+    const originalConfig = buildLegacyConfig(instanceRoot);
+
+    await fs.mkdir(instanceRoot, { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(originalConfig, null, 2) + "\n", "utf8");
+    await fs.writeFile(
+      envPath,
+      [
+        "# Paperclip environment variables",
+        "PAPERCLIP_IN_WORKTREE=true",
+        "PAPERCLIP_WORKTREE_NAME=PAP-884-ai-commits-component",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.chdir(tempRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
+    process.env.PAPERCLIP_HOME = homeDir;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    process.env.PAPERCLIP_CONFIG = configPath;
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect(maybeRepairLegacyWorktreeConfigAndEnvFiles()).toEqual({
+        repairedConfig: false,
+        repairedEnv: false,
+      });
+
+      maybePersistWorktreeRuntimePorts({
+        serverPort: 3210,
+        databasePort: 54330,
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const writtenConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+    const writtenEnv = await fs.readFile(envPath, "utf8");
+
+    expect(writtenConfig.server.port).toBe(3100);
+    expect(writtenConfig.database.embeddedPostgresPort).toBe(54329);
+    expect(writtenEnv).toContain("PAPERCLIP_IN_WORKTREE=true");
+    expect(writtenEnv).toContain("PAPERCLIP_WORKTREE_NAME=PAP-884-ai-commits-component");
   });
 });

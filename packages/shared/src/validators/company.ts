@@ -9,6 +9,8 @@ export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
+  devValueHourlyRateCents: z.number().int().nonnegative().optional().default(15000),
+  devValueTokensPerHour: z.number().int().positive().optional().default(100000),
 });
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;
@@ -18,6 +20,8 @@ export const updateCompanySchema = createCompanySchema
   .extend({
     status: z.enum(COMPANY_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
+    devValueHourlyRateCents: z.number().int().nonnegative().optional(),
+    devValueTokensPerHour: z.number().int().positive().optional(),
     requireBoardApprovalForNewAgents: z.boolean().optional(),
     feedbackDataSharingEnabled: z.boolean().optional(),
     feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),

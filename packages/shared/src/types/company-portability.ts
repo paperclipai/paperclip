@@ -102,6 +102,7 @@ export interface CompanyPortabilityIssueManifestEntry {
   projectWorkspaceKey: string | null;
   assigneeAgentSlug: string | null;
   description: string | null;
+  dueDate: string | null;
   recurring: boolean;
   routine: CompanyPortabilityIssueRoutineManifestEntry | null;
   legacyRecurrence: Record<string, unknown> | null;

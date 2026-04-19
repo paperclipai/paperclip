@@ -1,0 +1,1 @@
+ALTER TABLE "project_context_profiles" ADD COLUMN "goal_markdown" text DEFAULT '' NOT NULL;

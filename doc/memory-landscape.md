@@ -174,3 +174,15 @@ That is enough to support:
 - richer agent-memory systems like `MemOS` or `OpenViking`
 
 without forcing Paperclip itself to become a monolithic memory engine.
+
+## Implemented Local Baseline: Project Context
+
+Paperclip now has a project-scoped context layer that covers the smallest useful subset of the memory contract without becoming a general memory engine:
+
+- project instructions and inherited default skills
+- connector-neutral context sources
+- source items and deterministic text chunks
+- PostgreSQL full-text retrieval
+- provenance-bearing context bundles injected into heartbeat/run context
+
+This layer is deliberately narrower than long-term memory. It is project-owned operating context for issue and heartbeat work. External sources such as Google Drive are normalized through plugins using `ctx.contextSources`, so connector credentials remain outside source records and prompt bundles.

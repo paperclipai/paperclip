@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isCodexUnknownSessionError, parseCodexJsonl } from "./parse.js";
 
 describe("parseCodexJsonl", () => {
-  it("captures session id, assistant summary, usage, and error message", () => {
+  it("captures session id, assistant summary, usage, cost, and error message", () => {
     const stdout = [
       JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
       JSON.stringify({
@@ -12,6 +12,7 @@ describe("parseCodexJsonl", () => {
       JSON.stringify({
         type: "turn.completed",
         usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 4 },
+        total_cost_usd: 0.0042,
       }),
       JSON.stringify({ type: "turn.failed", error: { message: "resume failed" } }),
     ].join("\n");
@@ -24,6 +25,31 @@ describe("parseCodexJsonl", () => {
         cachedInputTokens: 2,
         outputTokens: 4,
       },
+      costUsd: 0.0042,
+      errorMessage: "resume failed",
+    });
+  });
+
+  it("captures cost and usage from failed turns when no completed turn is emitted", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+      JSON.stringify({
+        type: "turn.failed",
+        error: { message: "resume failed" },
+        usage: { input_tokens: 7, cached_input_tokens: 1, output_tokens: 3 },
+        total_cost_usd: 0.0017,
+      }),
+    ].join("\n");
+
+    expect(parseCodexJsonl(stdout)).toEqual({
+      sessionId: "thread_123",
+      summary: "",
+      usage: {
+        inputTokens: 7,
+        cachedInputTokens: 1,
+        outputTokens: 3,
+      },
+      costUsd: 0.0017,
       errorMessage: "resume failed",
     });
   });
@@ -57,6 +83,7 @@ describe("parseCodexJsonl", () => {
         cachedInputTokens: 2,
         outputTokens: 4,
       },
+      costUsd: null,
       errorMessage: null,
     });
   });

@@ -213,7 +213,9 @@ function createIssue(): Issue {
     parentId: null,
     title: "Plan rendering",
     description: null,
+    dueDate: null,
     status: "in_progress",
+    boardPosition: 0,
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
@@ -559,7 +561,7 @@ describe("IssueDocumentsSection", () => {
             extraActions={(
               <>
                 <button type="button">Upload</button>
-                <button type="button">Sub-issue</button>
+                <button type="button">Sub-task</button>
               </>
             )}
           />

@@ -48,6 +48,20 @@ const mockCostService = vi.hoisted(() => ({
   byAgentModel: vi.fn().mockResolvedValue([]),
   byProvider: vi.fn().mockResolvedValue([]),
   byBiller: vi.fn().mockResolvedValue([]),
+  workValue: vi.fn().mockResolvedValue({
+    companyId: "company-1",
+    totalTokens: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    aiSpendCents: 0,
+    estimatedDevHours: 0,
+    estimatedDevValueCents: 0,
+    estimatedSavingsCents: 0,
+    roiMultiple: 0,
+    devValueHourlyRateCents: 15000,
+    devValueTokensPerHour: 100000,
+  }),
   windowSpend: vi.fn().mockResolvedValue([]),
   byProject: vi.fn().mockResolvedValue([]),
 }));
@@ -86,6 +100,7 @@ vi.mock("../services/quota-windows.js", () => ({
 }));
 
 async function createApp() {
+  vi.resetModules();
   const [{ costRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/costs.js"),
     import("../middleware/index.js"),
@@ -102,6 +117,7 @@ async function createApp() {
 }
 
 async function createAppWithActor(actor: any) {
+  vi.resetModules();
   const [{ costRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/costs.js"),
     import("../middleware/index.js"),
@@ -139,6 +155,20 @@ beforeEach(() => {
     spentMonthlyCents: 0,
   });
   mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
+  mockCostService.workValue.mockResolvedValue({
+    companyId: "company-1",
+    totalTokens: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    aiSpendCents: 0,
+    estimatedDevHours: 0,
+    estimatedDevValueCents: 0,
+    estimatedSavingsCents: 0,
+    roiMultiple: 0,
+    devValueHourlyRateCents: 15000,
+    devValueTokensPerHour: 100000,
+  });
 });
 
 describe("cost routes", () => {
@@ -170,6 +200,19 @@ describe("cost routes", () => {
       .query({ from: "2026-02-01T00:00:00.000Z", to: "2026-02-28T23:59:59.999Z" });
     expect(res.status).toBe(200);
     expect(mockFinanceService.summary).toHaveBeenCalled();
+  });
+
+  it("returns work value rows for valid requests", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/work-value")
+      .query({ from: "2026-02-01T00:00:00.000Z", to: "2026-02-28T23:59:59.999Z" });
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.workValue).toHaveBeenCalledWith("company-1", {
+      from: new Date("2026-02-01T00:00:00.000Z"),
+      to: new Date("2026-02-28T23:59:59.999Z"),
+    });
   });
 
   it("returns 400 for invalid finance event list limits", async () => {

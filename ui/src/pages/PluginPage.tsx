@@ -5,10 +5,11 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
+import { isPluginRoutePathCandidate } from "@/lib/company-routes";
 import { PluginSlotMount } from "@/plugins/slots";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
-import { NotFoundPage } from "./NotFound";
+import { DashboardRecoveryRedirect } from "@/components/DashboardRecoveryRedirect";
 
 /**
  * Company-context plugin page. Renders a plugin's `page` slot at
@@ -43,11 +44,16 @@ export function PluginPage() {
     () => (resolvedCompanyId ? companies.find((c) => c.id === resolvedCompanyId)?.issuePrefix ?? null : null),
     [companies, resolvedCompanyId],
   );
+  const hasInvalidPluginRoutePath = Boolean(pluginRoutePath && !isPluginRoutePathCandidate(pluginRoutePath));
 
-  const { data: contributions } = useQuery({
+  const {
+    data: contributions,
+    error: contributionsError,
+    isLoading: contributionsLoading,
+  } = useQuery({
     queryKey: queryKeys.plugins.uiContributions,
     queryFn: () => pluginsApi.listUiContributions(),
-    enabled: !!resolvedCompanyId && (!!pluginId || !!pluginRoutePath),
+    enabled: !!resolvedCompanyId && (!!pluginId || !!pluginRoutePath) && !hasInvalidPluginRoutePath,
   });
 
   const pageSlot = useMemo(() => {
@@ -100,7 +106,7 @@ export function PluginPage() {
 
   if (!resolvedCompanyId) {
     if (hasInvalidCompanyPrefix) {
-      return <NotFoundPage scope="invalid_company_prefix" requestedPrefix={routeCompanyPrefix} />;
+      return <DashboardRecoveryRedirect />;
     }
     return (
       <div className="space-y-4">
@@ -109,7 +115,14 @@ export function PluginPage() {
     );
   }
 
+  if (hasInvalidPluginRoutePath) {
+    return <DashboardRecoveryRedirect />;
+  }
+
   if (!contributions) {
+    if (contributionsError || !contributionsLoading) {
+      return <DashboardRecoveryRedirect />;
+    }
     return <div className="text-sm text-muted-foreground">Loading…</div>;
   }
 
@@ -128,7 +141,7 @@ export function PluginPage() {
 
   if (!pageSlot) {
     if (pluginRoutePath) {
-      return <NotFoundPage scope="board" />;
+      return <DashboardRecoveryRedirect />;
     }
     // No page slot: redirect to plugin settings where plugin info is always shown
     const settingsPath = pluginId ? `/instance/settings/plugins/${pluginId}` : "/instance/settings/plugins";

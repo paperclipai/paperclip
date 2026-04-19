@@ -25,7 +25,7 @@ import {
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, type Config } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
@@ -41,6 +41,9 @@ import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
+import { serverVersion } from "./version.js";
+import { resolvePaperclipInstanceRoot } from "./home-paths.js";
+import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -189,6 +192,49 @@ export async function startServer(): Promise<StartedServer> {
       return parsed.toString();
     } catch {
       return rawUrl;
+    }
+  }
+
+  function hasNonLoopbackExplicitPublicUrl(rawUrl: string | undefined): boolean {
+    if (!rawUrl) return false;
+    try {
+      return !isLoopbackHost(new URL(rawUrl).hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  function resolveEffectiveUrlPort(rawUrl: string): number | null {
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.port) {
+        const port = Number(parsed.port);
+        return Number.isFinite(port) ? port : null;
+      }
+      if (parsed.protocol === "https:") return 443;
+      if (parsed.protocol === "http:") return 80;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  function assertExplicitPublicUrlPortMatchesConfiguredPort(config: Config): void {
+    if (
+      config.deploymentMode !== "authenticated" ||
+      config.authBaseUrlMode !== "explicit" ||
+      !config.authPublicBaseUrl ||
+      !hasNonLoopbackExplicitPublicUrl(config.authPublicBaseUrl)
+    ) {
+      return;
+    }
+
+    const explicitPublicPort = resolveEffectiveUrlPort(config.authPublicBaseUrl);
+    if (explicitPublicPort !== null && explicitPublicPort !== config.port) {
+      throw new Error(
+        `Configured server port ${config.port} does not match explicit public URL ${config.authPublicBaseUrl}. ` +
+          "Update both server.port and auth.publicBaseUrl together before restarting.",
+      );
     }
   }
   
@@ -456,6 +502,7 @@ export async function startServer(): Promise<StartedServer> {
       }
     }
   }
+  assertExplicitPublicUrlPortMatchesConfiguredPort(config);
   
   let authReady = config.deploymentMode === "local_trusted";
   let betterAuthHandler: RequestHandler | undefined;
@@ -502,8 +549,22 @@ export async function startServer(): Promise<StartedServer> {
     authReady = true;
   }
   
-  const listenPort = await detectPort(config.port);
-  if (listenPort !== config.port) {
+  const requestedPort = config.port;
+  const listenPort = await detectPort(requestedPort);
+  if (listenPort !== requestedPort) {
+    const requiresStableExplicitPort =
+      config.deploymentMode === "authenticated" &&
+      config.authBaseUrlMode === "explicit" &&
+      hasNonLoopbackExplicitPublicUrl(config.authPublicBaseUrl);
+
+    if (requiresStableExplicitPort) {
+      throw new Error(
+        `Configured server port ${requestedPort} is unavailable, but Paperclip is configured with explicit public URL ${config.authPublicBaseUrl}. ` +
+          `Refusing to start on fallback port ${listenPort}. Free port ${requestedPort}, or update both server.port and auth.publicBaseUrl together before restarting.`,
+      );
+    }
+
+    logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedPort}, selectedPort=${listenPort})`);
     config.port = listenPort;
   }
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
@@ -532,6 +593,25 @@ export async function startServer(): Promise<StartedServer> {
     bindHost: config.host,
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
+    heartbeatSchedulerEnabled: config.heartbeatSchedulerEnabled,
+    heartbeatSchedulerIntervalMs: config.heartbeatSchedulerIntervalMs,
+    hostVersion: serverVersion,
+    updateSafety: {
+      currentVersion: serverVersion,
+      connectionString: activeDatabaseConnectionString,
+      backupDir: config.databaseBackupDir,
+      instanceRoot: resolvePaperclipInstanceRoot(),
+      configPath: resolvePaperclipConfigPath(),
+      envPath: resolvePaperclipEnvPath(),
+      secretsKeyFilePath: config.secretsMasterKeyFilePath,
+      storageProvider: config.storageProvider,
+      storageLocalDiskBaseDir: config.storageLocalDiskBaseDir,
+      storageS3Bucket: config.storageS3Bucket,
+      storageS3Region: config.storageS3Region,
+      storageS3Endpoint: config.storageS3Endpoint,
+      storageS3Prefix: config.storageS3Prefix,
+      cwd: process.cwd(),
+    },
     betterAuthHandler,
     resolveSession,
   });
@@ -542,10 +622,6 @@ export async function startServer(): Promise<StartedServer> {
   // This prevents intermittent 502/ECONNRESET errors caused by Node's 5s default.
   server.keepAliveTimeout = 185000;
   server.headersTimeout = 186000;
-  
-  if (listenPort !== config.port) {
-    logger.warn(`Requested port is busy; using next free port (requestedPort=${config.port}, selectedPort=${listenPort})`);
-  }
   
   const runtimeListenHost = config.host;
   const runtimeApiHost =
@@ -701,14 +777,15 @@ export async function startServer(): Promise<StartedServer> {
             logger.warn({ err, url }, "Failed to open browser on startup");
           });
       }
-        printStartupBanner({
-          bind: config.bind,
-          host: config.host,
-          deploymentMode: config.deploymentMode,
+      printStartupBanner({
+        bind: config.bind,
+        host: config.host,
+        deploymentMode: config.deploymentMode,
         deploymentExposure: config.deploymentExposure,
         authReady,
-        requestedPort: config.port,
+        requestedPort,
         listenPort,
+        publicBaseUrl: config.authPublicBaseUrl,
         uiMode,
         db: startupDbInfo,
         migrationSummary,

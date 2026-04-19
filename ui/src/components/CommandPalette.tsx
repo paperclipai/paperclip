@@ -28,11 +28,13 @@ import {
   History,
   SquarePen,
   Plus,
+  CircleUserRound,
   Calendar,
   CalendarDays,
   CalendarRange,
 } from "lucide-react";
 import { Identity } from "./Identity";
+import { ProjectLabelPills } from "./ProjectLabelPills";
 import { agentUrl, projectUrl } from "../lib/utils";
 
 export function CommandPalette() {
@@ -109,7 +111,7 @@ export function CommandPalette() {
         if (v && isMobile) setSidebarOpen(false);
       }}>
       <CommandInput
-        placeholder="Search issues, agents, projects..."
+        placeholder="Search tasks, agents, projects..."
         value={query}
         onValueChange={setQuery}
       />
@@ -124,7 +126,7 @@ export function CommandPalette() {
             }}
           >
             <SquarePen className="mr-2 h-4 w-4" />
-            Create new issue
+            Create new task
             <span className="ml-auto text-xs text-muted-foreground">C</span>
           </CommandItem>
           <CommandItem
@@ -155,7 +157,11 @@ export function CommandPalette() {
           </CommandItem>
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
-            Issues
+            Tasks (Issues)
+          </CommandItem>
+          <CommandItem onSelect={() => go("/my-issues")}>
+            <CircleUserRound className="mr-2 h-4 w-4" />
+            My Tasks
           </CommandItem>
           <CommandItem onSelect={() => go("/tasks/today")}>
             <Calendar className="mr-2 h-4 w-4" />
@@ -198,7 +204,7 @@ export function CommandPalette() {
         {visibleIssues.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Issues">
+            <CommandGroup heading="Tasks (Issues)">
               {visibleIssues.slice(0, 10).map((issue) => (
                 <CommandItem
                   key={issue.id}
@@ -244,9 +250,16 @@ export function CommandPalette() {
             <CommandSeparator />
             <CommandGroup heading="Projects">
               {projects.slice(0, 10).map((project) => (
-                <CommandItem key={project.id} onSelect={() => go(projectUrl(project))}>
+                <CommandItem
+                  key={project.id}
+                  value={`${project.name} ${(project.labels ?? []).map((label) => label.name).join(" ")}`}
+                  onSelect={() => go(projectUrl(project))}
+                >
                   <Hexagon className="mr-2 h-4 w-4" />
-                  {project.name}
+                  <span className="flex min-w-0 flex-1 items-center gap-2">
+                    <span className="truncate">{project.name}</span>
+                    <ProjectLabelPills labels={project.labels} variant="dense" />
+                  </span>
                 </CommandItem>
               ))}
             </CommandGroup>

@@ -9,6 +9,9 @@ import type {
   IssueComment,
   Agent,
   Goal,
+  ContextSource,
+  ContextSourceItem,
+  ContextSourceSearchResult,
 } from "@paperclipai/shared";
 import type {
   EventFilter,
@@ -145,6 +148,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
   const projectWorkspaces = new Map<string, PluginWorkspace[]>();
+  const contextSources = new Map<string, ContextSource>();
+  const contextSourceItems = new Map<string, ContextSourceItem>();
 
   const sessions = new Map<string, AgentSession>();
   const sessionEventCallbacks = new Map<string, (event: AgentSessionEvent) => void>();
@@ -317,6 +322,165 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         return workspaces.find((workspace) => workspace.isPrimary) ?? null;
       },
     },
+    contextSources: {
+      async create(input) {
+        requireCapability(manifest, capabilitySet, "project.context.write");
+        const project = projects.get(input.projectId);
+        if (!isInCompany(project, input.companyId)) {
+          throw new Error(`Project not found: ${input.projectId}`);
+        }
+        const now = new Date();
+        const source: ContextSource = {
+          id: randomUUID(),
+          companyId: input.companyId,
+          projectId: input.projectId,
+          sourceType: input.sourceType,
+          provider: input.provider ?? null,
+          title: input.title,
+          uri: input.uri ?? null,
+          status: input.bodyText ? "ready" : "syncing",
+          statusMessage: null,
+          assetId: null,
+          externalId: input.externalId ?? null,
+          metadata: input.metadata ?? null,
+          lastSyncedAt: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          itemCount: 0,
+          chunkCount: 0,
+          createdAt: now,
+          updatedAt: now,
+        };
+        contextSources.set(source.id, source);
+        if (input.bodyText) {
+          const item: ContextSourceItem = {
+            id: randomUUID(),
+            companyId: source.companyId,
+            projectId: source.projectId,
+            sourceId: source.id,
+            externalId: input.externalId ?? source.id,
+            title: input.title,
+            uri: input.uri ?? null,
+            mimeType: "text/plain",
+            bodyText: input.bodyText,
+            bodySha256: null,
+            status: "ready",
+            statusMessage: null,
+            metadata: input.metadata ?? null,
+            sourceModifiedAt: null,
+            indexedAt: now,
+            createdAt: now,
+            updatedAt: now,
+          };
+          contextSourceItems.set(item.id, item);
+          contextSources.set(source.id, {
+            ...source,
+            status: "ready",
+            lastSyncedAt: now,
+            itemCount: 1,
+            chunkCount: 1,
+            updatedAt: now,
+          });
+        }
+        return contextSources.get(source.id)!;
+      },
+      async upsertItem(input) {
+        requireCapability(manifest, capabilitySet, "project.context.write");
+        const source = contextSources.get(input.sourceId);
+        if (!source || source.companyId !== input.companyId) {
+          throw new Error(`Context source not found: ${input.sourceId}`);
+        }
+        const existing = [...contextSourceItems.values()].find(
+          (item) => item.sourceId === input.sourceId && item.externalId === (input.externalId ?? null),
+        );
+        const now = new Date();
+        const item: ContextSourceItem = existing
+          ? {
+            ...existing,
+            title: input.title,
+            uri: input.uri ?? null,
+            mimeType: input.mimeType ?? null,
+            bodyText: input.bodyText ?? null,
+            bodySha256: null,
+            status: input.status ?? "ready",
+            statusMessage: input.statusMessage ?? null,
+            metadata: input.metadata ?? null,
+            sourceModifiedAt: input.sourceModifiedAt ? new Date(input.sourceModifiedAt) : null,
+            indexedAt: input.bodyText ? now : null,
+            updatedAt: now,
+          }
+          : {
+            id: randomUUID(),
+            companyId: source.companyId,
+            projectId: source.projectId,
+            sourceId: source.id,
+            externalId: input.externalId ?? null,
+            title: input.title,
+            uri: input.uri ?? null,
+            mimeType: input.mimeType ?? null,
+            bodyText: input.bodyText ?? null,
+            bodySha256: null,
+            status: input.status ?? "ready",
+            statusMessage: input.statusMessage ?? null,
+            metadata: input.metadata ?? null,
+            sourceModifiedAt: input.sourceModifiedAt ? new Date(input.sourceModifiedAt) : null,
+            indexedAt: input.bodyText ? now : null,
+            createdAt: now,
+            updatedAt: now,
+          };
+        contextSourceItems.set(item.id, item);
+        const items = [...contextSourceItems.values()].filter((entry) => entry.sourceId === source.id);
+        contextSources.set(source.id, {
+          ...source,
+          status: "ready",
+          statusMessage: null,
+          lastSyncedAt: now,
+          itemCount: items.length,
+          chunkCount: items.filter((entry) => entry.bodyText).length,
+          updatedAt: now,
+        });
+        return item;
+      },
+      async setStatus(sourceId, companyId, status, statusMessage) {
+        requireCapability(manifest, capabilitySet, "project.context.write");
+        const source = contextSources.get(sourceId);
+        if (!source || source.companyId !== companyId) {
+          throw new Error(`Context source not found: ${sourceId}`);
+        }
+        const updated = {
+          ...source,
+          status,
+          statusMessage: statusMessage ?? null,
+          updatedAt: new Date(),
+        };
+        contextSources.set(sourceId, updated);
+        return updated;
+      },
+      async search(input) {
+        requireCapability(manifest, capabilitySet, "project.context.read");
+        const query = input.query.trim().toLowerCase();
+        if (!query) return [];
+        const results: ContextSourceSearchResult[] = [];
+        for (const item of contextSourceItems.values()) {
+          if (item.companyId !== input.companyId || item.projectId !== input.projectId) continue;
+          const body = item.bodyText ?? "";
+          const index = body.toLowerCase().indexOf(query);
+          if (index === -1) continue;
+          const source = contextSources.get(item.sourceId);
+          results.push({
+            chunkId: `${item.id}:0`,
+            sourceId: item.sourceId,
+            itemId: item.id,
+            sourceTitle: source?.title ?? item.title,
+            itemTitle: item.title,
+            uri: item.uri,
+            content: body.slice(Math.max(0, index - 120), index + query.length + 240),
+            rank: 1,
+          });
+        }
+        return results.slice(0, input.limit ?? 10);
+      },
+    },
     companies: {
       async list(input) {
         requireCapability(manifest, capabilitySet, "companies.read");
@@ -360,7 +524,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           parentId: input.parentId ?? null,
           title: input.title,
           description: input.description ?? null,
+          dueDate: null,
           status: "todo",
+          boardPosition: issues.size,
           priority: input.priority ?? "medium",
           assigneeAgentId: input.assigneeAgentId ?? null,
           assigneeUserId: null,

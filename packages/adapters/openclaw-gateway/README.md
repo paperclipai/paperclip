@@ -43,6 +43,15 @@ The adapter supports the same session routing model as HTTP OpenClaw mode:
 
 Resolved session key is sent as `agent.sessionKey`.
 
+## Recommended Paperclip Role
+
+For live Paperclip companies, treat OpenClaw as an ops-manager agent rather than the CEO.
+
+- use a stable agent name such as `OpenClawOps`
+- enable heartbeat on the agent
+- grant `tasks:assign` when you want manager-mode delegation
+- rely on the heartbeat workflow to inspect company state, create child issues, and nudge `@CEO` only when work is stalled
+
 ## Payload Mapping
 
 The agent request is built as:
@@ -54,6 +63,22 @@ The agent request is built as:
 - optional additions:
   - all `payloadTemplate` fields merged in
   - `agentId` from config if set and not already in template
+
+Paperclip wake context is delivered in two ways:
+
+- inside `message` as environment hints plus the structured wake payload JSON
+- in a top-level `paperclip` field when the gateway accepts it
+
+If the gateway rejects the top-level `paperclip` field as incompatible, the adapter retries once without that field for compatibility.
+
+The default wake workflow is:
+
+1. `GET /api/agents/me`
+2. `GET /api/companies/{companyId}/dashboard`
+3. `GET /api/agents/me/inbox-lite`
+4. `GET /api/issues/{issueId}/heartbeat-context` for the chosen issue
+
+For company-wide fallback targeting, use `GET /api/companies/{companyId}/issues?status=todo,in_progress,blocked&limit=50` rather than `/api/issues?...`.
 
 ## Timeouts
 

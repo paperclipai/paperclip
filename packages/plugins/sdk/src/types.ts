@@ -23,6 +23,12 @@ import type {
   IssueDocumentSummary,
   Agent,
   Goal,
+  ContextSource,
+  ContextSourceCreateRequest,
+  ContextSourceItem,
+  ContextSourceSearchResult,
+  ContextSourceStatus,
+  ContextSourceUpsertItemRequest,
 } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
@@ -67,6 +73,12 @@ export type {
   IssueDocumentSummary,
   Agent,
   Goal,
+  ContextSource,
+  ContextSourceCreateRequest,
+  ContextSourceItem,
+  ContextSourceSearchResult,
+  ContextSourceStatus,
+  ContextSourceUpsertItemRequest,
 } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
@@ -662,6 +674,59 @@ export interface PluginProjectsClient {
 }
 
 /**
+ * `ctx.contextSources` — upsert connector-backed project context.
+ *
+ * Requires:
+ * - `project.context.write` for `create`, `upsertItem`, and `setStatus`
+ * - `project.context.read` for `search`
+ *
+ * Connector plugins should store only normalized source metadata and text here.
+ * OAuth tokens, refresh tokens, and other connector credentials must stay in
+ * plugin config/state as secret references and must never be written into
+ * context source metadata or source item bodies.
+ */
+export interface PluginContextSourcesClient {
+  /**
+   * Create a project context source row for a connector, folder, manual source,
+   * or uploaded file managed by the plugin.
+   */
+  create(input: ContextSourceCreateRequest & {
+    companyId: string;
+    projectId: string;
+  }): Promise<ContextSource>;
+
+  /**
+   * Create or refresh one source item, replacing its text chunks when body text
+   * changes. `externalId` is used as the connector's stable remote identifier.
+   */
+  upsertItem(input: ContextSourceUpsertItemRequest & {
+    companyId: string;
+    sourceId: string;
+  }): Promise<ContextSourceItem>;
+
+  /**
+   * Report source sync status. Use this before/after connector crawls or when
+   * an auth/error condition prevents a sync from completing.
+   */
+  setStatus(
+    sourceId: string,
+    companyId: string,
+    status: ContextSourceStatus,
+    statusMessage?: string | null,
+  ): Promise<ContextSource>;
+
+  /**
+   * Search a project's indexed context chunks with provenance.
+   */
+  search(input: {
+    companyId: string;
+    projectId: string;
+    query: string;
+    limit?: number;
+  }): Promise<ContextSourceSearchResult[]>;
+}
+
+/**
  * `ctx.data` — register `getData` handlers that back `usePluginData()` in the
  * plugin's frontend components.
  *
@@ -1155,6 +1220,9 @@ export interface PluginContext {
 
   /** Read project and workspace metadata. Requires `projects.read` / `project.workspaces.read`. */
   projects: PluginProjectsClient;
+
+  /** Upsert/search project context sources. Requires `project.context.*` capabilities. */
+  contextSources: PluginContextSourcesClient;
 
   /** Read company metadata. Requires `companies.read`. */
   companies: PluginCompaniesClient;

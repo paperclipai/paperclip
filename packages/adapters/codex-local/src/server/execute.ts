@@ -13,19 +13,26 @@ import {
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
-  ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
   resolvePaperclipDesiredSkillNames,
   renderTemplate,
+  renderPaperclipOperatingCadencePrompt,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
+  renderPaperclipProjectContextPrompt,
+  stringifyPaperclipProjectContextPayload,
   joinPromptSections,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
+import {
+  buildCodexCommandEnv,
+  codexCommandResolutionError,
+  withCodexCommandPath,
+} from "./command.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
@@ -140,6 +147,34 @@ async function pruneBrokenUnavailablePaperclipSkillSymlinks(
 
 function resolveCodexSkillsDir(codexHome: string): string {
   return path.join(codexHome, "skills");
+}
+
+type ResolvedCodexSkillSource = {
+  key: string;
+  runtimeName: string;
+  target: string;
+  desiredSource: string;
+  resolvedSource: string | null;
+};
+
+async function resolveCodexSkillSources(
+  skillsHome: string,
+  skillsEntries: Array<{ key: string; runtimeName: string; source: string }>,
+): Promise<ResolvedCodexSkillSource[]> {
+  const resolved = await Promise.all(
+    skillsEntries.map(async (entry) => {
+      const target = path.join(skillsHome, entry.runtimeName);
+      return {
+        key: entry.key,
+        runtimeName: entry.runtimeName,
+        target,
+        desiredSource: await fs.realpath(entry.source).catch(() => entry.source),
+        resolvedSource: await fs.realpath(target).catch(() => null),
+      };
+    }),
+  );
+  resolved.sort((left, right) => left.runtimeName.localeCompare(right.runtimeName));
+  return resolved;
 }
 
 type EnsureCodexSkillsInjectedOptions = {
@@ -270,6 +305,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
   const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
+  const desiredCodexSkillEntries = codexSkillEntries.filter((entry) => desiredSkillNames.includes(entry.key));
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const preparedManagedCodexHome =
     configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
@@ -287,6 +323,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       desiredSkillNames,
     },
   );
+  const resolvedCodexSkills = await resolveCodexSkillSources(codexSkillsDir, desiredCodexSkillEntries);
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
@@ -316,6 +353,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
+  const projectContextJson = stringifyPaperclipProjectContextPayload(context.paperclipProjectContext);
   if (wakeTaskId) {
     env.PAPERCLIP_TASK_ID = wakeTaskId;
   }
@@ -336,6 +374,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
+  }
+  if (projectContextJson) {
+    env.PAPERCLIP_PROJECT_CONTEXT_JSON = projectContextJson;
   }
   if (effectiveWorkspaceCwd) {
     env.PAPERCLIP_WORKSPACE_CWD = effectiveWorkspaceCwd;
@@ -388,9 +429,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const billingType = resolveCodexBillingType(effectiveEnv);
-  const runtimeEnv = ensurePathInEnv(effectiveEnv);
-  await ensureCommandResolvable(command, cwd, runtimeEnv);
+  const runtimeEnv = buildCodexCommandEnv(command, effectiveEnv);
+  try {
+    await ensureCommandResolvable(command, cwd, runtimeEnv);
+  } catch (err) {
+    throw new Error(codexCommandResolutionError(command, cwd, runtimeEnv, err));
+  }
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
+  const childEnv = withCodexCommandPath(env, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
     includeRuntimeKeys: ["HOME"],
@@ -455,28 +501,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const projectContextPrompt = renderPaperclipProjectContextPrompt(context.paperclipProjectContext);
+  const operatingCadencePrompt = renderPaperclipOperatingCadencePrompt();
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   instructionsChars = promptInstructionsPrefix.length;
   const commandNotes = (() => {
+    const codexRuntimeNotes = [
+      `Effective Codex model: ${model || "Codex CLI default"}`,
+      `Effective Codex reasoning effort: ${modelReasoningEffort || "auto"}`,
+      "Codex collaboration mode: Paperclip currently uses codex exec and does not expose true Codex Plan Mode; run/session metadata may still report the default collaboration mode.",
+      `Codex skills home: ${codexSkillsDir}`,
+      ...resolvedCodexSkills.map((skill) => {
+        const resolvedSource = skill.resolvedSource
+          ? skill.resolvedSource === skill.desiredSource
+            ? skill.resolvedSource
+            : `${skill.resolvedSource} (expected ${skill.desiredSource})`
+          : `${skill.target} (missing; expected ${skill.desiredSource})`;
+        return `Resolved Codex skill "${skill.runtimeName}": ${resolvedSource}`;
+      }),
+    ];
     if (!instructionsFilePath) {
-      return [repoAgentsNote];
+      return [...codexRuntimeNotes, repoAgentsNote];
     }
     if (instructionsPrefix.length > 0) {
       if (shouldUseResumeDeltaPrompt) {
         return [
+          ...codexRuntimeNotes,
           `Loaded agent instructions from ${instructionsFilePath}`,
           "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
           repoAgentsNote,
         ];
       }
       return [
+        ...codexRuntimeNotes,
         `Loaded agent instructions from ${instructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
         repoAgentsNote,
       ];
     }
     return [
+      ...codexRuntimeNotes,
       `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
       repoAgentsNote,
     ];
@@ -486,7 +551,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
+    operatingCadencePrompt,
     wakePrompt,
+    projectContextPrompt,
     sessionHandoffNote,
     renderedPrompt,
   ]);
@@ -494,7 +561,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     promptChars: prompt.length,
     instructionsChars,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
+    operatingCadencePromptChars: operatingCadencePrompt.length,
     wakePromptChars: wakePrompt.length,
+    projectContextPromptChars: projectContextPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
@@ -532,7 +601,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const proc = await runChildProcess(runId, command, args, {
       cwd,
-      env,
+      env: childEnv,
       stdin: prompt,
       timeoutSec,
       graceSec,
@@ -605,7 +674,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       biller: resolveCodexBiller(effectiveEnv, billingType),
       model,
       billingType,
-      costUsd: null,
+      costUsd: attempt.parsed.costUsd,
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,

@@ -12,12 +12,13 @@ import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
-import { usePanel } from "../context/PanelContext";
+import { useSidebar } from "../context/SidebarContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
+import { canAskAgentsForIssue } from "../lib/agent-help-request";
 import {
   hasLegacyIssueDetailQuery,
   createIssueDetailPath,
@@ -51,10 +52,14 @@ import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils"
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
+import { IssueChecklistSection } from "../components/IssueChecklistSection";
+import { IssueLinksSection } from "../components/IssueLinksSection";
 import { useLiveRunTranscripts } from "../components/transcript/useLiveRunTranscripts";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
+import { IssueDueBadge } from "../components/IssueDueBadge";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
+import { AskAgentsForHelpDialog } from "../components/AskAgentsForHelpDialog";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -66,25 +71,24 @@ import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatIssueActivityAction } from "@/lib/activity-format";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import {
   Activity as ActivityIcon,
+  Bot,
   Check,
   ChevronRight,
   Copy,
   EyeOff,
   Hexagon,
+  Image as ImageIcon,
   ListTree,
   MessageSquare,
   MoreHorizontal,
   Paperclip,
   Repeat,
-  SlidersHorizontal,
   Trash2,
 } from "lucide-react";
 import {
@@ -366,7 +370,7 @@ export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
-  const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
+  const { isMobile } = useSidebar();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -374,7 +378,6 @@ export function IssueDetail() {
   const { pushToast } = useToast();
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("chat");
   const [pendingApprovalAction, setPendingApprovalAction] = useState<{
     approvalId: string;
@@ -385,11 +388,13 @@ export function IssueDetail() {
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
+  const [askAgentsOpen, setAskAgentsOpen] = useState(false);
   const [optimisticComments, setOptimisticComments] = useState<OptimisticIssueComment[]>([]);
   const [pendingCommentComposerFocusKey, setPendingCommentComposerFocusKey] = useState(0);
   const [issueChatInitialTranscriptReady, setIssueChatInitialTranscriptReady] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
+  const lastAskAgentsLaunchKeyRef = useRef<string | null>(null);
   const commentComposerRef = useRef<IssueChatComposerHandle | null>(null);
 
   useEffect(() => {
@@ -497,7 +502,7 @@ export function IssueDetail() {
     [location.state, resolvedIssueDetailState],
   );
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: "Issues", href: "/issues" },
+    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: "Tasks (Issues)", href: "/issues" },
     [issueId, location.state, location.search],
   );
 
@@ -561,6 +566,7 @@ export function IssueDetail() {
     companyId: selectedCompanyId,
     userId: currentUserId,
   });
+  const canAskAgentsForCurrentIssue = canAskAgentsForIssue(issue, currentUserId);
   const { slots: issuePluginDetailSlots } = usePluginSlots({
     slotTypes: ["detailTab"],
     entityType: "issue",
@@ -634,13 +640,6 @@ export function IssueDetail() {
     () => [...rawChildIssues].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
     [rawChildIssues],
   );
-  const childIssuesPanelKey = useMemo(
-    () => childIssues.map((child) => `${child.id}:${String(child.updatedAt)}`).join("|"),
-    [childIssues],
-  );
-  const issuePanelKey = issue
-    ? `${issue.id}:${String(issue.updatedAt)}:${childIssuesPanelKey}`
-    : "";
   const openNewSubIssue = useCallback(() => {
     if (!issue) return;
     openNewIssue({
@@ -896,8 +895,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.list(context.selectedCompanyId), context.previousList);
       }
       pushToast({
-        title: "Issue update failed",
-        body: err instanceof Error ? err.message : "Unable to save issue changes",
+        title: "Task update failed",
+        body: err instanceof Error ? err.message : "Unable to save task changes",
         tone: "error",
       });
     },
@@ -1028,6 +1027,17 @@ export function IssueDetail() {
       }
     },
   });
+
+  useEffect(() => {
+    if (!issue?.id || !canAskAgentsForCurrentIssue) return;
+    const params = new URLSearchParams(location.search);
+    if (params.get("askAgents") !== "1") return;
+
+    const launchKey = `${issue.id}:${location.search}`;
+    if (lastAskAgentsLaunchKeyRef.current === launchKey) return;
+    lastAskAgentsLaunchKeyRef.current = launchKey;
+    setAskAgentsOpen(true);
+  }, [canAskAgentsForCurrentIssue, issue?.id, location.search]);
 
   const addCommentAndReassign = useMutation({
     mutationFn: ({
@@ -1304,24 +1314,37 @@ export function IssueDetail() {
     },
   });
 
+  const updateAttachment = useMutation({
+    mutationFn: ({ attachmentId, isCover }: { attachmentId: string; isCover: boolean }) =>
+      issuesApi.updateAttachment(attachmentId, { isCover }),
+    onSuccess: () => {
+      setAttachmentError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
+      invalidateIssueDetail();
+    },
+    onError: (err) => {
+      setAttachmentError(err instanceof Error ? err.message : "Attachment update failed");
+    },
+  });
+
   const archiveFromInbox = useMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
     onSuccess: () => {
       invalidateIssueCollections();
       navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
-      pushToast({ title: "Issue archived from inbox", tone: "success" });
+      pushToast({ title: "Task archived from inbox", tone: "success" });
     },
     onError: (err) => {
       pushToast({
         title: "Archive failed",
-        body: err instanceof Error ? err.message : "Unable to archive this issue from the inbox",
+        body: err instanceof Error ? err.message : "Unable to archive this task from the inbox",
         tone: "error",
       });
     },
   });
 
   useEffect(() => {
-    const titleLabel = issue?.title ?? issueId ?? "Issue";
+    const titleLabel = issue?.title ?? issueId ?? "Task";
     setBreadcrumbs([
       sourceBreadcrumb,
       { label: hasLiveRuns ? `🔵 ${titleLabel}` : titleLabel },
@@ -1355,22 +1378,6 @@ export function IssueDetail() {
     lastMarkedReadIssueIdRef.current = issue.id;
     markIssueRead.mutate(issue.id);
   }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!issue) {
-      closePanel();
-      return;
-    }
-    openPanel(
-      <IssueProperties
-        issue={issue}
-        childIssues={childIssues}
-        onAddSubIssue={openNewSubIssue}
-        onUpdate={handleIssuePropertiesUpdate}
-      />
-    );
-    return () => closePanel();
-  }, [closePanel, handleIssuePropertiesUpdate, issuePanelKey, openNewSubIssue, openPanel]);
 
   const goToInboxShortcutArmedRef = useRef(false);
   const goToInboxShortcutTimeoutRef = useRef<number | null>(null);
@@ -1501,6 +1508,7 @@ export function IssueDetail() {
   const attachmentList = attachments ?? [];
   const imageAttachments = attachmentList.filter(isImageAttachment);
   const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
+  const coverAttachment = issue?.coverAttachment ?? imageAttachments.find((attachment) => attachment.isCover) ?? null;
 
   const handleChatImageClick = useCallback(
     (src: string) => {
@@ -1627,6 +1635,19 @@ export function IssueDetail() {
 
   return (
     <div className="max-w-2xl space-y-6">
+      <AskAgentsForHelpDialog
+        open={askAgentsOpen && canAskAgentsForCurrentIssue}
+        issueTitle={issue.title}
+        agents={agents ?? []}
+        submitting={addComment.isPending}
+        onOpenChange={setAskAgentsOpen}
+        onSubmit={async (commentBody) => {
+          await addComment.mutateAsync({ body: commentBody });
+          setDetailTab("chat");
+          pushToast({ title: "Agents asked", tone: "success" });
+        }}
+      />
+
       {/* Parent chain breadcrumb */}
       {ancestors.length > 0 && (
         <nav className="flex items-center gap-1 text-xs text-muted-foreground flex-wrap">
@@ -1657,7 +1678,7 @@ export function IssueDetail() {
       {issue.hiddenAt && (
         <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <EyeOff className="h-4 w-4 shrink-0" />
-          This issue is hidden
+          This task is hidden
         </div>
       )}
 
@@ -1672,6 +1693,7 @@ export function IssueDetail() {
             onChange={(priority) => updateIssue.mutate({ priority })}
           />
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+          <IssueDueBadge issue={issue} />
 
           {hasLiveRuns && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
@@ -1730,44 +1752,45 @@ export function IssueDetail() {
           )}
 
           <div className="ml-auto flex items-center gap-0.5 md:hidden shrink-0">
+            {canAskAgentsForCurrentIssue ? (
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={() => setAskAgentsOpen(true)}
+                title="Ask agents"
+              >
+                <Bot className="h-4 w-4" />
+              </Button>
+            ) : null}
             <Button
               variant="ghost"
               size="icon-xs"
               onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
+              title="Copy task as markdown"
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => setMobilePropsOpen(true)}
-              title="Properties"
-            >
-              <SlidersHorizontal className="h-4 w-4" />
             </Button>
           </div>
 
           <div className="hidden md:flex items-center md:ml-auto shrink-0">
+            {canAskAgentsForCurrentIssue ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mr-1 h-7 gap-1.5 px-2 shadow-none"
+                onClick={() => setAskAgentsOpen(true)}
+              >
+                <Bot className="h-3.5 w-3.5" />
+                Ask agents
+              </Button>
+            ) : null}
             <Button
               variant="ghost"
               size="icon-xs"
               onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
+              title="Copy task as markdown"
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className={cn(
-                "shrink-0 transition-opacity duration-200",
-                panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
-              )}
-              onClick={() => setPanelVisible(true)}
-              title="Show properties"
-            >
-              <SlidersHorizontal className="h-4 w-4" />
             </Button>
 
             <Popover open={moreOpen} onOpenChange={setMoreOpen}>
@@ -1782,13 +1805,13 @@ export function IssueDetail() {
                 onClick={() => {
                   updateIssue.mutate(
                     { hiddenAt: new Date().toISOString() },
-                    { onSuccess: () => navigate("/issues/all") },
+                    { onSuccess: () => navigate(sourceBreadcrumb.href || "/issues") },
                   );
                   setMoreOpen(false);
                 }}
               >
                 <EyeOff className="h-3 w-3" />
-                Hide this Issue
+                Hide this Task
               </button>
             </PopoverContent>
             </Popover>
@@ -1801,6 +1824,33 @@ export function IssueDetail() {
           as="h2"
           className="text-xl font-bold"
         />
+
+        {coverAttachment ? (
+          <button
+            type="button"
+            className="group relative block aspect-[5/2] w-full overflow-hidden rounded-lg border border-border bg-muted text-left"
+            onClick={() => {
+              const idx = imageAttachments.findIndex((attachment) => attachment.id === coverAttachment.id);
+              if (idx >= 0) {
+                setGalleryIndex(idx);
+                setGalleryOpen(true);
+              } else {
+                window.open(coverAttachment.contentPath, "_blank");
+              }
+            }}
+            title="Open cover image"
+          >
+            <img
+              src={coverAttachment.contentPath}
+              alt={coverAttachment.originalFilename ?? "Task cover"}
+              className="h-full w-full object-cover transition-transform group-hover:scale-[1.01]"
+            />
+            <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-background/85 px-2 py-1 text-[11px] font-medium text-foreground shadow-sm">
+              <ImageIcon className="h-3 w-3" />
+              Cover
+            </span>
+          </button>
+        ) : null}
 
         <InlineEditor
           value={issue.description ?? ""}
@@ -1818,6 +1868,17 @@ export function IssueDetail() {
             await uploadAttachment.mutateAsync(file);
           }}
         />
+
+        <IssueProperties
+          issue={issue}
+          childIssues={childIssues}
+          onAddSubIssue={openNewSubIssue}
+          onUpdate={handleIssuePropertiesUpdate}
+          inline={isMobile}
+        />
+
+        <IssueChecklistSection issue={issue} />
+        <IssueLinksSection issue={issue} />
       </div>
 
       <PluginSlotOutlet
@@ -1864,11 +1925,11 @@ export function IssueDetail() {
       {(childIssuesLoading || childIssues.length > 0) && (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-medium text-muted-foreground">Sub-issues</h3>
+            <h3 className="text-sm font-medium text-muted-foreground">Child tasks</h3>
             <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shadow-none">
               <ListTree className="h-3.5 w-3.5 mr-1.5" />
-              <span className="hidden sm:inline">Add sub-issue</span>
-              <span className="sm:hidden">Sub-issue</span>
+              <span className="hidden sm:inline">Add child task</span>
+              <span className="sm:hidden">Child task</span>
             </Button>
           </div>
           {childIssuesLoading ? (
@@ -1936,8 +1997,8 @@ export function IssueDetail() {
             {childIssues.length === 0 && (
               <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shadow-none">
                 <ListTree className="h-3.5 w-3.5 mr-1.5" />
-                <span className="hidden sm:inline">Add sub-issue</span>
-                <span className="sm:hidden">Sub-issue</span>
+                <span className="hidden sm:inline">Add child task</span>
+                <span className="sm:hidden">Child task</span>
               </Button>
             )}
           </>
@@ -2025,17 +2086,39 @@ export function IssueDetail() {
                     </div>
                   </div>
                 ) : (
-                  <button
-                    type="button"
-                    className="absolute top-1.5 right-1.5 rounded-md bg-black/50 p-1 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setConfirmDeleteId(attachment.id);
-                    }}
-                    title="Delete attachment"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  <>
+                    {attachment.isCover ? (
+                      <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded-md bg-black/60 px-1.5 py-1 text-[10px] font-medium text-white">
+                        <ImageIcon className="h-3 w-3" />
+                        Cover
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="absolute left-1.5 top-1.5 rounded-md bg-black/50 p-1 text-white opacity-0 transition-opacity hover:bg-black/70 group-hover:opacity-100"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          updateAttachment.mutate({ attachmentId: attachment.id, isCover: true });
+                        }}
+                        disabled={updateAttachment.isPending}
+                        title="Set as cover"
+                        aria-label="Set as cover"
+                      >
+                        <ImageIcon className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="absolute top-1.5 right-1.5 rounded-md bg-black/50 p-1 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDeleteId(attachment.id);
+                      }}
+                      title="Delete attachment"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </>
                 )}
               </div>
             ))}
@@ -2274,25 +2357,6 @@ export function IssueDetail() {
         )}
       </Tabs>
 
-      {/* Mobile properties drawer */}
-      <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
-        <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
-          <SheetHeader>
-            <SheetTitle className="text-sm">Properties</SheetTitle>
-          </SheetHeader>
-          <ScrollArea className="flex-1 overflow-y-auto">
-            <div className="px-4 pb-4">
-              <IssueProperties
-                issue={issue}
-                childIssues={childIssues}
-                onAddSubIssue={openNewSubIssue}
-                onUpdate={(data) => updateIssue.mutate(data)}
-                inline
-              />
-            </div>
-          </ScrollArea>
-        </SheetContent>
-      </Sheet>
       <ScrollToBottom />
     </div>
   );

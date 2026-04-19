@@ -4,6 +4,10 @@ export const queryKeys = {
     detail: (id: string) => ["companies", id] as const,
     stats: ["companies", "stats"] as const,
   },
+  companyRollouts: {
+    list: (sourceCompanyId: string) => ["company-rollouts", sourceCompanyId] as const,
+    detail: (releaseId: string) => ["company-rollouts", "detail", releaseId] as const,
+  },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
     detail: (companyId: string, skillId: string) => ["company-skills", companyId, skillId] as const,
@@ -44,6 +48,8 @@ export const queryKeys = {
     listByExecutionWorkspace: (companyId: string, executionWorkspaceId: string) =>
       ["issues", companyId, "execution-workspace", executionWorkspaceId] as const,
     detail: (id: string) => ["issues", "detail", id] as const,
+    checklistItems: (issueId: string) => ["issues", "checklist-items", issueId] as const,
+    links: (issueId: string) => ["issues", "links", issueId] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     feedbackVotes: (issueId: string) => ["issues", "feedback-votes", issueId] as const,
     attachments: (issueId: string) => ["issues", "attachments", issueId] as const,
@@ -72,6 +78,11 @@ export const queryKeys = {
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
+    quickLinks: (companyId: string, projectId: string) =>
+      ["projects", companyId, projectId, "quick-links"] as const,
+    context: (companyId: string, projectId: string) => ["projects", companyId, projectId, "context"] as const,
+    contextSearch: (companyId: string, projectId: string, query: string) =>
+      ["projects", companyId, projectId, "context", "search", query] as const,
   },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
@@ -97,7 +108,11 @@ export const queryKeys = {
   },
   instance: {
     generalSettings: ["instance", "general-settings"] as const,
+    updateStatus: ["instance", "update-status"] as const,
+    preUpdateBackup: (targetVersion?: string | null) =>
+      ["instance", "pre-update-backup", targetVersion ?? "__none__"] as const,
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
+    agentServiceHealth: ["instance", "agent-service-health"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
   },
   health: ["health"] as const,
@@ -111,6 +126,8 @@ export const queryKeys = {
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
+  workValue: (companyId: string, from?: string, to?: string) =>
+    ["work-value", companyId, from, to] as const,
   usageByProvider: (companyId: string, from?: string, to?: string) =>
     ["usage-by-provider", companyId, from, to] as const,
   usageByBiller: (companyId: string, from?: string, to?: string) =>

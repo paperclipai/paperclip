@@ -208,7 +208,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
   {
     kind: "assistant",
     ts: "2026-03-11T15:25:00.908Z",
-    text: "Implemented the transcript UI refactor and switched the run detail page, issue live widget, and dashboard agent card onto the same rendering language.",
+    text: "Implemented the transcript UI refactor and switched the run detail page, task live widget, and dashboard agent card onto the same rendering language.",
   },
   {
     kind: "result",
@@ -223,4 +223,3 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     errors: [],
   },
 ];
-

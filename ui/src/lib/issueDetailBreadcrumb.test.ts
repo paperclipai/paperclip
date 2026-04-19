@@ -42,7 +42,9 @@ describe("issueDetailBreadcrumb", () => {
       parentId: null,
       title: "Prefilled issue title",
       description: null,
+      dueDate: null,
       status: "todo",
+      boardPosition: 0,
       priority: "medium",
       assigneeAgentId: null,
       assigneeUserId: null,
@@ -165,9 +167,27 @@ describe("issueDetailBreadcrumb", () => {
     });
   });
 
+  it("restores project task-list breadcrumbs as issue source context", () => {
+    const state = createIssueDetailLocationState(
+      "Paperclip App",
+      "/projects/paperclip-app/issues",
+      "issues",
+    );
+    sessionStorageMock.clear();
+    rememberIssueDetailLocationState("PAP-465", state);
+
+    expect(
+      readIssueDetailLocationState("PAP-465", null),
+    ).toEqual({
+      issueDetailBreadcrumb: { label: "Paperclip App", href: "/projects/paperclip-app/issues" },
+      issueDetailSource: "issues",
+      issueDetailInboxQuickArchiveArmed: false,
+    });
+  });
+
   it("attaches and reads issue header seed data from route state", () => {
     const seededState = withIssueDetailHeaderSeed(
-      createIssueDetailLocationState("Issues", "/issues", "issues"),
+      createIssueDetailLocationState("Tasks (Issues)", "/issues", "issues"),
       createIssue(),
     );
 

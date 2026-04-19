@@ -160,6 +160,14 @@ For `codex_local`, Paperclip also manages a per-company Codex home under the ins
 
 If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
 
+## Global UX, Features, and Company Rollouts
+
+Paperclip product UX and feature work belongs in instance code: `ui/`, `server/`, shared packages, database migrations, or installed plugins. Do not fork frontend/backend behavior for a single company. Once a feature ships in the instance, every company receives it automatically through the normal company-scoped API and UI routes.
+
+Plugins are installed and configured at the instance level. A plugin feature should be available to all companies unless the plugin itself implements an explicit company-level disable or policy gate.
+
+Company Rollouts are the supported way to copy company-owned package data from one source company to other companies. Rollouts version an immutable package snapshot, preview create/update/skip/error actions per target company, and apply agents, skills, projects, and recurring routine definitions while preserving each target company's identity, branding, budgets, and feedback settings. Rollouts are not a mechanism for shipping source-code UX changes.
+
 ## Worktree-local Instances
 
 When developing from multiple git worktrees, do not point two Paperclip servers at the same embedded PostgreSQL data directory.
@@ -375,6 +383,26 @@ Environment overrides:
 - `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES=<minutes>`
 - `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
+
+## Update Safety
+
+Paperclip checks the stable `paperclipai` release channel from the server and surfaces available updates in the board UI. Operators can review update status at:
+
+- `Instance Settings > Updates`
+
+The update page does not run `git pull`, package installs, or one-click upgrades from the browser. It requires a valid pre-update backup before showing safe manual update instructions.
+
+A pre-update backup is valid for the current instance and target version for 24 hours. It captures:
+
+- logical database backup
+- instance config/env files
+- local secrets key file, with a sensitive-backup warning
+- local uploaded asset storage when using `local_disk`
+- installed plugin and external adapter inventory
+- git branch/SHA/dirty-state metadata plus diff summaries when running from a checkout
+- manifest and checksums under `~/.paperclip/instances/default/data/backups/pre-update`
+
+For S3-compatible object storage, Paperclip records the configured provider/prefix in the manifest but does not copy bucket contents. The operator must acknowledge that external object storage is backed up separately before the guard unlocks update instructions.
 
 ## Secrets in Dev
 

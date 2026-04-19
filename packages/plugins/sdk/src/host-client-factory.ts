@@ -160,6 +160,14 @@ export interface HostServices {
     getWorkspaceForIssue(params: WorkerToHostMethods["projects.getWorkspaceForIssue"][0]): Promise<WorkerToHostMethods["projects.getWorkspaceForIssue"][1]>;
   };
 
+  /** Provides project context source upsert/search APIs for connector plugins. */
+  contextSources: {
+    create(params: WorkerToHostMethods["contextSources.create"][0]): Promise<WorkerToHostMethods["contextSources.create"][1]>;
+    upsertItem(params: WorkerToHostMethods["contextSources.upsertItem"][0]): Promise<WorkerToHostMethods["contextSources.upsertItem"][1]>;
+    setStatus(params: WorkerToHostMethods["contextSources.setStatus"][0]): Promise<WorkerToHostMethods["contextSources.setStatus"][1]>;
+    search(params: WorkerToHostMethods["contextSources.search"][0]): Promise<WorkerToHostMethods["contextSources.search"][1]>;
+  };
+
   /** Provides `issues.list`, `issues.get`, `issues.create`, `issues.update`, `issues.listComments`, `issues.createComment`. */
   issues: {
     list(params: WorkerToHostMethods["issues.list"][0]): Promise<WorkerToHostMethods["issues.list"][1]>;
@@ -305,6 +313,12 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "projects.listWorkspaces": "project.workspaces.read",
   "projects.getPrimaryWorkspace": "project.workspaces.read",
   "projects.getWorkspaceForIssue": "project.workspaces.read",
+
+  // Project Context Sources
+  "contextSources.create": "project.context.write",
+  "contextSources.upsertItem": "project.context.write",
+  "contextSources.setStatus": "project.context.write",
+  "contextSources.search": "project.context.read",
 
   // Issues
   "issues.list": "issues.read",
@@ -488,6 +502,20 @@ export function createHostClientHandlers(
     }),
     "projects.getWorkspaceForIssue": gated("projects.getWorkspaceForIssue", async (params) => {
       return services.projects.getWorkspaceForIssue(params);
+    }),
+
+    // Project Context Sources
+    "contextSources.create": gated("contextSources.create", async (params) => {
+      return services.contextSources.create(params);
+    }),
+    "contextSources.upsertItem": gated("contextSources.upsertItem", async (params) => {
+      return services.contextSources.upsertItem(params);
+    }),
+    "contextSources.setStatus": gated("contextSources.setStatus", async (params) => {
+      return services.contextSources.setStatus(params);
+    }),
+    "contextSources.search": gated("contextSources.search", async (params) => {
+      return services.contextSources.search(params);
     }),
 
     // Issues

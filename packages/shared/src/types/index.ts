@@ -11,8 +11,28 @@ export type {
   FeedbackTraceBundleFile,
   FeedbackTraceBundle,
 } from "./feedback.js";
-export type { InstanceExperimentalSettings, InstanceGeneralSettings, InstanceSettings, BackupRetentionPolicy } from "./instance.js";
-export { DAILY_RETENTION_PRESETS, WEEKLY_RETENTION_PRESETS, MONTHLY_RETENTION_PRESETS, DEFAULT_BACKUP_RETENTION } from "./instance.js";
+export type {
+  BackupRetentionPolicy,
+  InstanceExperimentalSettings,
+  InstanceGeneralSettings,
+  InstanceInstallContext,
+  InstancePreUpdateBackupInvalidReason,
+  InstancePreUpdateBackupManifest,
+  InstancePreUpdateBackupStatus,
+  InstancePreUpdateBackupSummary,
+  InstanceSettings,
+  InstanceUpdateChannel,
+  InstanceUpdateSettings,
+  InstanceUpdateStatus,
+  InstanceUpdateStatusState,
+} from "./instance.js";
+export {
+  DAILY_RETENTION_PRESETS,
+  WEEKLY_RETENTION_PRESETS,
+  MONTHLY_RETENTION_PRESETS,
+  DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_UPDATE_SETTINGS,
+} from "./instance.js";
 export type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,
@@ -62,6 +82,30 @@ export type {
 export type { AssetImage } from "./asset.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {
+  ProjectQuickLink,
+  ProjectQuickLinkCreateRequest,
+  ProjectQuickLinkMetadataInput,
+  ProjectQuickLinkPreview,
+  ProjectQuickLinkPreviewRequest,
+  ProjectQuickLinkUpdateRequest,
+} from "./project-quick-link.js";
+export type {
+  ContextSource,
+  ContextSourceChunk,
+  ContextSourceCreateRequest,
+  ContextSourceItem,
+  ContextSourceItemStatus,
+  ContextSourceSearchResult,
+  ContextSourceStatus,
+  ContextSourceType,
+  ContextSourceUpsertItemRequest,
+  ProjectContextBundle,
+  ProjectContextBundleSource,
+  ProjectContextOverview,
+  ProjectContextProfile,
+  ProjectContextProfileUpdateRequest,
+} from "./project-context.js";
+export type {
   ExecutionWorkspace,
   ExecutionWorkspaceConfig,
   ExecutionWorkspaceCloseAction,
@@ -105,6 +149,8 @@ export type {
   IssueExecutionStageParticipant,
   IssueExecutionStagePrincipal,
   IssueExecutionDecision,
+  IssueChecklistItem,
+  IssueLink,
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
@@ -149,7 +195,7 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
-export type { CostEvent, CostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
+export type { CostEvent, CostSummary, CostWorkValueSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
   AgentWakeupResponse,
@@ -160,6 +206,10 @@ export type {
   AgentTaskSession,
   AgentWakeupRequest,
   InstanceSchedulerHeartbeatAgent,
+  AgentServiceHealth,
+  AgentServiceHealthStatus,
+  AgentServiceHealthReason,
+  AgentServiceHealthFailureExample,
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
 export type { DashboardSummary } from "./dashboard.js";
@@ -205,6 +255,20 @@ export type {
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
 } from "./company-portability.js";
+export type {
+  CompanyRolloutApplyResult,
+  CompanyRolloutApplyTargetResult,
+  CompanyRolloutCounts,
+  CompanyRolloutCreateRequest,
+  CompanyRolloutEntityAction,
+  CompanyRolloutEntityKind,
+  CompanyRolloutEntityPreview,
+  CompanyRolloutPreviewResult,
+  CompanyRolloutRelease,
+  CompanyRolloutTargetPreview,
+  CompanyRolloutTargetSelectionRequest,
+  CompanyRolloutTargetStatus,
+} from "./company-rollout.js";
 export type {
   JsonSchema,
   PluginJobDeclaration,

@@ -103,6 +103,13 @@ async function flush() {
   });
 }
 
+function changeInputValue(input: HTMLInputElement, value: string) {
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  valueSetter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function createIssue(overrides: Partial<Issue> = {}): Issue {
   return {
     id: "issue-1",
@@ -111,9 +118,11 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     projectWorkspaceId: null,
     goalId: null,
     parentId: null,
-    title: "Parent issue",
+    title: "Parent task",
     description: null,
+    dueDate: null,
     status: "todo",
+    boardPosition: 0,
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
@@ -213,11 +222,11 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(container.textContent).toContain("Sub-issues");
-    expect(container.textContent).toContain("Add sub-issue");
+    expect(container.textContent).toContain("Child tasks");
+    expect(container.textContent).toContain("Add child task");
 
     const addButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Add sub-issue"));
+      .find((button) => button.textContent?.includes("Add child task"));
     expect(addButton).not.toBeUndefined();
 
     await act(async () => {
@@ -271,7 +280,7 @@ describe("IssueProperties", () => {
     await flush();
 
     const parentTrigger = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("No parent"));
+      .find((button) => button.textContent?.includes("No parent task"));
     expect(parentTrigger).not.toBeUndefined();
 
     await act(async () => {
@@ -330,7 +339,7 @@ describe("IssueProperties", () => {
     await flush();
 
     const clearParentButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("No parent"));
+      .find((button) => button.textContent?.includes("No parent task"));
     expect(clearParentButton).not.toBeUndefined();
 
     await act(async () => {
@@ -340,6 +349,70 @@ describe("IssueProperties", () => {
     expect(onUpdate).toHaveBeenCalledWith({ parentId: null });
 
     act(() => rerenderedRoot.unmount());
+  });
+
+  it("allows setting and clearing a due date from the properties pane", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ dueDate: "2026-05-01" }),
+      childIssues: [],
+      onUpdate,
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Due");
+    expect(container.textContent).toContain("May 1");
+
+    const dueDateInput = container.querySelector('input[aria-label="Due date"]') as HTMLInputElement | null;
+    expect(dueDateInput?.value).toBe("2026-05-01");
+
+    await act(async () => {
+      changeInputValue(dueDateInput!, "2026-05-02");
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ dueDate: "2026-05-02" });
+
+    const clearButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Clear due date"));
+    expect(clearButton).not.toBeUndefined();
+
+    await act(async () => {
+      clearButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ dueDate: null });
+
+    act(() => root.unmount());
+  });
+
+  it("sets the due date to today from the properties row shortcut", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 4, 3, 12));
+
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ dueDate: null }),
+      childIssues: [],
+      onUpdate,
+    });
+
+    try {
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const todayButton = container.querySelector('button[aria-label="Set due date to today"]');
+      expect(todayButton).not.toBeUndefined();
+
+      await act(async () => {
+        todayButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      expect(onUpdate).toHaveBeenCalledWith({ dueDate: "2026-05-03" });
+    } finally {
+      act(() => root.unmount());
+      vi.useRealTimers();
+    }
   });
 
   it("shows a run review action after reviewers are configured and starts execution explicitly when clicked", async () => {

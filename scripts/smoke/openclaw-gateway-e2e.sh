@@ -344,9 +344,36 @@ cleanup_openclaw_agents() {
   assert_status "200"
 
   local ids
-  ids="$(jq -r '.[] | select((.adapterType == "openclaw" or .adapterType == "openclaw_gateway")) | .id' <<<"$RESPONSE_BODY")"
+  ids="$(jq -r --arg name "$OPENCLAW_AGENT_NAME" '
+    .[]
+    | select((.adapterType == "openclaw" or .adapterType == "openclaw_gateway"))
+    | select(
+        (.name // .agentName // "") == $name
+        or ((.capabilities // "") | ascii_downcase | contains("smoke harness"))
+        or ((.urlKey // "") | ascii_downcase | contains("smoke"))
+      )
+    | .id
+  ' <<<"$RESPONSE_BODY")"
+  local preserved
+  preserved="$(jq -r --arg name "$OPENCLAW_AGENT_NAME" '
+    .[]
+    | select((.adapterType == "openclaw" or .adapterType == "openclaw_gateway"))
+    | select(
+        ((.name // .agentName // "") != $name)
+        and (((.capabilities // "") | ascii_downcase | contains("smoke harness")) | not)
+        and (((.urlKey // "") | ascii_downcase | contains("smoke")) | not)
+      )
+    | "- id=\(.id) name=\(.name // .agentName // "unknown") adapterType=\(.adapterType)"
+  ' <<<"$RESPONSE_BODY")"
+  if [[ -n "$preserved" ]]; then
+    log "preserving non-smoke OpenClaw agents:"
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] || continue
+      log "  ${entry}"
+    done <<<"$preserved"
+  fi
   if [[ -z "$ids" ]]; then
-    log "no prior OpenClaw agents to cleanup"
+    log "no prior OpenClaw smoke agents to cleanup"
     return
   fi
 
@@ -373,7 +400,15 @@ cleanup_pending_join_requests() {
   fi
 
   local ids
-  ids="$(jq -r '.[] | select((.adapterType == "openclaw" or .adapterType == "openclaw_gateway")) | .id' <<<"$RESPONSE_BODY")"
+  ids="$(jq -r --arg name "$OPENCLAW_AGENT_NAME" '
+    .[]
+    | select((.adapterType == "openclaw" or .adapterType == "openclaw_gateway"))
+    | select(
+        (.agentName // .name // "") == $name
+        or ((.capabilities // "") | ascii_downcase | contains("smoke harness"))
+      )
+    | .id
+  ' <<<"$RESPONSE_BODY")"
   if [[ -z "$ids" ]]; then
     return
   fi

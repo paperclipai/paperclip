@@ -5,6 +5,17 @@ import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-codex-local/server";
 
 const itWindows = process.platform === "win32" ? it : it.skip;
+const itPosix = process.platform === "win32" ? it.skip : it;
+
+async function writeFakeCodexCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "thread.started", thread_id: "test-thread" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
 
 describe("codex_local environment diagnostics", () => {
   beforeEach(() => {
@@ -94,6 +105,39 @@ describe("codex_local environment diagnostics", () => {
 
       expect(result.checks.some((check) => check.code === "codex_openai_api_key_missing")).toBe(true);
       expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix("uses Codex fallback PATH entries when the server PATH is minimal", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-fallback-path-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const binDir = path.join(root, ".local", "bin");
+    const cwd = path.join(root, "workspace");
+    const fakeCodex = path.join(binDir, "codex");
+
+    try {
+      await fs.mkdir(binDir, { recursive: true });
+      await writeFakeCodexCommand(fakeCodex);
+      vi.stubEnv("HOME", root);
+      vi.stubEnv("PATH", [path.dirname(process.execPath), "/usr/bin", "/bin"].join(path.delimiter));
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: "codex",
+          cwd,
+          env: { OPENAI_API_KEY: "test-key" },
+        },
+      });
+
+      expect(result.status).toBe("pass");
+      expect(result.checks.some((check) => check.code === "codex_command_resolvable")).toBe(true);
+      expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

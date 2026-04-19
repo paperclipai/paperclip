@@ -15,7 +15,10 @@ const BOARD_ROUTE_ROOTS = new Set([
   "usage",
   "activity",
   "inbox",
+  "blockers",
+  "my-issues",
   "design-guide",
+  "tests",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);
@@ -49,6 +52,16 @@ export function isBoardPathWithoutPrefix(pathname: string): boolean {
   const root = getRootSegment(pathname);
   if (!root) return false;
   return BOARD_ROUTE_ROOTS.has(root.toLowerCase());
+}
+
+export function isKnownCompanyRoutePath(path: string): boolean {
+  const { pathname } = splitPath(path);
+  if (pathname === "/" || pathname === "") return true;
+  return isBoardPathWithoutPrefix(pathname);
+}
+
+export function isPluginRoutePathCandidate(segment: string | null | undefined): boolean {
+  return /^[a-z0-9][a-z0-9-]*$/.test(segment ?? "");
 }
 
 export function extractCompanyPrefixFromPath(pathname: string): string | null {

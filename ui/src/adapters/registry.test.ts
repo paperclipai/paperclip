@@ -48,4 +48,14 @@ describe("ui adapter registry", () => {
     // But it uses the schema-based config fields for external adapter forms.
     expect(fallback.ConfigFields).toBe(SchemaConfigFields);
   });
+
+  it("treats hermes_local as an external dynamic adapter, not a built-in UI adapter", () => {
+    expect(findUIAdapter("hermes_local")).toBeNull();
+
+    const fallback = getUIAdapter("hermes_local");
+
+    expect(fallback.type).toBe("hermes_local");
+    expect(fallback.ConfigFields).toBe(SchemaConfigFields);
+    expect(fallback).not.toBe(processUIAdapter);
+  });
 });

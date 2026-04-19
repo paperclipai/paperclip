@@ -7,10 +7,20 @@ const {
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
   fakeServer,
+  loadConfigMock,
+  loggerMock,
+  printStartupBannerMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createDbMock = vi.fn(() => ({}) as never);
   const detectPortMock = vi.fn(async (port: number) => port);
+  const loadConfigMock = vi.fn();
+  const loggerMock = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  };
+  const printStartupBannerMock = vi.fn();
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
@@ -32,38 +42,14 @@ const {
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
     fakeServer,
+    loadConfigMock,
+    loggerMock,
+    printStartupBannerMock,
   };
 });
 
-vi.mock("node:http", () => ({
-  createServer: vi.fn(() => fakeServer),
-}));
-
-vi.mock("detect-port", () => ({
-  default: detectPortMock,
-}));
-
-vi.mock("@paperclipai/db", () => ({
-  createDb: createDbMock,
-  ensurePostgresDatabase: vi.fn(),
-  getPostgresDataDirectory: vi.fn(),
-  inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
-  applyPendingMigrations: vi.fn(),
-  reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
-  formatDatabaseBackupResult: vi.fn(() => "ok"),
-  runDatabaseBackup: vi.fn(),
-  authUsers: {},
-  companies: {},
-  companyMemberships: {},
-  instanceUserRoles: {},
-}));
-
-vi.mock("../app.js", () => ({
-  createApp: createAppMock,
-}));
-
-vi.mock("../config.js", () => ({
-  loadConfig: vi.fn(() => ({
+function buildBaseConfig() {
+  return {
     deploymentMode: "authenticated",
     deploymentExposure: "private",
     bind: "loopback",
@@ -99,15 +85,42 @@ vi.mock("../config.js", () => ({
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
     companyDeletionEnabled: false,
-  })),
+  };
+}
+
+vi.mock("node:http", () => ({
+  createServer: vi.fn(() => fakeServer),
+}));
+
+vi.mock("detect-port", () => ({
+  default: detectPortMock,
+}));
+
+vi.mock("@paperclipai/db", () => ({
+  createDb: createDbMock,
+  ensurePostgresDatabase: vi.fn(),
+  getPostgresDataDirectory: vi.fn(),
+  inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
+  applyPendingMigrations: vi.fn(),
+  reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
+  formatDatabaseBackupResult: vi.fn(() => "ok"),
+  runDatabaseBackup: vi.fn(),
+  authUsers: {},
+  companies: {},
+  companyMemberships: {},
+  instanceUserRoles: {},
+}));
+
+vi.mock("../app.js", () => ({
+  createApp: createAppMock,
+}));
+
+vi.mock("../config.js", () => ({
+  loadConfig: loadConfigMock,
 }));
 
 vi.mock("../middleware/logger.js", () => ({
-  logger: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
+  logger: loggerMock,
 }));
 
 vi.mock("../realtime/live-events-ws.js", () => ({
@@ -136,7 +149,7 @@ vi.mock("../services/feedback-share-client.js", () => ({
 }));
 
 vi.mock("../startup-banner.js", () => ({
-  printStartupBanner: vi.fn(),
+  printStartupBanner: printStartupBannerMock,
 }));
 
 vi.mock("../board-claim.js", () => ({
@@ -158,6 +171,7 @@ describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.BETTER_AUTH_SECRET = "test-secret";
+    loadConfigMock.mockReturnValue(buildBaseConfig());
   });
 
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {
@@ -171,5 +185,49 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+
+  it("allows port fallback for loopback explicit URLs and rewrites the runtime auth URL", async () => {
+    detectPortMock.mockResolvedValueOnce(3211);
+    loadConfigMock.mockReturnValue({
+      ...buildBaseConfig(),
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "http://localhost:3210",
+    });
+
+    const started = await startServer();
+
+    expect(started.listenPort).toBe(3211);
+    expect(createAppMock).toHaveBeenCalledTimes(1);
+    expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
+      serverPort: 3211,
+    });
+    expect(printStartupBannerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestedPort: 3210,
+        listenPort: 3211,
+        publicBaseUrl: "http://localhost:3211/",
+      }),
+    );
+    expect(loggerMock.warn).toHaveBeenCalledWith(
+      "Requested port is busy; using next free port (requestedPort=3210, selectedPort=3211)",
+    );
+  });
+
+  it("rejects authenticated mode when an explicit shared URL port differs from server.port", async () => {
+    loadConfigMock.mockReturnValue({
+      ...buildBaseConfig(),
+      bind: "tailnet",
+      host: "0.0.0.0",
+      allowedHostnames: ["paperclip.example.com"],
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "http://paperclip.example.com:3100",
+    });
+
+    await expect(startServer()).rejects.toThrow(
+      "Configured server port 3210 does not match explicit public URL http://paperclip.example.com:3100. Update both server.port and auth.publicBaseUrl together before restarting.",
+    );
+    expect(createAppMock).not.toHaveBeenCalled();
+    expect(printStartupBannerMock).not.toHaveBeenCalled();
   });
 });

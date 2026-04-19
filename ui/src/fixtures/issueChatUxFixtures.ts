@@ -109,7 +109,7 @@ export const issueChatUxReassignOptions: InlineEntityOption[] = [
 export const issueChatUxLiveComments: IssueChatComment[] = [
   createComment({
     id: "comment-live-user",
-    body: "Ship the issue page as a real chat. Keep the activity feed, but make the assistant flow feel conversational.",
+    body: "Ship the task page as a real chat. Keep the activity feed, but make the assistant flow feel conversational.",
     createdAt: new Date("2026-04-06T11:55:00.000Z"),
     updatedAt: new Date("2026-04-06T11:55:00.000Z"),
   }),
@@ -117,7 +117,7 @@ export const issueChatUxLiveComments: IssueChatComment[] = [
     id: "comment-live-agent",
     authorAgentId: primaryAgent.id,
     authorUserId: null,
-    body: "I swapped the old comment stack for the new assistant-ui thread and kept the existing issue mutations intact.",
+    body: "I swapped the old comment stack for the new assistant-ui thread and kept the existing task mutations intact.",
     createdAt: new Date("2026-04-06T12:01:00.000Z"),
     updatedAt: new Date("2026-04-06T12:01:00.000Z"),
     runId: "run-history-1",
@@ -200,7 +200,7 @@ export const issueChatUxTranscriptsByRunId = new Map<string, readonly IssueChatT
       {
         kind: "thinking",
         ts: "2026-04-06T11:58:03.000Z",
-        text: "Reviewing the issue thread to see where transcript noise still leaks into the conversation.",
+        text: "Reviewing the task thread to see where transcript noise still leaks into the conversation.",
       },
       {
         kind: "tool_call",
@@ -229,7 +229,7 @@ export const issueChatUxTranscriptsByRunId = new Map<string, readonly IssueChatT
       {
         kind: "assistant",
         ts: "2026-04-06T12:04:02.000Z",
-        text: "I am reshaping the issue page so the thread reads like a conversation instead of a run log.",
+        text: "I am reshaping the task page so the thread reads like a conversation instead of a run log.",
       },
       {
         kind: "thinking",

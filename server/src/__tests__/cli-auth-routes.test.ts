@@ -61,6 +61,26 @@ describe("cli auth routes", () => {
     vi.resetAllMocks();
   });
 
+  it("lists public bundled skills including optional approval and plugin helpers", async () => {
+    const app = createApp({ type: "none", source: "none" });
+    const res = await request(app).get("/api/skills/index");
+
+    expect(res.status).toBe(200);
+    expect(res.body.skills).toEqual(expect.arrayContaining([
+      { name: "paperclip-create-plugin", path: "/api/skills/paperclip-create-plugin" },
+      { name: "approval-gate", path: "/api/skills/approval-gate" },
+    ]));
+  });
+
+  it("serves approval-gate skill markdown", async () => {
+    const app = createApp({ type: "none", source: "none" });
+    const res = await request(app).get("/api/skills/approval-gate");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("name: approval-gate");
+    expect(res.text).toContain("requiredByDefault: false");
+  });
+
   it("creates a CLI auth challenge with approval metadata", async () => {
     mockBoardAuthService.createCliAuthChallenge.mockResolvedValue({
       challenge: {

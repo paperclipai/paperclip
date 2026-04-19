@@ -8,7 +8,10 @@ import {
   asString,
   buildPaperclipEnv,
   parseObject,
+  renderPaperclipOperatingCadencePrompt,
+  renderPaperclipProjectContextPrompt,
   renderPaperclipWakePrompt,
+  stringifyPaperclipProjectContextPayload,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
@@ -131,6 +134,11 @@ function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
   const normalized = asString(value, "issue").trim().toLowerCase();
   if (normalized === "fixed" || normalized === "run") return normalized;
   return "issue";
+}
+
+export function isUnexpectedPaperclipPayloadErrorMessage(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  return normalized.includes("unexpected property") && normalized.includes("paperclip");
 }
 
 function prefixSessionKeyForAgent(sessionKey: string, agentId: string | null): string {
@@ -391,6 +399,7 @@ function buildWakeText(
     "Paperclip wake event for a cloud adapter.",
     "",
     "Run this procedure now. Do not guess undocumented endpoints and do not ask for additional heartbeat docs.",
+    "You are acting as an ops-manager agent: keep the company moving, break down work into child issues, and nudge the CEO when progress stalls.",
     "",
     "Set these values in your run context:",
     ...envLines,
@@ -415,19 +424,49 @@ function buildWakeText(
     "",
     "Workflow:",
     "1) GET /api/agents/me",
-    `2) Determine issueId: PAPERCLIP_TASK_ID if present, otherwise issue_id (${issueIdHint}).`,
-    "3) If issueId exists:",
+    "2) GET /api/companies/$PAPERCLIP_COMPANY_ID/dashboard",
+    "   - Review dashboard.staleIssues, dashboard.recentActivity, and dashboard.liveRuns before deciding whether work is moving.",
+    "3) GET /api/agents/me/inbox-lite",
+    `4) Determine issueId: PAPERCLIP_TASK_ID if present, otherwise issue_id (${issueIdHint}).`,
+    "5) If issueId exists:",
+    "   - GET /api/issues/{issueId}/heartbeat-context",
     "   - POST /api/issues/{issueId}/checkout with {\"agentId\":\"$PAPERCLIP_AGENT_ID\",\"expectedStatuses\":[\"todo\",\"backlog\",\"blocked\",\"in_review\"]}",
     "   - GET /api/issues/{issueId}",
+    "   - GET /api/issues/{issueId}/checklist-items",
+    "   - GET /api/issues/{issueId}/links",
     "   - GET /api/issues/{issueId}/comments",
     "   - Execute the issue instructions exactly.",
+    "   - For lightweight checklist subtasks, use POST /api/issues/{issueId}/checklist-items, PATCH /api/issue-checklist-items/{itemId}, and DELETE /api/issue-checklist-items/{itemId}.",
+    "   - For external references, use POST /api/issues/{issueId}/links, PATCH /api/issue-links/{linkId}, and DELETE /api/issue-links/{linkId}.",
     "   - If instructions require a comment, POST /api/issues/{issueId}/comments with {\"body\":\"...\"}.",
     "   - PATCH /api/issues/{issueId} with {\"status\":\"done\",\"comment\":\"what changed and why\"}.",
-    "4) If issueId does not exist:",
-    "   - GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,in_review,blocked",
-    "   - Pick in_progress first, then in_review when you were woken by a comment, then todo, then blocked, then execute step 3.",
+    "6) If issueId does not exist:",
+    "   - Prefer inbox-lite assignments first.",
+    "   - If you still need a target, GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,in_review,blocked",
+    "   - Pick in_progress first, then in_review when you were woken by a comment, then todo, then blocked, then execute step 5.",
+    "",
+    "Delegation rules:",
+    "- Create child issues with POST /api/companies/{companyId}/issues. Always set parentId and goalId.",
+    "- For follow-up work that must stay on the same checkout/worktree, also set inheritExecutionWorkspaceFromIssueId to the source issue id.",
+    "- If you have tasks:assign authority, assign the child issue to the right agent.",
+    "- If you do not have tasks:assign authority, create the issue unassigned and then comment on the relevant issue with @CEO so the CEO can retarget it.",
+    "",
+    "Stall and nudge rules:",
+    "- Treat blocked issues as stalled immediately.",
+    "- Treat an in_progress issue as stalled when there is no active run and no activity/comment for 45 minutes.",
+    "- Treat the company as quiet when open work exists, there are no live runs, and there has been no company activity for 60 minutes.",
+    "- For an issue-specific stall, comment on that issue with one status line, 2-4 evidence bullets, and an exact @CEO mention.",
+    "- For company-wide quiet with no obvious blocked issue, GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?status=todo,in_progress,blocked&limit=50 and target in_progress first, then blocked, then the highest-priority todo.",
+    "- Before nudging, inspect the recent comments on the target issue and skip a repeat @CEO nudge if a similar nudge already happened in the last 60 minutes unless the assignee or status changed.",
     "",
     "Useful endpoints for issue work:",
+    "- GET /api/companies/{companyId}/dashboard",
+    "- GET /api/agents/me/inbox-lite",
+    "- GET /api/issues/{issueId}/heartbeat-context",
+    "- GET /api/issues/{issueId}/checklist-items",
+    "- POST /api/issues/{issueId}/checklist-items",
+    "- PATCH /api/issue-checklist-items/{itemId}",
+    "- DELETE /api/issue-checklist-items/{itemId}",
     "- POST /api/issues/{issueId}/comments",
     "- PATCH /api/issues/{issueId}",
     "- POST /api/companies/{companyId}/issues (when asked to create a new issue)",
@@ -448,15 +487,23 @@ function appendWakeText(baseText: string, wakeText: string): string {
   return trimmedBase.length > 0 ? `${trimmedBase}\n\n${wakeText}` : wakeText;
 }
 
-function joinWakePayloadSections(structuredWakePrompt: string, structuredWakeJson: string): string {
-  const sections = [
-    structuredWakePrompt.trim(),
-    "Structured wake payload JSON:",
-    "```json",
-    structuredWakeJson,
-    "```",
-  ].filter((entry) => entry.trim().length > 0);
-  return sections.join("\n");
+function joinStructuredContextSections(
+  sections: Array<{ prompt: string; json?: string | null; jsonLabel: string }>,
+): string {
+  const lines: string[] = [];
+  for (const section of sections) {
+    const prompt = section.prompt.trim();
+    const json = (section.json ?? "").trim();
+    if (prompt) {
+      if (lines.length > 0) lines.push("");
+      lines.push(prompt);
+    }
+    if (json) {
+      if (lines.length > 0) lines.push("");
+      lines.push(section.jsonLabel, "```json", json, "```");
+    }
+  }
+  return lines.join("\n");
 }
 
 function buildStandardPaperclipPayload(
@@ -494,6 +541,10 @@ function buildStandardPaperclipPayload(
   const structuredWake = parseObject(ctx.context.paperclipWake);
   if (Object.keys(structuredWake).length > 0) {
     standardPaperclip.wake = structuredWake;
+  }
+  const structuredProjectContext = parseObject(ctx.context.paperclipProjectContext);
+  if (Object.keys(structuredProjectContext).length > 0) {
+    standardPaperclip.projectContext = structuredProjectContext;
   }
 
   if (workspace) {
@@ -1078,6 +1129,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 0;
   const connectTimeoutMs = timeoutMs > 0 ? Math.min(timeoutMs, 15_000) : 10_000;
   const waitTimeoutMs = parseOptionalPositiveInteger(ctx.config.waitTimeoutMs) ?? (timeoutMs > 0 ? timeoutMs : 30_000);
+  const gatewayUrl = parsedUrl.toString();
+  const gatewayProtocol = parsedUrl.protocol;
+  const gatewayHostname = parsedUrl.hostname;
 
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const transportHint = nonEmpty(ctx.config.streamTransport) ?? nonEmpty(ctx.config.transport);
@@ -1101,14 +1155,54 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
+  const structuredOperatingCadencePrompt = renderPaperclipOperatingCadencePrompt();
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
+  const structuredProjectContextPrompt = renderPaperclipProjectContextPrompt(ctx.context.paperclipProjectContext);
+  const structuredProjectContextJson = stringifyPaperclipProjectContextPayload(ctx.context.paperclipProjectContext);
+  const structuredContextText = structuredProjectContextPrompt || structuredProjectContextJson
+    ? joinStructuredContextSections([
+        {
+          prompt: structuredOperatingCadencePrompt,
+          jsonLabel: "Structured operating cadence JSON:",
+        },
+        {
+          prompt: structuredWakePrompt,
+          json: structuredWakeJson,
+          jsonLabel: "Structured wake payload JSON:",
+        },
+        {
+          prompt: structuredProjectContextPrompt,
+          json: structuredProjectContextJson,
+          jsonLabel: "Structured project context JSON:",
+        },
+      ])
+    : structuredWakeJson
+      ? joinStructuredContextSections([
+          {
+            prompt: structuredOperatingCadencePrompt,
+            jsonLabel: "Structured operating cadence JSON:",
+          },
+          {
+            prompt: structuredWakePrompt,
+            json: structuredWakeJson,
+            jsonLabel: "Structured wake payload JSON:",
+          },
+        ])
+      : joinStructuredContextSections([
+          {
+            prompt: structuredOperatingCadencePrompt,
+            jsonLabel: "Structured operating cadence JSON:",
+          },
+          {
+            prompt: structuredWakePrompt,
+            jsonLabel: "Structured wake payload JSON:",
+          },
+        ]);
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
-    structuredWakeJson
-      ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
-      : structuredWakePrompt,
+    structuredContextText,
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -1124,55 +1218,63 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
   const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
-
-  const agentParams: Record<string, unknown> = {
-    ...payloadTemplate,
-    message,
-    sessionKey,
-    idempotencyKey: ctx.runId,
-  };
-  delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
-
   const configuredAgentId = nonEmpty(ctx.config.agentId);
-  if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
-    agentParams.agentId = configuredAgentId;
-  }
-
-  if (typeof agentParams.timeout !== "number") {
-    agentParams.timeout = waitTimeoutMs;
-  }
+  const buildAgentParams = (includePaperclipPayload: boolean): Record<string, unknown> => {
+    const agentParams: Record<string, unknown> = {
+      ...payloadTemplate,
+      message,
+      sessionKey,
+      idempotencyKey: ctx.runId,
+    };
+    delete agentParams.text;
+    delete agentParams.paperclip;
+    if (includePaperclipPayload) {
+      agentParams.paperclip = paperclipPayload;
+    }
+    if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
+      agentParams.agentId = configuredAgentId;
+    }
+    if (typeof agentParams.timeout !== "number") {
+      agentParams.timeout = waitTimeoutMs;
+    }
+    return agentParams;
+  };
+  let includePaperclipPayload = true;
 
   if (ctx.onMeta) {
     await ctx.onMeta({
       adapterType: "openclaw_gateway",
       command: "gateway",
-      commandArgs: ["ws", parsedUrl.toString(), "agent"],
+      commandArgs: ["ws", gatewayUrl, "agent"],
       context: ctx.context,
     });
   }
 
   const outboundHeaderKeys = Object.keys(headers).sort();
-  await ctx.onLog(
-    "stdout",
-    `[openclaw-gateway] outbound headers (redacted): ${stringifyForLog(redactForLog(headers), 4_000)}\n`,
-  );
-  await ctx.onLog(
-    "stdout",
-    `[openclaw-gateway] outbound payload (redacted): ${stringifyForLog(redactForLog(agentParams), 12_000)}\n`,
-  );
-  await ctx.onLog("stdout", `[openclaw-gateway] outbound header keys: ${outboundHeaderKeys.join(", ")}\n`);
-  if (transportHint) {
+  let outboundRequestLogged = false;
+  async function logOutboundRequest(agentParams: Record<string, unknown>) {
     await ctx.onLog(
       "stdout",
-      `[openclaw-gateway] ignoring streamTransport=${transportHint}; gateway adapter always uses websocket protocol\n`,
+      `[openclaw-gateway] outbound headers (redacted): ${stringifyForLog(redactForLog(headers), 4_000)}\n`,
     );
-  }
-  if (parsedUrl.protocol === "ws:" && !isLoopbackHost(parsedUrl.hostname)) {
     await ctx.onLog(
       "stdout",
-      "[openclaw-gateway] warning: using plaintext ws:// to a non-loopback host; prefer wss:// for remote endpoints\n",
+      `[openclaw-gateway] outbound payload (redacted): ${stringifyForLog(redactForLog(agentParams), 12_000)}\n`,
     );
+    await ctx.onLog("stdout", `[openclaw-gateway] outbound header keys: ${outboundHeaderKeys.join(", ")}\n`);
+    if (!outboundRequestLogged && transportHint) {
+      await ctx.onLog(
+        "stdout",
+        `[openclaw-gateway] ignoring streamTransport=${transportHint}; gateway adapter always uses websocket protocol\n`,
+      );
+    }
+    if (!outboundRequestLogged && gatewayProtocol === "ws:" && !isLoopbackHost(gatewayHostname)) {
+      await ctx.onLog(
+        "stdout",
+        "[openclaw-gateway] warning: using plaintext ws:// to a non-loopback host; prefer wss:// for remote endpoints\n",
+      );
+    }
+    outboundRequestLogged = true;
   }
 
   const autoPairOnFirstConnect = parseBoolean(ctx.config.autoPairOnFirstConnect, true);
@@ -1180,6 +1282,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let latestResultPayload: unknown = null;
 
   while (true) {
+    const agentParams = buildAgentParams(includePaperclipPayload);
+    await logOutboundRequest(agentParams);
+
     const trackedRunIds = new Set<string>([ctx.runId]);
     const assistantChunks: string[] = [];
     let lifecycleError: string | null = null;
@@ -1234,7 +1339,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     const client = new GatewayWsClient({
-      url: parsedUrl.toString(),
+      url: gatewayUrl,
       headers,
       onEvent,
       onLog: ctx.onLog,
@@ -1251,7 +1356,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await ctx.onLog("stdout", "[openclaw-gateway] device auth disabled\n");
       }
 
-      await ctx.onLog("stdout", `[openclaw-gateway] connecting to ${parsedUrl.toString()}\n`);
+      await ctx.onLog("stdout", `[openclaw-gateway] connecting to ${gatewayUrl}\n`);
 
       const hello = await client.connect((nonce) => {
         const signedAtMs = Date.now();
@@ -1430,6 +1535,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const lower = message.toLowerCase();
       const timedOut = lower.includes("timeout");
       const pairingRequired = lower.includes("pairing required");
+      const incompatiblePaperclipPayload =
+        includePaperclipPayload && isUnexpectedPaperclipPayloadErrorMessage(message);
 
       if (
         pairingRequired &&
@@ -1440,7 +1547,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ) {
         autoPairAttempted = true;
         const pairResult = await autoApproveDevicePairing({
-          url: parsedUrl.toString(),
+          url: gatewayUrl,
           headers,
           connectTimeoutMs,
           clientId,
@@ -1465,6 +1572,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           "stderr",
           `[openclaw-gateway] auto-pairing failed: ${pairResult.reason}\n`,
         );
+      }
+
+      if (incompatiblePaperclipPayload) {
+        includePaperclipPayload = false;
+        await ctx.onLog(
+          "stdout",
+          "[openclaw-gateway] gateway rejected the standard paperclip payload; retrying without the `paperclip` field for compatibility\n",
+        );
+        continue;
       }
 
       const detailedMessage = pairingRequired

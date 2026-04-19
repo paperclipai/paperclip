@@ -128,7 +128,8 @@ vi.mock("../lib/assignees", () => ({
     assigneeAgentId?: string;
     assigneeUserId?: string;
   }) => assigneeAgentId ? `agent:${assigneeAgentId}` : assigneeUserId ? `user:${assigneeUserId}` : "",
-  currentUserAssigneeOption: () => [],
+  currentUserAssigneeOption: (currentUserId: string | null | undefined) =>
+    currentUserId ? [{ id: `user:${currentUserId}`, label: "Me" }] : [],
   parseAssigneeValue: (value: string) => ({
     assigneeAgentId: value.startsWith("agent:") ? value.slice("agent:".length) : null,
     assigneeUserId: value.startsWith("user:") ? value.slice("user:".length) : null,
@@ -163,14 +164,28 @@ vi.mock("./InlineEntitySelector", async () => {
       HTMLButtonElement,
       {
         value: string;
+        options?: Array<{ id: string; label: string }>;
         placeholder?: string;
+        onChange?: (value: string) => void;
         renderTriggerValue?: (option: { id: string; label: string } | null) => ReactNode;
       }
-    >(function InlineEntitySelectorMock({ value, placeholder, renderTriggerValue }, ref) {
+    >(function InlineEntitySelectorMock({ value, options = [], placeholder, onChange, renderTriggerValue }, ref) {
       return (
-        <button ref={ref} type="button">
-          {(renderTriggerValue?.(value ? { id: value, label: value } : null) ?? value) || placeholder}
-        </button>
+        <div>
+          <button ref={ref} type="button">
+            {(renderTriggerValue?.(value ? { id: value, label: value } : null) ?? value) || placeholder}
+          </button>
+          <select
+            aria-label={placeholder ?? "Selector"}
+            value={value}
+            onChange={(event) => onChange?.(event.target.value)}
+          >
+            <option value="">{placeholder ?? "None"}</option>
+            {options.map((option) => (
+              <option key={option.id} value={option.id}>{option.label}</option>
+            ))}
+          </select>
+        </div>
       );
     }),
   };
@@ -222,6 +237,27 @@ async function flush() {
   });
 }
 
+async function waitForExpectation(assertion: () => void) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await flush();
+    }
+  }
+  throw lastError;
+}
+
+function changeInputValue(input: HTMLInputElement, value: string) {
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  valueSetter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function renderDialog(container: HTMLDivElement) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -246,6 +282,7 @@ describe("NewIssueDialog", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    localStorage.clear();
     dialogState.newIssueOpen = true;
     dialogState.newIssueDefaults = {};
     dialogState.closeNewIssue.mockReset();
@@ -277,13 +314,14 @@ describe("NewIssueDialog", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+    localStorage.clear();
   });
 
   it("shows sub-issue context only when opened from a sub-issue action", async () => {
     dialogState.newIssueDefaults = {
       parentId: "issue-1",
       parentIdentifier: "PAP-1",
-      parentTitle: "Parent issue",
+      parentTitle: "Parent task",
       projectId: "project-1",
       goalId: "goal-1",
     };
@@ -291,11 +329,11 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("New sub-issue");
-    expect(container.textContent).toContain("Sub-issue of");
+    expect(container.textContent).toContain("New sub-task");
+    expect(container.textContent).toContain("Sub-task of");
     expect(container.textContent).toContain("PAP-1");
-    expect(container.textContent).toContain("Parent issue");
-    expect(container.textContent).toContain("Create Sub-Issue");
+    expect(container.textContent).toContain("Parent task");
+    expect(container.textContent).toContain("Create Sub-task");
 
     act(() => root.unmount());
 
@@ -303,9 +341,9 @@ describe("NewIssueDialog", () => {
     const rerendered = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("New issue");
-    expect(container.textContent).toContain("Create Issue");
-    expect(container.textContent).not.toContain("Sub-issue of");
+    expect(container.textContent).toContain("New task");
+    expect(container.textContent).toContain("Create Task");
+    expect(container.textContent).not.toContain("Sub-task of");
 
     act(() => rerendered.root.unmount());
   });
@@ -338,8 +376,8 @@ describe("NewIssueDialog", () => {
     dialogState.newIssueDefaults = {
       parentId: "issue-1",
       parentIdentifier: "PAP-1",
-      parentTitle: "Parent issue",
-      title: "Child issue",
+      parentTitle: "Parent task",
+      title: "Child task",
       projectId: "project-1",
       executionWorkspaceId: "workspace-1",
       goalId: "goal-1",
@@ -349,7 +387,7 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Create Sub-Issue"));
+      .find((button) => button.textContent?.includes("Create Sub-task"));
     expect(submitButton).not.toBeUndefined();
     expect(submitButton?.hasAttribute("disabled")).toBe(false);
 
@@ -361,7 +399,7 @@ describe("NewIssueDialog", () => {
     expect(mockIssuesApi.create).toHaveBeenCalledWith(
       "company-1",
       expect.objectContaining({
-        title: "Child issue",
+        title: "Child task",
         parentId: "issue-1",
         goalId: "goal-1",
         projectId: "project-1",
@@ -372,25 +410,337 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  it("keeps the mobile dialog bounded with an internal flexible scroll region", async () => {
+  it("submits a selected due date", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Due task",
+    };
+
     const { root } = renderDialog(container);
     await flush();
 
-    const dialogContent = Array.from(container.querySelectorAll("div")).find((element) =>
-      typeof element.className === "string" && element.className.includes("max-h-[calc(100dvh-2rem)]"),
-    );
-    expect(dialogContent?.className).toContain("h-[calc(100dvh-2rem)]");
-    expect(dialogContent?.className).toContain("overflow-hidden");
+    const dueDateInput = container.querySelector('input[aria-label="Due date"]') as HTMLInputElement | null;
+    expect(dueDateInput).not.toBeNull();
 
-    const titleInput = container.querySelector('textarea[placeholder="Issue title"]');
-    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
-    const bodyScrollRegion = Array.from(container.querySelectorAll("div")).find((element) =>
-      typeof element.className === "string" && element.className.includes("overscroll-contain"),
+    await act(async () => {
+      changeInputValue(dueDateInput!, "2026-05-01");
+    });
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Due task",
+        dueDate: "2026-05-01",
+      }),
     );
-    expect(bodyScrollRegion?.className).toContain("flex-1");
-    expect(bodyScrollRegion?.className).toContain("overflow-y-auto");
-    expect(bodyScrollRegion?.contains(titleInput ?? null)).toBe(true);
-    expect(bodyScrollRegion?.contains(descriptionInput ?? null)).toBe(true);
+
+    act(() => root.unmount());
+  });
+
+  it("defaults an unassigned in-progress task to the current board user", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Started task",
+      status: "in_progress",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const assigneeSelect = container.querySelector('select[aria-label="Assignee"]') as HTMLSelectElement | null;
+    await waitForExpectation(() => {
+      expect(assigneeSelect?.value).toBe("user:user-1");
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Started task",
+        status: "in_progress",
+        assigneeUserId: "user-1",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("keeps an explicit agent assignee for an in-progress task", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Engineer",
+        role: "engineer",
+        status: "active",
+        icon: "code",
+      },
+    ]);
+    dialogState.newIssueDefaults = {
+      title: "Agent-started task",
+      status: "in_progress",
+      assigneeAgentId: "agent-1",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const assigneeSelect = container.querySelector('select[aria-label="Assignee"]') as HTMLSelectElement | null;
+    await waitForExpectation(() => {
+      expect(assigneeSelect?.value).toBe("agent:agent-1");
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const payload = mockIssuesApi.create.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      title: "Agent-started task",
+      status: "in_progress",
+      assigneeAgentId: "agent-1",
+    });
+    expect(payload.assigneeUserId).toBeUndefined();
+
+    act(() => root.unmount());
+  });
+
+  it("uses the current board user instead of a project lead for ordinary project tasks", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Mission Control",
+        description: null,
+        archivedAt: null,
+        color: "#445566",
+        leadAgentId: "agent-ceo",
+      },
+    ]);
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-ceo",
+        companyId: "company-1",
+        name: "CEO",
+        role: "ceo",
+        status: "active",
+        icon: "briefcase",
+      },
+    ]);
+    dialogState.newIssueDefaults = {
+      title: "Project lead task",
+      status: "in_progress",
+      projectId: "project-1",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const assigneeSelect = container.querySelector('select[aria-label="Assignee"]') as HTMLSelectElement | null;
+    await waitForExpectation(() => {
+      expect(assigneeSelect?.value).toBe("user:user-1");
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const payload = mockIssuesApi.create.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      title: "Project lead task",
+      status: "in_progress",
+      projectId: "project-1",
+      assigneeUserId: "user-1",
+    });
+    expect(payload.assigneeAgentId).toBeUndefined();
+
+    act(() => root.unmount());
+  });
+
+  it("defaults a normal todo task to the current board user", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Todo task",
+      status: "todo",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const assigneeSelect = container.querySelector('select[aria-label="Assignee"]') as HTMLSelectElement | null;
+    await waitForExpectation(() => {
+      expect(assigneeSelect?.value).toBe("user:user-1");
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const payload = mockIssuesApi.create.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      title: "Todo task",
+      status: "todo",
+      assigneeUserId: "user-1",
+    });
+    expect(payload.assigneeAgentId).toBeUndefined();
+
+    act(() => root.unmount());
+  });
+
+  it("keeps a manually cleared assignee unassigned on submit", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Cleared assignee task",
+      status: "todo",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const assigneeSelect = container.querySelector('select[aria-label="Assignee"]') as HTMLSelectElement | null;
+    await waitForExpectation(() => {
+      expect(assigneeSelect?.value).toBe("user:user-1");
+    });
+
+    await act(async () => {
+      assigneeSelect!.value = "";
+      assigneeSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+
+    expect(assigneeSelect?.value).toBe("");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const payload = mockIssuesApi.create.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      title: "Cleared assignee task",
+      status: "todo",
+    });
+    expect(payload.assigneeAgentId).toBeUndefined();
+    expect(payload.assigneeUserId).toBeUndefined();
+
+    act(() => root.unmount());
+  });
+
+  it("restores and clears a draft due date", async () => {
+    localStorage.setItem("paperclip:issue-draft", JSON.stringify({
+      title: "Draft due task",
+      description: "",
+      dueDate: "2026-05-02",
+      status: "todo",
+      priority: "",
+      assigneeValue: "",
+      reviewerValue: "",
+      approverValue: "",
+      projectId: "",
+      projectWorkspaceId: "",
+      assigneeModelOverride: "",
+      assigneeThinkingEffort: "",
+      assigneeChrome: false,
+      executionWorkspaceMode: "shared_workspace",
+      selectedExecutionWorkspaceId: "",
+    }));
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const dueDateInput = container.querySelector('input[aria-label="Due date"]') as HTMLInputElement | null;
+    expect(dueDateInput?.value).toBe("2026-05-02");
+
+    const clearButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Clear due date"));
+    expect(clearButton).not.toBeUndefined();
+
+    await act(async () => {
+      clearButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(dueDateInput?.value).toBe("");
+
+    act(() => root.unmount());
+  });
+
+  it("restores a draft with a manually cleared assignee as unassigned", async () => {
+    localStorage.setItem("paperclip:issue-draft", JSON.stringify({
+      title: "Draft cleared assignee task",
+      description: "",
+      dueDate: "",
+      status: "todo",
+      priority: "",
+      assigneeValue: "",
+      assigneeManuallyEdited: true,
+      reviewerValue: "",
+      approverValue: "",
+      projectId: "",
+      projectWorkspaceId: "",
+      assigneeModelOverride: "",
+      assigneeThinkingEffort: "",
+      assigneeChrome: false,
+      executionWorkspaceMode: "shared_workspace",
+      selectedExecutionWorkspaceId: "",
+    }));
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const assigneeSelect = container.querySelector('select[aria-label="Assignee"]') as HTMLSelectElement | null;
+    await waitForExpectation(() => {
+      expect(assigneeSelect?.value).toBe("");
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const payload = mockIssuesApi.create.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      title: "Draft cleared assignee task",
+      status: "todo",
+    });
+    expect(payload.assigneeAgentId).toBeUndefined();
+    expect(payload.assigneeUserId).toBeUndefined();
 
     act(() => root.unmount());
   });
@@ -431,8 +781,8 @@ describe("NewIssueDialog", () => {
     dialogState.newIssueDefaults = {
       parentId: "issue-1",
       parentIdentifier: "PAP-1",
-      parentTitle: "Parent issue",
-      title: "Child issue",
+      parentTitle: "Parent task",
+      title: "Child task",
       projectId: "project-1",
       executionWorkspaceId: "workspace-1",
       parentExecutionWorkspaceLabel: "Parent workspace",
@@ -441,13 +791,15 @@ describe("NewIssueDialog", () => {
 
     const { root } = renderDialog(container);
     await flush();
-    await flush();
 
-    expect(container.textContent).not.toContain("will no longer use the parent issue workspace");
+    expect(container.textContent).not.toContain("will no longer use the parent task workspace");
 
-    const selects = Array.from(container.querySelectorAll("select"));
-    const modeSelect = selects[0] as HTMLSelectElement | undefined;
-    expect(modeSelect).not.toBeUndefined();
+    let modeSelect: HTMLSelectElement | undefined;
+    await waitForExpectation(() => {
+      modeSelect = Array.from(container.querySelectorAll("select"))
+        .find((select) => Array.from(select.options).some((option) => option.value === "shared_workspace")) as HTMLSelectElement | undefined;
+      expect(modeSelect).not.toBeUndefined();
+    });
 
     await act(async () => {
       modeSelect!.value = "shared_workspace";
@@ -455,8 +807,58 @@ describe("NewIssueDialog", () => {
     });
     await flush();
 
-    expect(container.textContent).toContain("will no longer use the parent issue workspace");
+    expect(container.textContent).toContain("will no longer use the parent task workspace");
     expect(container.textContent).toContain("Parent workspace");
+
+    act(() => root.unmount());
+  });
+
+  it("keeps the current board user when selecting a project with a lead agent", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Mission Control",
+        description: null,
+        archivedAt: null,
+        color: "#445566",
+        leadAgentId: "agent-ceo",
+      },
+    ]);
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-ceo",
+        companyId: "company-1",
+        name: "CEO",
+        role: "ceo",
+        status: "active",
+        icon: "briefcase",
+      },
+    ]);
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const projectSelect = container.querySelector('select[aria-label="Project"]') as HTMLSelectElement | null;
+    const assigneeSelect = container.querySelector('select[aria-label="Assignee"]') as HTMLSelectElement | null;
+
+    expect(projectSelect).not.toBeNull();
+    expect(assigneeSelect).not.toBeNull();
+    await waitForExpectation(() => {
+      expect(Array.from(projectSelect!.options).some((option) => option.value === "project-1")).toBe(true);
+    });
+    await waitForExpectation(() => {
+      expect(assigneeSelect?.value).toBe("user:user-1");
+    });
+
+    await act(async () => {
+      projectSelect!.value = "project-1";
+      projectSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+
+    await waitForExpectation(() => {
+      expect(assigneeSelect?.value).toBe("user:user-1");
+    });
 
     act(() => root.unmount());
   });

@@ -136,6 +136,14 @@ export function costRoutes(db: Db) {
     res.json(rows);
   });
 
+  router.get("/companies/:companyId/costs/work-value", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const range = parseCostDateRange(req.query);
+    const summary = await costs.workValue(companyId, range);
+    res.json(summary);
+  });
+
   router.get("/companies/:companyId/costs/by-provider", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

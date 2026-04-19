@@ -2651,6 +2651,7 @@ function buildManifestFromPackageFiles(
       projectWorkspaceKey: asString(extension.projectWorkspaceKey),
       assigneeAgentSlug: asString(frontmatter.assignee),
       description: taskDoc.body || asString(frontmatter.description),
+      dueDate: asString(extension.dueDate),
       recurring,
       routine: routineExtension,
       legacyRecurrence,
@@ -3291,6 +3292,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       );
       const extension = stripEmptyValues({
         identifier: issue.identifier,
+        dueDate: issue.dueDate ?? undefined,
         status: issue.status,
         priority: issue.priority,
         labelIds: issue.labelIds ?? undefined,
@@ -4378,6 +4380,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           projectWorkspaceId,
           title: manifestIssue.title,
           description,
+          dueDate: manifestIssue.dueDate,
           assigneeAgentId,
           status: manifestIssue.status && ISSUE_STATUSES.includes(manifestIssue.status as any)
             ? manifestIssue.status as typeof ISSUE_STATUSES[number]

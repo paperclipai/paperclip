@@ -32,6 +32,8 @@ export const companiesApi = {
         | "description"
         | "status"
         | "budgetMonthlyCents"
+        | "devValueHourlyRateCents"
+        | "devValueTokensPerHour"
         | "requireBoardApprovalForNewAgents"
         | "feedbackDataSharingEnabled"
         | "brandColor"

@@ -166,6 +166,7 @@ export function applyOptimisticIssueFieldUpdate(
 
   assign("status");
   assign("priority");
+  assign("dueDate");
   assign("assigneeAgentId");
   assign("assigneeUserId");
   assign("projectId");

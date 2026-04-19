@@ -11,6 +11,8 @@ export interface AdapterInfo {
   modelsCount: number;
   loaded: boolean;
   disabled: boolean;
+  /** True when the adapter can run as a local agent with injected Paperclip runtime auth. */
+  supportsLocalAgentJwt: boolean;
   /** Installed version (for external npm adapters) */
   version?: string;
   /** Package name (for external adapters) */

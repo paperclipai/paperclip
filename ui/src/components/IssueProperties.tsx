@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -13,6 +12,7 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
+import { formatLocalDateOnly } from "../lib/issue-due-date";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -20,8 +20,12 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Copy, Check } from "lucide-react";
+import { Calendar, User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Copy, Check } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
+import { CompanyLabelEditor } from "./CompanyLabelEditor";
+import { LabelPills } from "./LabelPills";
+import { ProjectLabelPills } from "./ProjectLabelPills";
+import { IssueDueBadge } from "./IssueDueBadge";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
   const [copied, setCopied] = useState(false);
@@ -174,9 +178,7 @@ export function IssueProperties({
   const [approversOpen, setApproversOpen] = useState(false);
   const [approverSearch, setApproverSearch] = useState("");
   const [labelsOpen, setLabelsOpen] = useState(false);
-  const [labelSearch, setLabelSearch] = useState("");
-  const [newLabelName, setNewLabelName] = useState("");
-  const [newLabelColor, setNewLabelColor] = useState("#6366f1");
+  const [dueDateOpen, setDueDateOpen] = useState(false);
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -219,10 +221,14 @@ export function IssueProperties({
 
   const createLabel = useMutation({
     mutationFn: (data: { name: string; color: string }) => issuesApi.createLabel(companyId!, data),
-    onSuccess: async (created) => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
-      onUpdate({ labelIds: [...(issue.labelIds ?? []), created.id] });
-      setNewLabelName("");
+  });
+
+  const deleteLabel = useMutation({
+    mutationFn: (labelId: string) => issuesApi.deleteLabel(labelId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
+      queryClient.invalidateQueries({ queryKey: ["issues"] });
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
   });
 
@@ -253,6 +259,43 @@ export function IssueProperties({
     const project = projects?.find((p) => p.id === id) ?? null;
     return project ? projectUrl(project) : `/projects/${id}`;
   };
+  const goalPills = useMemo(() => {
+    type GoalScope = "company" | "project" | "issue";
+    type GoalPill = { id: string; title: string; scope: GoalScope };
+    const byId = new Map<string, GoalPill>();
+    const scopeRank: Record<GoalScope, number> = { issue: 0, project: 1, company: 2 };
+    const addGoal = (input: { id: string; title: string }, scope: GoalScope) => {
+      const id = input.id.trim();
+      const title = input.title.trim();
+      if (!id || !title) return;
+      const existing = byId.get(id);
+      if (!existing || scopeRank[scope] > scopeRank[existing.scope]) {
+        byId.set(id, { id, title, scope });
+      }
+    };
+
+    if (issue.companyGoal?.id && issue.companyGoal.title) {
+      addGoal({ id: issue.companyGoal.id, title: issue.companyGoal.title }, "company");
+    }
+    for (const projectGoal of issue.projectGoals ?? []) {
+      if (projectGoal.id && projectGoal.title) {
+        addGoal({ id: projectGoal.id, title: projectGoal.title }, "project");
+      }
+    }
+    for (const projectGoalRef of issue.project?.goals ?? []) {
+      addGoal(projectGoalRef, "project");
+    }
+    if (issue.goal?.id && issue.goal.title) {
+      const fallbackScope: GoalScope = issue.goal.level === "company"
+        ? "company"
+        : issue.projectId
+          ? "project"
+          : "issue";
+      addGoal({ id: issue.goal.id, title: issue.goal.title }, fallbackScope);
+    }
+
+    return Array.from(byId.values());
+  }, [issue.companyGoal, issue.goal, issue.project?.goals, issue.projectGoals, issue.projectId]);
 
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [assigneeOpen]);
   const sortedAgents = useMemo(
@@ -338,24 +381,7 @@ export function IssueProperties({
   })();
 
   const labelsTrigger = (issue.labels ?? []).length > 0 ? (
-    <div className="flex items-center gap-1 flex-wrap">
-      {(issue.labels ?? []).slice(0, 3).map((label) => (
-        <span
-          key={label.id}
-          className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium border"
-          style={{
-            borderColor: label.color,
-            backgroundColor: `${label.color}22`,
-            color: pickTextColorForPillBg(label.color, 0.13),
-          }}
-        >
-          {label.name}
-        </span>
-      ))}
-      {(issue.labels ?? []).length > 3 && (
-        <span className="text-xs text-muted-foreground">+{(issue.labels ?? []).length - 3}</span>
-      )}
-    </div>
+    <LabelPills labels={issue.labels} />
   ) : (
     <>
       <Tag className="h-3.5 w-3.5 text-muted-foreground" />
@@ -375,67 +401,61 @@ export function IssueProperties({
   ) : undefined;
 
   const labelsContent = (
+    <CompanyLabelEditor
+      labels={labels ?? []}
+      selectedLabelIds={issue.labelIds ?? []}
+      onToggleLabel={toggleLabel}
+      onCreateLabel={async (data) => {
+        const created = await createLabel.mutateAsync(data);
+        await queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
+        onUpdate({ labelIds: [...new Set([...(issue.labelIds ?? []), created.id])] });
+      }}
+      onDeleteLabel={(labelId) => deleteLabel.mutateAsync(labelId)}
+      autoFocus={!inline}
+    />
+  );
+
+  const dueDateTrigger = issue.dueDate ? (
+    <IssueDueBadge issue={issue} />
+  ) : (
     <>
-      <input
-        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search labels..."
-        value={labelSearch}
-        onChange={(e) => setLabelSearch(e.target.value)}
-        autoFocus={!inline}
-      />
-      <div className="max-h-44 overflow-y-auto overscroll-contain space-y-0.5">
-        {(labels ?? [])
-          .filter((label) => {
-            if (!labelSearch.trim()) return true;
-            return label.name.toLowerCase().includes(labelSearch.toLowerCase());
-          })
-          .map((label) => {
-            const selected = (issue.labelIds ?? []).includes(label.id);
-            return (
-              <button
-                key={label.id}
-                className={cn(
-                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
-                  selected && "bg-accent"
-                )}
-                onClick={() => toggleLabel(label.id)}
-              >
-                <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: label.color }} />
-                <span className="truncate">{label.name}</span>
-              </button>
-            );
-          })}
-      </div>
-      <div className="mt-2 border-t border-border pt-2 space-y-1">
-        <div className="flex items-center gap-1">
-          <input
-            className="h-7 w-7 p-0 rounded bg-transparent"
-            type="color"
-            value={newLabelColor}
-            onChange={(e) => setNewLabelColor(e.target.value)}
-          />
-          <input
-            className="flex-1 px-2 py-1.5 text-xs bg-transparent outline-none rounded placeholder:text-muted-foreground/50"
-            placeholder="New label"
-            value={newLabelName}
-            onChange={(e) => setNewLabelName(e.target.value)}
-          />
-        </div>
-        <button
-          className="flex items-center justify-center gap-1.5 w-full px-2 py-1.5 text-xs rounded border border-border hover:bg-accent/50 disabled:opacity-50"
-          disabled={!newLabelName.trim() || createLabel.isPending}
-          onClick={() =>
-            createLabel.mutate({
-              name: newLabelName.trim(),
-              color: newLabelColor,
-            })
-          }
-        >
-          <Plus className="h-3 w-3" />
-          {createLabel.isPending ? "Creating…" : "Create label"}
-        </button>
-      </div>
+      <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+      <span className="text-sm text-muted-foreground">No due date</span>
     </>
+  );
+  const todayDueDate = formatLocalDateOnly();
+  const dueDateExtra = issue.dueDate !== todayDueDate ? (
+    <button
+      type="button"
+      aria-label="Set due date to today"
+      className="shrink-0 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+      onClick={() => {
+        onUpdate({ dueDate: formatLocalDateOnly() });
+        setDueDateOpen(false);
+      }}
+    >
+      Today
+    </button>
+  ) : undefined;
+  const dueDateContent = (
+    <div className="space-y-2 p-2">
+      <input
+        type="date"
+        aria-label="Due date"
+        className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+        value={issue.dueDate ?? ""}
+        onChange={(event) => onUpdate({ dueDate: event.target.value || null })}
+      />
+      {issue.dueDate ? (
+        <button
+          type="button"
+          className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+          onClick={() => onUpdate({ dueDate: null })}
+        >
+          Clear due date
+        </button>
+      ) : null}
+    </div>
   );
 
   const assigneeTrigger = assignee ? (
@@ -604,7 +624,11 @@ export function IssueProperties({
         className="shrink-0 h-3 w-3 rounded-sm"
         style={{ backgroundColor: orderedProjects.find((p) => p.id === issue.projectId)?.color ?? "#6366f1" }}
       />
-      <span className="text-sm break-words min-w-0">{projectName(issue.projectId)}</span>
+      <span className="min-w-0 flex-1 truncate text-sm">{projectName(issue.projectId)}</span>
+      <ProjectLabelPills
+        labels={orderedProjects.find((project) => project.id === issue.projectId)?.labels}
+        variant="dense"
+      />
     </>
   ) : (
     <>
@@ -645,7 +669,7 @@ export function IssueProperties({
           .filter((p) => {
             if (!projectSearch.trim()) return true;
             const q = projectSearch.toLowerCase();
-            return p.name.toLowerCase().includes(q);
+            return `${p.name} ${(p.labels ?? []).map((label) => label.name).join(" ")}`.toLowerCase().includes(q);
           })
           .map((p) => (
           <button
@@ -672,7 +696,8 @@ export function IssueProperties({
               className="shrink-0 h-3 w-3 rounded-sm"
               style={{ backgroundColor: p.color ?? "#6366f1" }}
             />
-            {p.name}
+            <span className="min-w-0 flex-1 truncate">{p.name}</span>
+            <ProjectLabelPills labels={p.labels} variant="dense" />
           </button>
         ))}
       </div>
@@ -712,7 +737,7 @@ export function IssueProperties({
       {issue.ancestors?.[0]?.title ?? currentParentIssue?.title ?? issue.parentId.slice(0, 8)}
     </span>
   ) : (
-    <span className="text-sm text-muted-foreground">No parent</span>
+    <span className="text-sm text-muted-foreground">No parent task</span>
   );
   const parentOptions = (allIssues ?? [])
     .filter((candidate) => candidate.id !== issue.id)
@@ -734,7 +759,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder="Search tasks..."
         value={parentSearch}
         onChange={(e) => setParentSearch(e.target.value)}
         autoFocus={!inline}
@@ -750,7 +775,7 @@ export function IssueProperties({
             setParentOpen(false);
           }}
         >
-          No parent
+          No parent task
         </button>
         {parentOptions.map((candidate) => (
           <button
@@ -817,7 +842,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder="Search tasks..."
         value={blockedBySearch}
         onChange={(e) => setBlockedBySearch(e.target.value)}
         autoFocus={!inline}
@@ -876,9 +901,22 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
+          label="Due"
+          open={dueDateOpen}
+          onOpenChange={setDueDateOpen}
+          triggerContent={dueDateTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-56"
+          extra={dueDateExtra}
+        >
+          {dueDateContent}
+        </PropertyPicker>
+
+        <PropertyPicker
+          inline={inline}
           label="Labels"
           open={labelsOpen}
-          onOpenChange={(open) => { setLabelsOpen(open); if (!open) setLabelSearch(""); }}
+          onOpenChange={setLabelsOpen}
           triggerContent={labelsTrigger}
           triggerClassName="min-w-0 max-w-full"
           popoverClassName="w-64"
@@ -927,6 +965,27 @@ export function IssueProperties({
         >
           {projectContent}
         </PropertyPicker>
+
+        <PropertyRow label="Goals">
+          {goalPills.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {goalPills.map((goal) => (
+                <Link
+                  key={goal.id}
+                  to={`/goals/${goal.id}`}
+                  className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
+                >
+                  <span className="truncate max-w-[180px]">{goal.title}</span>
+                  <span className="rounded bg-muted px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    {goal.scope}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <span className="text-sm text-muted-foreground">None</span>
+          )}
+        </PropertyRow>
 
         <PropertyPicker
           inline={inline}
@@ -983,7 +1042,7 @@ export function IssueProperties({
           ) : null}
         </PropertyRow>
 
-        <PropertyRow label="Sub-issues">
+        <PropertyRow label="Child tasks">
           <div className="flex flex-wrap items-center gap-1.5">
             {childIssues.length > 0
               ? childIssues.map((child) => (
@@ -1003,7 +1062,7 @@ export function IssueProperties({
                 onClick={onAddSubIssue}
               >
                 <Plus className="h-3 w-3" />
-                Add sub-issue
+                Add child task
               </button>
             ) : null}
           </div>

@@ -6,7 +6,9 @@ import type { Db } from "@paperclipai/db";
 import { issueExecutionDecisions } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  createIssueChecklistItemSchema,
   createIssueAttachmentMetadataSchema,
+  createIssueLinkSchema,
   createIssueWorkProductSchema,
   createIssueLabelSchema,
   checkoutIssueSchema,
@@ -14,6 +16,7 @@ import {
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
+  reorderIssueSchema,
   upsertIssueFeedbackVoteSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
@@ -21,9 +24,13 @@ import {
   restoreIssueDocumentRevisionSchema,
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
+  updateIssueAttachmentSchema,
   updateIssueSchema,
+  updateIssueChecklistItemSchema,
+  updateIssueLinkSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  type HeartbeatRunStatus,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
@@ -48,7 +55,7 @@ import {
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   isInlineAttachmentContentType,
@@ -64,6 +71,7 @@ import {
 } from "../services/issue-execution-policy.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const ACTIVE_AGENT_RUN_STATUSES = new Set<HeartbeatRunStatus>(["queued", "running"]);
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -318,6 +326,20 @@ export function issueRoutes(
     };
   }
 
+  async function withIssueCardsMetadata<T extends { id: string }>(issuesToDecorate: T[]) {
+    const ids = issuesToDecorate.map((issue) => issue.id);
+    const [covers, links] = await Promise.all([
+      svc.listCoverAttachmentsForIssues(ids),
+      svc.listLinksForIssues(ids),
+    ]);
+
+    return issuesToDecorate.map((issue) => ({
+      ...issue,
+      coverAttachment: covers.get(issue.id) ? withContentPath(covers.get(issue.id)!) : null,
+      links: links.get(issue.id) ?? [],
+    }));
+  }
+
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
   }
@@ -392,9 +414,15 @@ export function issueRoutes(
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
-    if (runId) return runId;
-    res.status(401).json({ error: "Agent run id required" });
-    return null;
+    if (!runId) {
+      res.status(401).json({ error: "Agent run id required" });
+      return null;
+    }
+    if (req.actor.runStatus && !ACTIVE_AGENT_RUN_STATUSES.has(req.actor.runStatus)) {
+      res.status(401).json({ error: "Active agent run id required" });
+      return null;
+    }
+    return runId;
   }
 
   async function assertAgentRunCheckoutOwnership(
@@ -486,31 +514,50 @@ export function issueRoutes(
     return rawId;
   }
 
-  async function resolveIssueProjectAndGoal(issue: {
+  function isDefined<T>(value: T | null): value is T {
+    return value !== null;
+  }
+
+  async function resolveIssueGoalContext(issue: {
     companyId: string;
     projectId: string | null;
     goalId: string | null;
   }) {
     const projectPromise = issue.projectId ? projectsSvc.getById(issue.projectId) : Promise.resolve(null);
     const directGoalPromise = issue.goalId ? goalsSvc.getById(issue.goalId) : Promise.resolve(null);
-    const [project, directGoal] = await Promise.all([projectPromise, directGoalPromise]);
+    const companyGoalPromise = goalsSvc.getDefaultCompanyGoal(issue.companyId);
+    const [project, directGoal, companyGoal] = await Promise.all([projectPromise, directGoalPromise, companyGoalPromise]);
 
     if (directGoal) {
-      return { project, goal: directGoal };
+      const projectGoalIds = project?.goalIds.length
+        ? project.goalIds
+        : project?.goalId
+          ? [project.goalId]
+          : [];
+      const projectGoals = projectGoalIds.length > 0
+        ? (await Promise.all(projectGoalIds.map((goalId) => goalsSvc.getById(goalId)))).filter(isDefined)
+        : [];
+      return { project, goal: directGoal, projectGoals, companyGoal };
     }
 
-    const projectGoalId = project?.goalId ?? project?.goalIds[0] ?? null;
-    if (projectGoalId) {
-      const projectGoal = await goalsSvc.getById(projectGoalId);
-      return { project, goal: projectGoal };
+    const projectGoalIds = project?.goalIds.length
+      ? project.goalIds
+      : project?.goalId
+        ? [project.goalId]
+        : [];
+    const uniqueProjectGoalIds = [...new Set(projectGoalIds)];
+    const projectGoals = uniqueProjectGoalIds.length > 0
+      ? (await Promise.all(uniqueProjectGoalIds.map((goalId) => goalsSvc.getById(goalId)))).filter(isDefined)
+      : [];
+    if (projectGoals.length > 0) {
+      return { project, goal: projectGoals[0] ?? null, projectGoals, companyGoal };
     }
 
     if (!issue.projectId) {
-      const defaultGoal = await goalsSvc.getDefaultCompanyGoal(issue.companyId);
-      return { project, goal: defaultGoal };
+      return { project, goal: companyGoal, projectGoals: [], companyGoal };
     }
 
-    return { project, goal: null };
+    return { project, goal: null, projectGoals: [], companyGoal };
   }
 
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
@@ -616,7 +663,7 @@ export function issueRoutes(
       dueFrom,
       dueTo,
     });
-    res.json(result);
+    res.json(await withIssueCardsMetadata(result));
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -681,12 +728,24 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations] = await Promise.all([
-      resolveIssueProjectAndGoal(issue),
+    const [
+      { project, goal, projectGoals, companyGoal },
+      ancestors,
+      mentionedProjectIds,
+      documentPayload,
+      relations,
+      checklistItems,
+      links,
+      coverAttachments,
+    ] = await Promise.all([
+      resolveIssueGoalContext(issue),
       svc.getAncestors(issue.id),
       svc.findMentionedProjectIds(issue.id),
       documentsSvc.getIssueDocumentPayload(issue),
       svc.getRelationSummaries(issue.id),
+      svc.listChecklistItems(issue.id),
+      svc.listLinks(issue.id),
+      svc.listCoverAttachmentsForIssues([issue.id]),
     ]);
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
@@ -704,10 +763,360 @@ export function issueRoutes(
       ...documentPayload,
       project: project ?? null,
       goal: goal ?? null,
+      projectGoals,
+      companyGoal: companyGoal ?? null,
       mentionedProjects,
       currentExecutionWorkspace,
       workProducts,
+      checklistItems,
+      links,
+      coverAttachment: coverAttachments.get(issue.id) ? withContentPath(coverAttachments.get(issue.id)!) : null,
     });
+  });
+
+  router.get("/issues/:id/checklist-items", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const items = await svc.listChecklistItems(issue.id);
+    res.json(items);
+  });
+
+  router.post(
+    "/issues/:id/checklist-items",
+    validate(createIssueChecklistItemSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+      const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+      if (closedExecutionWorkspace) {
+        respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const item = await svc.createChecklistItem(
+        issue,
+        req.body,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          runId: actor.runId,
+        },
+      );
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.checklist_item_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          checklistItemId: item.id,
+          title: item.title,
+          position: item.position,
+        },
+      });
+
+      res.status(201).json(item);
+    },
+  );
+
+  router.patch(
+    "/issue-checklist-items/:itemId",
+    validate(updateIssueChecklistItemSchema),
+    async (req, res) => {
+      const itemId = req.params.itemId as string;
+      const existing = await svc.getChecklistItemById(itemId);
+      if (!existing) {
+        res.status(404).json({ error: "Checklist item not found" });
+        return;
+      }
+      const issue = await svc.getById(existing.issueId);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+      const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+      if (closedExecutionWorkspace) {
+        respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const updated = await svc.updateChecklistItem(itemId, req.body, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+        runId: actor.runId,
+      });
+      if (!updated) {
+        res.status(404).json({ error: "Checklist item not found" });
+        return;
+      }
+
+      const previous: Record<string, unknown> = {};
+      if (req.body.title !== undefined && existing.title !== updated.title) previous.title = existing.title;
+      if (req.body.position !== undefined && existing.position !== updated.position) previous.position = existing.position;
+      if (req.body.completed !== undefined) {
+        const wasCompleted = Boolean(existing.completedAt);
+        const isCompleted = Boolean(updated.completedAt);
+        if (wasCompleted !== isCompleted) previous.completed = wasCompleted;
+      }
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.checklist_item_updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          checklistItemId: updated.id,
+          title: updated.title,
+          position: updated.position,
+          completed: Boolean(updated.completedAt),
+          _previous: Object.keys(previous).length > 0 ? previous : undefined,
+        },
+      });
+
+      res.json(updated);
+    },
+  );
+
+  router.delete("/issue-checklist-items/:itemId", async (req, res) => {
+    const itemId = req.params.itemId as string;
+    const existing = await svc.getChecklistItemById(itemId);
+    if (!existing) {
+      res.status(404).json({ error: "Checklist item not found" });
+      return;
+    }
+    const issue = await svc.getById(existing.issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+    const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+    if (closedExecutionWorkspace) {
+      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+      return;
+    }
+
+    const removed = await svc.deleteChecklistItem(itemId);
+    if (!removed) {
+      res.status(404).json({ error: "Checklist item not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.checklist_item_deleted",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        checklistItemId: removed.id,
+        title: removed.title,
+        position: removed.position,
+        completed: Boolean(removed.completedAt),
+      },
+    });
+
+    res.json(removed);
+  });
+
+  router.get("/issues/:id/links", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const links = await svc.listLinks(issue.id);
+    res.json(links);
+  });
+
+  router.post(
+    "/issues/:id/links",
+    validate(createIssueLinkSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+      const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+      if (closedExecutionWorkspace) {
+        respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const link = await svc.createLink(
+        issue,
+        req.body,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          runId: actor.runId,
+        },
+      );
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.link_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          linkId: link.id,
+          url: link.url,
+          title: link.title,
+          position: link.position,
+        },
+      });
+
+      res.status(201).json(link);
+    },
+  );
+
+  router.patch(
+    "/issue-links/:linkId",
+    validate(updateIssueLinkSchema),
+    async (req, res) => {
+      const linkId = req.params.linkId as string;
+      const existing = await svc.getLinkById(linkId);
+      if (!existing) {
+        res.status(404).json({ error: "Issue link not found" });
+        return;
+      }
+      const issue = await svc.getById(existing.issueId);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+      const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+      if (closedExecutionWorkspace) {
+        respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+        return;
+      }
+
+      const updated = await svc.updateLink(linkId, req.body);
+      if (!updated) {
+        res.status(404).json({ error: "Issue link not found" });
+        return;
+      }
+
+      const previous: Record<string, unknown> = {};
+      if (req.body.url !== undefined && existing.url !== updated.url) previous.url = existing.url;
+      if (req.body.title !== undefined && existing.title !== updated.title) previous.title = existing.title;
+      if (req.body.position !== undefined && existing.position !== updated.position) previous.position = existing.position;
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.link_updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          linkId: updated.id,
+          url: updated.url,
+          title: updated.title,
+          position: updated.position,
+          _previous: Object.keys(previous).length > 0 ? previous : undefined,
+        },
+      });
+
+      res.json(updated);
+    },
+  );
+
+  router.delete("/issue-links/:linkId", async (req, res) => {
+    const linkId = req.params.linkId as string;
+    const existing = await svc.getLinkById(linkId);
+    if (!existing) {
+      res.status(404).json({ error: "Issue link not found" });
+      return;
+    }
+    const issue = await svc.getById(existing.issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
+    const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+    if (closedExecutionWorkspace) {
+      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
+      return;
+    }
+
+    const removed = await svc.deleteLink(linkId);
+    if (!removed) {
+      res.status(404).json({ error: "Issue link not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.link_deleted",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        linkId: removed.id,
+        url: removed.url,
+        title: removed.title,
+        position: removed.position,
+      },
+    });
+
+    res.json(removed);
   });
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
@@ -724,14 +1133,27 @@ export function issueRoutes(
         ? req.query.wakeCommentId.trim()
         : null;
 
-    const [{ project, goal }, ancestors, commentCursor, wakeComment, relations, attachments] =
+    const [
+      { project, goal, projectGoals, companyGoal },
+      ancestors,
+      commentCursor,
+      wakeComment,
+      relations,
+      attachments,
+      checklistItems,
+      links,
+      coverAttachments,
+    ] =
       await Promise.all([
-      resolveIssueProjectAndGoal(issue),
+      resolveIssueGoalContext(issue),
       svc.getAncestors(issue.id),
       svc.getCommentCursor(issue.id),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
       svc.getRelationSummaries(issue.id),
       svc.listAttachments(issue.id),
+      svc.listChecklistItems(issue.id),
+      svc.listLinks(issue.id),
+      svc.listCoverAttachmentsForIssues([issue.id]),
     ]);
 
     res.json({
@@ -747,6 +1169,9 @@ export function issueRoutes(
         parentId: issue.parentId,
         blockedBy: relations.blockedBy,
         blocks: relations.blocks,
+        checklistItems,
+        links,
+        coverAttachment: coverAttachments.get(issue.id) ? withContentPath(coverAttachments.get(issue.id)!) : null,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
         updatedAt: issue.updatedAt,
@@ -775,6 +1200,22 @@ export function issueRoutes(
             parentId: goal.parentId,
           }
         : null,
+      projectGoals: projectGoals.map((projectGoal) => ({
+        id: projectGoal.id,
+        title: projectGoal.title,
+        status: projectGoal.status,
+        level: projectGoal.level,
+        parentId: projectGoal.parentId,
+      })),
+      companyGoal: companyGoal
+        ? {
+            id: companyGoal.id,
+            title: companyGoal.title,
+            status: companyGoal.status,
+            level: companyGoal.level,
+            parentId: companyGoal.parentId,
+          }
+        : null,
       commentCursor,
       wakeComment:
         wakeComment && wakeComment.issueId === issue.id
@@ -783,6 +1224,7 @@ export function issueRoutes(
       attachments: attachments.map((a) => ({
         id: a.id,
         filename: a.originalFilename,
+        isCover: a.isCover,
         contentType: a.contentType,
         byteSize: a.byteSize,
         contentPath: withContentPath(a).contentPath,
@@ -1309,6 +1751,7 @@ export function issueRoutes(
       details: {
         title: issue.title,
         identifier: issue.identifier,
+        dueDate: issue.dueDate,
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
       },
     });
@@ -1890,6 +2333,66 @@ export function issueRoutes(
     })();
 
     res.json({ ...issueResponse, comment });
+  });
+
+  router.post("/issues/:id/reorder", validate(reorderIssueSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const issue = await svc.reorder(id, req.body);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.reordered",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        status: issue.status,
+        boardPosition: issue.boardPosition,
+        beforeIssueId: req.body.beforeIssueId ?? null,
+        _previous: {
+          status: existing.status,
+          boardPosition: existing.boardPosition,
+        },
+      },
+    });
+
+    if (existing.status === "backlog" && issue.status !== "backlog" && issue.assigneeAgentId) {
+      void heartbeat.wakeup(issue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_status_changed",
+        payload: {
+          issueId: issue.id,
+          mutation: "reorder",
+        },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: issue.id,
+          source: "issue.reorder",
+        },
+      }).catch((err) =>
+        logger.warn({ err, issueId: issue.id, agentId: issue.assigneeAgentId }, "failed to wake assignee after issue reorder"));
+    }
+
+    res.json(issue);
   });
 
   router.delete("/issues/:id", async (req, res) => {
@@ -2553,6 +3056,7 @@ export function issueRoutes(
       byteSize: stored.byteSize,
       sha256: stored.sha256,
       originalFilename: stored.originalFilename,
+      isCover: parsedMeta.data.isCover === true,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
@@ -2571,10 +3075,46 @@ export function issueRoutes(
         originalFilename: attachment.originalFilename,
         contentType: attachment.contentType,
         byteSize: attachment.byteSize,
+        isCover: attachment.isCover,
       },
     });
 
     res.status(201).json(withContentPath(attachment));
+  });
+
+  router.patch("/attachments/:attachmentId", validate(updateIssueAttachmentSchema), async (req, res) => {
+    const attachmentId = req.params.attachmentId as string;
+    const attachment = await svc.getAttachmentById(attachmentId);
+    if (!attachment) {
+      res.status(404).json({ error: "Attachment not found" });
+      return;
+    }
+    assertCompanyAccess(req, attachment.companyId);
+
+    const updated = await svc.updateAttachmentCover(attachmentId, req.body.isCover === true);
+    if (!updated) {
+      res.status(404).json({ error: "Attachment not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: updated.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: updated.isCover ? "issue.cover_set" : "issue.cover_cleared",
+      entityType: "issue",
+      entityId: updated.issueId,
+      details: {
+        attachmentId: updated.id,
+        originalFilename: updated.originalFilename,
+        contentType: updated.contentType,
+      },
+    });
+
+    res.json(withContentPath(updated));
   });
 
   router.get("/attachments/:attachmentId/content", async (req, res, next) => {

@@ -450,6 +450,7 @@ export const PLUGIN_CAPABILITIES = [
   "companies.read",
   "projects.read",
   "project.workspaces.read",
+  "project.context.read",
   "issues.read",
   "issue.comments.read",
   "issue.documents.read",
@@ -464,6 +465,7 @@ export const PLUGIN_CAPABILITIES = [
   "issues.update",
   "issue.comments.create",
   "issue.documents.write",
+  "project.context.write",
   "agents.pause",
   "agents.resume",
   "agents.invoke",
@@ -541,6 +543,7 @@ export const PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS = [
   "costs",
   "activity",
   "inbox",
+  "blockers",
   "design-guide",
   "tests",
 ] as const;

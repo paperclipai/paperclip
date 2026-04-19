@@ -10,6 +10,10 @@ import {
   defaultIssueFilterState,
   type IssueFilterState,
 } from "./issue-filters";
+import {
+  ISSUE_DUE_FILTER_STATES,
+  type IssueDueFilterState,
+} from "./issue-due-date";
 
 export const RECENT_ISSUES_LIMIT = 100;
 export const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
@@ -39,10 +43,11 @@ export const inboxIssueColumns = [
   "workspace",
   "parent",
   "labels",
+  "due",
   "updated",
 ] as const;
 export type InboxIssueColumn = (typeof inboxIssueColumns)[number];
-export const DEFAULT_INBOX_ISSUE_COLUMNS: InboxIssueColumn[] = ["status", "id", "updated"];
+export const DEFAULT_INBOX_ISSUE_COLUMNS: InboxIssueColumn[] = ["status", "id", "due", "updated"];
 export interface InboxFilterPreferences {
   allCategoryFilter: InboxCategoryFilter;
   allApprovalFilter: InboxApprovalFilter;
@@ -96,12 +101,20 @@ function normalizeStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string");
 }
 
+function normalizeDueStateArray(value: unknown): IssueDueFilterState[] {
+  const allowedStates = new Set<IssueDueFilterState>(ISSUE_DUE_FILTER_STATES);
+  return normalizeStringArray(value).filter((entry): entry is IssueDueFilterState =>
+    allowedStates.has(entry as IssueDueFilterState),
+  );
+}
+
 function normalizeIssueFilterState(value: unknown): IssueFilterState {
   if (!value || typeof value !== "object") return { ...defaultIssueFilterState };
   const candidate = value as Partial<Record<keyof IssueFilterState, unknown>>;
   return {
     statuses: normalizeStringArray(candidate.statuses),
     priorities: normalizeStringArray(candidate.priorities),
+    dueStates: normalizeDueStateArray(candidate.dueStates),
     assignees: normalizeStringArray(candidate.assignees),
     labels: normalizeStringArray(candidate.labels),
     projects: normalizeStringArray(candidate.projects),
@@ -603,7 +616,7 @@ const inboxWorkItemKindOrder: InboxWorkItem["kind"][] = [
 ];
 
 const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
-  issue: "Issues",
+  issue: "Tasks",
   approval: "Approvals",
   failed_run: "Failed runs",
   join_request: "Join requests",
@@ -764,7 +777,7 @@ export function computeInboxBadgeData({
   const alerts = Number(showAggregateAgentError) + Number(showBudgetAlert);
 
   return {
-    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues + alerts,
+    inbox: 0,
     approvals: actionableApprovals,
     failedRuns,
     joinRequests: visibleJoinRequests,

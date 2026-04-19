@@ -42,6 +42,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
 | Budget period | Monthly UTC calendar window |
 | Budget enforcement | Soft alerts + hard limit auto-pause |
+| Operating cadence | Agents default to slow, steady, token-conscious execution; faster token burn is reserved for `critical` priority issues or explicit board/user urgency wording such as urgent, ASAP, or immediate |
 | Deployment modes | Canonical model is `local_trusted` + `authenticated` with `private/public` exposure policy (see `doc/DEPLOYMENT-MODES.md`) |
 
 ## 4. Current Baseline (Repo Snapshot)
@@ -190,6 +191,36 @@ Invariant:
 
 - project env is merged into run environment for issues in that project and overrides conflicting agent env keys before Paperclip runtime-owned keys are injected
 
+### 7.5.1 Project context profiles and sources
+
+Projects may have a company-scoped context profile that augments issue, heartbeat, and run execution without creating a separate chat product.
+
+- `project_context_profiles`
+  - `company_id`, `project_id`
+  - `goal_markdown`
+  - `instructions_markdown`
+  - `default_skill_keys` jsonb
+  - `retrieval_enabled`
+  - `max_bundle_chars`, `max_chunks`
+- `context_sources`
+  - connector-neutral project source records for manual notes, uploads, Google Drive folders, and plugin-managed sources
+  - stores source type, provider, URI, status, status message, asset reference, external id, provenance metadata, sync timestamps
+- `context_source_items`
+  - one row per remote/local file or document
+  - stores text body when extractable, mime type, remote modified time, status, and metadata
+- `context_source_chunks`
+  - deterministic chunks derived from source item text
+  - indexed with PostgreSQL full-text search for V1 retrieval
+- `context_source_sync_runs`
+  - audit trail for source refresh/indexing attempts
+
+Invariants:
+
+- all profile/source/item/chunk reads and writes enforce company and project ownership
+- context bundles never include connector credentials, Drive tokens, or secret values
+- project-default skills are inherited at runtime and de-duplicated with explicit agent skill preferences
+- source snippets injected into runs include provenance sufficient for citation
+
 ## 7.6 `issues` (core task entity)
 
 - `id` uuid pk
@@ -199,7 +230,9 @@ Invariant:
 - `parent_id` uuid fk `issues.id` null
 - `title` text not null
 - `description` text null
+- `due_date` date null
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
+- `board_position` int not null default 0
 - `priority` enum: `critical | high | medium | low`
 - `assignee_agent_id` uuid fk `agents.id` null
 - `created_by_agent_id` uuid fk `agents.id` null
@@ -216,6 +249,57 @@ Invariants:
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
 - terminal states: `done | cancelled`
+- kanban board order is shared per `company_id + status` using ascending `board_position`
+
+### 7.6.1 `issue_checklist_items`
+
+Lightweight click-off subtasks live inside one issue and do not create child issues.
+
+- `id` uuid pk
+- `company_id` uuid fk not null
+- `issue_id` uuid fk `issues.id` not null
+- `title` text not null
+- `position` int not null default 0
+- `completed_at` timestamptz null
+- `completed_by_agent_id` uuid fk `agents.id` null
+- `completed_by_user_id` text null
+- `created_by_agent_id` uuid fk `agents.id` null
+- `created_by_user_id` text null
+- `created_by_run_id` uuid fk `heartbeat_runs.id` null
+
+Invariants:
+
+- checklist items inherit issue/company access
+- completing all checklist items does not automatically complete the parent issue
+- child issues via `issues.parent_id` remain the full task hierarchy model
+
+### 7.6.2 `issue_links`
+
+External links attached to an issue.
+
+- `id` uuid pk
+- `company_id` uuid fk not null
+- `issue_id` uuid fk `issues.id` not null
+- `url` text not null
+- `title` text null
+- `position` int not null default 0
+- `created_by_agent_id` uuid fk `agents.id` null
+- `created_by_user_id` text null
+- `created_by_run_id` uuid fk `heartbeat_runs.id` null
+
+Invariants:
+
+- links inherit issue/company access
+- link mutations update parent issue recency and activity
+- `GET /issues/:issueId` and heartbeat context include sorted `links`
+
+### 7.6.3 Issue Covers
+
+Issue covers are image attachments marked with `issue_attachments.is_cover`.
+
+- at most one cover attachment per issue
+- only image attachments may be set as covers
+- issue list/detail responses include `coverAttachment` when set
 
 ## 7.7 `issue_comments`
 
@@ -474,7 +558,17 @@ All endpoints are under `/api` and return JSON.
 - `GET /companies/:companyId/issues`
 - `POST /companies/:companyId/issues`
 - `GET /issues/:issueId`
+- `GET /issues/:issueId/checklist-items`
+- `POST /issues/:issueId/checklist-items`
+- `PATCH /issue-checklist-items/:itemId`
+- `DELETE /issue-checklist-items/:itemId`
+- `GET /issues/:issueId/links`
+- `POST /issues/:issueId/links`
+- `PATCH /issue-links/:linkId`
+- `DELETE /issue-links/:linkId`
+- `PATCH /attachments/:attachmentId` (set or clear `isCover`)
 - `PATCH /issues/:issueId`
+- `POST /issues/:issueId/reorder` with `{ status, beforeIssueId }` to move a task within or across kanban columns
 - `GET /issues/:issueId/documents`
 - `GET /issues/:issueId/documents/:key`
 - `PUT /issues/:issueId/documents/:key`
@@ -512,6 +606,18 @@ Server behavior:
 - `POST /companies/:companyId/projects`
 - `GET /projects/:projectId`
 - `PATCH /projects/:projectId`
+
+Project context endpoints:
+
+- `GET /companies/:companyId/projects/:projectId/context`
+- `PATCH /companies/:companyId/projects/:projectId/context`
+- `GET /companies/:companyId/projects/:projectId/context/sources`
+- `POST /companies/:companyId/projects/:projectId/context/sources`
+- `POST /companies/:companyId/projects/:projectId/context/sources/upload`
+- `GET /companies/:companyId/projects/:projectId/context/search`
+- `POST /companies/:companyId/context/sources/:sourceId/items`
+- `POST /companies/:companyId/context/sources/:sourceId/sync`
+- `DELETE /companies/:companyId/context/sources/:sourceId`
 
 ## 10.6 Approvals
 
@@ -552,6 +658,8 @@ Dashboard payload must include:
 - `500` server error
 
 ## 11. Heartbeat and Adapter Contract
+
+Before adapter execution, heartbeat assembly resolves the run issue's project and builds `paperclipProjectContext` from the project context profile, inherited project skill keys, and source search results based on issue title/body/recent comments/wake prompt. The bundle is stored in the run `context_snapshot` for auditability and passed to adapters through the normal run context. Local adapters render the bundle after Paperclip wake/workspace context and before the task prompt. External/gateway adapters include the same bundle in their structured Paperclip payload.
 
 ## 11.1 Adapter Interface
 
@@ -877,3 +985,22 @@ Export/import behavior in V1:
 - import supports collision strategies: `rename`, `skip`, `replace`
 - import supports preview (dry-run) before apply
 - GitHub imports warn on unpinned refs instead of blocking
+
+## 22. Company Rollouts
+
+Core Paperclip UX and product features are global instance behavior. Changes shipped in `ui/`, `server/`, shared packages, migrations, or installed plugins must not be implemented as company-specific forks; every company receives those features through the same company-scoped controls.
+
+Company Rollouts are only for company package data. A rollout release is an immutable, versioned export snapshot from one source company with a manifest, selected files, package hash, counts, creator metadata, and per-target audit history.
+
+Rollout behavior:
+
+- default targets are active companies except the source company
+- paused companies can be selected manually
+- archived companies are excluded
+- preview reports per-target entity actions: `create`, `update`, `skip_no_change`, `skip_unmanaged_conflict`, and `error`
+- apply creates missing managed agents, skills, projects, and recurring routine definitions
+- later releases update entities linked to the same source company and package key instead of duplicating them
+- unmanaged slug/name conflicts are skipped by default and surfaced in preview
+- target company identity is preserved; rollouts do not overwrite company name, branding, budgets, or feedback settings
+- ordinary non-recurring tasks remain create-only/skip-only package content and are not used to rewrite task history
+- apply records per-target success or failure without blocking successful targets when another target fails

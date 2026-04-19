@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type MouseEvent, type PointerEvent } from "react";
 import { Link, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -13,7 +13,7 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import { CalendarDays, ChevronLeft, ChevronRight, CircleDot } from "lucide-react";
+import { ArrowDown, ArrowUp, CalendarDays, ChevronLeft, ChevronRight, CircleDot, Plus } from "lucide-react";
 import type { Issue } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { useDialog } from "../context/DialogContext";
 import {
   addMonths,
   dateLongLabel,
@@ -42,7 +43,11 @@ import { queryKeys } from "../lib/queryKeys";
 
 const ACTIVE_DATED_STATUS_FILTER = "backlog,todo,in_progress,in_review,blocked";
 const MAX_VISIBLE_DAY_TASKS = 3;
+const CALENDAR_DISPLAY_MODE_STORAGE_KEY = "paperclip.taskCalendar.displayMode";
 const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const issuePriorityOrder = ["critical", "high", "medium", "low"] as const;
+
+export type CalendarDisplayMode = "all" | "three";
 
 type AgentOption = {
   id: string;
@@ -68,7 +73,43 @@ function replaceScope(scope: TaskScope) {
   window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
-function groupIssuesByDueDate(issues: Issue[]) {
+function readCalendarDisplayMode(): CalendarDisplayMode {
+  if (typeof window === "undefined") return "all";
+  return window.localStorage.getItem(CALENDAR_DISPLAY_MODE_STORAGE_KEY) === "three" ? "three" : "all";
+}
+
+function saveCalendarDisplayMode(mode: CalendarDisplayMode) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(CALENDAR_DISPLAY_MODE_STORAGE_KEY, mode);
+}
+
+function priorityRank(priority: string) {
+  const rank = issuePriorityOrder.indexOf(priority as (typeof issuePriorityOrder)[number]);
+  return rank === -1 ? issuePriorityOrder.indexOf("medium") : rank;
+}
+
+export function nextHigherPriority(priority: string): string | null {
+  const rank = priorityRank(priority);
+  return rank > 0 ? issuePriorityOrder[rank - 1] : null;
+}
+
+export function nextLowerPriority(priority: string): string | null {
+  const rank = priorityRank(priority);
+  return rank < issuePriorityOrder.length - 1 ? issuePriorityOrder[rank + 1] : null;
+}
+
+export function sortCalendarIssues(issues: Issue[]) {
+  return [...issues].sort((a, b) => {
+    if (a.priority !== b.priority) return priorityRank(a.priority) - priorityRank(b.priority);
+    return a.title.localeCompare(b.title);
+  });
+}
+
+export function visibleCalendarIssues(issues: Issue[], mode: CalendarDisplayMode) {
+  return mode === "three" ? issues.slice(0, MAX_VISIBLE_DAY_TASKS) : issues;
+}
+
+export function groupIssuesByDueDate(issues: Issue[]) {
   const groups = new Map<string, Issue[]>();
   for (const issue of issues) {
     if (!issue.dueDate) continue;
@@ -78,10 +119,7 @@ function groupIssuesByDueDate(issues: Issue[]) {
   }
   for (const group of groups.values()) {
     group.sort((a, b) => {
-      if (a.priority !== b.priority) {
-        const priorityOrder = ["critical", "high", "medium", "low"];
-        return priorityOrder.indexOf(a.priority) - priorityOrder.indexOf(b.priority);
-      }
+      if (a.priority !== b.priority) return priorityRank(a.priority) - priorityRank(b.priority);
       return a.title.localeCompare(b.title);
     });
   }
@@ -94,11 +132,13 @@ function CalendarTaskCard({
   isLive = false,
   isOverlay = false,
   dragProps,
+  onPriorityChange,
 }: {
   issue: Issue;
   agents?: AgentOption[];
   isLive?: boolean;
   isOverlay?: boolean;
+  onPriorityChange?: (id: string, priority: string) => void;
   dragProps?: {
     setNodeRef: CalendarDragProps["setNodeRef"];
     attributes: CalendarDragProps["attributes"];
@@ -107,6 +147,20 @@ function CalendarTaskCard({
     isDragging?: CalendarDragProps["isDragging"];
   };
 }) {
+  const higherPriority = nextHigherPriority(issue.priority);
+  const lowerPriority = nextLowerPriority(issue.priority);
+  const showPriorityControls = !isOverlay && Boolean(onPriorityChange) && (higherPriority || lowerPriority);
+
+  function handlePriorityChange(event: MouseEvent<HTMLButtonElement>, priority: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    onPriorityChange?.(issue.id, priority);
+  }
+
+  function stopPriorityPointer(event: PointerEvent<HTMLButtonElement> | MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+  }
+
   return (
     <div
       ref={dragProps?.setNodeRef}
@@ -120,15 +174,15 @@ function CalendarTaskCard({
         isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:bg-accent/40",
       )}
     >
-      <Link
-        to={`/issues/${issue.identifier ?? issue.id}`}
-        disableIssueQuicklook
-        className="block min-w-0 text-inherit no-underline"
-        onClick={(event) => {
-          if (dragProps?.isDragging) event.preventDefault();
-        }}
-      >
-        <div className="flex min-w-0 items-center gap-1.5">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <Link
+          to={`/issues/${issue.identifier ?? issue.id}`}
+          disableIssueQuicklook
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-inherit no-underline"
+          onClick={(event) => {
+            if (dragProps?.isDragging) event.preventDefault();
+          }}
+        >
           <StatusIcon status={issue.status} />
           <PriorityIcon priority={issue.priority} />
           <span className="min-w-0 flex-1 truncate">{issue.title}</span>
@@ -139,8 +193,42 @@ function CalendarTaskCard({
             </span>
           ) : null}
           <IssueAssigneeIcon issue={issue} agents={agents} className="-mr-0.5" />
-        </div>
-      </Link>
+        </Link>
+        {showPriorityControls ? (
+          <span className="flex shrink-0 items-center gap-0.5">
+            {higherPriority ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                title="Raise priority"
+                aria-label={`Raise priority for ${issue.title}`}
+                onPointerDown={stopPriorityPointer}
+                onMouseDown={stopPriorityPointer}
+                onClick={(event) => handlePriorityChange(event, higherPriority)}
+              >
+                <ArrowUp className="h-3 w-3" />
+              </Button>
+            ) : null}
+            {lowerPriority ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                title="Lower priority"
+                aria-label={`Lower priority for ${issue.title}`}
+                onPointerDown={stopPriorityPointer}
+                onMouseDown={stopPriorityPointer}
+                onClick={(event) => handlePriorityChange(event, lowerPriority)}
+              >
+                <ArrowDown className="h-3 w-3" />
+              </Button>
+            ) : null}
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -149,10 +237,12 @@ function DraggableCalendarTask({
   issue,
   agents,
   isLive,
+  onPriorityChange,
 }: {
   issue: Issue;
   agents?: AgentOption[];
   isLive?: boolean;
+  onPriorityChange?: (id: string, priority: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: issue.id,
@@ -165,6 +255,7 @@ function DraggableCalendarTask({
       issue={issue}
       agents={agents}
       isLive={isLive}
+      onPriorityChange={onPriorityChange}
       dragProps={{ attributes, listeners, setNodeRef, style, isDragging }}
     />
   );
@@ -176,40 +267,59 @@ function CalendarDayCell({
   agents,
   liveIssueIds,
   selected,
+  displayMode,
   onSelectDate,
+  onAddTask,
+  onPriorityChange,
 }: {
   day: ReturnType<typeof monthGrid>[number];
   issues: Issue[];
   agents?: AgentOption[];
   liveIssueIds?: Set<string>;
   selected: boolean;
+  displayMode: CalendarDisplayMode;
   onSelectDate: (date: string) => void;
+  onAddTask: (date: string) => void;
+  onPriorityChange: (id: string, priority: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: `date:${day.date}` });
-  const visibleIssues = issues.slice(0, MAX_VISIBLE_DAY_TASKS);
+  const visibleIssues = visibleCalendarIssues(issues, displayMode);
   const hiddenCount = Math.max(0, issues.length - visibleIssues.length);
 
   return (
     <div
       ref={setNodeRef}
       className={cn(
-        "min-h-[132px] border-b border-r border-border p-1.5 transition-colors md:min-h-[148px]",
+        "group min-h-[132px] border-b border-r border-border p-1.5 transition-colors md:min-h-[148px]",
         !day.inCurrentMonth && "bg-muted/10 text-muted-foreground",
         isOver && "bg-accent/50",
         selected && "ring-1 ring-inset ring-primary/50",
       )}
     >
-      <button
-        type="button"
-        className={cn(
-          "mb-1 flex h-6 min-w-6 items-center justify-center rounded-sm px-1 text-xs font-medium",
-          day.isToday ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-        )}
-        onClick={() => onSelectDate(day.date)}
-        aria-label={dateLongLabel(day.date)}
-      >
-        {day.dayOfMonth}
-      </button>
+      <div className="mb-1 flex items-center justify-between gap-1">
+        <button
+          type="button"
+          className={cn(
+            "flex h-6 min-w-6 items-center justify-center rounded-sm px-1 text-xs font-medium",
+            day.isToday ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          )}
+          onClick={() => onSelectDate(day.date)}
+          aria-label={dateLongLabel(day.date)}
+        >
+          {day.dayOfMonth}
+        </button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          className="h-6 w-6 text-muted-foreground opacity-70 transition-opacity hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+          title={`Add task due ${dateLongLabel(day.date)}`}
+          aria-label={`Add task due ${dateLongLabel(day.date)}`}
+          onClick={() => onAddTask(day.date)}
+        >
+          <Plus className="h-3 w-3" />
+        </Button>
+      </div>
       <div className="space-y-1">
         {visibleIssues.map((issue) => (
           <DraggableCalendarTask
@@ -217,6 +327,7 @@ function CalendarDayCell({
             issue={issue}
             agents={agents}
             isLive={liveIssueIds?.has(issue.id) === true}
+            onPriorityChange={onPriorityChange}
           />
         ))}
         {hiddenCount > 0 ? (
@@ -233,14 +344,73 @@ function CalendarDayCell({
   );
 }
 
+function CalendarAgendaTaskRow({
+  issue,
+  onPriorityChange,
+}: {
+  issue: Issue;
+  onPriorityChange: (id: string, priority: string) => void;
+}) {
+  const higherPriority = nextHigherPriority(issue.priority);
+  const lowerPriority = nextLowerPriority(issue.priority);
+
+  function handlePriorityChange(event: MouseEvent<HTMLButtonElement>, priority: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    onPriorityChange(issue.id, priority);
+  }
+
+  return (
+    <div className="flex min-w-0 items-center gap-1 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent/50">
+      <Link
+        to={`/issues/${issue.identifier ?? issue.id}`}
+        className="flex min-w-0 flex-1 items-center gap-2 text-inherit no-underline"
+      >
+        <StatusIcon status={issue.status} />
+        <PriorityIcon priority={issue.priority} />
+        <span className="min-w-0 flex-1 truncate">{issue.title}</span>
+        <IssueDueBadge issue={issue} compact />
+      </Link>
+      {higherPriority ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          className="h-6 w-6 text-muted-foreground hover:text-foreground"
+          title="Raise priority"
+          aria-label={`Raise priority for ${issue.title}`}
+          onClick={(event) => handlePriorityChange(event, higherPriority)}
+        >
+          <ArrowUp className="h-3 w-3" />
+        </Button>
+      ) : null}
+      {lowerPriority ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          className="h-6 w-6 text-muted-foreground hover:text-foreground"
+          title="Lower priority"
+          aria-label={`Lower priority for ${issue.title}`}
+          onClick={(event) => handlePriorityChange(event, lowerPriority)}
+        >
+          <ArrowDown className="h-3 w-3" />
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 export function TaskCalendarPage() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
+  const { openNewIssue } = useDialog();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const today = formatDateOnly();
   const [scope, setScope] = useState<TaskScope>(() => readScope(searchParams));
+  const [displayMode, setDisplayMode] = useState<CalendarDisplayMode>(() => readCalendarDisplayMode());
   const [monthDate, setMonthDate] = useState(() => firstOfMonth(today));
   const [selectedDate, setSelectedDate] = useState(today);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
@@ -326,6 +496,34 @@ export function TaskCalendarPage() {
     },
   });
 
+  const updatePriority = useMutation({
+    mutationFn: ({ id, priority }: { id: string; priority: string }) =>
+      issuesApi.update(id, { priority }),
+    onMutate: async ({ id, priority }) => {
+      await queryClient.cancelQueries({ queryKey: calendarQueryKey });
+      const previous = queryClient.getQueryData<Issue[]>(calendarQueryKey);
+      queryClient.setQueryData<Issue[]>(calendarQueryKey, (current) =>
+        (current ?? []).map((issue) => (issue.id === id ? { ...issue, priority } : issue)),
+      );
+      return { previous };
+    },
+    onError: (err, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(calendarQueryKey, context.previous);
+      pushToast({
+        title: "Priority update failed",
+        body: err instanceof Error ? err.message : "Could not update the task priority.",
+        tone: "error",
+      });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: calendarQueryKey });
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+      }
+    },
+  });
+
   const issuesByDate = useMemo(() => groupIssuesByDueDate(issues), [issues]);
   const activeIssue = useMemo(
     () => (activeIssueId ? issues.find((issue) => issue.id === activeIssueId) ?? null : null),
@@ -345,6 +543,20 @@ export function TaskCalendarPage() {
     const issue = event.active.data.current?.issue as Issue | undefined;
     if (!issue || issue.dueDate === targetDate) return;
     moveDueDate.mutate({ id: issue.id, dueDate: targetDate });
+  }
+
+  function handleDisplayModeChange(mode: CalendarDisplayMode) {
+    setDisplayMode(mode);
+    saveCalendarDisplayMode(mode);
+  }
+
+  function handleAddTask(date: string) {
+    openNewIssue({ dueDate: date });
+    setSelectedDate(date);
+  }
+
+  function handlePriorityChange(id: string, priority: string) {
+    updatePriority.mutate({ id, priority });
   }
 
   if (!selectedCompanyId) {
@@ -390,14 +602,38 @@ export function TaskCalendarPage() {
           </Button>
           <h1 className="ml-2 text-xl font-bold">{monthLabel(monthDate)}</h1>
         </div>
-        <TaskScopeToggle
-          value={visibleScope}
-          showMy={showMyScope}
-          onChange={(nextScope) => {
-            setScope(nextScope);
-            replaceScope(nextScope);
-          }}
-        />
+        <div className="flex items-center gap-2">
+          <div className="inline-flex rounded-md border border-border bg-muted/30 p-0.5" aria-label="Calendar task density">
+            {([
+              ["all", "All"],
+              ["three", "3"],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                className={cn(
+                  "rounded-sm px-2.5 py-1 text-xs font-medium transition-colors",
+                  displayMode === value
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                title={value === "all" ? "Show all tasks per date" : "Show 3 tasks per date"}
+                aria-pressed={displayMode === value}
+                onClick={() => handleDisplayModeChange(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <TaskScopeToggle
+            value={visibleScope}
+            showMy={showMyScope}
+            onChange={(nextScope) => {
+              setScope(nextScope);
+              replaceScope(nextScope);
+            }}
+          />
+        </div>
       </div>
 
       {error ? <p className="text-sm text-destructive">{(error as Error).message}</p> : null}
@@ -418,8 +654,12 @@ export function TaskCalendarPage() {
                 day={day}
                 issues={issuesByDate.get(day.date) ?? []}
                 agents={agents}
+                liveIssueIds={undefined}
                 selected={selectedDate === day.date}
+                displayMode={displayMode}
                 onSelectDate={setSelectedDate}
+                onAddTask={handleAddTask}
+                onPriorityChange={handlePriorityChange}
               />
             ))}
           </div>
@@ -443,16 +683,11 @@ export function TaskCalendarPage() {
         {selectedIssues.length > 0 ? (
           <div className="space-y-1">
             {selectedIssues.map((issue) => (
-              <Link
+              <CalendarAgendaTaskRow
                 key={issue.id}
-                to={`/issues/${issue.identifier ?? issue.id}`}
-                className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm text-inherit no-underline transition-colors hover:bg-accent/50"
-              >
-                <StatusIcon status={issue.status} />
-                <PriorityIcon priority={issue.priority} />
-                <span className="min-w-0 flex-1 truncate">{issue.title}</span>
-                <IssueDueBadge issue={issue} compact />
-              </Link>
+                issue={issue}
+                onPriorityChange={handlePriorityChange}
+              />
             ))}
           </div>
         ) : (

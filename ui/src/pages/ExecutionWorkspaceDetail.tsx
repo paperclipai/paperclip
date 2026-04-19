@@ -280,6 +280,18 @@ function ExecutionWorkspaceIssuesList({
     },
   });
 
+  const reorderIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { status: string; beforeIssueId?: string | null } }) =>
+      issuesApi.reorder(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByExecutionWorkspace(companyId, workspaceId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+      if (project?.id) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, project.id) });
+      }
+    },
+  });
+
   const projectOptions = useMemo(
     () => (project ? [{ id: project.id, name: project.name, workspaces: project.workspaces ?? [] }] : undefined),
     [project],
@@ -296,6 +308,7 @@ function ExecutionWorkspaceIssuesList({
       projectId={project?.id}
       viewStateKey={`paperclip:execution-workspace-view:${workspaceId}`}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+      onReorderIssue={(id, data) => reorderIssue.mutate({ id, data })}
     />
   );
 }
@@ -506,7 +519,7 @@ export function ExecutionWorkspaceDetail() {
           </div>
           <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Configure the concrete runtime workspace that Paperclip reuses for this issue flow.
+            Configure the concrete runtime workspace that Paperclip reuses for this task flow.
             <span className="hidden sm:inline"> These settings stay attached to the execution workspace so future runs can keep local paths, repo refs, provisioning, teardown, and runtime-service behavior in sync with the actual workspace being reused.</span>
           </p>
         </div>
@@ -515,7 +528,7 @@ export function ExecutionWorkspaceDetail() {
           <PageTabBar
             items={[
               { value: "configuration", label: "Configuration" },
-              { value: "issues", label: "Issues" },
+              { value: "issues", label: "Tasks (Issues)" },
             ]}
             align="start"
             value={activeTab ?? "configuration"}
@@ -739,7 +752,7 @@ export function ExecutionWorkspaceDetail() {
                     "None"
                   )}
                 </DetailRow>
-                <DetailRow label="Source issue">
+                <DetailRow label="Source task">
                   {sourceIssue ? (
                     <Link to={issueUrl(sourceIssue)} className="hover:underline">
                       {sourceIssue.identifier ?? sourceIssue.id} · {sourceIssue.title}

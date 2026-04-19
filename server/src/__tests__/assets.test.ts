@@ -66,6 +66,10 @@ function createStorageService(contentType = "image/png"): StorageService {
 }
 
 async function createApp(storage: ReturnType<typeof createStorageService>) {
+  vi.resetModules();
+  vi.doUnmock("../routes/assets.js");
+  vi.doUnmock("../attachment-types.js");
+  registerServiceMocks();
   const { assetRoutes } = await import("../routes/assets.js");
   const app = express();
   app.use((req, _res, next) => {
@@ -83,7 +87,6 @@ async function createApp(storage: ReturnType<typeof createStorageService>) {
 describe("POST /api/companies/:companyId/assets/images", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerServiceMocks();
     createAssetMock.mockReset();
     getAssetByIdMock.mockReset();
     logActivityMock.mockReset();
@@ -141,7 +144,6 @@ describe("POST /api/companies/:companyId/assets/images", () => {
 describe("POST /api/companies/:companyId/logo", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerServiceMocks();
     createAssetMock.mockReset();
     getAssetByIdMock.mockReset();
     logActivityMock.mockReset();

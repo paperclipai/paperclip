@@ -396,7 +396,7 @@ Defaults:
 ## 8.5 Trigger integration rules
 
 1. Timer checks run on server worker interval and enqueue due agents.
-2. Issue assignment mutation enqueues wakeup when assignee changes and target agent has `wakeOnAssignment=true`.
+2. Issue create/update enqueues an assignment wakeup when the resulting assignee changes or is auto-filled by project-lead intake and the target agent has `wakeOnAssignment=true`.
 3. On-demand endpoint enqueues wakeup with `source=on_demand` and `triggerDetail=manual|ping` when `wakeOnOnDemand=true`.
 4. Callback/system automations enqueue wakeup with `source=automation` and `triggerDetail=callback|system` when `wakeOnAutomation=true`.
 5. Paused/terminated agents do not receive new wakeups.

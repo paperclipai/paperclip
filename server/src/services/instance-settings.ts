@@ -3,8 +3,10 @@ import { companies, instanceSettings } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_UPDATE_SETTINGS,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
+  type InstanceUpdateSettings,
   instanceExperimentalSettingsSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceGeneralSettings,
@@ -24,6 +26,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
+      updateSettings: parsed.data.updateSettings ?? DEFAULT_INSTANCE_UPDATE_SETTINGS,
     };
   }
   return {
@@ -31,6 +34,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
+    updateSettings: DEFAULT_INSTANCE_UPDATE_SETTINGS,
   };
 }
 
@@ -106,6 +110,28 @@ export function instanceSettingsService(db: Db) {
       const nextGeneral = normalizeGeneralSettings({
         ...normalizeGeneralSettings(current.general),
         ...patch,
+      });
+      const now = new Date();
+      const [updated] = await db
+        .update(instanceSettings)
+        .set({
+          general: { ...nextGeneral },
+          updatedAt: now,
+        })
+        .where(eq(instanceSettings.id, current.id))
+        .returning();
+      return toInstanceSettings(updated ?? current);
+    },
+
+    updateUpdateSettings: async (patch: Partial<InstanceUpdateSettings>): Promise<InstanceSettings> => {
+      const current = await getOrCreateRow();
+      const currentGeneral = normalizeGeneralSettings(current.general);
+      const nextGeneral = normalizeGeneralSettings({
+        ...currentGeneral,
+        updateSettings: {
+          ...currentGeneral.updateSettings,
+          ...patch,
+        },
       });
       const now = new Date();
       const [updated] = await db

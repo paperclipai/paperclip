@@ -49,6 +49,18 @@ describe("company routes", () => {
     expect(applyCompanyPrefix("/company/import", "PAP")).toBe("/PAP/company/import");
   });
 
+  it("applies company prefix to company settings sections", () => {
+    expect(applyCompanyPrefix("/company/settings", "PAP")).toBe("/PAP/company/settings");
+    expect(applyCompanyPrefix("/company/settings/general", "PAP")).toBe("/PAP/company/settings/general");
+    expect(toCompanyRelativePath("/PAP/company/settings/appearance")).toBe("/company/settings/appearance");
+  });
+
+  it("treats the My Tasks board as a company-scoped route", () => {
+    expect(isBoardPathWithoutPrefix("/my-issues")).toBe(true);
+    expect(applyCompanyPrefix("/my-issues", "PAP")).toBe("/PAP/my-issues");
+    expect(toCompanyRelativePath("/PAP/my-issues")).toBe("/my-issues");
+  });
+
   it("does not double-apply the prefix if already present", () => {
     expect(applyCompanyPrefix("/PAP/company/export", "PAP")).toBe("/PAP/company/export");
   });

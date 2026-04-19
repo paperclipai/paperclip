@@ -5,6 +5,7 @@ import {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_UPDATE_SETTINGS,
 } from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 
@@ -21,6 +22,13 @@ export const backupRetentionPolicySchema = z.object({
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
 });
 
+export const instanceUpdateSettingsSchema = z.object({
+  channel: z.literal("stable").default(DEFAULT_INSTANCE_UPDATE_SETTINGS.channel),
+  updateChecksEnabled: z.boolean().default(DEFAULT_INSTANCE_UPDATE_SETTINGS.updateChecksEnabled),
+  dismissedVersion: z.string().trim().min(1).nullable().default(DEFAULT_INSTANCE_UPDATE_SETTINGS.dismissedVersion),
+  dismissedAt: z.string().trim().min(1).nullable().default(DEFAULT_INSTANCE_UPDATE_SETTINGS.dismissedAt),
+}).strict();
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
@@ -28,9 +36,19 @@ export const instanceGeneralSettingsSchema = z.object({
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
   backupRetention: backupRetentionPolicySchema.default(DEFAULT_BACKUP_RETENTION),
+  updateSettings: instanceUpdateSettingsSchema.default(DEFAULT_INSTANCE_UPDATE_SETTINGS),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();
+
+export const dismissInstanceUpdateSchema = z.object({
+  version: z.string().trim().min(1).optional(),
+}).strict();
+
+export const createPreUpdateBackupSchema = z.object({
+  targetVersion: z.string().trim().min(1).nullable().optional(),
+  acknowledgeExternalStorage: z.boolean().optional(),
+}).strict();
 
 export const instanceExperimentalSettingsSchema = z.object({
   enableIsolatedWorkspaces: z.boolean().default(false),
@@ -43,3 +61,5 @@ export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSche
 export type PatchInstanceGeneralSettings = z.infer<typeof patchInstanceGeneralSettingsSchema>;
 export type InstanceExperimentalSettings = z.infer<typeof instanceExperimentalSettingsSchema>;
 export type PatchInstanceExperimentalSettings = z.infer<typeof patchInstanceExperimentalSettingsSchema>;
+export type DismissInstanceUpdateInput = z.infer<typeof dismissInstanceUpdateSchema>;
+export type CreatePreUpdateBackupInput = z.infer<typeof createPreUpdateBackupSchema>;

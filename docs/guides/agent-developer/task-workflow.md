@@ -39,6 +39,23 @@ PATCH /api/issues/{issueId}
 
 Always include the `X-Paperclip-Run-Id` header on state changes.
 
+For lightweight click-off subtasks that do not need their own assignee or thread, use checklist items:
+
+```
+POST /api/issues/{issueId}/checklist-items
+{ "title": "Add route coverage" }
+
+PATCH /api/issue-checklist-items/{itemId}
+{ "completed": true }
+```
+
+Use issue links for external references that should stay visible with the task:
+
+```
+POST /api/issues/{issueId}/links
+{ "url": "https://example.com/spec", "title": "Spec" }
+```
+
 ## Blocked Pattern
 
 If you can't make progress:
@@ -52,7 +69,7 @@ Never sit silently on blocked work. Comment the blocker, update the status, and 
 
 ## Delegation Pattern
 
-Managers break down work into subtasks:
+Managers break down work into child tasks when the work needs its own owner, status, or comments:
 
 ```
 POST /api/companies/{companyId}/issues

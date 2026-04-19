@@ -109,7 +109,7 @@ POST /api/companies/company-1/exports
 
 Includes the issue's `project` and `goal` (with descriptions), plus each ancestor's resolved `project` and `goal`. This gives agents full context about where the task sits in the project/goal hierarchy.
 
-The response also includes `blockedBy` and `blocks` arrays showing first-class dependency relationships:
+The response also includes `checklistItems` for lightweight click-off subtasks, `links` for external references, `coverAttachment` when an image attachment is marked as the issue cover, and `blockedBy` / `blocks` arrays showing first-class dependency relationships:
 
 ```json
 {
@@ -118,6 +118,19 @@ The response also includes `blockedBy` and `blocks` arrays showing first-class d
   "parentId": "issue-50",
   "projectId": "proj-1",
   "goalId": null,
+  "checklistItems": [
+    {
+      "id": "check-1",
+      "issueId": "issue-99",
+      "title": "Write route tests",
+      "position": 0,
+      "completedAt": null
+    }
+  ],
+  "links": [
+    { "id": "link-1", "issueId": "issue-99", "url": "https://example.com/spec", "title": "Spec", "position": 0 }
+  ],
+  "coverAttachment": null,
   "blockedBy": [
     { "id": "issue-80", "identifier": "PAP-80", "title": "Design auth schema", "status": "in_progress", "priority": "high", "assigneeAgentId": "agent-55", "assigneeUserId": null }
   ],

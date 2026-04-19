@@ -13,6 +13,14 @@ const companyState = vi.hoisted(() => ({
   selectedCompanyId: "company-1",
 }));
 
+const routerState = vi.hoisted(() => ({
+  navigate: vi.fn(),
+}));
+
+const kanbanBoardState = vi.hoisted(() => ({
+  latestProps: null as null | { issueLinkState?: unknown },
+}));
+
 const dialogState = vi.hoisted(() => ({
   openNewIssue: vi.fn(),
 }));
@@ -42,6 +50,10 @@ vi.mock("../context/DialogContext", () => ({
   useDialog: () => dialogState,
 }));
 
+vi.mock("@/lib/router", () => ({
+  useNavigate: () => routerState.navigate,
+}));
+
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
@@ -63,21 +75,36 @@ vi.mock("./IssueRow", () => ({
     issue,
     desktopMetaLeading,
     desktopTrailing,
+    rowAction,
   }: {
     issue: Issue;
     desktopMetaLeading?: ReactNode;
     desktopTrailing?: ReactNode;
+    rowAction?: ReactNode;
   }) => (
     <div data-testid="issue-row">
       <span>{issue.title}</span>
       {desktopMetaLeading}
       {desktopTrailing}
+      {rowAction}
     </div>
   ),
 }));
 
 vi.mock("./KanbanBoard", () => ({
-  KanbanBoard: () => null,
+  KanbanBoard: (props: { issues: Issue[]; issueLinkState?: unknown; onAddIssue?: (status: string) => void }) => {
+    kanbanBoardState.latestProps = props;
+    return (
+      <div data-testid="kanban-board">
+        <button type="button" onClick={() => props.onAddIssue?.("in_progress")}>
+          Add in progress
+        </button>
+        {props.issues.map((issue) => (
+          <span key={issue.id}>{issue.title}</span>
+        ))}
+      </div>
+    );
+  },
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -95,6 +122,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     title: "Issue title",
     description: null,
     status: "todo",
+    boardPosition: 0,
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
@@ -115,6 +143,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     completedAt: null,
     cancelledAt: null,
     hiddenAt: null,
+    dueDate: null,
     createdAt: new Date("2026-04-07T00:00:00.000Z"),
     updatedAt: new Date("2026-04-07T00:00:00.000Z"),
     labels: [],
@@ -178,6 +207,8 @@ describe("IssuesList", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    routerState.navigate.mockReset();
+    kanbanBoardState.latestProps = null;
     dialogState.openNewIssue.mockReset();
     mockIssuesApi.list.mockReset();
     mockIssuesApi.listLabels.mockReset();
@@ -195,6 +226,282 @@ describe("IssuesList", () => {
   afterEach(() => {
     vi.useRealTimers();
     container.remove();
+  });
+
+  it("renders the Kanban board by default when no saved view state exists", async () => {
+    const issue = createIssue({ title: "Default board issue" });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[issue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="kanban-board"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="issue-row"]')).toBeNull();
+      expect(container.textContent).toContain("Default board issue");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders top content above the Kanban board", async () => {
+    const issue = createIssue({ title: "Board issue below top content" });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[issue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        topContent={<div data-testid="project-top-content">Project rail</div>}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const topContent = container.querySelector('[data-testid="project-top-content"]');
+      const board = container.querySelector('[data-testid="kanban-board"]');
+      expect(topContent).not.toBeNull();
+      expect(board).not.toBeNull();
+      expect(topContent!.compareDocumentPosition(board!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("forwards issue detail source state to the Kanban board", async () => {
+    const issueLinkState = {
+      issueDetailBreadcrumb: { label: "Paperclip App", href: "/projects/paperclip-app/issues" },
+      issueDetailSource: "issues",
+    } as const;
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ title: "Project board task" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        issueLinkState={issueLinkState}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(kanbanBoardState.latestProps?.issueLinkState).toBe(issueLinkState);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("orders board tasks by manual board position", async () => {
+    const laterActivity = createIssue({
+      id: "issue-later-activity",
+      title: "Later activity",
+      boardPosition: 2,
+      updatedAt: new Date("2026-04-09T00:00:00.000Z"),
+    });
+    const firstOnBoard = createIssue({
+      id: "issue-first-on-board",
+      title: "First on board",
+      boardPosition: 0,
+      updatedAt: new Date("2026-04-07T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[laterActivity, firstOnBoard]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const boardText = container.querySelector('[data-testid="kanban-board"]')?.textContent ?? "";
+      expect(boardText.indexOf("First on board")).toBeLessThan(boardText.indexOf("Later activity"));
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps a saved list view preference", async () => {
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ viewMode: "list" }));
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ title: "Saved list issue" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="issue-row"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="kanban-board"]')).toBeNull();
+      expect(container.textContent).toContain("Saved list issue");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("sorts list rows by due date with undated tasks last", async () => {
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({
+      viewMode: "list",
+      sortField: "due",
+      sortDir: "asc",
+    }));
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-undated", title: "No due date", dueDate: null }),
+          createIssue({ id: "issue-later", title: "Later due date", dueDate: "2026-05-02" }),
+          createIssue({ id: "issue-earlier", title: "Earlier due date", dueDate: "2026-05-01" }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const rowText = Array.from(container.querySelectorAll('[data-testid="issue-row"]'))
+        .map((row) => row.textContent ?? "");
+      expect(rowText[0]).toContain("Earlier due date");
+      expect(rowText[1]).toContain("Later due date");
+      expect(rowText[2]).toContain("No due date");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("groups date-list rows by due date and uses the group date for new tasks", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-may-2", title: "May 2 task", dueDate: "2026-05-02" }),
+          createIssue({ id: "issue-may-1", title: "May 1 task", dueDate: "2026-05-01" }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-date-list"
+        defaultViewMode="list"
+        defaultViewStatePatch={{ groupBy: "dueDate", sortField: "due", sortDir: "asc" }}
+        lockedGroupBy="dueDate"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("May 1");
+      expect(container.textContent).toContain("May 2");
+      const rowText = Array.from(container.querySelectorAll('[data-testid="issue-row"]'))
+        .map((row) => row.textContent ?? "");
+      expect(rowText[0]).toContain("May 1 task");
+      expect(rowText[1]).toContain("May 2 task");
+    });
+
+    await act(async () => {
+      const addButton = container.querySelector('button[aria-label*="May 1"]');
+      addButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(dialogState.openNewIssue).toHaveBeenCalledWith({ dueDate: "2026-05-01" });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows the empty state under the default board view", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("No tasks match the current filters or search.");
+      expect(container.querySelector('[data-testid="kanban-board"]')).toBeNull();
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("opens the new task dialog with the selected board column status", async () => {
+    const issue = createIssue({ title: "Board issue" });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[issue]}
+        agents={[]}
+        projects={[]}
+        projectId="project-1"
+        viewStateKey="paperclip:test-issues"
+        defaultNewIssueValues={{ assigneeUserId: "board-user" }}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="kanban-board"]')).not.toBeNull();
+    });
+
+    await act(async () => {
+      const addButton = Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "Add in progress",
+      );
+      addButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(dialogState.openNewIssue).toHaveBeenCalledWith({
+      assigneeUserId: "board-user",
+      projectId: "project-1",
+      status: "in_progress",
+    });
+
+    act(() => {
+      root.unmount();
+    });
   });
 
   it("renders server search results instead of filtering the full issue list locally", async () => {
@@ -226,6 +533,44 @@ describe("IssuesList", () => {
     });
   });
 
+  it("keeps server search constrained by supplied issue filters", async () => {
+    const blockedIssue = createIssue({
+      id: "issue-blocked",
+      identifier: "PAP-5",
+      title: "Blocked server result",
+      status: "blocked",
+    });
+
+    mockIssuesApi.list.mockResolvedValue([blockedIssue]);
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-blockers"
+        initialSearch="release"
+        searchFilters={{ status: "blocked", participantAgentId: "agent-1" }}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
+        q: "release",
+        projectId: undefined,
+        status: "blocked",
+        participantAgentId: "agent-1",
+      });
+      expect(container.textContent).toContain("Blocked server result");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("debounces search updates so typing does not notify the page on every keystroke", async () => {
     vi.useFakeTimers();
 
@@ -244,7 +589,7 @@ describe("IssuesList", () => {
       container,
     );
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+    const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement | null;
     expect(input).not.toBeNull();
     const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
     expect(valueSetter).toBeTypeOf("function");
@@ -294,6 +639,7 @@ describe("IssuesList", () => {
         agents={[{ id: "agent-1", name: "Agent One" }]}
         projects={[]}
         viewStateKey="paperclip:test-issues"
+        defaultViewMode="list"
         onUpdateIssue={() => undefined}
       />,
       container,
@@ -353,6 +699,7 @@ describe("IssuesList", () => {
         agents={[]}
         projects={[]}
         viewStateKey="paperclip:test-issues"
+        defaultViewMode="list"
         onUpdateIssue={() => undefined}
       />,
       container,
@@ -462,13 +809,13 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+      const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement | null;
       expect(input).not.toBeNull();
       input?.focus();
       expect(document.activeElement).toBe(input);
     });
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement;
+    const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement;
     act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", {
         key: "Enter",
@@ -498,13 +845,13 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+      const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement | null;
       expect(input).not.toBeNull();
       input?.focus();
       expect(document.activeElement).toBe(input);
     });
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement;
+    const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement;
     act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", {
         key: "Escape",
@@ -513,6 +860,90 @@ describe("IssuesList", () => {
     });
 
     expect(document.activeElement).not.toBe(input);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows an ask agents shortcut for open tasks assigned to the current user", async () => {
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ viewMode: "list" }));
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-1", userId: "board-user" },
+      user: { id: "board-user", email: null, name: null },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ assigneeUserId: "board-user" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        issueLinkState={{
+          issueDetailBreadcrumb: { label: "My Tasks", href: "/my-issues" },
+          issueDetailSource: "issues",
+        }}
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('button[title="Ask agents"]')).not.toBeNull();
+    });
+
+    await act(async () => {
+      const askButton = container.querySelector('button[title="Ask agents"]');
+      askButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(routerState.navigate).toHaveBeenCalledWith(
+      "/issues/PAP-1?askAgents=1",
+      expect.objectContaining({
+        state: expect.objectContaining({
+          issueDetailBreadcrumb: { label: "My Tasks", href: "/my-issues" },
+          issueDetailHeaderSeed: expect.objectContaining({
+            id: "issue-1",
+            identifier: "PAP-1",
+            title: "Issue title",
+          }),
+        }),
+      }),
+    );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the ask agents shortcut for terminal or non-owned tasks", async () => {
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ viewMode: "list" }));
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-1", userId: "board-user" },
+      user: { id: "board-user", email: null, name: null },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "done-issue", title: "Done issue", status: "done", assigneeUserId: "board-user" }),
+          createIssue({ id: "other-issue", title: "Other issue", status: "todo", assigneeUserId: "other-user" }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Done issue");
+      expect(container.textContent).toContain("Other issue");
+    });
+
+    expect(container.querySelector('button[title="Ask agents"]')).toBeNull();
 
     act(() => {
       root.unmount();

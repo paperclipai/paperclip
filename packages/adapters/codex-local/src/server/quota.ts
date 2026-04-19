@@ -280,28 +280,37 @@ export async function fetchCodexQuota(
 
 interface CodexRpcWindow {
   usedPercent?: number | null;
+  used_percent?: number | null;
   windowDurationMins?: number | null;
+  window_minutes?: number | null;
   resetsAt?: number | null;
+  resets_at?: number | null;
 }
 
 interface CodexRpcCredits {
   hasCredits?: boolean | null;
+  has_credits?: boolean | null;
   unlimited?: boolean | null;
   balance?: string | number | null;
 }
 
 interface CodexRpcLimit {
   limitId?: string | null;
+  limit_id?: string | null;
   limitName?: string | null;
+  limit_name?: string | null;
   primary?: CodexRpcWindow | null;
   secondary?: CodexRpcWindow | null;
   credits?: CodexRpcCredits | null;
   planType?: string | null;
+  plan_type?: string | null;
 }
 
 interface CodexRpcRateLimitsResult {
   rateLimits?: CodexRpcLimit | null;
+  rate_limits?: CodexRpcLimit | null;
   rateLimitsByLimitId?: Record<string, CodexRpcLimit> | null;
+  rate_limits_by_limit_id?: Record<string, CodexRpcLimit> | null;
 }
 
 interface CodexRpcAccountResult {
@@ -328,8 +337,8 @@ function buildCodexRpcWindow(label: string, window: CodexRpcWindow | null | unde
   if (!window) return null;
   return {
     label,
-    usedPercent: normalizeCodexUsedPercent(window.usedPercent),
-    resetsAt: unixSecondsToIso(window.resetsAt),
+    usedPercent: normalizeCodexUsedPercent(window.usedPercent ?? window.used_percent),
+    resetsAt: unixSecondsToIso(window.resetsAt ?? window.resets_at),
     valueLabel: null,
     detail: null,
   };
@@ -352,14 +361,15 @@ function parseCreditBalance(value: string | number | null | undefined): string |
 export function mapCodexRpcQuota(result: CodexRpcRateLimitsResult, account?: CodexRpcAccountResult | null): CodexRpcQuotaSnapshot {
   const windows: QuotaWindow[] = [];
   const limitOrder = ["codex"];
-  const limitsById = result.rateLimitsByLimitId ?? {};
+  const limitsById = result.rateLimitsByLimitId ?? result.rate_limits_by_limit_id ?? {};
   for (const key of Object.keys(limitsById)) {
     if (!limitOrder.includes(key)) limitOrder.push(key);
   }
 
-  const rootLimit = result.rateLimits ?? null;
+  const rootLimit = result.rateLimits ?? result.rate_limits ?? null;
   const allLimits = new Map<string, CodexRpcLimit>();
-  if (rootLimit?.limitId) allLimits.set(rootLimit.limitId, rootLimit);
+  const rootLimitId = rootLimit?.limitId ?? rootLimit?.limit_id;
+  if (rootLimit && rootLimitId) allLimits.set(rootLimitId, rootLimit);
   for (const [key, value] of Object.entries(limitsById)) {
     allLimits.set(key, value);
   }
@@ -371,7 +381,7 @@ export function mapCodexRpcQuota(result: CodexRpcRateLimitsResult, account?: Cod
     const prefix =
       limitId === "codex"
         ? ""
-        : `${limit.limitName ?? limitId} · `;
+        : `${limit.limitName ?? limit.limit_name ?? limitId} · `;
     const primary = buildCodexRpcWindow(`${prefix}5h limit`, limit.primary);
     if (primary) windows.push(primary);
     const secondary = buildCodexRpcWindow(`${prefix}Weekly limit`, limit.secondary);
@@ -396,7 +406,9 @@ export function mapCodexRpcQuota(result: CodexRpcRateLimitsResult, account?: Cod
     planType:
       typeof account?.account?.planType === "string" && account.account.planType.trim().length > 0
         ? account.account.planType.trim()
-        : (typeof rootLimit?.planType === "string" && rootLimit.planType.trim().length > 0 ? rootLimit.planType.trim() : null),
+        : (typeof rootLimit?.planType === "string" && rootLimit.planType.trim().length > 0
+            ? rootLimit.planType.trim()
+            : (typeof rootLimit?.plan_type === "string" && rootLimit.plan_type.trim().length > 0 ? rootLimit.plan_type.trim() : null)),
   };
 }
 
@@ -461,6 +473,10 @@ class CodexRpcClient {
       if (!pending) continue;
       this.pending.delete(id);
       clearTimeout(pending.timer);
+      if (parsed.error != null) {
+        pending.reject(new Error(readJsonRpcErrorMessage(parsed.error)));
+        continue;
+      }
       pending.resolve(parsed);
     }
   }
@@ -511,6 +527,14 @@ class CodexRpcClient {
   }
 }
 
+function readJsonRpcErrorMessage(error: unknown): string {
+  if (typeof error === "object" && error !== null && !Array.isArray(error)) {
+    const message = (error as Record<string, unknown>).message;
+    if (typeof message === "string" && message.trim().length > 0) return message.trim();
+  }
+  return String(error);
+}
+
 export async function fetchCodexRpcQuota(): Promise<CodexRpcQuotaSnapshot> {
   const client = new CodexRpcClient();
   try {
@@ -527,7 +551,19 @@ export async function fetchCodexRpcQuota(): Promise<CodexRpcQuotaSnapshot> {
 
 function formatProviderError(source: string, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  if (isCodexAuthError(message)) {
+    return "Codex rate limits require a fresh ChatGPT login. Run `codex login` and try again.";
+  }
   return `${source}: ${message}`;
+}
+
+function isCodexAuthError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes("401") ||
+    normalized.includes("unauthorized") ||
+    normalized.includes("could not parse your authentication token") ||
+    normalized.includes("authentication required") ||
+    normalized.includes("no local codex auth token");
 }
 
 export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
@@ -538,6 +574,7 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
     if (rpc.windows.length > 0) {
       return { provider: "openai", source: CODEX_USAGE_SOURCE_RPC, ok: true, windows: rpc.windows };
     }
+    errors.push("Codex app-server returned no rate-limit windows.");
   } catch (error) {
     errors.push(formatProviderError("Codex app-server", error));
   }
@@ -557,7 +594,7 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
   return {
     provider: "openai",
     ok: false,
-    error: errors.join("; "),
+    error: [...new Set(errors)].join("; "),
     windows: [],
   };
 }

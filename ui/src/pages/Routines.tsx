@@ -401,6 +401,13 @@ export function Routines() {
       await queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"] });
     },
   });
+  const reorderIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { status: string; beforeIssueId?: string | null } }) =>
+      issuesApi.reorder(id, data),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"] });
+    },
+  });
 
   const updateRoutineStatus = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => routinesApi.update(id, { status }),
@@ -570,7 +577,7 @@ export function Routines() {
             Routines
           </h1>
           <p className="text-sm text-muted-foreground">
-            Recurring work definitions that materialize into auditable execution issues.
+            Recurring work definitions that materialize into auditable execution tasks.
           </p>
         </div>
         <Button onClick={() => setComposerOpen(true)}>
@@ -637,6 +644,7 @@ export function Routines() {
             viewStateKey="paperclip:routine-recent-runs-view"
             issueLinkState={recentRunsIssueLinkState}
             onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+            onReorderIssue={(id, data) => reorderIssue.mutate({ id, data })}
           />
         </TabsContent>
       </Tabs>

@@ -7,7 +7,12 @@ import pc from "picocolors";
 import { bootstrapCeoInvite } from "./auth-bootstrap-ceo.js";
 import { onboard } from "./onboard.js";
 import { doctor } from "./doctor.js";
-import { loadPaperclipEnvFile } from "../config/env.js";
+import {
+  loadPaperclipEnvFile,
+  readAgentJwtSecretFromEnv,
+  readAgentJwtSecretFromEnvFile,
+  resolvePaperclipEnvFile,
+} from "../config/env.js";
 import { configExists, resolveConfigPath } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { readConfig } from "../config/store.js";
@@ -45,6 +50,16 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   const configPath = resolveConfigPath(opts.config);
   process.env.PAPERCLIP_CONFIG = configPath;
   loadPaperclipEnvFile(configPath);
+  const envFilePath = resolvePaperclipEnvFile(configPath);
+  const fileJwtSecret = readAgentJwtSecretFromEnvFile(envFilePath);
+  const loadedJwtSecret = readAgentJwtSecretFromEnv(configPath);
+  if (fileJwtSecret && !loadedJwtSecret) {
+    p.log.warn(
+      `PAPERCLIP_AGENT_JWT_SECRET was found in ${envFilePath} but was not loaded into the Paperclip process environment. ` +
+        "Paperclip will inject the file value for this run so local-agent JWT auth stays enabled.",
+    );
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = fileJwtSecret;
+  }
 
   p.intro(pc.bgCyan(pc.black(" paperclipai run ")));
   p.log.message(pc.dim(`Home: ${paths.homeDir}`));

@@ -163,7 +163,9 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     parentId: null,
     title: `Issue ${id}`,
     description: null,
+    dueDate: null,
     status: "todo",
+    boardPosition: 0,
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
@@ -271,6 +273,20 @@ const dashboard: DashboardSummary = {
     monthSpendCents: 900,
     monthBudgetCents: 1000,
     monthUtilizationPercent: 90,
+    workValue: {
+      companyId: "company-1",
+      totalTokens: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      aiSpendCents: 0,
+      estimatedDevHours: 0,
+      estimatedDevValueCents: 0,
+      estimatedSavingsCents: 0,
+      roiMultiple: 0,
+      devValueHourlyRateCents: 15000,
+      devValueTokensPerHour: 100000,
+    },
   },
   pendingApprovals: 1,
   budgets: {
@@ -286,7 +302,7 @@ describe("inbox helpers", () => {
     storage.clear();
   });
 
-  it("counts the same inbox sources the badge uses", () => {
+  it("keeps inbox badge quiet while retaining source counts", () => {
     const result = computeInboxBadgeData({
       approvals: [makeApproval("pending"), makeApproval("approved")],
       joinRequests: [makeJoinRequest("join-1")],
@@ -302,7 +318,7 @@ describe("inbox helpers", () => {
     });
 
     expect(result).toEqual({
-      inbox: 6,
+      inbox: 0,
       approvals: 1,
       failedRuns: 2,
       joinRequests: 1,
@@ -344,7 +360,7 @@ describe("inbox helpers", () => {
     });
 
     expect(result.mineIssues).toBe(1);
-    expect(result.inbox).toBe(3);
+    expect(result.inbox).toBe(0);
   });
 
   it("resurfaces non-issue items when they change after dismissal", () => {
@@ -630,6 +646,7 @@ describe("inbox helpers", () => {
         labels: ["label-1"],
         projects: ["project-1"],
         workspaces: ["workspace-1"],
+        dueStates: [],
         showRoutineExecutions: true,
       },
     });
@@ -643,6 +660,7 @@ describe("inbox helpers", () => {
         labels: [],
         projects: [],
         workspaces: [],
+        dueStates: [],
         showRoutineExecutions: false,
       },
     });
@@ -657,6 +675,7 @@ describe("inbox helpers", () => {
         labels: ["label-1"],
         projects: ["project-1"],
         workspaces: ["workspace-1"],
+        dueStates: [],
         showRoutineExecutions: true,
       },
     });
@@ -670,6 +689,7 @@ describe("inbox helpers", () => {
         labels: [],
         projects: [],
         workspaces: [],
+        dueStates: [],
         showRoutineExecutions: false,
       },
     });
@@ -696,6 +716,7 @@ describe("inbox helpers", () => {
       issueFilters: {
         statuses: ["todo"],
         priorities: [],
+        dueStates: [],
         assignees: ["agent-1"],
         labels: [],
         projects: ["project-1"],
@@ -730,7 +751,7 @@ describe("inbox helpers", () => {
   });
 
   it("hides the workspace column option unless isolated workspaces are enabled", () => {
-    expect(getAvailableInboxIssueColumns(false)).toEqual(["status", "id", "assignee", "project", "parent", "labels", "updated"]);
+    expect(getAvailableInboxIssueColumns(false)).toEqual(["status", "id", "assignee", "project", "parent", "labels", "due", "updated"]);
     expect(getAvailableInboxIssueColumns(true)).toEqual([
       "status",
       "id",
@@ -739,6 +760,7 @@ describe("inbox helpers", () => {
       "workspace",
       "parent",
       "labels",
+      "due",
       "updated",
     ]);
   });
@@ -873,7 +895,7 @@ describe("inbox helpers", () => {
 
     expect(groupInboxWorkItems(items, "none")).toEqual([{ key: "__all", label: null, items }]);
     expect(groupInboxWorkItems(items, "type")).toEqual([
-      { key: "issue", label: "Issues", items: [items[1], items[2]] },
+      { key: "issue", label: "Tasks", items: [items[1], items[2]] },
       { key: "approval", label: "Approvals", items: [items[0]] },
       { key: "failed_run", label: "Failed runs", items: [items[3]] },
       { key: "join_request", label: "Join requests", items: [items[4]] },

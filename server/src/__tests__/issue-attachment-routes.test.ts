@@ -9,6 +9,7 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
   createAttachment: vi.fn(),
   getAttachmentById: vi.fn(),
+  updateAttachmentCover: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -92,6 +93,7 @@ async function createApp(storage: StorageService) {
     import("../routes/issues.js"),
   ]);
   const app = express();
+  app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = {
       type: "board",
@@ -115,6 +117,7 @@ function makeAttachment(contentType: string, originalFilename: string) {
     issueId: "11111111-1111-4111-8111-111111111111",
     issueCommentId: null,
     assetId: "asset-1",
+    isCover: false,
     provider: "local_disk",
     objectKey: `issues/issue-1/${originalFilename}`,
     contentType,
@@ -166,6 +169,32 @@ describe("issue attachment routes", () => {
       }),
     );
     expect(res.body.contentType).toBe("application/zip");
+    expect(res.body.isCover).toBe(false);
+  });
+
+  it("sets image attachments as the issue cover", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("image/png", "preview.png"));
+    mockIssueService.updateAttachmentCover.mockResolvedValue({
+      ...makeAttachment("image/png", "preview.png"),
+      isCover: true,
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .patch("/api/attachments/attachment-1")
+      .send({ isCover: true });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.updateAttachmentCover).toHaveBeenCalledWith("attachment-1", true);
+    expect(res.body.isCover).toBe(true);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.cover_set",
+        entityId: "11111111-1111-4111-8111-111111111111",
+      }),
+    );
   });
 
   it("serves html attachments as downloads with nosniff", async () => {

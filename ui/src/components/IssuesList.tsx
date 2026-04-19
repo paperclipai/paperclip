@@ -1,4 +1,5 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef, type ReactNode } from "react";
+import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -7,6 +8,7 @@ import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
+import { canAskAgentsForIssue } from "../lib/agent-help-request";
 import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
@@ -45,15 +47,21 @@ import { EmptyState } from "./EmptyState";
 import { Identity } from "./Identity";
 import { IssueFiltersPopover } from "./IssueFiltersPopover";
 import { IssueRow } from "./IssueRow";
+import { IssueAssigneeIcon } from "./IssueAssigneeIcon";
 import { PageSkeleton } from "./PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, Columns3, User, Search } from "lucide-react";
+import { Bot, CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, Columns3, User, Search } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { dateHeading } from "../lib/issue-date-ranges";
+import {
+  createIssueDetailPath,
+  rememberIssueDetailLocationState,
+  withIssueDetailHeaderSeed,
+} from "../lib/issueDetailBreadcrumb";
 import type { Issue, Project } from "@paperclipai/shared";
 const ISSUE_SEARCH_DEBOUNCE_MS = 150;
 
@@ -73,27 +81,16 @@ const defaultViewState: IssueViewState = {
   sortField: "updated",
   sortDir: "desc",
   groupBy: "none",
-  viewMode: "list",
+  viewMode: "board",
   collapsedGroups: [],
   collapsedParents: [],
 };
+
 function buildDefaultViewState(
-  defaultViewMode: IssueViewState["viewMode"] = defaultViewState.viewMode,
+  defaultViewMode: IssueViewState["viewMode"] = "board",
   patch?: Partial<IssueViewState>,
 ): IssueViewState {
   return { ...defaultViewState, viewMode: defaultViewMode, ...patch };
-}
-
-function applyLockedViewState(
-  state: IssueViewState,
-  lockedViewMode?: IssueViewState["viewMode"],
-  lockedGroupBy?: IssueViewState["groupBy"],
-): IssueViewState {
-  return {
-    ...state,
-    ...(lockedViewMode ? { viewMode: lockedViewMode } : {}),
-    ...(lockedGroupBy ? { groupBy: lockedGroupBy } : {}),
-  };
 }
 
 function getViewState(
@@ -145,6 +142,7 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
 interface Agent {
   id: string;
   name: string;
+  icon?: string | null;
 }
 
 type ProjectOption = Pick<Project, "id" | "name"> & Partial<Pick<Project, "color" | "workspaces" | "executionWorkspacePolicy" | "primaryWorkspace">>;
@@ -179,6 +177,7 @@ interface IssuesListProps {
   topContent?: ReactNode;
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+  onReorderIssue?: (id: string, data: { status: string; beforeIssueId?: string | null }) => void;
 }
 
 function IssueSearchInput({
@@ -234,9 +233,9 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search issues..."
+        placeholder="Search tasks..."
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search issues"
+        aria-label="Search tasks"
         data-page-search-target="true"
       />
     </div>
@@ -262,13 +261,15 @@ export function IssuesList({
   searchFilters,
   enableRoutineVisibilityFilter = false,
   defaultNewIssueValues,
-  emptyMessage = "No issues match the current filters or search.",
+  emptyMessage = "No tasks match the current filters or search.",
   topContent,
   onSearchChange,
   onUpdateIssue,
+  onReorderIssue,
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
+  const navigate = useNavigate();
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -285,10 +286,20 @@ export function IssuesList({
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
 
   const [viewState, setViewState] = useState<IssueViewState>(() => {
-    const base = initialAssignees
-      ? { ...buildDefaultViewState(defaultViewMode, defaultViewStatePatch), assignees: initialAssignees, statuses: [] }
-      : getViewState(scopedKey, defaultViewMode, defaultViewStatePatch);
-    return applyLockedViewState(base, lockedViewMode, lockedGroupBy);
+    if (initialAssignees) {
+      return {
+        ...buildDefaultViewState(defaultViewMode, defaultViewStatePatch),
+        assignees: initialAssignees,
+        statuses: [],
+        ...(lockedViewMode ? { viewMode: lockedViewMode } : {}),
+        ...(lockedGroupBy ? { groupBy: lockedGroupBy } : {}),
+      };
+    }
+    return {
+      ...getViewState(scopedKey, defaultViewMode, defaultViewStatePatch),
+      ...(lockedViewMode ? { viewMode: lockedViewMode } : {}),
+      ...(lockedGroupBy ? { groupBy: lockedGroupBy } : {}),
+    };
   });
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
@@ -306,16 +317,27 @@ export function IssuesList({
   useEffect(() => {
     if (prevScopedKey.current !== scopedKey) {
       prevScopedKey.current = scopedKey;
-      const base = initialAssignees
-        ? { ...buildDefaultViewState(defaultViewMode, defaultViewStatePatch), assignees: initialAssignees, statuses: [] }
-        : getViewState(scopedKey, defaultViewMode, defaultViewStatePatch);
-      setViewState(applyLockedViewState(base, lockedViewMode, lockedGroupBy));
+      setViewState(initialAssignees
+        ? {
+            ...buildDefaultViewState(defaultViewMode, defaultViewStatePatch),
+            assignees: initialAssignees,
+            statuses: [],
+            ...(lockedViewMode ? { viewMode: lockedViewMode } : {}),
+            ...(lockedGroupBy ? { groupBy: lockedGroupBy } : {}),
+          }
+        : {
+            ...getViewState(scopedKey, defaultViewMode, defaultViewStatePatch),
+            ...(lockedViewMode ? { viewMode: lockedViewMode } : {}),
+            ...(lockedGroupBy ? { groupBy: lockedGroupBy } : {}),
+          });
     }
   }, [scopedKey, initialAssignees, defaultViewMode, defaultViewStatePatch, lockedViewMode, lockedGroupBy]);
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     setViewState((prev) => {
-      const next = applyLockedViewState({ ...prev, ...patch }, lockedViewMode, lockedGroupBy);
+      const next = { ...prev, ...patch };
+      if (lockedViewMode) next.viewMode = lockedViewMode;
+      if (lockedGroupBy) next.groupBy = lockedGroupBy;
       saveViewState(scopedKey, next);
       return next;
     });
@@ -456,11 +478,22 @@ export function IssuesList({
     return map;
   }, [issues]);
 
-  const filtered = useMemo(() => {
+  const filteredByControls = useMemo(() => {
     const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
-    const filteredByControls = applyIssueFilters(sourceIssues, viewState, currentUserId, enableRoutineVisibilityFilter);
-    return sortIssues(filteredByControls, viewState);
+    return applyIssueFilters(sourceIssues, viewState, currentUserId, enableRoutineVisibilityFilter);
   }, [issues, searchedIssues, viewState, normalizedIssueSearch, currentUserId, enableRoutineVisibilityFilter]);
+
+  const filtered = useMemo(() => sortIssues(filteredByControls, viewState), [filteredByControls, viewState]);
+
+  const boardIssues = useMemo(() => {
+    return [...filteredByControls].sort((a, b) => {
+      const statusDelta = issueStatusOrder.indexOf(a.status) - issueStatusOrder.indexOf(b.status);
+      if (statusDelta !== 0) return statusDelta;
+      const positionDelta = (a.boardPosition ?? 0) - (b.boardPosition ?? 0);
+      if (positionDelta !== 0) return positionDelta;
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    });
+  }, [filteredByControls]);
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
@@ -594,6 +627,35 @@ export function IssuesList({
     setAssigneeSearch("");
   }, [onUpdateIssue]);
 
+  const openAskAgentsForIssue = useCallback((issue: Issue) => {
+    const issuePathId = issue.identifier ?? issue.id;
+    const detailState = withIssueDetailHeaderSeed(issueLinkState, issue);
+    rememberIssueDetailLocationState(issuePathId, detailState);
+    navigate(`${createIssueDetailPath(issuePathId)}?askAgents=1`, { state: detailState });
+  }, [issueLinkState, navigate]);
+
+  const askAgentsRowAction = useCallback((issue: Issue) => {
+    if (!canAskAgentsForIssue(issue, currentUserId)) return undefined;
+    const label = `Ask agents for help with ${issue.identifier ?? issue.title}`;
+    return (
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        className="h-7 w-7 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+        title="Ask agents"
+        aria-label={label}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openAskAgentsForIssue(issue);
+        }}
+      >
+        <Bot className="h-3.5 w-3.5" />
+      </Button>
+    );
+  }, [currentUserId, openAskAgentsForIssue]);
+
 
   return (
     <div className="space-y-4">
@@ -602,7 +664,7 @@ export function IssuesList({
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <Button size="sm" variant="outline" onClick={() => openNewIssue(newIssueDefaults())}>
             <Plus className="h-4 w-4 sm:mr-1" />
-            <span className="hidden sm:inline">New Issue</span>
+            <span className="hidden sm:inline">New Task</span>
           </Button>
           <IssueSearchInput
             value={issueSearch}
@@ -639,7 +701,7 @@ export function IssuesList({
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which issue columns stay visible"
+            title="Choose which task columns stay visible"
             iconOnly
           />
 
@@ -657,7 +719,7 @@ export function IssuesList({
           />
 
           {/* Sort (list view only) */}
-          {viewState.viewMode === "list" && (
+          {viewState.viewMode === "list" && !lockedGroupBy && (
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
@@ -701,7 +763,7 @@ export function IssuesList({
           )}
 
           {/* Group (list view only) */}
-          {viewState.viewMode === "list" && !lockedGroupBy && (
+          {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Group">
@@ -715,7 +777,7 @@ export function IssuesList({
                     ["priority", "Priority"],
                     ["assignee", "Assignee"],
                     ["workspace", "Workspace"],
-                    ["parent", "Parent Issue"],
+                    ["parent", "Parent Task"],
                     ["dueDate", "Due Date"],
                     ["none", "None"],
                   ] as const).map(([value, label]) => (
@@ -742,21 +804,24 @@ export function IssuesList({
       {isLoading && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
-      {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
+      {!isLoading && filtered.length === 0 && (
         <EmptyState
           icon={CircleDot}
           message={emptyMessage}
-          action="Create Issue"
+          action="Create Task"
           onAction={() => openNewIssue(newIssueDefaults())}
         />
       )}
 
-      {viewState.viewMode === "board" ? (
+      {!isLoading && filtered.length > 0 && (viewState.viewMode === "board" ? (
         <KanbanBoard
-          issues={filtered}
+          issues={boardIssues}
           agents={agents}
           liveIssueIds={liveIssueIds}
+          issueLinkState={issueLinkState}
           onUpdateIssue={onUpdateIssue}
+          onReorderIssue={onReorderIssue}
+          onAddIssue={(status) => openNewIssue({ ...newIssueDefaults(), status })}
         />
       ) : (
         groupedContent.map((group) => (
@@ -783,6 +848,8 @@ export function IssuesList({
                   variant="ghost"
                   size="icon-xs"
                   className="ml-auto text-muted-foreground"
+                  title={`Add task to ${group.label}`}
+                  aria-label={`Add task to ${group.label}`}
                   onClick={() => openNewIssue(newIssueDefaults(group.key))}
                 >
                   <Plus className="h-3 w-3" />
@@ -815,6 +882,8 @@ export function IssuesList({
                       <IssueRow
                         issue={issue}
                         issueLinkState={issueLinkState}
+                        assigneeIcon={<IssueAssigneeIcon issue={issue} agents={agents} currentUserId={currentUserId} />}
+                        rowAction={askAgentsRowAction(issue)}
                         titleSuffix={hasChildren && !isExpanded ? (
                           <span className="ml-1.5 text-xs text-muted-foreground">
                             ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
@@ -990,7 +1059,7 @@ export function IssuesList({
             </CollapsibleContent>
           </Collapsible>
         ))
-      )}
+      ))}
     </div>
   );
 }

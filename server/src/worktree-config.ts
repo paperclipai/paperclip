@@ -110,6 +110,23 @@ type WorktreeRuntimeContext = {
   secretsKeyFilePath: string;
 };
 
+const warnedIgnoredWorktreeConfigPaths = new Set<string>();
+
+function isRepoLocalWorktreeConfigPath(configPath: string): boolean {
+  const resolved = path.resolve(configPath);
+  return path.basename(resolved) === "config.json" && path.basename(path.dirname(resolved)) === ".paperclip";
+}
+
+function warnIgnoredWorktreeEnv(configPath: string): void {
+  const resolved = path.resolve(configPath);
+  if (warnedIgnoredWorktreeConfigPaths.has(resolved)) return;
+  warnedIgnoredWorktreeConfigPaths.add(resolved);
+  console.warn(
+    `[paperclip] Ignoring PAPERCLIP_IN_WORKTREE=true for non-repo-local config ${resolved}. ` +
+      "Remove stale worktree flags from the adjacent .env to keep this instance shared.",
+  );
+}
+
 function resolveWorktreeRuntimeContext(
   env: NodeJS.ProcessEnv,
   overrideConfigPath?: string,
@@ -117,6 +134,10 @@ function resolveWorktreeRuntimeContext(
   if (env.PAPERCLIP_IN_WORKTREE !== "true") return null;
 
   const configPath = resolvePaperclipConfigPath(overrideConfigPath);
+  if (!isRepoLocalWorktreeConfigPath(configPath)) {
+    warnIgnoredWorktreeEnv(configPath);
+    return null;
+  }
   const envPath = resolvePaperclipEnvPath(configPath);
   const worktreeRoot = path.resolve(path.dirname(configPath), "..");
   const worktreeName = nonEmpty(env.PAPERCLIP_WORKTREE_NAME) ?? path.basename(worktreeRoot);

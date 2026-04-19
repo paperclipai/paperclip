@@ -9,7 +9,7 @@ import type {
   FinanceEvent,
   QuotaWindow,
 } from "@paperclipai/shared";
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText, TrendingUp } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
 import { BillerSpendCard } from "../components/BillerSpendCard";
@@ -28,6 +28,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
+import { formatCodexQuotaErrorMessage } from "../lib/codexQuota";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -93,6 +94,19 @@ function MetricTile({
       </div>
     </div>
   );
+}
+
+function formatDevHours(hours: number): string {
+  if (!Number.isFinite(hours) || hours <= 0) return "0h";
+  if (hours < 1) return `${hours.toFixed(2)}h`;
+  if (hours < 10) return `${hours.toFixed(1)}h`;
+  return `${Math.round(hours)}h`;
+}
+
+function formatRoiMultiple(roi: number | null): string {
+  if (roi === null) return "No billed spend";
+  if (!Number.isFinite(roi)) return "0x";
+  return `${roi.toFixed(roi >= 10 ? 0 : 1)}x`;
 }
 
 function FinanceSummaryCard({
@@ -232,13 +246,14 @@ export function Costs() {
   const { data: spendData, isLoading: spendLoading, error: spendError } = useQuery({
     queryKey: queryKeys.costs(companyId, from || undefined, to || undefined),
     queryFn: async () => {
-      const [summary, byAgent, byProject, byAgentModel] = await Promise.all([
+      const [summary, byAgent, byProject, byAgentModel, workValue] = await Promise.all([
         costsApi.summary(companyId, from || undefined, to || undefined),
         costsApi.byAgent(companyId, from || undefined, to || undefined),
         costsApi.byProject(companyId, from || undefined, to || undefined),
         costsApi.byAgentModel(companyId, from || undefined, to || undefined),
+        costsApi.workValue(companyId, from || undefined, to || undefined),
       ]);
-      return { summary, byAgent, byProject, byAgentModel };
+      return { summary, byAgent, byProject, byAgentModel, workValue };
     },
     enabled: !!selectedCompanyId && customReady,
   });
@@ -396,7 +411,12 @@ export function Costs() {
   const quotaErrorsByProvider = useMemo(() => {
     const map = new Map<string, string>();
     for (const result of quotaData ?? []) {
-      if (!result.ok && result.error) map.set(result.provider, result.error);
+      if (!result.ok && result.error) {
+        const error = result.provider === "openai"
+          ? (formatCodexQuotaErrorMessage(result.error) ?? result.error)
+          : result.error;
+        map.set(result.provider, error);
+      }
     }
     return map;
   }, [quotaData]);
@@ -579,12 +599,18 @@ export function Costs() {
             </div>
           ) : null}
 
-          <div className="grid gap-3 lg:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
             <MetricTile
               label="Inference spend"
               value={formatCents(spendData?.summary.spendCents ?? 0)}
               subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
               icon={DollarSign}
+            />
+            <MetricTile
+              label="Dev value estimate"
+              value={formatCents(spendData?.workValue.estimatedDevValueCents ?? 0)}
+              subtitle={`${formatDevHours(spendData?.workValue.estimatedDevHours ?? 0)} estimated at ${formatCents(spendData?.workValue.devValueHourlyRateCents ?? 15000)}/hr`}
+              icon={TrendingUp}
             />
             <MetricTile
               label="Budget"
@@ -704,6 +730,60 @@ export function Costs() {
                   </CardContent>
                 </Card>
 
+                <Card>
+                  <CardHeader className="px-5 pt-5 pb-2">
+                    <CardTitle className="text-base">Developer value estimate</CardTitle>
+                    <CardDescription>
+                      Heuristic value of tracked agent tokens compared with human developer time.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4 px-5 pb-5 pt-2">
+                    <div className="flex flex-wrap items-end justify-between gap-3">
+                      <div>
+                        <div className="text-3xl font-semibold tabular-nums">
+                          {formatCents(spendData?.workValue.estimatedDevValueCents ?? 0)}
+                        </div>
+                        <div className="mt-1 text-sm text-muted-foreground">
+                          {formatDevHours(spendData?.workValue.estimatedDevHours ?? 0)} estimated dev time from {formatTokens(spendData?.workValue.totalTokens ?? 0)} tokens
+                        </div>
+                      </div>
+                      <div className="border border-border px-4 py-3 text-right">
+                        <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">ROI</div>
+                        <div className="mt-1 text-lg font-medium tabular-nums">
+                          {formatRoiMultiple(spendData?.workValue.roiMultiple ?? 0)}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <MetricTile
+                        label="AI spend"
+                        value={formatCents(spendData?.workValue.aiSpendCents ?? 0)}
+                        subtitle="Tracked inference cost in this range"
+                        icon={DollarSign}
+                      />
+                      <MetricTile
+                        label="Savings"
+                        value={formatCents(spendData?.workValue.estimatedSavingsCents ?? 0)}
+                        subtitle="Estimated dev value minus AI spend"
+                        icon={Coins}
+                      />
+                      <MetricTile
+                        label="Token basis"
+                        value={formatTokens(spendData?.workValue.totalTokens ?? 0)}
+                        subtitle={`In ${formatTokens(spendData?.workValue.inputTokens ?? 0)} · cached ${formatTokens(spendData?.workValue.cachedInputTokens ?? 0)} · out ${formatTokens(spendData?.workValue.outputTokens ?? 0)}`}
+                        icon={ReceiptText}
+                      />
+                      <MetricTile
+                        label="Assumption"
+                        value={formatCents(spendData?.workValue.devValueHourlyRateCents ?? 15000)}
+                        subtitle={`per ${formatTokens(spendData?.workValue.devValueTokensPerHour ?? 100000)} tokens of work`}
+                        icon={TrendingUp}
+                      />
+                    </div>
+                  </CardContent>
+                </Card>
+
                 <FinanceSummaryCard
                   debitCents={financeData?.summary.debitCents ?? 0}
                   creditCents={financeData?.summary.creditCents ?? 0}
@@ -805,7 +885,7 @@ export function Costs() {
                   <Card>
                     <CardHeader className="px-5 pt-5 pb-2">
                       <CardTitle className="text-base">By project</CardTitle>
-                      <CardDescription>Run costs attributed through project-linked issues.</CardDescription>
+                      <CardDescription>Run costs attributed through project-linked tasks.</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-2 px-5 pb-5 pt-2">
                       {(spendData?.byProject.length ?? 0) === 0 ? (

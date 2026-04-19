@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { runChildProcess } from "./server-utils.js";
+import {
+  normalizePaperclipProjectContextPayload,
+  renderPaperclipOperatingCadencePrompt,
+  renderPaperclipProjectContextPrompt,
+  runChildProcess,
+  stringifyPaperclipProjectContextPayload,
+} from "./server-utils.js";
 
 function isPidAlive(pid: number) {
   try {
@@ -84,5 +90,69 @@ describe("runChildProcess", () => {
     expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
 
     expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
+  });
+});
+
+describe("renderPaperclipOperatingCadencePrompt", () => {
+  it("renders deterministic slow-and-steady token guidance", () => {
+    const prompt = renderPaperclipOperatingCadencePrompt();
+
+    expect(prompt).toBe(renderPaperclipOperatingCadencePrompt());
+    expect(prompt).toContain("## Paperclip Operating Cadence");
+    expect(prompt).toContain("slow, steady, token-conscious work");
+    expect(prompt).toContain("issue priority is `critical`");
+    expect(prompt).toContain("urgent, ASAP, or immediate");
+    expect(prompt).toContain("Keep progress and completion comments concise");
+    expect(prompt.length).toBeLessThan(700);
+  });
+});
+
+describe("Paperclip project context helpers", () => {
+  it("keeps goal-only project context payloads available to agents", () => {
+    const json = stringifyPaperclipProjectContextPayload({
+      projectId: "project-1",
+      companyId: "company-1",
+      goalMarkdown: "Ship the first working project demo.",
+      instructionsMarkdown: "",
+      defaultSkillKeys: [],
+      sources: [],
+      warnings: [],
+      generatedAt: "2026-04-19T00:00:00.000Z",
+    });
+
+    expect(json).not.toBeNull();
+    const normalized = normalizePaperclipProjectContextPayload(JSON.parse(json!));
+    expect(normalized?.goalMarkdown).toBe("Ship the first working project demo.");
+    expect(normalized?.instructionsMarkdown).toBe("");
+  });
+
+  it("renders project goals before instructions and advertises inherited skills", () => {
+    const prompt = renderPaperclipProjectContextPrompt({
+      projectId: "project-1",
+      companyId: "company-1",
+      goalMarkdown: "Create a clean board workflow for project-specific work.",
+      instructionsMarkdown: "Use local context before external research.",
+      defaultSkillKeys: ["design-guide", "design-guide", "qa"],
+      sources: [
+        {
+          sourceId: "source-1",
+          itemId: "item-1",
+          chunkId: "chunk-1",
+          sourceTitle: "Project Notes",
+          itemTitle: "Launch Plan",
+          uri: "https://example.com/plan",
+          excerpt: "Agents should cite project notes when using them.",
+        },
+      ],
+      warnings: [],
+      generatedAt: "2026-04-19T00:00:00.000Z",
+    });
+
+    expect(prompt).toContain("## Paperclip Project Context");
+    expect(prompt).toContain("inherited project skills available to use when useful: design-guide, qa");
+    expect(prompt).toContain("Project goal:");
+    expect(prompt).toContain("Project instructions:");
+    expect(prompt.indexOf("Project goal:")).toBeLessThan(prompt.indexOf("Project instructions:"));
+    expect(prompt).toContain("Project Notes / Launch Plan");
   });
 });

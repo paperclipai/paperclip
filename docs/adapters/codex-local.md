@@ -5,17 +5,26 @@ summary: OpenAI Codex local adapter setup and configuration
 
 The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session persistence via `previous_response_id` chaining and skills injection through the global Codex skills directory.
 
+Paperclip treats this adapter as a deep-thinking lane by default: new agents start on `gpt-5.4` with `xhigh` reasoning effort. Faster variants such as `gpt-5.3-codex-spark` remain available as explicit manual model choices, but they are not the default.
+
 ## Prerequisites
 
 - Codex CLI installed (`codex` command available)
 - `OPENAI_API_KEY` set in the environment or agent config
+
+## Background Service PATH
+
+On macOS, Codex installed through the Codex app may live at `/Applications/Codex.app/Contents/Resources/codex`, which is not always present in the `PATH` inherited by launchd or other background Paperclip server processes. When the adapter command is the default bare `codex`, Paperclip preserves the server's current `PATH` and appends common Codex locations, including the Codex app resources directory and common user bin directories under `$HOME`.
+
+If the environment test still reports `codex_command_unresolvable`, set the adapter command to `/Applications/Codex.app/Contents/Resources/codex` or add that directory to the environment used to start Paperclip.
 
 ## Configuration Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
-| `model` | string | No | Model to use |
+| `model` | string | No | Model to use. New Codex agents created by Paperclip default to `gpt-5.4`. |
+| `modelReasoningEffort` | string | No | Reasoning effort override passed as `-c model_reasoning_effort=...`. New Codex agents created by Paperclip default to `xhigh`. |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `env` | object | No | Environment variables (supports secret refs) |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |

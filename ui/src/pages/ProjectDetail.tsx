@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef, type ReactNode } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace } from "@paperclipai/shared";
@@ -15,9 +15,13 @@ import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
 import { CopyText } from "../components/CopyText";
 import { InlineEditor } from "../components/InlineEditor";
+import { ProjectLabelPills } from "../components/ProjectLabelPills";
+import { ProjectContextContent } from "../components/ProjectContextContent";
+import { ProjectTasksRail } from "../components/ProjectTasksRail";
 import { StatusBadge } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
@@ -36,7 +40,7 @@ import { IssuesQuicklook } from "../components/IssuesQuicklook";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "overview" | "list" | "workspaces" | "context" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -52,6 +56,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "overview") return "overview";
   if (tab === "configuration") return "configuration";
   if (tab === "budget") return "budget";
+  if (tab === "context") return "context";
   if (tab === "issues") return "list";
   if (tab === "workspaces") return "workspaces";
   return null;
@@ -158,8 +163,24 @@ function ColorPicker({
 
 /* ── List (issues) tab content ── */
 
-function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
+function ProjectIssuesList({
+  projectId,
+  companyId,
+  projectName,
+  projectRef,
+  topContent,
+}: {
+  projectId: string;
+  companyId: string;
+  projectName: string;
+  projectRef: string;
+  topContent?: ReactNode;
+}) {
   const queryClient = useQueryClient();
+  const issueLinkState = useMemo(
+    () => createIssueDetailLocationState(projectName, `/projects/${projectRef}/issues`, "issues"),
+    [projectName, projectRef],
+  );
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -202,6 +223,15 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     },
   });
 
+  const reorderIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { status: string; beforeIssueId?: string | null } }) =>
+      issuesApi.reorder(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    },
+  });
+
   return (
     <IssuesList
       issues={issues ?? []}
@@ -212,7 +242,11 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       liveIssueIds={liveIssueIds}
       projectId={projectId}
       viewStateKey={`paperclip:project-view:${projectId}`}
+      issueLinkState={issueLinkState}
+      defaultViewMode="board"
+      topContent={topContent}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+      onReorderIssue={(id, data) => reorderIssue.mutate({ id, data })}
     />
   );
 }
@@ -381,10 +415,10 @@ function ProjectWorkspacesContent({
           ) : null}
         </div>
 
-        {/* Issues */}
+        {/* Tasks */}
         {summary.issues.length > 0 ? (
           <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <span className="font-medium text-muted-foreground/70">Issues</span>
+            <span className="font-medium text-muted-foreground/70">Tasks</span>
             {visibleIssues.map((issue) => (
               <IssuesQuicklook key={issue.id} issue={issue}>
                 <Link
@@ -627,6 +661,10 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/budget`, { replace: true });
       return;
     }
+    if (activeTab === "context") {
+      navigate(`/projects/${canonicalProjectRef}/context`, { replace: true });
+      return;
+    }
     if (activeTab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`, { replace: true });
       return;
@@ -760,6 +798,9 @@ export function ProjectDetail() {
     if (cachedTab === "budget") {
       return <Navigate to={`/projects/${canonicalProjectRef}/budget`} replace />;
     }
+    if (cachedTab === "context") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/context`} replace />;
+    }
     if (cachedTab === "workspaces" && workspaceTabDecisionLoaded && showWorkspacesTab) {
       return <Navigate to={`/projects/${canonicalProjectRef}/workspaces`} replace />;
     }
@@ -789,6 +830,8 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/overview`);
     } else if (tab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
+    } else if (tab === "context") {
+      navigate(`/projects/${canonicalProjectRef}/context`);
     } else if (tab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`);
     } else if (tab === "configuration") {
@@ -808,12 +851,15 @@ export function ProjectDetail() {
           />
         </div>
         <div className="min-w-0 space-y-2">
-          <InlineEditor
-            value={project.name}
-            onSave={(name) => updateProject.mutate({ name })}
-            as="h2"
-            className="text-xl font-bold"
-          />
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <InlineEditor
+              value={project.name}
+              onSave={(name) => updateProject.mutate({ name })}
+              as="h2"
+              className="text-xl font-bold"
+            />
+            <ProjectLabelPills labels={project.labels} />
+          </div>
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
@@ -857,9 +903,10 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Issues" },
+            { value: "list", label: "Tasks (Issues)" },
             { value: "overview", label: "Overview" },
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
+            { value: "context", label: "Context" },
             { value: "configuration", label: "Configuration" },
             { value: "budget", label: "Budget" },
             ...pluginTabItems.map((item) => ({
@@ -885,7 +932,20 @@ export function ProjectDetail() {
       )}
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
-        <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
+        <ProjectIssuesList
+          projectId={project.id}
+          companyId={resolvedCompanyId}
+          projectName={project.name}
+          projectRef={canonicalProjectRef}
+          topContent={
+            <ProjectTasksRail
+              companyId={resolvedCompanyId}
+              projectId={project.id}
+              projectRef={canonicalProjectRef}
+              placement="top"
+            />
+          }
+        />
       )}
 
       {activeTab === "workspaces" ? (
@@ -903,6 +963,10 @@ export function ProjectDetail() {
         ) : (
           <p className="text-sm text-muted-foreground">Loading workspaces...</p>
         )
+      ) : null}
+
+      {activeTab === "context" && resolvedCompanyId ? (
+        <ProjectContextContent companyId={resolvedCompanyId} projectId={project.id} />
       ) : null}
 
       {activeTab === "configuration" && (

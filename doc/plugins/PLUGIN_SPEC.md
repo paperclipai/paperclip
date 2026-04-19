@@ -612,6 +612,7 @@ Required SDK clients:
 - `ctx.state`
 - `ctx.entities`
 - `ctx.projects`
+- `ctx.contextSources`
 - `ctx.issues`
 - `ctx.agents`
 - `ctx.goals`
@@ -623,6 +624,8 @@ Required SDK clients:
 `ctx.data` and `ctx.actions` register handlers that the plugin's own UI calls through the host bridge. `ctx.data.register(key, handler)` backs `usePluginData(key)` on the frontend. `ctx.actions.register(key, handler)` backs `usePluginAction(key)`.
 
 Plugins that need filesystem, git, terminal, or process operations handle those directly using standard Node APIs or libraries. The host provides project workspace metadata through `ctx.projects` so plugins can resolve workspace paths, but the host does not proxy low-level OS operations.
+
+Connector plugins that sync external files or folders use `ctx.contextSources` to create project sources, upsert source items, report sync status, and search indexed project context. This keeps connector code and credentials outside core while giving Paperclip normalized, company-scoped source text and provenance.
 
 ## 14.1 Example SDK Shape
 
@@ -654,6 +657,12 @@ export interface PluginContext {
   entities: {
     upsert(input: PluginEntityUpsert): Promise<void>;
     list(input: PluginEntityQuery): Promise<PluginEntityRecord[]>;
+  };
+  contextSources: {
+    create(input: ContextSourceCreateInput): Promise<ContextSource>;
+    upsertItem(input: ContextSourceUpsertItemInput): Promise<ContextSourceItem>;
+    setStatus(sourceId: string, companyId: string, status: ContextSourceStatus, statusMessage?: string | null): Promise<ContextSource>;
+    search(input: ContextSourceSearchInput): Promise<ContextSourceSearchResult[]>;
   };
   data: {
     register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void;
@@ -694,6 +703,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `companies.read`
 - `projects.read`
 - `project.workspaces.read`
+- `project.context.read`
 - `issues.read`
 - `issue.comments.read`
 - `agents.read`
@@ -706,6 +716,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `issues.create`
 - `issues.update`
 - `issue.comments.create`
+- `project.context.write`
 - `assets.write`
 - `assets.read`
 - `activity.log.write`

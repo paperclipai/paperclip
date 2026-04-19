@@ -92,6 +92,7 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
     createdByUserId: "local-board",
     identifier: "PAP-999",
     title: "Wake test",
+    dueDate: null,
     executionPolicy: null,
     executionState: null,
     hiddenAt: null,
@@ -106,6 +107,23 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+  });
+
+  it("updates and clears issue due dates", async () => {
+    const existing = makeIssue({ dueDate: "2026-05-01" });
+    const updated = makeIssue({ dueDate: null });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ dueDate: null });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      existing.id,
+      expect.objectContaining({ dueDate: null }),
+    );
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {

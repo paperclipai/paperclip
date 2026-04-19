@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  checkout: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -138,6 +139,7 @@ describe("issue comment reopen routes", () => {
     vi.resetAllMocks();
     mockIssueService.getById.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
+    mockIssueService.checkout.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
@@ -169,6 +171,10 @@ describe("issue comment reopen routes", () => {
     mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
     mockLogActivity.mockResolvedValue(undefined);
+    mockIssueService.checkout.mockResolvedValue({
+      ...makeIssue("todo"),
+      status: "in_progress",
+    });
     mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
     mockFeedbackService.saveIssueVote.mockResolvedValue({
       vote: null,
@@ -255,6 +261,55 @@ describe("issue comment reopen routes", () => {
           reopenedFrom: "done",
           status: "todo",
         }),
+      }),
+    );
+  });
+
+  it("records agent and run attribution when an agent posts a comment", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("todo"),
+      assigneeAgentId: null,
+    });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-agent-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "Hermes added board context.",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: "agent-hermes",
+      authorUserId: null,
+    });
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent",
+      agentId: "agent-hermes",
+      companyId: "company-1",
+      runId: "run-hermes-1",
+      runStatus: "running",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Hermes added board context." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "Hermes added board context.",
+      {
+        agentId: "agent-hermes",
+        userId: undefined,
+        runId: "run-hermes-1",
+      },
+    );
+    expect(mockHeartbeatService.reportRunActivity).toHaveBeenCalledWith("run-hermes-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorType: "agent",
+        actorId: "agent-hermes",
+        agentId: "agent-hermes",
+        runId: "run-hermes-1",
+        action: "issue.comment_added",
       }),
     );
   });
@@ -509,5 +564,57 @@ describe("issue comment reopen routes", () => {
         }),
       }),
     );
+  });
+
+  it("nulls agent run links on comment writes when no normalized run id is available", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      source: "agent_jwt",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "hello",
+      expect.objectContaining({
+        agentId: "22222222-2222-4222-8222-222222222222",
+        runId: null,
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.comment_added",
+        runId: null,
+      }),
+    );
+  });
+
+  it("rejects checkout when the normalized agent run is not active", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      runId: "run-terminal",
+      runStatus: "failed",
+      source: "agent_jwt",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/checkout")
+      .send({
+        agentId: "22222222-2222-4222-8222-222222222222",
+        expectedStatuses: ["todo"],
+      });
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "Active agent run id required" });
+    expect(mockIssueService.checkout).not.toHaveBeenCalled();
   });
 });

@@ -1,0 +1,146 @@
+schema: paperclip/v1
+company:
+  requireBoardApprovalForNewAgents: true
+agents:
+  tsr-ceo:
+    role: ceo
+    adapter:
+      type: codex_local
+      config:
+        cwd: /Users/robertdawson/AI
+        command: codex
+        model: gpt-5.4
+        modelReasoningEffort: xhigh
+        search: false
+        timeoutSec: 900
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtime:
+      heartbeat:
+        enabled: false
+        cooldownSec: 10
+        intervalSec: 0
+        wakeOnDemand: true
+        wakeOnOnDemand: true
+        wakeOnAssignment: true
+        wakeOnAutomation: false
+        maxConcurrentRuns: 1
+    permissions:
+      canCreateAgents: true
+    budgetMonthlyCents: 1000
+  growth-strategist:
+    adapter:
+      type: codex_local
+      config:
+        cwd: /Users/robertdawson/AI
+        command: codex
+        model: gpt-5.4
+        modelReasoningEffort: xhigh
+        search: false
+        timeoutSec: 900
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtime:
+      heartbeat:
+        enabled: false
+        cooldownSec: 10
+        intervalSec: 0
+        wakeOnDemand: true
+        wakeOnOnDemand: true
+        wakeOnAssignment: true
+        wakeOnAutomation: false
+        maxConcurrentRuns: 1
+    permissions:
+      canCreateAgents: false
+    budgetMonthlyCents: 500
+  seo-delivery-lead:
+    adapter:
+      type: codex_local
+      config:
+        cwd: /Users/robertdawson/AI
+        command: codex
+        model: gpt-5.4
+        modelReasoningEffort: xhigh
+        search: false
+        timeoutSec: 900
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtime:
+      heartbeat:
+        enabled: false
+        cooldownSec: 10
+        intervalSec: 0
+        wakeOnDemand: true
+        wakeOnOnDemand: true
+        wakeOnAssignment: true
+        wakeOnAutomation: false
+        maxConcurrentRuns: 1
+    permissions:
+      canCreateAgents: false
+    budgetMonthlyCents: 500
+  content-systems-lead:
+    adapter:
+      type: codex_local
+      config:
+        cwd: /Users/robertdawson/AI
+        command: codex
+        model: gpt-5.4
+        modelReasoningEffort: xhigh
+        search: false
+        timeoutSec: 900
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtime:
+      heartbeat:
+        enabled: false
+        cooldownSec: 10
+        intervalSec: 0
+        wakeOnDemand: true
+        wakeOnOnDemand: true
+        wakeOnAssignment: true
+        wakeOnAutomation: false
+        maxConcurrentRuns: 1
+    permissions:
+      canCreateAgents: false
+    budgetMonthlyCents: 0
+  client-success-lead:
+    adapter:
+      type: hermes_local
+      config:
+        cwd: /Users/robertdawson/AI
+        hermesCommand: /Users/robertdawson/.local/bin/hermes
+        provider: openai-codex
+        model: gpt-5.4-mini
+        timeoutSec: 900
+        persistSession: true
+        env: {}
+    runtime:
+      heartbeat:
+        enabled: false
+        cooldownSec: 10
+        intervalSec: 0
+        wakeOnDemand: true
+        wakeOnOnDemand: true
+        wakeOnAssignment: true
+        wakeOnAutomation: false
+        maxConcurrentRuns: 1
+    permissions:
+      canCreateAgents: false
+    budgetMonthlyCents: 500
+routines:
+  daily-growth-and-delivery-triage:
+    triggers:
+      - kind: schedule
+        cronExpression: "0 9 * * 1-5"
+        timezone: America/Halifax
+  weekly-tsr-exec-review:
+    triggers:
+      - kind: schedule
+        cronExpression: "0 10 * * 1"
+        timezone: America/Halifax
+  weekly-pipeline-review:
+    triggers:
+      - kind: schedule
+        cronExpression: "0 10 * * 1"
+        timezone: America/Halifax
+  weekly-delivery-qa:
+    triggers:
+      - kind: schedule
+        cronExpression: "0 15 * * 4"
+        timezone: America/Halifax

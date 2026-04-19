@@ -1,4 +1,4 @@
-import express, { Router, type Request as ExpressRequest } from "express";
+import express, { Router, type Express, type Request as ExpressRequest } from "express";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -11,9 +11,12 @@ import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
+import { companyRolloutRoutes } from "./routes/company-rollouts.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
+import { projectContextRoutes } from "./routes/project-context.js";
+import { projectQuickLinkRoutes } from "./routes/project-quick-links.js";
 import { issueRoutes } from "./routes/issues.js";
 import { routineRoutes } from "./routes/routines.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
@@ -26,6 +29,7 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { instanceUpdateSafetyRoutes } from "./routes/instance-update-safety.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
@@ -49,15 +53,53 @@ import { createPluginHostServiceCleanup } from "./services/plugin-host-service-c
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+import type { InstanceUpdateSafetyOptions } from "./services/instance-update-safety.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
+
+function formatFeedbackExportError(err: unknown) {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return "";
+}
+
+function isExpectedFeedbackExportShutdownError(err: unknown) {
+  const message = formatFeedbackExportError(err);
+  return /database system is shutting down/i.test(message);
+}
 
 export function resolveViteHmrPort(serverPort: number): number {
   if (serverPort <= 55_535) {
     return serverPort + 10_000;
   }
   return Math.max(1_024, serverPort - 10_000);
+}
+
+function shouldServeStaticUiFallback(req: ExpressRequest): boolean {
+  if (req.path.startsWith("/assets/")) return false;
+  if (!req.accepts("html")) return false;
+  return path.posix.extname(req.path) === "";
+}
+
+export function installStaticUiRoutes(app: Express, uiDist: string) {
+  const indexHtmlPath = path.join(uiDist, "index.html");
+
+  app.use(express.static(uiDist, { index: false }));
+  app.get(/.*/, (req, res, next) => {
+    if (!shouldServeStaticUiFallback(req)) {
+      next();
+      return;
+    }
+
+    fs.readFile(indexHtmlPath, "utf-8", (err, indexHtml) => {
+      if (err) {
+        next(err);
+        return;
+      }
+      res.status(200).type("html").end(applyUiBranding(indexHtml));
+    });
+  });
 }
 
 export async function createApp(
@@ -80,8 +122,11 @@ export async function createApp(
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    heartbeatSchedulerEnabled?: boolean;
+    heartbeatSchedulerIntervalMs?: number;
     instanceId?: string;
     hostVersion?: string;
+    updateSafety?: InstanceUpdateSafetyOptions;
     localPluginDir?: string;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
@@ -151,10 +196,16 @@ export async function createApp(
     }),
   );
   api.use("/companies", companyRoutes(db, opts.storageService));
+  api.use(companyRolloutRoutes(db));
   api.use(companySkillRoutes(db));
-  api.use(agentRoutes(db));
+  api.use(agentRoutes(db, {
+    heartbeatSchedulerEnabled: opts.heartbeatSchedulerEnabled ?? true,
+    heartbeatSchedulerIntervalMs: opts.heartbeatSchedulerIntervalMs ?? 30_000,
+  }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
+  api.use(projectContextRoutes(db, opts.storageService));
+  api.use(projectQuickLinkRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
   }));
@@ -169,6 +220,9 @@ export async function createApp(
   api.use(sidebarBadgeRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  if (opts.updateSafety) {
+    api.use(instanceUpdateSafetyRoutes(db, opts.updateSafety));
+  }
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = createPluginWorkerManager();
   const pluginRegistry = pluginRegistryService(db);
@@ -258,11 +312,7 @@ export async function createApp(
     ];
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
-      const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
-      app.use(express.static(uiDist));
-      app.get(/.*/, (_req, res) => {
-        res.status(200).set("Content-Type", "text/html").end(indexHtml);
-      });
+      installStaticUiRoutes(app, uiDist);
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
     }
@@ -303,18 +353,27 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
+  let feedbackExportShuttingDown = false;
+  const flushPendingFeedbackExports = async () => {
+    if (!opts.feedbackExportService) return;
+    try {
+      await opts.feedbackExportService.flushPendingFeedbackTraces();
+    } catch (err) {
+      if (feedbackExportShuttingDown && isExpectedFeedbackExportShutdownError(err)) {
+        logger.info({ err }, "Skipping feedback export flush during database shutdown");
+        return;
+      }
+      logger.error({ err }, "Failed to flush pending feedback exports");
+    }
+  };
   const feedbackExportTimer = opts.feedbackExportService
     ? setInterval(() => {
-      void opts.feedbackExportService?.flushPendingFeedbackTraces().catch((err) => {
-        logger.error({ err }, "Failed to flush pending feedback exports");
-      });
+      void flushPendingFeedbackExports();
     }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
     : null;
   feedbackExportTimer?.unref?.();
   if (opts.feedbackExportService) {
-    void opts.feedbackExportService.flushPendingFeedbackTraces().catch((err) => {
-      logger.error({ err }, "Failed to flush pending feedback exports");
-    });
+    void flushPendingFeedbackExports();
   }
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
@@ -335,8 +394,15 @@ export async function createApp(
   }).catch((err) => {
     logger.error({ err }, "Failed to load ready plugins on startup");
   });
-  process.once("exit", () => {
+  const markFeedbackExportShuttingDown = () => {
+    if (feedbackExportShuttingDown) return;
+    feedbackExportShuttingDown = true;
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
+  };
+  process.once("SIGINT", markFeedbackExportShuttingDown);
+  process.once("SIGTERM", markFeedbackExportShuttingDown);
+  process.once("exit", () => {
+    markFeedbackExportShuttingDown();
     devWatcher?.close();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();

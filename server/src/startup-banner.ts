@@ -25,6 +25,7 @@ type StartupBannerOptions = {
   authReady: boolean;
   requestedPort: number;
   listenPort: number;
+  publicBaseUrl?: string;
   uiMode: UiMode;
   db: ExternalPostgresInfo | EmbeddedPostgresInfo;
   migrationSummary: string;
@@ -86,7 +87,7 @@ function resolveAgentJwtSecretStatus(
     if (fileValue) {
       return {
         status: "warn",
-        message: `found in ${envFilePath} but not loaded`,
+        message: `found in ${envFilePath} but not loaded; local-agent JWT injection is disabled until restart`,
       };
     }
   }
@@ -102,6 +103,7 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
   const baseUrl = `http://${baseHost}:${opts.listenPort}`;
   const apiUrl = `${baseUrl}/api`;
   const uiUrl = opts.uiMode === "none" ? "disabled" : baseUrl;
+  const effectivePublicUrl = opts.publicBaseUrl?.trim() || baseUrl;
   const configPath = resolvePaperclipConfigPath();
   const envFilePath = resolvePaperclipEnvPath();
   const agentJwtSecret = resolveAgentJwtSecretStatus(envFilePath);
@@ -154,6 +156,7 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
     row("Server", portValue),
     row("API", `${apiUrl} ${color(`(health: ${apiUrl}/health)`, "dim")}`),
     row("UI", uiUrl),
+    row("Public URL", effectivePublicUrl),
     row("Database", dbDetails),
     row("Migrations", opts.migrationSummary),
     row(

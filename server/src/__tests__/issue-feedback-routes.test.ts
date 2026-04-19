@@ -77,6 +77,7 @@ vi.mock("../services/index.js", () => ({
 }));
 
 async function createApp(actor: Record<string, unknown>) {
+  vi.resetModules();
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),

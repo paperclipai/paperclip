@@ -42,8 +42,21 @@ Session routing fields:
 - sessionKeyStrategy (string, optional): issue (default), fixed, or run
 - sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)
 
+Recommended live Paperclip role:
+- Use a stable agent name such as OpenClawOps.
+- Enable heartbeat for the agent.
+- Grant tasks:assign when you want manager-mode routing for child issues.
+- Position this agent as an ops-manager, not the CEO.
+
+Wake context delivery:
+- Paperclip context is appended to the outbound message text, including environment hints and the structured wake payload JSON.
+- The adapter sends the structured paperclip payload as a top-level field by default and also includes the wake context in the message text.
+- If the gateway rejects the top-level paperclip field as incompatible, the adapter retries once without that field for compatibility.
+- The wake workflow starts with GET /api/agents/me, GET /api/companies/{companyId}/dashboard, GET /api/agents/me/inbox-lite, and GET /api/issues/{issueId}/heartbeat-context when an issue is selected.
+- For company-wide fallback targeting, use GET /api/companies/{companyId}/issues?status=todo,in_progress,blocked&limit=50 rather than /api/issues?....
+
 Standard outbound payload additions:
-- paperclip (object): standardized Paperclip context added to every gateway agent request
+- paperclip (object): standardized Paperclip context added to every gateway agent request when the gateway accepts it
 - paperclip.workspace (object, optional): resolved execution workspace for this run
 - paperclip.workspaces (array, optional): additional workspace hints Paperclip exposed to the run
 - paperclip.workspaceRuntime (object, optional): reserved workspace runtime metadata when explicitly supplied outside normal heartbeat execution

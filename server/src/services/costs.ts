@@ -12,6 +12,11 @@ export interface CostDateRange {
 const METERED_BILLING_TYPE = "metered_api";
 const SUBSCRIPTION_BILLING_TYPES = ["subscription_included", "subscription_overage"] as const;
 
+function roundTo(value: number, digits = 2) {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
 function currentUtcMonthWindow(now = new Date()) {
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth();
@@ -127,6 +132,65 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         spendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+      };
+    },
+
+    workValue: async (companyId: string, range?: CostDateRange) => {
+      const company = await db
+        .select({
+          id: companies.id,
+          devValueHourlyRateCents: companies.devValueHourlyRateCents,
+          devValueTokensPerHour: companies.devValueTokensPerHour,
+        })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!company) throw notFound("Company not found");
+
+      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      const [row] = await db
+        .select({
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+          aiSpendCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+        })
+        .from(costEvents)
+        .where(and(...conditions));
+
+      const inputTokens = Number(row?.inputTokens ?? 0);
+      const cachedInputTokens = Number(row?.cachedInputTokens ?? 0);
+      const outputTokens = Number(row?.outputTokens ?? 0);
+      const totalTokens = inputTokens + cachedInputTokens + outputTokens;
+      const aiSpendCents = Number(row?.aiSpendCents ?? 0);
+      const devValueTokensPerHour = Math.max(1, Number(company.devValueTokensPerHour ?? 100000));
+      const devValueHourlyRateCents = Math.max(0, Number(company.devValueHourlyRateCents ?? 15000));
+      const estimatedDevHours = totalTokens / devValueTokensPerHour;
+      const estimatedDevValueCents = Math.round(estimatedDevHours * devValueHourlyRateCents);
+      const estimatedSavingsCents = Math.max(0, estimatedDevValueCents - aiSpendCents);
+      const roiMultiple = aiSpendCents > 0
+        ? roundTo(estimatedDevValueCents / aiSpendCents, 2)
+        : estimatedDevValueCents > 0
+          ? null
+          : 0;
+
+      return {
+        companyId,
+        totalTokens,
+        inputTokens,
+        cachedInputTokens,
+        outputTokens,
+        aiSpendCents,
+        estimatedDevHours: roundTo(estimatedDevHours, 2),
+        estimatedDevValueCents,
+        estimatedSavingsCents,
+        roiMultiple,
+        devValueHourlyRateCents,
+        devValueTokensPerHour,
       };
     },
 

@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   Inbox,
   CircleDot,
   Target,
@@ -11,6 +12,8 @@ import {
   Boxes,
   Repeat,
   Settings,
+  FolderOpen,
+  CircleUserRound,
   Calendar,
   CalendarDays,
   CalendarRange,
@@ -22,18 +25,19 @@ import { SidebarProjects } from "./SidebarProjects";
 import { SidebarAgents } from "./SidebarAgents";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useSidebar } from "../context/SidebarContext";
 import { heartbeatsApi } from "../api/heartbeats";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateOnly } from "../lib/issue-date-ranges";
-import { useInboxBadge } from "../hooks/useInboxBadge";
+import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 export function Sidebar() {
   const { openNewIssue } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
-  const inboxBadge = useInboxBadge(selectedCompanyId);
+  const { isMobile, sidebarSide } = useSidebar();
   const today = formatDateOnly();
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
@@ -48,6 +52,7 @@ export function Sidebar() {
     refetchInterval: 15_000,
   });
   const liveRunCount = liveRuns?.length ?? 0;
+  const blockerCount = sidebarBadges?.blockers ?? 0;
   const todayCount = sidebarBadges?.taskDates?.today ?? 0;
   const tomorrowCount = sidebarBadges?.taskDates?.tomorrow ?? 0;
   const next7DaysCount = sidebarBadges?.taskDates?.next7Days ?? 0;
@@ -62,7 +67,12 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
+    <aside
+      className={cn(
+        "w-full min-w-0 h-full min-h-0 border-border bg-background flex flex-col",
+        !isMobile && sidebarSide === "right" ? "border-l" : "border-r",
+      )}
+    >
       {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
         {selectedCompany?.brandColor && (
@@ -79,6 +89,8 @@ export function Sidebar() {
           size="icon-sm"
           className="text-muted-foreground shrink-0"
           onClick={openSearch}
+          aria-label="Search"
+          title="Search"
         >
           <Search className="h-4 w-4" />
         </Button>
@@ -86,22 +98,26 @@ export function Sidebar() {
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
-          {/* New Issue button aligned with nav items */}
+          {/* New task button aligned with nav items */}
           <button
             onClick={() => openNewIssue()}
             className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >
             <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">New Issue</span>
+            <span className="truncate">New Task</span>
           </button>
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
             label="Inbox"
             icon={Inbox}
-            badge={inboxBadge.inbox}
-            badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
-            alert={inboxBadge.failedRuns > 0}
+          />
+          <SidebarNavItem
+            to="/blockers"
+            label="Blockers"
+            icon={AlertTriangle}
+            badge={blockerCount}
+            badgeTone="danger"
           />
           <PluginSlotOutlet
             slotTypes={["sidebar"]}
@@ -113,11 +129,13 @@ export function Sidebar() {
         </div>
 
         <SidebarSection label="Work">
+          <SidebarNavItem to="/my-issues" label="My Tasks" icon={CircleUserRound} />
           <SidebarNavItem to="/tasks/today" label="Today" icon={Calendar} badge={todayCount} />
           <SidebarNavItem to="/tasks/tomorrow" label="Tomorrow" icon={CalendarDays} badge={tomorrowCount} />
           <SidebarNavItem to="/tasks/next-7-days" label="Next 7 Days" icon={CalendarRange} badge={next7DaysCount} />
           <SidebarNavItem to="/tasks/calendar" label="Calendar" icon={CalendarDays} />
-          <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
+          <SidebarNavItem to="/issues" label="Tasks (Issues)" icon={CircleDot} />
+          <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
         </SidebarSection>

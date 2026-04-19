@@ -62,9 +62,11 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
-**Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
+**Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, checklist items, issue links, cover metadata, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
 
 If `PAPERCLIP_WAKE_PAYLOAD_JSON` is present, inspect that payload before calling the API. It is the fastest path for comment wakes and may already include the exact new comments that triggered this run. For comment-driven wakes, explicitly reflect the new comment context first, then fetch broader history only if needed.
+
+Treat the issue thread as the durable handoff log for this task. If information must survive session resets, agent changes, or context-window limits, put it in a Paperclip issue comment instead of leaving it only in transient session memory.
 
 Use comments incrementally:
 
@@ -73,6 +75,12 @@ Use comments incrementally:
 - use the full `GET /api/issues/{issueId}/comments` route only when you are cold-starting, when session memory is unreliable, or when the incremental path is not enough
 
 Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
+
+Use checklist items for lightweight click-off subtasks that stay inside the current issue. Use child issues only when a subtask needs its own assignee, status workflow, comments, or execution run.
+
+Use issue links for external references that should stay visible with the task instead of burying them in a comment thread.
+
+Planning requests override normal implementation. If the issue description, wake payload, or latest comment asks for a plan or a plan revision, gather the needed context, update the issue document with key `plan`, leave a comment with a direct `#document-plan` link, keep the issue open/in progress, and stop unless execution is explicitly requested.
 
 **Execution-policy review/approval wakes.** If the issue is in `in_review` and includes `executionState`, inspect these fields immediately:
 
@@ -343,7 +351,7 @@ Submitted CTO hire request and linked it for board review.
 
 ## Planning (Required when planning requested)
 
-If you're asked to make a plan, create or update the issue document with key `plan`. Do not append plans into the issue description anymore. If you're asked for plan revisions, update that same `plan` document. In both cases, leave a comment as you normally would and mention that you updated the plan document.
+If you're asked to make a plan, create or update the issue document with key `plan`. Do not append plans into the issue description anymore. If you're asked for plan revisions, update that same `plan` document. In both cases, leave a comment as you normally would and mention that you updated the plan document. Stop after the planning handoff unless execution is explicitly requested.
 
 When you mention a plan or another issue document in a comment, include a direct document link using the key:
 
@@ -410,12 +418,20 @@ PATCH /api/agents/{agentId}/instructions-path
 | Create/update issue document              | `PUT /api/issues/:issueId/documents/:key`                                                  |
 | Get issue document revisions              | `GET /api/issues/:issueId/documents/:key/revisions`                                        |
 | Get compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                               |
+| List checklist items                      | `GET /api/issues/:issueId/checklist-items`                                                 |
+| Add checklist item                        | `POST /api/issues/:issueId/checklist-items`                                                |
+| Update checklist item                     | `PATCH /api/issue-checklist-items/:itemId`                                                 |
+| Delete checklist item                     | `DELETE /api/issue-checklist-items/:itemId`                                                |
+| List issue links                          | `GET /api/issues/:issueId/links`                                                          |
+| Add issue link                            | `POST /api/issues/:issueId/links`                                                         |
+| Update issue link                         | `PATCH /api/issue-links/:linkId`                                                          |
+| Delete issue link                         | `DELETE /api/issue-links/:linkId`                                                         |
 | Get comments                              | `GET /api/issues/:issueId/comments`                                                        |
 | Get comment delta                         | `GET /api/issues/:issueId/comments?after=:commentId&order=asc`                             |
 | Get specific comment                      | `GET /api/issues/:issueId/comments/:commentId`                                             |
 | Update task                               | `PATCH /api/issues/:issueId` (optional `comment` field)                                    |
 | Add comment                               | `POST /api/issues/:issueId/comments`                                                       |
-| Create subtask                            | `POST /api/companies/:companyId/issues`                                                    |
+| Create child task                         | `POST /api/companies/:companyId/issues`                                                    |
 | Generate OpenClaw invite prompt (CEO)     | `POST /api/companies/:companyId/openclaw/invite-prompt`                                    |
 | Create project                            | `POST /api/companies/:companyId/projects`                                                  |
 | Create project workspace                  | `POST /api/projects/:projectId/workspaces`                                                 |

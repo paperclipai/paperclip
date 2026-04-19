@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Moon, Settings, Sun } from "lucide-react";
 import { Link, Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
@@ -17,11 +25,20 @@ import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
+import { UpdateStatusBanner } from "./UpdateStatusBanner";
+import { AgentServiceHealthBanner } from "./AgentServiceHealthBanner";
+import { DashboardRecoveryRedirect } from "./DashboardRecoveryRedirect";
 import { useDialog } from "../context/DialogContext";
 import { GeneralSettingsProvider } from "../context/GeneralSettingsContext";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
-import { useSidebar } from "../context/SidebarContext";
+import {
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_MAX,
+  SIDEBAR_WIDTH_MIN,
+  useSidebar,
+  type SidebarSide,
+} from "../context/SidebarContext";
 import { useTheme } from "../context/ThemeContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
@@ -40,11 +57,11 @@ import {
 import { queryKeys } from "../lib/queryKeys";
 import { scheduleMainContentFocus } from "../lib/main-content-focus";
 import { cn } from "../lib/utils";
-import { NotFoundPage } from "../pages/NotFound";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 const INSTANCE_SETTINGS_MEMORY_KEY = "paperclip.lastInstanceSettingsPath";
+const COMPANY_RAIL_WIDTH = 72;
 
 function readRememberedInstanceSettingsPath(): string {
   if (typeof window === "undefined") return DEFAULT_INSTANCE_SETTINGS_PATH;
@@ -56,7 +73,16 @@ function readRememberedInstanceSettingsPath(): string {
 }
 
 export function Layout() {
-  const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
+  const {
+    sidebarOpen,
+    setSidebarOpen,
+    toggleSidebar,
+    sidebarSide,
+    sidebarWidth,
+    setSidebarWidth,
+    resetSidebarWidth,
+    isMobile,
+  } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
   const { togglePanelVisible } = usePanel();
   const {
@@ -75,12 +101,21 @@ export function Layout() {
   const isInstanceSettingsRoute = location.pathname.startsWith("/instance/");
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
+  const sidebarResizeStart = useRef<{
+    pointerId: number;
+    side: SidebarSide;
+    startX: number;
+    width: number;
+  } | null>(null);
   const previousPathname = useRef<string | null>(null);
   const mainContentRef = useRef<HTMLElement | null>(null);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [instanceSettingsTarget, setInstanceSettingsTarget] = useState<string>(() => readRememberedInstanceSettingsPath());
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const nextTheme = theme === "dark" ? "light" : "dark";
+  const desktopSidebarWidth = sidebarOpen ? sidebarWidth : 0;
+  const desktopSidebarShellWidth = COMPANY_RAIL_WIDTH + desktopSidebarWidth;
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
     const requestedPrefix = companyPrefix.toUpperCase();
@@ -306,6 +341,249 @@ export function Layout() {
     resetNavigationScroll(mainContentRef.current);
   }, [location.pathname, navigationType]);
 
+  const beginSidebarResize = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (isMobile || !sidebarOpen) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    sidebarResizeStart.current = {
+      pointerId: event.pointerId,
+      side: sidebarSide,
+      startX: event.clientX,
+      width: sidebarWidth,
+    };
+    setIsResizingSidebar(true);
+  }, [isMobile, sidebarOpen, sidebarSide, sidebarWidth]);
+
+  const continueSidebarResize = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const start = sidebarResizeStart.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+    const delta = start.side === "right"
+      ? start.startX - event.clientX
+      : event.clientX - start.startX;
+    setSidebarWidth(start.width + delta);
+  }, [setSidebarWidth]);
+
+  const endSidebarResize = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    sidebarResizeStart.current = null;
+    setIsResizingSidebar(false);
+  }, []);
+
+  const handleSidebarResizeKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 32 : 16;
+
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setSidebarWidth(sidebarSide === "right" ? sidebarWidth + step : sidebarWidth - step);
+      return;
+    }
+
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setSidebarWidth(sidebarSide === "right" ? sidebarWidth - step : sidebarWidth + step);
+      return;
+    }
+
+    if (event.key === "Home") {
+      event.preventDefault();
+      setSidebarWidth(SIDEBAR_WIDTH_MIN);
+      return;
+    }
+
+    if (event.key === "End") {
+      event.preventDefault();
+      setSidebarWidth(SIDEBAR_WIDTH_MAX);
+      return;
+    }
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      resetSidebarWidth();
+    }
+  }, [resetSidebarWidth, setSidebarWidth, sidebarSide, sidebarWidth]);
+
+  useEffect(() => {
+    if (!isResizingSidebar) return;
+
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    };
+  }, [isResizingSidebar]);
+
+  const sidebarTooltipSide = sidebarSide === "right" ? "left" : "right";
+  const desktopSidebarPane = (
+    <div
+      className={cn(
+        "relative h-full shrink-0 overflow-visible motion-reduce:transition-none",
+        isResizingSidebar ? "transition-none" : "transition-[width] duration-100 ease-out",
+      )}
+      style={{ width: desktopSidebarWidth }}
+    >
+      <div className="h-full overflow-hidden">
+        <div className="h-full" style={{ width: sidebarWidth }}>
+          {isInstanceSettingsRoute ? <InstanceSidebar /> : <Sidebar />}
+        </div>
+      </div>
+      {sidebarOpen && (
+        <div
+          role="separator"
+          aria-label="Resize sidebar"
+          aria-orientation="vertical"
+          aria-valuemin={SIDEBAR_WIDTH_MIN}
+          aria-valuemax={SIDEBAR_WIDTH_MAX}
+          aria-valuenow={sidebarWidth}
+          aria-valuetext={`${sidebarWidth}px`}
+          tabIndex={0}
+          title="Resize sidebar"
+          className={cn(
+            "group absolute inset-y-0 z-20 w-2 cursor-col-resize touch-none select-none",
+            sidebarSide === "right" ? "-left-1" : "-right-1",
+            "focus-visible:bg-ring/15 focus-visible:ring-2 focus-visible:ring-ring",
+          )}
+          onDoubleClick={resetSidebarWidth}
+          onKeyDown={handleSidebarResizeKeyDown}
+          onPointerDown={beginSidebarResize}
+          onPointerMove={continueSidebarResize}
+          onPointerUp={endSidebarResize}
+          onPointerCancel={endSidebarResize}
+        >
+          <span
+            className={cn(
+              "absolute inset-y-2 left-1/2 w-px -translate-x-1/2 bg-border",
+              "transition-[background-color,width] duration-150 motion-reduce:transition-none",
+              "group-hover:w-0.5 group-hover:bg-primary/60 group-focus-visible:w-0.5 group-focus-visible:bg-primary",
+              isResizingSidebar && "w-0.5 bg-primary",
+            )}
+          />
+        </div>
+      )}
+    </div>
+  );
+  const desktopSidebarFooter = (
+    <div
+      className={cn(
+        "border-t border-border bg-background px-3 py-2",
+        sidebarSide === "right" ? "border-l" : "border-r",
+      )}
+    >
+      {sidebarOpen ? (
+        <div className="flex items-center gap-1">
+          <a
+            href="https://docs.paperclip.ing/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
+          >
+            <BookOpen className="h-4 w-4 shrink-0" />
+            <span className="truncate">Documentation</span>
+          </a>
+          {health?.version && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="px-2 text-xs text-muted-foreground shrink-0 cursor-default">v</span>
+              </TooltipTrigger>
+              <TooltipContent side={sidebarTooltipSide}>v{health.version}</TooltipContent>
+            </Tooltip>
+          )}
+          <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
+            <Link
+              to={instanceSettingsTarget}
+              state={SIDEBAR_SCROLL_RESET_STATE}
+              aria-label="Instance settings"
+              title="Instance settings"
+            >
+              <Settings className="h-4 w-4" />
+            </Link>
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground shrink-0"
+            onClick={toggleTheme}
+            aria-label={`Switch to ${nextTheme} mode`}
+            title={`Switch to ${nextTheme} mode`}
+          >
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-col items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
+                href="https://docs.paperclip.ing/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color] duration-150 hover:bg-accent/50 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label="Documentation"
+                title="Documentation"
+              >
+                <BookOpen className="h-4 w-4" aria-hidden="true" />
+              </a>
+            </TooltipTrigger>
+            <TooltipContent side={sidebarTooltipSide}>Documentation</TooltipContent>
+          </Tooltip>
+          {health?.version && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="flex h-7 items-center px-2 text-xs text-muted-foreground cursor-default">v</span>
+              </TooltipTrigger>
+              <TooltipContent side={sidebarTooltipSide}>v{health.version}</TooltipContent>
+            </Tooltip>
+          )}
+          <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
+            <Link
+              to={instanceSettingsTarget}
+              state={SIDEBAR_SCROLL_RESET_STATE}
+              aria-label="Instance settings"
+              title="Instance settings"
+            >
+              <Settings className="h-4 w-4" />
+            </Link>
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground shrink-0"
+            onClick={toggleTheme}
+            aria-label={`Switch to ${nextTheme} mode`}
+            title={`Switch to ${nextTheme} mode`}
+          >
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+  const desktopSidebarShell = (
+    <div className="flex h-full flex-col shrink-0" style={{ width: desktopSidebarShellWidth }}>
+      <div className="flex flex-1 min-h-0 w-full">
+        {sidebarSide === "left" ? (
+          <>
+            <CompanyRail />
+            {desktopSidebarPane}
+          </>
+        ) : (
+          <>
+            {desktopSidebarPane}
+            <CompanyRail />
+          </>
+        )}
+      </div>
+      {desktopSidebarFooter}
+    </div>
+  );
+
   return (
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
@@ -322,6 +600,8 @@ export function Layout() {
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
+      <UpdateStatusBanner />
+      <AgentServiceHealthBanner />
       <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-hidden")}>
         {isMobile && sidebarOpen && (
           <button
@@ -341,7 +621,9 @@ export function Layout() {
           >
             <div className="flex flex-1 min-h-0 overflow-hidden">
               <CompanyRail />
-              {isInstanceSettingsRoute ? <InstanceSidebar /> : <Sidebar />}
+              <div className="h-full shrink-0 overflow-hidden" style={{ width: SIDEBAR_WIDTH_DEFAULT }}>
+                {isInstanceSettingsRoute ? <InstanceSidebar /> : <Sidebar />}
+              </div>
             </div>
             <div className="border-t border-r border-border px-3 py-2 bg-background">
               <div className="flex items-center gap-1">
@@ -389,66 +671,7 @@ export function Layout() {
               </div>
             </div>
           </div>
-        ) : (
-          <div className="flex h-full flex-col shrink-0">
-            <div className="flex flex-1 min-h-0">
-              <CompanyRail />
-              <div
-                className={cn(
-                  "overflow-hidden transition-[width] duration-100 ease-out",
-                  sidebarOpen ? "w-60" : "w-0"
-                )}
-              >
-                {isInstanceSettingsRoute ? <InstanceSidebar /> : <Sidebar />}
-              </div>
-            </div>
-            <div className="border-t border-r border-border px-3 py-2">
-              <div className="flex items-center gap-1">
-                <a
-                  href="https://docs.paperclip.ing/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
-                >
-                  <BookOpen className="h-4 w-4 shrink-0" />
-                  <span className="truncate">Documentation</span>
-                </a>
-                {health?.version && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="px-2 text-xs text-muted-foreground shrink-0 cursor-default">v</span>
-                    </TooltipTrigger>
-                    <TooltipContent>v{health.version}</TooltipContent>
-                  </Tooltip>
-                )}
-                <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
-                  <Link
-                    to={instanceSettingsTarget}
-                    state={SIDEBAR_SCROLL_RESET_STATE}
-                    aria-label="Instance settings"
-                    title="Instance settings"
-                    onClick={() => {
-                      if (isMobile) setSidebarOpen(false);
-                    }}
-                  >
-                    <Settings className="h-4 w-4" />
-                  </Link>
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  className="text-muted-foreground shrink-0"
-                  onClick={toggleTheme}
-                  aria-label={`Switch to ${nextTheme} mode`}
-                  title={`Switch to ${nextTheme} mode`}
-                >
-                  {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
+        ) : sidebarSide === "left" ? desktopSidebarShell : null}
 
         <div className={cn("flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
           <div
@@ -468,18 +691,12 @@ export function Layout() {
                 isMobile ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]" : "overflow-auto",
               )}
             >
-              {hasUnknownCompanyPrefix ? (
-                <NotFoundPage
-                  scope="invalid_company_prefix"
-                  requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
-                />
-              ) : (
-                <Outlet />
-              )}
+              {hasUnknownCompanyPrefix ? <DashboardRecoveryRedirect /> : <Outlet />}
             </main>
             <PropertiesPanel />
           </div>
         </div>
+        {!isMobile && sidebarSide === "right" && desktopSidebarShell}
       </div>
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />

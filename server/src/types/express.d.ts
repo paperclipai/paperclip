@@ -1,3 +1,5 @@
+import type { HeartbeatRunStatus } from "@paperclipai/shared";
+
 export {};
 
 declare global {
@@ -12,6 +14,7 @@ declare global {
         isInstanceAdmin?: boolean;
         keyId?: string;
         runId?: string;
+        runStatus?: HeartbeatRunStatus;
         source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "none";
       };
     }

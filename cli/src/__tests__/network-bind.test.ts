@@ -1,8 +1,30 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveRuntimeBind, validateConfiguredBindMode } from "@paperclipai/shared";
 import { buildPresetServerConfig } from "../config/server-bind.js";
 
+const mockExecFileSync = vi.hoisted(() => vi.fn());
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFileSync: mockExecFileSync,
+  };
+});
+
 describe("network bind helpers", () => {
+  beforeEach(() => {
+    delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    mockExecFileSync.mockReset();
+    mockExecFileSync.mockImplementation(() => {
+      throw new Error("tailscale unavailable");
+    });
+  });
+
+  afterEach(() => {
+    delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+  });
+
   it("rejects non-loopback bind modes in local_trusted", () => {
     expect(
       validateConfiguredBindMode({
@@ -35,6 +57,19 @@ describe("network bind helpers", () => {
   });
 
   it("stores the detected tailscale address for tailnet presets", () => {
+    mockExecFileSync.mockReturnValue("100.64.0.8\n");
+
+    const preset = buildPresetServerConfig("tailnet", {
+      port: 3100,
+      allowedHostnames: [],
+      serveUi: true,
+    });
+
+    expect(preset.server.host).toBe("100.64.0.8");
+    expect(mockExecFileSync).toHaveBeenCalledWith("tailscale", ["ip", "-4"], expect.any(Object));
+  });
+
+  it("prefers PAPERCLIP_TAILNET_BIND_HOST for tailnet presets", () => {
     process.env.PAPERCLIP_TAILNET_BIND_HOST = "100.64.0.8";
 
     const preset = buildPresetServerConfig("tailnet", {
@@ -44,13 +79,10 @@ describe("network bind helpers", () => {
     });
 
     expect(preset.server.host).toBe("100.64.0.8");
-
-    delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    expect(mockExecFileSync).not.toHaveBeenCalled();
   });
 
   it("falls back to loopback when no tailscale address is available for tailnet presets", () => {
-    delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
-
     const preset = buildPresetServerConfig("tailnet", {
       port: 3100,
       allowedHostnames: [],

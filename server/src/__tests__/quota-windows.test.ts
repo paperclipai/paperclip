@@ -1,7 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import type { QuotaWindow } from "@paperclipai/adapter-utils";
+
+const childProcessMock = vi.hoisted(() => ({
+  spawn: vi.fn(),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn: childProcessMock.spawn,
+  };
+});
 
 // Pure utility functions — import directly from adapter source
 import {
@@ -18,6 +31,7 @@ import {
   readCodexAuthInfo,
   readCodexToken,
   fetchCodexQuota,
+  fetchCodexRpcQuota,
   mapCodexRpcQuota,
   codexHomeDir,
 } from "@paperclipai/adapter-codex-local/server";
@@ -689,6 +703,77 @@ describe("fetchCodexQuota", () => {
   });
 });
 
+type MockCodexProcess = EventEmitter & {
+  stdout: EventEmitter & { setEncoding: (encoding: string) => void };
+  stderr: EventEmitter & { setEncoding: (encoding: string) => void };
+  stdin: { write: (payload: string) => boolean };
+  kill: (signal?: string) => boolean;
+};
+
+function mockCodexAppServer(
+  handler: (message: Record<string, unknown>) => Record<string, unknown>,
+): MockCodexProcess {
+  const proc = new EventEmitter() as MockCodexProcess;
+  proc.stdout = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
+  proc.stderr = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
+  proc.stdin = {
+    write(payload: string) {
+      const message = JSON.parse(payload) as Record<string, unknown>;
+      if (typeof message.id !== "number") return true;
+      const response = handler(message);
+      queueMicrotask(() => {
+        proc.stdout.emit("data", `${JSON.stringify(response)}\n`);
+      });
+      return true;
+    },
+  };
+  proc.kill = vi.fn(() => {
+    queueMicrotask(() => proc.emit("exit", 0, null));
+    return true;
+  });
+  childProcessMock.spawn.mockReturnValue(proc);
+  return proc;
+}
+
+describe("fetchCodexRpcQuota", () => {
+  afterEach(() => {
+    childProcessMock.spawn.mockReset();
+  });
+
+  it("rejects JSON-RPC errors from account/rateLimits/read instead of mapping them to empty windows", async () => {
+    mockCodexAppServer((message) => {
+      if (message.method === "initialize") {
+        return { id: message.id, result: {} };
+      }
+      if (message.method === "account/rateLimits/read") {
+        return {
+          id: message.id,
+          error: {
+            code: -32603,
+            message: "failed to fetch codex rate limits: 401 Unauthorized",
+          },
+        };
+      }
+      if (message.method === "account/read") {
+        return {
+          id: message.id,
+          result: {
+            account: {
+              email: "codex@example.com",
+              planType: "pro",
+            },
+          },
+        };
+      }
+      return { id: message.id, result: {} };
+    });
+
+    await expect(fetchCodexRpcQuota()).rejects.toThrow(
+      "failed to fetch codex rate limits: 401 Unauthorized",
+    );
+  });
+});
+
 describe("mapCodexRpcQuota", () => {
   it("maps account and model-specific Codex limits into quota windows", () => {
     const snapshot = mapCodexRpcQuota(
@@ -743,6 +828,69 @@ describe("mapCodexRpcQuota", () => {
       {
         label: "GPT-5.3-Codex-Spark · Weekly limit",
         usedPercent: 20,
+        resetsAt: null,
+        valueLabel: null,
+        detail: null,
+      },
+    ]);
+  });
+
+  it("maps snake_case Codex app-server quota payloads", () => {
+    const snapshot = mapCodexRpcQuota(
+      {
+        rate_limits: {
+          limit_id: "codex",
+          primary: { used_percent: 35, window_minutes: 300, resets_at: 1_763_500_000 },
+          secondary: { used_percent: 15, window_minutes: 10_080 },
+          plan_type: "pro",
+          credits: {
+            unlimited: false,
+            balance: 8.5,
+          },
+        },
+        rate_limits_by_limit_id: {
+          codex_bengalfox: {
+            limit_id: "codex_bengalfox",
+            limit_name: "GPT-5.3-Codex-Spark",
+            primary: { used_percent: 2, window_minutes: 300 },
+          },
+        },
+      },
+      {
+        account: {
+          email: "codex@example.com",
+          planType: "pro",
+        },
+      },
+    );
+
+    expect(snapshot.email).toBe("codex@example.com");
+    expect(snapshot.planType).toBe("pro");
+    expect(snapshot.windows).toEqual([
+      {
+        label: "5h limit",
+        usedPercent: 35,
+        resetsAt: "2025-11-18T21:06:40.000Z",
+        valueLabel: null,
+        detail: null,
+      },
+      {
+        label: "Weekly limit",
+        usedPercent: 15,
+        resetsAt: null,
+        valueLabel: null,
+        detail: null,
+      },
+      {
+        label: "Credits",
+        usedPercent: null,
+        resetsAt: null,
+        valueLabel: "$8.50 remaining",
+        detail: null,
+      },
+      {
+        label: "GPT-5.3-Codex-Spark · 5h limit",
+        usedPercent: 2,
         resetsAt: null,
         valueLabel: null,
         detail: null,

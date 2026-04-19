@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -33,7 +33,12 @@ import {
 } from "@/components/ui/tooltip";
 import { PROJECT_COLORS } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
+import {
+  buildProjectWorkspaceInput,
+  validateProjectWorkspaceInputs,
+} from "../lib/project-workspace";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
+import { ReportsToPicker } from "./ReportsToPicker";
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
 
@@ -58,6 +63,8 @@ export function NewProjectDialog() {
   const [workspaceLocalPath, setWorkspaceLocalPath] = useState("");
   const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [leadAgentId, setLeadAgentId] = useState<string | null>(null);
+  const [leadAgentTouched, setLeadAgentTouched] = useState(false);
 
   const [statusOpen, setStatusOpen] = useState(false);
   const [goalOpen, setGoalOpen] = useState(false);
@@ -91,6 +98,10 @@ export function NewProjectDialog() {
     }
     return options;
   }, [agents]);
+  const defaultLeadAgentId = useMemo(
+    () => agents?.find((agent) => agent.status !== "terminated" && agent.role === "ceo")?.id ?? null,
+    [agents],
+  );
 
   const createProject = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
@@ -114,53 +125,28 @@ export function NewProjectDialog() {
     setWorkspaceLocalPath("");
     setWorkspaceRepoUrl("");
     setWorkspaceError(null);
+    setLeadAgentId(null);
+    setLeadAgentTouched(false);
   }
 
-  const isAbsolutePath = (value: string) => value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
-
-  const looksLikeRepoUrl = (value: string) => {
-    try {
-      const parsed = new URL(value);
-      if (parsed.protocol !== "https:") return false;
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      return segments.length >= 2;
-    } catch {
-      return false;
-    }
-  };
-
-  const deriveWorkspaceNameFromPath = (value: string) => {
-    const normalized = value.trim().replace(/[\\/]+$/, "");
-    const segments = normalized.split(/[\\/]/).filter(Boolean);
-    return segments[segments.length - 1] ?? "Local folder";
-  };
-
-  const deriveWorkspaceNameFromRepo = (value: string) => {
-    try {
-      const parsed = new URL(value);
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      const repo = segments[segments.length - 1]?.replace(/\.git$/i, "") ?? "";
-      return repo || "GitHub repo";
-    } catch {
-      return "GitHub repo";
-    }
-  };
+  useEffect(() => {
+    if (!newProjectOpen || leadAgentTouched) return;
+    setLeadAgentId(defaultLeadAgentId);
+  }, [defaultLeadAgentId, leadAgentTouched, newProjectOpen]);
 
   async function handleSubmit() {
     if (!selectedCompanyId || !name.trim()) return;
     const localPath = workspaceLocalPath.trim();
     const repoUrl = workspaceRepoUrl.trim();
 
-    if (localPath && !isAbsolutePath(localPath)) {
-      setWorkspaceError("Local folder must be a full absolute path.");
-      return;
-    }
-    if (repoUrl && !looksLikeRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
+    const workspaceError = validateProjectWorkspaceInputs({ localPath, repoUrl });
+    if (workspaceError) {
+      setWorkspaceError(workspaceError);
       return;
     }
 
     setWorkspaceError(null);
+    const workspace = buildProjectWorkspaceInput({ localPath, repoUrl });
 
     try {
       const created = await createProject.mutateAsync({
@@ -168,20 +154,11 @@ export function NewProjectDialog() {
         description: description.trim() || undefined,
         status,
         color: PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)],
+        ...(leadAgentTouched || leadAgentId ? { leadAgentId } : defaultLeadAgentId ? { leadAgentId: defaultLeadAgentId } : {}),
         ...(goalIds.length > 0 ? { goalIds } : {}),
         ...(targetDate ? { targetDate } : {}),
+        ...(workspace ? { workspace } : {}),
       });
-
-      if (localPath || repoUrl) {
-        const workspacePayload: Record<string, unknown> = {
-          name: localPath
-            ? deriveWorkspaceNameFromPath(localPath)
-            : deriveWorkspaceNameFromRepo(repoUrl),
-          ...(localPath ? { cwd: localPath } : {}),
-          ...(repoUrl ? { repoUrl } : {}),
-        };
-        await projectsApi.createWorkspace(created.id, workspacePayload);
-      }
 
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(created.id) });
@@ -357,6 +334,17 @@ export function NewProjectDialog() {
               ))}
             </PopoverContent>
           </Popover>
+
+          <ReportsToPicker
+            agents={(agents ?? []).filter((agent) => agent.status !== "terminated")}
+            value={leadAgentId}
+            onChange={(id) => {
+              setLeadAgentTouched(true);
+              setLeadAgentId(id);
+            }}
+            disabledEmptyLabel="No lead agent"
+            chooseLabel="Lead agent..."
+          />
 
           {selectedGoals.map((goal) => (
             <span

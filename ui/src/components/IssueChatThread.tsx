@@ -316,7 +316,7 @@ function IssueChatFallbackThread({
           <div className="space-y-1">
             <p className="font-medium">Chat renderer hit an internal state error.</p>
             <p className="text-xs opacity-80">
-              Showing a safe fallback transcript instead of crashing the issues page.
+              Showing a safe fallback transcript instead of crashing the tasks page.
             </p>
           </div>
         </div>
@@ -1943,7 +1943,7 @@ export function IssueChatThread({
   const resolvedEmptyMessage = emptyMessage
     ?? (variant === "embedded"
       ? "No run output yet."
-      : "This issue conversation is empty. Start with a message below.");
+      : "This task conversation is empty. Start with a message below.");
   const errorBoundaryResetKey = useMemo(
     () => messages.map((message) => `${message.id}:${message.role}:${message.content.length}:${message.status?.type ?? "none"}`).join("|"),
     [messages],

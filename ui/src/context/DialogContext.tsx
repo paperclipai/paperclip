@@ -16,6 +16,7 @@ interface NewIssueDefaults {
   assigneeUserId?: string;
   title?: string;
   description?: string;
+  dueDate?: string;
 }
 
 interface NewGoalDefaults {

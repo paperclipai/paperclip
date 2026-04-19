@@ -53,6 +53,7 @@ import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
 } from "../board-claim.js";
+import { findServerAdapter } from "../adapters/index.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -75,6 +76,31 @@ function createInviteToken() {
 
 function createClaimSecret() {
   return `pcp_claim_${randomBytes(24).toString("hex")}`;
+}
+
+function normalizeKnownAdapterType(
+  rawAdapterType: unknown,
+  options?: { missingMessage?: string; unknownMessage?: (adapterType: string) => string },
+) {
+  const adapterType = typeof rawAdapterType === "string" ? rawAdapterType.trim() : "";
+  if (!adapterType) {
+    throw badRequest(options?.missingMessage ?? "adapterType is required");
+  }
+  if (!findServerAdapter(adapterType)) {
+    throw badRequest(options?.unknownMessage?.(adapterType) ?? `Unknown adapter type: ${adapterType}`);
+  }
+  return adapterType;
+}
+
+function assertKnownJoinRequestAdapterType(rawAdapterType: unknown) {
+  const adapterType = typeof rawAdapterType === "string" ? rawAdapterType.trim() : "";
+  if (!adapterType) {
+    throw conflict("Join request is missing adapter type");
+  }
+  if (!findServerAdapter(adapterType)) {
+    throw conflict(`Join request has unknown adapter type: ${adapterType}`);
+  }
+  return adapterType;
 }
 
 export function companyInviteExpiresAt(nowMs: number = Date.now()) {
@@ -109,7 +135,9 @@ function readSkillMarkdown(skillName: string): string | null {
     normalized !== "paperclip" &&
     normalized !== "paperclip-create-agent" &&
     normalized !== "paperclip-create-plugin" &&
-    normalized !== "para-memory-files"
+    normalized !== "para-memory-files" &&
+    normalized !== "approval-gate" &&
+    normalized !== "paperclip-ux-edit"
   )
     return null;
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -1921,6 +1949,18 @@ export function accessRoutes(
         {
           name: "paperclip-create-agent",
           path: "/api/skills/paperclip-create-agent"
+        },
+        {
+          name: "paperclip-create-plugin",
+          path: "/api/skills/paperclip-create-plugin"
+        },
+        {
+          name: "approval-gate",
+          path: "/api/skills/approval-gate"
+        },
+        {
+          name: "paperclip-ux-edit",
+          path: "/api/skills/paperclip-ux-edit"
         }
       ]
     });
@@ -2230,7 +2270,12 @@ export function accessRoutes(
         }
       }
 
-      const adapterType = req.body.adapterType ?? null;
+      const adapterType =
+        requestType === "agent"
+          ? normalizeKnownAdapterType(req.body.adapterType, {
+              missingMessage: "adapterType is required for agent join requests",
+            })
+          : null;
       if (
         inviteAlreadyAccepted &&
         !canReplayOpenClawGatewayInviteAccept({
@@ -2661,6 +2706,7 @@ export function accessRoutes(
             status: a.status
           }))
         );
+        const adapterType = assertKnownJoinRequestAdapterType(existing.adapterType);
 
         const created = await agents.create(companyId, {
           name: agentName,
@@ -2669,7 +2715,7 @@ export function accessRoutes(
           status: "idle",
           reportsTo: managerId,
           capabilities: existing.capabilities ?? null,
-          adapterType: existing.adapterType ?? "process",
+          adapterType,
           adapterConfig:
             existing.agentDefaultsPayload &&
             typeof existing.agentDefaultsPayload === "object"

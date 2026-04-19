@@ -11,12 +11,20 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+function mockServicesModule() {
+  vi.doMock("../services/index.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+    logActivity: mockLogActivity,
+  }));
+}
+
 vi.mock("../services/index.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
   logActivity: mockLogActivity,
 }));
 
 async function createApp(actor: any) {
+  mockServicesModule();
   const [{ instanceSettingsRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/instance-settings.js"),
     import("../middleware/index.js"),

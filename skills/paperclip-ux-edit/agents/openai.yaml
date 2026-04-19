@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paperclip UX Edit"
+  short_description: "Implement Paperclip UI changes and push them live."
+  default_prompt: "Edit the Paperclip UX in this repo, preserve the existing data flow, and do not mark the task done until the running local Paperclip service reflects the change."

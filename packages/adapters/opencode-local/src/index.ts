@@ -1,15 +1,14 @@
 export const type = "opencode_local";
 export const label = "OpenCode (local)";
 
-export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+export const models: Array<{ id: string; label: string }> = [];
 
-export const models: Array<{ id: string; label: string }> = [
-  { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
-  { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
-  { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
-  { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
-  { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
-];
+export {
+  OPENCODE_NATIVE_OPENROUTER_HINT,
+  OPENCODE_PROVIDER_MODELS_HINT,
+  detectOpenCodeOpenRouterMisconfiguration,
+  inspectOpenCodeOpenRouterEnv,
+} from "./openrouter.js";
 
 export const agentConfigurationDoc = `# opencode_local agent configuration
 
@@ -44,6 +43,8 @@ Notes:
 - OpenCode supports multiple providers and models. Use \
   \`opencode models\` to list available options in provider/model format.
 - Paperclip requires an explicit \`model\` value for \`opencode_local\` agents.
+- Configure OpenRouter through OpenCode's native provider/auth flow. \
+  Do not point \`OPENAI_BASE_URL\` at OpenRouter for this adapter.
 - Runs are executed with: opencode run --format json ...
 - Sessions are resumed with --session when stored session cwd matches current cwd.
 - The adapter sets OPENCODE_DISABLE_PROJECT_CONFIG=true to prevent OpenCode from \

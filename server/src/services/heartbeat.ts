@@ -25,10 +25,15 @@ import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import {
+  readPaperclipSkillSyncPreference,
+  writePaperclipSkillSyncPreference,
+} from "@paperclipai/adapter-utils/server-utils";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
+import { projectContextService } from "./project-context.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -405,6 +410,17 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function mergeProjectContextDesiredSkills(
+  config: Record<string, unknown>,
+  projectSkillKeys: string[],
+) {
+  const inherited = projectSkillKeys.map((value) => value.trim()).filter(Boolean);
+  if (inherited.length === 0) return config;
+  const preference = readPaperclipSkillSyncPreference(config);
+  const desired = preference.explicit ? preference.desiredSkills : [];
+  return writePaperclipSkillSyncPreference(config, Array.from(new Set([...desired, ...inherited])));
 }
 
 function normalizeLedgerBillingType(value: unknown): BillingType {
@@ -1191,6 +1207,7 @@ export function heartbeatService(db: Db) {
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
+  const projectContexts = projectContextService(db);
   const issuesSvc = issueService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
@@ -2792,9 +2809,26 @@ export function heartbeatService(db: Db) {
       projectEnv: projectContext?.env ?? null,
       secretsSvc,
     });
+    const projectContextBundle = executionProjectId
+      ? await projectContexts.buildBundle({
+          companyId: agent.companyId,
+          projectId: executionProjectId,
+          issueId: issueRef?.id ?? issueId,
+          query: readNonEmptyString(context.prompt),
+        })
+      : null;
+    if (projectContextBundle) {
+      context.paperclipProjectContext = projectContextBundle;
+    } else {
+      delete context.paperclipProjectContext;
+    }
+    const effectiveResolvedConfig = mergeProjectContextDesiredSkills(
+      resolvedConfig,
+      projectContextBundle?.defaultSkillKeys ?? [],
+    );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
     const runtimeConfig = {
-      ...resolvedConfig,
+      ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
@@ -3009,7 +3043,7 @@ export function heartbeatService(db: Db) {
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
     const runtimeServiceIntents = (() => {
-      const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
+      const runtimeConfig = parseObject(effectiveResolvedConfig.workspaceRuntime);
       return Array.isArray(runtimeConfig.services)
         ? runtimeConfig.services.filter(
             (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
@@ -3165,7 +3199,7 @@ export function heartbeatService(db: Db) {
         await onLog(logEntry.stream, logEntry.chunk);
       }
       const adapterEnv = Object.fromEntries(
-        Object.entries(parseObject(resolvedConfig.env)).filter(
+        Object.entries(parseObject(effectiveResolvedConfig.env)).filter(
           (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
         ),
       );
@@ -3180,7 +3214,7 @@ export function heartbeatService(db: Db) {
         issue: issueRef,
         workspace: executionWorkspace,
         executionWorkspaceId: persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
-        config: resolvedConfig,
+        config: effectiveResolvedConfig,
         adapterEnv,
         onLog,
       });
@@ -4529,7 +4563,18 @@ export function heartbeatService(db: Db) {
     readLog: async (runId: string, opts?: { offset?: number; limitBytes?: number }) => {
       const run = await getRun(runId);
       if (!run) throw notFound("Heartbeat run not found");
-      if (!run.logStore || !run.logRef) throw notFound("Run log not found");
+      if (!run.logStore || !run.logRef) {
+        if (run.status === "queued" || run.status === "running") {
+          return {
+            runId,
+            store: null,
+            logRef: null,
+            pending: true,
+            content: "",
+          };
+        }
+        throw notFound("Run log not found");
+      }
 
       const result = await runLogStore.read(
         {
@@ -4543,6 +4588,7 @@ export function heartbeatService(db: Db) {
         runId,
         store: run.logStore,
         logRef: run.logRef,
+        pending: false,
         ...result,
         content: redactCurrentUserText(result.content, await getCurrentUserRedactionOptions()),
       };

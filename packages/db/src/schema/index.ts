@@ -18,6 +18,14 @@ export { agentRuntimeState } from "./agent_runtime_state.js";
 export { agentTaskSessions } from "./agent_task_sessions.js";
 export { agentWakeupRequests } from "./agent_wakeup_requests.js";
 export { projects } from "./projects.js";
+export { projectQuickLinks } from "./project_quick_links.js";
+export {
+  contextSourceChunks,
+  contextSourceItems,
+  contextSources,
+  contextSourceSyncRuns,
+  projectContextProfiles,
+} from "./project_context.js";
 export { projectWorkspaces } from "./project_workspaces.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
 export { workspaceOperations } from "./workspace_operations.js";
@@ -25,11 +33,14 @@ export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
 export { issues } from "./issues.js";
+export { issueChecklistItems } from "./issue_checklist_items.js";
+export { issueLinks } from "./issue_links.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineTriggers, routineRuns } from "./routines.js";
 export { issueWorkProducts } from "./issue_work_products.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
+export { projectLabels } from "./project_labels.js";
 export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
 export { issueExecutionDecisions } from "./issue_execution_decisions.js";
@@ -53,6 +64,11 @@ export { activityLog } from "./activity_log.js";
 export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { companySkills } from "./company_skills.js";
+export {
+  companyRolloutEntityLinks,
+  companyRolloutReleases,
+  companyRolloutTargets,
+} from "./company_rollouts.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";

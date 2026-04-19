@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { errorHandler } from "../middleware/index.js";
-import { issueRoutes } from "../routes/issues.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -65,7 +63,12 @@ function makeIssue(status: "todo" | "done") {
   };
 }
 
-function createApp(actor: Record<string, unknown>) {
+async function createApp(actor: Record<string, unknown>) {
+  vi.resetModules();
+  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/issues.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -98,7 +101,7 @@ describe("issue telemetry routes", () => {
       adapterType: "codex_local",
     });
 
-    const app = createApp({
+    const app = await createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
@@ -117,7 +120,7 @@ describe("issue telemetry routes", () => {
   }, 10_000);
 
   it("does not emit agent task-completed telemetry for board-driven completions", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "local-board",
       companyIds: ["company-1"],

@@ -26,8 +26,10 @@
         const lightThemeColor = "#ffffff";
         try {
           const stored = window.localStorage.getItem(key);
-          const theme = stored === "light" || stored === "dark" ? stored : "dark";
-          const isDark = theme === "dark";
+          const theme = stored === "light" || stored === "dark" || stored === "system" ? stored : "dark";
+          const systemDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+          const effectiveTheme = theme === "system" ? (systemDark ? "dark" : "light") : theme;
+          const isDark = effectiveTheme === "dark";
           document.documentElement.classList.toggle("dark", isDark);
           document.documentElement.style.colorScheme = isDark ? "dark" : "light";
           const themeColorMeta = document.querySelector('meta[name="theme-color"]');

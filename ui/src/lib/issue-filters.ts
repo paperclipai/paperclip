@@ -1,8 +1,13 @@
 import type { Issue } from "@paperclipai/shared";
+import {
+  getIssueDueState,
+  type IssueDueFilterState,
+} from "./issue-due-date";
 
 export type IssueFilterState = {
   statuses: string[];
   priorities: string[];
+  dueStates: IssueDueFilterState[];
   assignees: string[];
   labels: string[];
   projects: string[];
@@ -13,6 +18,7 @@ export type IssueFilterState = {
 export const defaultIssueFilterState: IssueFilterState = {
   statuses: [],
   priorities: [],
+  dueStates: [],
   assignees: [],
   labels: [],
   projects: [],
@@ -41,7 +47,7 @@ export function issueFilterArraysEqual(a: string[], b: string[]): boolean {
   return sortedA.every((value, index) => value === sortedB[index]);
 }
 
-export function toggleIssueFilterValue(values: string[], value: string): string[] {
+export function toggleIssueFilterValue<T extends string>(values: readonly T[], value: T): T[] {
   return values.includes(value) ? values.filter((existing) => existing !== value) : [...values, value];
 }
 
@@ -63,6 +69,12 @@ export function applyIssueFilters(
   }
   if (state.statuses.length > 0) result = result.filter((issue) => state.statuses.includes(issue.status));
   if (state.priorities.length > 0) result = result.filter((issue) => state.priorities.includes(issue.priority));
+  if (state.dueStates.length > 0) {
+    result = result.filter((issue) => {
+      const dueState = getIssueDueState(issue.dueDate, issue.status);
+      return dueState !== "neutral" && state.dueStates.includes(dueState);
+    });
+  }
   if (state.assignees.length > 0) {
     result = result.filter((issue) => {
       for (const assignee of state.assignees) {
@@ -95,6 +107,7 @@ export function countActiveIssueFilters(
   let count = 0;
   if (state.statuses.length > 0) count += 1;
   if (state.priorities.length > 0) count += 1;
+  if (state.dueStates.length > 0) count += 1;
   if (state.assignees.length > 0) count += 1;
   if (state.labels.length > 0) count += 1;
   if (state.projects.length > 0) count += 1;

@@ -35,6 +35,49 @@ describe("paperclip skill utils", () => {
     expect(entries[0]?.source).toBe(path.join(root, "skills", "paperclip"));
   });
 
+  it("respects bundled skill metadata for optional company-library skills", async () => {
+    const root = await makeTempDir("paperclip-skill-required-flags-");
+    cleanupDirs.add(root);
+
+    const moduleDir = path.join(root, "a", "b", "c", "d", "e");
+    const paperclipDir = path.join(root, "skills", "paperclip");
+    const approvalGateDir = path.join(root, "skills", "approval-gate");
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.mkdir(paperclipDir, { recursive: true });
+    await fs.mkdir(approvalGateDir, { recursive: true });
+    await fs.writeFile(path.join(paperclipDir, "SKILL.md"), "---\nname: paperclip\n---\n", "utf8");
+    await fs.writeFile(
+      path.join(approvalGateDir, "SKILL.md"),
+      [
+        "---",
+        "name: approval-gate",
+        "metadata:",
+        "  paperclip:",
+        "    requiredByDefault: false",
+        "---",
+        "",
+        "# Approval Gate",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const entries = await listPaperclipSkillEntries(moduleDir);
+
+    const approvalGate = entries.find((entry) => entry.key === "paperclipai/paperclip/approval-gate");
+    const paperclip = entries.find((entry) => entry.key === "paperclipai/paperclip/paperclip");
+    expect(approvalGate).toMatchObject({
+      runtimeName: "approval-gate",
+      required: false,
+      requiredReason: null,
+    });
+    expect(paperclip).toMatchObject({
+      runtimeName: "paperclip",
+      required: true,
+      requiredReason: "Bundled Paperclip skills are always available for local adapters.",
+    });
+  });
+
   it("removes stale maintainer-only symlinks from a shared skills home", async () => {
     const root = await makeTempDir("paperclip-skill-cleanup-");
     cleanupDirs.add(root);

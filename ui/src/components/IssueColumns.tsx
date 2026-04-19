@@ -19,8 +19,9 @@ import { cn } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
+import { IssueDueBadge } from "./IssueDueBadge";
 
-export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "project", "workspace", "parent", "labels", "updated"];
+export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "project", "workspace", "parent", "labels", "due", "updated"];
 
 const issueColumnLabels: Record<InboxIssueColumn, string> = {
   status: "Status",
@@ -28,19 +29,21 @@ const issueColumnLabels: Record<InboxIssueColumn, string> = {
   assignee: "Assignee",
   project: "Project",
   workspace: "Workspace",
-  parent: "Parent issue",
+  parent: "Parent task",
   labels: "Tags",
+  due: "Due date",
   updated: "Last updated",
 };
 
 const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
-  status: "Issue state chip on the left edge.",
+  status: "Task state chip on the left edge.",
   id: "Ticket identifier like PAP-1009.",
   assignee: "Assigned agent or board user.",
   project: "Linked project pill with its color.",
-  workspace: "Execution or project workspace used for the issue.",
-  parent: "Parent issue identifier and title.",
-  labels: "Issue labels and tags.",
+  workspace: "Execution or project workspace used for the task.",
+  parent: "Parent task identifier and title.",
+  labels: "Task labels and tags.",
+  due: "Calendar due date with overdue and today states.",
   updated: "Latest visible activity time.",
 };
 
@@ -56,6 +59,7 @@ function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
       if (column === "workspace") return "minmax(6rem, 9rem)";
       if (column === "parent") return "minmax(3.5rem, 5.5rem)";
       if (column === "labels") return "minmax(3rem, 6rem)";
+      if (column === "due") return "minmax(4.5rem, 6.5rem)";
       return "minmax(3.5rem, 4.5rem)";
     })
     .join(" ");
@@ -94,7 +98,7 @@ export function IssueColumnPicker({
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              Desktop issue rows
+              Desktop task rows
             </div>
             <div className="text-sm font-medium text-foreground">
               {title}
@@ -126,7 +130,7 @@ export function IssueColumnPicker({
           className="rounded-lg px-3 py-2 text-sm"
         >
           Reset defaults
-          <span className="ml-auto text-xs text-muted-foreground">status, id, updated</span>
+          <span className="ml-auto text-xs text-muted-foreground">status, id, due, updated</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -343,6 +347,14 @@ export function InboxIssueTrailingColumns({
           );
         }
 
+        if (column === "due") {
+          return (
+            <span key={column} className="min-w-0 truncate">
+              <IssueDueBadge issue={issue} compact />
+            </span>
+          );
+        }
+
         if (column === "parent") {
           if (!issue.parentId) {
             return <span key={column} className="min-w-0" aria-hidden="true" />;
@@ -353,7 +365,7 @@ export function InboxIssueTrailingColumns({
               {parentIdentifier ? (
                 <span className="font-mono">{parentIdentifier}</span>
               ) : (
-                <span className="italic">Sub-issue</span>
+                <span className="italic">Sub-task</span>
               )}
             </span>
           );

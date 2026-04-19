@@ -22,7 +22,9 @@ interface IssueRowProps {
   mobileMeta?: ReactNode;
   desktopTrailing?: ReactNode;
   trailingMeta?: ReactNode;
+  assigneeIcon?: ReactNode;
   titleSuffix?: ReactNode;
+  rowAction?: ReactNode;
   unreadState?: UnreadState | null;
   onMarkRead?: () => void;
   onArchive?: () => void;
@@ -40,7 +42,9 @@ export function IssueRow({
   mobileMeta,
   desktopTrailing,
   trailingMeta,
+  assigneeIcon,
   titleSuffix,
+  rowAction,
   unreadState = null,
   onMarkRead,
   onArchive,
@@ -70,6 +74,16 @@ export function IssueRow({
       <span className="shrink-0 pt-px sm:hidden">
         {mobileLeading ?? <StatusIcon status={issue.status} className={selectedStatusClass} />}
       </span>
+      {issue.coverAttachment ? (
+        <span className="h-12 w-16 shrink-0 overflow-hidden rounded-md border border-border bg-muted sm:h-10 sm:w-14">
+          <img
+            src={issue.coverAttachment.contentPath}
+            alt={issue.coverAttachment.originalFilename ?? "Task cover"}
+            className="h-full w-full object-cover"
+            loading="lazy"
+          />
+        </span>
+      ) : null}
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span className="line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none">
           {issue.title}{titleSuffix}
@@ -98,12 +112,14 @@ export function IssueRow({
           ) : null}
         </span>
       </span>
-      {(desktopTrailing || trailingMeta) ? (
+      {(assigneeIcon || desktopTrailing || trailingMeta || rowAction) ? (
         <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-3 sm:flex sm:gap-3">
+          {assigneeIcon}
           {desktopTrailing}
           {trailingMeta ? (
             <span className="text-xs text-muted-foreground">{trailingMeta}</span>
           ) : null}
+          {rowAction}
         </span>
       ) : null}
       {showUnreadSlot ? (

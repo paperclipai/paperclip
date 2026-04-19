@@ -32,6 +32,7 @@ export const issues = pgTable(
     description: text("description"),
     dueDate: date("due_date"),
     status: text("status").notNull().default("backlog"),
+    boardPosition: integer("board_position").notNull().default(0),
     priority: text("priority").notNull().default("medium"),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
@@ -64,6 +65,11 @@ export const issues = pgTable(
   },
   (table) => ({
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
+    companyStatusBoardPositionIdx: index("issues_company_status_board_position_idx").on(
+      table.companyId,
+      table.status,
+      table.boardPosition,
+    ),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(
       table.companyId,
       table.assigneeAgentId,

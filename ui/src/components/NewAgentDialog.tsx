@@ -4,7 +4,6 @@ import { useNavigate } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { agentsApi } from "../api/agents";
-import { adaptersApi } from "../api/adapters";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   Dialog,
@@ -16,33 +15,16 @@ import {
   Bot,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { listUIAdapters } from "../adapters";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
-import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
-
-/**
- * Adapter types that are suitable for agent creation (excludes internal
- * system adapters like "process" and "http").
- */
-const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
-
-function isAgentAdapterType(type: string): boolean {
-  return !SYSTEM_ADAPTER_TYPES.has(type);
-}
+import { useAdaptersSync } from "../adapters/use-disabled-adapters";
+import { listLocalAgentAdapterOptions } from "../adapters/metadata";
 
 export function NewAgentDialog() {
   const { newAgentOpen, closeNewAgent, openNewIssue } = useDialog();
   const { selectedCompanyId } = useCompany();
   const navigate = useNavigate();
   const [showAdvancedCards, setShowAdvancedCards] = useState(false);
-  const disabledTypes = useDisabledAdaptersSync();
-
-  // Fetch registered adapters from server (syncs disabled store + provides data)
-  const { data: serverAdapters } = useQuery({
-    queryKey: queryKeys.adapters.all,
-    queryFn: () => adaptersApi.list(),
-    staleTime: 5 * 60 * 1000,
-  });
+  const { adapters: registeredAdapters } = useAdaptersSync();
 
   // Fetch existing agents for the "Ask CEO" flow
   const { data: agents } = useQuery({
@@ -53,23 +35,19 @@ export function NewAgentDialog() {
 
   const ceoAgent = (agents ?? []).find((a) => a.role === "ceo");
 
-  // Build the adapter grid from the UI registry merged with display metadata.
-  // This automatically includes external/plugin adapters.
+  // Build the adapter grid from server registry metadata so external/plugin
+  // local adapters appear only when this instance has actually loaded them.
   const adapterGrid = useMemo(() => {
-    const registered = listUIAdapters()
-      .filter((a) => isAgentAdapterType(a.type) && !disabledTypes.has(a.type));
-
-    // Sort: recommended first, then alphabetical
-    return registered
-      .map((a) => {
-        const display = getAdapterDisplay(a.type);
+    return listLocalAgentAdapterOptions(registeredAdapters)
+      .map((adapter) => {
+        const display = getAdapterDisplay(adapter.value);
         return {
-          value: a.type,
+          value: adapter.value,
           label: display.label,
           desc: display.description,
           icon: display.icon,
           recommended: display.recommended,
-          comingSoon: display.comingSoon,
+          comingSoon: adapter.comingSoon,
           disabledLabel: display.disabledLabel,
         };
       })
@@ -78,7 +56,7 @@ export function NewAgentDialog() {
         if (!a.recommended && b.recommended) return 1;
         return a.label.localeCompare(b.label);
       });
-  }, [disabledTypes, serverAdapters]);
+  }, [registeredAdapters]);
 
   function handleAskCeo() {
     closeNewAgent();

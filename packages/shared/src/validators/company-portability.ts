@@ -138,6 +138,7 @@ export const portabilityIssueManifestEntrySchema = z.object({
   projectWorkspaceKey: z.string().min(1).nullable(),
   assigneeAgentSlug: z.string().min(1).nullable(),
   description: z.string().nullable(),
+  dueDate: z.string().nullable().optional().default(null),
   recurring: z.boolean().default(false),
   routine: portabilityIssueRoutineManifestEntrySchema.nullable(),
   legacyRecurrence: z.record(z.unknown()).nullable(),

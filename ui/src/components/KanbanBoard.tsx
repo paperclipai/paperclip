@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type MouseEvent } from "react";
 import { Link } from "@/lib/router";
 import {
   DndContext,
@@ -14,12 +14,23 @@ import { useDroppable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import {
   SortableContext,
+  arrayMove,
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
+import { Calendar, Link2, Plus } from "lucide-react";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
+import { IssueDueBadge } from "./IssueDueBadge";
+import { IssueAssigneeIcon } from "./IssueAssigneeIcon";
+import { Button } from "@/components/ui/button";
+import {
+  createIssueDetailPath,
+  rememberIssueDetailLocationState,
+  withIssueDetailHeaderSeed,
+} from "../lib/issueDetailBreadcrumb";
+import { formatLocalDateOnly } from "../lib/issue-due-date";
 import type { Issue } from "@paperclipai/shared";
 
 const boardStatuses = [
@@ -36,17 +47,59 @@ function statusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+export function resolveKanbanReorderTarget(
+  issues: Issue[],
+  issueId: string,
+  overId: string,
+): { status: string; beforeIssueId: string | null } | null {
+  const issue = issues.find((candidate) => candidate.id === issueId);
+  if (!issue) return null;
+
+  let targetStatus: string | null = null;
+  if (boardStatuses.includes(overId)) {
+    targetStatus = overId;
+  } else {
+    targetStatus = issues.find((candidate) => candidate.id === overId)?.status ?? null;
+  }
+  if (!targetStatus) return null;
+
+  const targetColumnIssues = issues.filter((candidate) => candidate.status === targetStatus);
+  if (boardStatuses.includes(overId)) {
+    if (targetStatus === issue.status && targetColumnIssues.at(-1)?.id === issueId) return null;
+    return { status: targetStatus, beforeIssueId: null };
+  }
+
+  if (targetStatus === issue.status) {
+    const ids = targetColumnIssues.map((candidate) => candidate.id);
+    const oldIndex = ids.indexOf(issueId);
+    const overIndex = ids.indexOf(overId);
+    if (oldIndex === -1 || overIndex === -1 || oldIndex === overIndex) return null;
+    const nextIds = arrayMove(ids, oldIndex, overIndex);
+    const nextIndex = nextIds.indexOf(issueId);
+    return { status: targetStatus, beforeIssueId: nextIds[nextIndex + 1] ?? null };
+  }
+
+  const beforeIssueId = targetColumnIssues.some((candidate) => candidate.id === overId) ? overId : null;
+  return { status: targetStatus, beforeIssueId };
+}
+
 interface Agent {
   id: string;
   name: string;
+  icon?: string | null;
 }
 
 interface KanbanBoardProps {
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  issueLinkState?: unknown;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+  onReorderIssue?: (id: string, data: { status: string; beforeIssueId?: string | null }) => void;
+  onAddIssue?: (status: string) => void;
 }
+
+const terminalIssueStatuses = new Set(["done", "cancelled"]);
 
 /* ── Droppable Column ── */
 
@@ -55,28 +108,61 @@ function KanbanColumn({
   issues,
   agents,
   liveIssueIds,
+  issueLinkState,
+  onUpdateIssue,
+  onAddIssue,
 }: {
   status: string;
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  issueLinkState?: unknown;
+  onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+  onAddIssue?: (status: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
   const isEmpty = issues.length === 0;
+  const isExpanded = !isEmpty || isOver;
+  const columnWidthClass = isExpanded ? "min-w-[260px] w-[260px]" : "min-w-[132px] w-[132px]";
+  const addTitle = `Add task to ${statusLabel(status)}`;
+
+  function handleAddIssue(event: MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    onAddIssue?.(status);
+  }
+
+  function handleColumnBodyClick(event: MouseEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget) return;
+    onAddIssue?.(status);
+  }
 
   return (
-    <div className={`flex flex-col shrink-0 transition-[width,min-width] ${isEmpty && !isOver ? "min-w-[48px] w-[48px]" : "min-w-[260px] w-[260px]"}`}>
-      <div className={`flex items-center gap-2 px-2 py-2 mb-1 ${isEmpty && !isOver ? "justify-center" : ""}`}>
+    <div className={`group flex flex-col shrink-0 transition-[width,min-width] ${columnWidthClass}`}>
+      <div className="flex items-center gap-2 px-2 py-2 mb-1">
         <StatusIcon status={status} />
-        {(!isEmpty || isOver) && (
+        <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {statusLabel(status)}
+        </span>
+        {isExpanded && (
           <>
-            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              {statusLabel(status)}
-            </span>
             <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
               {issues.length}
             </span>
+            {onAddIssue && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className="h-6 w-6 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+                title={addTitle}
+                aria-label={addTitle}
+                onClick={handleAddIssue}
+              >
+                <Plus className="h-3 w-3" />
+              </Button>
+            )}
           </>
         )}
       </div>
@@ -85,6 +171,7 @@ function KanbanColumn({
         className={`flex-1 min-h-[120px] rounded-md p-1 space-y-1 transition-colors ${
           isOver ? "bg-accent/40" : "bg-muted/20"
         }`}
+        onClick={handleColumnBodyClick}
       >
         <SortableContext
           items={issues.map((i) => i.id)}
@@ -96,9 +183,25 @@ function KanbanColumn({
               issue={issue}
               agents={agents}
               isLive={liveIssueIds?.has(issue.id)}
+              issueLinkState={issueLinkState}
+              onUpdateIssue={onUpdateIssue}
             />
           ))}
         </SortableContext>
+        {onAddIssue && (
+          <button
+            type="button"
+            title={addTitle}
+            aria-label={addTitle}
+            className={`flex items-center justify-center rounded-md border border-dashed border-border/80 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-accent/50 hover:text-foreground ${
+              isExpanded ? "min-h-8 w-full gap-1.5 px-2" : "mx-auto h-7 w-7"
+            }`}
+            onClick={handleAddIssue}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {isExpanded && <span>Add task</span>}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -111,11 +214,15 @@ function KanbanCard({
   agents,
   isLive,
   isOverlay,
+  issueLinkState,
+  onUpdateIssue,
 }: {
   issue: Issue;
   agents?: Agent[];
   isLive?: boolean;
   isOverlay?: boolean;
+  issueLinkState?: unknown;
+  onUpdateIssue?: (id: string, data: Record<string, unknown>) => void;
 }) {
   const {
     attributes,
@@ -135,6 +242,20 @@ function KanbanCard({
     if (!id || !agents) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
   };
+  const issuePathId = issue.identifier ?? issue.id;
+  const detailState = withIssueDetailHeaderSeed(issueLinkState, issue);
+  const todayDueDate = formatLocalDateOnly();
+  const canSetDueToday =
+    !isOverlay &&
+    !!onUpdateIssue &&
+    issue.dueDate !== todayDueDate &&
+    !terminalIssueStatuses.has(issue.status);
+
+  function handleSetDueToday(event: MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    onUpdateIssue?.(issue.id, { dueDate: formatLocalDateOnly() });
+  }
 
   return (
     <div
@@ -147,15 +268,27 @@ function KanbanCard({
       } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"}`}
     >
       <Link
-        to={`/issues/${issue.identifier ?? issue.id}`}
+        to={createIssueDetailPath(issuePathId)}
+        state={detailState}
         disableIssueQuicklook
         className="block no-underline text-inherit"
+        onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
         onClick={(e) => {
           // Prevent navigation during drag
           if (isDragging) e.preventDefault();
         }}
       >
-        <div className="flex items-start gap-1.5 mb-1.5">
+        {issue.coverAttachment ? (
+          <div className="-mx-2.5 -mt-2.5 mb-2 aspect-[5/2] overflow-hidden rounded-t-md border-b border-border bg-muted">
+            <img
+              src={issue.coverAttachment.contentPath}
+              alt={issue.coverAttachment.originalFilename ?? "Task cover"}
+              className="h-full w-full object-cover"
+              loading="lazy"
+            />
+          </div>
+        ) : null}
+        <div className="mb-1.5 flex items-start gap-1.5">
           <span className="text-xs text-muted-foreground font-mono shrink-0">
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
@@ -165,22 +298,45 @@ function KanbanCard({
               <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
             </span>
           )}
+          <IssueAssigneeIcon issue={issue} agents={agents} className="ml-auto -mt-1" />
         </div>
         <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
-        <div className="flex items-center gap-2">
-          <PriorityIcon priority={issue.priority} />
-          {issue.assigneeAgentId && (() => {
-            const name = agentName(issue.assigneeAgentId);
-            return name ? (
-              <Identity name={name} size="xs" />
-            ) : (
-              <span className="text-xs text-muted-foreground font-mono">
-                {issue.assigneeAgentId.slice(0, 8)}
-              </span>
-            );
-          })()}
-        </div>
       </Link>
+      <div className="flex flex-wrap items-center gap-2">
+        <PriorityIcon priority={issue.priority} />
+        <IssueDueBadge issue={issue} compact />
+        {(issue.links?.length ?? 0) > 0 ? (
+          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" title={`${issue.links?.length ?? 0} link${(issue.links?.length ?? 0) === 1 ? "" : "s"}`}>
+            <Link2 className="h-3 w-3" />
+            {issue.links?.length}
+          </span>
+        ) : null}
+        {issue.assigneeAgentId && !agents?.some((agent) => agent.id === issue.assigneeAgentId) && (() => {
+          const name = agentName(issue.assigneeAgentId);
+          return name ? (
+            <Identity name={name} size="xs" />
+          ) : (
+            <span className="text-xs text-muted-foreground font-mono">
+              {issue.assigneeAgentId.slice(0, 8)}
+            </span>
+          );
+        })()}
+        {canSetDueToday && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            className="ml-auto h-5 w-5 text-muted-foreground transition-colors hover:bg-amber-500/10 hover:text-amber-700 dark:hover:text-amber-300"
+            title="Set due date to today"
+            aria-label="Set due date to today"
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={handleSetDueToday}
+          >
+            <Calendar className="h-3 w-3" />
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
@@ -191,7 +347,10 @@ export function KanbanBoard({
   issues,
   agents,
   liveIssueIds,
+  issueLinkState,
   onUpdateIssue,
+  onReorderIssue,
+  onAddIssue,
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
 
@@ -230,22 +389,13 @@ export function KanbanBoard({
     const issue = issues.find((i) => i.id === issueId);
     if (!issue) return;
 
-    // Determine target status: the "over" could be a column id (status string)
-    // or another card's id. Find which column the "over" belongs to.
-    let targetStatus: string | null = null;
+    const reorderTarget = resolveKanbanReorderTarget(issues, issueId, over.id as string);
+    if (!reorderTarget) return;
 
-    if (boardStatuses.includes(over.id as string)) {
-      targetStatus = over.id as string;
-    } else {
-      // It's a card - find which column it's in
-      const targetIssue = issues.find((i) => i.id === over.id);
-      if (targetIssue) {
-        targetStatus = targetIssue.status;
-      }
-    }
-
-    if (targetStatus && targetStatus !== issue.status) {
-      onUpdateIssue(issueId, { status: targetStatus });
+    if (onReorderIssue) {
+      onReorderIssue(issueId, reorderTarget);
+    } else if (reorderTarget.status !== issue.status) {
+      onUpdateIssue(issueId, { status: reorderTarget.status });
     }
   }
 
@@ -268,12 +418,15 @@ export function KanbanBoard({
             issues={columnIssues[status] ?? []}
             agents={agents}
             liveIssueIds={liveIssueIds}
+            issueLinkState={issueLinkState}
+            onUpdateIssue={onUpdateIssue}
+            onAddIssue={onAddIssue}
           />
         ))}
       </div>
       <DragOverlay>
         {activeIssue ? (
-          <KanbanCard issue={activeIssue} agents={agents} isOverlay />
+          <KanbanCard issue={activeIssue} agents={agents} issueLinkState={issueLinkState} isOverlay />
         ) : null}
       </DragOverlay>
     </DndContext>

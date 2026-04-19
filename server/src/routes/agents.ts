@@ -61,6 +61,7 @@ import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
+  DEFAULT_CODEX_LOCAL_MODEL_REASONING_EFFORT,
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -69,9 +70,16 @@ import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
+import { agentServiceHealthService } from "../services/agent-service-health.js";
 import { getTelemetryClient } from "../telemetry.js";
 
-export function agentRoutes(db: Db) {
+export function agentRoutes(
+  db: Db,
+  opts: {
+    heartbeatSchedulerEnabled?: boolean;
+    heartbeatSchedulerIntervalMs?: number;
+  } = {},
+) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
@@ -97,6 +105,7 @@ export function agentRoutes(db: Db) {
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
+  const agentServiceHealth = agentServiceHealthService(db);
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
@@ -492,6 +501,9 @@ export function agentRoutes(db: Db) {
     if (adapterType === "codex_local") {
       if (!asNonEmptyString(next.model)) {
         next.model = DEFAULT_CODEX_LOCAL_MODEL;
+      }
+      if (!asNonEmptyString(next.modelReasoningEffort) && !asNonEmptyString(next.reasoningEffort)) {
+        next.modelReasoningEffort = DEFAULT_CODEX_LOCAL_MODEL_REASONING_EFFORT;
       }
       const hasBypassFlag =
         typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
@@ -1034,6 +1046,15 @@ export function agentRoutes(db: Db) {
       });
 
     res.json(items);
+  });
+
+  router.get("/instance/agent-service-health", async (req, res) => {
+    assertInstanceAdmin(req);
+    const health = await agentServiceHealth.get({
+      heartbeatSchedulerEnabled: opts.heartbeatSchedulerEnabled ?? true,
+      heartbeatSchedulerIntervalMs: opts.heartbeatSchedulerIntervalMs ?? 30_000,
+    });
+    res.json(health);
   });
 
   router.get("/companies/:companyId/org", async (req, res) => {

@@ -57,4 +57,38 @@ describe("activity formatting", () => {
     expect(formatActivityVerb("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers on");
     expect(formatIssueActivityAction("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers");
   });
+
+  it("formats checklist item lifecycle activity", () => {
+    expect(formatActivityVerb("issue.checklist_item_created")).toBe("added checklist item to");
+    expect(formatIssueActivityAction("issue.checklist_item_created")).toBe("added checklist item");
+
+    expect(formatActivityVerb("issue.checklist_item_deleted")).toBe("deleted checklist item from");
+    expect(formatIssueActivityAction("issue.checklist_item_deleted")).toBe("deleted checklist item");
+  });
+
+  it("formats checklist item completion activity", () => {
+    const completedDetails = {
+      completed: true,
+      _previous: { completed: false },
+    };
+    const reopenedDetails = {
+      completed: false,
+      _previous: { completed: true },
+    };
+
+    expect(formatActivityVerb("issue.checklist_item_updated", completedDetails)).toBe("completed checklist item on");
+    expect(formatIssueActivityAction("issue.checklist_item_updated", completedDetails)).toBe("completed checklist item");
+    expect(formatActivityVerb("issue.checklist_item_updated", reopenedDetails)).toBe("reopened checklist item on");
+    expect(formatIssueActivityAction("issue.checklist_item_updated", reopenedDetails)).toBe("reopened checklist item");
+  });
+
+  it("formats checklist item title updates", () => {
+    const details = {
+      title: "Updated checklist item",
+      _previous: { title: "Old checklist item" },
+    };
+
+    expect(formatActivityVerb("issue.checklist_item_updated", details)).toBe("renamed checklist item on");
+    expect(formatIssueActivityAction("issue.checklist_item_updated", details)).toBe("renamed checklist item");
+  });
 });

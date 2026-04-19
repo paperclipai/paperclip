@@ -75,7 +75,7 @@ vi.mock("./MarkdownEditor", () => ({
 
     return (
       <textarea
-        aria-label="Issue chat editor"
+        aria-label="Task chat editor"
         data-class-name={className}
         data-content-class-name={contentClassName}
         placeholder={placeholder}
@@ -257,7 +257,7 @@ describe("IssueChatThread", () => {
       );
     });
 
-    const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    const editor = container.querySelector('textarea[aria-label="Task chat editor"]') as HTMLTextAreaElement | null;
     expect(editor).not.toBeNull();
     expect(editor?.placeholder).toBe("Reply");
 
@@ -297,7 +297,7 @@ describe("IssueChatThread", () => {
       );
     });
 
-    const restoredEditor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    const restoredEditor = container.querySelector('textarea[aria-label="Task chat editor"]') as HTMLTextAreaElement | null;
     expect(restoredEditor?.value).toBe("Draft survives refresh");
 
     act(() => {
@@ -329,7 +329,7 @@ describe("IssueChatThread", () => {
     expect(composer?.className).not.toContain("bottom-0");
     expect(composer?.className).toContain("pb-[calc(env(safe-area-inset-bottom)+1.5rem)]");
 
-    const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    const editor = container.querySelector('textarea[aria-label="Task chat editor"]') as HTMLTextAreaElement | null;
     expect(editor?.dataset.contentClassName).toContain("max-h-[28dvh]");
     expect(editor?.dataset.contentClassName).toContain("overflow-y-auto");
 

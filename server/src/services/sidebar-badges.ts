@@ -103,7 +103,19 @@ export function sidebarBadgeService(db: Db) {
           row.updatedAt ?? row.createdAt,
         )
       ).length;
-      const unreadTouchedIssues = extra?.unreadTouchedIssues ?? 0;
+
+      const [blockerRow] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.status, "blocked"),
+            isNull(issues.hiddenAt),
+            ne(issues.originKind, "routine_execution"),
+          ),
+        );
+      const blockers = Number(blockerRow?.count ?? 0);
 
       async function countTaskDates(from: string, to: string = from) {
         const [row] = await db
@@ -129,7 +141,8 @@ export function sidebarBadgeService(db: Db) {
       ]);
 
       return {
-        inbox: actionableApprovals + failedRuns + joinRequests + unreadTouchedIssues,
+        inbox: 0,
+        blockers,
         approvals: actionableApprovals,
         failedRuns,
         joinRequests,

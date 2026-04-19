@@ -6,6 +6,12 @@ export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } fr
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
 export { projectService } from "./projects.js";
+export { projectContextService } from "./project-context.js";
+export { projectQuickLinkService } from "./project-quick-links.js";
+export {
+  createProjectQuickLinkPreviewFetcher,
+  type ProjectQuickLinkPreviewFetcher,
+} from "./project-quick-link-preview.js";
 export { issueService, type IssueFilters } from "./issues.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { goalService } from "./goals.js";
@@ -17,13 +23,16 @@ export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
+export { agentServiceHealthService } from "./agent-service-health.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
 export { accessService } from "./access.js";
 export { boardAuthService } from "./board-auth.js";
 export { instanceSettingsService } from "./instance-settings.js";
+export { instanceUpdateSafetyService } from "./instance-update-safety.js";
 export { companyPortabilityService } from "./company-portability.js";
+export { companyRolloutService } from "./company-rollouts.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
 export { workspaceOperationService } from "./workspace-operations.js";
 export { workProductService } from "./work-products.js";

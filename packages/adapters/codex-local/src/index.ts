@@ -1,11 +1,12 @@
 export const type = "codex_local";
 export const label = "Codex (local)";
-export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.3-codex";
+export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.4";
+export const DEFAULT_CODEX_LOCAL_MODEL_REASONING_EFFORT = "xhigh";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 
 export const models = [
-  { id: "gpt-5.4", label: "gpt-5.4" },
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
+  { id: "gpt-5.3-codex", label: "gpt-5.3-codex" },
   { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
   { id: "gpt-5", label: "gpt-5" },
   { id: "o3", label: "o3" },
@@ -24,7 +25,7 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
 - model (string, optional): Codex model id
-- modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...
+- modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...; newly created Codex agents default to xhigh unless overridden
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
@@ -42,8 +43,12 @@ Notes:
 - Prompts are piped via stdin (Codex receives "-" prompt argument).
 - If instructionsFilePath is configured, Paperclip prepends that file's contents to the stdin prompt on every run.
 - Codex exec automatically applies repo-scoped AGENTS.md instructions from the active workspace. Paperclip cannot suppress that discovery in exec mode, so repo AGENTS.md files may still apply even when you only configured an explicit instructionsFilePath.
+- Use AGENTS.md for stable role/process guidance, not per-task journals. Durable task state should live in Paperclip issue comments, while reusable project know-how belongs in SKILL.md or nearby project docs.
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. In managed-home mode (the default) this is ~/.paperclip/instances/<id>/companies/<companyId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.
 - Unless explicitly overridden in adapter config, Paperclip runs Codex with a per-company managed CODEX_HOME under the active Paperclip instance and seeds auth/config from the shared Codex home (the CODEX_HOME env var, when set, or ~/.codex).
+- Paperclip resumes Codex sessions per task key. Same issue and workspace can resume automatically; a changed cwd or an explicit session reset starts fresh.
+- Paperclip defaults Codex heartbeats to the deeper "gpt-5.4" + "xhigh" lane. Faster model variants such as "gpt-5.3-codex-spark" remain selectable, but only as manual overrides.
+- Paperclip can tune Codex model + reasoning effort, but the current codex exec heartbeat path does not expose true Codex collaboration Plan Mode. Session metadata may still report collaboration_mode_kind="default"; planning behavior comes from Paperclip wake/instruction rules instead.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 `;

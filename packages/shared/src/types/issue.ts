@@ -185,6 +185,7 @@ export interface Issue {
   description: string | null;
   dueDate: string | null;
   status: IssueStatus;
+  boardPosition: number;
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -220,13 +221,48 @@ export interface Issue {
   legacyPlanDocument?: LegacyPlanDocument | null;
   project?: Project | null;
   goal?: Goal | null;
+  projectGoals?: Goal[];
+  companyGoal?: Goal | null;
   currentExecutionWorkspace?: ExecutionWorkspace | null;
   workProducts?: IssueWorkProduct[];
+  checklistItems?: IssueChecklistItem[];
+  links?: IssueLink[];
+  coverAttachment?: IssueAttachment | null;
   mentionedProjects?: Project[];
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IssueChecklistItem {
+  id: string;
+  companyId: string;
+  issueId: string;
+  title: string;
+  position: number;
+  completedAt: Date | null;
+  completedByAgentId: string | null;
+  completedByUserId: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdByRunId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IssueLink {
+  id: string;
+  companyId: string;
+  issueId: string;
+  url: string;
+  title: string | null;
+  position: number;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdByRunId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -248,6 +284,7 @@ export interface IssueAttachment {
   issueId: string;
   issueCommentId: string | null;
   assetId: string;
+  isCover: boolean;
   provider: string;
   objectKey: string;
   contentType: string;

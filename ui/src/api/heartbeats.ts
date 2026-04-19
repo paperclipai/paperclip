@@ -29,6 +29,15 @@ export interface LiveRunForIssue {
   issueId?: string | null;
 }
 
+export interface HeartbeatRunLogResponse {
+  runId: string;
+  store: string | null;
+  logRef: string | null;
+  pending: boolean;
+  content: string;
+  nextOffset?: number;
+}
+
 export const heartbeatsApi = {
   list: (companyId: string, agentId?: string, limit?: number) => {
     const searchParams = new URLSearchParams();
@@ -43,7 +52,7 @@ export const heartbeatsApi = {
       `/heartbeat-runs/${runId}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ),
   log: (runId: string, offset = 0, limitBytes = 256000) =>
-    api.get<{ runId: string; store: string; logRef: string; content: string; nextOffset?: number }>(
+    api.get<HeartbeatRunLogResponse>(
       `/heartbeat-runs/${runId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
     ),
   workspaceOperations: (runId: string) =>

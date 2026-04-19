@@ -22,8 +22,10 @@ export function agentJwtSecretCheck(configPath?: string): CheckResult {
     return {
       name: "Agent JWT secret",
       status: "warn",
-      message: `PAPERCLIP_AGENT_JWT_SECRET is present in ${envPath} but not loaded into environment`,
-      repairHint: `Set the value from ${envPath} in your shell before starting the Paperclip server`,
+      message:
+        `PAPERCLIP_AGENT_JWT_SECRET is present in ${envPath} but not loaded into environment; ` +
+        "local-agent JWT injection will stay disabled until Paperclip is restarted with that env loaded",
+      repairHint: `Restart Paperclip through paperclipai run or export the value from ${envPath} before starting the server`,
     };
   }
 

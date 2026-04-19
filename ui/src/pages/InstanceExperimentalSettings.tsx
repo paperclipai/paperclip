@@ -79,7 +79,7 @@ export function InstanceExperimentalSettings() {
             <h2 className="text-sm font-semibold">Enable Isolated Workspaces</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show execution workspace controls in project configuration and allow isolated workspace behavior for new
-              and existing issue runs.
+              and existing task runs.
             </p>
           </div>
           <ToggleSwitch

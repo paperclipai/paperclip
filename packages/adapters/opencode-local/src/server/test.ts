@@ -14,6 +14,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
+import { detectOpenCodeOpenRouterMisconfiguration, OPENCODE_PROVIDER_MODELS_HINT } from "../openrouter.js";
 import { parseOpenCodeJsonl } from "./parse.js";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
@@ -104,6 +105,16 @@ export async function testEnvironment(
   }
   try {
     const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env }));
+    const openRouterMisconfiguration = detectOpenCodeOpenRouterMisconfiguration(runtimeEnv);
+    if (openRouterMisconfiguration) {
+      checks.push({
+        code: openRouterMisconfiguration.code,
+        level: "error",
+        message: openRouterMisconfiguration.message,
+        ...(openRouterMisconfiguration.detail ? { detail: openRouterMisconfiguration.detail } : {}),
+        hint: openRouterMisconfiguration.hint,
+      });
+    }
 
     const cwdInvalid = checks.some((check) => check.code === "opencode_cwd_invalid");
     if (cwdInvalid) {
@@ -132,7 +143,12 @@ export async function testEnvironment(
     }
 
     const canRunProbe =
-      checks.every((check) => check.code !== "opencode_cwd_invalid" && check.code !== "opencode_command_unresolvable");
+      checks.every(
+        (check) =>
+          check.code !== "opencode_cwd_invalid" &&
+          check.code !== "opencode_command_unresolvable" &&
+          check.code !== "opencode_openrouter_openai_compat_unsupported",
+      );
 
     let modelValidationPassed = false;
     const configuredModel = asString(config.model, "").trim();
@@ -151,7 +167,7 @@ export async function testEnvironment(
             code: "opencode_models_empty",
             level: "error",
             message: "OpenCode returned no models.",
-            hint: "Run `opencode models` and verify provider authentication.",
+            hint: OPENCODE_PROVIDER_MODELS_HINT,
           });
         }
       } catch (err) {
@@ -169,7 +185,7 @@ export async function testEnvironment(
             code: "opencode_models_discovery_failed",
             level: "error",
             message: errMsg || "OpenCode model discovery failed.",
-            hint: "Run `opencode models` manually to verify provider auth and config.",
+            hint: OPENCODE_PROVIDER_MODELS_HINT,
           });
         }
       }
@@ -191,14 +207,14 @@ export async function testEnvironment(
             level: "warn",
             message: "The configured model was not found by the provider.",
             detail: errMsg,
-            hint: "Run `opencode models` and choose an available provider/model ID.",
+            hint: OPENCODE_PROVIDER_MODELS_HINT,
           });
         } else {
           checks.push({
             code: "opencode_models_discovery_failed",
             level: "warn",
             message: errMsg || "OpenCode model discovery failed (best-effort, no model configured).",
-            hint: "Run `opencode models` manually to verify provider auth and config.",
+            hint: OPENCODE_PROVIDER_MODELS_HINT,
           });
         }
       }
@@ -226,7 +242,7 @@ export async function testEnvironment(
           code: "opencode_model_invalid",
           level: "error",
           message: err instanceof Error ? err.message : "Configured model is unavailable.",
-          hint: "Run `opencode models` and choose a currently available provider/model ID.",
+          hint: OPENCODE_PROVIDER_MODELS_HINT,
         });
       }
     }
@@ -293,7 +309,7 @@ export async function testEnvironment(
             level: "warn",
             message: "The configured model was not found by the provider.",
             ...(detail ? { detail } : {}),
-            hint: "Run `opencode models` and choose an available provider/model ID.",
+            hint: OPENCODE_PROVIDER_MODELS_HINT,
           });
         } else if (OPENCODE_AUTH_REQUIRED_RE.test(authEvidence)) {
           checks.push({
@@ -301,7 +317,7 @@ export async function testEnvironment(
             level: "warn",
             message: "OpenCode is installed, but provider authentication is not ready.",
             ...(detail ? { detail } : {}),
-            hint: "Run `opencode auth login` or set provider credentials, then retry the probe.",
+            hint: OPENCODE_PROVIDER_MODELS_HINT,
           });
         } else {
           checks.push({

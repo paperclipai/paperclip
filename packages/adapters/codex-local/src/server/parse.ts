@@ -4,11 +4,26 @@ export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
   let errorMessage: string | null = null;
+  let costUsd: number | null = null;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
     outputTokens: 0,
   };
+
+  function applyUsage(event: Record<string, unknown>) {
+    const usageObj = parseObject(event.usage);
+    usage.inputTokens = asNumber(usageObj.input_tokens, usage.inputTokens);
+    usage.cachedInputTokens = asNumber(usageObj.cached_input_tokens, usage.cachedInputTokens);
+    usage.outputTokens = asNumber(usageObj.output_tokens, usage.outputTokens);
+  }
+
+  function applyCost(event: Record<string, unknown>) {
+    const nextCostUsd = event.total_cost_usd;
+    if (typeof nextCostUsd === "number" && Number.isFinite(nextCostUsd)) {
+      costUsd = nextCostUsd;
+    }
+  }
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -39,14 +54,14 @@ export function parseCodexJsonl(stdout: string) {
     }
 
     if (type === "turn.completed") {
-      const usageObj = parseObject(event.usage);
-      usage.inputTokens = asNumber(usageObj.input_tokens, usage.inputTokens);
-      usage.cachedInputTokens = asNumber(usageObj.cached_input_tokens, usage.cachedInputTokens);
-      usage.outputTokens = asNumber(usageObj.output_tokens, usage.outputTokens);
+      applyUsage(event);
+      applyCost(event);
       continue;
     }
 
     if (type === "turn.failed") {
+      applyUsage(event);
+      applyCost(event);
       const err = parseObject(event.error);
       const msg = asString(err.message, "").trim();
       if (msg) errorMessage = msg;
@@ -57,6 +72,7 @@ export function parseCodexJsonl(stdout: string) {
     sessionId,
     summary: finalMessage?.trim() ?? "",
     usage,
+    costUsd,
     errorMessage,
   };
 }

@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import pino from "pino";
@@ -5,7 +6,19 @@ import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 
+function isVitestProcess(): boolean {
+  return Boolean(process.env.VITEST?.trim() || process.env.VITEST_WORKER_ID?.trim());
+}
+
 function resolveServerLogDir(): string {
+  if (isVitestProcess()) {
+    return path.resolve(
+      os.tmpdir(),
+      "paperclip-vitest-logs",
+      `worker-${process.env.VITEST_WORKER_ID?.trim() || process.pid}`,
+    );
+  }
+
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
   if (envOverride) return resolveHomeAwarePath(envOverride);
 

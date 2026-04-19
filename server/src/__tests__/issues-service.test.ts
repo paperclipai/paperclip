@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -9,8 +8,10 @@ import {
   createDb,
   executionWorkspaces,
   instanceSettings,
+  issueChecklistItems,
   issueComments,
   issueInboxArchives,
+  issueLinks,
   issueRelations,
   issues,
   projectWorkspaces,
@@ -42,6 +43,44 @@ async function ensureIssueRelationsTable(db: ReturnType<typeof createDb>) {
   `));
 }
 
+async function ensureIssueChecklistItemsTable(db: ReturnType<typeof createDb>) {
+  await db.execute(sql.raw(`
+    CREATE TABLE IF NOT EXISTS "issue_checklist_items" (
+      "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      "company_id" uuid NOT NULL,
+      "issue_id" uuid NOT NULL,
+      "title" text NOT NULL,
+      "position" integer NOT NULL DEFAULT 0,
+      "completed_at" timestamptz,
+      "completed_by_agent_id" uuid,
+      "completed_by_user_id" text,
+      "created_by_agent_id" uuid,
+      "created_by_user_id" text,
+      "created_by_run_id" uuid,
+      "created_at" timestamptz NOT NULL DEFAULT now(),
+      "updated_at" timestamptz NOT NULL DEFAULT now()
+    );
+  `));
+}
+
+async function ensureIssueLinksTable(db: ReturnType<typeof createDb>) {
+  await db.execute(sql.raw(`
+    CREATE TABLE IF NOT EXISTS "issue_links" (
+      "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      "company_id" uuid NOT NULL,
+      "issue_id" uuid NOT NULL,
+      "url" text NOT NULL,
+      "title" text,
+      "position" integer NOT NULL DEFAULT 0,
+      "created_by_agent_id" uuid,
+      "created_by_user_id" text,
+      "created_by_run_id" uuid,
+      "created_at" timestamptz NOT NULL DEFAULT now(),
+      "updated_at" timestamptz NOT NULL DEFAULT now()
+    );
+  `));
+}
+
 if (!embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres issue service tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
@@ -58,9 +97,13 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
+    await ensureIssueChecklistItemsTable(db);
+    await ensureIssueLinksTable(db);
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueLinks);
+    await db.delete(issueChecklistItems);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
@@ -194,6 +237,355 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       activityIssueId,
     ]));
     expect(resultIds.has(excludedIssueId)).toBe(false);
+  });
+
+  it("persists due dates through create, list, get, and update", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const created = await svc.create(companyId, {
+      title: "Due date issue",
+      status: "todo",
+      priority: "medium",
+      dueDate: "2026-05-01",
+    });
+
+    expect(created.dueDate).toBe("2026-05-01");
+
+    const listed = await svc.list(companyId);
+    expect(listed[0]?.dueDate).toBe("2026-05-01");
+
+    const fetched = await svc.getById(created.id);
+    expect(fetched?.dueDate).toBe("2026-05-01");
+
+    const updated = await svc.update(created.id, { dueDate: null });
+    expect(updated?.dueDate).toBeNull();
+  });
+
+  it("filters issues by exact due date and inclusive due date ranges", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        companyId,
+        title: "April 19",
+        status: "todo",
+        priority: "medium",
+        dueDate: "2026-04-19",
+      },
+      {
+        companyId,
+        title: "April 20",
+        status: "todo",
+        priority: "medium",
+        dueDate: "2026-04-20",
+      },
+      {
+        companyId,
+        title: "April 25",
+        status: "todo",
+        priority: "medium",
+        dueDate: "2026-04-25",
+      },
+      {
+        companyId,
+        title: "Undated",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        companyId: otherCompanyId,
+        title: "Other company",
+        status: "todo",
+        priority: "medium",
+        dueDate: "2026-04-19",
+      },
+    ]);
+
+    const exact = await svc.list(companyId, { dueDate: "2026-04-19" });
+    expect(exact.map((issue) => issue.title)).toEqual(["April 19"]);
+
+    const range = await svc.list(companyId, { dueFrom: "2026-04-20", dueTo: "2026-04-25" });
+    expect(new Set(range.map((issue) => issue.title))).toEqual(new Set(["April 20", "April 25"]));
+  });
+
+  it("appends created issues and status changes to each board column", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const firstTodo = await svc.create(companyId, {
+      title: "First todo",
+      status: "todo",
+      priority: "medium",
+    });
+    const secondTodo = await svc.create(companyId, {
+      title: "Second todo",
+      status: "todo",
+      priority: "medium",
+    });
+    const backlog = await svc.create(companyId, {
+      title: "Backlog task",
+      status: "backlog",
+      priority: "medium",
+    });
+
+    expect(firstTodo.boardPosition).toBe(0);
+    expect(secondTodo.boardPosition).toBe(1);
+    expect(backlog.boardPosition).toBe(0);
+
+    const moved = await svc.update(backlog.id, { status: "todo" });
+    expect(moved?.boardPosition).toBe(2);
+
+    const todoRows = await db
+      .select({ id: issues.id, boardPosition: issues.boardPosition })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.status, "todo")))
+      .orderBy(asc(issues.boardPosition), asc(issues.id));
+
+    expect(todoRows).toEqual([
+      { id: firstTodo.id, boardPosition: 0 },
+      { id: secondTodo.id, boardPosition: 1 },
+      { id: backlog.id, boardPosition: 2 },
+    ]);
+  });
+
+  it("reorders issues within and across board columns", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const first = await svc.create(companyId, {
+      title: "First",
+      status: "todo",
+      priority: "medium",
+    });
+    const second = await svc.create(companyId, {
+      title: "Second",
+      status: "todo",
+      priority: "medium",
+    });
+    const third = await svc.create(companyId, {
+      title: "Third",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const reordered = await svc.reorder(third.id, { status: "todo", beforeIssueId: second.id });
+    expect(reordered).toEqual(expect.objectContaining({
+      id: third.id,
+      status: "todo",
+      boardPosition: 1,
+    }));
+
+    const todoAfterSameColumnMove = await db
+      .select({ id: issues.id, boardPosition: issues.boardPosition })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.status, "todo")))
+      .orderBy(asc(issues.boardPosition), asc(issues.id));
+
+    expect(todoAfterSameColumnMove).toEqual([
+      { id: first.id, boardPosition: 0 },
+      { id: third.id, boardPosition: 1 },
+      { id: second.id, boardPosition: 2 },
+    ]);
+
+    const moved = await svc.reorder(third.id, { status: "blocked", beforeIssueId: null });
+    expect(moved).toEqual(expect.objectContaining({
+      id: third.id,
+      status: "blocked",
+      boardPosition: 0,
+    }));
+
+    const todoAfterCrossColumnMove = await db
+      .select({ id: issues.id, boardPosition: issues.boardPosition })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.status, "todo")))
+      .orderBy(asc(issues.boardPosition), asc(issues.id));
+    const blockedAfterCrossColumnMove = await db
+      .select({ id: issues.id, boardPosition: issues.boardPosition })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.status, "blocked")))
+      .orderBy(asc(issues.boardPosition), asc(issues.id));
+
+    expect(todoAfterCrossColumnMove).toEqual([
+      { id: first.id, boardPosition: 0 },
+      { id: second.id, boardPosition: 1 },
+    ]);
+    expect(blockedAfterCrossColumnMove).toEqual([
+      { id: third.id, boardPosition: 0 },
+    ]);
+  });
+
+  it("rejects reorder anchors from another status or company", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    const todo = await svc.create(companyId, {
+      title: "Todo",
+      status: "todo",
+      priority: "medium",
+    });
+    const blocked = await svc.create(companyId, {
+      title: "Blocked",
+      status: "blocked",
+      priority: "medium",
+    });
+    const otherCompanyTodo = await svc.create(otherCompanyId, {
+      title: "Other company todo",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.reorder(todo.id, { status: "todo", beforeIssueId: blocked.id }))
+      .rejects.toThrow("Before issue must be in the target status");
+    await expect(svc.reorder(todo.id, { status: "todo", beforeIssueId: otherCompanyTodo.id }))
+      .rejects.toThrow("Before issue must belong to the same company");
+  });
+
+  it("creates, completes, reopens, and deletes issue checklist items", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Checklist Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Checklist issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const created = await svc.createChecklistItem(
+      issue,
+      { title: "Write tests" },
+      { userId: "user-1" },
+    );
+    expect(created).toEqual(expect.objectContaining({
+      issueId: issue.id,
+      title: "Write tests",
+      position: 0,
+      createdByUserId: "user-1",
+    }));
+
+    const listed = await svc.listChecklistItems(issue.id);
+    expect(listed.map((item) => item.title)).toEqual(["Write tests"]);
+
+    const completed = await svc.updateChecklistItem(created.id, { completed: true }, { agentId });
+    expect(completed?.completedAt).toBeInstanceOf(Date);
+    expect(completed?.completedByAgentId).toBe(agentId);
+
+    const reopened = await svc.updateChecklistItem(created.id, { completed: false }, { userId: "user-1" });
+    expect(reopened?.completedAt).toBeNull();
+    expect(reopened?.completedByAgentId).toBeNull();
+    expect(reopened?.completedByUserId).toBeNull();
+
+    const removed = await svc.deleteChecklistItem(created.id);
+    expect(removed?.id).toBe(created.id);
+    await expect(svc.listChecklistItems(issue.id)).resolves.toEqual([]);
+  });
+
+  it("creates, updates, and deletes issue links", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Linked issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const created = await svc.createLink(
+      issue,
+      { url: "https://example.com/spec", title: "Spec" },
+      { userId: "user-1" },
+    );
+    expect(created).toEqual(expect.objectContaining({
+      issueId: issue.id,
+      url: "https://example.com/spec",
+      title: "Spec",
+      position: 0,
+      createdByUserId: "user-1",
+    }));
+
+    const listed = await svc.listLinks(issue.id);
+    expect(listed.map((link) => link.url)).toEqual(["https://example.com/spec"]);
+
+    const updated = await svc.updateLink(created.id, { title: "Updated spec" });
+    expect(updated?.title).toBe("Updated spec");
+
+    const removed = await svc.deleteLink(created.id);
+    expect(removed?.id).toBe(created.id);
+    await expect(svc.listLinks(issue.id)).resolves.toEqual([]);
   });
 
   it("combines participation filtering with search", async () => {
@@ -1130,10 +1522,235 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
     await svc.update(childB, { status: "cancelled" });
 
-    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toEqual({
+    const wakeableParent = await svc.getWakeableParentAfterChildCompletion(parentId);
+    expect(wakeableParent).toEqual(expect.objectContaining({
       id: parentId,
       assigneeAgentId,
-      childIssueIds: [childA, childB],
+    }));
+    expect(wakeableParent?.childIssueIds).toHaveLength(2);
+    expect(new Set(wakeableParent?.childIssueIds)).toEqual(new Set([childA, childB]));
+  });
+
+  it("auto-assigns new issues to the project lead when no assignee is provided", async () => {
+    const companyId = randomUUID();
+    const ceoAgentId = randomUUID();
+    const projectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(agents).values({
+      id: ceoAgentId,
+      companyId,
+      name: "CEO",
+      role: "ceo",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Mission Control",
+      status: "in_progress",
+      leadAgentId: ceoAgentId,
+    });
+
+    const created = await svc.create(companyId, {
+      projectId,
+      title: "Investigate intake",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    expect(created.projectId).toBe(projectId);
+    expect(created.assigneeAgentId).toBe(ceoAgentId);
+  });
+
+  it("keeps an explicit assignee instead of overwriting with the project lead", async () => {
+    const companyId = randomUUID();
+    const ceoAgentId = randomUUID();
+    const engineerAgentId = randomUUID();
+    const projectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: ceoAgentId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: engineerAgentId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Mission Control",
+      status: "in_progress",
+      leadAgentId: ceoAgentId,
+    });
+
+    const created = await svc.create(companyId, {
+      projectId,
+      title: "Handle explicit assignee",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: engineerAgentId,
+    });
+
+    expect(created.assigneeAgentId).toBe(engineerAgentId);
+  });
+
+  it("leaves issues unassigned when the project has no lead", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Mission Control",
+      status: "planned",
+      leadAgentId: null,
+    });
+
+    const created = await svc.create(companyId, {
+      projectId,
+      title: "Stay unassigned",
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(created.assigneeAgentId).toBeNull();
+    expect(created.assigneeUserId).toBeNull();
+  });
+});
+
+describeEmbeddedPostgres("issueService comment normalization", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-comments-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function createTestIssue() {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Normalize comment body",
+      status: "todo",
+      priority: "medium",
+    });
+
+    return { issueId };
+  }
+
+  it("stores normal markdown comments unchanged", async () => {
+    const { issueId } = await createTestIssue();
+    const body = "## Update\n\n- Item one";
+
+    const comment = await svc.addComment(issueId, body, {});
+    const stored = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.id, comment.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(comment.body).toBe(body);
+    expect(stored?.body).toBe(body);
+  });
+
+  it("decodes obviously JSON-escaped markdown before storing it", async () => {
+    const { issueId } = await createTestIssue();
+    const body = "## Update\\n\\n- Item one";
+
+    const comment = await svc.addComment(issueId, body, {});
+    const stored = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.id, comment.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(comment.body).toBe("## Update\n\n- Item one");
+    expect(stored?.body).toBe("## Update\n\n- Item one");
+  });
+
+  it("leaves ordinary backslash text unchanged", async () => {
+    const { issueId } = await createTestIssue();
+    const body = String.raw`Windows path C:\new-folder\tools`;
+
+    const comment = await svc.addComment(issueId, body, {});
+    const stored = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.id, comment.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(comment.body).toBe(body);
+    expect(stored?.body).toBe(body);
   });
 });

@@ -555,6 +555,56 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      contextSources: {
+        async create(input) {
+          return callHost("contextSources.create", {
+            companyId: input.companyId,
+            projectId: input.projectId,
+            sourceType: input.sourceType,
+            title: input.title,
+            uri: input.uri,
+            provider: input.provider,
+            externalId: input.externalId,
+            bodyText: input.bodyText,
+            metadata: input.metadata,
+          });
+        },
+
+        async upsertItem(input) {
+          return callHost("contextSources.upsertItem", {
+            companyId: input.companyId,
+            sourceId: input.sourceId,
+            externalId: input.externalId,
+            title: input.title,
+            uri: input.uri,
+            mimeType: input.mimeType,
+            bodyText: input.bodyText,
+            status: input.status,
+            statusMessage: input.statusMessage,
+            metadata: input.metadata,
+            sourceModifiedAt: input.sourceModifiedAt,
+          });
+        },
+
+        async setStatus(sourceId, companyId, status, statusMessage) {
+          return callHost("contextSources.setStatus", {
+            sourceId,
+            companyId,
+            status,
+            statusMessage,
+          });
+        },
+
+        async search(input) {
+          return callHost("contextSources.search", {
+            companyId: input.companyId,
+            projectId: input.projectId,
+            query: input.query,
+            limit: input.limit,
+          });
+        },
+      },
+
       companies: {
         async list(input) {
           return callHost("companies.list", {
