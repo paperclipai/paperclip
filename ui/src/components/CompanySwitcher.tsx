@@ -37,9 +37,9 @@ function CompanyRow({
   const { bulkPause, bulkResume } = useBulkCompanyAgentMutations(company.id);
   const busy = bulkPause.isPending || bulkResume.isPending;
   return (
-    <div
-      className={`flex items-center gap-1 px-2 py-1.5 rounded-sm text-sm cursor-pointer hover:bg-accent group ${isSelected ? "bg-accent" : ""}`}
-      onClick={onSelect}
+    <DropdownMenuItem
+      className={`flex items-center gap-1 group ${isSelected ? "bg-accent" : ""}`}
+      onSelect={onSelect}
     >
       <span className={`h-2 w-2 rounded-full shrink-0 mr-1 ${statusDotColor(company.status)}`} />
       <span className="truncate flex-1">{company.name}</span>
@@ -47,7 +47,7 @@ function CompanyRow({
         type="button"
         className="opacity-0 group-hover:opacity-100 flex items-center justify-center h-4 w-4 rounded hover:bg-muted-foreground/20 text-muted-foreground hover:text-foreground transition-opacity"
         title="Pause all agents"
-        onClick={(e) => { e.stopPropagation(); bulkPause.mutate(); }}
+        onClick={(e) => { e.stopPropagation(); e.preventDefault(); bulkPause.mutate(); }}
         disabled={busy}
       >
         <Pause className="h-2.5 w-2.5" />
@@ -56,12 +56,12 @@ function CompanyRow({
         type="button"
         className="opacity-0 group-hover:opacity-100 flex items-center justify-center h-4 w-4 rounded hover:bg-muted-foreground/20 text-muted-foreground hover:text-foreground transition-opacity"
         title="Resume all agents"
-        onClick={(e) => { e.stopPropagation(); bulkResume.mutate(); }}
+        onClick={(e) => { e.stopPropagation(); e.preventDefault(); bulkResume.mutate(); }}
         disabled={busy}
       >
         <Play className="h-2.5 w-2.5" />
       </button>
-    </div>
+    </DropdownMenuItem>
   );
 }
 
