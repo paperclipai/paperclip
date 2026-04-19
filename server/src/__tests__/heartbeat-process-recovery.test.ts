@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentRuntimeState,
   agentWakeupRequests,
   companies,
+  companySkills,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -52,12 +53,14 @@ function spawnAliveProcess() {
 
 describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let db!: ReturnType<typeof createDb>;
+  let raceDb!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const childProcesses = new Set<ChildProcess>();
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
+    raceDb = createDb(tempDb.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -73,6 +76,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
@@ -319,6 +323,106 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.assigneeAgentId).toBe(otherAgentId);
     expect(issue?.executionRunId).toBeNull();
     expect(wakeup?.status).toBe("cancelled");
+  });
+
+  it("does not restamp stale execution ownership when reassignment races the queued claim", async () => {
+    const { companyId, issueId, runId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+    });
+    const otherAgentId = randomUUID();
+    const heartbeat = heartbeatService(db);
+    const lockKey = Number.parseInt(runId.replaceAll("-", "").slice(0, 8), 16);
+    const triggerName = `test_claim_sleep_${runId.replaceAll("-", "_")}`;
+    const functionName = `${triggerName}_fn`;
+
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION ${functionName}()
+      RETURNS trigger AS $$
+      BEGIN
+        IF OLD.id = '${runId}'::uuid AND OLD.status = 'queued' AND NEW.status = 'running' THEN
+          PERFORM pg_advisory_lock(${lockKey});
+          PERFORM pg_sleep(0.4);
+          PERFORM pg_advisory_unlock(${lockKey});
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `));
+    await db.execute(sql.raw(`
+      CREATE TRIGGER ${triggerName}
+      BEFORE UPDATE ON heartbeat_runs
+      FOR EACH ROW
+      EXECUTE FUNCTION ${functionName}();
+    `));
+
+    async function waitForClaimWindow() {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const rows = await raceDb.execute(sql<{ acquired: boolean }>`SELECT pg_try_advisory_lock(${lockKey}) AS acquired`);
+        const acquired = rows[0]?.acquired === true;
+        if (!acquired) return;
+        await raceDb.execute(sql`SELECT pg_advisory_unlock(${lockKey})`);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error("Timed out waiting for the queued-claim race window");
+    }
+
+    try {
+      const resumePromise = heartbeat.resumeQueuedRuns();
+      await waitForClaimWindow();
+
+      const reassignPromise = raceDb
+        .update(issues)
+        .set({
+          status: "todo",
+          assigneeAgentId: otherAgentId,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+        })
+        .where(eq(issues.id, issueId));
+
+      await Promise.all([resumePromise, reassignPromise]);
+    } finally {
+      await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${triggerName} ON heartbeat_runs`));
+      await db.execute(sql.raw(`DROP FUNCTION IF EXISTS ${functionName}()`));
+    }
+
+    const queuedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(queuedRun?.status).toBe("running");
+    expect(issue?.assigneeAgentId).toBe(otherAgentId);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
   });
 
   it("clears the detached warning when the run reports activity again", async () => {

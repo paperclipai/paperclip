@@ -2221,6 +2221,7 @@ export function heartbeatService(db: Db) {
 
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId);
+    const wakeReason = readNonEmptyString(context.wakeReason);
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId,
       projectId: readNonEmptyString(context.projectId),
@@ -2232,33 +2233,87 @@ export function heartbeatService(db: Db) {
       return null;
     }
 
-    if (issueId && readNonEmptyString(context.wakeReason) === "issue_assigned") {
-      const issue = await db
-        .select({ assigneeAgentId: issues.assigneeAgentId })
-        .from(issues)
-        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
-        .then((rows) => rows[0] ?? null);
+    class CancelQueuedRunError extends Error {}
 
-      if (issue?.assigneeAgentId !== run.agentId) {
-        await cancelRunInternal(run.id, "Cancelled because the issue was reassigned before this wake ran", {
+    let claimed: typeof heartbeatRuns.$inferSelect | null = null;
+
+    try {
+      claimed = await db.transaction(async (tx) => {
+        if (issueId && wakeReason === "issue_assigned") {
+          await tx.execute(
+            sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
+          );
+
+          const issue = await tx
+            .select({ assigneeAgentId: issues.assigneeAgentId })
+            .from(issues)
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+            .then((rows) => rows[0] ?? null);
+
+          if (!issue) {
+            throw new CancelQueuedRunError("Cancelled because the issue no longer exists");
+          }
+          if (issue.assigneeAgentId !== run.agentId) {
+            throw new CancelQueuedRunError("Cancelled because the issue was reassigned before this wake ran");
+          }
+        }
+
+        const claimedAt = new Date();
+        const nextClaimed = await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "running",
+            startedAt: run.startedAt ?? claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!nextClaimed) return null;
+
+        // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
+        // not at queue time. Keep issue_assigned claims assignee-safe in the same transaction.
+        if (issueId) {
+          const issueStampWhere = [
+            eq(issues.id, issueId),
+            eq(issues.companyId, nextClaimed.companyId),
+            or(isNull(issues.executionRunId), eq(issues.executionRunId, nextClaimed.id)),
+          ];
+          if (wakeReason === "issue_assigned") {
+            issueStampWhere.push(eq(issues.assigneeAgentId, nextClaimed.agentId));
+          }
+
+          const stampedIssue = await tx
+            .update(issues)
+            .set({
+              executionRunId: nextClaimed.id,
+              executionAgentNameKey: normalizeAgentNameKey(agent.name),
+              executionLockedAt: claimedAt,
+              updatedAt: claimedAt,
+            })
+            .where(and(...issueStampWhere))
+            .returning({ id: issues.id })
+            .then((rows) => rows[0] ?? null);
+
+          if (!stampedIssue && wakeReason === "issue_assigned") {
+            throw new CancelQueuedRunError("Cancelled because the issue was reassigned before this wake ran");
+          }
+        }
+
+        return nextClaimed;
+      });
+    } catch (error) {
+      if (error instanceof CancelQueuedRunError) {
+        await cancelRunInternal(run.id, error.message, {
           startNextQueuedRun: startNextQueuedRunOnCancel,
         });
         return null;
       }
+      throw error;
     }
-
-    const claimedAt = new Date();
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
     if (!claimed) return null;
+
+    const claimedAt = claimed.startedAt ?? new Date();
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -2277,27 +2332,6 @@ export function heartbeatService(db: Db) {
     });
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
-
-    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
-    // not at queue time. Guard is idempotent — safe if called more than once.
-    if (issueId) {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, issueId),
-            eq(issues.companyId, claimed.companyId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
-        );
-    }
 
     return claimed;
   }
