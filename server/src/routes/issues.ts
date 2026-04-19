@@ -2328,6 +2328,13 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    // Strip run ID if it references a non-existent run (prevents FK constraint violation)
+    if (actor.runId) {
+      const run = await heartbeat.getRun(actor.runId).catch(() => null);
+      if (!run) {
+        actor.runId = null;
+      }
+    }
     const reopenRequested = req.body.reopen === true;
     const interruptRequested = req.body.interrupt === true;
     const isClosed = isClosedIssueStatus(issue.status);
