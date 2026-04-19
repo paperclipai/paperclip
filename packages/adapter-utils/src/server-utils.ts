@@ -1120,7 +1120,20 @@ export async function runChildProcess(
         let timedOut = false;
         let stdout = "";
         let stderr = "";
-        let logChain: Promise<void> = Promise.resolve();
+        /** In-flight `onLog` calls — decouple stream reads from slow consumers (see runChildProcess close handler). */
+        const inflightOnLog = new Set<Promise<void>>();
+
+        const scheduleOnLog = (stream: "stdout" | "stderr", text: string, failureMessage: string) => {
+          const p = Promise.resolve()
+            .then(() => opts.onLog(stream, text))
+            .catch((err: unknown) => {
+              onLogError(err, runId, failureMessage);
+            });
+          inflightOnLog.add(p);
+          void p.finally(() => {
+            inflightOnLog.delete(p);
+          });
+        };
 
         const timeout =
           opts.timeoutSec > 0
@@ -1136,17 +1149,13 @@ export async function runChildProcess(
         child.stdout?.on("data", (chunk: unknown) => {
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
-          logChain = logChain
-            .then(() => opts.onLog("stdout", text))
-            .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"));
+          scheduleOnLog("stdout", text, "failed to append stdout log chunk");
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
-          logChain = logChain
-            .then(() => opts.onLog("stderr", text))
-            .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
+          scheduleOnLog("stderr", text, "failed to append stderr log chunk");
         });
 
         const stdin = child.stdin;
@@ -1173,7 +1182,7 @@ export async function runChildProcess(
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
           runningProcesses.delete(runId);
-          void logChain.finally(() => {
+          void Promise.allSettled([...inflightOnLog]).finally(() => {
             resolve({
               exitCode: code,
               signal,
