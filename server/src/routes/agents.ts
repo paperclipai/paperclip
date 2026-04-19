@@ -75,10 +75,13 @@ import {
   prepareAdapterConfigForPersistence,
 } from "../services/agent-adapter-config.js";
 import { resolveHermesRuntimeConfig } from "../services/hermes-config.js";
+import {
+  isHeartbeatRunFresh,
+  LIVE_HEARTBEAT_RUN_FRESHNESS_WINDOW_MS,
+} from "../services/heartbeat-run-activity.js";
 
 export function agentRoutes(db: Db) {
   const SINGLETON_EXECUTIVE_ROLES = new Set(["ceo", "cto", "cmo", "cfo", "coo"]);
-  const LIVE_RUN_ACTIVITY_WINDOW_MS = 150_000;
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
@@ -101,17 +104,15 @@ export function agentRoutes(db: Db) {
 
   function hasFreshHeartbeatActivity(run: {
     lastActivityAt: Date | null;
-    updatedAt: Date | null;
+    updatedAt: Date;
     startedAt: Date | null;
     createdAt: Date;
   }) {
-    const cutoffMs = Date.now() - LIVE_RUN_ACTIVITY_WINDOW_MS;
-    const lastActivity = run.lastActivityAt ?? run.updatedAt ?? run.startedAt ?? run.createdAt;
-    return lastActivity.getTime() >= cutoffMs;
+    return isHeartbeatRunFresh(run);
   }
 
   function getLiveRunFreshnessPredicate() {
-    const cutoff = new Date(Date.now() - LIVE_RUN_ACTIVITY_WINDOW_MS).toISOString();
+    const cutoff = new Date(Date.now() - LIVE_HEARTBEAT_RUN_FRESHNESS_WINDOW_MS).toISOString();
     return sql`
       coalesce(${heartbeatRuns.lastActivityAt}, ${heartbeatRuns.updatedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${cutoff}::timestamptz
     `;
@@ -2255,6 +2256,13 @@ export function agentRoutes(db: Db) {
     }
 
     res.json(liveRuns);
+  });
+
+  router.get("/companies/:companyId/issue-execution-summaries", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const summaries = await heartbeat.listIssueExecutionSummaries(companyId);
+    res.json(summaries);
   });
 
   router.get("/heartbeat-runs/:runId", async (req, res) => {

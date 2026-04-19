@@ -480,6 +480,7 @@ function invalidateHeartbeatQueries(
   payload: Record<string, unknown>,
 ) {
   queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.issueExecutionSummaries(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
@@ -523,6 +524,10 @@ function invalidateActivityQueries(
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(ref) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(ref) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(ref) });
+      }
+      const parentIssueId = readString(details?.parentId) ?? readString(details?.parentIssueId);
+      if (parentIssueId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(parentIssueId) });
       }
     }
     return;

@@ -207,9 +207,11 @@ The heartbeat runtime should prefer same-issue recovery over operator cleanup:
 - active runs are judged by fresh runtime activity, not only by `status = running`
 - trusted liveness should come from `lastActivityAt` and runtime signals such as log streaming, adapter metadata, process spawn metadata, and explicit activity reports; ordinary status bookkeeping must not refresh that lease by itself
 - a quiet run should become `suspect` before it is declared lost
+- a quiet run that is still owned by an in-memory execution or live child process should remain occupancy truth for scheduling, but it should be surfaced separately from fresh live work so the UI does not imply the agent is idle
 - the default balanced policy is:
   - suspect after roughly 90 seconds without trusted activity
   - declare loss after roughly 150 seconds without trusted activity
+  - if a run is still owned but has gone quiet for much longer, mark it `suspect` without weakening the live-run limit
   - recover on the same issue inside 5 minutes when possible
 - process loss should retry the same agent on the same issue once, including adapters without a local child pid when the lease has clearly expired
 - the queued recovery run may reserve the issue execution lock so another worker does not steal the same execution while recovery is in flight
@@ -218,6 +220,10 @@ The heartbeat runtime should prefer same-issue recovery over operator cleanup:
 - transient adapter failures should trip an adapter-level retry circuit before they create a retry storm, and an open circuit should pause fresh specialist dispatch and cross-agent recovery nudges on that adapter until the cooldown expires while allowing orchestrator-only control-plane runs to keep sweeping and bookkeeping
 - recovery should always write structured run events and activity-log rows
 - issue comments should only be added when recovery changes ownership, changes status, or needs operator attention
+- issue list UI should distinguish:
+  - fresh live execution
+  - quiet-but-still-occupied execution
+  - deferred/coalesced/skipped wakeups
 - completion-comment enforcement should apply only to succeeded runs; failed or auto-retrying runs must not create missing-comment recovery noise
 - Inbox should not surface failed runs that are still auto-recovering
 

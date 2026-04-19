@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { HeartbeatIssueExecutionSummary, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { epicTone } from "../lib/roadmapEpicStyles";
 import { IssuesList } from "./IssuesList";
@@ -32,6 +32,10 @@ const mockRoadmapApi = vi.hoisted(() => ({
   get: vi.fn(),
 }));
 
+const mockHeartbeatsApi = vi.hoisted(() => ({
+  issueExecutionSummariesForCompany: vi.fn(),
+}));
+
 const mockCompaniesApi = vi.hoisted(() => ({
   listRoadmapEpics: vi.fn(),
   pauseRoadmapEpic: vi.fn(),
@@ -43,7 +47,11 @@ const toastState = vi.hoisted(() => ({
 }));
 
 const kanbanPropsState = vi.hoisted(() => ({
-  latest: null as { issues: Issue[]; allIssues?: Issue[] } | null,
+  latest: null as {
+    issues: Issue[];
+    allIssues?: Issue[];
+    issueExecutionSummariesByIssueId?: Map<string, HeartbeatIssueExecutionSummary>;
+  } | null,
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -66,6 +74,10 @@ vi.mock("../api/roadmap", () => ({
   roadmapApi: mockRoadmapApi,
 }));
 
+vi.mock("../api/heartbeats", () => ({
+  heartbeatsApi: mockHeartbeatsApi,
+}));
+
 vi.mock("../api/companies", () => ({
   companiesApi: mockCompaniesApi,
 }));
@@ -77,12 +89,14 @@ vi.mock("../context/ToastContext", () => ({
 vi.mock("./IssueRow", () => ({
   IssueRow: ({
     issue,
+    desktopMetaLeading,
     desktopTrailing,
     mobileMeta,
     trailingMeta,
     className,
   }: {
     issue: Issue;
+    desktopMetaLeading?: ReactNode;
     desktopTrailing?: ReactNode;
     mobileMeta?: ReactNode;
     trailingMeta?: ReactNode;
@@ -90,6 +104,7 @@ vi.mock("./IssueRow", () => ({
   }) => (
     <div data-testid="issue-row" data-class-name={className}>
       <span>{issue.title}</span>
+      <span data-testid={`issue-row-meta-${issue.id}`}>{desktopMetaLeading}</span>
       <span data-testid={`issue-row-mobile-meta-${issue.id}`}>{mobileMeta}</span>
       <span data-testid={`issue-row-trailing-${issue.id}`}>{desktopTrailing}</span>
       <span data-testid={`issue-row-trailing-meta-${issue.id}`}>{trailingMeta}</span>
@@ -205,6 +220,7 @@ describe("IssuesList", () => {
     mockIssuesApi.listLabels.mockReset();
     mockAuthApi.getSession.mockReset();
     mockRoadmapApi.get.mockReset();
+    mockHeartbeatsApi.issueExecutionSummariesForCompany.mockReset();
     mockCompaniesApi.listRoadmapEpics.mockReset();
     mockCompaniesApi.pauseRoadmapEpic.mockReset();
     mockCompaniesApi.resumeRoadmapEpic.mockReset();
@@ -212,6 +228,7 @@ describe("IssuesList", () => {
     kanbanPropsState.latest = null;
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: null, session: null });
+    mockHeartbeatsApi.issueExecutionSummariesForCompany.mockResolvedValue([]);
     mockRoadmapApi.get.mockResolvedValue({
       index: { path: "/doc/ROADMAP.md", markdown: "", links: [] },
       roadmap: {
@@ -769,6 +786,30 @@ describe("IssuesList", () => {
         "Board todo issue",
       ]);
     });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not render a show closed toggle", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ id: "issue-visible", identifier: "PAP-4", title: "Visible issue" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Visible issue");
+    });
+
+    expect(container.textContent).not.toContain("Show Closed");
+    expect(container.textContent).not.toContain("Hide Closed");
 
     act(() => {
       root.unmount();
@@ -1352,6 +1393,124 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       const rowTrailing = container.querySelector('[data-testid="issue-row-trailing-issue-epic-1"]');
       expect(rowTrailing?.textContent).not.toContain("Ship OAuth flow");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders quiet and skipped execution indicators from heartbeat summaries", async () => {
+    const quietIssue = createIssue({
+      id: "issue-quiet",
+      identifier: "PAP-21",
+      title: "Quiet issue",
+    });
+    const skippedIssue = createIssue({
+      id: "issue-skipped",
+      identifier: "PAP-22",
+      title: "Skipped issue",
+    });
+
+    const summaries: HeartbeatIssueExecutionSummary[] = [
+      {
+        issueId: quietIssue.id,
+        activeRun: {
+          runId: "run-quiet",
+          status: "running",
+          agentId: "agent-1",
+          agentName: "QA Runner",
+          adapterType: "codex_local",
+          freshness: "quiet",
+          activityAt: new Date("2026-04-19T09:48:00.000Z"),
+          activityAgeMs: 12 * 60_000,
+        },
+        latestWakeup: null,
+      },
+      {
+        issueId: skippedIssue.id,
+        activeRun: null,
+        latestWakeup: {
+          id: "wake-1",
+          agentId: "agent-2",
+          agentName: "QA and Release Engineer",
+          status: "skipped",
+          reason: "heartbeat.live_run_limit_reached",
+          error: null,
+          runId: null,
+          requestedAt: new Date("2026-04-19T10:00:00.000Z"),
+          finishedAt: new Date("2026-04-19T10:00:01.000Z"),
+        },
+      },
+    ];
+    mockHeartbeatsApi.issueExecutionSummariesForCompany.mockResolvedValue(summaries);
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[quietIssue, skippedIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="issue-row-meta-issue-quiet"]')?.textContent).toContain("Quiet 12m");
+      expect(container.querySelector('[data-testid="issue-row-meta-issue-skipped"]')?.textContent).toContain("Wake skipped");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("passes issue execution summaries through to board mode", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ viewMode: "board" }),
+    );
+
+    const quietIssue = createIssue({
+      id: "issue-board-quiet",
+      identifier: "PAP-31",
+      title: "Board quiet issue",
+    });
+    const summaries: HeartbeatIssueExecutionSummary[] = [
+      {
+        issueId: quietIssue.id,
+        activeRun: {
+          runId: "run-board-quiet",
+          status: "running",
+          agentId: "agent-1",
+          agentName: "QA Runner",
+          adapterType: "codex_local",
+          freshness: "quiet",
+          activityAt: new Date("2026-04-19T09:48:00.000Z"),
+          activityAgeMs: 12 * 60_000,
+        },
+        latestWakeup: null,
+      },
+    ];
+    mockHeartbeatsApi.issueExecutionSummariesForCompany.mockResolvedValue(summaries);
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[quietIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Kanban board");
+      expect(kanbanPropsState.latest?.issueExecutionSummariesByIssueId?.get(quietIssue.id)?.activeRun?.freshness).toBe(
+        "quiet",
+      );
     });
 
     act(() => {

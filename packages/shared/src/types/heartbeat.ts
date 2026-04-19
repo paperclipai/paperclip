@@ -65,6 +65,35 @@ export interface AgentWakeupSkipped {
 
 export type AgentWakeupResponse = HeartbeatRun | AgentWakeupSkipped;
 
+export interface HeartbeatIssueActiveRunSummary {
+  runId: string;
+  status: "queued" | "running";
+  agentId: string;
+  agentName: string | null;
+  adapterType: string;
+  freshness: "fresh" | "quiet";
+  activityAt: Date;
+  activityAgeMs: number;
+}
+
+export interface HeartbeatIssueWakeupSummary {
+  id: string;
+  agentId: string;
+  agentName: string | null;
+  status: WakeupRequestStatus;
+  reason: string | null;
+  error: string | null;
+  runId: string | null;
+  requestedAt: Date;
+  finishedAt: Date | null;
+}
+
+export interface HeartbeatIssueExecutionSummary {
+  issueId: string;
+  activeRun: HeartbeatIssueActiveRunSummary | null;
+  latestWakeup: HeartbeatIssueWakeupSummary | null;
+}
+
 export interface HeartbeatRunEvent {
   id: number;
   companyId: string;

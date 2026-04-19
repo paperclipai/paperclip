@@ -34,6 +34,32 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       queryKey: queryKeys.issues.listUnreadTouchedByMe("company-1"),
     });
   });
+
+  it("refreshes the parent issue detail when a child issue activity includes parent context", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "issue",
+        entityId: "issue-child-1",
+        details: {
+          parentId: "issue-root-1",
+        },
+      },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.detail("issue-root-1"),
+    });
+  });
 });
 
 describe("LiveUpdatesProvider visible issue toast suppression", () => {

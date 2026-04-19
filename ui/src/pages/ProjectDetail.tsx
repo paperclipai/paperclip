@@ -208,6 +208,8 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       }
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issueExecutionSummaries(companyId) });
     },
   });
 

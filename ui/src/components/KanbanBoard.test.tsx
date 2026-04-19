@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import type { HeartbeatIssueExecutionSummary } from "@paperclipai/shared";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
@@ -259,6 +260,52 @@ describe("KanbanBoard", () => {
     expect(container.querySelectorAll("[data-kanban-empty-placeholder]").length).toBe(7);
     expect(container.textContent).toContain("Backlog");
     expect(container.textContent).toContain("Cancelled");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders quiet execution indicators when issue execution summaries are provided", () => {
+    const root = createRoot(container);
+    const issue = createIssue({
+      id: "issue-quiet",
+      identifier: "PAP-9",
+      title: "Quiet board issue",
+      status: "todo",
+    });
+    const summaries = new Map<string, HeartbeatIssueExecutionSummary>([
+      [
+        issue.id,
+        {
+          issueId: issue.id,
+          activeRun: {
+            runId: "run-quiet",
+            status: "running",
+            agentId: "agent-1",
+            agentName: "QA Runner",
+            adapterType: "codex_local",
+            freshness: "quiet",
+            activityAt: new Date("2026-04-07T11:48:00.000Z"),
+            activityAgeMs: 12 * 60_000,
+          },
+          latestWakeup: null,
+        },
+      ],
+    ]);
+
+    act(() => {
+      root.render(
+        <KanbanBoard
+          issues={[issue]}
+          onUpdateIssue={() => undefined}
+          issueExecutionSummariesByIssueId={summaries}
+        />,
+      );
+    });
+
+    const card = container.querySelector('[data-kanban-card-id="issue-quiet"]');
+    expect(card?.textContent).toContain("Quiet 12m");
 
     act(() => {
       root.unmount();

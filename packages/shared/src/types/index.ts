@@ -231,6 +231,9 @@ export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } fro
 export type {
   AgentWakeupResponse,
   AgentWakeupSkipped,
+  HeartbeatIssueActiveRunSummary,
+  HeartbeatIssueExecutionSummary,
+  HeartbeatIssueWakeupSummary,
   HeartbeatRun,
   HeartbeatRunEvent,
   AgentRuntimeState,

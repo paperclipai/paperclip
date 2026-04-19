@@ -20,10 +20,14 @@ import {
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
+import {
+  issueExecutionIndicatorClassName,
+  resolveIssueExecutionIndicator,
+} from "../lib/issue-execution-indicator";
 import { formatIssueStatusLabel } from "../lib/issue-status-labels";
 import { timeAgo } from "../lib/timeAgo";
 import { formatDateTime } from "../lib/utils";
-import type { Issue } from "@paperclipai/shared";
+import type { HeartbeatIssueExecutionSummary, Issue } from "@paperclipai/shared";
 
 const COLUMN_PAGE_SIZE = 15;
 
@@ -59,6 +63,7 @@ interface KanbanBoardProps {
   allIssues?: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  issueExecutionSummariesByIssueId?: Map<string, HeartbeatIssueExecutionSummary>;
   epicStylesByIssueId?: Map<string, { cardClassName: string }>;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
@@ -73,6 +78,7 @@ function KanbanColumn({
   onShowMore,
   agents,
   liveIssueIds,
+  issueExecutionSummariesByIssueId,
   epicStylesByIssueId,
 }: {
   status: string;
@@ -82,6 +88,7 @@ function KanbanColumn({
   onShowMore: () => void;
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  issueExecutionSummariesByIssueId?: Map<string, HeartbeatIssueExecutionSummary>;
   epicStylesByIssueId?: Map<string, { cardClassName: string }>;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
@@ -120,6 +127,7 @@ function KanbanColumn({
               issue={issue}
               agents={agents}
               isLive={liveIssueIds?.has(issue.id)}
+              issueExecutionSummary={issueExecutionSummariesByIssueId?.get(issue.id)}
               epicCardClassName={epicStylesByIssueId?.get(issue.id)?.cardClassName}
             />
           ))}
@@ -160,12 +168,14 @@ function KanbanCard({
   issue,
   agents,
   isLive,
+  issueExecutionSummary,
   isOverlay,
   epicCardClassName,
 }: {
   issue: Issue;
   agents?: Agent[];
   isLive?: boolean;
+  issueExecutionSummary?: HeartbeatIssueExecutionSummary;
   isOverlay?: boolean;
   epicCardClassName?: string;
 }) {
@@ -187,6 +197,7 @@ function KanbanCard({
     if (!id || !agents) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
   };
+  const executionIndicator = resolveIssueExecutionIndicator(issueExecutionSummary, Boolean(isLive));
 
   return (
     <div
@@ -212,10 +223,18 @@ function KanbanCard({
             <span className="text-xs text-muted-foreground font-mono shrink-0">
               {issue.identifier ?? issue.id.slice(0, 8)}
             </span>
-            {isLive && (
-              <span className="relative flex h-2 w-2 shrink-0 mt-0.5">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+            {executionIndicator && (
+              <span
+                title={executionIndicator.title}
+                className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${issueExecutionIndicatorClassName(executionIndicator.tone)}`}
+              >
+                {executionIndicator.pulse ? (
+                  <span className="relative flex h-2 w-2 shrink-0">
+                    <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                  </span>
+                ) : null}
+                <span>{executionIndicator.label}</span>
               </span>
             )}
           </span>
@@ -264,6 +283,7 @@ export function KanbanBoard({
   allIssues,
   agents,
   liveIssueIds,
+  issueExecutionSummariesByIssueId,
   epicStylesByIssueId,
   onUpdateIssue,
 }: KanbanBoardProps) {
@@ -384,6 +404,7 @@ export function KanbanBoard({
               }
               agents={agents}
               liveIssueIds={liveIssueIds}
+              issueExecutionSummariesByIssueId={issueExecutionSummariesByIssueId}
               epicStylesByIssueId={epicStylesByIssueId}
             />
           ))}
@@ -393,6 +414,8 @@ export function KanbanBoard({
             <KanbanCard
               issue={activeIssue}
               agents={agents}
+              isLive={liveIssueIds?.has(activeIssue.id)}
+              issueExecutionSummary={issueExecutionSummariesByIssueId?.get(activeIssue.id)}
               isOverlay
               epicCardClassName={epicStylesByIssueId?.get(activeIssue.id)?.cardClassName}
             />

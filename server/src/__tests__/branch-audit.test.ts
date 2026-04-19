@@ -34,6 +34,12 @@ async function commitFile(cwd: string, filename: string, body: string, message: 
   await runGit(cwd, ["commit", "-m", message]);
 }
 
+async function reserveWorktreePath(repoRoot: string, label: string) {
+  const worktreePath = path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-${label}`);
+  await fs.rm(worktreePath, { recursive: true, force: true });
+  return worktreePath;
+}
+
 describe("branch audit", () => {
   const cleanupDirs = new Set<string>();
 
@@ -55,7 +61,7 @@ describe("branch audit", () => {
 
     await runGit(repoRoot, ["checkout", "-b", "active-worktree"]);
     await runGit(repoRoot, ["checkout", "master"]);
-    const activeWorktreePath = path.join(path.dirname(repoRoot), "paperclip-active-worktree");
+    const activeWorktreePath = await reserveWorktreePath(repoRoot, "active-worktree");
     cleanupDirs.add(activeWorktreePath);
     await runGit(repoRoot, ["worktree", "add", activeWorktreePath, "active-worktree"]);
     await commitFile(activeWorktreePath, "active.txt", "active\n", "Active worktree commit");
@@ -85,14 +91,14 @@ describe("branch audit", () => {
 
     await runGit(repoRoot, ["checkout", "-b", "live-worktree"]);
     await runGit(repoRoot, ["checkout", "master"]);
-    const liveWorktreePath = path.join(path.dirname(repoRoot), "paperclip-live-worktree");
+    const liveWorktreePath = await reserveWorktreePath(repoRoot, "live-worktree");
     cleanupDirs.add(liveWorktreePath);
     await runGit(repoRoot, ["worktree", "add", liveWorktreePath, "live-worktree"]);
     const resolvedLiveWorktreePath = await fs.realpath(liveWorktreePath);
 
     await runGit(repoRoot, ["checkout", "-b", "stale-worktree"]);
     await runGit(repoRoot, ["checkout", "master"]);
-    const staleWorktreePath = path.join(path.dirname(repoRoot), "paperclip-stale-worktree");
+    const staleWorktreePath = await reserveWorktreePath(repoRoot, "stale-worktree");
     cleanupDirs.add(staleWorktreePath);
     await runGit(repoRoot, ["worktree", "add", staleWorktreePath, "stale-worktree"]);
     await fs.rm(staleWorktreePath, { recursive: true, force: true });
@@ -121,7 +127,7 @@ describe("branch audit", () => {
 
     await runGit(repoRoot, ["checkout", "-b", "attached-branch"]);
     await runGit(repoRoot, ["checkout", "master"]);
-    const attachedWorktreePath = path.join(path.dirname(repoRoot), "paperclip-attached-worktree");
+    const attachedWorktreePath = await reserveWorktreePath(repoRoot, "attached-worktree");
     cleanupDirs.add(attachedWorktreePath);
     await runGit(repoRoot, ["worktree", "add", attachedWorktreePath, "attached-branch"]);
 

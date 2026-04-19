@@ -260,6 +260,7 @@ describe("NewIssueDialog", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    localStorage.clear();
     dialogState.newIssueOpen = true;
     dialogState.newIssueDefaults = {};
     dialogState.closeNewIssue.mockReset();
@@ -290,6 +291,7 @@ describe("NewIssueDialog", () => {
   });
 
   afterEach(() => {
+    localStorage.clear();
     document.body.innerHTML = "";
   });
 
@@ -324,7 +326,7 @@ describe("NewIssueDialog", () => {
     act(() => rerendered.root.unmount());
   });
 
-  it("does not send execution workspace overrides when mode is auto", async () => {
+  it("does not send a specific reusable execution workspace id when left on the default mode", async () => {
     mockProjectsApi.list.mockResolvedValue([
       {
         id: "project-1",
@@ -364,10 +366,9 @@ describe("NewIssueDialog", () => {
     expect(payload).toEqual(
       expect.objectContaining({
         projectId: "project-1",
-        executionWorkspacePreference: "shared_workspace",
-        executionWorkspaceSettings: { mode: "shared_workspace" },
       }),
     );
+    expect(payload).not.toHaveProperty("executionWorkspaceId");
 
     act(() => root.unmount());
   });
@@ -583,6 +584,70 @@ describe("NewIssueDialog", () => {
     await act(async () => {
       workflowToggle!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    await waitForCondition(() =>
+      Array.from(container.querySelectorAll("button"))
+        .some((button) => button.textContent?.includes("Engineering workflow") ?? false),
+    );
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).toBeTruthy();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Workflow root issue",
+        workflowTemplateKey: "engineering_delivery_v1",
+      }),
+    );
+
+    act(() => root.unmount());
+  }, 15_000);
+
+  it("preserves a selected workflow template when projects finish loading afterwards", async () => {
+    let resolveProjects: ((projects: Array<Record<string, unknown>>) => void) | null = null;
+    mockProjectsApi.list.mockReturnValue(
+      new Promise<Array<Record<string, unknown>>>((resolve) => {
+        resolveProjects = resolve;
+      }),
+    );
+    dialogState.newIssueDefaults = {
+      title: "Workflow root issue",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const workflowToggle = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("No workflow"));
+    expect(workflowToggle).toBeTruthy();
+
+    await act(async () => {
+      workflowToggle!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForCondition(() =>
+      Array.from(container.querySelectorAll("button"))
+        .some((button) => button.textContent?.includes("Engineering workflow") ?? false),
+    );
+
+    await act(async () => {
+      resolveProjects?.([
+        {
+          id: "project-1",
+          name: "Alpha",
+          description: null,
+          archivedAt: null,
+          color: "#445566",
+        },
+      ]);
+      await flush();
+    });
+
     await waitForCondition(() =>
       Array.from(container.querySelectorAll("button"))
         .some((button) => button.textContent?.includes("Engineering workflow") ?? false),

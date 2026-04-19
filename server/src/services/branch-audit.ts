@@ -128,6 +128,11 @@ function normalizeProtectedBranchName(baseRef: string) {
     .replace(/^[^/]+\//, "");
 }
 
+function isActiveWorktreeDeletionError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /cannot delete branch .* used by worktree/i.test(message);
+}
+
 export async function listGitWorktrees(repoRoot: string): Promise<BranchAuditWorktree[]> {
   const output = await runGit(repoRoot, ["worktree", "list", "--porcelain"]);
   return parseWorktreeList(output);
@@ -248,7 +253,9 @@ export async function deleteMergedLocalBranches(
     } catch (error) {
       skipped.push({
         branch: branch.name,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: isActiveWorktreeDeletionError(error)
+          ? "active worktree"
+          : (error instanceof Error ? error.message : String(error)),
       });
     }
   }

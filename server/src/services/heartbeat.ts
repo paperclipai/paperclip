@@ -56,6 +56,13 @@ import {
   type OperationsAssignmentCandidate,
 } from "./issue-routing-heuristics.js";
 import { countLiveRunLimitRelevantRuns, hasReachedLiveRunLimit } from "./heartbeat-run-limit.js";
+import {
+  heartbeatRunActivityAgeMs,
+  heartbeatRunActivityReferenceTime,
+  classifyHeartbeatRunFreshness,
+  isHeartbeatRunActivityWarningRecoverable,
+  OWNED_HEARTBEAT_RUN_QUIET_THRESHOLD_MS,
+} from "./heartbeat-run-activity.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { buildHeartbeatRunIssueComment, summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
@@ -1420,12 +1427,6 @@ function isOpenRoutineExecutionConflict(error: unknown) {
     "constraint" in error &&
     (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq"
   );
-}
-
-function runActivityReferenceTime(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "lastActivityAt" | "updatedAt" | "startedAt" | "createdAt">,
-) {
-  return run.lastActivityAt ?? run.updatedAt ?? run.startedAt ?? run.createdAt;
 }
 
 function classifyHeartbeatFailureCode(input: {
@@ -2929,16 +2930,66 @@ export function heartbeatService(db: Db) {
     if (!opts?.force && nowMs - previousTouchMs < RUN_ACTIVITY_TOUCH_INTERVAL_MS) {
       return null;
     }
+
+    const current = await getRun(runId);
+    if (!current || current.status !== "running") return null;
+
+    const shouldClearWarning = isHeartbeatRunActivityWarningRecoverable(current.errorCode);
     runActivityTouchMs.set(runId, nowMs);
-    return db
+    const updated = await db
       .update(heartbeatRuns)
       .set({
         lastActivityAt: now,
         updatedAt: now,
+        ...(shouldClearWarning
+          ? {
+              error: null,
+              errorCode: null,
+            }
+          : {}),
       })
       .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    if (!updated || !shouldClearWarning) return updated;
+
+    await appendRunEvent(updated, await nextRunEventSeq(updated.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message:
+        current.errorCode === PROCESS_SUSPECT_ERROR_CODE
+          ? "Recovered run activity after quiet-period warning; cleared suspect state"
+          : "Detached child process reported activity; cleared detached warning",
+    });
+    return updated;
+  }
+
+  async function markQuietOwnedRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    activityAgeMs: number,
+  ) {
+    if (run.errorCode === PROCESS_SUSPECT_ERROR_CODE) return null;
+
+    const quietMessage = `Run has been quiet for ${Math.floor(activityAgeMs / 1000)}s while still owned; waiting for activity before recovery`;
+    const suspectedRun = await setRunStatus(run.id, "running", {
+      error: quietMessage,
+      errorCode: PROCESS_SUSPECT_ERROR_CODE,
+    });
+    if (!suspectedRun) return null;
+    runActivityTouchMs.delete(run.id);
+
+    await appendRunEvent(suspectedRun, await nextRunEventSeq(suspectedRun.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: quietMessage,
+    });
+    await logRunRecoveryActivity(suspectedRun, "heartbeat.run_quiet_owned", {
+      staleForMs: activityAgeMs,
+    });
+    return suspectedRun;
   }
 
   async function logRunRecoveryActivity(
@@ -3180,40 +3231,139 @@ export function heartbeatService(db: Db) {
   }
 
   async function clearDetachedRunWarning(runId: string) {
-    const current = await getRun(runId);
-    if (!current || current.status !== "running") return null;
+    return touchRunActivity(runId, { force: true });
+  }
 
-    const shouldClearWarning =
-      current.errorCode === DETACHED_PROCESS_ERROR_CODE || current.errorCode === PROCESS_SUSPECT_ERROR_CODE;
-    const updated = await db
-      .update(heartbeatRuns)
-      .set({
-        lastActivityAt: new Date(),
-        updatedAt: new Date(),
-        ...(shouldClearWarning
-          ? {
-              error: null,
-              errorCode: null,
-            }
-          : {}),
-      })
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (!updated) return null;
-    runActivityTouchMs.set(runId, Date.now());
-    if (!shouldClearWarning) return updated;
+  async function listIssueExecutionSummaries(companyId: string) {
+    const runIssueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+    const wakeIssueId = sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`;
+    const nowMs = Date.now();
 
-    await appendRunEvent(updated, await nextRunEventSeq(updated.id), {
-      eventType: "lifecycle",
-      stream: "system",
-      level: "info",
-      message:
-        current.errorCode === PROCESS_SUSPECT_ERROR_CODE
-          ? "Recovered run activity after quiet-period warning; cleared suspect state"
-          : "Detached child process reported activity; cleared detached warning",
-    });
-    return updated;
+    const [activeRuns, wakeups] = await Promise.all([
+      db
+        .selectDistinctOn([runIssueId], {
+          issueId: runIssueId.as("issueId"),
+          runId: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          agentId: heartbeatRuns.agentId,
+          agentName: agents.name,
+          adapterType: agents.adapterType,
+          lastActivityAt: heartbeatRuns.lastActivityAt,
+          updatedAt: heartbeatRuns.updatedAt,
+          startedAt: heartbeatRuns.startedAt,
+          createdAt: heartbeatRuns.createdAt,
+        })
+        .from(heartbeatRuns)
+        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            sql`${runIssueId} is not null`,
+          ),
+        )
+        .orderBy(
+          runIssueId,
+          sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
+          desc(sql`coalesce(${heartbeatRuns.lastActivityAt}, ${heartbeatRuns.updatedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt})`),
+          desc(heartbeatRuns.createdAt),
+          desc(heartbeatRuns.id),
+        ),
+      db
+        .selectDistinctOn([wakeIssueId], {
+          issueId: wakeIssueId.as("issueId"),
+          id: agentWakeupRequests.id,
+          agentId: agentWakeupRequests.agentId,
+          agentName: agents.name,
+          status: agentWakeupRequests.status,
+          reason: agentWakeupRequests.reason,
+          error: agentWakeupRequests.error,
+          runId: agentWakeupRequests.runId,
+          requestedAt: agentWakeupRequests.requestedAt,
+          finishedAt: agentWakeupRequests.finishedAt,
+        })
+        .from(agentWakeupRequests)
+        .innerJoin(agents, eq(agentWakeupRequests.agentId, agents.id))
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution", "skipped", "coalesced"]),
+            sql`${wakeIssueId} is not null`,
+          ),
+        )
+        .orderBy(
+          wakeIssueId,
+          desc(agentWakeupRequests.requestedAt),
+          desc(agentWakeupRequests.createdAt),
+          desc(agentWakeupRequests.id),
+        ),
+    ]);
+
+    const summaries = new Map<string, {
+      issueId: string;
+      activeRun: {
+        runId: string;
+        status: "queued" | "running";
+        agentId: string;
+        agentName: string | null;
+        adapterType: string;
+        freshness: "fresh" | "quiet";
+        activityAt: Date;
+        activityAgeMs: number;
+      } | null;
+      latestWakeup: {
+        id: string;
+        agentId: string;
+        agentName: string | null;
+        status: typeof agentWakeupRequests.$inferSelect.status;
+        reason: string | null;
+        error: string | null;
+        runId: string | null;
+        requestedAt: Date;
+        finishedAt: Date | null;
+      } | null;
+    }>();
+
+    for (const row of activeRuns) {
+      if (!row.issueId) continue;
+      const activityAt = heartbeatRunActivityReferenceTime(row);
+      summaries.set(row.issueId, {
+        issueId: row.issueId,
+        activeRun: {
+          runId: row.runId,
+          status: row.status as "queued" | "running",
+          agentId: row.agentId,
+          agentName: row.agentName,
+          adapterType: row.adapterType,
+          freshness: classifyHeartbeatRunFreshness(row, nowMs),
+          activityAt,
+          activityAgeMs: heartbeatRunActivityAgeMs(row, nowMs),
+        },
+        latestWakeup: null,
+      });
+    }
+
+    for (const row of wakeups) {
+      if (!row.issueId) continue;
+      const existing = summaries.get(row.issueId);
+      summaries.set(row.issueId, {
+        issueId: row.issueId,
+        activeRun: existing?.activeRun ?? null,
+        latestWakeup: {
+          id: row.id,
+          agentId: row.agentId,
+          agentName: row.agentName,
+          status: row.status,
+          reason: row.reason,
+          error: row.error,
+          runId: row.runId,
+          requestedAt: row.requestedAt,
+          finishedAt: row.finishedAt,
+        },
+      });
+    }
+
+    return [...summaries.values()].sort((left, right) => left.issueId.localeCompare(right.issueId));
   }
 
   async function patchRunIssueCommentStatus(
@@ -4248,9 +4398,14 @@ export function heartbeatService(db: Db) {
     const reaped: string[] = [];
 
     for (const { run, adapterType } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      const activityAgeMs = heartbeatRunActivityAgeMs(run, now.getTime());
 
-      const activityAgeMs = now.getTime() - runActivityReferenceTime(run).getTime();
+      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) {
+        if (activityAgeMs >= OWNED_HEARTBEAT_RUN_QUIET_THRESHOLD_MS) {
+          await markQuietOwnedRun(run, activityAgeMs);
+        }
+        continue;
+      }
 
       if (
         staleThresholdMs > 0 &&
@@ -4265,6 +4420,7 @@ export function heartbeatService(db: Db) {
             errorCode: PROCESS_SUSPECT_ERROR_CODE,
           });
           if (suspectedRun) {
+            runActivityTouchMs.delete(run.id);
             await appendRunEvent(suspectedRun, await nextRunEventSeq(suspectedRun.id), {
               eventType: "lifecycle",
               stream: "system",
@@ -4293,6 +4449,7 @@ export function heartbeatService(db: Db) {
             errorCode: DETACHED_PROCESS_ERROR_CODE,
           });
           if (detachedRun) {
+            runActivityTouchMs.delete(run.id);
             await appendRunEvent(detachedRun, await nextRunEventSeq(detachedRun.id), {
               eventType: "lifecycle",
               stream: "system",
@@ -7953,6 +8110,8 @@ export function heartbeatService(db: Db) {
         content: redactCurrentUserText(result.content, await getCurrentUserRedactionOptions()),
       };
     },
+
+    listIssueExecutionSummaries,
 
     invoke: async (
       agentId: string,

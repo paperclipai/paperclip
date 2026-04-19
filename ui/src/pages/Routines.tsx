@@ -399,7 +399,11 @@ export function Routines() {
           tone: "warn",
         });
       }
-      await queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issueExecutionSummaries(selectedCompanyId!) }),
+      ]);
     },
   });
 

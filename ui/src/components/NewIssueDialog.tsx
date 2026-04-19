@@ -309,6 +309,7 @@ export function NewIssueDialog() {
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
+  const workflowTemplateTouchedRef = useRef(false);
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
@@ -536,6 +537,10 @@ export function NewIssueDialog() {
     scheduleSave,
   ]);
 
+  useEffect(() => {
+    workflowTemplateTouchedRef.current = false;
+  }, [newIssueOpen]);
+
   // Restore draft or apply defaults when dialog opens
   useEffect(() => {
     if (!newIssueOpen) return;
@@ -563,7 +568,9 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceMode);
       setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
-      setWorkflowTemplateKey("");
+      if (!workflowTemplateTouchedRef.current) {
+        setWorkflowTemplateKey("");
+      }
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     } else if (newIssueDefaults.title) {
       setTitle(newIssueDefaults.title);
@@ -584,7 +591,9 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
-      setWorkflowTemplateKey("");
+      if (!workflowTemplateTouchedRef.current) {
+        setWorkflowTemplateKey("");
+      }
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     } else if (draft && draft.title.trim()) {
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
@@ -612,7 +621,9 @@ export function NewIssueDialog() {
           ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : defaultExecutionWorkspaceModeForProject(restoredProject)),
       );
       setSelectedExecutionWorkspaceId(draft.selectedExecutionWorkspaceId ?? "");
-      setWorkflowTemplateKey(draft.workflowTemplateKey ?? "");
+      if (!workflowTemplateTouchedRef.current) {
+        setWorkflowTemplateKey(draft.workflowTemplateKey ?? "");
+      }
       executionWorkspaceDefaultProjectId.current = restoredProjectId || null;
     } else {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
@@ -631,7 +642,9 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
-      setWorkflowTemplateKey("");
+      if (!workflowTemplateTouchedRef.current) {
+        setWorkflowTemplateKey("");
+      }
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     }
   }, [newIssueOpen, newIssueDefaults, orderedProjects]);
@@ -686,6 +699,7 @@ export function NewIssueDialog() {
     setStagedFiles([]);
     setIsFileDragOver(false);
     setCompanyOpen(false);
+    workflowTemplateTouchedRef.current = false;
     executionWorkspaceDefaultProjectId.current = null;
   }
 
@@ -705,6 +719,7 @@ export function NewIssueDialog() {
     setAssigneeChrome(false);
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
+    workflowTemplateTouchedRef.current = false;
     setWorkflowTemplateKey("");
   }
 
@@ -1639,9 +1654,12 @@ export function NewIssueDialog() {
                   ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300"
                   : "border-border hover:bg-accent/50",
               )}
-              onClick={() => setWorkflowTemplateKey((current) => (
-                current ? "" : ENGINEERING_WORKFLOW_TEMPLATE_KEY
-              ))}
+              onClick={() => {
+                workflowTemplateTouchedRef.current = true;
+                setWorkflowTemplateKey((current) => (
+                  current ? "" : ENGINEERING_WORKFLOW_TEMPLATE_KEY
+                ));
+              }}
               disabled={createIssue.isPending}
               title="Toggle the built-in engineering workflow template"
             >

@@ -115,6 +115,8 @@ export function Issues() {
         });
       }
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issueExecutionSummaries(selectedCompanyId!) });
     },
     onError: (err) => {
       const parsed = describeIssueUpdateError(err);

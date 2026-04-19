@@ -1,4 +1,5 @@
 import type {
+  HeartbeatIssueExecutionSummary,
   HeartbeatRun,
   HeartbeatRunEvent,
   InstanceSchedulerHeartbeatAgent,
@@ -56,6 +57,8 @@ export const heartbeatsApi = {
     api.get<ActiveRunForIssue | null>(`/issues/${issueId}/active-run`),
   liveRunsForCompany: (companyId: string, minCount?: number) =>
     api.get<LiveRunForIssue[]>(`/companies/${companyId}/live-runs${minCount ? `?minCount=${minCount}` : ""}`),
+  issueExecutionSummariesForCompany: (companyId: string) =>
+    api.get<HeartbeatIssueExecutionSummary[]>(`/companies/${companyId}/issue-execution-summaries`),
   listInstanceSchedulerAgents: () =>
     api.get<InstanceSchedulerHeartbeatAgent[]>("/instance/scheduler-heartbeats"),
 };

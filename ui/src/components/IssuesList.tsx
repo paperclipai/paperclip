@@ -7,11 +7,16 @@ import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
+import { heartbeatsApi } from "../api/heartbeats";
 import { roadmapApi } from "../api/roadmap";
 import { queryKeys } from "../lib/queryKeys";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { groupBy } from "../lib/groupBy";
 import { formatIssueStatusLabel } from "../lib/issue-status-labels";
+import {
+  issueExecutionIndicatorClassName,
+  resolveIssueExecutionIndicator,
+} from "../lib/issue-execution-indicator";
 import {
   epicButtonClassName,
   epicTone,
@@ -34,7 +39,7 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/component
 import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search, Pause, Play } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
-import type { Issue, IssueRelationIssueSummary } from "@paperclipai/shared";
+import type { HeartbeatIssueExecutionSummary, Issue, IssueRelationIssueSummary } from "@paperclipai/shared";
 
 /* ── Helpers ── */
 
@@ -639,6 +644,18 @@ export function IssuesList({
     enabled: !!selectedCompanyId,
   });
 
+  const { data: issueExecutionSummaries = [] } = useQuery({
+    queryKey: queryKeys.issueExecutionSummaries(selectedCompanyId!),
+    queryFn: () => heartbeatsApi.issueExecutionSummariesForCompany(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 5000,
+  });
+
+  const issueExecutionSummaryByIssueId = useMemo(
+    () => new Map(issueExecutionSummaries.map((summary) => [summary.issueId, summary])),
+    [issueExecutionSummaries],
+  );
+
   const activeFilterCount = countActiveFilters(viewState, defaultStatuses);
 
   const groupedContent = useMemo(() => {
@@ -1202,6 +1219,7 @@ export function IssuesList({
           allIssues={sourceIssues}
           agents={agents}
           liveIssueIds={liveIssueIds}
+          issueExecutionSummariesByIssueId={issueExecutionSummaryByIssueId}
           epicStylesByIssueId={epicStylesByIssueId}
           onUpdateIssue={onUpdateIssue}
         />
@@ -1243,6 +1261,10 @@ export function IssuesList({
                 const renderIssueRow = (issue: Issue, depth: number) => {
                   const children = childMap.get(issue.id) ?? [];
                   const issueEpicIds = epicIdsByIssueId.get(issue.id) ?? [];
+                  const executionIndicator = resolveIssueExecutionIndicator(
+                    issueExecutionSummaryByIssueId.get(issue.id),
+                    Boolean(liveIssueIds?.has(issue.id)),
+                  );
                   const hasChildren = children.length > 0;
                   const totalDescendants = hasChildren ? countDescendants(issue.id, childMap) : 0;
                   const isExpanded = !viewState.collapsedParents.includes(issue.id);
@@ -1300,14 +1322,22 @@ export function IssuesList({
                             <span className="shrink-0 font-mono text-xs text-muted-foreground">
                               {issue.identifier ?? issue.id.slice(0, 8)}
                             </span>
-                            {liveIssueIds?.has(issue.id) && (
-                              <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 sm:gap-1.5 sm:px-2">
-                                <span className="relative flex h-2 w-2">
-                                  <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
-                                  <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
-                                </span>
-                                <span className="hidden text-[11px] font-medium text-blue-600 dark:text-blue-400 sm:inline">
-                                  Live
+                            {executionIndicator && (
+                              <span
+                                title={executionIndicator.title}
+                                className={cn(
+                                  "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
+                                  issueExecutionIndicatorClassName(executionIndicator.tone),
+                                )}
+                              >
+                                {executionIndicator.pulse ? (
+                                  <span className="relative flex h-2 w-2">
+                                    <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
+                                    <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
+                                  </span>
+                                ) : null}
+                                <span className="hidden text-[11px] font-medium sm:inline">
+                                  {executionIndicator.label}
                                 </span>
                               </span>
                             )}

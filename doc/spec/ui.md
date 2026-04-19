@@ -1014,6 +1014,7 @@ All routes are company-scoped after company selection (company context stored in
 
 ### Phase 2: Issue Management (Core)
 6. Issue list view with grouping, filtering, status circles
+   - execution badges should distinguish fresh live work from quiet occupied runs and from wakeup states such as deferred or skipped
 7. Issue detail view (three-pane with properties panel)
 8. New issue modal
 9. Issue comments

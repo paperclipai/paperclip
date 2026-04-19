@@ -81,10 +81,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     childProcesses.clear();
     await db.delete(issues);
     await db.delete(roadmapEpicPauses);
-    await db.delete(activityLog);
-    await db.delete(issueComments);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await db.delete(activityLog);
+        await db.delete(issueComments);
+        await db.delete(heartbeatRunEvents);
+        await db.delete(heartbeatRuns);
+        break;
+      } catch (error) {
+        if (attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
     await db.delete(agentRuntimeState);
     await db.delete(heartbeatRetryCircuits);
     await db.delete(companySkills);
@@ -200,6 +208,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       payload: input?.includeIssue === false ? {} : { issueId },
       status: "claimed",
       runId,
+      requestedAt: now,
       claimedAt: now,
     });
 
@@ -293,6 +302,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("marks a still-owned quiet run as suspect before it disappears from the UI", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId } = await seedRunFixture({
+      includeIssue: false,
+    });
+    runningProcesses.set(runId, {
+      child,
+      graceSec: 1,
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        lastActivityAt: new Date(Date.now() - 11 * 60_000),
+        updatedAt: new Date(Date.now() - 11 * 60_000),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns({
+      staleThresholdMs: 150_000,
+    });
+
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_suspect");
+    expect(run?.error).toContain("still owned");
   });
 
   it("queues exactly one retry when the recorded local pid is dead", async () => {
@@ -406,6 +448,40 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     run = await heartbeat.getRun(runId);
     expect(run?.status).toBe("failed");
     expect(run?.errorCode).toBe("process_lost");
+  });
+
+  it("reports quiet runs and latest skipped wakeups in issue execution summaries", async () => {
+    const { companyId, agentId, issueId } = await seedRunFixture();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        lastActivityAt: new Date(Date.now() - 11 * 60_000),
+        updatedAt: new Date(Date.now() - 11 * 60_000),
+      })
+      .where(eq(heartbeatRuns.companyId, companyId));
+
+    await db.insert(agentWakeupRequests).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "heartbeat.live_run_limit_reached",
+      payload: { issueId },
+      status: "skipped",
+      requestedAt: new Date("2026-03-19T00:05:00.000Z"),
+      finishedAt: new Date("2026-03-19T00:05:01.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const summaries = await heartbeat.listIssueExecutionSummaries(companyId);
+    const summary = summaries.find((entry) => entry.issueId === issueId);
+
+    expect(summary?.activeRun?.status).toBe("running");
+    expect(summary?.activeRun?.freshness).toBe("quiet");
+    expect(summary?.activeRun?.activityAgeMs).toBeGreaterThanOrEqual(11 * 60_000);
+    expect(summary?.latestWakeup?.status).toBe("skipped");
+    expect(summary?.latestWakeup?.reason).toBe("heartbeat.live_run_limit_reached");
   });
 
   it("does not queue a second retry after the first process-loss retry was already used", async () => {
@@ -636,7 +712,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .select()
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId));
-      return runs.length >= 2;
+      const initialRun = runs.find((run) => run.retryAttempt === 0);
+      const retryRun = runs.find((run) => run.retryAttempt === 1);
+      return Boolean(initialRun && retryRun && initialRun.retryState === "scheduled");
     }, 2_000);
 
     const runs = await db
@@ -685,7 +763,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .select()
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId));
-      return runs.length >= 2;
+      const initialRun = runs.find((run) => run.retryAttempt === 0);
+      const retryRun = runs.find((run) => run.retryAttempt === 1);
+      return Boolean(initialRun && retryRun && initialRun.retryState === "scheduled");
     }, 2_000);
 
     const runs = await db
@@ -736,7 +816,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .select()
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId));
-      return runs.length >= 2;
+      const initialRun = runs.find((run) => run.retryAttempt === 0);
+      const retryRun = runs.find((run) => run.retryAttempt === 1);
+      return Boolean(initialRun && retryRun && initialRun.retryState === "scheduled");
     }, 2_000);
 
     const runs = await db
@@ -847,6 +929,77 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.errorCode).toBeNull();
     expect(run?.error).toBeNull();
+  });
+
+  it("clears the quiet-owned suspect warning when normal adapter log activity resumes", async () => {
+    let releaseLog: (() => void) | null = null;
+    let releaseFinish: (() => void) | null = null;
+    const execute = vi.fn().mockImplementation(async ({ onLog }: Parameters<ServerAdapterModule["execute"]>[0]) => {
+      await new Promise<void>((resolve) => {
+        releaseLog = resolve;
+      });
+      await onLog("stdout", "work resumed\n");
+      await new Promise<void>((resolve) => {
+        releaseFinish = resolve;
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      };
+    });
+    registerTestAdapter({
+      type: "external_activity_clear_warning_test",
+      execute,
+      testEnvironment: async () => ({
+        adapterType: "external_activity_clear_warning_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      models: [],
+      supportsLocalAgentJwt: false,
+    });
+
+    const { agentId } = await seedAgentFixture({
+      adapterType: "external_activity_clear_warning_test",
+      agentStatus: "idle",
+    });
+    const heartbeat = heartbeatService(db);
+    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(queued?.status).toBe("queued");
+
+    await waitFor(async () => {
+      const run = await heartbeat.getRun(queued!.id);
+      return run?.status === "running" && releaseLog !== null;
+    });
+
+    const staleActivityAt = new Date(Date.now() - 11 * 60 * 1000);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        lastActivityAt: staleActivityAt,
+        updatedAt: staleActivityAt,
+      })
+      .where(eq(heartbeatRuns.id, queued!.id));
+
+    await heartbeat.reapOrphanedRuns();
+    await waitFor(async () => (await heartbeat.getRun(queued!.id))?.errorCode === "process_suspect");
+
+    releaseLog?.();
+
+    await waitFor(async () => {
+      const run = await heartbeat.getRun(queued!.id);
+      return run?.status === "running" && run.errorCode === null;
+    });
+
+    const recovered = await heartbeat.getRun(queued!.id);
+    expect(recovered?.errorCode).toBeNull();
+    expect(recovered?.error).toBeNull();
+
+    await waitFor(() => releaseFinish !== null);
+    releaseFinish?.();
+    await waitFor(async () => (await heartbeat.getRun(queued!.id))?.status === "succeeded");
   });
 
   it("continues timer scans when a paused company blocks wakeups", async () => {
