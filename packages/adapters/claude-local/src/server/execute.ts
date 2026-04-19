@@ -257,7 +257,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const runtimeEnv = ensurePathInEnv({ ...sanitizeChildEnv(process.env), ...env });
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
-  const timeoutSec = asNumber(config.timeoutSec, 0);
+  const timeoutSec = asNumber(config.timeoutSec, 3600);
   const graceSec = asNumber(config.graceSec, 20);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
@@ -325,7 +325,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const model = asString(config.model, "");
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
-  const maxTurns = asNumber(config.maxTurnsPerRun, 0);
+  const maxTurns = asNumber(config.maxTurnsPerRun, 200);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
