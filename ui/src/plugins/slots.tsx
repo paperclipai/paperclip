@@ -54,6 +54,10 @@ export type PluginSlotContext = {
   /** Parent entity ID for nested slots (e.g. comment annotations within an issue). */
   parentEntityId?: string | null;
   projectRef?: string | null;
+  /** Form state for slots rendered inside form contexts (e.g. newIssueFormExtension). */
+  formState?: Record<string, unknown>;
+  /** Callbacks for form manipulation (e.g. setDescription). */
+  formActions?: Record<string, (...args: unknown[]) => void>;
 };
 
 export type ResolvedPluginSlot = PluginUiSlotDeclaration & {

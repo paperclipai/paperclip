@@ -58,6 +58,7 @@ import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDe
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { PluginSlotOutlet } from "../plugins/slots";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -479,7 +480,7 @@ export function NewIssueDialog() {
     (draft: IssueDraft) => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
       draftTimer.current = setTimeout(() => {
-        if (draft.title.trim()) saveDraft(draft);
+        if (draft.title.trim() || draft.description.trim()) saveDraft(draft);
       }, DEBOUNCE_MS);
     },
     [],
@@ -571,7 +572,7 @@ export function NewIssueDialog() {
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
-    } else if (draft && draft.title.trim()) {
+    } else if (draft && (draft.title.trim() || draft.description.trim())) {
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
       setTitle(draft.title);
@@ -1451,6 +1452,17 @@ export function NewIssueDialog() {
             </div>
           )}
 
+          <PluginSlotOutlet
+            slotTypes={["newIssueFormExtension"]}
+            context={{
+              companyId: effectiveCompanyId,
+              companyPrefix: dialogCompany?.issuePrefix ?? null,
+              formState: { description },
+              formActions: { setDescription: (v: unknown) => setDescription(v as string) },
+            }}
+            className="px-4 pb-1"
+            itemClassName="inline-flex items-center gap-2 text-sm text-muted-foreground"
+          />
           {/* Description */}
           <div
             className="border-t border-border/60 px-4 pb-2 pt-3"

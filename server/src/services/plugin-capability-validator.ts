@@ -109,6 +109,7 @@ const UI_SLOT_CAPABILITIES: Record<PluginUiSlotType, PluginCapability> = {
   commentAnnotation: "ui.commentAnnotation.register",
   commentContextMenuItem: "ui.action.register",
   settingsPage: "instance.settings.register",
+  newIssueFormExtension: "ui.action.register",
 };
 
 /**
@@ -132,6 +133,7 @@ const LAUNCHER_PLACEMENT_CAPABILITIES: Record<
   commentAnnotation: "ui.commentAnnotation.register",
   commentContextMenuItem: "ui.action.register",
   settingsPage: "instance.settings.register",
+  newIssueFormExtension: "ui.action.register",
 };
 
 /**
