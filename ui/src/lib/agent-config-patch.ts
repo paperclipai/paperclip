@@ -14,6 +14,7 @@ const ADAPTER_AGNOSTIC_KEYS = [
   "instructionsFilePath",
   "cwd",
   "timeoutSec",
+  "maxWallClockSec",
   "idleTimeoutSec",
   "graceSec",
   "bootstrapPromptTemplate",
@@ -21,7 +22,7 @@ const ADAPTER_AGNOSTIC_KEYS = [
 
 function omitUndefinedEntries(value: Record<string, unknown>) {
   return Object.fromEntries(
-    Object.entries(value).filter(([, entryValue]) => entryValue !== undefined),
+    Object.entries(value).filter(([, entryValue]) => entryValue != null),
   );
 }
 

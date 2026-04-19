@@ -6,6 +6,7 @@ import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type Adapter
 import {
   asString,
   asNumber,
+  asOptionalFiniteNumber,
   asStringArray,
   parseObject,
   buildPaperclipEnv,
@@ -21,6 +22,7 @@ import {
   stringifyPaperclipWakePayload,
   runChildProcess,
   formatRunChildProcessTimedOutErrorMessage,
+  resolveRunChildProcessWallLimitSec,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
@@ -207,6 +209,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
 
     const timeoutSec = asNumber(config.timeoutSec, 0);
+    const maxWallClockSec = asOptionalFiniteNumber(config.maxWallClockSec);
+    const wallLimitSec = resolveRunChildProcessWallLimitSec({ timeoutSec, maxWallClockSec });
     const idleTimeoutSec = asNumber(config.idleTimeoutSec, 0);
     const graceSec = asNumber(config.graceSec, 20);
     const extraArgs = (() => {
@@ -330,6 +334,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env: runtimeEnv,
         stdin: prompt,
         timeoutSec,
+        ...(maxWallClockSec !== undefined ? { maxWallClockSec } : {}),
         idleTimeoutSec,
         graceSec,
         onSpawn,
@@ -364,7 +369,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           timedOut: true,
           errorMessage:
             formatRunChildProcessTimedOutErrorMessage(attempt.proc, {
-              wallTimeoutSec: timeoutSec,
+              wallTimeoutSec: wallLimitSec,
               idleTimeoutSec,
             }) ?? "Timed out",
           clearSession: clearSessionOnMissingSession,

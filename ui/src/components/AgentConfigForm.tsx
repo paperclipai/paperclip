@@ -826,6 +826,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       className={inputClass}
                     />
                   </Field>
+                  <Field label="Hard wall ceiling (sec)" hint={help.maxWallClockSec}>
+                    <DraftNumberInput
+                      value={
+                        Number(
+                          eff(
+                            "adapterConfig",
+                            "maxWallClockSec",
+                            typeof config.maxWallClockSec === "number" ? config.maxWallClockSec : 0,
+                          ) ?? 0,
+                        ) || 0
+                      }
+                      onCommit={(v) => mark("adapterConfig", "maxWallClockSec", v > 0 ? v : null)}
+                      immediate
+                      className={inputClass}
+                    />
+                  </Field>
                   <Field label="Idle output timeout (sec)" hint={help.idleTimeoutSec}>
                     <DraftNumberInput
                       value={eff(

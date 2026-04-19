@@ -5,6 +5,7 @@ import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type Adapter
 import {
   asString,
   asNumber,
+  asOptionalFiniteNumber,
   parseObject,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
@@ -21,6 +22,7 @@ import {
   joinPromptSections,
   runChildProcess,
   formatRunChildProcessTimedOutErrorMessage,
+  resolveRunChildProcessWallLimitSec,
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
@@ -389,6 +391,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
+  const maxWallClockSec = asOptionalFiniteNumber(config.maxWallClockSec);
+  const wallLimitSec = resolveRunChildProcessWallLimitSec({ timeoutSec, maxWallClockSec });
   const idleTimeoutSec = asNumber(config.idleTimeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
 
@@ -515,6 +519,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env,
       stdin: prompt,
       timeoutSec,
+      ...(maxWallClockSec !== undefined ? { maxWallClockSec } : {}),
       idleTimeoutSec,
       graceSec,
       onSpawn,
@@ -560,7 +565,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: attempt.proc.signal,
         timedOut: true,
         errorMessage:
-          formatRunChildProcessTimedOutErrorMessage(attempt.proc, { wallTimeoutSec: timeoutSec, idleTimeoutSec }) ??
+          formatRunChildProcessTimedOutErrorMessage(attempt.proc, { wallTimeoutSec: wallLimitSec, idleTimeoutSec }) ??
           "Timed out",
         clearSession: clearSessionOnMissingSession,
       };

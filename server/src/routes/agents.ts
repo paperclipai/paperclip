@@ -1987,7 +1987,7 @@ export function agentRoutes(db: Db) {
         // when the adapter type changes. Without this, a PATCH that includes
         // adapterConfig but omits these keys would silently drop them.
         const ADAPTER_AGNOSTIC_KEYS = [
-          "env", "cwd", "timeoutSec", "idleTimeoutSec", "graceSec",
+          "env", "cwd", "timeoutSec", "maxWallClockSec", "idleTimeoutSec", "graceSec",
           "promptTemplate", "bootstrapPromptTemplate",
         ] as const;
         for (const key of ADAPTER_AGNOSTIC_KEYS) {

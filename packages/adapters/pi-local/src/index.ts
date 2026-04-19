@@ -28,7 +28,8 @@ Core fields:
 - env (object, optional): KEY=VALUE environment variables
 
 Operational fields:
-- timeoutSec (number, optional): wall-clock run timeout in seconds (0 disables)
+- timeoutSec (number, optional): wall-clock run timeout in seconds (0 disables when maxWallClockSec is omitted)
+- maxWallClockSec (number, optional): explicit wall-clock ceiling; when set (including 0), drives the wall watchdog instead of timeoutSec alone
 - idleTimeoutSec (number, optional): kill if no stdout/stderr for this many seconds (0 disables)
 - graceSec (number, optional): SIGTERM grace period in seconds
 
