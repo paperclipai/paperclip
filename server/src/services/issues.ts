@@ -646,7 +646,7 @@ async function reconcileExecutionStateForIssues(
           executionAgentNameKey: executionState.executionAgentNameKey,
           updatedAt: now,
         })
-        .where(and(eq(issues.id, issueId), eq(issues.checkoutRunId, executionState.executionRunId)));
+        .where(eq(issues.id, issueId));
     }
   }
 
