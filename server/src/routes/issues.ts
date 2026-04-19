@@ -507,17 +507,27 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     if (issue.assigneeAgentId) {
-      void heartbeat
-        .wakeup(issue.assigneeAgentId, {
-          source: "assignment",
-          triggerDetail: "system",
-          reason: "issue_assigned",
-          payload: { issueId: issue.id, mutation: "create" },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.create" },
-        })
-        .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue create"));
+      // Skip wakeup if parent issue exists and isn't done yet (sequential work)
+      let parentBlocking = false;
+      if (issue.parentId) {
+        const parent = await svc.getById(issue.parentId);
+        if (parent && parent.status !== "done") parentBlocking = true;
+      }
+      if (!parentBlocking) {
+        void heartbeat
+          .wakeup(issue.assigneeAgentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: "issue_assigned",
+            payload: { issueId: issue.id, mutation: "create" },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: { issueId: issue.id, source: "issue.create" },
+          })
+          .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue create"));
+      } else {
+        logger.info({ issueId: issue.id, parentId: issue.parentId }, "skipping wakeup — parent not done yet");
+      }
     }
 
     res.status(201).json(issue);
@@ -698,6 +708,28 @@ export function issueRoutes(db: Db, storage: StorageService) {
               source: "comment.mention",
             },
           });
+        }
+      }
+
+      // When an issue is marked done, cascade wakeups to child issues whose agents are waiting
+      if (issue.status === "done" && existing.status !== "done") {
+        try {
+          const children = await svc.list(issue.companyId, { parentId: issue.id });
+          for (const child of children) {
+            if (child.assigneeAgentId && child.status !== "done" && child.status !== "cancelled" && !wakeups.has(child.assigneeAgentId)) {
+              wakeups.set(child.assigneeAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "parent_completed",
+                payload: { issueId: child.id, parentIssueId: issue.id },
+                requestedByActorType: actor.actorType,
+                requestedByActorId: actor.actorId,
+                contextSnapshot: { issueId: child.id, parentIssueId: issue.id, source: "parent.completed" },
+              });
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "failed to cascade wakeups to children");
         }
       }
 
