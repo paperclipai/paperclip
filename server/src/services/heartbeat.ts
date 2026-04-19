@@ -1023,8 +1023,13 @@ async function resolveOperationsHeartbeatTargets(
   const readyUnassignedRows = await db
     .select({
       id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      description: issues.description,
       priority: issues.priority,
       updatedAt: issues.updatedAt,
+      projectId: issues.projectId,
+      workflowLaneRole: issues.workflowLaneRole,
     })
     .from(issues)
     .where(
@@ -1036,7 +1041,23 @@ async function resolveOperationsHeartbeatTargets(
         sql`${issues.assigneeUserId} is null`,
       ),
     );
-  const readyUnassigned = selectReadyUnassignedCandidate(readyUnassignedRows);
+  const securityAgentRows = await db
+    .select({
+      id: agents.id,
+      status: agents.status,
+    })
+    .from(agents)
+    .where(and(eq(agents.companyId, input.companyId), eq(agents.role, "security")));
+  const hasAssignableSecuritySpecialist = securityAgentRows.some((agent) => (
+    agent.status !== "paused"
+    && agent.status !== "terminated"
+    && agent.status !== "pending_approval"
+    && agent.status !== "error"
+  ));
+  const assignableReadyUnassignedRows = readyUnassignedRows.filter((issue) => (
+    issue.workflowLaneRole !== "security" || hasAssignableSecuritySpecialist
+  ));
+  const readyUnassigned = selectReadyUnassignedCandidate(assignableReadyUnassignedRows);
 
   if (readyUnassigned) {
     return [{
@@ -4534,6 +4555,7 @@ export function heartbeatService(db: Db) {
           description: issues.description,
           projectId: issues.projectId,
           projectName: projects.name,
+          workflowLaneRole: issues.workflowLaneRole,
           executionRunId: issues.executionRunId,
           executionState: issues.executionState,
           assigneeAgentId: issues.assigneeAgentId,
@@ -4564,6 +4586,7 @@ export function heartbeatService(db: Db) {
           description: issues.description,
           projectId: issues.projectId,
           projectName: projects.name,
+          workflowLaneRole: issues.workflowLaneRole,
         })
         .from(issues)
         .leftJoin(projects, and(eq(projects.id, issues.projectId), eq(projects.companyId, issues.companyId)))
@@ -4814,6 +4837,7 @@ export function heartbeatService(db: Db) {
       description?: string | null;
       projectId: string | null;
       projectName?: string | null;
+      workflowLaneRole?: string | null;
     }) => {
       const routingDescriptionParts = [
         readNonEmptyString(issue.description),
@@ -4826,6 +4850,7 @@ export function heartbeatService(db: Db) {
         description: routingDescriptionParts.length > 0 ? routingDescriptionParts.join("\n\n") : (issue.description ?? null),
         projectId: issue.projectId,
         projectName: issue.projectName,
+        preferredRole: issue.workflowLaneRole ?? null,
       };
     };
     const resolveEligibleCandidatePool = (issue: {
@@ -4835,6 +4860,7 @@ export function heartbeatService(db: Db) {
       description?: string | null;
       projectId: string | null;
       projectName?: string | null;
+      workflowLaneRole?: string | null;
     }, candidatePool: OperationsAssignmentCandidate[] = availableAssignmentCandidates) => (
       resolveEligibleOperationsAssignmentCandidates(buildRoutingIssueInput(issue), candidatePool)
     );
@@ -4845,6 +4871,7 @@ export function heartbeatService(db: Db) {
       description?: string | null;
       projectId: string | null;
       projectName?: string | null;
+      workflowLaneRole?: string | null;
     }, opts?: {
       excludeAgentId?: string | null;
       candidatePool?: OperationsAssignmentCandidate[];
@@ -4881,6 +4908,7 @@ export function heartbeatService(db: Db) {
           description: base.description,
           projectId: base.projectId,
           projectName: base.projectName,
+          workflowLaneRole: base.workflowLaneRole ?? null,
         };
         openAssignedIssueById.delete(issueId);
         openAssignedIssues = openAssignedIssues.filter((issue) => issue.id !== issueId);
@@ -4914,6 +4942,7 @@ export function heartbeatService(db: Db) {
         assigneeName: assignee?.name ?? null,
         assigneeRole: assignee?.role ?? null,
         assigneeStatus: assignee?.status ?? null,
+        workflowLaneRole: base.workflowLaneRole ?? null,
       };
       openAssignedIssueById.set(issueId, nextAssigned);
       openAssignedIssues = [
@@ -5023,7 +5052,7 @@ export function heartbeatService(db: Db) {
     const updateOwnedIssueWithActivity = async (
       issue: (typeof openAssignedIssues)[number],
       patch: {
-        assigneeAgentId: string;
+        assigneeAgentId: string | null;
         status?: string;
       },
     ) => {
@@ -5145,6 +5174,47 @@ export function heartbeatService(db: Db) {
       const bestEligibleCandidate = pickAssignmentCandidate(issue, { candidatePool: eligibleCandidatePool });
       const bestFreeSlotCandidate = pickAssignmentCandidate(issue, { candidatePool: freeSlotEligibleCandidates });
       const currentAssigneeHasFreeSlot = hasFreeSlot(issue.assigneeAgentId);
+
+      if (issue.workflowLaneRole === "security" && eligibleCandidatePool.length === 0) {
+        const nextStatus = issue.status === "in_progress" ? "todo" : issue.status;
+        try {
+          await updateOwnedIssueWithActivity(issue, {
+            assigneeAgentId: null,
+            ...(nextStatus !== issue.status ? { status: nextStatus } : {}),
+          });
+          syncLocalAssignedIssue(issue.id, {
+            assigneeAgentId: null,
+            status: nextStatus,
+          });
+          ownershipCorrectedIssueIds.add(issue.id);
+          try {
+            await issuesSvc.addComment(
+              issue.id,
+              buildOperationsOwnershipCorrectionComment({
+                correctionReason: "wrong_specialist_reassigned",
+                wakeDeferred: false,
+                detail: "security workflow lane requires a security specialist, but none are currently available",
+                nextStatus,
+                assigneeAgentId: null,
+                assigneeName: null,
+              }),
+              { agentId: input.agent.id, runId: input.run.id },
+            );
+            ownershipCorrectionCommentCount += 1;
+          } catch (err) {
+            logger.warn(
+              { err, issueId: issue.id },
+              "operations heartbeat failed to post security-lane ownership correction comment",
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id },
+            "operations heartbeat failed to return security workflow lane to the unassigned queue",
+          );
+        }
+        continue;
+      }
 
       if (eligibleCandidatePool.length > 0 && !currentAssigneeIsEligible) {
         const nextOwner = bestFreeSlotCandidate ?? bestEligibleCandidate;
@@ -5512,6 +5582,7 @@ export function heartbeatService(db: Db) {
           description: issue.description,
           projectId: issue.projectId,
           projectName: issue.projectName,
+          workflowLaneRole: issue.workflowLaneRole ?? null,
         }];
       }),
     ];

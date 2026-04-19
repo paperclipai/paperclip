@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
@@ -27,8 +27,6 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { accessService } from "../services/access.js";
-import { errorHandler as errorHandlerMiddleware } from "../middleware/index.js";
-import { routineRoutes as routineRoutesFactory } from "../routes/routines.js";
 
 vi.mock("../services/index.js", async () => {
   const actual = await vi.importActual<typeof import("../services/index.js")>("../services/index.js");
@@ -81,7 +79,6 @@ vi.mock("../services/index.js", async () => {
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
-const EMBEDDED_POSTGRES_SETUP_TIMEOUT_MS = 60_000;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -92,11 +89,19 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("routine routes end-to-end", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let routineRoutesFactory!: typeof import("../routes/routines.js").routineRoutes;
+  let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-e2e-");
     db = createDb(tempDb.connectionString);
-  }, EMBEDDED_POSTGRES_SETUP_TIMEOUT_MS);
+  }, 20_000);
+
+  beforeEach(async () => {
+    vi.resetModules();
+    ({ routineRoutes: routineRoutesFactory } = await import("../routes/routines.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+  });
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -327,14 +332,15 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   });
 
   it("persists execution workspace selections from manual routine runs", async () => {
-    const { companyId, agentId, projectId } = await seedFixture();
+    const { companyId, agentId, projectId, userId } = await seedFixture();
     const projectWorkspaceId = randomUUID();
     const executionWorkspaceId = randomUUID();
     const app = await createApp({
-      type: "agent",
-      companyId,
-      agentId,
-      source: "agent_api_key",
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
     });
 
     await db.insert(projectWorkspaces).values({

@@ -5,12 +5,7 @@ import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
 
 const mockIssueService = vi.hoisted(() => ({
-  getAncestors: vi.fn(),
   getById: vi.fn(),
-  findMentionedProjectIds: vi.fn(),
-  getRelationSummaries: vi.fn(),
-  listAttachments: vi.fn(),
-  listComments: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
@@ -41,17 +36,11 @@ vi.mock("../services/index.js", () => ({
     hasPermission: vi.fn(),
   }),
   agentService: () => mockAgentService,
-  documentService: () => ({
-    getIssueDocumentPayload: vi.fn(async () => ({})),
-    listIssueDocuments: vi.fn(async () => []),
-  }),
+  documentService: () => ({}),
   executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({}),
-  goalService: () => ({
-    getById: vi.fn(async () => null),
-    getDefaultCompanyGoal: vi.fn(async () => null),
-  }),
+  goalService: () => ({}),
   heartbeatService: () => ({
     wakeup: vi.fn(async () => undefined),
     reportRunActivity: vi.fn(async () => undefined),
@@ -59,17 +48,17 @@ vi.mock("../services/index.js", () => ({
   instanceSettingsService: () => ({}),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
-  logActivity: vi.fn(async () => undefined),
-  projectService: () => ({
-    getById: vi.fn(async () => null),
-    listByIds: vi.fn(async () => []),
+  issueWorkflowService: () => ({
+    decorateIssue: vi.fn(async (issue: unknown) => issue),
+    evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
+    applyTemplate: vi.fn(),
   }),
+  logActivity: vi.fn(async () => undefined),
+  projectService: () => ({}),
   routineService: () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
-  workProductService: () => ({
-    listForIssue: vi.fn(async () => []),
-  }),
+  workProductService: () => ({}),
 }));
 
 function makeIssue(status: "todo" | "done") {
@@ -112,12 +101,7 @@ describe("issue telemetry routes", () => {
       }
       return null;
     });
-    mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
-    mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
-    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
-    mockIssueService.listAttachments.mockResolvedValue([]);
-    mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({

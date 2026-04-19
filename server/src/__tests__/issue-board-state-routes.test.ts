@@ -1,16 +1,12 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { HttpError as HttpErrorCtor } from "../errors.js";
-import { errorHandler as errorHandlerMiddleware } from "../middleware/index.js";
-import { issueRoutes as issueRoutesFactory } from "../routes/issues.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   list: vi.fn(),
   update: vi.fn(),
   listComments: vi.fn(),
-  listAttachments: vi.fn(),
   getAncestors: vi.fn(),
   findMentionedProjectIds: vi.fn(),
   getRelationSummaries: vi.fn(),
@@ -25,6 +21,67 @@ const mockAgentService = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(),
+  hasPermission: vi.fn(),
+}));
+
+const mockDocumentService = vi.hoisted(() => ({
+  getIssueDocumentPayload: vi.fn(),
+}));
+
+const mockExecutionGateService = vi.hoisted(() => ({
+  getExecutionBlock: vi.fn(),
+}));
+
+const mockExecutionWorkspaceService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
+const mockFeedbackService = vi.hoisted(() => ({
+  listIssueVotesForUser: vi.fn(),
+  saveIssueVote: vi.fn(),
+}));
+
+const mockGoalService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  getDefaultCompanyGoal: vi.fn(),
+}));
+
+const mockHeartbeatService = vi.hoisted(() => ({
+  wakeup: vi.fn(),
+  reportRunActivity: vi.fn(),
+  getRun: vi.fn(),
+  getActiveRunForAgent: vi.fn(),
+  cancelRun: vi.fn(),
+}));
+
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(),
+  listCompanyIds: vi.fn(),
+}));
+
+const mockIssueWorkflowService = vi.hoisted(() => ({
+  decorateIssue: vi.fn(),
+  evaluateLaneCompletion: vi.fn(),
+  applyTemplate: vi.fn(),
+}));
+
+const mockLogActivity = vi.hoisted(() => vi.fn());
+
+const mockProjectService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  listByIds: vi.fn(),
+}));
+
+const mockRoutineService = vi.hoisted(() => ({
+  syncRunStatusForIssue: vi.fn(),
+}));
+
+const mockWorkProductService = vi.hoisted(() => ({
+  listForIssue: vi.fn(),
+}));
+
 const mockComputeIssueBoardStateMap = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/issue-board-state.js", () => ({
@@ -32,59 +89,22 @@ vi.mock("../services/issue-board-state.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
-  accessService: () => ({
-    canUser: vi.fn(),
-    hasPermission: vi.fn(),
-  }),
+  accessService: () => mockAccessService,
   agentService: () => mockAgentService,
-  documentService: () => ({
-    getIssueDocumentPayload: vi.fn(async () => ({})),
-    listIssueDocuments: vi.fn(async () => []),
-  }),
-  executionGateService: () => ({
-    getExecutionBlock: vi.fn(async () => null),
-  }),
-  executionWorkspaceService: () => ({
-    getById: vi.fn(async () => null),
-  }),
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
-  goalService: () => ({
-    getById: vi.fn(async () => null),
-    getDefaultCompanyGoal: vi.fn(async () => null),
-  }),
-  heartbeatService: () => ({
-    wakeup: vi.fn(async () => undefined),
-    reportRunActivity: vi.fn(async () => undefined),
-    getRun: vi.fn(async () => null),
-    getActiveRunForAgent: vi.fn(async () => null),
-    cancelRun: vi.fn(async () => null),
-  }),
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
+  documentService: () => mockDocumentService,
+  executionGateService: () => mockExecutionGateService,
+  executionWorkspaceService: () => mockExecutionWorkspaceService,
+  feedbackService: () => mockFeedbackService,
+  goalService: () => mockGoalService,
+  heartbeatService: () => mockHeartbeatService,
+  instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
-  logActivity: vi.fn(async () => undefined),
-  projectService: () => ({
-    getById: vi.fn(async () => null),
-    listByIds: vi.fn(async () => []),
-  }),
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({
-    listForIssue: vi.fn(async () => []),
-  }),
+  issueWorkflowService: () => mockIssueWorkflowService,
+  logActivity: mockLogActivity,
+  projectService: () => mockProjectService,
+  routineService: () => mockRoutineService,
+  workProductService: () => mockWorkProductService,
 }));
 
 vi.mock("../services/issue-merge.js", () => ({
@@ -97,6 +117,9 @@ vi.mock("../services/issue-merge.js", () => ({
 const mockDb = {
   select: vi.fn(),
 } as any;
+let issueRoutesFactory!: typeof import("../routes/issues.js").issueRoutes;
+let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
+let HttpErrorCtor!: typeof import("../errors.js").HttpError;
 
 function createApp() {
   const app = express();
@@ -150,11 +173,32 @@ function makeIssue(overrides?: Record<string, unknown>) {
 }
 
 describe("issue board state routes", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
+  beforeEach(async () => {
+    vi.resetModules();
+    ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+    ({ HttpError: HttpErrorCtor } = await import("../errors.js"));
+    mockAccessService.canUser.mockReset();
+    mockAccessService.hasPermission.mockReset();
+    mockDocumentService.getIssueDocumentPayload.mockReset();
+    mockExecutionGateService.getExecutionBlock.mockReset();
+    mockExecutionWorkspaceService.getById.mockReset();
+    mockFeedbackService.listIssueVotesForUser.mockReset();
+    mockFeedbackService.saveIssueVote.mockReset();
+    mockGoalService.getById.mockReset();
+    mockGoalService.getDefaultCompanyGoal.mockReset();
+    mockHeartbeatService.wakeup.mockReset();
+    mockHeartbeatService.reportRunActivity.mockReset();
+    mockHeartbeatService.getRun.mockReset();
+    mockHeartbeatService.getActiveRunForAgent.mockReset();
+    mockHeartbeatService.cancelRun.mockReset();
+    mockInstanceSettingsService.get.mockReset();
+    mockInstanceSettingsService.listCompanyIds.mockReset();
     mockIssueService.listComments.mockResolvedValue([]);
-    mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.getAncestors.mockResolvedValue([]);
+    mockIssueService.getById.mockReset();
+    mockIssueService.list.mockReset();
+    mockIssueService.update.mockReset();
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({
       blockedBy: [],
@@ -168,8 +212,45 @@ describe("issue board state routes", () => {
     mockIssueService.addComment.mockResolvedValue(null);
     mockAgentService.getById.mockResolvedValue(null);
     mockAgentService.list.mockResolvedValue([]);
+    mockIssueWorkflowService.decorateIssue.mockReset();
+    mockIssueWorkflowService.evaluateLaneCompletion.mockReset();
+    mockIssueWorkflowService.applyTemplate.mockReset();
+    mockLogActivity.mockReset();
+    mockProjectService.getById.mockReset();
+    mockProjectService.listByIds.mockReset();
+    mockRoutineService.syncRunStatusForIssue.mockReset();
+    mockWorkProductService.listForIssue.mockReset();
     mockComputeIssueBoardStateMap.mockResolvedValue(new Map());
-  });
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockDocumentService.getIssueDocumentPayload.mockResolvedValue({});
+    mockExecutionGateService.getExecutionBlock.mockResolvedValue(null);
+    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
+    mockFeedbackService.saveIssueVote.mockResolvedValue({ vote: null, consentEnabledNow: false, sharingEnabled: false });
+    mockGoalService.getById.mockResolvedValue(null);
+    mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
+    mockHeartbeatService.wakeup.mockResolvedValue(undefined);
+    mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
+    mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockInstanceSettingsService.get.mockResolvedValue({
+      id: "instance-settings-1",
+      general: {
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      },
+    });
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+    mockIssueWorkflowService.decorateIssue.mockImplementation(async (issue: unknown) => issue);
+    mockIssueWorkflowService.evaluateLaneCompletion.mockResolvedValue({ canComplete: true, blockingReasons: [], artifactStatuses: [] });
+    mockLogActivity.mockResolvedValue(undefined);
+    mockProjectService.getById.mockResolvedValue(null);
+    mockProjectService.listByIds.mockResolvedValue([]);
+    mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
+  }, 30_000);
 
   it("includes boardState and primaryBlocker on GET /issues/:id", async () => {
     const issue = makeIssue();

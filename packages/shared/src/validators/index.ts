@@ -153,6 +153,9 @@ export {
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
   issueExecutionWorkspaceSettingsSchema,
+  issueWorkflowTemplateKeySchema,
+  issueWorkflowLaneRoleSchema,
+  issueWorkflowArtifactRequirementSchema,
   checkoutIssueSchema,
   addIssueCommentSchema,
   linkIssueApprovalSchema,
@@ -161,6 +164,7 @@ export {
   issueDocumentKeySchema,
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
+  applyIssueWorkflowTemplateSchema,
   type CreateIssue,
   type IssueRecovery,
   type CreateIssueLabel,
@@ -173,6 +177,7 @@ export {
   type IssueDocumentFormat,
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
+  type ApplyIssueWorkflowTemplate,
 } from "./issue.js";
 
 export {

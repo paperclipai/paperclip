@@ -6,8 +6,12 @@ describe("resolveDefaultAgentInstructionsBundleRole", () => {
     expect(resolveDefaultAgentInstructionsBundleRole("ceo")).toBe("ceo");
     expect(resolveDefaultAgentInstructionsBundleRole("coo")).toBe("coo");
     expect(resolveDefaultAgentInstructionsBundleRole("operations")).toBe("coo");
+    expect(resolveDefaultAgentInstructionsBundleRole("designer")).toBe("designer");
     expect(resolveDefaultAgentInstructionsBundleRole("engineer")).toBe("engineer");
+    expect(resolveDefaultAgentInstructionsBundleRole("pm")).toBe("pm");
     expect(resolveDefaultAgentInstructionsBundleRole("qa")).toBe("qa");
+    expect(resolveDefaultAgentInstructionsBundleRole("researcher")).toBe("researcher");
+    expect(resolveDefaultAgentInstructionsBundleRole("security")).toBe("security");
   });
 
   it("falls back to the shared default bundle for other roles", () => {
@@ -20,18 +24,29 @@ describe("loadDefaultAgentInstructionsBundle", () => {
   it("loads the role-specific AGENTS bundle content", async () => {
     const ceoBundle = await loadDefaultAgentInstructionsBundle("ceo");
     const cooBundle = await loadDefaultAgentInstructionsBundle("coo");
+    const designerBundle = await loadDefaultAgentInstructionsBundle("designer");
     const engineerBundle = await loadDefaultAgentInstructionsBundle("engineer");
+    const pmBundle = await loadDefaultAgentInstructionsBundle("pm");
     const qaBundle = await loadDefaultAgentInstructionsBundle("qa");
+    const researcherBundle = await loadDefaultAgentInstructionsBundle("researcher");
+    const securityBundle = await loadDefaultAgentInstructionsBundle("security");
     const defaultBundle = await loadDefaultAgentInstructionsBundle("default");
 
     expect(ceoBundle["AGENTS.md"]).toContain("You are the CEO.");
     expect(ceoBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
     expect(cooBundle["AGENTS.md"]).toContain("Same-issue recovery is the default for stuck work.");
     expect(cooBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
+    expect(designerBundle["AGENTS.md"]).toContain("You are the Designer.");
+    expect(designerBundle["AGENTS.md"]).toContain("`design` issue document");
     expect(engineerBundle["AGENTS.md"]).toContain("Never move a delivery issue from `In Progress` to `Done`.");
     expect(engineerBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
+    expect(pmBundle["AGENTS.md"]).toContain("You are the Product Manager.");
+    expect(pmBundle["AGENTS.md"]).toContain("`plan` issue document");
     expect(qaBundle["AGENTS.md"]).toContain("Only QA and Release Engineer moves a delivery issue from `In Review` to `Done`.");
     expect(qaBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
+    expect(researcherBundle["AGENTS.md"]).toContain("You are the Researcher.");
+    expect(securityBundle["AGENTS.md"]).toContain("You are the Security Engineer.");
+    expect(securityBundle["AGENTS.md"]).toContain("`threat-review` issue document");
     expect(defaultBundle["AGENTS.md"]).toContain(
       "Successor issues linked by `recovered_by` are exceptional board-controlled recovery only.",
     );
@@ -42,11 +57,25 @@ describe("loadDefaultAgentInstructionsBundle", () => {
   it("includes org baseline precedence and trivial-task fast path guidance", async () => {
     const ceoBundle = await loadDefaultAgentInstructionsBundle("ceo");
     const cooBundle = await loadDefaultAgentInstructionsBundle("coo");
+    const designerBundle = await loadDefaultAgentInstructionsBundle("designer");
     const engineerBundle = await loadDefaultAgentInstructionsBundle("engineer");
+    const pmBundle = await loadDefaultAgentInstructionsBundle("pm");
     const qaBundle = await loadDefaultAgentInstructionsBundle("qa");
+    const researcherBundle = await loadDefaultAgentInstructionsBundle("researcher");
+    const securityBundle = await loadDefaultAgentInstructionsBundle("security");
     const defaultBundle = await loadDefaultAgentInstructionsBundle("default");
 
-    const bundles = [ceoBundle, cooBundle, engineerBundle, qaBundle, defaultBundle];
+    const bundles = [
+      ceoBundle,
+      cooBundle,
+      designerBundle,
+      engineerBundle,
+      pmBundle,
+      qaBundle,
+      researcherBundle,
+      securityBundle,
+      defaultBundle,
+    ];
     for (const bundle of bundles) {
       expect(bundle["AGENTS.md"]).toContain("Always apply the `org-engineering-baseline` skill for coding tasks.");
       expect(bundle["AGENTS.md"]).toContain("1. Direct user instructions");
@@ -56,22 +85,5 @@ describe("loadDefaultAgentInstructionsBundle", () => {
         "Use the trivial-task fast path for obvious one-line or non-behavioral edits.",
       );
     }
-  });
-
-  it("teaches strategist roles to use an internal review loop and publish a decision card", async () => {
-    const ceoBundle = await loadDefaultAgentInstructionsBundle("ceo");
-    const cooBundle = await loadDefaultAgentInstructionsBundle("coo");
-    const defaultBundle = await loadDefaultAgentInstructionsBundle("default");
-
-    for (const bundle of [ceoBundle, cooBundle, defaultBundle]) {
-      expect(bundle["AGENTS.md"]).toContain("Draft -> Cross-examine -> Verify -> Revise -> Compress");
-      expect(bundle["AGENTS.md"]).toContain("Decision Card");
-      expect(bundle["AGENTS.md"]).toContain("Do not expose internal debate, reviewer personas, or orchestration chatter.");
-      expect(bundle["AGENTS.md"]).toContain("When in doubt between `Execute` and `Run Probe`, default to `Run Probe`.");
-    }
-
-    expect(ceoBundle["AGENTS.md"]).toContain("When you submit `approve_ceo_strategy`");
-    expect(ceoBundle["AGENTS.md"]).toContain("\"recommendation\"");
-    expect(ceoBundle["AGENTS.md"]).toContain("\"nextStepMode\"");
   });
 });

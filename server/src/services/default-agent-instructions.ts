@@ -5,7 +5,11 @@ const DEFAULT_AGENT_BUNDLE_FILES = {
   ceo: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md", "ROLE_TEMPLATE.md"],
   coo: ["AGENTS.md", "ROLE_TEMPLATE.md"],
   engineer: ["AGENTS.md", "ROLE_TEMPLATE.md"],
+  designer: ["AGENTS.md", "ROLE_TEMPLATE.md"],
+  pm: ["AGENTS.md", "ROLE_TEMPLATE.md"],
   qa: ["AGENTS.md", "ROLE_TEMPLATE.md"],
+  researcher: ["AGENTS.md", "ROLE_TEMPLATE.md"],
+  security: ["AGENTS.md", "ROLE_TEMPLATE.md"],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
@@ -29,6 +33,10 @@ export function resolveDefaultAgentInstructionsBundleRole(role: string): Default
   if (role === "ceo") return "ceo";
   if (role === "coo" || role === "operations") return "coo";
   if (role === "engineer") return "engineer";
+  if (role === "designer") return "designer";
+  if (role === "pm") return "pm";
   if (role === "qa") return "qa";
+  if (role === "researcher") return "researcher";
+  if (role === "security") return "security";
   return "default";
 }

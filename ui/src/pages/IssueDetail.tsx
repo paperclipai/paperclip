@@ -37,18 +37,16 @@ import {
   type OptimisticIssueComment,
 } from "../lib/optimistic-issue-comments";
 import { useProjectOrder } from "../hooks/useProjectOrder";
-import { relativeTime, cn, formatDateTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { describeIssueUpdateError } from "../lib/issue-update-errors";
-import { getSmartReviewActionUi, getSmartReviewPresentation } from "../lib/qa-gate-presentation";
-import { formatActivityAction } from "../lib/activityActionText";
+import { getSmartReviewPresentation } from "../lib/qa-gate-presentation";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueBoardStatePanel } from "../components/IssueBoardStatePanel";
 import { IssueChatThread } from "../components/IssueChatThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
-import { IssueReviewBoard } from "../components/IssueReviewBoard";
-import { IssueReviewItemDrawer } from "../components/IssueReviewItemDrawer";
+import { IssueWorkflowPanel } from "../components/IssueWorkflowPanel";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
@@ -88,7 +86,6 @@ import {
   type Issue,
   type IssueAttachment,
   type IssueComment,
-  type IssueReviewItem,
 } from "@paperclipai/shared";
 
 type CommentReassignment = IssueCommentReassignment;
@@ -100,6 +97,31 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   queueTargetRunId?: string | null;
 };
 
+const ACTION_LABELS: Record<string, string> = {
+  "issue.created": "created the issue",
+  "issue.updated": "updated the issue",
+  "issue.checked_out": "checked out the issue",
+  "issue.released": "released the issue",
+  "issue.comment_added": "added a comment",
+  "issue.feedback_vote_saved": "saved feedback on an AI output",
+  "issue.attachment_added": "added an attachment",
+  "issue.attachment_removed": "removed an attachment",
+  "issue.document_created": "created a document",
+  "issue.document_updated": "updated a document",
+  "issue.document_deleted": "deleted a document",
+  "issue.deleted": "deleted the issue",
+  "agent.created": "created an agent",
+  "agent.updated": "updated the agent",
+  "agent.paused": "paused the agent",
+  "agent.resumed": "resumed the agent",
+  "agent.terminated": "terminated the agent",
+  "heartbeat.invoked": "invoked a heartbeat",
+  "heartbeat.cancelled": "cancelled a heartbeat",
+  "approval.created": "requested approval",
+  "approval.approved": "approved",
+  "approval.rejected": "rejected",
+};
+
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://www.orchestrero.ai/tos";
 const QA_DIMENSION_TITLES = [
   { key: "codeQuality", label: "Code Quality" },
@@ -108,6 +130,14 @@ const QA_DIMENSION_TITLES = [
   { key: "commentQuality", label: "Comment Quality" },
   { key: "docsImpact", label: "Docs Impact" },
 ] as const;
+const QA_GATE_REASON_LABELS: Record<string, string> = {
+  qa_gate_requires_qa_assignee: "Delivery issues entering QA must be assigned to a QA agent.",
+  qa_gate_no_eligible_qa_agent: "No eligible QA agent is available to own this review.",
+  qa_gate_requires_in_review: "Issue must be in QA before shipping.",
+  qa_gate_missing_qa_comment: "No QA comment yet.",
+  qa_gate_missing_qa_pass: "Latest QA comment is missing [QA PASS].",
+  qa_gate_missing_release_confirmation: "Latest QA comment is missing [RELEASE CONFIRMED].",
+};
 
 function qaStateBadgeClass(value: string) {
   if (value === "pass") return "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
@@ -148,6 +178,11 @@ function formatIssueCommentPublicationStatus(value: string | null | undefined) {
     default:
       return "unknown";
   }
+}
+
+function humanizeValue(value: unknown): string {
+  if (typeof value !== "string") return String(value ?? "none");
+  return value.replace(/_/g, " ");
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -200,15 +235,47 @@ function titleizeFilename(input: string) {
 }
 
 function formatAction(action: string, details?: Record<string, unknown> | null): string {
+  if (action === "issue.updated" && details) {
+    const previous = (details._previous ?? {}) as Record<string, unknown>;
+    const parts: string[] = [];
+
+    if (details.status !== undefined) {
+      const from = previous.status;
+      parts.push(
+        from
+          ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
+          : `changed the status to ${humanizeValue(details.status)}`
+      );
+    }
+    if (details.priority !== undefined) {
+      const from = previous.priority;
+      parts.push(
+        from
+          ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
+          : `changed the priority to ${humanizeValue(details.priority)}`
+      );
+    }
+    if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
+      parts.push(
+        details.assigneeAgentId || details.assigneeUserId
+          ? "assigned the issue"
+          : "unassigned the issue",
+      );
+    }
+    if (details.title !== undefined) parts.push("updated the title");
+    if (details.description !== undefined) parts.push("updated the description");
+
+    if (parts.length > 0) return parts.join(", ");
+  }
   if (
     (action === "issue.document_created" || action === "issue.document_updated" || action === "issue.document_deleted") &&
     details
   ) {
     const key = typeof details.key === "string" ? details.key : "document";
     const title = typeof details.title === "string" && details.title ? ` (${details.title})` : "";
-    return `${formatActivityAction(action, details)} ${key}${title}`;
+    return `${ACTION_LABELS[action] ?? action} ${key}${title}`;
   }
-  return formatActivityAction(action, details);
+  return ACTION_LABELS[action] ?? action.replace(/[._]/g, " ");
 }
 
 function mergeOptimisticFeedbackVote(
@@ -291,7 +358,6 @@ export function IssueDetail() {
   const { pushToast } = useToast();
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const copyIssueTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("chat");
   const [pendingApprovalAction, setPendingApprovalAction] = useState<{
@@ -303,7 +369,6 @@ export function IssueDetail() {
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
-  const [selectedReviewItem, setSelectedReviewItem] = useState<IssueReviewItem | null>(null);
   const [optimisticComments, setOptimisticComments] = useState<OptimisticIssueComment[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
@@ -488,16 +553,6 @@ export function IssueDetail() {
       .filter((i) => i.parentId === issue.id)
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }, [allIssues, issue]);
-  const reviewItems = issue?.reviewItems ?? [];
-  const reviewPackSurface = issue?.reviewPackSurface ?? null;
-  const hasReviewPackContent = Boolean(
-    reviewPackSurface && (
-      (reviewPackSurface.blockers?.length ?? 0) > 0
-      || !!reviewPackSurface.heroPack
-      || (reviewPackSurface.queue?.length ?? 0) > 0
-      || (reviewPackSurface.evidence?.length ?? 0) > 0
-    ),
-  );
   const childIssuesPanelKey = useMemo(
     () => childIssues.map((child) => `${child.id}:${String(child.updatedAt)}`).join("|"),
     [childIssues],
@@ -706,6 +761,25 @@ export function IssueDetail() {
   const handleIssuePropertiesUpdate = useCallback((data: Record<string, unknown>) => {
     updateIssue.mutate(data);
   }, [updateIssue.mutate]);
+
+  const applyWorkflowTemplate = useMutation({
+    mutationFn: () => issuesApi.applyWorkflowTemplate(issueId!, { workflowTemplateKey: "engineering_delivery_v1" }),
+    onSuccess: () => {
+      invalidateIssue();
+      pushToast({
+        title: "Workflow applied",
+        body: "Specialist child lanes were created for this issue.",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Workflow apply failed",
+        body: err instanceof Error ? err.message : "Unable to apply workflow template",
+        tone: "error",
+      });
+    },
+  });
 
   const approvalDecision = useMutation({
     mutationFn: async ({ approvalId, action }: { approvalId: string; action: "approve" | "reject" }) => {
@@ -1169,9 +1243,6 @@ export function IssueDetail() {
   }, [archiveFromInbox, canQuickArchiveFromInbox, issue?.id]);
 
   const copyIssueToClipboard = async () => {
-    if (copyIssueTimeoutRef.current) {
-      clearTimeout(copyIssueTimeoutRef.current);
-    }
     if (!issue) return;
     const decodeEntities = (text: string) => {
       const el = document.createElement("textarea");
@@ -1184,18 +1255,12 @@ export function IssueDetail() {
     await navigator.clipboard.writeText(md);
     setCopied(true);
     pushToast({ title: "Copied to clipboard", tone: "success" });
-    copyIssueTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
+    setTimeout(() => setCopied(false), 2000);
   };
-
-  useEffect(() => () => {
-    if (copyIssueTimeoutRef.current) {
-      clearTimeout(copyIssueTimeoutRef.current);
-    }
-  }, []);
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading...</p>;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
-    if (!issue) return null;
+  if (!issue) return null;
 
   // Ancestors are returned oldest-first from the server (root at end, immediate parent at start)
   const ancestors = issue.ancestors ?? [];
@@ -1271,18 +1336,10 @@ export function IssueDetail() {
       value: qaGate.review[key],
     }))
     : [];
+  const qaGateMissing = qaGate?.missingRequirements ?? [];
   const smartReviewPresentation = getSmartReviewPresentation({
     issueStatus: issue.status,
     lastQaSummaryAt: qaGate?.lastQaSummaryAt ?? null,
-    assigneeAgentId: issue.assigneeAgentId,
-    assigneeUserId: issue.assigneeUserId,
-    agents: agents ?? null,
-    missingRequirements: qaGate?.missingRequirements ?? [],
-  });
-  const smartReviewActionUi = getSmartReviewActionUi({
-    actionStatus: smartReviewPresentation.actionStatus,
-    canShip: qaGate?.canShip ?? false,
-    isPending: updateIssue.isPending,
   });
 
   return (
@@ -1317,18 +1374,7 @@ export function IssueDetail() {
       {issue.hiddenAt && (
         <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <EyeOff className="h-4 w-4 shrink-0" />
-          <span className="min-w-0">
-            This issue is hidden.
-            <span className="ml-1 text-destructive/80">Hidden {formatDateTime(issue.hiddenAt)}.</span>
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto h-7 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
-            onClick={() => updateIssue.mutate({ hiddenAt: null })}
-          >
-            Unhide
-          </Button>
+          This issue is hidden
         </div>
       )}
 
@@ -1452,16 +1498,14 @@ export function IssueDetail() {
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
                 onClick={() => {
                   updateIssue.mutate(
-                    issue.hiddenAt
-                      ? { hiddenAt: null }
-                      : { hiddenAt: new Date().toISOString() },
-                    issue.hiddenAt ? undefined : { onSuccess: () => navigate("/issues/all") },
+                    { hiddenAt: new Date().toISOString() },
+                    { onSuccess: () => navigate("/issues/all") },
                   );
                   setMoreOpen(false);
                 }}
               >
                 <EyeOff className="h-3 w-3" />
-                {issue.hiddenAt ? "Unhide Issue" : "Hide this Issue"}
+                Hide this Issue
               </button>
             </PopoverContent>
             </Popover>
@@ -1493,9 +1537,19 @@ export function IssueDetail() {
         />
       </div>
 
-      {!hasReviewPackContent ? (
-        <IssueBoardStatePanel issue={issue} issueLinkState={resolvedIssueDetailState ?? location.state} />
-      ) : null}
+      <IssueBoardStatePanel issue={issue} issueLinkState={resolvedIssueDetailState ?? location.state} />
+
+      <IssueWorkflowPanel
+        issue={issue}
+        agentNamesById={agentMap}
+        issueLinkState={resolvedIssueDetailState ?? location.state}
+        onApplyEngineeringDeliveryWorkflow={
+          !issue.parentId && !issue.workflowTemplateKey && !issue.workflowLaneRole
+            ? () => applyWorkflowTemplate.mutate()
+            : null
+        }
+        isApplyingTemplate={applyWorkflowTemplate.isPending}
+      />
 
       {qaGate && qaGate.isDeliveryScoped && (
         <div className="space-y-3 rounded-lg border border-border bg-card px-3 py-3">
@@ -1527,15 +1581,10 @@ export function IssueDetail() {
             ))}
           </div>
 
-          {(smartReviewPresentation.blockingMessage || smartReviewPresentation.blockingDetails?.length) && (
+          {qaGateMissing.length > 0 && (
             <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-2 text-xs text-amber-700 dark:text-amber-300">
-              {smartReviewPresentation.blockingMessage && (
-                <p className="font-medium text-amber-800 dark:text-amber-200">
-                  {smartReviewPresentation.blockingMessage}
-                </p>
-              )}
-              {smartReviewPresentation.blockingDetails?.map((detail) => (
-                <p key={detail}>{detail}</p>
+              {qaGateMissing.map((reasonCode) => (
+                <p key={reasonCode}>{QA_GATE_REASON_LABELS[reasonCode] ?? reasonCode}</p>
               ))}
             </div>
           )}
@@ -1599,8 +1648,13 @@ export function IssueDetail() {
           <div className="flex items-center justify-end">
             <Button
               size="sm"
-              variant={smartReviewActionUi.variant}
-              disabled={smartReviewActionUi.disabled}
+              variant={
+                smartReviewPresentation.actionStatus === "in_review"
+                || (smartReviewPresentation.actionStatus === "done" && qaGate.canShip)
+                  ? "default"
+                  : "outline"
+              }
+              disabled={!smartReviewPresentation.actionStatus || updateIssue.isPending}
               onClick={() => {
                 if (!smartReviewPresentation.actionStatus) return;
                 updateIssue.mutate({ status: smartReviewPresentation.actionStatus });
@@ -1652,15 +1706,6 @@ export function IssueDetail() {
         itemClassName="rounded-lg border border-border p-3"
         missingBehavior="placeholder"
       />
-
-      {hasReviewPackContent ? (
-        <IssueReviewBoard
-          issueId={issue.id}
-          items={reviewItems}
-          surface={reviewPackSurface}
-          onOpenItem={(item) => setSelectedReviewItem(item)}
-        />
-      ) : null}
 
       {childIssues.length > 0 && (
         <div className="space-y-3">
@@ -1953,8 +1998,6 @@ export function IssueDetail() {
               await interruptQueuedComment.mutateAsync(runId);
             }}
             interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
-            reviewItems={reviewItems}
-            onOpenReviewItem={(item) => setSelectedReviewItem(item)}
             onCancelRun={runningIssueRun
               ? async () => {
                   await interruptQueuedComment.mutateAsync(runningIssueRun.id);
@@ -2059,14 +2102,6 @@ export function IssueDetail() {
           </ScrollArea>
         </SheetContent>
       </Sheet>
-      <IssueReviewItemDrawer
-        issueId={issue.id}
-        item={selectedReviewItem}
-        open={Boolean(selectedReviewItem)}
-        onOpenChange={(open) => {
-          if (!open) setSelectedReviewItem(null);
-        }}
-      />
       <ScrollToBottom />
     </div>
   );

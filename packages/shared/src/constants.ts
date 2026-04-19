@@ -93,6 +93,7 @@ export const AGENT_ROLES = [
   "cfo",
   "coo",
   "engineer",
+  "security",
   "designer",
   "pm",
   "qa",
@@ -109,6 +110,7 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   cfo: "CFO",
   coo: "COO",
   engineer: "Engineer",
+  security: "Security",
   designer: "Designer",
   pm: "PM",
   qa: "QA",
@@ -221,6 +223,20 @@ export type IssueRecoveryDisposition = (typeof ISSUE_RECOVERY_DISPOSITIONS)[numb
 
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
+
+export const ISSUE_WORKFLOW_TEMPLATE_KEYS = ["engineering_delivery_v1"] as const;
+export type IssueWorkflowTemplateKey = (typeof ISSUE_WORKFLOW_TEMPLATE_KEYS)[number];
+
+export const ISSUE_WORKFLOW_LANE_ROLES = ["pm", "designer", "engineer", "security", "qa"] as const;
+export type IssueWorkflowLaneRole = (typeof ISSUE_WORKFLOW_LANE_ROLES)[number];
+
+export const ISSUE_WORKFLOW_ARTIFACT_KINDS = [
+  "document",
+  "work_product",
+  "document_or_work_product",
+  "comment_marker",
+] as const;
+export type IssueWorkflowArtifactKind = (typeof ISSUE_WORKFLOW_ARTIFACT_KINDS)[number];
 
 export const ISSUE_EXECUTION_STAGE_TYPES = ["review", "approval"] as const;
 export type IssueExecutionStageType = (typeof ISSUE_EXECUTION_STAGE_TYPES)[number];

@@ -42,6 +42,11 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockIssueWorkflowService = vi.hoisted(() => ({
+  decorateIssue: vi.fn(async (issue: unknown) => issue),
+  evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
+  applyTemplate: vi.fn(),
+}));
 const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsert = vi.hoisted(() => vi.fn(() => ({ values: mockTxInsertValues })));
 const mockTx = vi.hoisted(() => ({
@@ -81,6 +86,7 @@ vi.mock("../services/index.js", () => ({
   }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
+  issueWorkflowService: () => mockIssueWorkflowService,
   logActivity: mockLogActivity,
   projectService: () => ({
     getById: vi.fn(async () => null),
@@ -137,6 +143,13 @@ describe("issue comment reopen routes", () => {
       name: "Operator",
     }));
     mockAgentService.list.mockResolvedValue([]);
+    mockIssueWorkflowService.decorateIssue.mockImplementation(async (issue: unknown) => issue);
+    mockIssueWorkflowService.evaluateLaneCompletion.mockResolvedValue({
+      canComplete: true,
+      blockingReasons: [],
+      artifactStatuses: [],
+    });
+    mockIssueWorkflowService.applyTemplate.mockReset();
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });

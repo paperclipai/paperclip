@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  ISSUE_WORKFLOW_ARTIFACT_KINDS,
   ISSUE_EXECUTION_DECISION_OUTCOMES,
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
@@ -7,6 +8,8 @@ import {
   ISSUE_RECOVERY_DISPOSITIONS,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
+  ISSUE_WORKFLOW_LANE_ROLES,
+  ISSUE_WORKFLOW_TEMPLATE_KEYS,
 } from "../constants.js";
 import { normalizeIssuePriorityInput } from "../issue-priority.js";
 
@@ -138,6 +141,18 @@ export const issueRecoverySchema = z
 
 export type IssueRecovery = z.infer<typeof issueRecoverySchema>;
 
+export const issueWorkflowTemplateKeySchema = z.enum(ISSUE_WORKFLOW_TEMPLATE_KEYS);
+export const issueWorkflowLaneRoleSchema = z.enum(ISSUE_WORKFLOW_LANE_ROLES);
+export const issueWorkflowArtifactRequirementSchema = z.object({
+  key: z.string().trim().min(1).max(64),
+  label: z.string().trim().min(1).max(120),
+  kind: z.enum(ISSUE_WORKFLOW_ARTIFACT_KINDS),
+  blocking: z.boolean().optional().default(true),
+  documentKey: z.string().trim().min(1).max(64).nullable().optional(),
+  workProductTypes: z.array(z.string().trim().min(1)).optional().nullable(),
+  commentMarkers: z.array(z.string().trim().min(1)).optional().nullable(),
+});
+
 const issuePrioritySchema = z.preprocess(normalizeIssuePriorityInput, z.enum(ISSUE_PRIORITIES));
 
 const createIssueCoreSchema = z.object({
@@ -160,6 +175,7 @@ const createIssueCoreSchema = z.object({
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  workflowTemplateKey: issueWorkflowTemplateKeySchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
 
@@ -257,3 +273,9 @@ export const restoreIssueDocumentRevisionSchema = z.object({});
 export type IssueDocumentFormat = z.infer<typeof issueDocumentFormatSchema>;
 export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;
 export type RestoreIssueDocumentRevision = z.infer<typeof restoreIssueDocumentRevisionSchema>;
+
+export const applyIssueWorkflowTemplateSchema = z.object({
+  workflowTemplateKey: issueWorkflowTemplateKeySchema,
+});
+
+export type ApplyIssueWorkflowTemplate = z.infer<typeof applyIssueWorkflowTemplateSchema>;

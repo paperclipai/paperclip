@@ -62,6 +62,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
+const ENGINEERING_WORKFLOW_TEMPLATE_KEY = "engineering_delivery_v1";
 
 
 interface IssueDraft {
@@ -80,6 +81,7 @@ interface IssueDraft {
   assigneeChrome: boolean;
   executionWorkspaceMode?: string;
   selectedExecutionWorkspaceId?: string;
+  workflowTemplateKey?: string;
   useIsolatedExecutionWorkspace?: boolean;
 }
 
@@ -242,7 +244,6 @@ const priorities = [
 ];
 
 const EXECUTION_WORKSPACE_MODES = [
-  { value: "auto", label: "Auto (smart detection)" },
   { value: "shared_workspace", label: "Project default" },
   { value: "isolated_workspace", label: "New isolated workspace" },
   { value: "reuse_existing", label: "Reuse existing workspace" },
@@ -299,8 +300,9 @@ export function NewIssueDialog() {
   const [assigneeModelOverride, setAssigneeModelOverride] = useState("");
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
   const [assigneeChrome, setAssigneeChrome] = useState(false);
-  const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("auto");
+  const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
+  const [workflowTemplateKey, setWorkflowTemplateKey] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
@@ -505,6 +507,7 @@ export function NewIssueDialog() {
       assigneeChrome,
       executionWorkspaceMode,
       selectedExecutionWorkspaceId,
+      workflowTemplateKey,
     });
   }, [
     title,
@@ -521,6 +524,7 @@ export function NewIssueDialog() {
     assigneeChrome,
     executionWorkspaceMode,
     selectedExecutionWorkspaceId,
+    workflowTemplateKey,
     newIssueOpen,
     scheduleSave,
   ]);
@@ -539,7 +543,7 @@ export function NewIssueDialog() {
         ?? defaultProjectWorkspaceIdForProject(defaultProject);
       const defaultExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceId
         ? "reuse_existing"
-        : (newIssueDefaults.executionWorkspaceMode ?? "auto");
+        : (newIssueDefaults.executionWorkspaceMode ?? defaultExecutionWorkspaceModeForProject(defaultProject));
       setTitle(newIssueDefaults.title ?? "");
       setDescription(newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
@@ -552,6 +556,7 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceMode);
       setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
+      setWorkflowTemplateKey("");
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     } else if (newIssueDefaults.title) {
       setTitle(newIssueDefaults.title);
@@ -570,8 +575,9 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setExecutionWorkspaceMode("auto");
+      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
+      setWorkflowTemplateKey("");
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     } else if (draft && draft.title.trim()) {
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
@@ -596,9 +602,10 @@ export function NewIssueDialog() {
       setAssigneeChrome(draft.assigneeChrome ?? false);
       setExecutionWorkspaceMode(
         draft.executionWorkspaceMode
-          ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : "auto"),
+          ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : defaultExecutionWorkspaceModeForProject(restoredProject)),
       );
       setSelectedExecutionWorkspaceId(draft.selectedExecutionWorkspaceId ?? "");
+      setWorkflowTemplateKey(draft.workflowTemplateKey ?? "");
       executionWorkspaceDefaultProjectId.current = restoredProjectId || null;
     } else {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
@@ -615,8 +622,9 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setExecutionWorkspaceMode("auto");
+      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
+      setWorkflowTemplateKey("");
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     }
   }, [newIssueOpen, newIssueDefaults, orderedProjects]);
@@ -664,7 +672,7 @@ export function NewIssueDialog() {
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
-    setExecutionWorkspaceMode("auto");
+    setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
     setExpanded(false);
     setDialogCompanyId(null);
@@ -688,8 +696,9 @@ export function NewIssueDialog() {
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
-    setExecutionWorkspaceMode("auto");
+    setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
+    setWorkflowTemplateKey("");
   }
 
   function discardDraft() {
@@ -718,9 +727,7 @@ export function NewIssueDialog() {
       executionWorkspaceMode === "reuse_existing"
         ? issueExecutionWorkspaceModeForExistingWorkspace(selectedReusableExecutionWorkspace?.mode)
         : executionWorkspaceMode;
-    const shouldForceExecutionWorkspacePolicy = executionWorkspacePolicy?.enabled
-      && executionWorkspaceMode !== "auto";
-    const executionWorkspaceSettings = shouldForceExecutionWorkspacePolicy
+    const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
       ? { mode: requestedExecutionWorkspaceMode }
       : null;
     const executionPolicy = buildExecutionPolicy({
@@ -741,12 +748,13 @@ export function NewIssueDialog() {
       ...(projectId ? { projectId } : {}),
       ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
-      ...(shouldForceExecutionWorkspacePolicy ? { executionWorkspacePreference: executionWorkspaceMode } : {}),
+      ...(executionWorkspacePolicy?.enabled ? { executionWorkspacePreference: executionWorkspaceMode } : {}),
       ...(executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId
         ? { executionWorkspaceId: selectedExecutionWorkspaceId }
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
       ...(executionPolicy ? { executionPolicy } : {}),
+      ...(!isSubIssueMode && workflowTemplateKey ? { workflowTemplateKey } : {}),
     });
   }
 
@@ -905,7 +913,7 @@ export function NewIssueDialog() {
     const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
     executionWorkspaceDefaultProjectId.current = nextProjectId || null;
     setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
-    setExecutionWorkspaceMode("auto");
+    setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
     setSelectedExecutionWorkspaceId("");
   }, [orderedProjects]);
 
@@ -917,7 +925,7 @@ export function NewIssueDialog() {
     if (!project) return;
     executionWorkspaceDefaultProjectId.current = projectId;
     setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(project));
-    setExecutionWorkspaceMode("auto");
+    setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(project));
     setSelectedExecutionWorkspaceId("");
   }, [newIssueOpen, orderedProjects, projectId]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
@@ -1350,11 +1358,11 @@ export function NewIssueDialog() {
 
         {currentProject && currentProjectSupportsExecutionWorkspace && (
           <div className="px-4 py-3 shrink-0 space-y-2">
-              <div className="space-y-1.5">
-                <div className="text-xs font-medium">Execution workspace</div>
-                <div className="text-[11px] text-muted-foreground">
-                  Use "Auto" to let Paperclip pick the best workspace mode from issue text; choose another option to force it.
-                </div>
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium">Execution workspace</div>
+              <div className="text-[11px] text-muted-foreground">
+                Control whether this issue runs in the shared workspace, a new isolated workspace, or an existing one.
+              </div>
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
                 value={executionWorkspaceMode}
@@ -1614,6 +1622,26 @@ export function NewIssueDialog() {
               ))}
             </PopoverContent>
           </Popover>
+
+          {!isSubIssueMode ? (
+            <button
+              type="button"
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
+                workflowTemplateKey
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300"
+                  : "border-border hover:bg-accent/50",
+              )}
+              onClick={() => setWorkflowTemplateKey((current) => (
+                current ? "" : ENGINEERING_WORKFLOW_TEMPLATE_KEY
+              ))}
+              disabled={createIssue.isPending}
+              title="Toggle the built-in engineering workflow template"
+            >
+              <ShieldCheck className="h-3 w-3" />
+              {workflowTemplateKey ? "Engineering workflow" : "No workflow"}
+            </button>
+          ) : null}
 
           {/* Labels chip — disabled, not wired up yet */}
           {/* <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">

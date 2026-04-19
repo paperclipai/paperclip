@@ -383,6 +383,7 @@ export function adapterRoutes() {
     }
 
     const changed = setOverridePaused(adapterType, paused);
+    configSchemaCache.delete(adapterType);
 
     logger.info({ type: adapterType, paused, changed }, "Adapter override toggle");
 

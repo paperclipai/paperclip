@@ -3,9 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { errorHandler } from "../middleware/index.js";
-import { roadmapRoutes } from "../routes/roadmap.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
+let roadmapRoutesFactory!: typeof import("../routes/roadmap.js").roadmapRoutes;
 
 function createApp(
   actor: Record<string, unknown>,
@@ -27,13 +28,13 @@ function createApp(
   });
   app.use(
     "/api",
-    roadmapRoutes({
+    roadmapRoutesFactory({
       repoRoot,
       resolveCompanyRoadmapPath: opts?.resolveCompanyRoadmapPath,
       resolveCompanyRoadmapContext: opts?.resolveCompanyRoadmapContext,
     }),
   );
-  app.use(errorHandler);
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
@@ -41,6 +42,9 @@ describe("roadmap route", () => {
   let repoRoot = "";
 
   beforeEach(async () => {
+    vi.resetModules();
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+    ({ roadmapRoutes: roadmapRoutesFactory } = await import("../routes/roadmap.js"));
     repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-roadmap-"));
     await fs.mkdir(path.join(repoRoot, "doc", "plans"), { recursive: true });
     await fs.writeFile(

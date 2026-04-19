@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 
 const agentId = "11111111-1111-4111-8111-111111111111";
@@ -147,13 +147,10 @@ function createApp(actor: Record<string, unknown>) {
 }
 
 describe("agent permission routes", () => {
-  beforeAll(async () => {
+  beforeEach(async () => {
     vi.resetModules();
     ({ agentRoutes: agentRoutesFactory } = await import("../routes/agents.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-  });
-
-  beforeEach(() => {
     vi.resetAllMocks();
     mockRoleRequiresQaCoverage.mockReturnValue(false);
     mockAgentService.getById.mockResolvedValue(baseAgent);

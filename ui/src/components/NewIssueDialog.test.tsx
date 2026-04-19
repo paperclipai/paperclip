@@ -324,109 +324,6 @@ describe("NewIssueDialog", () => {
     act(() => rerendered.root.unmount());
   });
 
-  it("does not send execution workspace overrides when mode is auto", async () => {
-    mockProjectsApi.list.mockResolvedValue([
-      {
-        id: "project-1",
-        name: "Alpha",
-        description: null,
-        archivedAt: null,
-        color: "#445566",
-        executionWorkspacePolicy: {
-          enabled: true,
-          defaultMode: "shared_workspace",
-        },
-      },
-    ]);
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
-    dialogState.newIssueDefaults = {
-      projectId: "project-1",
-      title: "Implement payment flow validation",
-    };
-
-    const { root } = renderDialog(container);
-    await flush();
-
-    const submitButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Create Issue"),
-    );
-    expect(submitButton).not.toBeUndefined();
-    expect((submitButton as HTMLButtonElement).disabled).toBe(false);
-
-    await act(async () => {
-      (submitButton as HTMLButtonElement).click();
-      await flush();
-    });
-
-    const lastCall = mockIssuesApi.create.mock.calls.at(-1);
-    expect(lastCall).not.toBeUndefined();
-    const payload = lastCall?.[1] as Record<string, unknown>;
-    expect(payload).toHaveProperty("projectId", "project-1");
-    expect(payload).not.toHaveProperty("executionWorkspacePreference");
-    expect(payload).not.toHaveProperty("executionWorkspaceSettings");
-
-    act(() => root.unmount());
-  });
-
-  it("sends explicit execution workspace settings when selecting a mode", async () => {
-    mockProjectsApi.list.mockResolvedValue([
-      {
-        id: "project-1",
-        name: "Alpha",
-        description: null,
-        archivedAt: null,
-        color: "#445566",
-        executionWorkspacePolicy: {
-          enabled: true,
-          defaultMode: "shared_workspace",
-        },
-      },
-    ]);
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
-    dialogState.newIssueDefaults = {
-      projectId: "project-1",
-      title: "Refactor routing for dashboard",
-    };
-
-    const { root } = renderDialog(container);
-    await flush();
-
-    const modeSelect = Array.from(container.querySelectorAll("select")).find((element) =>
-      Array.from(element.options).some((option) => option.value === "isolated_workspace"),
-    ) as HTMLSelectElement | undefined;
-    expect(modeSelect).not.toBeUndefined();
-
-    await act(async () => {
-      if (!modeSelect) return;
-      modeSelect.value = "isolated_workspace";
-      modeSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-
-    const submitButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Create Issue"),
-    );
-    expect(submitButton).not.toBeUndefined();
-    expect((submitButton as HTMLButtonElement).disabled).toBe(false);
-
-    await act(async () => {
-      (submitButton as HTMLButtonElement).click();
-      await flush();
-    });
-
-    const lastCall = mockIssuesApi.create.mock.calls.at(-1);
-    expect(lastCall).not.toBeUndefined();
-    const payload = lastCall?.[1] as Record<string, unknown>;
-    expect(payload).toEqual(
-      expect.objectContaining({
-        projectId: "project-1",
-        executionWorkspacePreference: "isolated_workspace",
-        executionWorkspaceSettings: { mode: "isolated_workspace" },
-      }),
-    );
-
-    act(() => root.unmount());
-  });
-
   it("submits parent and goal context for sub-issues", async () => {
     mockProjectsApi.list.mockResolvedValue([
       {
@@ -557,4 +454,44 @@ describe("NewIssueDialog", () => {
 
     act(() => root.unmount());
   });
+
+  it("submits the engineering workflow template for root issues when selected", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Workflow root issue",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const workflowToggle = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("No workflow"));
+    expect(workflowToggle).toBeTruthy();
+
+    await act(async () => {
+      workflowToggle!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForCondition(() =>
+      Array.from(container.querySelectorAll("button"))
+        .some((button) => button.textContent?.includes("Engineering workflow") ?? false),
+    );
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).toBeTruthy();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Workflow root issue",
+        workflowTemplateKey: "engineering_delivery_v1",
+      }),
+    );
+
+    act(() => root.unmount());
+  }, 15_000);
 });

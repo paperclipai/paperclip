@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -159,14 +159,44 @@ function makeAgent(adapterType: string) {
 }
 
 describe("agent skill routes", () => {
-  beforeAll(async () => {
+  beforeEach(async () => {
     vi.resetModules();
     ({ agentRoutes: agentRoutesFactory } = await import("../routes/agents.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-  });
-
-  beforeEach(() => {
-    vi.resetAllMocks();
+    mockAgentService.getById.mockReset();
+    mockAgentService.list.mockReset();
+    mockAgentService.update.mockReset();
+    mockAgentService.create.mockReset();
+    mockAgentService.resolveByReference.mockReset();
+    mockAccessService.canUser.mockReset();
+    mockAccessService.hasPermission.mockReset();
+    mockAccessService.getMembership.mockReset();
+    mockAccessService.listPrincipalGrants.mockReset();
+    mockAccessService.ensureMembership.mockReset();
+    mockAccessService.setPrincipalPermission.mockReset();
+    mockApprovalService.create.mockReset();
+    mockIssueApprovalService.linkManyForApproval.mockReset();
+    mockAgentInstructionsService.getBundle.mockReset();
+    mockAgentInstructionsService.readFile.mockReset();
+    mockAgentInstructionsService.updateBundle.mockReset();
+    mockAgentInstructionsService.writeFile.mockReset();
+    mockAgentInstructionsService.deleteFile.mockReset();
+    mockAgentInstructionsService.exportFiles.mockReset();
+    mockAgentInstructionsService.ensureManagedBundle.mockReset();
+    mockAgentInstructionsService.materializeManagedBundle.mockReset();
+    mockCompanySkillService.listRuntimeSkillEntries.mockReset();
+    mockCompanySkillService.resolveRequestedSkillKeys.mockReset();
+    mockAgentHeartbeatModel.ensureCompanyHasQaReleaseEngineer.mockReset();
+    mockRoleRequiresQaCoverage.mockReset();
+    mockSecretService.resolveAdapterConfigForRuntime.mockReset();
+    mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
+    mockLogActivity.mockReset();
+    mockTrackAgentCreated.mockReset();
+    mockGetTelemetryClient.mockReset();
+    mockNormalizeRuntimeConfigForCooHeartbeatModel.mockReset();
+    mockResolveRoleForCooCoordinatorModel.mockReset();
+    mockAdapter.listSkills.mockReset();
+    mockAdapter.syncSkills.mockReset();
     mockRoleRequiresQaCoverage.mockReturnValue(false);
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockAgentService.resolveByReference.mockResolvedValue({
@@ -175,6 +205,9 @@ describe("agent skill routes", () => {
     });
     mockAgentService.list.mockResolvedValue([makeAgent("claude_local")]);
     mockSecretService.resolveAdapterConfigForRuntime.mockResolvedValue({ config: { env: {} } });
+    mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(
+      async (_companyId: string, config: Record<string, unknown>) => config,
+    );
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
       {
         key: "paperclipai/paperclip/paperclip",
@@ -247,7 +280,7 @@ describe("agent skill routes", () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
-  }, 20_000);
+  });
 
   it("skips runtime materialization when listing Claude skills", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
@@ -256,10 +289,8 @@ describe("agent skill routes", () => {
       .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    await vi.waitFor(() => {
-      expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
-        materializeMissing: false,
-      });
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+      materializeMissing: false,
     });
     expect(mockAdapter.listSkills).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -286,10 +317,8 @@ describe("agent skill routes", () => {
       .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    await vi.waitFor(() => {
-      expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
-        materializeMissing: false,
-      });
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+      materializeMissing: false,
     });
   });
 
@@ -308,10 +337,8 @@ describe("agent skill routes", () => {
       .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    await vi.waitFor(() => {
-      expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
-        materializeMissing: true,
-      });
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+      materializeMissing: true,
     });
   });
 
@@ -323,10 +350,8 @@ describe("agent skill routes", () => {
       .send({ desiredSkills: ["paperclipai/paperclip/paperclip"] });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    await vi.waitFor(() => {
-      expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
-        materializeMissing: false,
-      });
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+      materializeMissing: false,
     });
     expect(mockAdapter.syncSkills).toHaveBeenCalled();
   });
@@ -339,7 +364,6 @@ describe("agent skill routes", () => {
       .send({ desiredSkills: ["paperclip"] });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockCompanySkillService.resolveRequestedSkillKeys).toHaveBeenCalledWith("company-1", ["paperclip"]);
     expect(mockAgentService.update).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({

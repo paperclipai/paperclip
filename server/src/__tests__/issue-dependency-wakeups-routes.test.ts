@@ -1,18 +1,25 @@
 import express from "express";
 import request from "supertest";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(),
+  hasPermission: vi.fn(),
+}));
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+const mockDocumentService = vi.hoisted(() => ({
+  getIssueDocumentPayload: vi.fn(async () => ({})),
+}));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getById: vi.fn(),
   getByIdentifier: vi.fn(async () => null),
   getComment: vi.fn(),
   getCommentCursor: vi.fn(),
-  findMentionedProjectIds: vi.fn(),
   getRelationSummaries: vi.fn(),
-  listAttachments: vi.fn(),
-  listComments: vi.fn(),
   update: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
@@ -22,24 +29,25 @@ const mockIssueService = vi.hoisted(() => ({
 const mockExecutionGateService = vi.hoisted(() => ({
   getExecutionBlock: vi.fn(),
 }));
+const mockHeartbeatService = vi.hoisted(() => ({
+  wakeup: mockWakeup,
+  reportRunActivity: vi.fn(async () => undefined),
+}));
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(),
+  listCompanyIds: vi.fn(),
+}));
+const mockIssueWorkflowService = vi.hoisted(() => ({
+  decorateIssue: vi.fn(async (issue: unknown) => issue),
+  evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
+  applyTemplate: vi.fn(),
+}));
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../services/index.js", () => ({
-  accessService: () => ({
-    canUser: vi.fn(),
-    hasPermission: vi.fn(),
-  }),
-  agentService: () => ({
-    getById: vi.fn(async (id: string) => ({
-      id,
-      companyId: "company-1",
-      role: "pm",
-      name: "Operator",
-    })),
-  }),
-  documentService: () => ({
-    getIssueDocumentPayload: vi.fn(async () => ({})),
-    listIssueDocuments: vi.fn(async () => []),
-  }),
+  accessService: () => mockAccessService,
+  agentService: () => mockAgentService,
+  documentService: () => mockDocumentService,
   executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => ({
     getById: vi.fn(),
@@ -49,17 +57,12 @@ vi.mock("../services/index.js", () => ({
     getById: vi.fn(),
     getDefaultCompanyGoal: vi.fn(),
   }),
-  heartbeatService: () => ({
-    wakeup: mockWakeup,
-    reportRunActivity: vi.fn(async () => undefined),
-  }),
-  instanceSettingsService: () => ({
-    get: vi.fn(),
-    listCompanyIds: vi.fn(),
-  }),
+  heartbeatService: () => mockHeartbeatService,
+  instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
-  logActivity: vi.fn(async () => undefined),
+  issueWorkflowService: () => mockIssueWorkflowService,
+  logActivity: mockLogActivity,
   projectService: () => ({
     getById: vi.fn(),
     listByIds: vi.fn(async () => []),
@@ -95,13 +98,22 @@ function createApp() {
 let issueRoutesFactory: typeof import("../routes/issues.js").issueRoutes;
 
 describe("issue dependency wakeups in issue routes", () => {
-  beforeAll(async () => {
+  beforeEach(async () => {
     vi.resetModules();
     ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
-  }, 30_000);
-
-  beforeEach(() => {
     vi.clearAllMocks();
+    mockAccessService.canUser.mockReset();
+    mockAccessService.hasPermission.mockReset();
+    mockAgentService.getById.mockReset();
+    mockDocumentService.getIssueDocumentPayload.mockReset();
+    mockExecutionGateService.getExecutionBlock.mockReset();
+    mockHeartbeatService.reportRunActivity.mockReset();
+    mockInstanceSettingsService.get.mockReset();
+    mockInstanceSettingsService.listCompanyIds.mockReset();
+    mockIssueWorkflowService.decorateIssue.mockReset();
+    mockIssueWorkflowService.evaluateLaneCompletion.mockReset();
+    mockIssueWorkflowService.applyTemplate.mockReset();
+    mockLogActivity.mockReset();
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.getCommentCursor.mockResolvedValue({
@@ -109,13 +121,31 @@ describe("issue dependency wakeups in issue routes", () => {
       latestCommentId: null,
       latestCommentAt: null,
     });
-    mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
-    mockIssueService.listAttachments.mockResolvedValue([]);
-    mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
-  });
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAgentService.getById.mockImplementation(async (id: string) => ({
+      id,
+      companyId: "company-1",
+      role: "pm",
+      name: "Operator",
+    }));
+    mockDocumentService.getIssueDocumentPayload.mockResolvedValue({});
+    mockExecutionGateService.getExecutionBlock.mockResolvedValue(null);
+    mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
+    mockInstanceSettingsService.get.mockResolvedValue(undefined);
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue([]);
+    mockIssueWorkflowService.decorateIssue.mockImplementation(async (issue: unknown) => issue);
+    mockIssueWorkflowService.evaluateLaneCompletion.mockResolvedValue({
+      canComplete: true,
+      blockingReasons: [],
+      artifactStatuses: [],
+    });
+    mockIssueWorkflowService.applyTemplate.mockResolvedValue(undefined);
+    mockLogActivity.mockResolvedValue(undefined);
+  }, 60_000);
 
   it("wakes dependents when the final blocker transitions to done", async () => {
     mockIssueService.getById.mockResolvedValue({

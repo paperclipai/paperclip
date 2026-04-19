@@ -17,6 +17,7 @@ export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
 export { projectService } from "./projects.js";
 export { issueService, type IssueFilters } from "./issues.js";
+export { issueWorkflowService, synthesizeWorkflowBoardState } from "./issue-workflows.js";
 export { issueMergeService, attemptQaPassAutoMerge, getIssueMergeStatus } from "./issue-merge.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { goalService } from "./goals.js";
@@ -48,6 +49,7 @@ export { executionGateService, type ExecutionBlock, type ExecutionBlockCode } fr
 export { workspaceOperationService } from "./workspace-operations.js";
 export { workProductService } from "./work-products.js";
 export { parseSchedulerHeartbeatPolicy, parseBooleanLike, parseNumberLike } from "./scheduler-heartbeat-policy.js";
+export { runtimeIntegrityService } from "./runtime-integrity.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";

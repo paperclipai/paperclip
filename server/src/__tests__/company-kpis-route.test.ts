@@ -98,7 +98,50 @@ describe("company KPI routes", () => {
     vi.resetModules();
     ({ companyRoutes: companyRoutesFactory } = await import("../routes/companies.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-    vi.resetAllMocks();
+    vi.clearAllMocks();
+    mockCompanyService.list.mockReset();
+    mockCompanyService.stats.mockReset();
+    mockCompanyService.getById.mockReset();
+    mockCompanyService.create.mockReset();
+    mockCompanyService.update.mockReset();
+    mockCompanyService.archive.mockReset();
+    mockCompanyService.remove.mockReset();
+    mockAgentService.getById.mockReset();
+    mockAccessService.ensureMembership.mockReset();
+    mockBudgetService.upsertPolicy.mockReset();
+    mockHeartbeatService.cancelActiveForCompany.mockReset();
+    mockHeartbeatService.stopRunningForCompany.mockReset();
+    mockHeartbeatService.invoke.mockReset();
+    mockHeartbeatService.resumeQueuedRuns.mockReset();
+    mockAgentHeartbeatModelService.ensureCompanyHasCooCoordinator.mockReset();
+    mockCompanyPortabilityService.exportBundle.mockReset();
+    mockCompanyPortabilityService.previewExport.mockReset();
+    mockCompanyPortabilityService.previewImport.mockReset();
+    mockCompanyPortabilityService.importBundle.mockReset();
+    mockExecutiveSummaryService.listKpis.mockReset();
+    mockExecutiveSummaryService.replaceKpis.mockReset();
+    mockExecutiveSummaryService.buildExecutiveSummary.mockReset();
+    mockExecutiveSummaryService.tickDaily.mockReset();
+    mockFeedbackService.listIssueVotesForUser.mockReset();
+    mockFeedbackService.listFeedbackTraces.mockReset();
+    mockFeedbackService.getFeedbackTraceById.mockReset();
+    mockFeedbackService.saveIssueVote.mockReset();
+    mockRoadmapEpicService.listPausedEpicIds.mockReset();
+    mockRoadmapEpicService.pauseEpic.mockReset();
+    mockRoadmapEpicService.resumeEpic.mockReset();
+    mockLogActivity.mockReset();
+    mockAgentService.getById.mockResolvedValue(null);
+    mockAccessService.ensureMembership.mockResolvedValue(undefined);
+    mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
+    mockHeartbeatService.cancelActiveForCompany.mockResolvedValue(undefined);
+    mockHeartbeatService.stopRunningForCompany.mockResolvedValue(undefined);
+    mockHeartbeatService.invoke.mockResolvedValue(undefined);
+    mockHeartbeatService.resumeQueuedRuns.mockResolvedValue(undefined);
+    mockAgentHeartbeatModelService.ensureCompanyHasCooCoordinator.mockResolvedValue(undefined);
+    mockCompanyPortabilityService.exportBundle.mockResolvedValue(undefined);
+    mockCompanyPortabilityService.previewExport.mockResolvedValue(undefined);
+    mockCompanyPortabilityService.previewImport.mockResolvedValue(undefined);
+    mockCompanyPortabilityService.importBundle.mockResolvedValue(undefined);
     mockExecutiveSummaryService.listKpis.mockResolvedValue([]);
     mockExecutiveSummaryService.replaceKpis.mockResolvedValue([]);
     mockExecutiveSummaryService.buildExecutiveSummary.mockResolvedValue({
@@ -134,6 +177,15 @@ describe("company KPI routes", () => {
         recipients: [],
       },
     });
+    mockExecutiveSummaryService.tickDaily.mockResolvedValue(undefined);
+    mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
+    mockFeedbackService.listFeedbackTraces.mockResolvedValue([]);
+    mockFeedbackService.getFeedbackTraceById.mockResolvedValue(null);
+    mockFeedbackService.saveIssueVote.mockResolvedValue(undefined);
+    mockRoadmapEpicService.listPausedEpicIds.mockResolvedValue([]);
+    mockRoadmapEpicService.pauseEpic.mockResolvedValue(undefined);
+    mockRoadmapEpicService.resumeEpic.mockResolvedValue(undefined);
+    mockLogActivity.mockResolvedValue(undefined);
   }, 30_000);
 
   it("allows board users to list and replace KPIs", async () => {
@@ -246,6 +298,11 @@ describe("company KPI routes", () => {
   });
 
   it("rejects cross-company agent access for KPI endpoints", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-2",
+      role: "ceo",
+    });
     const app = createApp({
       type: "agent",
       agentId: "agent-1",
@@ -257,6 +314,7 @@ describe("company KPI routes", () => {
     const response = await request(app).get("/api/companies/company-1/kpis");
     expect(response.status).toBe(403);
     expect(response.body.error).toContain("cannot access another company");
+    expect(mockExecutiveSummaryService.listKpis).not.toHaveBeenCalled();
   });
 
   it("allows board users to patch daily executive summary toggle", async () => {

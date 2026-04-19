@@ -1072,6 +1072,114 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     expect(sweep.operationsHeartbeatSweep?.qaReleaseGateReassignCount).toBe(0);
   });
 
+  it("returns stale security workflow lanes to the unassigned queue when no security specialist exists", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const ceoAgentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Security Workflow Ownership Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: ceoAgentId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Security: Threat review needs a real owner",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: ceoAgentId,
+      workflowTemplateKey: "engineering_delivery_v1",
+      workflowLaneRole: "security",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    const updatedIssue = await db
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    const latestComment = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt))
+      .then((rows) => rows.at(-1) ?? null);
+
+    const persistedRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run!.id))
+      .then((rows) => rows[0] ?? null);
+    const sweep = (persistedRun?.contextSnapshot ?? {}) as Record<string, Record<string, unknown>>;
+
+    expect(updatedIssue).toMatchObject({
+      assigneeAgentId: null,
+      status: "todo",
+    });
+    expect(latestComment?.body).toContain("[operations-heartbeat-ownership-correction]");
+    expect(latestComment?.body).toContain("security workflow lane requires a security specialist");
+    expect(latestComment?.body).toContain("Next owner: unassigned queue.");
+    expect(sweep.operationsHeartbeatSweep?.ownershipCorrectionCommentCount).toBe(1);
+  });
+
   it("does not target in_review execution review issues for operations heartbeat recovery", async () => {
     const companyId = randomUUID();
     const operationsAgentId = randomUUID();

@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 function makeDb(overrides: Record<string, unknown> = {}) {
   const selectChain = {
@@ -86,8 +86,8 @@ vi.mock("../services/quota-windows.js", () => ({
   fetchAllQuotaWindows: mockFetchAllQuotaWindows,
 }));
 
-let costRoutesFactory!: typeof import("../routes/costs.js").costRoutes;
-let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
+let costRoutesFactory: typeof import("../routes/costs.js").costRoutes;
+let errorHandlerMiddleware: typeof import("../middleware/index.js").errorHandler;
 
 function createApp() {
   const app = express();
@@ -113,14 +113,34 @@ function createAppWithActor(actor: any) {
   return app;
 }
 
-beforeAll(async () => {
+beforeEach(async () => {
   vi.resetModules();
   ({ costRoutes: costRoutesFactory } = await import("../routes/costs.js"));
   ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
-});
-
-beforeEach(() => {
-  vi.clearAllMocks();
+  mockCompanyService.getById.mockReset();
+  mockCompanyService.update.mockReset();
+  mockAgentService.getById.mockReset();
+  mockAgentService.update.mockReset();
+  mockHeartbeatService.cancelBudgetScopeWork.mockReset();
+  mockLogActivity.mockReset();
+  mockFetchAllQuotaWindows.mockReset();
+  mockCostService.createEvent.mockReset();
+  mockCostService.summary.mockReset();
+  mockCostService.byAgent.mockReset();
+  mockCostService.byAgentModel.mockReset();
+  mockCostService.byInvocationSource.mockReset();
+  mockCostService.byProvider.mockReset();
+  mockCostService.byBiller.mockReset();
+  mockCostService.windowSpend.mockReset();
+  mockCostService.byProject.mockReset();
+  mockFinanceService.createEvent.mockReset();
+  mockFinanceService.summary.mockReset();
+  mockFinanceService.byBiller.mockReset();
+  mockFinanceService.byKind.mockReset();
+  mockFinanceService.list.mockReset();
+  mockBudgetService.overview.mockReset();
+  mockBudgetService.upsertPolicy.mockReset();
+  mockBudgetService.resolveIncident.mockReset();
   mockCompanyService.update.mockResolvedValue({
     id: "company-1",
     name: "PrivateClip",
@@ -134,8 +154,31 @@ beforeEach(() => {
     budgetMonthlyCents: 100,
     spentMonthlyCents: 0,
   });
+  mockHeartbeatService.cancelBudgetScopeWork.mockResolvedValue(undefined);
+  mockLogActivity.mockResolvedValue(undefined);
+  mockFetchAllQuotaWindows.mockResolvedValue([]);
+  mockCostService.summary.mockResolvedValue({ spendCents: 0 });
+  mockCostService.byAgent.mockResolvedValue([]);
+  mockCostService.byAgentModel.mockResolvedValue([]);
+  mockCostService.byInvocationSource.mockResolvedValue([]);
+  mockCostService.byProvider.mockResolvedValue([]);
+  mockCostService.byBiller.mockResolvedValue([]);
+  mockCostService.windowSpend.mockResolvedValue([]);
+  mockCostService.byProject.mockResolvedValue([]);
+  mockFinanceService.summary.mockResolvedValue({ debitCents: 0, creditCents: 0, netCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+  mockFinanceService.byBiller.mockResolvedValue([]);
+  mockFinanceService.byKind.mockResolvedValue([]);
+  mockFinanceService.list.mockResolvedValue([]);
+  mockBudgetService.overview.mockResolvedValue({
+    companyId: "company-1",
+    policies: [],
+    activeIncidents: [],
+    pausedAgentCount: 0,
+    pausedProjectCount: 0,
+    pendingApprovalCount: 0,
+  });
   mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
-});
+}, 20_000);
 
 describe("cost routes", () => {
   it("accepts valid ISO date strings and passes them to cost summary routes", async () => {

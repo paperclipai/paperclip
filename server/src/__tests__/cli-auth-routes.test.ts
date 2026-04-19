@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAccessService = vi.hoisted(() => ({
   isInstanceAdmin: vi.fn(),
@@ -25,21 +25,23 @@ const mockBoardAuthService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../services/index.js")>();
-  return {
-    ...actual,
-    accessService: () => mockAccessService,
-    agentService: () => mockAgentService,
-    boardAuthService: () => mockBoardAuthService,
-    logActivity: mockLogActivity,
-    notifyHireApproved: vi.fn(),
-    deduplicateAgentName: vi.fn((name: string) => name),
-  };
-});
+vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
+  agentService: () => mockAgentService,
+  boardAuthService: () => mockBoardAuthService,
+  deduplicateAgentName: vi.fn((name: string) => name),
+  logActivity: mockLogActivity,
+  normalizeRuntimeConfigForCooHeartbeatModel: vi.fn((input: unknown) => input),
+  notifyHireApproved: vi.fn(async () => undefined),
+  prepareAdapterConfigForPersistence: vi.fn((input: unknown) => input),
+  secretService: () => ({
+    getOptionalConfigValue: vi.fn(async () => null),
+    getConfigValue: vi.fn(async () => null),
+  }),
+}));
 
-const { accessRoutes } = await import("../routes/access.js");
-const { errorHandler } = await import("../middleware/index.js");
+let accessRoutes!: typeof import("../routes/access.js").accessRoutes;
+let errorHandler!: typeof import("../middleware/index.js").errorHandler;
 
 function createApp(actor: any) {
   const app = express();
@@ -62,8 +64,19 @@ function createApp(actor: any) {
 }
 
 describe("cli auth routes", () => {
+  beforeAll(async () => {
+    ({ accessRoutes } = await import("../routes/access.js"));
+    ({ errorHandler } = await import("../middleware/index.js"));
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAccessService.isInstanceAdmin.mockResolvedValue(false);
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAgentService.getById.mockResolvedValue(null);
+    mockBoardAuthService.revokeBoardApiKey.mockResolvedValue(undefined);
+    mockLogActivity.mockResolvedValue(undefined);
   });
 
   it("creates a CLI auth challenge with approval metadata", async () => {
@@ -192,12 +205,10 @@ describe("cli auth routes", () => {
       .send({ token: "pcp_cli_auth_secret" });
 
     expect(res.status).toBe(200);
-    await vi.waitFor(() => {
-      expect(mockBoardAuthService.resolveBoardActivityCompanyIds).toHaveBeenCalledWith({
-        userId: "admin-1",
-        requestedCompanyId: null,
-        boardApiKeyId: "board-key-2",
-      });
+    expect(mockBoardAuthService.resolveBoardActivityCompanyIds).toHaveBeenCalledWith({
+      userId: "admin-1",
+      requestedCompanyId: null,
+      boardApiKeyId: "board-key-2",
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
@@ -220,11 +231,9 @@ describe("cli auth routes", () => {
     const res = await request(app).post("/api/cli-auth/revoke-current").send({});
 
     expect(res.status).toBe(200);
-    await vi.waitFor(() => {
-      expect(mockBoardAuthService.resolveBoardActivityCompanyIds).toHaveBeenCalledWith({
-        userId: "admin-2",
-        boardApiKeyId: "board-key-3",
-      });
+    expect(mockBoardAuthService.resolveBoardActivityCompanyIds).toHaveBeenCalledWith({
+      userId: "admin-2",
+      boardApiKeyId: "board-key-3",
     });
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),

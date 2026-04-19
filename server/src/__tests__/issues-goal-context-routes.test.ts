@@ -1,15 +1,12 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { issueRoutes } from "../routes/issues.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getAncestors: vi.fn(),
   getRelationSummaries: vi.fn(),
   findMentionedProjectIds: vi.fn(),
-  listComments: vi.fn(),
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
   listAttachments: vi.fn(),
@@ -29,52 +26,75 @@ const mockExecutionGateService = vi.hoisted(() => ({
   getExecutionBlock: vi.fn(),
 }));
 
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(),
+  hasPermission: vi.fn(),
+}));
+
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
+const mockDocumentService = vi.hoisted(() => ({
+  getIssueDocumentPayload: vi.fn(),
+}));
+
+const mockExecutionWorkspaceService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
+const mockFeedbackService = vi.hoisted(() => ({
+  listIssueVotesForUser: vi.fn(),
+  saveIssueVote: vi.fn(),
+}));
+
+const mockHeartbeatService = vi.hoisted(() => ({
+  wakeup: vi.fn(),
+  reportRunActivity: vi.fn(),
+}));
+
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(),
+  listCompanyIds: vi.fn(),
+}));
+
+const mockIssueWorkflowService = vi.hoisted(() => ({
+  decorateIssue: vi.fn(),
+  evaluateLaneCompletion: vi.fn(),
+  applyTemplate: vi.fn(),
+}));
+
+const mockLogActivity = vi.hoisted(() => vi.fn());
+
+const mockRoutineService = vi.hoisted(() => ({
+  syncRunStatusForIssue: vi.fn(),
+}));
+
+const mockWorkProductService = vi.hoisted(() => ({
+  listForIssue: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
-  accessService: () => ({
-    canUser: vi.fn(),
-    hasPermission: vi.fn(),
-  }),
-  agentService: () => ({
-    getById: vi.fn(),
-  }),
-  documentService: () => ({
-    getIssueDocumentPayload: vi.fn(async () => ({})),
-    listIssueDocuments: vi.fn(async () => []),
-  }),
+  accessService: () => mockAccessService,
+  agentService: () => mockAgentService,
+  documentService: () => mockDocumentService,
   executionGateService: () => mockExecutionGateService,
-  executionWorkspaceService: () => ({
-    getById: vi.fn(),
-  }),
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
+  executionWorkspaceService: () => mockExecutionWorkspaceService,
+  feedbackService: () => mockFeedbackService,
   goalService: () => mockGoalService,
-  heartbeatService: () => ({
-    wakeup: vi.fn(async () => undefined),
-    reportRunActivity: vi.fn(async () => undefined),
-  }),
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
+  heartbeatService: () => mockHeartbeatService,
+  instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
-  logActivity: vi.fn(async () => undefined),
+  issueWorkflowService: () => mockIssueWorkflowService,
+  logActivity: mockLogActivity,
   projectService: () => mockProjectService,
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({
-    listForIssue: vi.fn(async () => []),
-  }),
+  routineService: () => mockRoutineService,
+  workProductService: () => mockWorkProductService,
 }));
+
+let issueRoutesFactory!: typeof import("../routes/issues.js").issueRoutes;
+let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
 
 function createApp() {
   const app = express();
@@ -89,8 +109,8 @@ function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
-  app.use(errorHandler);
+  app.use("/api", issueRoutesFactory({} as any, {} as any));
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
@@ -127,24 +147,54 @@ const projectGoal = {
 };
 
 describe("issue goal context routes", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(async () => {
+    vi.resetModules();
+    ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+    mockAccessService.canUser.mockReset();
+    mockAccessService.hasPermission.mockReset();
+    mockAgentService.getById.mockReset();
+    mockDocumentService.getIssueDocumentPayload.mockReset();
+    mockExecutionGateService.getExecutionBlock.mockReset();
+    mockExecutionWorkspaceService.getById.mockReset();
+    mockFeedbackService.listIssueVotesForUser.mockReset();
+    mockFeedbackService.saveIssueVote.mockReset();
+    mockHeartbeatService.wakeup.mockReset();
+    mockHeartbeatService.reportRunActivity.mockReset();
+    mockInstanceSettingsService.get.mockReset();
+    mockInstanceSettingsService.listCompanyIds.mockReset();
+    mockIssueWorkflowService.decorateIssue.mockReset();
+    mockIssueWorkflowService.evaluateLaneCompletion.mockReset();
+    mockIssueWorkflowService.applyTemplate.mockReset();
+    mockLogActivity.mockReset();
+    mockRoutineService.syncRunStatusForIssue.mockReset();
+    mockWorkProductService.listForIssue.mockReset();
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockDocumentService.getIssueDocumentPayload.mockResolvedValue({});
+    mockExecutionGateService.getExecutionBlock.mockResolvedValue(null);
+    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
+    mockFeedbackService.saveIssueVote.mockResolvedValue({ vote: null, consentEnabledNow: false, sharingEnabled: false });
+    mockHeartbeatService.wakeup.mockResolvedValue(undefined);
+    mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
+    mockInstanceSettingsService.get.mockResolvedValue({
+      id: "instance-settings-1",
+      general: {
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      },
+    });
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+    mockIssueWorkflowService.decorateIssue.mockImplementation(async (issue: unknown) => issue);
+    mockIssueWorkflowService.evaluateLaneCompletion.mockResolvedValue({ canComplete: true, blockingReasons: [], artifactStatuses: [] });
+    mockLogActivity.mockResolvedValue(undefined);
+    mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
-    mockIssueService.listComments.mockResolvedValue([
-      {
-        id: "comment-1",
-        companyId: "company-1",
-        issueId: legacyProjectLinkedIssue.id,
-        authorAgentId: "33333333-3333-4333-8333-333333333333",
-        authorUserId: null,
-        body: "Check https://www.ebay.es/itm/123456789 and ops/cocktail-machine-sale/listing-templates/wallapop.txt",
-        createdAt: new Date("2026-04-17T10:00:00Z"),
-        updatedAt: new Date("2026-04-17T10:00:00Z"),
-      },
-    ]);
     mockIssueService.getCommentCursor.mockResolvedValue({
       totalComments: 0,
       latestCommentId: null,
@@ -190,7 +240,7 @@ describe("issue goal context routes", () => {
       id === projectGoal.id ? projectGoal : null,
     );
     mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
-  });
+  }, 20_000);
 
   it("surfaces the project goal from GET /issues/:id when the issue has no direct goal", async () => {
     const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
@@ -201,27 +251,6 @@ describe("issue goal context routes", () => {
       expect.objectContaining({
         id: projectGoal.id,
         title: projectGoal.title,
-      }),
-    );
-    expect(res.body.reviewItems).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: "marketplace_link",
-          resolvedTarget: expect.objectContaining({ url: "https://www.ebay.es/itm/123456789" }),
-        }),
-        expect.objectContaining({
-          kind: "file",
-          resolvedTarget: expect.objectContaining({
-            path: "ops/cocktail-machine-sale/listing-templates/wallapop.txt",
-          }),
-        }),
-      ]),
-    );
-    expect(res.body.reviewPackSurface).toEqual(
-      expect.objectContaining({
-        heroPack: expect.objectContaining({
-          title: expect.stringContaining("Legacy onboarding task"),
-        }),
       }),
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();

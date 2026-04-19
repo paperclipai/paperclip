@@ -1,11 +1,7 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
-import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
-import { setOverridePaused } from "../adapters/registry.js";
-import { adapterRoutes } from "../routes/adapters.js";
-import { errorHandler } from "../middleware/index.js";
 
 const overridingConfigSchemaAdapter: ServerAdapterModule = {
   type: "claude_local",
@@ -41,20 +37,31 @@ function createApp() {
     };
     next();
   });
-  app.use("/api", adapterRoutes());
-  app.use(errorHandler);
+  app.use("/api", adapterRoutesFactory());
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
+let registerServerAdapterFn!: typeof import("../adapters/index.js").registerServerAdapter;
+let unregisterServerAdapterFn!: typeof import("../adapters/index.js").unregisterServerAdapter;
+let setOverridePausedFn!: typeof import("../adapters/registry.js").setOverridePaused;
+let adapterRoutesFactory!: typeof import("../routes/adapters.js").adapterRoutes;
+let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
+
 describe("adapter routes", () => {
-  beforeEach(() => {
-    setOverridePaused("claude_local", false);
-    registerServerAdapter(overridingConfigSchemaAdapter);
+  beforeEach(async () => {
+    vi.resetModules();
+    ({ registerServerAdapter: registerServerAdapterFn, unregisterServerAdapter: unregisterServerAdapterFn } = await import("../adapters/index.js"));
+    ({ setOverridePaused: setOverridePausedFn } = await import("../adapters/registry.js"));
+    ({ adapterRoutes: adapterRoutesFactory } = await import("../routes/adapters.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+    setOverridePausedFn("claude_local", false);
+    registerServerAdapterFn(overridingConfigSchemaAdapter);
   });
 
   afterEach(() => {
-    setOverridePaused("claude_local", false);
-    unregisterServerAdapter("claude_local");
+    setOverridePausedFn("claude_local", false);
+    unregisterServerAdapterFn("claude_local");
   });
 
   it("uses the active adapter when resolving config schema for a paused builtin override", async () => {
