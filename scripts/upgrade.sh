@@ -477,7 +477,12 @@ fi
 # ---------------------------------------------------------------------------
 
 if [ "$phase" = "built" ]; then
-  save_heartbeat_state
+  # Only save if no snapshot exists yet — guards against a crash between
+  # quiesce_agents and set_phase "quiescing" re-overwriting the snapshot
+  # with the already-quiesced state, which would permanently disable agents.
+  if [ ! -f "$HEARTBEAT_STATE_FILE" ]; then
+    save_heartbeat_state
+  fi
   quiesce_agents
   set_phase "quiescing"
 
