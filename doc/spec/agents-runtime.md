@@ -214,9 +214,11 @@ The heartbeat runtime should prefer same-issue recovery over operator cleanup:
 - process loss should retry the same agent on the same issue once, including adapters without a local child pid when the lease has clearly expired
 - the queued recovery run may reserve the issue execution lock so another worker does not steal the same execution while recovery is in flight
 - if that retry is already used, the run should become terminal from a recovery perspective (`exhausted`, `blocked`, or `non_retriable`)
-- transient adapter failures should trip an adapter-level retry circuit before they create a retry storm, and an open circuit should pause fresh dispatch on that adapter until the cooldown expires
+- transient adapter failures should be classified consistently whether the adapter throws or returns a failed result, so the same retry policy and retry-circuit logic applies to both
+- transient adapter failures should trip an adapter-level retry circuit before they create a retry storm, and an open circuit should pause fresh specialist dispatch and cross-agent recovery nudges on that adapter until the cooldown expires while allowing orchestrator-only control-plane runs to keep sweeping and bookkeeping
 - recovery should always write structured run events and activity-log rows
 - issue comments should only be added when recovery changes ownership, changes status, or needs operator attention
+- completion-comment enforcement should apply only to succeeded runs; failed or auto-retrying runs must not create missing-comment recovery noise
 - Inbox should not surface failed runs that are still auto-recovering
 
 ## 8. Troubleshooting

@@ -6,7 +6,7 @@ import path from "node:path";
 import { createServer } from "node:http";
 import { and, asc, eq, or } from "drizzle-orm";
 import { WebSocketServer } from "ws";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   agentWakeupRequests,
@@ -14,6 +14,7 @@ import {
   applyPendingMigrations,
   companies,
   createDb,
+  heartbeatRetryCircuits,
   ensurePostgresDatabase,
   getEmbeddedPostgresTestSupport,
   heartbeatRuns,
@@ -235,6 +236,27 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     instance = started.instance;
     dataDir = started.dataDir;
   }, 45_000);
+
+  afterEach(async () => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const activeRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(or(eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.status, "running")));
+      if (activeRuns.length === 0) break;
+      if (attempt === 0) {
+        await db
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(or(eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.status, "running")));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  });
 
   afterAll(async () => {
     await waitFor(async () => {
@@ -2110,6 +2132,145 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         })
         .where(eq(heartbeatRuns.id, busyRunId));
     }
+  });
+
+  it("skips cross-agent recovery wakes when the target assignee adapter retry circuit is open", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const workerAgentId = randomUUID();
+    const issueId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const completedRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Recovery Circuit Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: workerAgentId,
+        companyId,
+        name: "Product Engineer - App",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values({
+      id: completedRunId,
+      companyId,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(heartbeatRetryCircuits).values({
+      companyId,
+      adapterType: "codex_local",
+      state: "open",
+      openedAt: new Date("2026-04-16T10:00:00.000Z"),
+      openUntil: new Date(Date.now() + 60_000),
+      windowStartedAt: new Date("2026-04-16T09:59:00.000Z"),
+      windowTotal: 3,
+      windowFailures: 3,
+      consecutiveFailures: 3,
+      cooldownSeconds: 600,
+      updatedAt: new Date(),
+    });
+
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Upstream blocker",
+        status: "todo",
+        priority: "critical",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: issueId,
+        companyId,
+        title: "Blocked assigned issue while the adapter circuit is open",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: completedRunId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt));
+    const wakeups = await db
+      .select({
+        agentId: agentWakeupRequests.agentId,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId))
+      .orderBy(asc(agentWakeupRequests.createdAt));
+
+    expect(comments.some((comment) => comment.body?.includes("[operations-heartbeat-recovery]"))).toBe(false);
+    expect(
+      wakeups.some((wakeup) => (
+        wakeup.agentId === workerAgentId && wakeup.reason === "operations_cross_agent_recovery"
+      )),
+    ).toBe(false);
   });
 
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {

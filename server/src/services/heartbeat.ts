@@ -1082,6 +1082,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "codex_local",
   "cursor",
   "gemini_local",
+  "hermes_local",
   "opencode_local",
   "pi_local",
 ]);
@@ -1427,14 +1428,18 @@ function runActivityReferenceTime(
   return run.lastActivityAt ?? run.updatedAt ?? run.startedAt ?? run.createdAt;
 }
 
-function classifyThrownHeartbeatErrorCode(error: unknown): string {
-  const thrown = (error && typeof error === "object" ? error : null) as
-    | { errorCode?: unknown; code?: unknown; message?: unknown }
-    | null;
-  const directErrorCode = readNonEmptyString(thrown?.errorCode);
+function classifyHeartbeatFailureCode(input: {
+  errorCode?: unknown;
+  code?: unknown;
+  message?: unknown;
+  timedOut?: boolean;
+}): string {
+  if (input.timedOut) return "timeout";
+
+  const directErrorCode = readNonEmptyString(input.errorCode);
   if (directErrorCode) return directErrorCode;
 
-  const directCode = readNonEmptyString(thrown?.code);
+  const directCode = readNonEmptyString(input.code);
   if (directCode) {
     const normalizedCode = directCode.toUpperCase();
     if ([
@@ -1452,7 +1457,7 @@ function classifyThrownHeartbeatErrorCode(error: unknown): string {
     }
   }
 
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  const message = readNonEmptyString(input.message)?.toLowerCase() ?? "";
   if (
     /socket hang up|econnreset|etimedout|timeout|timed out|eai_again|enotfound|econnrefused|temporarily unavailable|gateway not connected|502|503|504/.test(message)
   ) {
@@ -1460,6 +1465,29 @@ function classifyThrownHeartbeatErrorCode(error: unknown): string {
   }
 
   return "adapter_failed";
+}
+
+function classifyThrownHeartbeatErrorCode(error: unknown): string {
+  const thrown = (error && typeof error === "object" ? error : null) as
+    | { errorCode?: unknown; code?: unknown; message?: unknown }
+    | null;
+  return classifyHeartbeatFailureCode({
+    errorCode: thrown?.errorCode,
+    code: thrown?.code,
+    message: error instanceof Error ? error.message : String(error),
+  });
+}
+
+function classifyAdapterResultHeartbeatErrorCode(result: {
+  errorCode?: unknown;
+  errorMessage?: unknown;
+  timedOut?: boolean;
+}): string {
+  return classifyHeartbeatFailureCode({
+    errorCode: result.errorCode,
+    message: result.errorMessage,
+    timedOut: result.timedOut,
+  });
 }
 
 function isTransientAutoRetryErrorCode(errorCode: string | null | undefined) {
@@ -2972,6 +3000,15 @@ export function heartbeatService(db: Db) {
     return { closed: existing.state !== "closed" || isExpired };
   }
 
+  async function isRetryCircuitOpen(companyId: string, adapterType: string, now: Date) {
+    await closeRetryCircuitIfReady(companyId, adapterType, now);
+    const retryCircuit = await getRetryCircuit(companyId, adapterType);
+    return Boolean(
+      retryCircuit?.state === "open"
+      && (!retryCircuit.openUntil || new Date(retryCircuit.openUntil).getTime() > now.getTime()),
+    );
+  }
+
   async function recordTransientFailureForRetryCircuit(
     companyId: string,
     adapterType: string,
@@ -4015,12 +4052,7 @@ export function heartbeatService(db: Db) {
     }
 
     const now = new Date();
-    await closeRetryCircuitIfReady(run.companyId, agent.adapterType, now);
-    const retryCircuit = await getRetryCircuit(run.companyId, agent.adapterType);
-    if (
-      retryCircuit?.state === "open" &&
-      (!retryCircuit.openUntil || new Date(retryCircuit.openUntil).getTime() > now.getTime())
-    ) {
+    if (!isOperationsOrchestratorAgent(agent) && await isRetryCircuitOpen(run.companyId, agent.adapterType, now)) {
       return null;
     }
 
@@ -5403,6 +5435,9 @@ export function heartbeatService(db: Db) {
       if (!targetIssue.assigneeAgentId) return;
       if (!isAgentInvokableStatus(targetIssue.assigneeStatus)) return;
       if (!hasFreeSlot(targetIssue.assigneeAgentId)) return;
+      const assigneeAgent = await getAgent(targetIssue.assigneeAgentId);
+      if (!assigneeAgent) return;
+      if (await isRetryCircuitOpen(assigneeAgent.companyId, assigneeAgent.adapterType, new Date())) return;
 
       try {
         await issuesSvc.addComment(
@@ -6653,6 +6688,12 @@ export function heartbeatService(db: Db) {
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
             } as Record<string, unknown>)
           : null;
+      const failureErrorCode =
+        outcome === "succeeded"
+          ? null
+          : outcome === "cancelled"
+            ? "cancelled"
+            : classifyAdapterResultHeartbeatErrorCode(adapterResult);
 
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
@@ -6663,14 +6704,7 @@ export function heartbeatService(db: Db) {
                 adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               ),
-        errorCode:
-          outcome === "timed_out"
-            ? "timeout"
-            : outcome === "cancelled"
-              ? "cancelled"
-              : outcome === "failed"
-                ? (adapterResult.errorCode ?? "adapter_failed")
-                : null,
+        errorCode: failureErrorCode,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
         usageJson,
@@ -6735,9 +6769,17 @@ export function heartbeatService(db: Db) {
               retryAttempt: finalizedRun.retryAttempt,
             });
           }
+          await finalizeIssueCommentPolicy(finalizedRun, agent);
+          await releaseIssueExecutionAndPromote(finalizedRun);
+        } else if (outcome === "failed" || outcome === "timed_out") {
+          const recovery = await planAutomaticRetry(finalizedRun, agent, new Date());
+          finalizedRun = recovery.updatedRun;
+          if (recovery.outcome !== "retry_queued") {
+            await releaseIssueExecutionAndPromote(finalizedRun);
+          }
+        } else {
+          await releaseIssueExecutionAndPromote(finalizedRun);
         }
-        await finalizeIssueCommentPolicy(finalizedRun, agent);
-        await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
       if (finalizedRun) {
@@ -6806,7 +6848,6 @@ export function heartbeatService(db: Db) {
         });
         const recovery = await planAutomaticRetry(failedRun, agent, new Date());
         const effectiveFailedRun = recovery.updatedRun;
-        await finalizeIssueCommentPolicy(effectiveFailedRun, agent);
         if (recovery.outcome !== "retry_queued") {
           await releaseIssueExecutionAndPromote(effectiveFailedRun);
         }
@@ -6865,7 +6906,6 @@ export function heartbeatService(db: Db) {
             if (failedAgent) {
               const recovery = await planAutomaticRetry(failedRun, failedAgent, new Date()).catch(() => null);
               const effectiveFailedRun = recovery?.updatedRun ?? failedRun;
-              await finalizeIssueCommentPolicy(effectiveFailedRun, failedAgent).catch(() => undefined);
               if (recovery?.outcome !== "retry_queued") {
                 await releaseIssueExecutionAndPromote(effectiveFailedRun).catch(() => undefined);
               }

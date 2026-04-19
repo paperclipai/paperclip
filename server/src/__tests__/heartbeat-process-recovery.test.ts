@@ -10,6 +10,7 @@ import {
   companies,
   companySkills,
   createDb,
+  issueComments,
   heartbeatRetryCircuits,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -81,6 +82,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issues);
     await db.delete(roadmapEpicPauses);
     await db.delete(activityLog);
+    await db.delete(issueComments);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentRuntimeState);
@@ -244,6 +246,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(child.pid).toBeTypeOf("number");
 
     const { runId, wakeupRequestId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_detached");
+    expect(run?.error).toContain(String(child.pid));
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("keeps a Hermes local run active when the recorded pid is still alive", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      adapterType: "hermes_local",
       processPid: child.pid ?? null,
       includeIssue: false,
     });
@@ -620,6 +650,134 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(initialRun?.retryState).toBe("scheduled");
     expect(initialRun?.retryLastDecision).toBe("auto_retry_scheduled");
     expect(retryRun?.retryOfRunId).toBe(initialRun?.id ?? null);
+  });
+
+  it("retries returned transient adapter failures instead of collapsing them into non-retriable adapter_failed", async () => {
+    const execute = vi.fn().mockResolvedValue({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "API call failed after 3 retries: timed out",
+    });
+    registerTestAdapter({
+      type: "external_transient_result_test",
+      execute,
+      testEnvironment: async () => ({
+        adapterType: "external_transient_result_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      models: [],
+      supportsLocalAgentJwt: false,
+    });
+
+    const { agentId } = await seedAgentFixture({
+      adapterType: "external_transient_result_test",
+      agentStatus: "idle",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+
+    await waitFor(async () => {
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      return runs.length >= 2;
+    }, 2_000);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(runs).toHaveLength(2);
+    const initialRun = runs.find((run) => run.retryAttempt === 0);
+    const retryRun = runs.find((run) => run.retryAttempt === 1);
+    expect(initialRun?.errorCode).toBe("adapter_transient_error");
+    expect(initialRun?.retryState).toBe("scheduled");
+    expect(initialRun?.retryLastDecision).toBe("auto_retry_scheduled");
+    expect(retryRun?.retryOfRunId).toBe(initialRun?.id ?? null);
+  });
+
+  it("does not enforce issue-comment recovery policy for failed runs that already queued auto-retry", async () => {
+    const execute = vi.fn().mockResolvedValue({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "API call failed after 3 retries: timed out",
+    });
+    registerTestAdapter({
+      type: "external_transient_comment_policy_test",
+      execute,
+      testEnvironment: async () => ({
+        adapterType: "external_transient_comment_policy_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      models: [],
+      supportsLocalAgentJwt: false,
+    });
+
+    const { companyId, agentId } = await seedAgentFixture({
+      adapterType: "external_transient_comment_policy_test",
+      agentStatus: "idle",
+    });
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Retry this failed issue without comment-policy noise",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+      },
+    });
+    expect(run).not.toBeNull();
+
+    await waitFor(async () => {
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      return runs.length >= 2;
+    }, 2_000);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const initialRun = runs.find((row) => row.id === run?.id);
+    const retryRun = runs.find((row) => row.id !== run?.id);
+    expect(initialRun?.status).toBe("failed");
+    expect(initialRun?.issueCommentStatus).toBe("not_applicable");
+    expect(retryRun?.status).toBe("queued");
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
