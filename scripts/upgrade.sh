@@ -90,6 +90,7 @@ ROLLBACK_REF_FILE="$STATE_DIR/rollback-ref"
 DRAIN_START_FILE="$STATE_DIR/drain-started-at"
 LOCK_FILE="$STATE_DIR/upgrade.lock"
 PULSE_FILE="$STATE_DIR/pulse"
+COMPANY_ID_FILE="$STATE_DIR/company-id"
 
 mkdir -p "$STATE_DIR"
 
@@ -131,16 +132,25 @@ phase_age_sec() {
 # ---------------------------------------------------------------------------
 
 resolve_company_id() {
+  # Use env var if set
   if [ -n "${PAPERCLIP_COMPANY_ID:-}" ]; then
+    echo "$PAPERCLIP_COMPANY_ID" | tee "$COMPANY_ID_FILE" > /dev/null
     echo "$PAPERCLIP_COMPANY_ID"
     return
   fi
+  # Use persisted value from a prior run (survives mid-swap crash when API is down)
+  if [ -f "$COMPANY_ID_FILE" ]; then
+    cat "$COMPANY_ID_FILE"
+    return
+  fi
+  # Fall back to API auto-detect (fresh upgrade only)
   local detected
   detected=$(api_curl "$API_URL/api/companies" 2>/dev/null | jq -r '.[0].id // empty' 2>/dev/null || echo "")
   if [ -z "$detected" ]; then
     log "ERROR: Could not auto-detect company ID. Set PAPERCLIP_COMPANY_ID or ensure the server is running."
     exit 1
   fi
+  echo "$detected" > "$COMPANY_ID_FILE"
   echo "$detected"
 }
 
@@ -256,8 +266,13 @@ restore_heartbeats() {
 }
 
 full_cleanup() {
+  # Preserve company-id across cleanup — needed for crash recovery when the
+  # API is down mid-swap. It is refreshed on every fresh upgrade start.
+  local saved_company_id=""
+  [ -f "$COMPANY_ID_FILE" ] && saved_company_id=$(cat "$COMPANY_ID_FILE")
   rm -rf "$STATE_DIR"
   mkdir -p "$STATE_DIR"
+  [ -n "$saved_company_id" ] && echo "$saved_company_id" > "$COMPANY_ID_FILE"
   if [ -d "$BUILD_DIR" ]; then
     git -C "$REPO_DIR" worktree remove --force "$BUILD_DIR" 2>/dev/null || rm -rf "$BUILD_DIR"
   fi
