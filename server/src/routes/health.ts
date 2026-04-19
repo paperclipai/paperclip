@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { readdirSync, statSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
@@ -7,6 +9,60 @@ import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-se
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
+
+/**
+ * Tables the application cannot run without. If any are missing (botched
+ * migration, wrong-schema backup restore, accidental DROP), the service
+ * is considered degraded so external monitoring fires alerts.
+ */
+const CRITICAL_TABLES = [
+  "user",
+  "instance_user_roles",
+  "agents",
+  "issues",
+  "session",
+] as const;
+
+export type SchemaIntegrityStatus = "ok" | "degraded" | "unknown";
+
+export interface SchemaIntegrityResult {
+  status: SchemaIntegrityStatus;
+  checkedAt: string;
+  missingTables: string[];
+  errors: Array<{ table: string; message: string }>;
+}
+
+/**
+ * Cheap `SELECT 1 FROM "<table>" LIMIT 1` probe against each critical table.
+ * Each query wrapped in its own try/catch to collect every failure rather
+ * than aborting on the first one.
+ */
+export async function checkSchemaIntegrity(db: Db | undefined): Promise<SchemaIntegrityResult> {
+  const checkedAt = new Date().toISOString();
+  if (!db) {
+    return { status: "unknown", checkedAt, missingTables: [], errors: [] };
+  }
+
+  const missingTables: string[] = [];
+  const errors: Array<{ table: string; message: string }> = [];
+
+  for (const table of CRITICAL_TABLES) {
+    try {
+      await db.execute(sql`SELECT 1 FROM ${sql.identifier(table)} LIMIT 1`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      missingTables.push(table);
+      errors.push({ table, message });
+    }
+  }
+
+  return {
+    status: missingTables.length === 0 ? "ok" : "degraded",
+    checkedAt,
+    missingTables,
+    errors,
+  };
+}
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -128,6 +184,35 @@ export function healthRoutes(
       },
       ...(devServer ? { devServer } : {}),
     });
+  });
+
+  router.get("/schema", async (_req, res) => {
+    const result = await checkSchemaIntegrity(db);
+    const httpStatus = result.status === "degraded" ? 503 : 200;
+    res.status(httpStatus).json(result);
+  });
+
+  router.get("/backups", (_req, res) => {
+    const candidates = [
+      "/paperclip/external-backups",
+      "/paperclip/instances/default/data/backups",
+      "/paperclip/data/backups",
+      "/paperclip/backups",
+    ];
+    for (const dir of candidates) {
+      if (existsSync(dir)) {
+        const files = readdirSync(dir)
+          .filter((f) => f.endsWith(".sql"))
+          .map((f) => {
+            const stat = statSync(resolve(dir, f));
+            return { name: f, size: stat.size, modified: stat.mtime.toISOString() };
+          })
+          .sort((a, b) => b.modified.localeCompare(a.modified));
+        res.json({ backupDir: dir, files });
+        return;
+      }
+    }
+    res.json({ backupDir: null, files: [], searched: candidates });
   });
 
   return router;

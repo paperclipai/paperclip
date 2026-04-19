@@ -27,6 +27,8 @@ import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
+import { checkSchemaIntegrity } from "./routes/health.js";
+import { notifyOps } from "./services/telegram.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
@@ -641,7 +643,71 @@ export async function startServer(): Promise<StartedServer> {
         });
     }, config.heartbeatSchedulerIntervalMs);
   }
-  
+
+  // Schema integrity watchdog — catches the "we lost data overnight" failure
+  // mode where a critical table goes missing (botched migration, wrong-schema
+  // backup restore, accidental DROP). Runs every 60s, alerts via Telegram on
+  // failure, dedupes so a persistent failure pages at most every 5 minutes.
+  {
+    const SCHEMA_CHECK_INTERVAL_MS = 60 * 1000;
+    const SCHEMA_ALERT_DEDUP_MS = 5 * 60 * 1000;
+    let lastAlertSentAt = 0;
+    let lastAlertSignature: string | null = null;
+
+    const runSchemaCheck = async () => {
+      let result;
+      try {
+        result = await checkSchemaIntegrity(db);
+      } catch (err) {
+        logger.error({ err }, "Schema integrity check threw unexpectedly");
+        return;
+      }
+      if (result.status !== "degraded") {
+        if (lastAlertSignature !== null) {
+          logger.info({ checkedAt: result.checkedAt }, "Schema integrity recovered");
+          lastAlertSignature = null;
+          lastAlertSentAt = 0;
+        }
+        return;
+      }
+
+      const signature = result.missingTables.slice().sort().join(",");
+      const now = Date.now();
+      const sameFailure = signature === lastAlertSignature;
+      const withinDedupWindow = now - lastAlertSentAt < SCHEMA_ALERT_DEDUP_MS;
+      const shouldAlert = !sameFailure || !withinDedupWindow;
+
+      logger.error(
+        {
+          missingTables: result.missingTables,
+          errors: result.errors,
+          checkedAt: result.checkedAt,
+          willAlert: shouldAlert,
+        },
+        "SCHEMA INTEGRITY CHECK FAILED",
+      );
+
+      if (!shouldAlert) return;
+
+      lastAlertSentAt = now;
+      lastAlertSignature = signature;
+      const summary = result.errors
+        .map((e) => `${e.table}: ${e.message}`)
+        .join("; ");
+      void notifyOps(
+        `Schema integrity check FAILED: missing/broken tables [${result.missingTables.join(", ")}] — ${summary}`,
+        "error",
+      ).catch((err) => {
+        logger.warn({ err }, "Failed to send schema integrity Telegram alert");
+      });
+    };
+
+    void runSchemaCheck();
+    setInterval(() => {
+      void runSchemaCheck();
+    }, SCHEMA_CHECK_INTERVAL_MS);
+  }
+
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
     const settingsSvc = instanceSettingsService(db);
