@@ -605,10 +605,8 @@ if [ "$phase" = "swapping" ]; then
 
   log "Building artifacts in live repo..."
   if ! pnpm build 2>>"$LOG_FILE"; then
-    log "ERROR: Build failed in live repo — restoring agents and aborting"
-    systemctl --user start "$SERVICE_NAME" 2>>"$LOG_FILE" || true
-    restore_heartbeats
-    full_cleanup
+    log "ERROR: Build failed in live repo — rolling back to previous commit"
+    rollback
     exit 1
   fi
 
