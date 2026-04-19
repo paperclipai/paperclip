@@ -38,7 +38,12 @@ function registerModuleMocks() {
     projectService: () => mockProjectService,
     secretService: () => mockSecretService,
     workspaceOperationService: () => mockWorkspaceOperationService,
-  }));
+    feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
+  chatProcessService: () => ({}),
+}));
 
   vi.doMock("../services/workspace-runtime.js", () => ({
     cleanupExecutionWorkspaceArtifacts: vi.fn(),

@@ -56,7 +56,11 @@ function registerServiceMocks() {
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     feedbackService: () => ({
       listIssueVotesForUser: vi.fn(async () => []),
-      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false   assetService: () => ({}),
+  chatService: () => ({}),
+  chatProcessService: () => ({}),
+    instanceSettingsService: () => ({}),
+  })),
     }),
     goalService: () => ({
       getDefaultCompanyGoal: vi.fn(async () => null),

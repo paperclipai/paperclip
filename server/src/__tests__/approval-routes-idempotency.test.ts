@@ -35,6 +35,10 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => mockIssueApprovalService,
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
+  feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
 }));
 
 function registerModuleMocks() {
@@ -44,6 +48,11 @@ function registerModuleMocks() {
     issueApprovalService: () => mockIssueApprovalService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
+    chatService: () => ({}),
+  chatProcessService: () => ({}),
+    feedbackService: () => ({}),
+    instanceSettingsService: () => ({}),
+    assetService: () => ({}),
   }));
 }
 

@@ -37,7 +37,9 @@ vi.mock("../services/index.js", () => ({
     reportRunActivity: vi.fn(async () => undefined),
   }),
   instanceSettingsService: () => ({
-    getExperimental: vi.fn(async () => ({})),
+    getExperimental: vi.fn(async () => ({  assetService: () => ({}),
+  chatService: () => ({}),
+})),
     getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
   }),
   issueApprovalService: () => ({}),
@@ -63,7 +65,10 @@ function registerModuleMocks() {
       reportRunActivity: vi.fn(async () => undefined),
     }),
     instanceSettingsService: () => ({
-      getExperimental: vi.fn(async () => ({})),
+      getExperimental: vi.fn(async () => ({  chatService: () => ({}),
+  chatProcessService: () => ({}),
+    assetService: () => ({}),
+  })),
       getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
     }),
     issueApprovalService: () => ({}),

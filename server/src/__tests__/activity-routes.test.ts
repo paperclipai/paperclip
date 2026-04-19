@@ -26,6 +26,10 @@ vi.mock("../services/activity.js", () => ({
 vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   heartbeatService: () => mockHeartbeatService,
+  feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
 }));
 
 async function createApp(

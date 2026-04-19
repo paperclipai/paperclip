@@ -33,7 +33,12 @@ function registerModuleMocks() {
     secretService: () => ({}),
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
     workspaceOperationService: () => ({}),
-  }));
+    feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
+  chatProcessService: () => ({}),
+}));
 
   vi.doMock("../adapters/index.js", () => ({
     findServerAdapter: vi.fn(),

@@ -37,7 +37,9 @@ vi.mock("../services/index.js", () => ({
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({
     listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false   assetService: () => ({}),
+  chatService: () => ({}),
+})),
   }),
   goalService: () => ({}),
   heartbeatService: () => mockHeartbeatService,

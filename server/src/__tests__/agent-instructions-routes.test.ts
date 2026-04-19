@@ -56,6 +56,8 @@ vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
   workspaceOperationService: () => ({}),
+  feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
 }));
 
 vi.mock("../adapters/index.js", () => ({
@@ -78,6 +80,11 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => ({}),
+    feedbackService: () => ({}),
+    instanceSettingsService: () => ({}),
+    assetService: () => ({}),
+    chatService: () => ({}),
+    chatProcessService: () => ({}),
   }));
 
   vi.doMock("../adapters/index.js", () => ({

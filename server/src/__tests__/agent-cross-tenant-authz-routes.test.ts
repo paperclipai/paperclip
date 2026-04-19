@@ -125,6 +125,10 @@ vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
   workspaceOperationService: () => mockWorkspaceOperationService,
+  feedbackService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
+  chatProcessService: () => ({}),
 }));
 
 vi.mock("../services/instance-settings.js", () => ({

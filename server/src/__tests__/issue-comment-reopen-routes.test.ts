@@ -81,6 +81,8 @@ vi.mock("../services/index.js", () => ({
   projectService: () => ({}),
   routineService: () => mockRoutineService,
   workProductService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
 }));
 
 function registerModuleMocks() {
@@ -108,6 +110,9 @@ function registerModuleMocks() {
     projectService: () => ({}),
     routineService: () => mockRoutineService,
     workProductService: () => ({}),
+    chatService: () => ({}),
+  chatProcessService: () => ({}),
+    assetService: () => ({}),
   }));
 }
 

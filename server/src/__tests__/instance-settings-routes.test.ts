@@ -14,12 +14,19 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 vi.mock("../services/index.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
   logActivity: mockLogActivity,
+  feedbackService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
 }));
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
+    chatService: () => ({}),
+  chatProcessService: () => ({}),
+    feedbackService: () => ({}),
+    assetService: () => ({}),
   }));
 }
 

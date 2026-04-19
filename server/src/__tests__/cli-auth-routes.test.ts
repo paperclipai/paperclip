@@ -32,6 +32,10 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),
   deduplicateAgentName: vi.fn((name: string) => name),
+  feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
 }));
 
 function registerModuleMocks() {
@@ -42,6 +46,11 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     notifyHireApproved: vi.fn(),
     deduplicateAgentName: vi.fn((name: string) => name),
+    chatService: () => ({}),
+  chatProcessService: () => ({}),
+    feedbackService: () => ({}),
+    instanceSettingsService: () => ({}),
+    assetService: () => ({}),
   }));
 }
 

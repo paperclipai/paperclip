@@ -17,6 +17,10 @@ vi.mock("../services/index.js", () => ({
   projectService: () => ({}),
   routineService: () => ({ syncRunStatusForIssue: vi.fn() }),
   workProductService: () => ({}),
+  feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
 }));
 
 function createApp(actorType: "none" | "board") {

@@ -20,7 +20,12 @@ function registerServiceMocks() {
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     logActivity: vi.fn(async () => undefined),
     workspaceOperationService: () => mockWorkspaceOperationService,
-  }));
+    feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
+  chatProcessService: () => ({}),
+}));
 }
 
 async function createApp() {

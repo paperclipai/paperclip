@@ -41,7 +41,12 @@ function registerModuleMocks() {
     deduplicateAgentName: vi.fn(),
     logActivity: mockLogActivity,
     notifyHireApproved: vi.fn(),
-  }));
+    feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
+  chatProcessService: () => ({}),
+}));
 }
 
 function createDbStub() {

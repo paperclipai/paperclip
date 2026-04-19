@@ -97,7 +97,12 @@ function registerModuleMocks() {
     accessService: () => mockAccessService,
     logActivity: mockLogActivity,
     routineService: () => mockRoutineService,
-  }));
+    feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
+  chatProcessService: () => ({}),
+}));
 }
 
 async function createApp(actor: Record<string, unknown>) {

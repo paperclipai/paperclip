@@ -14,7 +14,10 @@ vi.mock("../services/index.js", () => ({
   assetService: vi.fn(() => ({
     create: createAssetMock,
     getById: getAssetByIdMock,
-  })),
+    feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
+  chatService: () => ({}),
+})),
   logActivity: logActivityMock,
 }));
 
@@ -23,7 +26,11 @@ function registerModuleMocks() {
     assetService: vi.fn(() => ({
       create: createAssetMock,
       getById: getAssetByIdMock,
-    })),
+      chatService: () => ({}),
+  chatProcessService: () => ({}),
+    feedbackService: () => ({}),
+    instanceSettingsService: () => ({}),
+  })),
     logActivity: logActivityMock,
   }));
 }

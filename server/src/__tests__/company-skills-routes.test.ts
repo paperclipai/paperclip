@@ -34,6 +34,10 @@ vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
   companySkillService: () => mockCompanySkillService,
   logActivity: mockLogActivity,
+  feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
 }));
 
 async function createApp(actor: Record<string, unknown>) {
