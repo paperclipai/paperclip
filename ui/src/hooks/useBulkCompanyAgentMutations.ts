@@ -41,9 +41,9 @@ export function useBulkCompanyAgentMutations(companyId: string | null) {
     },
     onSuccess: (count) => {
       pushToast({ title: `Paused ${count} agent${count === 1 ? "" : "s"}`, tone: "success" });
-      invalidate();
     },
     onError: (err: Error) => pushToast({ title: err.message, tone: "error" }),
+    onSettled: () => invalidate(),
   });
 
   const bulkResume = useMutation({
@@ -60,9 +60,9 @@ export function useBulkCompanyAgentMutations(companyId: string | null) {
     },
     onSuccess: (count) => {
       pushToast({ title: `Resumed ${count} agent${count === 1 ? "" : "s"}`, tone: "success" });
-      invalidate();
     },
     onError: (err: Error) => pushToast({ title: err.message, tone: "error" }),
+    onSettled: () => invalidate(),
   });
 
   return { bulkPause, bulkResume };
