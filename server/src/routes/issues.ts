@@ -585,9 +585,9 @@ export function issueRoutes(
     }
   });
 
-  // Alias: accept /companies/:companyId/issues/:issueId/* and route to the flat
-  // /issues/:issueId/* handlers below. Fixes #3993: agents over-generalize from
-  // the nested create endpoint and 404 on modify/comment paths.
+  // Accept /companies/:companyId/issues/:issueId/* as aliases for the flat
+  // /issues/:issueId/* handlers. The URL's companyId is advisory — authz
+  // stays actor-based inside each handler.
   router.use((req, _res, next) => {
     const queryIdx = req.url.indexOf("?");
     const pathname = queryIdx === -1 ? req.url : req.url.slice(0, queryIdx);
@@ -598,8 +598,9 @@ export function issueRoutes(
 
     const [, issueId, subpath = ""] = match;
 
-    // POST /companies/:companyId/issues/:issueId/attachments has a native
-    // nested handler (no flat equivalent for create). Let it through unchanged.
+    // Bypass paths that have a native nested handler with no flat equivalent.
+    // Today only POST /.../attachments qualifies; extend this list if more
+    // nested-only endpoints are added.
     if (subpath === "/attachments" && req.method === "POST") return next();
 
     req.url = `/issues/${issueId}${subpath}${query}`;
