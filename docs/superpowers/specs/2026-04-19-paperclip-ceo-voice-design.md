@@ -80,7 +80,7 @@ Walter will Aufgaben an seinen Paperclip-CEO-Agenten per Sprache und Text steuer
   > Du bist die Telegram- und Voice-Brücke zwischen Walter und seinem CEO-Agenten in Paperclip.
   > Verstehe Walters Anweisung und führe sie via Paperclip-Tools aus. Antworte kurz auf Deutsch.
   > Regeln:
-  > - Neue Tasks immer dem CEO-Agenten zuweisen (`assigneeAgentId = "fca63798-7610-4502-8603-1ecd02d4b811"`).
+  > - Neue Tasks immer dem CEO-Agenten zuweisen (`assigneeAgentId = "506c873e-3a40-4483-9a45-0eb0fa1554bb"`).
   > - Bei Mehrdeutigkeit höflich zurückfragen, nicht raten.
   > - Bei Listen-Anfragen: max. 5 Tasks zeigen, je Task ID + Titel + Status.
   > - Keine Meta-Sätze. Kein "Ich werde jetzt …", sondern Ergebnis nennen.
@@ -88,7 +88,7 @@ Walter will Aufgaben an seinen Paperclip-CEO-Agenten per Sprache und Text steuer
 
 | Tool | Methode | URL | Body / Query |
 |---|---|---|---|
-| `create_task` | POST | `http://127.0.0.1:3100/api/companies/9cebf3cf-efe8-4597-a400-f06488900a87/issues` | `{ "title": "{title}", "description": "{description}", "status": "todo", "priority": "{priority\|medium}", "assigneeAgentId": "fca63798-7610-4502-8603-1ecd02d4b811" }` |
+| `create_task` | POST | `http://127.0.0.1:3100/api/companies/9cebf3cf-efe8-4597-a400-f06488900a87/issues` | `{ "title": "{title}", "description": "{description}", "status": "todo", "priority": "{priority\|medium}", "assigneeAgentId": "506c873e-3a40-4483-9a45-0eb0fa1554bb" }` |
 | `list_tasks` | GET | `http://127.0.0.1:3100/api/companies/9cebf3cf-.../issues` | `?assigneeAgentId=fca63798-...&status=todo,in_progress,in_review,blocked` |
 | `get_task` | GET | `http://127.0.0.1:3100/api/issues/{issueId}` | — |
 | `comment_task` | POST | `http://127.0.0.1:3100/api/issues/{issueId}/comments` | `{ "body": "{body}" }` |
@@ -108,7 +108,7 @@ AI Agent output → Extract assistantText → IF source:
 - **n8n-Credential "Paperclip API"**: `httpHeaderAuth`, Header `Authorization: Bearer <KEY>`
 - Key-Erzeugung einmalig:
   ```
-  pnpm paperclipai agent local-cli fca63798-7610-4502-8603-1ecd02d4b811 \
+  pnpm paperclipai agent local-cli 506c873e-3a40-4483-9a45-0eb0fa1554bb \
     --company-id 9cebf3cf-efe8-4597-a400-f06488900a87
   ```
 - Der Output enthält `export PAPERCLIP_API_KEY=…` — dieser Wert wandert in den n8n-Credential.

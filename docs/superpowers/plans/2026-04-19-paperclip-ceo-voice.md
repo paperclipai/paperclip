@@ -34,7 +34,7 @@ Diese Schritte erfordern Walters Umgebung und werden interaktiv bestätigt, nich
 
   ```bash
   cd "/Users/walterschoenenbroecher.de/Desktop/Claude Code/Paperclip"
-  pnpm paperclipai agent local-cli fca63798-7610-4502-8603-1ecd02d4b811 \
+  pnpm paperclipai agent local-cli 506c873e-3a40-4483-9a45-0eb0fa1554bb \
     --company-id 9cebf3cf-efe8-4597-a400-f06488900a87
   ```
 
@@ -266,7 +266,7 @@ Dein Job: Walters Anweisungen in Paperclip-Aktionen umsetzen.
 - Antworte NUR auf Deutsch.
 - Gib NUR die finale Antwort aus, keine Meta-Sätze ("Ich werde jetzt ..." ist verboten).
 - Bei "Task anlegen" / "Aufgabe für den CEO" etc. → Tool `create_task` aufrufen.
-  Assignee ist IMMER der CEO-Agent (Agent-ID "fca63798-7610-4502-8603-1ecd02d4b811").
+  Assignee ist IMMER der CEO-Agent (Agent-ID "506c873e-3a40-4483-9a45-0eb0fa1554bb").
 - Bei "Was ist offen?" / "Status?" / "Was macht der CEO?" → Tool `list_tasks`, max. 5 ausgeben mit Identifier + Titel + Status.
 - Bei "Zu WHI-X: ..." / "Kommentiere Task Y" → erst `get_task` um die Issue-ID zu finden, dann `comment_task`.
 - Bei Mehrdeutigkeit: höflich einmal zurückfragen statt zu raten.
@@ -369,7 +369,7 @@ n8n-Canvas → neuen Node vom Typ `HTTP Request Tool` (unter "Tools" für AI Age
     "description": "{description}",
     "status": "todo",
     "priority": "medium",
-    "assigneeAgentId": "fca63798-7610-4502-8603-1ecd02d4b811"
+    "assigneeAgentId": "506c873e-3a40-4483-9a45-0eb0fa1554bb"
   }
   ```
 
@@ -421,7 +421,7 @@ Neuer HTTP Request Tool:
 - **Method**: `GET`
 - **URL**: `http://127.0.0.1:3100/api/companies/9cebf3cf-efe8-4597-a400-f06488900a87/issues`
 - **Query Parameters**:
-  - `assigneeAgentId`: `fca63798-7610-4502-8603-1ecd02d4b811`
+  - `assigneeAgentId`: `506c873e-3a40-4483-9a45-0eb0fa1554bb`
   - `status`: `todo,in_progress,in_review,blocked`
 - **Authentication**: `Paperclip API` (wie oben).
 
