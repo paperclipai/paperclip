@@ -545,41 +545,80 @@ async function finalizeWorktree(
         if (!ownerRepo) {
           await onLog("stderr", `[paperclip-worktree] Could not parse owner/repo from origin remote "${remote.stdout}"; skipping PR creation.\n`);
         } else {
-          // First commit subject for PR title.
-          const subj = runGit(wkt.worktreePath, ["log", "-1", "--pretty=%s", `origin/${wkt.base}..HEAD`], true);
-          const firstSubj = subj.ok && subj.stdout.length > 0
-            ? subj.stdout.split("\n")[0]
-            : `${wkCfg.agentName}: ${wkt.branch}`;
-          const title = firstSubj.length > 200 ? firstSubj.slice(0, 197) + "..." : firstSubj;
-          const body = [
-            `Automated PR from \`${wkCfg.agentName}\` session.`,
-            "",
-            `- Branch: \`${wkt.branch}\``,
-            `- Base: \`${wkt.base}\``,
-            `- Worktree: \`${wkt.worktreePath}\``,
-            "",
-            `Adapter-created on session exit. Label \`${wkCfg.autoMergeLabel}\` applied for the DIY auto-merge workflow.`,
-          ].join("\n");
-
-          const ghArgs = [
-            "pr", "create",
-            "--repo", `${ownerRepo.owner}/${ownerRepo.repo}`,
-            "--base", wkt.base,
-            "--head", wkt.branch,
-            "--title", title,
-            "--body", body,
-            "--label", wkCfg.autoMergeLabel,
-          ];
+          // WORKTREE_PATCH_V1.1: check if agent already opened a PR on this branch.
+          // Agents use ship / open-rollup-pr / open-vault-pr skills to open rich-body
+          // PRs during the session. The adapter PR-on-exit is a safety net for sessions
+          // that crashed or didn't open one. If a PR already exists, skip creation.
           const ghEnv: NodeJS.ProcessEnv = { ...process.env };
           if (patToken) {
             ghEnv.GH_TOKEN = patToken;
             ghEnv.GITHUB_TOKEN = patToken;
           }
-          const ghRes = spawnSync("gh", ghArgs, { encoding: "utf-8", cwd: wkt.worktreePath, env: ghEnv });
-          if (ghRes.status === 0) {
-            await onLog("stdout", `[paperclip-worktree] Opened PR on ${ownerRepo.owner}/${ownerRepo.repo}: ${(ghRes.stdout || "").trim()}\n`);
+          const existingRes = spawnSync(
+            "gh",
+            [
+              "pr", "list",
+              "--repo", `${ownerRepo.owner}/${ownerRepo.repo}`,
+              "--head", wkt.branch,
+              "--state", "open",
+              "--json", "number",
+              "--limit", "1",
+            ],
+            { encoding: "utf-8", cwd: wkt.worktreePath, env: ghEnv },
+          );
+          let existingPrNumber: number | null = null;
+          if (existingRes.status === 0 && existingRes.stdout) {
+            try {
+              const parsed = JSON.parse(existingRes.stdout) as Array<{ number: number }>;
+              if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0]?.number === "number") {
+                existingPrNumber = parsed[0].number;
+              }
+            } catch {
+              // Malformed JSON — fall through to create path.
+            }
+          }
+
+          if (existingPrNumber !== null) {
+            await onLog(
+              "stdout",
+              `[paperclip-worktree] PR already exists on ${wkt.branch} (#${existingPrNumber}), skipping create.\n`,
+            );
           } else {
-            await onLog("stderr", `[paperclip-worktree] gh pr create failed (exit ${ghRes.status}): ${(ghRes.stderr || "").trim()}\n`);
+            // First commit subject for PR title.
+            const subj = runGit(wkt.worktreePath, ["log", "-1", "--pretty=%s", `origin/${wkt.base}..HEAD`], true);
+            const firstSubj = subj.ok && subj.stdout.length > 0
+              ? subj.stdout.split("\n")[0]
+              : `${wkCfg.agentName}: ${wkt.branch}`;
+            const title = firstSubj.length > 200 ? firstSubj.slice(0, 197) + "..." : firstSubj;
+            const body = [
+              `⚠️ This PR was created by the Paperclip adapter on session exit because no PR was opened during the agent session. Review context may be incomplete. Check the assigned issue for full context.`,
+              "",
+              "---",
+              "",
+              `Automated PR from \`${wkCfg.agentName}\` session.`,
+              "",
+              `- Branch: \`${wkt.branch}\``,
+              `- Base: \`${wkt.base}\``,
+              `- Worktree: \`${wkt.worktreePath}\``,
+              "",
+              `Adapter-created on session exit. Label \`${wkCfg.autoMergeLabel}\` applied for the DIY auto-merge workflow.`,
+            ].join("\n");
+
+            const ghArgs = [
+              "pr", "create",
+              "--repo", `${ownerRepo.owner}/${ownerRepo.repo}`,
+              "--base", wkt.base,
+              "--head", wkt.branch,
+              "--title", title,
+              "--body", body,
+              "--label", wkCfg.autoMergeLabel,
+            ];
+            const ghRes = spawnSync("gh", ghArgs, { encoding: "utf-8", cwd: wkt.worktreePath, env: ghEnv });
+            if (ghRes.status === 0) {
+              await onLog("stdout", `[paperclip-worktree] Opened PR on ${ownerRepo.owner}/${ownerRepo.repo}: ${(ghRes.stdout || "").trim()}\n`);
+            } else {
+              await onLog("stderr", `[paperclip-worktree] gh pr create failed (exit ${ghRes.status}): ${(ghRes.stderr || "").trim()}\n`);
+            }
           }
         }
       }
@@ -678,6 +717,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (!env.ANTHROPIC_DEFAULT_HAIKU_MODEL) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
     if (!env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
     if (!env.API_TIMEOUT_MS) env.API_TIMEOUT_MS = "3000000";
+  } else {
+    delete env.ANTHROPIC_API_KEY;
   }
 
   const effectiveEnv = Object.fromEntries(
