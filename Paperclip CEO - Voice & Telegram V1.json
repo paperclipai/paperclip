@@ -587,7 +587,7 @@
     {
       "parameters": {
         "httpMethod": "POST",
-        "path": "luna/voice",
+        "path": "paperclip/command",
         "responseMode": "responseNode",
         "options": {}
       },
@@ -598,7 +598,7 @@
         1168
       ],
       "id": "0222726e-cf7c-4caa-a7bf-3f8ea7f27b37",
-      "name": "Webhook (Luna Voice)",
+      "name": "Webhook (Paperclip Command)",
       "webhookId": "534e7c51-f8f6-4556-a8ed-258047c616e8"
     },
     {
@@ -608,17 +608,13 @@
           "number": [
             {
               "name": "chatId",
-              "value": "={{Number($json.body?.chatId ?? 0)}}"
-            },
-            {
-              "name": "messageId",
-              "value": "={{Number($json.body?.messageId ?? 0)}}"
+              "value": "={{ Number($env.WALTER_TG_CHAT_ID ?? 0) }}"
             }
           ],
           "string": [
             {
               "name": "username",
-              "value": "={{$json.body?.username ?? 'Luna'}}"
+              "value": "Walter"
             },
             {
               "name": "inputType",
@@ -626,14 +622,15 @@
             },
             {
               "name": "userText",
-              "value": "={{$json.body?.text ?? ''}}"
+              "value": "={{ $json.body?.text ?? '' }}"
             },
             {
-              "name": "voiceFileId"
+              "name": "voiceFileId",
+              "value": ""
             },
             {
               "name": "source",
-              "value": "luna"
+              "value": "={{ $json.body?.source ?? 'mac' }}"
             }
           ]
         },
@@ -661,10 +658,10 @@
             {
               "id": "9eba2541-e85f-4506-9e8b-adf1b44e62bf",
               "leftValue": "={{ $json.source }}",
-              "rightValue": "luna",
+              "rightValue": "telegram",
               "operator": {
                 "type": "string",
-                "operation": "equals",
+                "operation": "notEquals",
                 "singleValue": true
               }
             }
@@ -673,7 +670,7 @@
         },
         "options": {}
       },
-      "name": "IF Source is Luna?",
+      "name": "IF Source is Webhook?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
@@ -1158,7 +1155,7 @@
             "index": 0
           },
           {
-            "node": "IF Source is Luna?",
+            "node": "IF Source is Webhook?",
             "type": "main",
             "index": 0
           }
@@ -1261,7 +1258,7 @@
         ]
       ]
     },
-    "Webhook (Luna Voice)": {
+    "Webhook (Paperclip Command)": {
       "main": [
         [
           {
@@ -1288,7 +1285,7 @@
         ]
       ]
     },
-    "IF Source is Luna?": {
+    "IF Source is Webhook?": {
       "main": [
         [
           {
