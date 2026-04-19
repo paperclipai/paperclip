@@ -565,6 +565,20 @@ export function issueRoutes(
     return { project, goal: null };
   }
 
+  // LLM agents routinely post to /companies/:companyId/issues/:id/* (matching
+  // the list-scoping convention) even though mutation routes below are
+  // registered at the bare /issues/:id/* path. Rather than duplicate every
+  // route, strip the /companies/:companyId prefix when the scoped path is
+  // used against an /issues/:id sub-route. Company access is still enforced
+  // downstream via the issue's own companyId and assertCompanyAccess.
+  router.use((req, _res, next) => {
+    const m = req.url.match(/^\/companies\/[0-9a-f-]{36}(\/issues\/[^?]+.*)$/);
+    if (m) {
+      req.url = m[1];
+    }
+    next();
+  });
+
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
     try {
