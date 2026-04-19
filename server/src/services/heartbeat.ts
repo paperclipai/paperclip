@@ -4206,9 +4206,22 @@ export function heartbeatService(db: Db) {
   }
 
   async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
+    type TerminalSkipEntry = {
+      companyId: string;
+      issueId: string;
+      issueStatus: string;
+      identifier: string | null;
+      agentId: string;
+      runId: string;
+    };
+    type PromotionResult =
+      | null
+      | { run: null; skippedTerminalWakes: TerminalSkipEntry[] }
+      | { run: typeof heartbeatRuns.$inferSelect; skippedTerminalWakes: TerminalSkipEntry[] };
+
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
-    const promotionResult = await db.transaction(async (tx) => {
+    const promotionResult: PromotionResult = await db.transaction(async (tx): Promise<PromotionResult> => {
       if (contextIssueId) {
         await tx.execute(
           sql`select id from issues where company_id = ${run.companyId} and id = ${contextIssueId} for update`,
@@ -4251,14 +4264,7 @@ export function heartbeatService(db: Db) {
           .where(eq(issues.id, issue.id));
       }
 
-      const terminalSkipWakes: Array<{
-        companyId: string;
-        issueId: string;
-        issueStatus: string;
-        identifier: string | null;
-        agentId: string;
-        runId: string;
-      }> = [];
+      const terminalSkipWakes: TerminalSkipEntry[] = [];
 
       while (true) {
         const deferred = await tx
@@ -4405,10 +4411,7 @@ export function heartbeatService(db: Db) {
     // whether a run was also promoted in the same cycle (mixed cycle: terminal skip on
     // iteration N, non-comment promotion on iteration N+1 → promotedRun is non-null but
     // the skip still happened and must be logged).
-    const skips =
-      promotionResult && "skippedTerminalWakes" in promotionResult
-        ? promotionResult.skippedTerminalWakes
-        : [];
+    const skips = promotionResult?.skippedTerminalWakes ?? [];
     for (const skip of skips) {
       await logActivity(db, {
         companyId: skip.companyId,
