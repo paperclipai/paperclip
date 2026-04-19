@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -296,6 +297,308 @@ export async function runClaudeLogin(input: {
   });
 }
 
+// ----------------------------------------------------------------------------
+// Per-agent worktree provisioning (freemymemories/local-customizations)
+//
+// When adapterConfig.worktreeEnabled === true, the adapter provisions a
+// fresh git worktree per wake, pre-sets git identity + GH_TOKEN from the
+// macOS keychain, and (on session exit) pushes the branch + opens a PR.
+// Cleans up the worktree/branch regardless of exit code.
+//
+// Design plan: /Users/openclaw/.claude/plans/okay-this-is-clearly-luminous-goblet.md
+// (Layer 5 — Modified `claude_local` adapter).
+//
+// Agent's HEARTBEAT no longer needs any git plumbing — the cwd is already
+// inside `<wkt>/_workspaces/<slug>/` on a task-scoped branch, and the
+// adapter opens the PR on exit. Direct pushes to master/main are blocked
+// by a separate user-global PreToolUse hook (Layer 3).
+// ----------------------------------------------------------------------------
+
+interface WorktreeConfig {
+  enabled: boolean;
+  agentSlug: string;
+  agentName: string;
+  gitEmail: string;
+  primaryRepo: string;
+  secondaryRepo: string | null;
+  primaryBase: string;
+  secondaryBase: string | null;
+  autoMergeLabel: string;
+  keychainService: string;
+}
+
+interface ProvisionedWorktree {
+  repoRoot: string;
+  worktreePath: string;
+  branch: string;
+  base: string;
+  isPrimary: boolean;
+}
+
+interface WorktreeProvisionResult {
+  config: WorktreeConfig;
+  primary: ProvisionedWorktree;
+  secondary: ProvisionedWorktree | null;
+  patToken: string | null;
+  sessionCwd: string;
+  envAdditions: Record<string, string>;
+}
+
+function parseWorktreeConfig(config: Record<string, unknown>): WorktreeConfig | null {
+  const enabled = asBoolean(config.worktreeEnabled, false);
+  if (!enabled) return null;
+  const agentSlug = asString(config.agentSlug, "").trim();
+  const primaryRepo = asString(config.primaryRepo, "").trim();
+  if (!agentSlug || !primaryRepo) return null;
+  return {
+    enabled: true,
+    agentSlug,
+    agentName: asString(config.agentName, agentSlug),
+    gitEmail: asString(config.gitEmail, `${agentSlug}@freemymemories.com`),
+    primaryRepo,
+    secondaryRepo: asString(config.secondaryRepo, "").trim() || null,
+    primaryBase: asString(config.primaryBase, "master"),
+    secondaryBase: asString(config.secondaryBase, "").trim() || null,
+    autoMergeLabel: asString(config.autoMergeLabel, "auto-merge:approved"),
+    keychainService: asString(config.keychainService, "paperclip.github.pat."),
+  };
+}
+
+function sanitizeBranchName(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 200);
+}
+
+function runGit(repoOrWkt: string, args: string[], allowFail = false): { ok: boolean; stdout: string; stderr: string } {
+  const res = spawnSync("git", ["-C", repoOrWkt, ...args], {
+    encoding: "utf-8",
+  });
+  const ok = res.status === 0;
+  if (!ok && !allowFail) {
+    // caller will decide; we don't throw here
+  }
+  return { ok, stdout: (res.stdout || "").trim(), stderr: (res.stderr || "").trim() };
+}
+
+function readKeychainPat(service: string, account = "paperclip"): string | null {
+  const res = spawnSync("security", ["find-generic-password", "-a", account, "-s", service, "-w"], {
+    encoding: "utf-8",
+  });
+  if (res.status !== 0) return null;
+  const token = (res.stdout || "").trim();
+  return token.length > 0 ? token : null;
+}
+
+function parseGitHubOwnerRepo(remoteUrl: string): { owner: string; repo: string } | null {
+  // Accept git@github.com:owner/repo(.git) or https://github.com/owner/repo(.git)
+  const ssh = remoteUrl.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/);
+  if (ssh) return { owner: ssh[1], repo: ssh[2] };
+  const https = remoteUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/);
+  if (https) return { owner: https[1], repo: https[2] };
+  return null;
+}
+
+async function provisionWorktrees(
+  wkCfg: WorktreeConfig,
+  taskId: string | null,
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
+): Promise<WorktreeProvisionResult | null> {
+  const rawBranch = `${wkCfg.agentSlug}-${taskId && taskId.trim().length > 0 ? taskId.trim() : Date.now()}`;
+  const branch = sanitizeBranchName(rawBranch);
+  if (!branch) {
+    await onLog("stderr", `[paperclip-worktree] Could not derive a branch name from slug="${wkCfg.agentSlug}" taskId="${taskId}"; aborting worktree provisioning.\n`);
+    return null;
+  }
+
+  const worktreesRoot = path.join(os.homedir(), ".paperclip-worktrees");
+  await fs.mkdir(worktreesRoot, { recursive: true });
+
+  const primaryPath = path.join(worktreesRoot, branch);
+  const secondaryBranch = wkCfg.secondaryRepo ? `${branch}-ios` : null;
+  const secondaryPath = wkCfg.secondaryRepo ? path.join(worktreesRoot, `${branch}-ios`) : null;
+
+  // Pre-clean any stale worktree/branch from a prior aborted run (idempotent).
+  const cleanupStale = (repo: string, wkt: string, br: string) => {
+    runGit(repo, ["worktree", "remove", wkt, "--force"], true);
+    runGit(repo, ["branch", "-D", br], true);
+  };
+  cleanupStale(wkCfg.primaryRepo, primaryPath, branch);
+  if (wkCfg.secondaryRepo && secondaryPath && secondaryBranch) {
+    cleanupStale(wkCfg.secondaryRepo, secondaryPath, secondaryBranch);
+  }
+
+  // Fetch latest so origin/<base> is fresh. Non-fatal on failure.
+  runGit(wkCfg.primaryRepo, ["fetch", "origin", wkCfg.primaryBase], true);
+  if (wkCfg.secondaryRepo && wkCfg.secondaryBase) {
+    runGit(wkCfg.secondaryRepo, ["fetch", "origin", wkCfg.secondaryBase], true);
+  }
+
+  // Create primary worktree from origin/<base>.
+  const primaryAdd = runGit(wkCfg.primaryRepo, [
+    "worktree", "add", "-b", branch, primaryPath, `origin/${wkCfg.primaryBase}`,
+  ], true);
+  if (!primaryAdd.ok) {
+    await onLog("stderr", `[paperclip-worktree] Failed to create primary worktree at ${primaryPath} on origin/${wkCfg.primaryBase}: ${primaryAdd.stderr}\n`);
+    return null;
+  }
+
+  let secondary: ProvisionedWorktree | null = null;
+  if (wkCfg.secondaryRepo && secondaryPath && secondaryBranch) {
+    const base = wkCfg.secondaryBase || "main";
+    const secAdd = runGit(wkCfg.secondaryRepo, [
+      "worktree", "add", "-b", secondaryBranch, secondaryPath, `origin/${base}`,
+    ], true);
+    if (!secAdd.ok) {
+      await onLog("stderr", `[paperclip-worktree] Failed to create secondary worktree at ${secondaryPath} on origin/${base}: ${secAdd.stderr}. Proceeding without secondary.\n`);
+      // Don't fail the spawn — continue with primary only.
+    } else {
+      secondary = {
+        repoRoot: wkCfg.secondaryRepo,
+        worktreePath: secondaryPath,
+        branch: secondaryBranch,
+        base,
+        isPrimary: false,
+      };
+    }
+  }
+
+  const patToken = readKeychainPat(`${wkCfg.keychainService}${wkCfg.agentSlug}`);
+  if (!patToken) {
+    await onLog(
+      "stderr",
+      `[paperclip-worktree] Warning: no keychain PAT found for service="${wkCfg.keychainService}${wkCfg.agentSlug}" (account=paperclip). Agent will run without GH_TOKEN.\n`,
+    );
+  }
+
+  // cwd for the Claude Code session — inside the primary worktree at the agent's workspace.
+  const sessionCwd = path.join(primaryPath, "_workspaces", wkCfg.agentSlug);
+  try {
+    await fs.mkdir(sessionCwd, { recursive: true });
+  } catch {
+    // If the dir genuinely can't be created (e.g. file conflict), fall back to the worktree root.
+  }
+
+  const envAdditions: Record<string, string> = {
+    GIT_AUTHOR_NAME: wkCfg.agentName,
+    GIT_COMMITTER_NAME: wkCfg.agentName,
+    GIT_AUTHOR_EMAIL: wkCfg.gitEmail,
+    GIT_COMMITTER_EMAIL: wkCfg.gitEmail,
+    PAPERCLIP_WORKTREE: primaryPath,
+    PAPERCLIP_IOS_WORKTREE: secondary ? secondary.worktreePath : "",
+    PAPERCLIP_AGENT_SLUG: wkCfg.agentSlug,
+    PAPERCLIP_PRIMARY_REPO: wkCfg.primaryRepo,
+    PAPERCLIP_SECONDARY_REPO: wkCfg.secondaryRepo || "",
+  };
+  if (patToken) {
+    envAdditions.GH_TOKEN = patToken;
+    envAdditions.GITHUB_TOKEN = patToken;
+  }
+
+  await onLog(
+    "stdout",
+    `[paperclip-worktree] Provisioned branch="${branch}" primary=${primaryPath}${secondary ? ` secondary=${secondary.worktreePath}` : ""} cwd=${sessionCwd} pat=${patToken ? "yes" : "no"}\n`,
+  );
+
+  return {
+    config: wkCfg,
+    primary: {
+      repoRoot: wkCfg.primaryRepo,
+      worktreePath: primaryPath,
+      branch,
+      base: wkCfg.primaryBase,
+      isPrimary: true,
+    },
+    secondary,
+    patToken,
+    sessionCwd,
+    envAdditions,
+  };
+}
+
+async function finalizeWorktree(
+  wkt: ProvisionedWorktree,
+  wkCfg: WorktreeConfig,
+  patToken: string | null,
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
+): Promise<void> {
+  try {
+    // 1. Detect commits: compare HEAD to origin/<base>.
+    const headRes = runGit(wkt.worktreePath, ["rev-parse", "HEAD"], true);
+    const baseRes = runGit(wkt.repoRoot, ["rev-parse", `origin/${wkt.base}`], true);
+    const hasCommits = headRes.ok && baseRes.ok && headRes.stdout.length > 0 && headRes.stdout !== baseRes.stdout;
+
+    if (hasCommits) {
+      // 2. Push the branch.
+      const push = runGit(wkt.worktreePath, ["push", "origin", wkt.branch], true);
+      if (!push.ok) {
+        await onLog("stderr", `[paperclip-worktree] Push failed for ${wkt.branch}: ${push.stderr}\n`);
+      } else {
+        await onLog("stdout", `[paperclip-worktree] Pushed ${wkt.branch} to origin.\n`);
+
+        // 3. Extract owner/repo from origin remote.
+        const remote = runGit(wkt.worktreePath, ["remote", "get-url", "origin"], true);
+        const ownerRepo = remote.ok ? parseGitHubOwnerRepo(remote.stdout) : null;
+        if (!ownerRepo) {
+          await onLog("stderr", `[paperclip-worktree] Could not parse owner/repo from origin remote "${remote.stdout}"; skipping PR creation.\n`);
+        } else {
+          // First commit subject for PR title.
+          const subj = runGit(wkt.worktreePath, ["log", "-1", "--pretty=%s", `origin/${wkt.base}..HEAD`], true);
+          const firstSubj = subj.ok && subj.stdout.length > 0
+            ? subj.stdout.split("\n")[0]
+            : `${wkCfg.agentName}: ${wkt.branch}`;
+          const title = firstSubj.length > 200 ? firstSubj.slice(0, 197) + "..." : firstSubj;
+          const body = [
+            `Automated PR from \`${wkCfg.agentName}\` session.`,
+            "",
+            `- Branch: \`${wkt.branch}\``,
+            `- Base: \`${wkt.base}\``,
+            `- Worktree: \`${wkt.worktreePath}\``,
+            "",
+            `Adapter-created on session exit. Label \`${wkCfg.autoMergeLabel}\` applied for the DIY auto-merge workflow.`,
+          ].join("\n");
+
+          const ghArgs = [
+            "pr", "create",
+            "--repo", `${ownerRepo.owner}/${ownerRepo.repo}`,
+            "--base", wkt.base,
+            "--head", wkt.branch,
+            "--title", title,
+            "--body", body,
+            "--label", wkCfg.autoMergeLabel,
+          ];
+          const ghEnv: NodeJS.ProcessEnv = { ...process.env };
+          if (patToken) {
+            ghEnv.GH_TOKEN = patToken;
+            ghEnv.GITHUB_TOKEN = patToken;
+          }
+          const ghRes = spawnSync("gh", ghArgs, { encoding: "utf-8", cwd: wkt.worktreePath, env: ghEnv });
+          if (ghRes.status === 0) {
+            await onLog("stdout", `[paperclip-worktree] Opened PR on ${ownerRepo.owner}/${ownerRepo.repo}: ${(ghRes.stdout || "").trim()}\n`);
+          } else {
+            await onLog("stderr", `[paperclip-worktree] gh pr create failed (exit ${ghRes.status}): ${(ghRes.stderr || "").trim()}\n`);
+          }
+        }
+      }
+    } else {
+      await onLog("stdout", `[paperclip-worktree] No commits on ${wkt.branch}; skipping push + PR.\n`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await onLog("stderr", `[paperclip-worktree] finalize error for ${wkt.branch}: ${msg}\n`);
+  } finally {
+    // 4. Cleanup — always.
+    const rm = runGit(wkt.repoRoot, ["worktree", "remove", wkt.worktreePath, "--force"], true);
+    if (!rm.ok) {
+      await onLog("stderr", `[paperclip-worktree] worktree remove warning for ${wkt.worktreePath}: ${rm.stderr}\n`);
+    }
+    runGit(wkt.repoRoot, ["branch", "-D", wkt.branch], true);
+  }
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
 
@@ -325,7 +628,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const {
     command,
-    cwd,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
@@ -334,6 +636,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     graceSec,
     extraArgs,
   } = runtimeConfig;
+  let cwd = runtimeConfig.cwd;
+
+  // --- Pre-spawn: per-agent worktree provisioning (Layer 5) -----------------
+  // Read adapterConfig.worktreeEnabled and friends. If opted in, create a
+  // per-task worktree, override cwd, inject git identity + keychain PAT.
+  // Safe: any error in this block logs + no-ops (does not abort the spawn).
+  let worktreeResult: WorktreeProvisionResult | null = null;
+  try {
+    const wkCfg = parseWorktreeConfig(config);
+    if (wkCfg) {
+      const taskId =
+        (typeof context.taskId === "string" && context.taskId.trim()) ||
+        (typeof context.issueId === "string" && context.issueId.trim()) ||
+        null;
+      worktreeResult = await provisionWorktrees(wkCfg, taskId, onLog);
+      if (worktreeResult) {
+        cwd = worktreeResult.sessionCwd;
+        for (const [k, v] of Object.entries(worktreeResult.envAdditions)) {
+          env[k] = v;
+        }
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await onLog("stderr", `[paperclip-worktree] Pre-spawn provisioning threw: ${msg}. Falling back to default cwd/env.\n`);
+    worktreeResult = null;
+  }
 
   // Auto-inject provider env vars for third-party models (e.g., MiniMax)
   const isThirdParty = model ? isThirdPartyModel(model) : false;
@@ -619,5 +948,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
     fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
+
+    // --- Post-completion: worktree push + PR + cleanup (Layer 5) -----------
+    // Always runs (regardless of exit code). Never throws — each finalize has
+    // its own try/catch/finally so cleanup still happens on push/PR failure.
+    if (worktreeResult) {
+      try {
+        await finalizeWorktree(worktreeResult.primary, worktreeResult.config, worktreeResult.patToken, onLog);
+        if (worktreeResult.secondary) {
+          await finalizeWorktree(worktreeResult.secondary, worktreeResult.config, worktreeResult.patToken, onLog);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await onLog("stderr", `[paperclip-worktree] Post-completion error (non-fatal): ${msg}\n`);
+      }
+    }
   }
 }
