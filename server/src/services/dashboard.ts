@@ -41,6 +41,7 @@ export function dashboardService(db: Db) {
         error: 0,
       };
       for (const row of agentRows) {
+        if (!row) continue;
         const count = Number(row.count);
         // "idle" agents are operational — count them as active
         const bucket = row.status === "idle" ? "active" : row.status;
@@ -54,6 +55,7 @@ export function dashboardService(db: Db) {
         done: 0,
       };
       for (const row of taskRows) {
+        if (!row) continue;
         const count = Number(row.count);
         if (row.status === "in_progress") taskCounts.inProgress += count;
         if (row.status === "blocked") taskCounts.blocked += count;
@@ -63,7 +65,7 @@ export function dashboardService(db: Db) {
 
       const now = new Date();
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const [{ monthSpend }] = await db
+      const [monthSpendRow] = await db
         .select({
           monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
         })
@@ -75,7 +77,7 @@ export function dashboardService(db: Db) {
           ),
         );
 
-      const monthSpendCents = Number(monthSpend);
+      const monthSpendCents = Number(monthSpendRow?.monthSpend ?? 0);
       const utilization =
         company.budgetMonthlyCents > 0
           ? (monthSpendCents / company.budgetMonthlyCents) * 100

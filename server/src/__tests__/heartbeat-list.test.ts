@@ -133,6 +133,51 @@ describeEmbeddedPostgres("heartbeat list", () => {
     });
   });
 
+  it("returns small result json payloads unchanged from list", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      resultJson: {
+        summary: "completed — all good ✅",
+        structured: { ok: true },
+      },
+    });
+
+    const runs = await heartbeatService(db).list(companyId, agentId, 5);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.resultJson).toEqual({
+      summary: "completed — all good ✅",
+      structured: { ok: true },
+    });
+  });
+
   it("bounds oversized legacy result json payloads on getRun", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -188,5 +233,59 @@ describeEmbeddedPostgres("heartbeat list", () => {
     expect(typeof result?.stdout).toBe("string");
     expect((result?.stdout as string).length).toBeLessThan(oversizedStdout.length);
     expect(result).not.toHaveProperty("nestedHuge");
+  });
+
+  it("bounds oversized legacy result json payloads on list", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const oversizedStdout = Array.from({ length: 8_000 }, (_, index) =>
+      `${index.toString(16).padStart(4, "0")}-${randomUUID()}`,
+    ).join("|");
+    const oversizedNestedPayload = Array.from({ length: 6_000 }, (_, index) =>
+      `${index.toString(16).padStart(4, "0")}:${randomUUID()}`,
+    ).join("|");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      resultJson: {
+        summary: "completed",
+        stdout: oversizedStdout,
+        nestedHuge: { payload: oversizedNestedPayload },
+      },
+    });
+
+    const runs = await heartbeatService(db).list(companyId, agentId, 5);
+    const result = runs[0]?.resultJson as Record<string, unknown> | null;
+
+    expect(result).toMatchObject({
+      truncated: true,
+      truncationReason: "oversized_result_json",
+    });
+    expect(result).not.toHaveProperty("nestedHuge");
+    expect(result).not.toHaveProperty("stdout");
   });
 });
