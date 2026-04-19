@@ -1,6 +1,7 @@
 packages:
   - packages/*
   - packages/adapters/*
+  - packages/integrations/*
   - packages/plugins/*
   - packages/plugins/examples/*
   - server
