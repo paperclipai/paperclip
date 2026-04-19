@@ -136,6 +136,35 @@ describe("GET /health", () => {
     });
   });
 
+  describe("GET /health/db", () => {
+    it("returns 200 when db probe succeeds", async () => {
+      const db = {
+        execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      } as unknown as Db;
+      const app = createApp(db);
+      const res = await request(app).get("/health/db");
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ status: "ok" });
+    });
+
+    it("returns 503 when db probe fails", async () => {
+      const db = {
+        execute: vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED")),
+      } as unknown as Db;
+      const app = createApp(db);
+      const res = await request(app).get("/health/db");
+      expect(res.status).toBe(503);
+      expect(res.body).toEqual({ status: "unhealthy", error: "database_unreachable" });
+    });
+
+    it("returns 503 when no db is provided", async () => {
+      const app = createApp();
+      const res = await request(app).get("/health/db");
+      expect(res.status).toBe(503);
+      expect(res.body).toEqual({ status: "unhealthy", error: "no_database_configured" });
+    });
+  });
+
   it("keeps detailed metadata for authenticated requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
     vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);

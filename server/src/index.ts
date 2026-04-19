@@ -790,6 +790,16 @@ export async function startServer(): Promise<StartedServer> {
     });
   }
 
+  process.on("unhandledRejection", (reason) => {
+    logger.fatal({ err: reason }, "Unhandled promise rejection — exiting for watchdog restart");
+    process.exit(1);
+  });
+
+  process.on("uncaughtException", (err) => {
+    logger.fatal({ err }, "Uncaught exception — exiting for watchdog restart");
+    process.exit(1);
+  });
+
   return {
     server,
     host: config.host,
