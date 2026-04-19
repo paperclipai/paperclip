@@ -13,10 +13,10 @@ This slice covers only:
 - identity mapping for `Main`, `Ork`, `Stitch`, and `Personal OS`
 - how those actors create or update tracked Paperclip issues
 - when a message must become a structured Paperclip update versus remaining chat/comment text
+- task-status sync rules for mapping OpenClaw-side progress onto existing Paperclip issue status
 
 This slice does not yet define:
 
-- task-status sync from external runtimes
 - Telegram emergence rules
 - broader specialty-routing policy beyond the minimum ownership defaults below
 
@@ -204,7 +204,94 @@ The following should be set whenever known and are expected for normal cross-age
 
 Cross-agent delegation must not rely on a freeform comment alone when a valid structured handoff can be written.
 
-### 9. Operational Consequences
+### 9. Task Status Sync
+
+#### 9.1 Canonical rule
+
+`issues.status` remains the single durable task-status model.
+
+OpenClaw-side progress may update Paperclip issue status, but only by mapping into the existing Paperclip statuses:
+
+- `backlog`
+- `todo`
+- `in_progress`
+- `in_review`
+- `blocked`
+- `done`
+- `cancelled`
+
+`missionControl.workflowState` is supporting context, not a second status lane. It explains why work is blocked, handed off, or resumed; it does not replace `issues.status`.
+
+#### 9.2 Reuse-first sync rule
+
+Status sync must collapse OpenClaw-side progress into the existing Paperclip execution semantics from `doc/execution-semantics.md`.
+
+- Do not mirror every OpenClaw internal step or transcript event into a Paperclip status change.
+- Do not invent adapter-specific task states in Paperclip.
+- Do not treat chat narration as status truth.
+- Only publish a status change when operator-visible execution expectations changed in a durable way.
+
+Rule: if the answer to "what should the operator believe happens next?" did not change, the status probably should not change either.
+
+#### 9.3 Mapping rules
+
+| OpenClaw-side reality | Paperclip write |
+|---|---|
+| work exists but is not ready to start | `status=backlog` |
+| work is actionable, but no mapped actor has actively claimed execution yet | `status=todo` |
+| the mapped assignee has actively taken the work and is the current executor | `status=in_progress` |
+| execution is paused because the next move belongs to a reviewer or approver | `status=in_review` |
+| the work cannot continue until an external dependency, upstream issue, or human input changes | `status=blocked` plus matching mission-control context |
+| the requested deliverable for this issue is complete | `status=done` |
+| the work will not continue by explicit decision | `status=cancelled` |
+
+This is a lossy normalization by design. OpenClaw may have richer internal progress, but Paperclip stores only the operator-facing task state it already understands.
+
+#### 9.4 Required pairing with mission-control fields
+
+When status sync sets `status=blocked`, the integration should also set the existing mission-control context that explains the block:
+
+- waiting on human input: `missionControl.workflowState.kind=waiting_on_human`
+- blocked on another issue or external upstream: `missionControl.workflowState.kind=blocked_on_upstream`
+
+When status sync reflects a handoff without a true execution pause, use `missionControl.handoff` and, when helpful, `missionControl.workflowState.kind=handed_off`, but do not force a status change just because ownership moved.
+
+When work resumes after a prior handoff or waiting state, clear or replace stale blocking/handoff metadata as needed and use `missionControl.workflowState.kind=resumed` if the resumed context is operationally useful. Resume context does not require inventing a new issue status; the issue returns to the appropriate normal status such as `todo` or `in_progress`.
+
+#### 9.5 Ownership and status must stay coherent
+
+Status sync must preserve existing Paperclip invariants:
+
+- `in_progress` requires an assignee
+- status must reflect the current execution expectation, not just who spoke last
+- ownership changes and status changes should be published together when they describe the same handoff of active work
+
+Examples:
+
+- If `Main` hands implementation to `Ork` and `Ork` has not started yet, set ownership/handoff fields and leave the issue in `todo`.
+- If `Ork` has started driving the implementation slice, set ownership as needed and move the issue to `in_progress`.
+- If `Stitch` finishes design work and is waiting on human review, move the issue to `in_review` or `blocked` based on who must act next; do not leave it in `in_progress`.
+
+#### 9.6 What must not change status
+
+The following do not justify a Paperclip status transition by themselves:
+
+- local reasoning inside OpenClaw
+- transcript chatter
+- tool-call progress
+- partial substeps within the same active execution slice
+- a handoff proposal that has not yet changed durable ownership or next-step expectations
+- a summary/comment that restates the current plan
+
+Status churn is a failure mode. Paperclip should show durable workflow state, not every heartbeat mood swing.
+
+#### 9.7 No automatic hook requirement in this slice
+
+This slice defines sync semantics only.
+
+It does not require a specific automation path, webhook, or heartbeat hook in this pass. Later implementation may apply these rules through explicit issue updates, adapter callbacks, or other existing integration surfaces, but any implementation must preserve the contract in sections 9.1 through 9.6.
+
+### 10. Operational Consequences
 
 This spec intentionally aligns with the current operator queue and summary surfaces:
 
@@ -213,13 +300,15 @@ This spec intentionally aligns with the current operator queue and summary surfa
 - escalation lanes depend on `missionControl.needsHumanAttention`
 - recent handoffs depend on `issue.handoff_updated` activity derived from structured handoff writes
 
-If an OpenClaw actor leaves a state-changing message only in chat, the operator queue will miss it. That is considered incorrect integration behavior for any case covered by sections 5 through 8.
+If an OpenClaw actor leaves a state-changing message only in chat, the operator queue will miss it. That is considered incorrect integration behavior for any case covered by sections 5 through 9.
 
-### 10. Acceptance Criteria For This Slice
+### 11. Acceptance Criteria For This Slice
 
 This slice is complete when later implementation follows these rules:
 
 - every structured mission-control write from `Main`, `Ork`, `Stitch`, or `Personal OS` resolves to a real Paperclip agent id
 - ownership, blocker, waiting, escalation, and handoff changes are represented through existing issue fields rather than transcript inference
+- OpenClaw-side progress maps into existing Paperclip issue statuses rather than introducing adapter-specific task states
+- blocked, waiting, handoff, and resume context is expressed through existing mission-control metadata without replacing `issues.status`
 - chat-only messages are allowed only for non-durable discussion
 - no additional mission-control task or dashboard model is introduced to support this integration
