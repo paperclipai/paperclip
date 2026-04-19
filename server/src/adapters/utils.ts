@@ -83,6 +83,7 @@ export async function runChildProcess(
     env: Record<string, string>;
     timeoutSec: number;
     idleTimeoutSec?: number;
+    maxWallClockSec?: number;
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   },

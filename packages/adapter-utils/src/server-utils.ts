@@ -77,6 +77,10 @@ export function formatRunChildProcessTimedOutErrorMessage(
 }
 
 export const runningProcesses = new Map<string, RunningProcess>();
+
+/** Warn once per process when callers rely on `timeoutSec` as the wall-clock ceiling. */
+let warnedLegacyWallTimeoutSec = false;
+
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
@@ -1086,8 +1090,17 @@ export async function runChildProcess(
   opts: {
     cwd: string;
     env: Record<string, string>;
-    /** Wall-clock limit from spawn; `0` disables the wall watchdog. */
+    /**
+     * Legacy wall-clock ceiling from spawn. When `maxWallClockSec` is omitted, this value
+     * is used as the wall limit (deprecated — prefer `maxWallClockSec`). `0` disables the wall
+     * watchdog when no explicit `maxWallClockSec` is provided.
+     */
     timeoutSec: number;
+    /**
+     * Preferred wall-clock ceiling (seconds from spawn). When set (including `0`), this wins
+     * over `timeoutSec` for the wall watchdog. Omitted means use `timeoutSec` as the wall limit.
+     */
+    maxWallClockSec?: number;
     /**
      * Output-idle limit: reset whenever a `stdout` or `stderr` chunk arrives from the child.
      * `0` (default) disables the idle watchdog.
@@ -1101,6 +1114,19 @@ export async function runChildProcess(
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
+
+  const wallLimitSec =
+    opts.maxWallClockSec !== undefined ? opts.maxWallClockSec : opts.timeoutSec;
+  if (
+    !warnedLegacyWallTimeoutSec &&
+    opts.maxWallClockSec === undefined &&
+    opts.timeoutSec > 0
+  ) {
+    console.warn(
+      "[@paperclipai/adapter-utils] runChildProcess: using `timeoutSec` as the wall-clock limit is deprecated; prefer `maxWallClockSec`. Behavior is unchanged for now.",
+    );
+    warnedLegacyWallTimeoutSec = true;
+  }
 
   return new Promise<RunProcessResult>((resolve, reject) => {
     const rawMerged: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
@@ -1203,8 +1229,8 @@ export async function runChildProcess(
           idleTimer = setTimeout(() => beginForcedShutdown("idle"), idleTimeoutSec * 1000);
         };
 
-        if (opts.timeoutSec > 0) {
-          wallTimer = setTimeout(() => beginForcedShutdown("wall"), opts.timeoutSec * 1000);
+        if (wallLimitSec > 0) {
+          wallTimer = setTimeout(() => beginForcedShutdown("wall"), wallLimitSec * 1000);
         }
         bumpIdleWatchdog();
 
