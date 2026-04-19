@@ -38,10 +38,10 @@ pnpm dev
 
 This starts:
 
-- API server: `http://localhost:3100`
+- API server: `http://localhost:3102`
 - UI: served by the API server in dev middleware mode (same origin as API)
 
-If `3100` is already occupied, the dev runner now probes for the next available
+If `3102` is already occupied, the dev runner now probes for the next available
 server port and paired Vite HMR port automatically, then prints the selected
 URL in the startup banner.
 
@@ -104,7 +104,7 @@ Build and run PrivateClip in Docker:
 ```sh
 docker build -t paperclip-local .
 docker run --name paperclip \
-  -p 3100:3100 \
+  -p 3102:3102 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
@@ -315,8 +315,8 @@ For project execution worktrees, PrivateClip can also run a project-defined prov
 In another terminal:
 
 ```sh
-curl http://localhost:3100/api/health
-curl http://localhost:3100/api/companies
+curl http://localhost:3102/api/health
+curl http://localhost:3102/api/companies
 ```
 
 Expected:
@@ -434,7 +434,7 @@ pnpm paperclipai issue update <issue-id> --status in_progress --comment "Started
 Set defaults once with context profiles:
 
 ```sh
-pnpm paperclipai context set --api-base http://localhost:3100 --company-id <company-id>
+pnpm paperclipai context set --api-base http://localhost:3102 --company-id <company-id>
 ```
 
 Then run commands without repeating flags:

@@ -703,6 +703,58 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.retryOfRunId).toBe(initialRun?.id ?? null);
   });
 
+  it("retries returned timed-out adapter results through the same transient recovery path", async () => {
+    const execute = vi.fn().mockResolvedValue({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: true,
+      errorMessage: "Timed out after 30s",
+    });
+    registerTestAdapter({
+      type: "external_timed_out_result_test",
+      execute,
+      testEnvironment: async () => ({
+        adapterType: "external_timed_out_result_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      models: [],
+      supportsLocalAgentJwt: false,
+    });
+
+    const { agentId } = await seedAgentFixture({
+      adapterType: "external_timed_out_result_test",
+      agentStatus: "idle",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+
+    await waitFor(async () => {
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      return runs.length >= 2;
+    }, 2_000);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(runs).toHaveLength(2);
+    const initialRun = runs.find((run) => run.retryAttempt === 0);
+    const retryRun = runs.find((run) => run.retryAttempt === 1);
+    expect(initialRun?.status).toBe("timed_out");
+    expect(initialRun?.errorCode).toBe("timeout");
+    expect(initialRun?.retryState).toBe("scheduled");
+    expect(initialRun?.retryLastDecision).toBe("auto_retry_scheduled");
+    expect(retryRun?.retryOfRunId).toBe(initialRun?.id ?? null);
+  });
+
   it("does not enforce issue-comment recovery policy for failed runs that already queued auto-retry", async () => {
     const execute = vi.fn().mockResolvedValue({
       exitCode: 1,
