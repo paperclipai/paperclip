@@ -1569,15 +1569,12 @@ describe("company portability", () => {
     expect(routineSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       projectId: "project-created",
       title: "Monday Review",
-      assigneeAgentId: null,
+      assigneeAgentId: "agent-created",
       priority: "high",
       status: "paused",
       concurrencyPolicy: "always_enqueue",
       catchUpPolicy: "enqueue_missed_with_cap",
     }), expect.any(Object));
-    expect(result.warnings).toContain(
-      "Task monday-review assignee claudecoder is pending_approval; imported work was left unassigned.",
-    );
     expect(routineSvc.createTrigger).toHaveBeenCalledTimes(2);
     expect(routineSvc.createTrigger).toHaveBeenCalledWith("routine-created", expect.objectContaining({
       kind: "schedule",
@@ -2579,7 +2576,7 @@ describe("company portability", () => {
       adapterConfig: expect.objectContaining({
         normalized: true,
       }),
-      status: "pending_approval",
+      status: "idle",
     }));
   });
 

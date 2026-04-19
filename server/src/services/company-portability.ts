@@ -4342,16 +4342,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           continue;
         }
 
-        const requiresApproval =
-          typeof targetCompany.requireBoardApprovalForNewAgents === "boolean"
-            ? targetCompany.requireBoardApprovalForNewAgents
-            : include.company
-              ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? true)
-              : true;
-        const createdStatus = requiresApproval ? "pending_approval" : "idle";
         let created = await agents.create(targetCompany.id, {
           ...patch,
-          status: createdStatus,
+          status: "idle",
         });
         await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
         await access.setPrincipalPermission(
@@ -4371,7 +4364,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         } catch (err) {
           warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
         }
-        agentStatusById.set(created.id, created.status ?? createdStatus);
+        agentStatusById.set(created.id, created.status ?? "idle");
         importedSlugToAgentId.set(planAgent.slug, created.id);
         existingSlugToAgentId.set(normalizeAgentUrlKey(created.name) ?? created.id, created.id);
         resultAgents.push({
