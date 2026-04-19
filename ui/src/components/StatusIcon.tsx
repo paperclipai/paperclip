@@ -3,6 +3,7 @@ import { cn } from "../lib/utils";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { Trash2 } from "lucide-react";
 
 const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
 
@@ -13,12 +14,14 @@ function statusLabel(status: string): string {
 interface StatusIconProps {
   status: string;
   onChange?: (status: string) => void;
+  onDelete?: () => void;
   className?: string;
   showLabel?: boolean;
 }
 
-export function StatusIcon({ status, onChange, className, showLabel }: StatusIconProps) {
+export function StatusIcon({ status, onChange, onDelete, className, showLabel }: StatusIconProps) {
   const [open, setOpen] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const colorClass = issueStatusIcon[status] ?? issueStatusIconDefault;
   const isDone = status === "done";
 
@@ -49,7 +52,7 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent className="w-40 p-1" align="start">
+      <PopoverContent className="w-40 p-1" align="start" onCloseAutoFocus={() => setConfirmingDelete(false)}>
         {allStatuses.map((s) => (
           <Button
             key={s}
@@ -65,6 +68,48 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
             {statusLabel(s)}
           </Button>
         ))}
+        {onDelete && (
+          <>
+            <div className="my-1 border-t" />
+            {confirmingDelete ? (
+              <div className="px-2 py-1.5 space-y-1.5">
+                <p className="text-xs text-destructive font-medium">Delete this issue? This cannot be undone.</p>
+                <div className="flex gap-1.5">
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="flex-1 text-xs h-7"
+                    onClick={() => {
+                      onDelete();
+                      setOpen(false);
+                      setConfirmingDelete(false);
+                    }}
+                  >
+                    Delete
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="flex-1 text-xs h-7"
+                    onClick={() => setConfirmingDelete(false)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start gap-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
+                onClick={() => setConfirmingDelete(true)}
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete issue
+              </Button>
+            )}
+          </>
+        )}
       </PopoverContent>
     </Popover>
   );

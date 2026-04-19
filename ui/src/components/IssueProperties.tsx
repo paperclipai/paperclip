@@ -77,6 +77,7 @@ interface IssuePropertiesProps {
   childIssues?: Issue[];
   onAddSubIssue?: () => void;
   onUpdate: (data: Record<string, unknown>) => void;
+  onDelete?: () => void;
   inline?: boolean;
 }
 
@@ -156,6 +157,7 @@ export function IssueProperties({
   childIssues = [],
   onAddSubIssue,
   onUpdate,
+  onDelete,
   inline,
 }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
@@ -927,6 +929,7 @@ export function IssueProperties({
           <StatusIcon
             status={issue.status}
             onChange={(status) => onUpdate({ status })}
+            onDelete={onDelete}
             showLabel
           />
         </PropertyRow>
