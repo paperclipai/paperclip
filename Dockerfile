@@ -3,7 +3,7 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-    ca-certificates curl git gosu unzip jq \
+    ca-certificates curl git gosu unzip zip jq wget ripgrep python3 \
     libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
     libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
     libxfixes3 libxrandr2 libgbm1 libasound2 \
@@ -25,6 +25,7 @@ COPY ui/package.json ui/
 COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
+COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
@@ -73,7 +74,7 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
-COPY docker-entrypoint.sh /usr/local/bin/
+COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production \
@@ -87,7 +88,8 @@ ENV NODE_ENV=production \
   USER_GID=${USER_GID} \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
-  PAPERCLIP_DEPLOYMENT_EXPOSURE=private
+  PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
+  OPENCODE_ALLOW_ALL_MODELS=true
 
 VOLUME ["/paperclip"]
 EXPOSE 3100
