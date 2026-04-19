@@ -17,3 +17,4 @@ export { llmRoutes } from "./llms.js";
 export { accessRoutes } from "./access.js";
 export { instanceSettingsRoutes } from "./instance-settings.js";
 export { kpiRoutes } from "./kpi.js";
+export { pendingResponseRoutes } from "./pending-responses.js";
