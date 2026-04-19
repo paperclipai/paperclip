@@ -41,6 +41,14 @@ const mockIssueMergeService = vi.hoisted(() => ({
   attemptQaPassAutoMerge: vi.fn(async () => ({ outcome: "not_applicable" as const, status: null })),
 }));
 
+const mockIssueWorkflowService = vi.hoisted(() => ({
+  decorateIssue: vi.fn(async (issue: unknown) => issue),
+  evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [] })),
+  applyTemplate: vi.fn(async () => {
+    throw new Error("not implemented in test");
+  }),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../services/index.js", () => ({
@@ -78,6 +86,7 @@ vi.mock("../services/index.js", () => ({
   }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
+  issueWorkflowService: () => mockIssueWorkflowService,
   logActivity: mockLogActivity,
   projectService: () => ({
     getById: vi.fn(async () => null),
@@ -201,6 +210,9 @@ describe("issue QA gate routes", () => {
     mockExecutionGateService.getExecutionBlock.mockReset();
     mockIssueMergeService.getIssueMergeStatus.mockReset();
     mockIssueMergeService.attemptQaPassAutoMerge.mockReset();
+    mockIssueWorkflowService.decorateIssue.mockReset();
+    mockIssueWorkflowService.evaluateLaneCompletion.mockReset();
+    mockIssueWorkflowService.applyTemplate.mockReset();
     mockLogActivity.mockReset();
     mockHeartbeatService.wakeup.mockImplementation(async () => undefined);
     mockHeartbeatService.reportRunActivity.mockImplementation(async () => undefined);
@@ -208,6 +220,11 @@ describe("issue QA gate routes", () => {
     mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
     mockExecutionGateService.getExecutionBlock.mockResolvedValue(null);
+    mockIssueWorkflowService.decorateIssue.mockImplementation(async (issue: unknown) => issue);
+    mockIssueWorkflowService.evaluateLaneCompletion.mockResolvedValue({
+      canComplete: true,
+      blockingReasons: [],
+    });
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.hasCommentContaining.mockResolvedValue(false);
     mockIssueService.listComments.mockResolvedValue([]);
@@ -247,7 +264,7 @@ describe("issue QA gate routes", () => {
     // hooks after sending the response. Give those tasks time to settle before
     // the next case resets shared mocks, or later tests can observe leaked
     // background work from the previous request.
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 250));
   });
 
   it("rejects delivery issue done transition when current status is not in_review", async () => {

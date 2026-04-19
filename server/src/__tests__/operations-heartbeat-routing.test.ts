@@ -1025,6 +1025,42 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
 
   });
 
+  it("ignores ready unassigned security workflow lanes when no security specialist exists", async () => {
+    const { companyId, opsAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const securityLaneIssueId = randomUUID();
+    const genericIssueId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: securityLaneIssueId,
+        companyId,
+        title: "Security: Threat review for checkout release",
+        status: "todo",
+        priority: "urgent",
+        assigneeAgentId: null,
+        workflowTemplateKey: "engineering_delivery_v1",
+        workflowLaneRole: "security",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: genericIssueId,
+        companyId,
+        title: "Generic backlog issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: null,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target?.issueId).toBe(genericIssueId);
+    expect(target?.mode).toBe("ready_unassigned");
+  });
+
   it("returns null when there is no actionable work", async () => {
     const { companyId, opsAgentId } = await seedCompanyWithOpsAgent();
 

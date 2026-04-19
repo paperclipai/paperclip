@@ -10,6 +10,7 @@ import { heartbeatRuns, issueExecutionDecisions } from "@paperclipai/db";
 import type { IssueExecutionDecisionOutcome, IssueQaGateReasonCode, IssueStatus } from "@paperclipai/shared";
 import {
   addIssueCommentSchema,
+  applyIssueWorkflowTemplateSchema,
   buildAgentMentionHref,
   createIssueAttachmentMetadataSchema,
   createIssueWorkProductSchema,
@@ -48,6 +49,7 @@ import {
   instanceSettingsService,
   issueApprovalService,
   issueService,
+  issueWorkflowService,
   documentService,
   logActivity,
   projectService,
@@ -74,8 +76,8 @@ import { issueMergeService } from "../services/issue-merge.js";
 import { getAgentNotInvokableStatus, isAgentNotInvokableWakeupError } from "../services/wakeup-errors.js";
 import { buildIssueQaGate, isDeliveryScopedAssigneeRole, issueQaGateReasonMessage } from "../services/qa-gate.js";
 import { buildIssueRoutingText } from "../services/issue-routing-heuristics.js";
-import { buildIssueReviewItems, buildIssueReviewPackSurface } from "../services/issue-review-items.js";
 import { computeIssueBoardStateMap } from "../services/issue-board-state.js";
+import { synthesizeWorkflowBoardState } from "../services/issue-workflows.js";
 import {
   classifyIssueTruthFromCommentBody,
   hasReadyForQaTruthFromCommentBody,
@@ -88,8 +90,8 @@ const AUTO_FIX_MAX_ATTEMPTS = 2;
 const AUTO_FIX_WINDOW_MS = 24 * 60 * 60 * 1000;
 const QA_ROUTE_COMMENT_MARKER = "[qa-routing]";
 const QA_ASSIGNMENT_REQUIRED_COMMENT_MARKER = "[qa-assignment-required]";
-const QA_MERGE_BLOCKED_MARKER = "[merge-blocked]";
 const RECOVERY_SUCCESSOR_NOTE_MARKER = "[recovery-successor-note]";
+const QA_MERGE_BLOCKED_MARKER = "[merge-blocked]";
 const QA_ASSIGNMENT_REQUIRED_COMMENT_LOOKBACK = 25;
 const QA_PASS_MARKER_REGEX = /\[QA PASS\]/i;
 const RELEASE_CONFIRMED_MARKER_REGEX = /\[RELEASE CONFIRMED\]/i;
@@ -116,12 +118,6 @@ const ISSUE_ACTIVITY_DETAIL_KEYS = [
   "cancelledAt",
   "labelIds",
 ] as const;
-const updateIssueRouteSchema = updateIssueSchema.extend({
-  interrupt: z.boolean().optional(),
-});
-const archiveClosedIssuesRouteSchema = z.object({
-  olderThanDays: z.number().int().min(1).max(365).optional(),
-});
 const ISSUE_FILE_PREVIEW_MAX_BYTES = 4096;
 
 const TEXT_PREVIEW_EXTENSIONS = new Set([
@@ -151,6 +147,12 @@ const IMAGE_PREVIEW_CONTENT_TYPES: Record<string, string> = {
   ".gif": "image/gif",
   ".svg": "image/svg+xml",
 };
+const updateIssueRouteSchema = updateIssueSchema.extend({
+  interrupt: z.boolean().optional(),
+});
+const archiveClosedIssuesRouteSchema = z.object({
+  olderThanDays: z.number().int().min(1).max(365).optional(),
+});
 
 export function issueRoutes(
   db: Db,
@@ -178,6 +180,7 @@ export function issueRoutes(
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+  const issueWorkflowsSvc = issueWorkflowService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
@@ -461,56 +464,76 @@ export function issueRoutes(
     issueId: string;
     eligibleQaAgents: Array<{ name?: string | null }>;
   }) {
+    type QaAssignmentCommentRecord = {
+      body: string | null | undefined;
+      createdAt: Date | string | null | undefined;
+    };
+    type QaAssignmentCommentService = {
+      listComments?: (
+        issueId: string,
+        opts?: { order?: "asc" | "desc"; limit?: number | null },
+      ) => Promise<QaAssignmentCommentRecord[]>;
+      hasCommentContaining?: (
+        issueId: string,
+        fragment: string,
+      ) => Promise<boolean>;
+    };
+    const commentService = svc as unknown as QaAssignmentCommentService;
     const listComments =
-      typeof (svc as { listComments?: unknown }).listComments === "function"
-        ? (svc as {
-          listComments: (
-            issueId: string,
-            opts?: { order?: "asc" | "desc"; limit?: number | null },
-          ) => Promise<Array<{ body?: string | null; createdAt?: Date | string | null }>>;
-        }).listComments
+      typeof commentService.listComments === "function"
+        ? commentService.listComments.bind(commentService)
         : null;
     const listRecentComments = async () => {
-      if (!listComments) return [];
-      return listComments(input.issueId, {
+      if (!listComments) return [] as QaAssignmentCommentRecord[];
+      return await listComments(input.issueId, {
         order: "desc",
         limit: QA_ASSIGNMENT_REQUIRED_COMMENT_LOOKBACK,
       });
     };
-    const commentTimestampMs = (comment: { createdAt?: Date | string | null }) => {
-      if (comment.createdAt instanceof Date) return comment.createdAt.getTime();
-      if (typeof comment.createdAt === "string") {
-        const timestamp = new Date(comment.createdAt).getTime();
-        return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
-      }
-      return Number.NEGATIVE_INFINITY;
-    };
 
-    if (listComments) {
+    const hasMarkerInRecentWindow = async () => {
       const recentComments = await listRecentComments();
-      const recentCommentsForTruth = recentComments.map((comment) => ({
-        ...comment,
-        body: comment.body ?? null,
-      }));
-      const latestGateComment = recentComments.find((comment) =>
-        typeof comment.body === "string" && comment.body.includes(QA_ASSIGNMENT_REQUIRED_COMMENT_MARKER));
-      if (latestGateComment) {
+      const recentCommentsForTruth = recentComments.filter((comment) => typeof comment.body === "string");
+      if (recentCommentsForTruth.length > 0) {
         const latestStructuredTruthComment = resolveLatestStructuredTruthComment(recentCommentsForTruth);
-        if (!latestStructuredTruthComment) return;
-        if (commentTimestampMs(latestStructuredTruthComment) <= commentTimestampMs(latestGateComment)) {
-          return;
+        if (latestStructuredTruthComment) {
+          const latestTruthCreatedAt = new Date(latestStructuredTruthComment.createdAt ?? 0).getTime();
+          if (Number.isFinite(latestTruthCreatedAt)) {
+            for (const comment of recentCommentsForTruth) {
+              const body = comment.body ?? "";
+              const createdAt = new Date(comment.createdAt ?? 0).getTime();
+              if (!Number.isFinite(createdAt) || createdAt < latestTruthCreatedAt) continue;
+              if (body.includes(QA_ASSIGNMENT_REQUIRED_COMMENT_MARKER)) return true;
+            }
+            return false;
+          }
         }
       }
-    } else if (typeof (svc as { hasCommentContaining?: unknown }).hasCommentContaining === "function") {
-      const hasExistingGateComment = await Promise.resolve(
-        (svc as {
-          hasCommentContaining: (issueId: string, needle: string) => Promise<boolean>;
-        }).hasCommentContaining(input.issueId, QA_ASSIGNMENT_REQUIRED_COMMENT_MARKER),
+      return recentComments.some((comment) =>
+        typeof comment.body === "string" && comment.body.includes(QA_ASSIGNMENT_REQUIRED_COMMENT_MARKER));
+    };
+
+    const recentWindowMarkerState = listComments ? await hasMarkerInRecentWindow() : null;
+    if (recentWindowMarkerState === true) return;
+    if (recentWindowMarkerState === false) {
+      await svc.addComment(
+        input.issueId,
+        buildQaAssignmentRequiredComment(input),
+        {},
       );
-      if (hasExistingGateComment) return;
+      return;
     }
 
-    await svc.addComment(input.issueId, buildQaAssignmentRequiredComment(input), {});
+    const hasMarker =
+      typeof commentService.hasCommentContaining === "function"
+        ? await commentService.hasCommentContaining(input.issueId, QA_ASSIGNMENT_REQUIRED_COMMENT_MARKER)
+        : false;
+    if (hasMarker) return;
+    await svc.addComment(
+      input.issueId,
+      buildQaAssignmentRequiredComment(input),
+      {},
+    );
   }
 
   async function maybePromoteCommentReadyForQa<
@@ -839,6 +862,82 @@ export function issueRoutes(
     }
   }
 
+  async function applyWorkflowTemplateAndWakeChildren(input: {
+    companyId: string;
+    templateKey: "engineering_delivery_v1";
+    parentIssue: {
+      id: string;
+      companyId: string;
+      parentId: string | null;
+      projectId: string | null;
+      goalId: string | null;
+      priority: string;
+      title: string;
+      description: string | null;
+      identifier: string | null;
+      workflowTemplateKey?: string | null;
+    };
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    const applied = await issueWorkflowsSvc.applyTemplate({
+      companyId: input.companyId,
+      templateKey: input.templateKey,
+      parentIssue: input.parentIssue!,
+      actorAgentId: input.actor.agentId ?? null,
+      actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+      createIssue: (data, dbOrTx) => svc.create(input.companyId, data, dbOrTx),
+      updateIssue: (id, data, dbOrTx) => svc.update(id, data, dbOrTx),
+    });
+
+    for (const child of applied.createdChildren) {
+      await logActivity(db, {
+        companyId: input.companyId,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        agentId: input.actor.agentId,
+        runId: input.actor.runId,
+        action: "issue.created",
+        entityType: "issue",
+        entityId: child.id,
+        details: {
+          title: child.title,
+          identifier: child.identifier,
+          parentId: child.parentId,
+          workflowTemplateKey: child.workflowTemplateKey,
+          workflowLaneRole: child.workflowLaneRole,
+          workflowGenerated: true,
+        },
+      });
+
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue: child,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.workflow_template",
+        requestedByActorType: input.actor.actorType,
+        requestedByActorId: input.actor.actorId,
+      });
+    }
+
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "issue.workflow_template_applied",
+      entityType: "issue",
+      entityId: applied.parentIssue.id,
+      details: {
+        workflowTemplateKey: input.templateKey,
+        childIssueIds: applied.createdChildren.map((child) => child.id),
+      },
+    });
+
+    return applied;
+  }
+
   async function persistExecutionWorkspaceMergeStatus(
     workspace: ExecutionWorkspace | null,
     mergeStatus: Awaited<ReturnType<typeof computeIssueMergeStatusSafe>>,
@@ -1154,7 +1253,10 @@ export function issueRoutes(
   async function decorateIssueDetailWithBoardState<TIssue extends { id: string; companyId: string }>(
     issue: TIssue,
   ) {
-    if (!hasQueryableDb(db)) return issue;
+    if (!hasQueryableDb(db)) {
+      const workflowBoardState = synthesizeWorkflowBoardState(issue as never);
+      return workflowBoardState ? { ...issue, boardState: workflowBoardState } : issue;
+    }
     const boardStateMap = await computeIssueBoardStateMap(db, issue.companyId, [issue.id], { includePaths: true })
       .catch((err) => {
         logger.warn(
@@ -1163,13 +1265,19 @@ export function issueRoutes(
         );
         return null;
       });
-    if (!boardStateMap) return issue;
+    if (!boardStateMap) {
+      const workflowBoardState = synthesizeWorkflowBoardState(issue as never);
+      return workflowBoardState ? { ...issue, boardState: workflowBoardState } : issue;
+    }
     const computed = boardStateMap.get(issue.id);
-    if (!computed) return issue;
-    return {
-      ...issue,
-      ...computed,
-    };
+    const decorated = computed
+      ? {
+          ...issue,
+          ...computed,
+        }
+      : issue;
+    const workflowBoardState = synthesizeWorkflowBoardState(decorated as never);
+    return workflowBoardState ? { ...decorated, boardState: workflowBoardState } : decorated;
   }
 
   function hasCreateRecoveryFields(body: {
@@ -1710,26 +1818,20 @@ export function issueRoutes(
     res.json(removed);
   });
 
-  async function buildIssueDetailPayload(
-    issue: Omit<NonNullable<Awaited<ReturnType<typeof svc.getById>>>, "labels" | "labelIds"> & {
-      labels?: NonNullable<Awaited<ReturnType<typeof svc.getById>>>["labels"];
-      labelIds?: string[];
-    },
-  ) {
-    const issueWithLabels = {
-      ...issue,
-      labels: issue.labels ?? [],
-      labelIds: issue.labelIds ?? [],
-    };
-    const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations, comments, documents, attachments] = await Promise.all([
+  router.get("/issues/:id", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
       svc.findMentionedProjectIds(issue.id),
       documentsSvc.getIssueDocumentPayload(issue),
       svc.getRelationSummaries(issue.id),
-      svc.listComments(issue.id),
-      documentsSvc.listIssueDocuments(issue.id),
-      svc.listAttachments(issue.id),
     ]);
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
@@ -1743,17 +1845,8 @@ export function issueRoutes(
       qaGate,
       executionWorkspace: currentExecutionWorkspace,
     });
-    const reviewItems = buildIssueReviewItems({
-      issueId: issue.id,
-      issueDescription: issue.description,
-      hasProjectCodebase: Boolean(project?.codebase?.effectiveLocalFolder),
-      comments,
-      attachments: attachments.map(withContentPath),
-      documents,
-      workProducts,
-    });
-    const decoratedIssue = await decorateIssueDetailWithBoardState({
-      ...issueWithLabels,
+    const workflowDecorated = await issueWorkflowsSvc.decorateIssue({
+      ...issue,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       blockedBy: relations.blockedBy,
@@ -1766,35 +1859,10 @@ export function issueRoutes(
       mentionedProjects,
       currentExecutionWorkspace,
       workProducts,
-      reviewItems,
       qaGate,
       mergeStatus,
     });
-    const reviewPackSurface = buildIssueReviewPackSurface({
-      issueId: decoratedIssue.id,
-      issueTitle: decoratedIssue.title,
-      issueDescription: decoratedIssue.description ?? null,
-      reviewItems,
-      boardState: (decoratedIssue as {
-        boardState?: import("@paperclipai/shared").IssueBoardState | null;
-      }).boardState ?? null,
-    });
-    return {
-      ...decoratedIssue,
-      reviewItems,
-      reviewPackSurface,
-    };
-  }
-
-  router.get("/issues/:id", async (req, res) => {
-    const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
-    res.json(await buildIssueDetailPayload(issue));
+    res.json(await decorateIssueDetailWithBoardState(workflowDecorated));
   });
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
@@ -1923,72 +1991,6 @@ export function issueRoutes(
     res.json(doc);
   });
 
-  router.get("/issues/:id/file-preview", async (req, res) => {
-    const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
-
-    const requestedPath = parseOptionalQueryString(req.query.path);
-    if (!requestedPath) {
-      res.status(400).json({ error: "Missing path query value" });
-      return;
-    }
-
-    const { preview } = await readIssueFilePreview(issue.id, issue.companyId, requestedPath);
-    res.json(preview);
-  });
-
-  router.get("/issues/:id/file-preview/content", async (req, res, next) => {
-    const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
-
-    const requestedPath = parseOptionalQueryString(req.query.path);
-    if (!requestedPath) {
-      res.status(400).json({ error: "Missing path query value" });
-      return;
-    }
-
-    const { preview, absolutePath } = await readIssueFilePreview(issue.id, issue.companyId, requestedPath);
-    if (!preview.exists || !absolutePath) {
-      res.status(404).json({ error: "File not found" });
-      return;
-    }
-    if (preview.kind !== "image") {
-      res.status(422).json({ error: "File preview content is only available for image files" });
-      return;
-    }
-
-    try {
-      const raw = await fs.readFile(absolutePath);
-      res.setHeader("Content-Type", preview.contentType ?? "application/octet-stream");
-      res.setHeader("Content-Length", String(raw.byteLength));
-      res.setHeader("Cache-Control", "private, max-age=60");
-      res.setHeader("X-Content-Type-Options", "nosniff");
-      res.setHeader(
-        "Content-Disposition",
-        `inline; filename="${path.basename(preview.path).replaceAll("\"", "")}"`,
-      );
-      if (preview.contentType === SVG_CONTENT_TYPE) {
-        res.setHeader(
-          "Content-Security-Policy",
-          "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
-        );
-      }
-      res.end(raw);
-    } catch (err) {
-      next(err);
-    }
-  });
-
   router.put("/issues/:id/documents/:key", validate(upsertIssueDocumentSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -2059,6 +2061,72 @@ export function issueRoutes(
     }
     const revisions = await documentsSvc.listIssueDocumentRevisions(issue.id, keyParsed.data);
     res.json(revisions);
+  });
+
+  router.get("/issues/:id/file-preview", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const requestedPath = parseOptionalQueryString(req.query.path);
+    if (!requestedPath) {
+      res.status(400).json({ error: "Missing path query value" });
+      return;
+    }
+
+    const { preview } = await readIssueFilePreview(issue.id, issue.companyId, requestedPath);
+    res.json(preview);
+  });
+
+  router.get("/issues/:id/file-preview/content", async (req, res, next) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const requestedPath = parseOptionalQueryString(req.query.path);
+    if (!requestedPath) {
+      res.status(400).json({ error: "Missing path query value" });
+      return;
+    }
+
+    const { preview, absolutePath } = await readIssueFilePreview(issue.id, issue.companyId, requestedPath);
+    if (!preview.exists || !absolutePath) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+    if (preview.kind !== "image") {
+      res.status(422).json({ error: "File preview content is only available for image files" });
+      return;
+    }
+
+    try {
+      const raw = await fs.readFile(absolutePath);
+      res.setHeader("Content-Type", preview.contentType ?? "application/octet-stream");
+      res.setHeader("Content-Length", String(raw.byteLength));
+      res.setHeader("Cache-Control", "private, max-age=60");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="${path.basename(preview.path).replaceAll("\"", "")}"`,
+      );
+      if (preview.contentType === SVG_CONTENT_TYPE) {
+        res.setHeader(
+          "Content-Security-Policy",
+          "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
+        );
+      }
+      res.end(raw);
+    } catch (err) {
+      next(err);
+    }
   });
 
   router.post(
@@ -2489,18 +2557,32 @@ export function issueRoutes(
     ) {
       throw forbidden("Only board users can create or apply recovery successor issues");
     }
+    if (req.body.workflowTemplateKey && req.body.parentId) {
+      res.status(422).json({ error: "Workflow templates can only be applied to root issues" });
+      return;
+    }
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
 
     const actor = getActorInfo(req);
+    const { workflowTemplateKey, ...createBody } = req.body;
     const issue = await svc.create(companyId, {
-      ...req.body,
+      ...createBody,
       projectId: resolvedProjectId,
-      executionPolicy: normalizeIssueExecutionPolicy(req.body.executionPolicy),
+      executionPolicy: normalizeIssueExecutionPolicy(createBody.executionPolicy),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
+
+    if (workflowTemplateKey) {
+      await applyWorkflowTemplateAndWakeChildren({
+        companyId,
+        templateKey: workflowTemplateKey,
+        parentIssue: issue,
+        actor,
+      });
+    }
 
     await logActivity(db, {
       companyId,
@@ -2514,6 +2596,7 @@ export function issueRoutes(
       details: {
         title: issue.title,
         identifier: issue.identifier,
+        ...(workflowTemplateKey ? { workflowTemplateKey } : {}),
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...(req.body.recoveryFromIssueId ? { recoveryFromIssueId: req.body.recoveryFromIssueId } : {}),
         ...(req.body.recoveryDisposition ? { recoveryDisposition: req.body.recoveryDisposition } : {}),
@@ -2531,11 +2614,39 @@ export function issueRoutes(
     });
     const warning = assigneeWakeup.status === "warning" && assigneeWakeup.warning ? assigneeWakeup.warning : null;
 
-    const issuePayload = await buildIssueDetailPayload(issue);
+    const decoratedIssue = workflowTemplateKey
+      ? await svc.getById(issue.id).then(async (refreshed) => (refreshed ? issueWorkflowsSvc.decorateIssue(refreshed) : issue))
+      : issue;
+    const issuePayload = await decorateIssueDetailWithBoardState(decoratedIssue);
     res.status(201).json({
       ...issuePayload,
       ...(warning ? { warnings: [warning] } : {}),
     });
+  });
+
+  router.post("/issues/:id/apply-workflow-template", validate(applyIssueWorkflowTemplateSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    if (!(await assertAgentExecutionMutationAllowed(req, res, {
+      companyId: existing.companyId,
+      issueId: existing.id,
+      projectId: existing.projectId,
+    }))) return;
+    const actor = getActorInfo(req);
+    await applyWorkflowTemplateAndWakeChildren({
+      companyId: existing.companyId,
+      templateKey: req.body.workflowTemplateKey,
+      parentIssue: existing,
+      actor,
+    });
+    const refreshed = await svc.getById(existing.id);
+    const decorated = refreshed ? await issueWorkflowsSvc.decorateIssue(refreshed) : existing;
+    res.json(await decorateIssueDetailWithBoardState(decorated));
   });
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
@@ -2787,8 +2898,16 @@ export function issueRoutes(
     const isDoneTransition = existing.status !== "done" && requestedNextStatus === "done";
     let qaGateSnapshot = null as Awaited<ReturnType<typeof computeIssueQaGate>> | null;
     if (isDoneTransition) {
-      // Release-gate ownership must already be correct before closure.
-      // Fixing the assignee and closing are intentionally separate mutations.
+      if (existing.workflowLaneRole && (existing.workflowRequiredArtifacts?.length ?? 0) > 0 && !forceDoneRequested) {
+        const workflowGate = await issueWorkflowsSvc.evaluateLaneCompletion(existing);
+        if (!workflowGate.canComplete) {
+          res.status(422).json({
+            error: workflowGate.blockingReasons[0] ?? "Workflow requirements are not satisfied",
+            blockingReasons: workflowGate.blockingReasons,
+          });
+          return;
+        }
+      }
       qaGateSnapshot = await computeIssueQaGate(existing, { commentLimit: MAX_ISSUE_COMMENT_LIMIT });
       if (qaGateSnapshot.isDeliveryScoped && !forceDoneRequested) {
         const gateFailure = qaGateSnapshot.missingRequirements[0] ?? null;
@@ -3257,12 +3376,16 @@ export function issueRoutes(
     void maybeTriggerQaAutoFix(issue, actor, "patch_update").catch((err) =>
       logger.warn({ err, issueId: issue.id }, "failed to trigger qa auto-fix after issue update"));
 
-    const issuePayload = await buildIssueDetailPayload(issueResponse);
-    res.json({
-      ...issuePayload,
+    const qaGate = await computeIssueQaGateSafe(issue);
+    const finalMergeStatus = mergeStatus ?? await computeIssueMergeStatusSafe(issue, { qaGate });
+    const workflowDecoratedIssue = await issueWorkflowsSvc.decorateIssue({
+      ...issueResponse,
+      qaGate,
+      mergeStatus: finalMergeStatus,
       comment,
       ...(wakeupWarnings.length > 0 ? { warnings: wakeupWarnings } : {}),
     });
+    res.json(await decorateIssueDetailWithBoardState(workflowDecoratedIssue));
   });
 
   router.delete("/issues/:id", async (req, res) => {
@@ -3382,7 +3505,7 @@ export function issueRoutes(
         .catch((err) => logWakeupFailure(err, { issueId: issue.id }, "failed to wake assignee on issue checkout"));
     }
 
-    res.json(await buildIssueDetailPayload(updated));
+    res.json(await decorateIssueDetailWithBoardState(updated));
   });
 
   router.post("/issues/:id/release", async (req, res) => {
@@ -3424,7 +3547,7 @@ export function issueRoutes(
       entityId: released.id,
     });
 
-    res.json(await buildIssueDetailPayload(released));
+    res.json(await decorateIssueDetailWithBoardState(released));
   });
 
   router.get("/issues/:id/comments", async (req, res) => {

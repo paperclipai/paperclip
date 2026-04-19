@@ -361,9 +361,13 @@ describe("NewIssueDialog", () => {
     const lastCall = mockIssuesApi.create.mock.calls.at(-1);
     expect(lastCall).not.toBeUndefined();
     const payload = lastCall?.[1] as Record<string, unknown>;
-    expect(payload).toHaveProperty("projectId", "project-1");
-    expect(payload).not.toHaveProperty("executionWorkspacePreference");
-    expect(payload).not.toHaveProperty("executionWorkspaceSettings");
+    expect(payload).toEqual(
+      expect.objectContaining({
+        projectId: "project-1",
+        executionWorkspacePreference: "shared_workspace",
+        executionWorkspaceSettings: { mode: "shared_workspace" },
+      }),
+    );
 
     act(() => root.unmount());
   });
@@ -563,4 +567,44 @@ describe("NewIssueDialog", () => {
 
     act(() => root.unmount());
   });
+
+  it("submits the engineering workflow template for root issues when selected", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Workflow root issue",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const workflowToggle = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("No workflow"));
+    expect(workflowToggle).toBeTruthy();
+
+    await act(async () => {
+      workflowToggle!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForCondition(() =>
+      Array.from(container.querySelectorAll("button"))
+        .some((button) => button.textContent?.includes("Engineering workflow") ?? false),
+    );
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).toBeTruthy();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Workflow root issue",
+        workflowTemplateKey: "engineering_delivery_v1",
+      }),
+    );
+
+    act(() => root.unmount());
+  }, 15_000);
 });

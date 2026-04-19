@@ -10,12 +10,7 @@ const nextWorkspaceId = "44444444-4444-4444-8444-444444444444";
 const agentId = "22222222-2222-4222-8222-222222222222";
 
 const mockIssueService = vi.hoisted(() => ({
-  getAncestors: vi.fn(),
   getById: vi.fn(),
-  findMentionedProjectIds: vi.fn(),
-  getRelationSummaries: vi.fn(),
-  listAttachments: vi.fn(),
-  listComments: vi.fn(),
   update: vi.fn(),
   checkout: vi.fn(),
   addComment: vi.fn(),
@@ -53,10 +48,7 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({
     getById: vi.fn(async () => null),
   }),
-  documentService: () => ({
-    getIssueDocumentPayload: vi.fn(async () => ({})),
-    listIssueDocuments: vi.fn(async () => []),
-  }),
+  documentService: () => ({}),
   executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
   feedbackService: () => ({
@@ -80,14 +72,17 @@ vi.mock("../services/index.js", () => ({
   }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
+  issueWorkflowService: () => ({
+    decorateIssue: vi.fn(async (issue: unknown) => issue),
+    evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
+    applyTemplate: vi.fn(),
+  }),
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
   routineService: () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
-  workProductService: () => ({
-    listForIssue: vi.fn(async () => []),
-  }),
+  workProductService: () => ({}),
 }));
 
 function createApp() {
@@ -139,12 +134,7 @@ function makeClosedWorkspace() {
 describe("closed isolated workspace issue routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getById.mockResolvedValue(makeIssue());
-    mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
-    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
-    mockIssueService.listAttachments.mockResolvedValue([]);
-    mockIssueService.listComments.mockResolvedValue([]);
     mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
   });
 

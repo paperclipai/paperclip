@@ -55,6 +55,9 @@ export const issues = pgTable(
       .references((): AnyPgColumn => executionWorkspaces.id, { onDelete: "set null" }),
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
+    workflowTemplateKey: text("workflow_template_key"),
+    workflowLaneRole: text("workflow_lane_role"),
+    workflowRequiredArtifacts: jsonb("workflow_required_artifacts").$type<Record<string, unknown>[]>(),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
@@ -98,6 +101,12 @@ export const issues = pgTable(
         sql`${table.originKind} = 'board_copilot_thread'
           and ${table.originId} is not null
           and ${table.hiddenAt} is null`,
+      ),
+    workflowParentLaneIdx: uniqueIndex("issues_workflow_parent_lane_uq")
+      .on(table.companyId, table.parentId, table.workflowLaneRole)
+      .where(
+        sql`${table.parentId} is not null
+          and ${table.workflowLaneRole} is not null`,
       ),
   }),
 );

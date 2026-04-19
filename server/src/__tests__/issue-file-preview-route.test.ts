@@ -15,6 +15,11 @@ const mockIssueService = vi.hoisted(() => ({
 const mockProjectService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
+const mockIssueWorkflowService = vi.hoisted(() => ({
+  decorateIssue: vi.fn(async (issue: unknown) => issue),
+  evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
+  applyTemplate: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
@@ -58,6 +63,7 @@ vi.mock("../services/index.js", () => ({
   }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
+  issueWorkflowService: () => mockIssueWorkflowService,
   logActivity: vi.fn(async () => undefined),
   projectService: () => mockProjectService,
   routineService: () => ({
@@ -91,6 +97,13 @@ describe("issue file preview route", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockIssueWorkflowService.decorateIssue.mockImplementation(async (issue: unknown) => issue);
+    mockIssueWorkflowService.evaluateLaneCompletion.mockResolvedValue({
+      canComplete: true,
+      blockingReasons: [],
+      artifactStatuses: [],
+    });
+    mockIssueWorkflowService.applyTemplate.mockReset();
     tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-issue-preview-"));
     await fs.mkdir(path.join(tempRoot, "docs"), { recursive: true });
     await fs.writeFile(path.join(tempRoot, "docs", "listing.md"), "# Listing brief\n\nUse the uploaded images.\n");

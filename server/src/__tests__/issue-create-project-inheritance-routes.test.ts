@@ -23,6 +23,11 @@ const mockExecutionGateService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockIssueWorkflowService = vi.hoisted(() => ({
+  decorateIssue: vi.fn(async (issue: unknown) => issue),
+  evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
+  applyTemplate: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
@@ -62,6 +67,7 @@ vi.mock("../services/index.js", () => ({
   }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
+  issueWorkflowService: () => mockIssueWorkflowService,
   logActivity: mockLogActivity,
   projectService: () => ({
     getById: vi.fn(async () => null),
@@ -118,6 +124,13 @@ describe("issue create project inheritance routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIssueWorkflowService.decorateIssue.mockImplementation(async (issue: unknown) => issue);
+    mockIssueWorkflowService.evaluateLaneCompletion.mockResolvedValue({
+      canComplete: true,
+      blockingReasons: [],
+      artifactStatuses: [],
+    });
+    mockIssueWorkflowService.applyTemplate.mockReset();
     mockExecutionGateService.getExecutionBlock.mockResolvedValue(null);
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "run-1",

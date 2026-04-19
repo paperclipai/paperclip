@@ -1,8 +1,12 @@
 import type {
+  AgentRole,
   IssueBoardStateKind,
   IssueExecutionDecisionOutcome,
   IssueExecutionPolicyMode,
   IssueExecutionStageType,
+  IssueWorkflowArtifactKind,
+  IssueWorkflowLaneRole,
+  IssueWorkflowTemplateKey,
   IssueExecutionStateStatus,
   IssueNextActionType,
   IssueRecoveryDisposition,
@@ -16,7 +20,7 @@ import type {
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
-import type { IssueWorkProduct } from "./work-product.js";
+import type { IssueWorkProduct, IssueWorkProductType } from "./work-product.js";
 
 export interface IssueAncestorProject {
   id: string;
@@ -281,6 +285,45 @@ export interface IssueQaGate {
   review: IssueQaReviewState;
 }
 
+export interface IssueWorkflowArtifactRequirement {
+  key: string;
+  label: string;
+  kind: IssueWorkflowArtifactKind;
+  blocking: boolean;
+  documentKey?: string | null;
+  workProductTypes?: IssueWorkProductType[] | null;
+  commentMarkers?: string[] | null;
+}
+
+export interface IssueWorkflowArtifactStatus {
+  key: string;
+  label: string;
+  kind: IssueWorkflowArtifactKind;
+  blocking: boolean;
+  satisfied: boolean;
+  detail: string | null;
+}
+
+export interface IssueWorkflowLaneSummary {
+  issueId: string | null;
+  role: IssueWorkflowLaneRole;
+  title: string;
+  status: IssueStatus | "missing";
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  workspaceMode: string | null;
+  unresolvedOwnership: boolean;
+  artifactStatuses: IssueWorkflowArtifactStatus[];
+  blockingReasons: string[];
+}
+
+export interface IssueWorkflowSummary {
+  templateKey: IssueWorkflowTemplateKey;
+  isBlocked: boolean;
+  blockingReasons: string[];
+  lanes: IssueWorkflowLaneSummary[];
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -316,6 +359,11 @@ export interface Issue {
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  workflowTemplateKey?: IssueWorkflowTemplateKey | null;
+  workflowLaneRole?: AgentRole | IssueWorkflowLaneRole | null;
+  workflowRequiredArtifacts?: IssueWorkflowArtifactRequirement[] | null;
+  workflowArtifactStatus?: IssueWorkflowArtifactStatus[] | null;
+  workflowSummary?: IssueWorkflowSummary | null;
   startedAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;

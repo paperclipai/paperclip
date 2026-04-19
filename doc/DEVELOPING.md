@@ -38,22 +38,20 @@ pnpm dev
 
 This starts:
 
-- API server: `http://localhost:3102`
+- API server: `http://localhost:3100`
 - UI: served by the API server in dev middleware mode (same origin as API)
 
-If `3102` is already occupied, the dev runner now probes for the next available
+If `3100` is already occupied, the dev runner now probes for the next available
 server port and paired Vite HMR port automatically, then prints the selected
 URL in the startup banner.
 
-If you prefer the repo-root `./run.sh` helper, it first runs `scripts/kill-dev.sh` to clear stale local PrivateClip dev and embedded PostgreSQL processes before starting `PORT=3200 pnpm dev:once` with warning/error log filtering.
+If you prefer the repo-root `./run.sh` helper, it first runs `scripts/kill-dev.sh` to clear stale local PrivateClip dev and embedded PostgreSQL processes before starting `pnpm -s dev` with warning/error log filtering.
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching PrivateClip dev runner is already alive, PrivateClip reports the existing process instead of starting a duplicate.
-
-Repo-root `pnpm test:run` executes each Vitest project explicitly instead of using one shared workspace session. Server test files run one file per Vitest process to avoid cross-suite mock leakage in the current server test harness.
 
 Inspect or stop the current repo's managed dev runner:
 
@@ -68,14 +66,6 @@ If embedded PostgreSQL fails to start with shared-memory errors (for example
 ```sh
 pnpm dev:recover
 ```
-
-PrivateClip no longer registers the PWA service worker in Vite dev. On startup, dev
-now removes stale PrivateClip service workers and `paperclip-*` / `orchestrero-*`
-cache entries so repeated reloads do not accumulate cached module blobs.
-
-If a browser profile was already poisoned by an older dev build and `http://localhost:3102`
-stops loading, clear site data for that origin once (Application/Storage tab in DevTools,
-or browser site settings) and reload.
 
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
@@ -114,7 +104,7 @@ Build and run PrivateClip in Docker:
 ```sh
 docker build -t paperclip-local .
 docker run --name paperclip \
-  -p 3102:3102 \
+  -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e PAPERCLIP_HOME=/paperclip \
   -v "$(pwd)/data/docker-paperclip:/paperclip" \
@@ -147,27 +137,6 @@ PAPERCLIP_HOME=/custom/path PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
 ```
 
 No Docker or external database is required for this mode.
-
-## Runtime Integrity Reconciliation
-
-Heartbeat recovery now runs in three steps on startup and on the periodic recovery sweep:
-
-1. reap orphaned running runs
-2. reconcile stale queued/claimed wakeups and broken `in_progress` issue ownership
-3. resume any remaining queued runs
-
-Manual inspection and repair is available through:
-
-```sh
-pnpm runtime-integrity:reconcile
-pnpm runtime-integrity:reconcile -- --apply
-pnpm runtime-integrity:reconcile -- --json
-pnpm routine-execution:reconcile
-pnpm routine-execution:reconcile -- --apply
-pnpm routine-execution:reconcile -- --json
-```
-
-The script is dry-run by default. It currently expects an explicit `DATABASE_URL` when run outside the server process against an embedded PostgreSQL instance.
 
 ## Storage in Dev (Auto-Handled)
 
@@ -346,8 +315,8 @@ For project execution worktrees, PrivateClip can also run a project-defined prov
 In another terminal:
 
 ```sh
-curl http://localhost:3102/api/health
-curl http://localhost:3102/api/companies
+curl http://localhost:3100/api/health
+curl http://localhost:3100/api/companies
 ```
 
 Expected:
@@ -465,7 +434,7 @@ pnpm paperclipai issue update <issue-id> --status in_progress --comment "Started
 Set defaults once with context profiles:
 
 ```sh
-pnpm paperclipai context set --api-base http://localhost:3102 --company-id <company-id>
+pnpm paperclipai context set --api-base http://localhost:3100 --company-id <company-id>
 ```
 
 Then run commands without repeating flags:
@@ -541,3 +510,20 @@ Networking behavior for this smoke script:
 - auto-detects and prints a PrivateClip host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
 - if PrivateClip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `pnpm paperclipai allowed-hostname host.docker.internal` and restart PrivateClip
+
+## Developing specialist workflows in a worktree
+
+Recommended flow for workflow-template changes:
+1. Create a dedicated worktree and branch.
+2. Run `pnpm install` inside the worktree.
+3. Generate schema changes with `pnpm db:generate` after editing DB schema.
+4. Run focused package verification before full repo verification.
+
+Current worktree caveats observed during implementation:
+- In restricted desktop sandboxes, `pnpm paperclipai worktree init --name <name>` can fail when it tries to mirror hooks under `.git/worktrees/...` because those hook writes may be blocked. Feature development in the worktree still works, but hook mirroring may need to be skipped in that environment.
+- Fresh worktrees may not have built `@paperclipai/plugin-sdk` artifacts yet. Running `pnpm --filter @paperclipai/plugin-sdk build` once in the worktree resolves the missing `dist` exports before broader test runs.
+
+For this feature, the minimum final verification bar remains:
+- `pnpm -r typecheck`
+- `pnpm test:run`
+- `pnpm build`

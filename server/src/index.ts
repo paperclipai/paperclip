@@ -37,6 +37,7 @@ import {
   issueService,
   logActivity,
   reconcilePersistedRuntimeServicesOnStartup,
+  runtimeIntegrityService,
   routineService,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
@@ -657,6 +658,7 @@ export async function startServer(): Promise<StartedServer> {
   
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
+    const runtimeIntegrity = runtimeIntegrityService(db as any);
     const routines = routineService(db as any);
     const executiveSummary = executiveSummaryService(db as any);
     const boardBriefDelivery = boardBriefDeliveryService(db as any);
@@ -664,8 +666,8 @@ export async function startServer(): Promise<StartedServer> {
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
-      .reapOrphanedRuns({ suspectThresholdMs: 90 * 1000, staleThresholdMs: 150 * 1000 })
-      .then(() => heartbeat.reconcileRuntimeIntegrity())
+      .reapOrphanedRuns({ staleThresholdMs: 150 * 1000 })
+      .then(() => runtimeIntegrity.reconcileAll())
       .then(() => heartbeat.resumeQueuedRuns())
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
@@ -717,8 +719,8 @@ export async function startServer(): Promise<StartedServer> {
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
       void heartbeat
-        .reapOrphanedRuns({ suspectThresholdMs: 90 * 1000, staleThresholdMs: 150 * 1000 })
-        .then(() => heartbeat.reconcileRuntimeIntegrity())
+        .reapOrphanedRuns({ staleThresholdMs: 150 * 1000 })
+        .then(() => runtimeIntegrity.reconcileAll())
         .then(() => heartbeat.resumeQueuedRuns())
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");

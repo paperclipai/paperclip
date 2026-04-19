@@ -54,6 +54,11 @@ vi.mock("../services/index.js", () => ({
   }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
+  issueWorkflowService: () => ({
+    decorateIssue: vi.fn(async (issue: unknown) => issue),
+    evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
+    applyTemplate: vi.fn(),
+  }),
   logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => ({

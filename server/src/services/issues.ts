@@ -33,18 +33,17 @@ import {
   normalizeIssuePriority,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
-import { normalizeRunLinkedIssueCommentBody } from "./heartbeat-run-summary.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
-import { isLikelyTechnicalIssueText } from "./issue-routing-heuristics.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { normalizeRunLinkedIssueCommentBody } from "./heartbeat-run-summary.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
@@ -57,11 +56,7 @@ const ISSUE_STATUS_TRANSITIONS: Record<string, Set<string>> = {
   blocked: new Set(["todo", "in_progress", "in_review", "done", "cancelled"]),
   done: new Set(["todo", "cancelled"]),
   cancelled: new Set(["todo"]),
-}; 
-
-function asUuidParam(value: string) {
-  return sql`${value}::uuid`;
-}
+};
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 const RECOVERY_RELATION_TYPE = "recovered_by" as const;
 const RECOVERY_DISPOSITIONS_REQUIRING_SUCCESSOR = new Set(["superseded", "recovered_by_reissue", "blocked"]);
@@ -1549,32 +1544,9 @@ export function issueService(db: Db) {
         if (visited.has(current)) continue;
         visited.add(current);
         queue.push(...(adjacency.get(current) ?? []));
+      }
     }
   }
-}
-
-function resolveDefaultIssueExecutionWorkspaceSettings(input: {
-  issueTitle: string;
-  issueDescription: string | null | undefined;
-  projectExecutionWorkspacePolicy: ReturnType<typeof parseProjectExecutionWorkspacePolicy>;
-  isolatedWorkspacesEnabled: boolean;
-}) {
-  const isTechnical = isLikelyTechnicalIssueText(
-    [input.issueTitle, input.issueDescription].filter(Boolean).join(" "),
-  );
-  const parsedPolicy = gateProjectExecutionWorkspacePolicy(
-    input.projectExecutionWorkspacePolicy,
-    input.isolatedWorkspacesEnabled,
-  );
-  const projectDefault = defaultIssueExecutionWorkspaceSettingsForProject(parsedPolicy);
-  if (projectDefault?.mode === "shared_workspace") {
-    return { mode: isTechnical ? "isolated_workspace" : "shared_workspace" };
-  }
-  if (projectDefault) {
-    return projectDefault;
-  }
-  return { mode: isTechnical ? "isolated_workspace" : "shared_workspace" };
-}
 
   async function syncBlockedByIssueIds(
     issueId: string,
@@ -1708,10 +1680,10 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
 
     return db.transaction(async (tx) => {
       await tx.execute(
-        sql`select id from issues where id = ${asUuidParam(input.issueId)} for update`,
+        sql`select id from issues where id = ${input.issueId} for update`,
       );
       await tx.execute(
-        sql`select id from heartbeat_runs where id = ${asUuidParam(input.expectedExecutionRunId)} for update`,
+        sql`select id from heartbeat_runs where id = ${input.expectedExecutionRunId} for update`,
       );
 
       const queuedRun = await tx
@@ -2530,6 +2502,7 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
     create: async (
       companyId: string,
       data: IssueCreateInput,
+      dbOrTx: any = null,
     ) => {
       const {
         labelIds: inputLabelIds,
@@ -2569,7 +2542,7 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
       }
       const finalBlockedByIssueIds = [...new Set(blockedByIssueIds ?? [])];
       assertBlockedStatusMatchesRelations(issueData.status, finalBlockedByIssueIds);
-      return db.transaction(async (tx) => {
+      const runCreate = async (tx: any) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -2599,7 +2572,7 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
               })
               .from(executionWorkspaces)
               .where(eq(executionWorkspaces.id, workspaceSource.executionWorkspaceId))
-              .then((rows) => rows[0] ?? null);
+              .then((rows: Array<{ id: string; mode: string | null }>) => rows[0] ?? null);
             if (sourceWorkspace) {
               executionWorkspaceId = sourceWorkspace.id;
               executionWorkspacePreference = "reuse_existing";
@@ -2611,7 +2584,6 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
           }
         }
         if (
-          isolatedWorkspacesEnabled &&
           executionWorkspaceSettings == null &&
           executionWorkspaceId == null &&
           issueData.projectId
@@ -2620,13 +2592,14 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
             .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
             .from(projects)
             .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
-          executionWorkspaceSettings = resolveDefaultIssueExecutionWorkspaceSettings({
-            issueTitle: issueData.title,
-            issueDescription: issueData.description,
-            projectExecutionWorkspacePolicy: parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
-            isolatedWorkspacesEnabled,
-          }) as Record<string, unknown> | null;
+            .then((rows: Array<{ executionWorkspacePolicy: unknown }>) => rows[0] ?? null);
+          executionWorkspaceSettings =
+            defaultIssueExecutionWorkspaceSettingsForProject(
+              gateProjectExecutionWorkspacePolicy(
+                parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
+                isolatedWorkspacesEnabled,
+              ),
+            ) as Record<string, unknown> | null;
         }
         if (!projectWorkspaceId && issueData.projectId) {
           const project = await tx
@@ -2635,7 +2608,7 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
             })
             .from(projects)
             .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
+            .then((rows: Array<{ executionWorkspacePolicy: unknown }>) => rows[0] ?? null);
           const projectPolicy = parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy);
           projectWorkspaceId = projectPolicy?.defaultProjectWorkspaceId ?? null;
           if (!projectWorkspaceId) {
@@ -2644,7 +2617,7 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
               .from(projectWorkspaces)
               .where(and(eq(projectWorkspaces.projectId, issueData.projectId), eq(projectWorkspaces.companyId, companyId)))
               .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
-              .then((rows) => rows[0]?.id ?? null);
+              .then((rows: Array<{ id: string }>) => rows[0]?.id ?? null);
           }
         }
         if (projectWorkspaceId) {
@@ -2728,7 +2701,8 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
-      });
+      };
+      return dbOrTx ? runCreate(dbOrTx) : db.transaction(runCreate);
     },
 
     update: async (
@@ -2874,10 +2848,10 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
         if (resolvedStatus !== existing.status || issueData.status !== undefined) {
           patchForTx.status = resolvedStatus;
         }
-        const statusWillChange = patchForTx.status !== undefined && patchForTx.status !== existing.status;
         if (recovery) {
           applyIssueLifecyclePatch(patchForTx, resolvedStatus);
         } else {
+          const statusWillChange = patchForTx.status !== undefined && patchForTx.status !== existing.status;
           if (statusWillChange) {
             applyStatusSideEffects(patchForTx.status, patchForTx);
             if (patchForTx.status && patchForTx.status !== "done") {
@@ -3047,7 +3021,7 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
       // matching the existing pattern in enqueueWakeup().
       await db.transaction(async (tx) => {
         await tx.execute(
-          sql`select id from issues where id = ${asUuidParam(id)} for update`,
+          sql`select id from issues where id = ${id} for update`,
         );
         const preCheckRow = await tx
           .select({ executionRunId: issues.executionRunId })
@@ -3337,26 +3311,6 @@ function resolveDefaultIssueExecutionWorkspaceSettings(input: {
         .where(eq(labels.id, id))
         .returning()
         .then((rows) => rows[0] ?? null),
-
-    hasCommentContaining: async (issueId: string, needle: string) => {
-      const trimmedNeedle = needle.trim();
-      if (!trimmedNeedle) return false;
-      const escapedNeedle = escapeLikePattern(trimmedNeedle);
-      const likePattern = `%${escapedNeedle}%`;
-      const match = await db
-        .select({ id: issueComments.id })
-        .from(issueComments)
-        .where(
-          and(
-            eq(issueComments.issueId, issueId),
-            sql<boolean>`${issueComments.body} ILIKE ${likePattern} ESCAPE '\\'`,
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-
-      return Boolean(match);
-    },
 
     listComments: async (
       issueId: string,

@@ -1,9 +1,10 @@
 import type {
   IssueOriginKind,
-  IssueRoutineExecutionRole,
-  RoutineExecutionState,
   RoutineVariableType,
 } from "../constants.js";
+
+export type IssueRoutineExecutionRole = "canonical" | "parallel" | "superseded";
+export type RoutineExecutionState = "none" | "idle" | "live" | "paused";
 
 export interface RoutineProjectSummary {
   id: string;

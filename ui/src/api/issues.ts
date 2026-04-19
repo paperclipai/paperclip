@@ -88,6 +88,8 @@ export const issuesApi = {
     api.delete<{ id: string; archivedAt: Date } | { ok: true }>(`/issues/${id}/inbox-archive`),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<IssueUpdateResponse>(`/companies/${companyId}/issues`, data),
+  applyWorkflowTemplate: (id: string, data: { workflowTemplateKey: string }) =>
+    api.post<Issue>(`/issues/${id}/apply-workflow-template`, data),
   archiveClosed: (companyId: string, input?: { olderThanDays?: number }) =>
     api.post<{
       archivedCount: number;

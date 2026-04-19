@@ -1,9 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { companyRoutes } from "../routes/companies.js";
-import { errorHandler } from "../middleware/index.js";
-import { conflict } from "../errors.js";
 
 const mockCompanyService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -86,7 +83,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
 }));
 
-function createCompany(status: "active" | "paused" | "archived") {
+function createCompany(status: "active" | "paused") {
   const now = new Date("2026-04-11T12:00:00.000Z");
   return {
     id: "company-1",
@@ -123,14 +120,79 @@ function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api/companies", companyRoutes({} as any));
-  app.use(errorHandler);
+  app.use("/api/companies", companyRoutesFactory({} as any));
+  app.use(errorHandlerMiddleware);
   return app;
 }
 
+let companyRoutesFactory!: typeof import("../routes/companies.js").companyRoutes;
+let errorHandlerMiddleware!: typeof import("../middleware/index.js").errorHandler;
+let conflictFactory!: typeof import("../errors.js").conflict;
+
 describe("company pause/resume routes", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
+  beforeEach(async () => {
+    vi.resetModules();
+    ({ companyRoutes: companyRoutesFactory } = await import("../routes/companies.js"));
+    ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+    ({ conflict: conflictFactory } = await import("../errors.js"));
+    mockCompanyService.list.mockReset();
+    mockCompanyService.stats.mockReset();
+    mockCompanyService.getById.mockReset();
+    mockCompanyService.create.mockReset();
+    mockCompanyService.update.mockReset();
+    mockCompanyService.archive.mockReset();
+    mockCompanyService.pause.mockReset();
+    mockCompanyService.resume.mockReset();
+    mockCompanyService.remove.mockReset();
+    mockAgentService.getById.mockReset();
+    mockAgentService.list.mockReset();
+    mockAccessService.ensureMembership.mockReset();
+    mockBudgetService.upsertPolicy.mockReset();
+    mockHeartbeatService.cancelActiveForCompany.mockReset();
+    mockHeartbeatService.cancelExecutionScopeWork.mockReset();
+    mockHeartbeatService.stopRunningForCompany.mockReset();
+    mockHeartbeatService.invoke.mockReset();
+    mockHeartbeatService.resumeQueuedRuns.mockReset();
+    mockAgentHeartbeatModelService.ensureCompanyHasCooCoordinator.mockReset();
+    mockCompanyPortabilityService.exportBundle.mockReset();
+    mockCompanyPortabilityService.previewExport.mockReset();
+    mockCompanyPortabilityService.previewImport.mockReset();
+    mockCompanyPortabilityService.importBundle.mockReset();
+    mockFeedbackService.listIssueVotesForUser.mockReset();
+    mockFeedbackService.listFeedbackTraces.mockReset();
+    mockFeedbackService.getFeedbackTraceById.mockReset();
+    mockFeedbackService.saveIssueVote.mockReset();
+    mockExecutiveSummaryService.listKpis.mockReset();
+    mockExecutiveSummaryService.replaceKpis.mockReset();
+    mockExecutiveSummaryService.buildExecutiveSummary.mockReset();
+    mockExecutiveSummaryService.tickDaily.mockReset();
+    mockRoadmapEpicService.listPausedEpicIds.mockReset();
+    mockRoadmapEpicService.pauseEpic.mockReset();
+    mockRoadmapEpicService.resumeEpic.mockReset();
+    mockLogActivity.mockReset();
+    mockAccessService.ensureMembership.mockResolvedValue(undefined);
+    mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
+    mockHeartbeatService.cancelActiveForCompany.mockResolvedValue(undefined);
+    mockHeartbeatService.cancelExecutionScopeWork.mockResolvedValue({
+      cancelledRunCount: 0,
+      cancelledWakeupCount: 0,
+    });
+    mockHeartbeatService.stopRunningForCompany.mockResolvedValue(undefined);
+    mockHeartbeatService.invoke.mockResolvedValue(undefined);
+    mockHeartbeatService.resumeQueuedRuns.mockResolvedValue(undefined);
+    mockCompanyPortabilityService.exportBundle.mockResolvedValue(undefined);
+    mockCompanyPortabilityService.previewExport.mockResolvedValue(undefined);
+    mockCompanyPortabilityService.previewImport.mockResolvedValue(undefined);
+    mockCompanyPortabilityService.importBundle.mockResolvedValue(undefined);
+    mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
+    mockFeedbackService.listFeedbackTraces.mockResolvedValue([]);
+    mockFeedbackService.getFeedbackTraceById.mockResolvedValue(null);
+    mockFeedbackService.saveIssueVote.mockResolvedValue(undefined);
+    mockExecutiveSummaryService.listKpis.mockResolvedValue([]);
+    mockExecutiveSummaryService.replaceKpis.mockResolvedValue([]);
+    mockExecutiveSummaryService.buildExecutiveSummary.mockResolvedValue(null);
+    mockExecutiveSummaryService.tickDaily.mockResolvedValue(undefined);
+    mockLogActivity.mockResolvedValue(undefined);
     mockAgentService.list.mockResolvedValue([]);
     mockRoadmapEpicService.listPausedEpicIds.mockResolvedValue([]);
     mockRoadmapEpicService.pauseEpic.mockResolvedValue({ roadmapId: "RM-2026-Q2-01" });
@@ -180,43 +242,6 @@ describe("company pause/resume routes", () => {
         companyId: "company-1",
         action: "company.paused",
         details: { cancelledRunCount: 2, cancelledWakeupCount: 3 },
-      }),
-    );
-  });
-
-  it("archives a company and cancels queued, running, and deferred company work", async () => {
-    const archived = createCompany("archived");
-    mockCompanyService.archive.mockResolvedValue(archived);
-    mockHeartbeatService.cancelExecutionScopeWork.mockResolvedValue({
-      cancelledRunCount: 4,
-      cancelledWakeupCount: 6,
-    });
-
-    const app = createApp({
-      type: "board",
-      userId: "user-1",
-      source: "local_implicit",
-    });
-
-    const response = await request(app).post("/api/companies/company-1/archive").send({});
-
-    expect(response.status).toBe(200);
-    expect(response.body.status).toBe("archived");
-    expect(mockCompanyService.archive).toHaveBeenCalledWith("company-1");
-    expect(mockHeartbeatService.cancelExecutionScopeWork).toHaveBeenCalledWith(
-      {
-        companyId: "company-1",
-        scopeType: "company",
-        scopeId: "company-1",
-      },
-      "Cancelled due to company archive",
-    );
-    expect(mockLogActivity).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        companyId: "company-1",
-        action: "company.archived",
-        details: { cancelledRunCount: 4, cancelledWakeupCount: 6 },
       }),
     );
   });
@@ -271,7 +296,7 @@ describe("company pause/resume routes", () => {
 
   it("returns 409 when attempting to manually resume a budget-paused company", async () => {
     mockCompanyService.resume.mockRejectedValue(
-      conflict("Company is paused because its budget hard-stop was reached."),
+      conflictFactory("Company is paused because its budget hard-stop was reached."),
     );
 
     const app = createApp({

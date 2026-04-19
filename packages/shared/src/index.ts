@@ -2,13 +2,6 @@ export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapte
 export { LEGACY_AGENT_ROLE_ALIASES, canonicalizeAgentRole, normalizeAgentRoleInput } from "./agent-role.js";
 export { issuePriorityWeight, normalizeIssuePriority, normalizeIssuePriorityInput } from "./issue-priority.js";
 export {
-  QA_RELEASE_DEFAULT_NAME,
-  QA_RELEASE_DEFAULT_TITLE,
-  isEligibleQaAgentStatus,
-  isCanonicalReleaseGateQaAgent,
-  resolveReleaseGateQaAgent,
-} from "./release-gate-qa.js";
-export {
   BOARD_BRIEF_HEALTH_TONES,
   BOARD_BRIEF_FRESHNESS_STATUSES,
   BOARD_BRIEF_CONFIDENCE_LEVELS,
@@ -55,6 +48,9 @@ export {
   ISSUE_ROUTINE_EXECUTION_ROLES,
   ISSUE_RELATION_TYPES,
   ISSUE_RECOVERY_DISPOSITIONS,
+  ISSUE_WORKFLOW_TEMPLATE_KEYS,
+  ISSUE_WORKFLOW_LANE_ROLES,
+  ISSUE_WORKFLOW_ARTIFACT_KINDS,
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
@@ -137,6 +133,9 @@ export {
   type IssueRoutineExecutionRole,
   type IssueRelationType,
   type IssueRecoveryDisposition,
+  type IssueWorkflowTemplateKey,
+  type IssueWorkflowLaneRole,
+  type IssueWorkflowArtifactKind,
   type IssueExecutionPolicyMode,
   type IssueExecutionStageType,
   type IssueExecutionStateStatus,
@@ -199,6 +198,13 @@ export {
   type PluginEventType,
   type PluginBridgeErrorCode,
 } from "./constants.js";
+export {
+  QA_RELEASE_DEFAULT_NAME,
+  QA_RELEASE_DEFAULT_TITLE,
+  isEligibleQaAgentStatus,
+  isCanonicalReleaseGateQaAgent,
+  resolveReleaseGateQaAgent,
+} from "./release-gate-qa.js";
 
 export type {
   BoardBrief,
@@ -335,6 +341,10 @@ export type {
   IssueQaReviewDimension,
   IssueQaReviewOverall,
   IssueQaGateReasonCode,
+  IssueWorkflowArtifactRequirement,
+  IssueWorkflowArtifactStatus,
+  IssueWorkflowLaneSummary,
+  IssueWorkflowSummary,
   IssueCommentPublicationStatus,
   IssueMergeState,
   IssueMergeStatus,
@@ -562,6 +572,9 @@ export {
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
   issueExecutionWorkspaceSettingsSchema,
+  issueWorkflowTemplateKeySchema,
+  issueWorkflowLaneRoleSchema,
+  issueWorkflowArtifactRequirementSchema,
   checkoutIssueSchema,
   addIssueCommentSchema,
   linkIssueApprovalSchema,
@@ -583,6 +596,7 @@ export {
   issueDocumentKeySchema,
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
+  applyIssueWorkflowTemplateSchema,
   type CreateIssue,
   type CreateIssueLabel,
   type UpdateIssue,
@@ -596,6 +610,7 @@ export {
   type IssueDocumentFormat,
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
+  type ApplyIssueWorkflowTemplate,
   createGoalSchema,
   updateGoalSchema,
   type CreateGoal,
