@@ -7,6 +7,7 @@ import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclip
 import {
   asBoolean,
   asNumber,
+  asOptionalFiniteNumber,
   asString,
   asStringArray,
   buildPaperclipEnv,
@@ -25,6 +26,8 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  formatRunChildProcessTimedOutErrorMessage,
+  resolveRunChildProcessWallLimitSec,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
@@ -233,6 +236,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
+  const maxWallClockSec = asOptionalFiniteNumber(config.maxWallClockSec);
+  const wallLimitSec = resolveRunChildProcessWallLimitSec({ timeoutSec, maxWallClockSec });
+  const idleTimeoutSec = asNumber(config.idleTimeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
@@ -365,6 +371,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       cwd,
       env,
       timeoutSec,
+      ...(maxWallClockSec !== undefined ? { maxWallClockSec } : {}),
+      idleTimeoutSec,
       graceSec,
       onSpawn,
       onLog,
@@ -381,6 +389,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: number | null;
         signal: string | null;
         timedOut: boolean;
+        timedOutReason: "wall" | "idle" | null;
         stdout: string;
         stderr: string;
       };
@@ -400,7 +409,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorMessage:
+          formatRunChildProcessTimedOutErrorMessage(attempt.proc, { wallTimeoutSec: wallLimitSec, idleTimeoutSec }) ??
+          "Timed out",
         errorCode: authMeta.requiresAuth ? "gemini_auth_required" : null,
         clearSession: clearSessionOnMissingSession,
       };

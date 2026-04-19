@@ -4,7 +4,7 @@
 import type { ChildProcess } from "node:child_process";
 import { logger } from "../middleware/logger.js";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
-export type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
+export type { RunProcessResult, RunChildProcessTimeoutReason } from "@paperclipai/adapter-utils/server-utils";
 
 type BuildInvocationEnvForLogsOptions = {
   runtimeEnv?: NodeJS.ProcessEnv | Record<string, string>;
@@ -20,6 +20,8 @@ export const MAX_EXCERPT_BYTES = serverUtils.MAX_EXCERPT_BYTES;
 export const parseObject = serverUtils.parseObject;
 export const asString = serverUtils.asString;
 export const asNumber = serverUtils.asNumber;
+export const asOptionalFiniteNumber = serverUtils.asOptionalFiniteNumber;
+export const resolveRunChildProcessWallLimitSec = serverUtils.resolveRunChildProcessWallLimitSec;
 export const asBoolean = serverUtils.asBoolean;
 export const asStringArray = serverUtils.asStringArray;
 export const parseJson = serverUtils.parseJson;
@@ -33,6 +35,7 @@ export const ensurePathInEnv = serverUtils.ensurePathInEnv;
 export const ensureAbsoluteDirectory = serverUtils.ensureAbsoluteDirectory;
 export const ensureCommandResolvable = serverUtils.ensureCommandResolvable;
 export const resolveCommandForLogs = serverUtils.resolveCommandForLogs;
+export const formatRunChildProcessTimedOutErrorMessage = serverUtils.formatRunChildProcessTimedOutErrorMessage;
 
 export function buildInvocationEnvForLogs(
   env: Record<string, string>,
@@ -81,6 +84,8 @@ export async function runChildProcess(
     cwd: string;
     env: Record<string, string>;
     timeoutSec: number;
+    idleTimeoutSec?: number;
+    maxWallClockSec?: number;
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   },

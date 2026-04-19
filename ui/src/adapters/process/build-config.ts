@@ -11,6 +11,7 @@ export function buildProcessConfig(v: CreateConfigValues): Record<string, unknow
   const ac: Record<string, unknown> = {};
   if (v.cwd) ac.cwd = v.cwd;
   ac.timeoutSec = 0;
+  ac.idleTimeoutSec = 0;
   ac.graceSec = 15;
   if (v.command) ac.command = v.command;
   if (v.args) ac.args = parseCommaArgs(v.args);

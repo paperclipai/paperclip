@@ -38,6 +38,7 @@ describe("runChildProcess", () => {
         env: {},
         stdin: "hello from stdin",
         timeoutSec: 5,
+        maxWallClockSec: 5,
         graceSec: 1,
         onLog: async () => {},
         onSpawn: async () => {
@@ -49,6 +50,7 @@ describe("runChildProcess", () => {
     const finishedAt = Date.now();
 
     expect(result.exitCode).toBe(0);
+    expect(result.timedOutReason).toBeNull();
     expect(result.stdout).toBe("hello from stdin");
     expect(onSpawnCompletedAt).toBeGreaterThanOrEqual(startedAt + spawnDelayMs);
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
@@ -73,6 +75,7 @@ describe("runChildProcess", () => {
         cwd: process.cwd(),
         env: {},
         timeoutSec: 1,
+        maxWallClockSec: 1,
         graceSec: 1,
         onLog: async () => {},
         onSpawn: async () => {},
@@ -81,8 +84,143 @@ describe("runChildProcess", () => {
 
     descendantPid = Number.parseInt(result.stdout.trim(), 10);
     expect(result.timedOut).toBe(true);
+    expect(result.timedOutReason).toBe("wall");
     expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
 
     expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
+  });
+
+  it("does not let a slow onLog stall the child when stdout is high-volume", async () => {
+    const chunkSize = 8192;
+    const numChunks = 300;
+    const onLogDelayMs = 12;
+    let logCalls = 0;
+
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        `const n=${numChunks};const sz=${chunkSize};const b=Buffer.alloc(sz,120);for(let i=0;i<n;i++)process.stdout.write(b);`,
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 10,
+        maxWallClockSec: 10,
+        graceSec: 1,
+        onLog: async () => {
+          logCalls += 1;
+          await new Promise((resolve) => setTimeout(resolve, onLogDelayMs));
+        },
+      },
+    );
+
+    expect(result.timedOut).toBe(false);
+    expect(result.timedOutReason).toBeNull();
+    expect(result.exitCode).toBe(0);
+    expect(logCalls).toBeGreaterThan(0);
+    expect(result.stdout.length).toBe(chunkSize * numChunks);
+  });
+
+  it("idle watchdog kills a child that emits no stdout/stderr", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "setInterval(() => {}, 500);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        idleTimeoutSec: 1,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.timedOut).toBe(true);
+    expect(result.timedOutReason).toBe("idle");
+  });
+
+  it("idle watchdog resets on child output", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        "let n=0; setInterval(() => { process.stdout.write('.'); n++; if (n>=12) process.exit(0); }, 250);",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 30,
+        maxWallClockSec: 30,
+        idleTimeoutSec: 1,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.timedOut).toBe(false);
+    expect(result.timedOutReason).toBeNull();
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("wall watchdog fires even when the child keeps writing stderr", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "setInterval(() => { process.stderr.write('.'); }, 50);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 60,
+        maxWallClockSec: 1,
+        idleTimeoutSec: 30,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.timedOut).toBe(true);
+    expect(result.timedOutReason).toBe("wall");
+  });
+
+  it("legacy timeoutSec (without maxWallClockSec) still arms the wall watchdog", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "setInterval(() => {}, 500);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 1,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.timedOut).toBe(true);
+    expect(result.timedOutReason).toBe("wall");
+  });
+
+  it("maxWallClockSec overrides timeoutSec for the wall watchdog", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "setInterval(() => { process.stdout.write('.'); }, 50);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 30,
+        maxWallClockSec: 1,
+        idleTimeoutSec: 30,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.timedOut).toBe(true);
+    expect(result.timedOutReason).toBe("wall");
   });
 });

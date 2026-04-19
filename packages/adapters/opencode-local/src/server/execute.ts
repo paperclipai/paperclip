@@ -6,6 +6,7 @@ import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type Adapter
 import {
   asString,
   asNumber,
+  asOptionalFiniteNumber,
   asStringArray,
   parseObject,
   buildPaperclipEnv,
@@ -20,12 +21,14 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  formatRunChildProcessTimedOutErrorMessage,
+  resolveRunChildProcessWallLimitSec,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
+  removeMaintainerOnlySkillSymlinks,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
-import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -206,6 +209,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
 
     const timeoutSec = asNumber(config.timeoutSec, 0);
+    const maxWallClockSec = asOptionalFiniteNumber(config.maxWallClockSec);
+    const wallLimitSec = resolveRunChildProcessWallLimitSec({ timeoutSec, maxWallClockSec });
+    const idleTimeoutSec = asNumber(config.idleTimeoutSec, 0);
     const graceSec = asNumber(config.graceSec, 20);
     const extraArgs = (() => {
       const fromExtraArgs = asStringArray(config.extraArgs);
@@ -328,6 +334,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env: runtimeEnv,
         stdin: prompt,
         timeoutSec,
+        ...(maxWallClockSec !== undefined ? { maxWallClockSec } : {}),
+        idleTimeoutSec,
         graceSec,
         onSpawn,
         onLog,
@@ -341,7 +349,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const toResult = (
       attempt: {
-        proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
+        proc: {
+          exitCode: number | null;
+          signal: string | null;
+          timedOut: boolean;
+          timedOutReason: "wall" | "idle" | null;
+          stdout: string;
+          stderr: string;
+        };
         rawStderr: string;
         parsed: ReturnType<typeof parseOpenCodeJsonl>;
       },
@@ -352,7 +367,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: `Timed out after ${timeoutSec}s`,
+          errorMessage:
+            formatRunChildProcessTimedOutErrorMessage(attempt.proc, {
+              wallTimeoutSec: wallLimitSec,
+              idleTimeoutSec,
+            }) ?? "Timed out",
           clearSession: clearSessionOnMissingSession,
         };
       }

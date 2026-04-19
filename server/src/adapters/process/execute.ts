@@ -2,13 +2,16 @@ import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.j
 import {
   asString,
   asNumber,
+  asOptionalFiniteNumber,
   asStringArray,
   parseObject,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
   ensurePathInEnv,
   resolveCommandForLogs,
+  resolveRunChildProcessWallLimitSec,
   runChildProcess,
+  formatRunChildProcessTimedOutErrorMessage,
 } from "../utils.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -32,6 +35,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
+  const maxWallClockSec = asOptionalFiniteNumber(config.maxWallClockSec);
+  const wallLimitSec = resolveRunChildProcessWallLimitSec({ timeoutSec, maxWallClockSec });
+  const idleTimeoutSec = asNumber(config.idleTimeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 15);
 
   if (onMeta) {
@@ -48,6 +54,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     cwd,
     env,
     timeoutSec,
+    ...(maxWallClockSec !== undefined ? { maxWallClockSec } : {}),
+    idleTimeoutSec,
     graceSec,
     onLog,
   });
@@ -57,7 +65,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: true,
-      errorMessage: `Timed out after ${timeoutSec}s`,
+      errorMessage:
+        formatRunChildProcessTimedOutErrorMessage(proc, { wallTimeoutSec: wallLimitSec, idleTimeoutSec }) ??
+        "Timed out",
     };
   }
 

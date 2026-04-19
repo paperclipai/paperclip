@@ -6,10 +6,14 @@ import type {
   AdapterSkillSnapshot,
 } from "./types.js";
 
+export type RunChildProcessTimeoutReason = "wall" | "idle";
+
 export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  /** Set when `timedOut` is true: wall clock (`timeoutSec`) vs output-idle (`idleTimeoutSec`). */
+  timedOutReason: RunChildProcessTimeoutReason | null;
   stdout: string;
   stderr: string;
   pid: number | null;
@@ -57,7 +61,34 @@ function signalRunningProcess(
   }
 }
 
+/** User-facing timeout message for process adapters (wall vs idle watchdog). */
+export function formatRunChildProcessTimedOutErrorMessage(
+  proc: Pick<RunProcessResult, "timedOut" | "timedOutReason">,
+  limits: { wallTimeoutSec: number; idleTimeoutSec: number },
+): string | null {
+  if (!proc.timedOut) return null;
+  if (proc.timedOutReason === "idle" && limits.idleTimeoutSec > 0) {
+    return `Idle timeout: no stdout/stderr for ${limits.idleTimeoutSec}s`;
+  }
+  if (limits.wallTimeoutSec > 0) {
+    return `Timed out after ${limits.wallTimeoutSec}s`;
+  }
+  return "Timed out";
+}
+
+/** Effective wall-clock limit for `runChildProcess` timers and user-facing timeout copy. */
+export function resolveRunChildProcessWallLimitSec(opts: {
+  timeoutSec: number;
+  maxWallClockSec?: number;
+}): number {
+  return opts.maxWallClockSec !== undefined ? opts.maxWallClockSec : opts.timeoutSec;
+}
+
 export const runningProcesses = new Map<string, RunningProcess>();
+
+/** Warn once per process when callers rely on `timeoutSec` as the wall-clock ceiling. */
+let warnedLegacyWallTimeoutSec = false;
+
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
@@ -157,6 +188,19 @@ export function asString(value: unknown, fallback: string): string {
 
 export function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/** Finite numbers from adapter config (`undefined` when absent or invalid). */
+export function asOptionalFiniteNumber(value: unknown): number | undefined {
+  if (value == null) return undefined;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return undefined;
+    const n = Number(trimmed);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
 }
 
 export function asBoolean(value: unknown, fallback: boolean): boolean {
@@ -1067,7 +1111,22 @@ export async function runChildProcess(
   opts: {
     cwd: string;
     env: Record<string, string>;
+    /**
+     * Legacy wall-clock ceiling from spawn. When `maxWallClockSec` is omitted, this value
+     * is used as the wall limit (deprecated — prefer `maxWallClockSec`). `0` disables the wall
+     * watchdog when no explicit `maxWallClockSec` is provided.
+     */
     timeoutSec: number;
+    /**
+     * Preferred wall-clock ceiling (seconds from spawn). When set (including `0`), this wins
+     * over `timeoutSec` for the wall watchdog. Omitted means use `timeoutSec` as the wall limit.
+     */
+    maxWallClockSec?: number;
+    /**
+     * Output-idle limit: reset whenever a `stdout` or `stderr` chunk arrives from the child.
+     * `0` (default) disables the idle watchdog.
+     */
+    idleTimeoutSec?: number;
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
@@ -1076,6 +1135,21 @@ export async function runChildProcess(
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
+
+  const wallLimitSec = resolveRunChildProcessWallLimitSec({
+    timeoutSec: opts.timeoutSec,
+    maxWallClockSec: opts.maxWallClockSec,
+  });
+  if (
+    !warnedLegacyWallTimeoutSec &&
+    opts.maxWallClockSec === undefined &&
+    opts.timeoutSec > 0
+  ) {
+    console.warn(
+      "[@paperclipai/adapter-utils] runChildProcess: using `timeoutSec` as the wall-clock limit is deprecated; prefer `maxWallClockSec`. Behavior is unchanged for now.",
+    );
+    warnedLegacyWallTimeoutSec = true;
+  }
 
   return new Promise<RunProcessResult>((resolve, reject) => {
     const rawMerged: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
@@ -1118,35 +1192,83 @@ export async function runChildProcess(
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
+        let timedOutReason: RunChildProcessTimeoutReason | null = null;
         let stdout = "";
         let stderr = "";
-        let logChain: Promise<void> = Promise.resolve();
+        /** In-flight `onLog` calls — decouple stream reads from slow consumers (see runChildProcess close handler). */
+        const inflightOnLog = new Set<Promise<void>>();
 
-        const timeout =
-          opts.timeoutSec > 0
-            ? setTimeout(() => {
-                timedOut = true;
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
-                setTimeout(() => {
-                  signalRunningProcess({ child, processGroupId }, "SIGKILL");
-                }, Math.max(1, opts.graceSec) * 1000);
-              }, opts.timeoutSec * 1000)
-            : null;
+        const scheduleOnLog = (stream: "stdout" | "stderr", text: string, failureMessage: string) => {
+          const p = Promise.resolve()
+            .then(() => opts.onLog(stream, text))
+            .catch((err: unknown) => {
+              onLogError(err, runId, failureMessage);
+            });
+          inflightOnLog.add(p);
+          void p.finally(() => {
+            inflightOnLog.delete(p);
+          });
+        };
+
+        let wallTimer: ReturnType<typeof setTimeout> | null = null;
+        let idleTimer: ReturnType<typeof setTimeout> | null = null;
+        let killTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const clearWallTimer = () => {
+          if (wallTimer) {
+            clearTimeout(wallTimer);
+            wallTimer = null;
+          }
+        };
+        const clearIdleTimer = () => {
+          if (idleTimer) {
+            clearTimeout(idleTimer);
+            idleTimer = null;
+          }
+        };
+        const clearKillTimer = () => {
+          if (killTimer) {
+            clearTimeout(killTimer);
+            killTimer = null;
+          }
+        };
+
+        const beginForcedShutdown = (reason: RunChildProcessTimeoutReason) => {
+          if (timedOutReason !== null) return;
+          timedOut = true;
+          timedOutReason = reason;
+          clearWallTimer();
+          clearIdleTimer();
+          signalRunningProcess({ child, processGroupId }, "SIGTERM");
+          killTimer = setTimeout(() => {
+            signalRunningProcess({ child, processGroupId }, "SIGKILL");
+          }, Math.max(1, opts.graceSec) * 1000);
+        };
+
+        const idleTimeoutSec = opts.idleTimeoutSec ?? 0;
+        const bumpIdleWatchdog = () => {
+          clearIdleTimer();
+          if (idleTimeoutSec <= 0) return;
+          idleTimer = setTimeout(() => beginForcedShutdown("idle"), idleTimeoutSec * 1000);
+        };
+
+        if (wallLimitSec > 0) {
+          wallTimer = setTimeout(() => beginForcedShutdown("wall"), wallLimitSec * 1000);
+        }
+        bumpIdleWatchdog();
 
         child.stdout?.on("data", (chunk: unknown) => {
+          bumpIdleWatchdog();
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
-          logChain = logChain
-            .then(() => opts.onLog("stdout", text))
-            .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"));
+          scheduleOnLog("stdout", text, "failed to append stdout log chunk");
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
+          bumpIdleWatchdog();
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
-          logChain = logChain
-            .then(() => opts.onLog("stderr", text))
-            .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
+          scheduleOnLog("stderr", text, "failed to append stderr log chunk");
         });
 
         const stdin = child.stdin;
@@ -1159,7 +1281,9 @@ export async function runChildProcess(
         }
 
         child.on("error", (err: Error) => {
-          if (timeout) clearTimeout(timeout);
+          clearWallTimer();
+          clearIdleTimer();
+          clearKillTimer();
           runningProcesses.delete(runId);
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
@@ -1171,13 +1295,16 @@ export async function runChildProcess(
         });
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-          if (timeout) clearTimeout(timeout);
+          clearWallTimer();
+          clearIdleTimer();
+          clearKillTimer();
           runningProcesses.delete(runId);
-          void logChain.finally(() => {
+          void Promise.allSettled([...inflightOnLog]).finally(() => {
             resolve({
               exitCode: code,
               signal,
               timedOut,
+              timedOutReason,
               stdout,
               stderr,
               pid: child.pid ?? null,

@@ -5,6 +5,7 @@ import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type Adapter
 import {
   asString,
   asNumber,
+  asOptionalFiniteNumber,
   parseObject,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
@@ -20,6 +21,8 @@ import {
   stringifyPaperclipWakePayload,
   joinPromptSections,
   runChildProcess,
+  formatRunChildProcessTimedOutErrorMessage,
+  resolveRunChildProcessWallLimitSec,
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
@@ -388,6 +391,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
+  const maxWallClockSec = asOptionalFiniteNumber(config.maxWallClockSec);
+  const wallLimitSec = resolveRunChildProcessWallLimitSec({ timeoutSec, maxWallClockSec });
+  const idleTimeoutSec = asNumber(config.idleTimeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
@@ -513,6 +519,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env,
       stdin: prompt,
       timeoutSec,
+      ...(maxWallClockSec !== undefined ? { maxWallClockSec } : {}),
+      idleTimeoutSec,
       graceSec,
       onSpawn,
       onLog: async (stream, chunk) => {
@@ -537,7 +545,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const toResult = (
-    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
+    attempt: {
+      proc: {
+        exitCode: number | null;
+        signal: string | null;
+        timedOut: boolean;
+        timedOutReason: "wall" | "idle" | null;
+        stdout: string;
+        stderr: string;
+      };
+      rawStderr: string;
+      parsed: ReturnType<typeof parseCodexJsonl>;
+    },
     clearSessionOnMissingSession = false,
   ): AdapterExecutionResult => {
     if (attempt.proc.timedOut) {
@@ -545,7 +564,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorMessage:
+          formatRunChildProcessTimedOutErrorMessage(attempt.proc, { wallTimeoutSec: wallLimitSec, idleTimeoutSec }) ??
+          "Timed out",
         clearSession: clearSessionOnMissingSession,
       };
     }

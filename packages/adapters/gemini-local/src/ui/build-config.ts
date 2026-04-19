@@ -59,6 +59,7 @@ export function buildGeminiLocalConfig(v: CreateConfigValues): Record<string, un
   if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
   ac.model = v.model || DEFAULT_GEMINI_LOCAL_MODEL;
   ac.timeoutSec = 0;
+  ac.idleTimeoutSec = 0;
   ac.graceSec = 15;
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);

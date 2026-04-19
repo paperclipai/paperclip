@@ -6,6 +6,7 @@ import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   asString,
   asNumber,
+  asOptionalFiniteNumber,
   asBoolean,
   asStringArray,
   parseObject,
@@ -22,6 +23,8 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  formatRunChildProcessTimedOutErrorMessage,
+  resolveRunChildProcessWallLimitSec,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseClaudeStreamJson,
@@ -54,6 +57,8 @@ interface ClaudeRuntimeConfig {
   env: Record<string, string>;
   loggedEnv: Record<string, string>;
   timeoutSec: number;
+  maxWallClockSec?: number;
+  idleTimeoutSec: number;
   graceSec: number;
   extraArgs: string[];
 }
@@ -236,6 +241,8 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
+  const maxWallClockSec = asOptionalFiniteNumber(config.maxWallClockSec);
+  const idleTimeoutSec = asNumber(config.idleTimeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
@@ -253,6 +260,8 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env,
     loggedEnv,
     timeoutSec,
+    maxWallClockSec,
+    idleTimeoutSec,
     graceSec,
     extraArgs,
   };
@@ -279,6 +288,8 @@ export async function runClaudeLogin(input: {
     cwd: runtime.cwd,
     env: runtime.env,
     timeoutSec: runtime.timeoutSec,
+    ...(runtime.maxWallClockSec !== undefined ? { maxWallClockSec: runtime.maxWallClockSec } : {}),
+    idleTimeoutSec: runtime.idleTimeoutSec,
     graceSec: runtime.graceSec,
     onLog,
   });
@@ -326,9 +337,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env,
     loggedEnv,
     timeoutSec,
+    maxWallClockSec,
+    idleTimeoutSec,
     graceSec,
     extraArgs,
   } = runtimeConfig;
+  const wallLimitSec = resolveRunChildProcessWallLimitSec({ timeoutSec, maxWallClockSec });
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -499,6 +513,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env,
       stdin: prompt,
       timeoutSec,
+      ...(maxWallClockSec !== undefined ? { maxWallClockSec } : {}),
+      idleTimeoutSec,
       graceSec,
       onSpawn,
       onLog,
@@ -535,7 +551,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorMessage:
+          formatRunChildProcessTimedOutErrorMessage(proc, { wallTimeoutSec: wallLimitSec, idleTimeoutSec }) ??
+          "Timed out",
         errorCode: "timeout",
         errorMeta,
         clearSession: Boolean(opts.clearSessionOnMissingSession),
