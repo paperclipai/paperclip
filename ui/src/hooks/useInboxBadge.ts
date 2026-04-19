@@ -20,7 +20,7 @@ import {
   READ_ITEMS_KEY,
 } from "../lib/inbox";
 
-const INBOX_ISSUE_STATUSES = "backlog,todo,in_progress,in_review,blocked,done";
+const INBOX_ISSUE_STATUSES = "backlog,todo,in_progress,in_review,blocked";
 const INBOX_BADGE_HEARTBEAT_RUN_LIMIT = 200;
 
 export function useDismissedInboxAlerts() {
