@@ -40,4 +40,9 @@ export const credentialsApi = {
   reveal: (id: string) => api.get<RevealedCredential>(`/credentials/${id}/reveal`),
   test: (id: string) =>
     api.post<{ ok: boolean; message: string }>(`/credentials/${id}/test`, {}),
+  probe: (type: CredentialType, credential: Record<string, unknown>) =>
+    api.post<{ ok: boolean; message: string }>(`/credentials/probe`, {
+      type,
+      credential,
+    }),
 };

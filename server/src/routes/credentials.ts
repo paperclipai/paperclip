@@ -171,6 +171,24 @@ export function credentialRoutes(db: Db) {
     res.json({ ok: true });
   });
 
+  // ── Probe a credential from the form (before save) ───────────────────
+
+  router.post("/credentials/probe", async (req, res) => {
+    assertBoard(req);
+    const body = req.body as { type?: unknown; credential?: unknown };
+    const type = typeof body.type === "string" ? body.type : "";
+    const credential =
+      body.credential && typeof body.credential === "object" && !Array.isArray(body.credential)
+        ? (body.credential as Record<string, unknown>)
+        : null;
+    if (!type || !credential) {
+      res.status(400).json({ error: "type and credential (object) are required" });
+      return;
+    }
+    const result = await safeProbe(type, credential);
+    res.json({ ok: result.ok, message: result.message });
+  });
+
   // ── Test credential (probe provider API) ─────────────────────────────
 
   router.post("/credentials/:id/test", async (req, res) => {

@@ -839,6 +839,32 @@ function CredentialsSection({ companyId }: { companyId: string }) {
   const [revealedValue, setRevealedValue] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ id: string; ok: boolean; message: string } | null>(null);
+  const [formProbe, setFormProbe] = useState<
+    { scope: "add" | "edit"; ok: boolean; message: string } | null
+  >(null);
+  const [formProbing, setFormProbing] = useState<"add" | "edit" | null>(null);
+
+  const handleFormProbe = async (
+    scope: "add" | "edit",
+    type: CredentialType,
+    token: string,
+  ) => {
+    setFormProbing(scope);
+    setFormProbe(null);
+    try {
+      const payload = buildCredentialPayload(type, token.trim());
+      const result = await credentialsApi.probe(type, payload);
+      setFormProbe({ scope, ok: result.ok, message: result.message });
+    } catch (err) {
+      setFormProbe({
+        scope,
+        ok: false,
+        message: err instanceof Error ? err.message : "Probe failed",
+      });
+    } finally {
+      setFormProbing(null);
+    }
+  };
 
   const handleTest = async (id: string) => {
     setTestingId(id);
@@ -863,6 +889,7 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     setAddType("claude_api_key");
     setAddToken("");
     setAddIsDefault(false);
+    setFormProbe((prev) => (prev?.scope === "add" ? null : prev));
   };
 
   const handleReveal = async (id: string) => {
@@ -900,6 +927,7 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     setEditName("");
     setEditToken("");
     setEditIsDefault(false);
+    setFormProbe((prev) => (prev?.scope === "edit" ? null : prev));
   };
 
   const invalidate = () =>
@@ -1017,6 +1045,17 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                       >
                         {updateMutation.isPending ? "Saving..." : "Save"}
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleFormProbe("edit", cred.type, editToken)}
+                        disabled={formProbing === "edit" || !editToken.trim()}
+                        className="gap-1.5"
+                        title="Test the token in the field above"
+                      >
+                        <Zap className="h-3.5 w-3.5" />
+                        {formProbing === "edit" ? "Testing…" : "Test"}
+                      </Button>
                       <Button size="sm" variant="ghost" onClick={cancelEdit}>
                         Cancel
                       </Button>
@@ -1028,6 +1067,22 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                         </span>
                       )}
                     </div>
+                    {formProbe?.scope === "edit" && (
+                      <div
+                        className={`flex items-start gap-2 rounded px-2 py-1.5 text-xs ${
+                          formProbe.ok
+                            ? "bg-green-500/10 text-green-700 dark:text-green-300"
+                            : "bg-destructive/10 text-destructive"
+                        }`}
+                      >
+                        {formProbe.ok ? (
+                          <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        ) : (
+                          <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        )}
+                        <span className="break-all">{formProbe.message}</span>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2">
@@ -1227,6 +1282,16 @@ function CredentialsSection({ companyId }: { companyId: string }) {
               >
                 {createMutation.isPending ? "Saving..." : "Save"}
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleFormProbe("add", addType, addToken)}
+                disabled={formProbing === "add" || !addToken.trim()}
+                className="gap-1.5"
+              >
+                <Zap className="h-3.5 w-3.5" />
+                {formProbing === "add" ? "Testing…" : "Test"}
+              </Button>
               <Button size="sm" variant="ghost" onClick={resetAddForm}>
                 Cancel
               </Button>
@@ -1238,6 +1303,22 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                 </span>
               )}
             </div>
+            {formProbe?.scope === "add" && (
+              <div
+                className={`flex items-start gap-2 rounded px-2 py-1.5 text-xs ${
+                  formProbe.ok
+                    ? "bg-green-500/10 text-green-700 dark:text-green-300"
+                    : "bg-destructive/10 text-destructive"
+                }`}
+              >
+                {formProbe.ok ? (
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                ) : (
+                  <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                )}
+                <span className="break-all">{formProbe.message}</span>
+              </div>
+            )}
           </div>
         ) : (
           <div className="flex items-center gap-2">
