@@ -3,7 +3,6 @@ export {
   ANTHROPIC_MODEL_PRICING,
   resolveModelPricing,
   computeEquivalentCostCents,
-  calculateDriftPct,
   type TokenUsage,
   type ModelPricing,
 } from "./pricing.js";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeEquivalentCostCents, resolveModelPricing, calculateDriftPct } from "@paperclipai/shared";
+import { computeEquivalentCostCents, resolveModelPricing } from "@paperclipai/shared";
 
 describe("resolveModelPricing", () => {
   it("returns Opus rates for exact match", () => {
@@ -70,20 +70,3 @@ describe("computeEquivalentCostCents", () => {
   });
 });
 
-describe("calculateDriftPct", () => {
-  it("calculates drift between non-zero values — |100-120|/120 ≈ 16.67%", () => {
-    expect(calculateDriftPct(100, 120)).toBeCloseTo(16.67, 1);
-  });
-
-  it("returns 0 when both are zero", () => {
-    expect(calculateDriftPct(0, 0)).toBe(0);
-  });
-
-  it("returns 100 when anthropic is zero but paperclip has spend", () => {
-    expect(calculateDriftPct(500, 0)).toBe(100);
-  });
-
-  it("returns 100 when paperclip is zero but anthropic has spend", () => {
-    expect(calculateDriftPct(0, 100)).toBe(100);
-  });
-});

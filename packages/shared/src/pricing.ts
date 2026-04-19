@@ -61,14 +61,3 @@ export function computeEquivalentCostCents(usage: TokenUsage, model: string): nu
   return Math.max(0, Math.round(cents));
 }
 
-/**
- * Compute drift percentage between Paperclip-recorded and Anthropic-reported spend.
- * Returns 0 when both values are zero.
- */
-export function calculateDriftPct(paperclipCents: number, anthropicCents: number): number {
-  if (anthropicCents > 0) {
-    return (Math.abs(paperclipCents - anthropicCents) / anthropicCents) * 100;
-  }
-  if (paperclipCents > 0) return 100;
-  return 0;
-}
