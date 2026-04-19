@@ -122,8 +122,8 @@ Renders inline inside the native "New Issue" dialog, between the assignee/review
 **Context:** Company-scoped. `context.companyId` and `context.companyPrefix` reflect the currently selected company.
 
 **Form access:**
-- `formState.description` — current description field value (read-only snapshot)
-- `formActions.setDescription(value)` — replace the description field content
+- `context.formState.description` — current description field value (read-only snapshot)
+- `context.formActions.setDescription(value)` — replace the description field content
 
 **What the host owns:** Title, status, priority, assignee, reviewer, approver, project, execution workspace, file attachments, draft auto-save, mentions, company switching, and the submit action. The plugin cannot modify or block these.
 

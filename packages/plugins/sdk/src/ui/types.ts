@@ -306,7 +306,7 @@ export interface NewIssueFormActions {
  * A `newIssueFormExtension` slot renders inline inside the native
  * "New Issue" dialog, between the assignee/reviewer rows and the
  * description editor. The plugin can read the current description
- * via `formState` and write to it via `formActions`.
+ * via `context.formState` and write to it via `context.formActions`.
  *
  * The host owns all other form fields (title, status, priority,
  * assignee, reviewer, approver, project, execution workspace, file
@@ -335,17 +335,17 @@ export interface NewIssueFormActions {
  * - Any read/write augmentation of the description field during creation
  */
 export interface PluginNewIssueFormExtensionProps {
-  /** Host context including companyId and companyPrefix. */
+  /** Host context including companyId, companyPrefix, formState, and formActions. */
   context: PluginHostContext & {
     /** ID of the company selected in the New Issue dialog. */
     companyId: string;
     /** Issue prefix of the selected company (e.g. "PER"). */
     companyPrefix: string | null;
+    /** Current form field values (read-only snapshot). */
+    formState: NewIssueFormState;
+    /** Callbacks to update form fields. */
+    formActions: NewIssueFormActions;
   };
-  /** Current form field values (read-only snapshot). */
-  formState: NewIssueFormState;
-  /** Callbacks to update form fields. */
-  formActions: NewIssueFormActions;
 }
 
 // ---------------------------------------------------------------------------

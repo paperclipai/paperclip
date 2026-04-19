@@ -1458,7 +1458,7 @@ export function NewIssueDialog() {
               companyId: effectiveCompanyId,
               companyPrefix: dialogCompany?.issuePrefix ?? null,
               formState: { description },
-              formActions: { setDescription: (v: unknown) => setDescription(v as string) },
+              formActions: { setDescription: (v: unknown) => setDescription(typeof v === "string" ? v : "") },
             }}
             className="px-4 pb-1"
             itemClassName="inline-flex items-center gap-2 text-sm text-muted-foreground"
