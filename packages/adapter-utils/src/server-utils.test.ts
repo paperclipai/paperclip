@@ -85,4 +85,35 @@ describe("runChildProcess", () => {
 
     expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
   });
+
+  it("does not let a slow onLog stall the child when stdout is high-volume", async () => {
+    const chunkSize = 8192;
+    const numChunks = 300;
+    const onLogDelayMs = 12;
+    let logCalls = 0;
+
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        `const n=${numChunks};const sz=${chunkSize};const b=Buffer.alloc(sz,120);for(let i=0;i<n;i++)process.stdout.write(b);`,
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 10,
+        graceSec: 1,
+        onLog: async () => {
+          logCalls += 1;
+          await new Promise((resolve) => setTimeout(resolve, onLogDelayMs));
+        },
+      },
+    );
+
+    expect(result.timedOut).toBe(false);
+    expect(result.exitCode).toBe(0);
+    expect(logCalls).toBeGreaterThan(0);
+    expect(result.stdout.length).toBe(chunkSize * numChunks);
+  });
 });
