@@ -67,6 +67,7 @@ import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
+import { BlockerWarningDialog, shouldWarnOnStatusChange } from "../components/BlockerWarningDialog";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { Identity } from "../components/Identity";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
@@ -1207,6 +1208,8 @@ export function IssueDetail() {
     },
   });
 
+  const [pendingBlockedStatus, setPendingBlockedStatus] = useState<string | null>(null);
+
   const updateIssue = useMutation({
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
     onMutate: async (data) => {
@@ -2205,7 +2208,29 @@ export function IssueDetail() {
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
             status={issue.status}
-            onChange={(status) => updateIssue.mutate({ status })}
+            unresolvedBlockerCount={issue.unresolvedBlockerCount}
+            onChange={(status) => {
+              if (status === issue.status) return;
+              if (shouldWarnOnStatusChange(status, issue.blockedBy)) {
+                setPendingBlockedStatus(status);
+                return;
+              }
+              updateIssue.mutate({ status });
+            }}
+          />
+          <BlockerWarningDialog
+            open={pendingBlockedStatus !== null}
+            onOpenChange={(open) => {
+              if (!open) setPendingBlockedStatus(null);
+            }}
+            nextStatus={pendingBlockedStatus ?? ""}
+            blockedBy={issue.blockedBy ?? []}
+            onConfirm={() => {
+              if (pendingBlockedStatus) {
+                updateIssue.mutate({ status: pendingBlockedStatus });
+                setPendingBlockedStatus(null);
+              }
+            }}
           />
           <PriorityIcon
             priority={issue.priority}

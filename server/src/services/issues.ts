@@ -80,6 +80,7 @@ export interface IssueFilters {
   originId?: string;
   includeRoutineExecutions?: boolean;
   excludeRoutineExecutions?: boolean;
+  excludeBlockedByUnresolved?: boolean;
   q?: string;
   limit?: number;
 }
@@ -730,6 +731,38 @@ export function issueService(db: Db) {
     );
   }
 
+  async function loadUnresolvedBlockerCounts(
+    companyId: string,
+    issueIds: string[],
+    dbOrTx: DbReader = db,
+  ): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    const uniqueIssueIds = [...new Set(issueIds)];
+    if (uniqueIssueIds.length === 0) return counts;
+
+    const rows = await dbOrTx
+      .select({
+        issueId: issueRelations.relatedIssueId,
+        count: sql<number>`count(*)`,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issueRelations.relatedIssueId, uniqueIssueIds),
+          sql`${issues.status} NOT IN ('done', 'cancelled')`,
+        ),
+      )
+      .groupBy(issueRelations.relatedIssueId);
+
+    for (const row of rows) {
+      counts.set(row.issueId, Number(row.count));
+    }
+    return counts;
+  }
+
   async function getIssueRelationSummaryMap(
     companyId: string,
     issueIds: string[],
@@ -1035,6 +1068,17 @@ export function issueService(db: Db) {
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
+      if (filters?.excludeBlockedByUnresolved) {
+        conditions.push(sql`NOT EXISTS (
+          SELECT 1
+          FROM ${issueRelations} ir
+          INNER JOIN ${issues} blocker ON blocker.id = ir.issue_id
+          WHERE ir.related_issue_id = ${issues.id}
+            AND ir.company_id = ${companyId}
+            AND ir.type = 'blocks'
+            AND blocker.status NOT IN ('done', 'cancelled')
+        )`);
+      }
       conditions.push(isNull(issues.hiddenAt));
 
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
@@ -1069,6 +1113,11 @@ export function issueService(db: Db) {
       }
 
       const issueIds = withRuns.map((row) => row.id);
+      const unresolvedBlockerCounts = await loadUnresolvedBlockerCounts(companyId, issueIds);
+      const withBlockerCounts = withRuns.map((row) => ({
+        ...row,
+        unresolvedBlockerCount: unresolvedBlockerCounts.get(row.id) ?? 0,
+      }));
       const [statsRows, readRows, lastActivityRows] = await Promise.all([
         contextUserId
           ? db
@@ -1169,7 +1218,7 @@ export function issueService(db: Db) {
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
 
       if (!contextUserId) {
-        return withRuns.map((row) => {
+        return withBlockerCounts.map((row) => {
           const activity = lastActivityByIssueId.get(row.id);
           const lastActivityAt = latestIssueActivityAt(
             row.updatedAt,
@@ -1185,7 +1234,7 @@ export function issueService(db: Db) {
 
       const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
 
-      return withRuns.map((row) => {
+      return withBlockerCounts.map((row) => {
         const activity = lastActivityByIssueId.get(row.id);
         const lastActivityAt = latestIssueActivityAt(
           row.updatedAt,
@@ -1321,6 +1370,17 @@ export function issueService(db: Db) {
       if (!issue) throw notFound("Issue not found");
       const relations = await getIssueRelationSummaryMap(issue.companyId, [issueId], db);
       return relations.get(issueId) ?? { blockedBy: [], blocks: [] };
+    },
+
+    countUnresolvedBlockers: async (issueId: string): Promise<number> => {
+      const issue = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return 0;
+      const counts = await loadUnresolvedBlockerCounts(issue.companyId, [issueId]);
+      return counts.get(issueId) ?? 0;
     },
 
     listWakeableBlockedDependents: async (blockerIssueId: string) => {

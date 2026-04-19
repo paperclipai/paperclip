@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link2 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -15,14 +16,36 @@ interface StatusIconProps {
   onChange?: (status: string) => void;
   className?: string;
   showLabel?: boolean;
+  /**
+   * When status === "blocked" and this is > 0, renders a distinct
+   * "blocked by dependencies" indicator instead of the manual-blocked one.
+   */
+  unresolvedBlockerCount?: number;
 }
 
-export function StatusIcon({ status, onChange, className, showLabel }: StatusIconProps) {
+export function StatusIcon({ status, onChange, className, showLabel, unresolvedBlockerCount }: StatusIconProps) {
   const [open, setOpen] = useState(false);
-  const colorClass = issueStatusIcon[status] ?? issueStatusIconDefault;
+  const isDependencyBlocked = status === "blocked" && (unresolvedBlockerCount ?? 0) > 0;
+  const colorClass = isDependencyBlocked
+    ? "text-muted-foreground"
+    : (issueStatusIcon[status] ?? issueStatusIconDefault);
   const isDone = status === "done";
 
-  const circle = (
+  const dependencyBlockedTitle = isDependencyBlocked
+    ? `Blocked by ${unresolvedBlockerCount} unresolved ${unresolvedBlockerCount === 1 ? "dependency" : "dependencies"} — will auto-unblock when resolved`
+    : undefined;
+
+  const indicator = isDependencyBlocked ? (
+    <span
+      className="inline-flex shrink-0"
+      aria-label="Blocked by dependencies"
+      title={dependencyBlockedTitle}
+    >
+      <Link2
+        className={cn("h-4 w-4", colorClass, onChange && !showLabel && "cursor-pointer", className)}
+      />
+    </span>
+  ) : (
     <span
       className={cn(
         "relative inline-flex h-4 w-4 rounded-full border-2 shrink-0",
@@ -30,6 +53,7 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
         onChange && !showLabel && "cursor-pointer",
         className
       )}
+      title={status === "blocked" ? "Blocked — needs attention" : undefined}
     >
       {isDone && (
         <span className="absolute inset-0 m-auto h-2 w-2 rounded-full bg-current" />
@@ -37,14 +61,26 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
     </span>
   );
 
-  if (!onChange) return showLabel ? <span className="inline-flex items-center gap-1.5">{circle}<span className="text-sm">{statusLabel(status)}</span></span> : circle;
+  const displayLabel = isDependencyBlocked ? "Blocked by deps" : statusLabel(status);
+
+  if (!onChange) {
+    return showLabel ? (
+      <span className="inline-flex items-center gap-1.5" title={dependencyBlockedTitle}>
+        {indicator}
+        <span className="text-sm">{displayLabel}</span>
+      </span>
+    ) : indicator;
+  }
 
   const trigger = showLabel ? (
-    <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
-      {circle}
-      <span className="text-sm">{statusLabel(status)}</span>
+    <button
+      className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors"
+      title={dependencyBlockedTitle}
+    >
+      {indicator}
+      <span className="text-sm">{displayLabel}</span>
     </button>
-  ) : circle;
+  ) : indicator;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

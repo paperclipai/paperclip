@@ -1168,6 +1168,7 @@ export function agentRoutes(db: Db) {
       assigneeAgentId: req.actor.agentId,
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
+      excludeBlockedByUnresolved: true,
     });
 
     res.json(
