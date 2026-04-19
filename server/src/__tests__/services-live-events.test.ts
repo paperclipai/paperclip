@@ -24,5 +24,25 @@ describe("services/live-events.ts", () => {
     expect(listener).toHaveBeenCalledWith(event);
     unsubscribe();
   });
+
+  it("increments event ids and stops notifications after unsubscribe", () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeCompanyLiveEvents("cmp-unsub", listener);
+
+    const first = publishLiveEvent({
+      companyId: "cmp-unsub",
+      type: "activity.logged",
+      payload: { seq: 1 },
+    });
+    unsubscribe();
+    const second = publishLiveEvent({
+      companyId: "cmp-unsub",
+      type: "activity.logged",
+      payload: { seq: 2 },
+    });
+
+    expect(second.id).toBeGreaterThan(first.id);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
 });
 

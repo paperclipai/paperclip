@@ -10,5 +10,14 @@ describe("services/agent-permissions.ts", () => {
   it("normalizes malformed permission payload to role defaults", () => {
     expect(normalizeAgentPermissions("bad-permissions", "engineer")).toEqual({ canCreateAgents: false });
   });
+
+  it("preserves explicit boolean permission overrides", () => {
+    expect(normalizeAgentPermissions({ canCreateAgents: true }, "engineer")).toEqual({
+      canCreateAgents: true,
+    });
+    expect(normalizeAgentPermissions({ canCreateAgents: false }, "ceo")).toEqual({
+      canCreateAgents: false,
+    });
+  });
 });
 
