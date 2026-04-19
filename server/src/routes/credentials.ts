@@ -140,6 +140,26 @@ export function credentialRoutes(db: Db) {
     res.json({ ok: true });
   });
 
+  // ── Test credential (probe provider API) ─────────────────────────────
+
+  router.post("/credentials/:id/test", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Credential not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    await requireCredentialManage(req, existing.companyId);
+    const payload = await svc.getDecryptedPayload(id);
+    if (!payload) {
+      res.status(404).json({ error: "Credential not found" });
+      return;
+    }
+    const result = await probeCredential(existing.type, payload);
+    res.json(result);
+  });
+
   // ── Reveal credential value (audit-logged, rate-limited) ──────────────
 
   // In-memory sliding-window rate limit: max 10 reveals per minute per user
@@ -189,4 +209,96 @@ export function credentialRoutes(db: Db) {
   });
 
   return router;
+}
+
+type ProbeResult = { ok: boolean; message: string };
+
+async function probeCredential(type: string, payload: Record<string, unknown>): Promise<ProbeResult> {
+  try {
+    switch (type) {
+      case "claude_oauth": {
+        const accessToken = typeof payload.accessToken === "string" ? payload.accessToken : "";
+        if (!accessToken) return { ok: false, message: "Missing accessToken in stored credential" };
+        const res = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "oauth-2025-04-20",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            model: "claude-haiku-4-5",
+            max_tokens: 1,
+            messages: [{ role: "user", content: "hi" }],
+          }),
+        });
+        if (res.ok) {
+          const refreshToken = typeof payload.refreshToken === "string" ? payload.refreshToken : "";
+          const expiresAt = typeof payload.expiresAt === "number" ? payload.expiresAt : 0;
+          const expiresSoon = expiresAt > 0 && expiresAt - Date.now() < 24 * 3600 * 1000;
+          const warnings: string[] = [];
+          if (!refreshToken) warnings.push("no refreshToken (will break when access token expires)");
+          if (expiresSoon) warnings.push(`access token expires ${new Date(expiresAt).toISOString()}`);
+          return {
+            ok: true,
+            message: warnings.length > 0 ? `OAuth token valid. Warning: ${warnings.join("; ")}` : "OAuth token valid",
+          };
+        }
+        const body = await res.text().catch(() => "");
+        return { ok: false, message: `Anthropic API returned ${res.status}: ${body.slice(0, 200)}` };
+      }
+      case "claude_api_key": {
+        const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
+        if (!apiKey) return { ok: false, message: "Missing apiKey in stored credential" };
+        const res = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+            "x-api-key": apiKey,
+          },
+          body: JSON.stringify({
+            model: "claude-haiku-4-5",
+            max_tokens: 1,
+            messages: [{ role: "user", content: "hi" }],
+          }),
+        });
+        if (res.ok) return { ok: true, message: "API key valid" };
+        const body = await res.text().catch(() => "");
+        return { ok: false, message: `Anthropic API returned ${res.status}: ${body.slice(0, 200)}` };
+      }
+      case "openai_api_key": {
+        const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
+        if (!apiKey) return { ok: false, message: "Missing apiKey in stored credential" };
+        const res = await fetch("https://api.openai.com/v1/models", {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
+        if (res.ok) return { ok: true, message: "API key valid" };
+        return { ok: false, message: `OpenAI API returned ${res.status}` };
+      }
+      case "openrouter_api_key": {
+        const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
+        if (!apiKey) return { ok: false, message: "Missing apiKey in stored credential" };
+        const res = await fetch("https://openrouter.ai/api/v1/auth/key", {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
+        if (res.ok) return { ok: true, message: "API key valid" };
+        return { ok: false, message: `OpenRouter API returned ${res.status}` };
+      }
+      case "gemini_api_key": {
+        const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
+        if (!apiKey) return { ok: false, message: "Missing apiKey in stored credential" };
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+        );
+        if (res.ok) return { ok: true, message: "API key valid" };
+        return { ok: false, message: `Gemini API returned ${res.status}` };
+      }
+      default:
+        return { ok: false, message: `Unknown credential type: ${type}` };
+    }
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
 }

@@ -196,21 +196,24 @@ export async function resolveCredentialEnv(
         logger.warn({ agentId, credentialId }, "claude_oauth credential missing accessToken");
         return { env: {} };
       }
+      const refreshToken = typeof payload.refreshToken === "string" ? payload.refreshToken : "";
+      const expiresAt = typeof payload.expiresAt === "number" ? payload.expiresAt : 4102444800000;
+      const scopes = Array.isArray(payload.scopes) && payload.scopes.every((s) => typeof s === "string")
+        ? (payload.scopes as string[])
+        : ["user:inference", "user:profile", "user:sessions:claude_code", "user:file_upload", "user:mcp_servers"];
+      const subscriptionType = typeof payload.subscriptionType === "string" ? payload.subscriptionType : "max";
+      const oauth: Record<string, unknown> = { accessToken, refreshToken, expiresAt, scopes, subscriptionType };
+      if (typeof payload.rateLimitTier === "string") oauth.rateLimitTier = payload.rateLimitTier;
+
       const agentHome = path.join(resolvePaperclipInstanceRoot(), "agent-homes", agentId);
       const claudeDir = path.join(agentHome, ".claude");
       await fs.mkdir(claudeDir, { recursive: true });
       const credFile = path.join(claudeDir, ".credentials.json");
-      await fs.writeFile(
-        credFile,
-        JSON.stringify({
-          claudeAiOauth: {
-            accessToken,
-            refreshToken: typeof payload.refreshToken === "string" ? payload.refreshToken : "",
-            expiresAt: typeof payload.expiresAt === "number" ? payload.expiresAt : 4102444800000,
-            scopes: ["user:inference", "user:profile", "user:sessions:claude_code"],
-          },
-        }),
-        "utf-8",
+      await fs.writeFile(credFile, JSON.stringify({ claudeAiOauth: oauth }), "utf-8");
+      await fs.chmod(credFile, 0o600).catch(() => undefined);
+      logger.info(
+        { agentId, credentialId, credFile, hasRefreshToken: refreshToken.length > 0, subscriptionType },
+        "wrote claude_oauth credentials.json for agent",
       );
       return { env: { HOME: agentHome }, home: agentHome };
     }

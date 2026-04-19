@@ -38,4 +38,6 @@ export const credentialsApi = {
   remove: (id: string, force = false) =>
     api.delete<{ ok: true }>(`/credentials/${id}${force ? "?force=true" : ""}`),
   reveal: (id: string) => api.get<RevealedCredential>(`/credentials/${id}/reveal`),
+  test: (id: string) =>
+    api.post<{ ok: boolean; message: string }>(`/credentials/${id}/test`, {}),
 };

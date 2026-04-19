@@ -25,6 +25,9 @@ import {
   Eye,
   EyeOff,
   Copy,
+  CheckCircle2,
+  XCircle,
+  Zap,
 } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
@@ -787,9 +790,29 @@ function buildCredentialPayload(
   type: CredentialType,
   token: string,
 ): Record<string, unknown> {
-  return type === "claude_oauth"
-    ? { accessToken: token }
-    : { apiKey: token };
+  if (type !== "claude_oauth") return { apiKey: token };
+
+  const trimmed = token.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      const inner =
+        parsed && typeof parsed.claudeAiOauth === "object" && parsed.claudeAiOauth !== null
+          ? (parsed.claudeAiOauth as Record<string, unknown>)
+          : parsed;
+      const out: Record<string, unknown> = {};
+      if (typeof inner.accessToken === "string") out.accessToken = inner.accessToken;
+      if (typeof inner.refreshToken === "string") out.refreshToken = inner.refreshToken;
+      if (typeof inner.expiresAt === "number") out.expiresAt = inner.expiresAt;
+      if (Array.isArray(inner.scopes)) out.scopes = inner.scopes.filter((s): s is string => typeof s === "string");
+      if (typeof inner.subscriptionType === "string") out.subscriptionType = inner.subscriptionType;
+      if (typeof inner.rateLimitTier === "string") out.rateLimitTier = inner.rateLimitTier;
+      if (typeof out.accessToken === "string") return out;
+    } catch {
+      // fall through — treat as bare token
+    }
+  }
+  return { accessToken: trimmed };
 }
 
 function CredentialsSection({ companyId }: { companyId: string }) {
@@ -814,6 +837,25 @@ function CredentialsSection({ companyId }: { companyId: string }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [revealedId, setRevealedId] = useState<string | null>(null);
   const [revealedValue, setRevealedValue] = useState<string | null>(null);
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ id: string; ok: boolean; message: string } | null>(null);
+
+  const handleTest = async (id: string) => {
+    setTestingId(id);
+    setTestResult(null);
+    try {
+      const result = await credentialsApi.test(id);
+      setTestResult({ id, ok: result.ok, message: result.message });
+    } catch (err) {
+      setTestResult({
+        id,
+        ok: false,
+        message: err instanceof Error ? err.message : "Test failed",
+      });
+    } finally {
+      setTestingId(null);
+    }
+  };
 
   const resetAddForm = () => {
     setShowAddForm(false);
@@ -950,16 +992,26 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                       />
                     </Field>
                     <Field
-                      label="Replace token"
+                      label={cred.type === "claude_oauth" ? "Replace credentials JSON (or bare access token)" : "Replace token"}
                       hint="Leave empty to keep the existing token."
                     >
-                      <input
-                        className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
-                        type="password"
-                        value={editToken}
-                        placeholder={credentialPlaceholder(cred.type)}
-                        onChange={(e) => setEditToken(e.target.value)}
-                      />
+                      {cred.type === "claude_oauth" ? (
+                        <textarea
+                          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none min-h-[6rem]"
+                          value={editToken}
+                          placeholder={'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-...","refreshToken":"...","expiresAt":1776...,"subscriptionType":"max"}}'}
+                          onChange={(e) => setEditToken(e.target.value)}
+                          spellCheck={false}
+                        />
+                      ) : (
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                          type="password"
+                          value={editToken}
+                          placeholder={credentialPlaceholder(cred.type)}
+                          onChange={(e) => setEditToken(e.target.value)}
+                        />
+                      )}
                     </Field>
                     <ToggleField
                       label="Default credential"
@@ -1007,6 +1059,16 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                       </span>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 w-7 p-0"
+                        onClick={() => handleTest(cred.id)}
+                        disabled={testingId === cred.id}
+                        title="Test credential against provider API"
+                      >
+                        <Zap className="h-3.5 w-3.5" />
+                      </Button>
                       <Button
                         size="sm"
                         variant="ghost"
@@ -1067,6 +1129,31 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                     </div>
                   </div>
                 )}
+                {(testingId === cred.id || testResult?.id === cred.id) && (
+                  <div
+                    className={`mt-1 flex items-start gap-2 rounded px-2 py-1.5 text-xs ${
+                      testingId === cred.id
+                        ? "bg-muted/50 text-muted-foreground"
+                        : testResult?.ok
+                          ? "bg-green-500/10 text-green-700 dark:text-green-300"
+                          : "bg-destructive/10 text-destructive"
+                    }`}
+                  >
+                    {testingId === cred.id ? (
+                      <span>Testing…</span>
+                    ) : testResult?.ok ? (
+                      <>
+                        <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        <span className="break-all">{testResult.message}</span>
+                      </>
+                    ) : (
+                      <>
+                        <XCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        <span className="break-all">{testResult?.message}</span>
+                      </>
+                    )}
+                  </div>
+                )}
                 {revealedId === cred.id && revealedValue && (
                   <div className="mt-1 flex items-center gap-2 rounded bg-muted/50 px-2 py-1.5">
                     <code className="text-xs font-mono text-foreground break-all flex-1">
@@ -1116,16 +1203,38 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                 ))}
               </select>
             </Field>
+            {addType === "claude_oauth" && (
+              <div className="rounded-md bg-blue-500/5 border border-blue-500/20 px-3 py-2.5 space-y-1.5">
+                <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
+                  How to get your Claude subscription OAuth token:
+                </p>
+                <ol className="text-[11px] text-blue-600/80 dark:text-blue-400/80 space-y-1 list-decimal list-inside">
+                  <li>Run <code className="bg-blue-500/10 px-1 rounded">claude</code> on your local machine and complete browser login</li>
+                  <li>Run <code className="bg-blue-500/10 px-1 rounded">cat ~/.claude/.credentials.json</code></li>
+                  <li>Paste the entire JSON output below (the full <code className="bg-blue-500/10 px-1 rounded">{"{...}"}</code> blob, not just the access token)</li>
+                </ol>
+              </div>
+            )}
             <Field
-              label={addType === "claude_oauth" ? "Access Token" : "API Key"}
+              label={addType === "claude_oauth" ? "Credentials JSON (or bare access token)" : "API Key"}
             >
-              <input
-                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
-                type="password"
-                value={addToken}
-                placeholder={credentialPlaceholder(addType)}
-                onChange={(e) => setAddToken(e.target.value)}
-              />
+              {addType === "claude_oauth" ? (
+                <textarea
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none min-h-[7rem]"
+                  value={addToken}
+                  placeholder={'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-...","refreshToken":"sk-ant-ort01-...","expiresAt":1776...,"subscriptionType":"max"}}'}
+                  onChange={(e) => setAddToken(e.target.value)}
+                  spellCheck={false}
+                />
+              ) : (
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                  type="password"
+                  value={addToken}
+                  placeholder={credentialPlaceholder(addType)}
+                  onChange={(e) => setAddToken(e.target.value)}
+                />
+              )}
             </Field>
             <ToggleField
               label="Set as default"
