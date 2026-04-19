@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, notExists, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -14,7 +14,9 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueLabels,
   issues,
+  labels,
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
@@ -971,11 +973,23 @@ function deriveTaskKey(
  * The synthetic key is only used when:
  * - No explicit task/issue key exists in the context
  * - The wake source is "timer" (scheduled heartbeat)
+ *
+ * Routine-dispatched wakes (source === "routine.dispatch") also use a
+ * stable task key so that successive fires of the same routine reuse the
+ * same Claude session instead of starting fresh each time.
  */
 export function deriveTaskKeyWithHeartbeatFallback(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
 ) {
+  const source = readNonEmptyString(contextSnapshot?.source);
+  if (source === "routine.dispatch") {
+    // Routine-dispatched wakes create a new issue per fire, but the agent
+    // should reuse its session across fires.  Use the heartbeat task key
+    // so all routine fires share the same session slot.
+    return HEARTBEAT_TASK_KEY;
+  }
+
   const explicit = deriveTaskKey(contextSnapshot, payload);
   if (explicit) return explicit;
 
@@ -987,12 +1001,22 @@ export function deriveTaskKeyWithHeartbeatFallback(
 
 export function shouldResetTaskSessionForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
+  options?: { hasExistingTaskSession?: boolean },
 ) {
   if (contextSnapshot?.forceFreshSession === true) return true;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  if (wakeReason === "issue_assigned") {
+    // Routine-dispatched wakes create a fresh issue per fire but should
+    // reuse the existing session so agents accumulate context across runs.
+    const source = readNonEmptyString(contextSnapshot?.source);
+    if (source === "routine.dispatch") return false;
+    // Re-assignment to an agent already mid-task must not wipe the live
+    // session. Only reset for genuine first assignments (no prior row).
+    if (options?.hasExistingTaskSession) return false;
+    return true;
+  }
   if (
-    wakeReason === "issue_assigned" ||
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
     wakeReason === "execution_changes_requested"
@@ -1023,11 +1047,17 @@ export function formatRuntimeWorkspaceWarningLog(warning: string) {
 
 function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
+  options?: { hasExistingTaskSession?: boolean },
 ) {
   if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  if (wakeReason === "issue_assigned") {
+    const source = readNonEmptyString(contextSnapshot?.source);
+    if (source === "routine.dispatch") return null;
+    if (options?.hasExistingTaskSession) return null;
+    return "wake reason is issue_assigned";
+  }
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
@@ -1500,6 +1530,7 @@ export function heartbeatService(db: Db) {
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  const pendingTransientRetryTimers = new Set<ReturnType<typeof setTimeout>>();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -2586,6 +2617,302 @@ export function heartbeatService(db: Db) {
     return queued;
   }
 
+  async function enqueueTransientErrorRetry(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    nextRetryCount: number,
+  ) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
+    const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const originalWakeReason = readNonEmptyString(contextSnapshot.wakeReason);
+    const now = new Date();
+    const retryContextSnapshot = {
+      ...contextSnapshot,
+      retryOfRunId: run.id,
+      wakeReason: "transient_error_retry",
+      retryReason: "transient_error_retry",
+      transientRetryCount: nextRetryCount,
+      ...(originalWakeReason && !contextSnapshot.originalWakeReason
+        ? { originalWakeReason }
+        : {}),
+    };
+
+    const queued = await db.transaction(async (tx) => {
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "transient_error_retry",
+          payload: {
+            ...(issueId ? { issueId } : {}),
+            retryOfRunId: run.id,
+            transientRetryCount: nextRetryCount,
+          },
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const retryRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: retryContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          retryOfRunId: run.id,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          runId: retryRun.id,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      if (issueId) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: retryRun.id,
+            executionAgentNameKey: normalizeAgentNameKey(agent.name),
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, run.companyId),
+              isNull(issues.executionRunId),
+            ),
+          );
+      }
+
+      return retryRun;
+    });
+
+    publishLiveEvent({
+      companyId: queued.companyId,
+      type: "heartbeat.run.queued",
+      payload: {
+        runId: queued.id,
+        agentId: queued.agentId,
+        invocationSource: queued.invocationSource,
+        triggerDetail: queued.triggerDetail,
+        wakeupRequestId: queued.wakeupRequestId,
+      },
+    });
+
+    await appendRunEvent(queued, 1, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: `Queued automatic retry after transient error (consecutive failure #${nextRetryCount} for this agent-issue-errorCode)`,
+      payload: {
+        retryOfRunId: run.id,
+        transientRetryCount: nextRetryCount,
+        errorCode: run.errorCode,
+      },
+    });
+
+    return queued;
+  }
+
+  // Count consecutive failed runs with matching `errorCode` for the same
+  // (agent, issueId) pair since the most recent successful run for that pair.
+  // A success naturally resets the counter by advancing the lower bound.
+  async function countConsecutiveSameErrorCodeFailures(
+    companyId: string,
+    agentId: string,
+    issueId: string | null,
+    errorCode: string,
+  ): Promise<{ count: number; runIds: string[] }> {
+    const issueFilter = issueId
+      ? sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`
+      : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' IS NULL`;
+
+    const lastSuccess = await db
+      .select({ createdAt: heartbeatRuns.createdAt })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "succeeded"),
+          issueFilter,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    const runs = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "failed"),
+          eq(heartbeatRuns.errorCode, errorCode),
+          issueFilter,
+          lastSuccess ? gt(heartbeatRuns.createdAt, lastSuccess.createdAt) : sql`true`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt));
+
+    return { count: runs.length, runIds: runs.map((r) => r.id) };
+  }
+
+  function backoffDelayForFailureCount(failureCount: number): number | null {
+    if (failureCount < 1) return null;
+    if (failureCount > RETRY_BACKOFF_SCHEDULE_MS.length) return null;
+    return RETRY_BACKOFF_SCHEDULE_MS[failureCount - 1];
+  }
+
+  async function blockIssueForRetryExhaustion(
+    run: typeof heartbeatRuns.$inferSelect,
+    errorCode: string,
+    failureCount: number,
+    runIds: string[],
+  ) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (!issueId) return false;
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return false;
+    if (issue.status === "blocked" || issue.status === "done" || issue.status === "cancelled") {
+      return false;
+    }
+
+    const retryHistory = runIds.slice(0, MAX_SAME_ERROR_RETRIES).join(", ");
+    const comment =
+      `Auto-blocked after ${failureCount} consecutive \`${errorCode}\` failures on this agent-issue pair — ` +
+      `exponential backoff exhausted, needs human review. Retry history: ${retryHistory}.`;
+
+    const previousStatus = issue.status;
+    const updated = await issuesSvc.update(issue.id, { status: "blocked" });
+    if (!updated) return false;
+
+    await issuesSvc.addComment(issue.id, comment, {});
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        status: "blocked",
+        previousStatus,
+        source: "heartbeat.retry_backoff_exhausted",
+        errorCode,
+        consecutiveFailures: failureCount,
+        retryRunIds: runIds.slice(0, MAX_SAME_ERROR_RETRIES),
+      },
+    });
+
+    return true;
+  }
+
+  // Schedule an auto-retry for a run that finalized with a retryable errorCode,
+  // using the exponential backoff schedule. Returns the outcome so callers can
+  // log appropriately. Retries are scoped per (agent, issue, errorCode) so
+  // different error codes don't accumulate together and a success for the same
+  // pair resets the counter.
+  async function maybeScheduleBackoffRetryOrBlock(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    errorCode: string,
+    kind: "process_lost" | "transient",
+  ): Promise<{
+    outcome: "retry_immediate" | "retry_deferred" | "blocked" | "skipped";
+    runId: string | null;
+    delayMs: number;
+    failureCount: number;
+  }> {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const { count, runIds } = await countConsecutiveSameErrorCodeFailures(
+      run.companyId,
+      run.agentId,
+      issueId,
+      errorCode,
+    );
+
+    const delayMs = backoffDelayForFailureCount(count);
+    if (delayMs === null) {
+      await blockIssueForRetryExhaustion(run, errorCode, count, runIds);
+      return { outcome: "blocked", runId: null, delayMs: 0, failureCount: count };
+    }
+
+    if (delayMs === 0) {
+      const queued = kind === "process_lost"
+        ? await enqueueProcessLossRetry(run, agent, new Date())
+        : await enqueueTransientErrorRetry(run, agent, count);
+      return {
+        outcome: "retry_immediate",
+        runId: queued?.id ?? null,
+        delayMs: 0,
+        failureCount: count,
+      };
+    }
+
+    scheduleBackoffRetry(run, agent, kind, count, delayMs);
+    return { outcome: "retry_deferred", runId: null, delayMs, failureCount: count };
+  }
+
+  function scheduleBackoffRetry(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    kind: "process_lost" | "transient",
+    failureCount: number,
+    delayMs: number,
+  ) {
+    const handle = setTimeout(() => {
+      pendingTransientRetryTimers.delete(handle);
+      const enqueueFn = kind === "process_lost"
+        ? () => enqueueProcessLossRetry(run, agent, new Date())
+        : () => enqueueTransientErrorRetry(run, agent, failureCount);
+      enqueueFn().catch((err) => {
+        logger.error(
+          { err, runId: run.id, agentId: agent.id, failureCount, kind },
+          "failed to enqueue backoff retry",
+        );
+      });
+    }, delayMs);
+    if (typeof handle === "object" && handle && typeof (handle as { unref?: () => void }).unref === "function") {
+      (handle as { unref: () => void }).unref();
+    }
+    pendingTransientRetryTimers.add(handle);
+  }
+
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
@@ -2640,6 +2967,11 @@ export function heartbeatService(db: Db) {
       .returning()
       .then((rows) => rows[0] ?? null);
     if (!claimed) return null;
+
+    await db
+      .update(agents)
+      .set({ lastActivityAt: claimedAt, updatedAt: claimedAt })
+      .where(eq(agents.id, claimed.agentId));
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -2796,47 +3128,74 @@ export function heartbeatService(db: Db) {
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const eligibleForRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId);
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: baseMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
 
-      let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
-      if (shouldRetry) {
+      let retryResult:
+        | Awaited<ReturnType<typeof maybeScheduleBackoffRetryOrBlock>>
+        | null = null;
+      if (eligibleForRetry) {
         const agent = await getAgent(run.agentId);
         if (agent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
+          retryResult = await maybeScheduleBackoffRetryOrBlock(
+            finalizedRun,
+            agent,
+            "process_lost",
+            "process_lost",
+          );
         }
-      } else {
+      }
+
+      if (!retryResult || retryResult.outcome === "blocked" || retryResult.outcome === "skipped") {
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
+
+      const retryMessage = (() => {
+        if (!retryResult) return baseMessage;
+        switch (retryResult.outcome) {
+          case "retry_immediate":
+            return `${baseMessage}; queued retry ${retryResult.runId ?? ""}`.trim();
+          case "retry_deferred":
+            return `${baseMessage}; scheduled retry in ${Math.round(retryResult.delayMs / 1000)}s (consecutive failure #${retryResult.failureCount})`;
+          case "blocked":
+            return `${baseMessage}; auto-blocked issue after ${retryResult.failureCount} consecutive process_lost failures`;
+          default:
+            return baseMessage;
+        }
+      })();
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
         eventType: "lifecycle",
         stream: "system",
         level: "error",
-        message: shouldRetry
-          ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : baseMessage,
+        message: retryMessage,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
-          ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          ...(retryResult?.runId ? { retryRunId: retryResult.runId } : {}),
+          ...(retryResult ? { retryOutcome: retryResult.outcome, retryFailureCount: retryResult.failureCount } : {}),
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
+      // When process_lost retries are exhausted, the agent itself is fine —
+      // it was a transient child process death. Reset to idle, not error.
+      const retriedOrDeferred =
+        retryResult?.outcome === "retry_immediate" || retryResult?.outcome === "retry_deferred";
+      const processLostRetriesExhausted = tracksLocalChild && !!run.processPid && !retriedOrDeferred;
+      await finalizeAgentStatus(run.agentId, processLostRetriesExhausted ? "cancelled" : "failed");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -2881,8 +3240,59 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  // Cap how many `issue_continuation_needed` wakes may fire for a single issue
+  // before we escalate to `blocked` for human review. The counter resets when
+  // the assignee posts a comment (treated as proof of progress). See SHA-1866.
+  const MAX_CONTINUATION_RETRIES = 3;
+
+  // Issues tagged with any of these labels are intentionally long-running and
+  // should NOT be woken by the stranded-assignment reconciler. The assignee
+  // owns cadence (e.g. scheduled day-N spot-checks) and continuous wake
+  // pressure just burns budget with no actionable work. See SHA-1879.
+  const RECONCILE_EXEMPT_LABELS = ["long-running-verification"] as const;
+
+  async function countContinuationRetriesSinceLastAssigneeComment(
+    companyId: string,
+    issueId: string,
+    assigneeAgentId: string,
+  ): Promise<{ count: number; runIds: string[] }> {
+    const lastComment = await db
+      .select({ createdAt: issueComments.createdAt })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, issueId),
+          eq(issueComments.authorAgentId, assigneeAgentId),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    const runs = await db
+      .select({ id: heartbeatRuns.id, createdAt: heartbeatRuns.createdAt })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' = 'issue_continuation_needed'`,
+          lastComment ? gt(heartbeatRuns.createdAt, lastComment.createdAt) : sql`true`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt));
+
+    return { count: runs.length, runIds: runs.map((r) => r.id) };
+  }
+
+  // Grace window after an agent-initiated pause's resumeAt before the reconciler
+  // stops treating the pause as an active execution path. Covers scheduler drift
+  // between the agent's ScheduleWakeup fire and the next heartbeat cycle.
+  const AGENT_PAUSE_GRACE_MS = 60_000;
+
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
-    const [run, deferredWake] = await Promise.all([
+    const [run, deferredWake, agentPause] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
@@ -2907,9 +3317,22 @@ export function heartbeatService(db: Db) {
         )
         .limit(1)
         .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.status, "deferred_agent_pause"),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+            sql`(${agentWakeupRequests.payload} ->> 'resumeAt')::timestamptz + make_interval(secs => ${AGENT_PAUSE_GRACE_MS / 1000}) > now()`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
     ]);
 
-    return Boolean(run || deferredWake);
+    return Boolean(run || deferredWake || agentPause);
   }
 
   async function enqueueStrandedIssueRecovery(input: {
@@ -2955,6 +3378,30 @@ export function heartbeatService(db: Db) {
     return queued;
   }
 
+  // Error codes that represent transient failures (e.g. subscription quota,
+  // OAuth refresh hiccup). When the latest recovery run failed with one of
+  // these, we skip escalation to `blocked` and let the normal heartbeat cycle
+  // retry after the window resets.
+  const TRANSIENT_ERROR_CODES = new Set(["rate_limited", "timeout", "claude_auth_required"]);
+
+  // Error codes produced by the adapter execution path that should trigger an
+  // in-process auto-retry when the run finalizes with them. These are transient
+  // failures (e.g. an OAuth token rotation race) where a fresh attempt often
+  // succeeds. `process_lost` has its own retry path in `reapOrphanedRuns` and
+  // is intentionally not listed here. Retries for both are gated by the
+  // exponential backoff helper so sustained failures don't burn spend in a
+  // tight loop. See SHA-1868, SHA-1891.
+  const AUTO_RETRY_ERROR_CODES = new Set(["claude_auth_required"]);
+
+  // Exponential backoff schedule for consecutive same-`errorCode` failures
+  // scoped to a single (agent, issue) pair. The N-th consecutive failure
+  // schedules retry #N with delay `RETRY_BACKOFF_SCHEDULE_MS[N-1]`. Once the
+  // count exceeds the schedule length we stop retrying and auto-block the
+  // issue for human review (SHA-1866-style). A successful run for the same
+  // (agent, issue) pair naturally resets the counter (query-bound). See SHA-1891.
+  const RETRY_BACKOFF_SCHEDULE_MS = [0, 30_000, 120_000, 480_000];
+  const MAX_SAME_ERROR_RETRIES = RETRY_BACKOFF_SCHEDULE_MS.length + 1;
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
@@ -2964,6 +3411,13 @@ export function heartbeatService(db: Db) {
     > | null;
     comment: string;
   }) {
+    // Don't escalate when the failure is transient — the issue will be
+    // picked up again on the next heartbeat cycle after the rate-limit /
+    // timeout window resets.
+    if (input.latestRun?.errorCode && TRANSIENT_ERROR_CODES.has(input.latestRun.errorCode)) {
+      return null;
+    }
+
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
     });
@@ -2994,7 +3448,54 @@ export function heartbeatService(db: Db) {
     return updated;
   }
 
+  // Agent-initiated pause for an issue currently under execution. Records a
+  // `deferred_agent_pause` wakeup so the reconciler can distinguish an
+  // intentional ScheduleWakeup-style pause from a process-lost run. See
+  // SHA-1873.
+  async function deferIssueExecution(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    resumeAt: Date;
+    reason?: string | null;
+    requestedByActorType?: "user" | "agent" | "system" | null;
+    requestedByActorId?: string | null;
+  }) {
+    const now = new Date();
+    const [row] = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_execution_deferred_by_agent",
+        payload: {
+          issueId: input.issueId,
+          resumeAt: input.resumeAt.toISOString(),
+          ...(input.reason ? { deferReason: input.reason } : {}),
+        },
+        status: "deferred_agent_pause",
+        requestedByActorType: input.requestedByActorType ?? null,
+        requestedByActorId: input.requestedByActorId ?? null,
+        requestedAt: now,
+      })
+      .returning();
+    return row;
+  }
+
   async function reconcileStrandedAssignedIssues() {
+    const exemptLabelSubquery = db
+      .select({ issueId: issueLabels.issueId })
+      .from(issueLabels)
+      .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+      .where(
+        and(
+          eq(issueLabels.issueId, issues.id),
+          inArray(labels.name, RECONCILE_EXEMPT_LABELS as unknown as string[]),
+        ),
+      );
+
     const candidates = await db
       .select()
       .from(issues)
@@ -3003,6 +3504,7 @@ export function heartbeatService(db: Db) {
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
+          notExists(exemptLabelSubquery),
         ),
       );
 
@@ -3083,16 +3585,22 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      if (latestRetryReason === "issue_continuation_needed") {
+      const continuation = await countContinuationRetriesSinceLastAssigneeComment(
+        issue.companyId,
+        issue.id,
+        agentId,
+      );
+
+      if (continuation.count >= MAX_CONTINUATION_RETRIES) {
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+        const retryHistory = continuation.runIds.slice(0, MAX_CONTINUATION_RETRIES).join(", ");
         const updated = await escalateStrandedAssignedIssue({
           issue,
           previousStatus: "in_progress",
           latestRun,
           comment:
-            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-            `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
-            "Moving it to `blocked` so it is visible for intervention.",
+            `Auto-blocked after ${continuation.count} continuation retries without agent comment progress — ` +
+            `needs human review.${failureSummary ?? ""} Retry history: ${retryHistory}.`,
         });
         if (updated) {
           result.escalated += 1;
@@ -3300,8 +3808,9 @@ export function heartbeatService(db: Db) {
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
-    const resetTaskSession = shouldResetTaskSessionForWake(context);
-    const sessionResetReason = describeSessionResetReason(context);
+    const hasExistingTaskSession = taskSession !== null;
+    const resetTaskSession = shouldResetTaskSessionForWake(context, { hasExistingTaskSession });
+    const sessionResetReason = describeSessionResetReason(context, { hasExistingTaskSession });
     const taskSessionForRun = resetTaskSession ? null : taskSession;
     const explicitResumeSessionParams = normalizeSessionParams(
       sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
@@ -4008,6 +4517,31 @@ export function heartbeatService(db: Db) {
         adapterResult.summary ?? null,
       );
 
+      // Persist the task-session BEFORE finalizing the run. releaseIssueExecutionAndPromote
+      // (called from the finalized-run block below) may immediately queue a next wake, and
+      // that wake's resolveSessionBeforeForWakeup reads agent_task_sessions. If we finalized
+      // first, a wake fired between setRunStatus and upsertTaskSession would miss the fresh
+      // session and start a new one. See SHA-1903.
+      if (taskKey) {
+        if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
+          await clearTaskSessions(agent.companyId, agent.id, {
+            taskKey,
+            adapterType: agent.adapterType,
+          });
+        } else {
+          await upsertTaskSession({
+            companyId: agent.companyId,
+            agentId: agent.id,
+            adapterType: agent.adapterType,
+            taskKey,
+            sessionParamsJson: nextSessionState.params,
+            sessionDisplayId: nextSessionState.displayId,
+            lastRunId: run.id,
+            lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
+          });
+        }
+      }
+
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
         error:
@@ -4072,31 +4606,25 @@ export function heartbeatService(db: Db) {
         }
         await finalizeIssueCommentPolicy(finalizedRun, agent);
         await releaseIssueExecutionAndPromote(finalizedRun);
+
+        if (
+          outcome === "failed" &&
+          adapterResult.errorCode &&
+          AUTO_RETRY_ERROR_CODES.has(adapterResult.errorCode)
+        ) {
+          await maybeScheduleBackoffRetryOrBlock(
+            finalizedRun,
+            agent,
+            adapterResult.errorCode,
+            "transient",
+          );
+        }
       }
 
       if (finalizedRun) {
         await updateRuntimeState(agent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
-        if (taskKey) {
-          if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
-            await clearTaskSessions(agent.companyId, agent.id, {
-              taskKey,
-              adapterType: agent.adapterType,
-            });
-          } else {
-            await upsertTaskSession({
-              companyId: agent.companyId,
-              agentId: agent.id,
-              adapterType: agent.adapterType,
-              taskKey,
-              sessionParamsJson: nextSessionState.params,
-              sessionDisplayId: nextSessionState.displayId,
-              lastRunId: finalizedRun.id,
-              lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
-            });
-          }
-        }
       }
       await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
@@ -5325,6 +5853,8 @@ export function heartbeatService(db: Db) {
 
     reconcileStrandedAssignedIssues,
 
+    deferIssueExecution,
+
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
       let checked = 0;
@@ -5358,6 +5888,23 @@ export function heartbeatService(db: Db) {
       }
 
       return { checked, enqueued, skipped };
+    },
+
+    tickActiveAgentActivity: async (now = new Date()) => {
+      const updated = await db
+        .update(agents)
+        .set({ lastActivityAt: now, updatedAt: now })
+        .where(
+          inArray(
+            agents.id,
+            db
+              .select({ agentId: heartbeatRuns.agentId })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.status, "running")),
+          ),
+        )
+        .returning({ id: agents.id });
+      return { ticked: updated.length };
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),

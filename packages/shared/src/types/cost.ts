@@ -111,3 +111,22 @@ export interface CostByProject {
   cachedInputTokens: number;
   outputTokens: number;
 }
+
+export interface IssueCostContributor {
+  agentId: string;
+  agentName: string | null;
+  costCents: number;
+  runs: number;
+}
+
+/** aggregated cost for a single issue with per-agent breakdown */
+export interface IssueCostSummary {
+  issueId: string;
+  identifier: string | null;
+  totalCostCents: number;
+  runs: number;
+  totalInputTokens: number;
+  totalCachedInputTokens: number;
+  totalOutputTokens: number;
+  topContributors: IssueCostContributor[];
+}

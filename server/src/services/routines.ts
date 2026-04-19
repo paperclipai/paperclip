@@ -746,9 +746,39 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         })
         .returning();
 
-      const nextRunAt = input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
-        ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
-        : undefined;
+      // nextRunAt is owned by tickScheduledTriggers (scheduled fires) and
+      // createTrigger/updateTrigger (CRUD). Dispatch must not write it —
+      // doing so can overwrite the scheduler's freshly-claimed value with a
+      // stale computation (race from slow transactions or enqueue_missed_with_cap)
+      // and can corrupt the cron schedule on manual/webhook fires.
+
+      // Skip issue creation — fire heartbeat directly
+      if (input.routine.skipIssueCreation) {
+        await heartbeat.wakeup(input.routine.assigneeAgentId!, {
+          source: "timer",
+          triggerDetail: "system",
+          reason: "routine_heartbeat",
+          payload: { routineId: input.routine.id, routineTitle: input.routine.title },
+          requestedByActorType: "system",
+          contextSnapshot: {
+            source: "routine.dispatch",
+            wakeReason: "routine_heartbeat",
+            routineId: input.routine.id,
+            routineTitle: input.routine.title,
+          },
+        });
+        const updated = await finalizeRun(createdRun.id, {
+          status: "completed",
+          completedAt: new Date(),
+        }, txDb);
+        await updateRoutineTouchedState({
+          routineId: input.routine.id,
+          triggerId: input.trigger?.id ?? null,
+          triggeredAt,
+          status: "completed",
+        }, txDb);
+        return updated ?? createdRun;
+      }
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
@@ -767,7 +797,6 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             triggeredAt,
             status,
             issueId: activeIssue.id,
-            nextRunAt,
           }, txDb);
           return updated ?? createdRun;
         }
@@ -816,7 +845,6 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             triggeredAt,
             status,
             issueId: existingIssue.id,
-            nextRunAt,
           }, txDb);
           return updated ?? createdRun;
         }
@@ -841,7 +869,6 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           triggeredAt,
           status: "issue_created",
           issueId: createdIssue.id,
-          nextRunAt,
         }, txDb);
         return updated ?? createdRun;
       } catch (error) {
@@ -859,7 +886,6 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           triggerId: input.trigger?.id ?? null,
           triggeredAt,
           status: "failed",
-          nextRunAt,
         }, txDb);
         return failed ?? createdRun;
       }

@@ -1777,6 +1777,22 @@ export function issueService(db: Db) {
       }),
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+      // Validate checkoutRunId references an existing heartbeat_run before attempting
+      // to write it as a foreign key. A stale/reaped runId would cause the issues
+      // table update to fail with FK constraint violation ("issues_checkout_run_id_heartbeat_runs_id_fk"),
+      // putting agents with an orphaned runId into a retry loop.
+      if (checkoutRunId) {
+        const runExists = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, checkoutRunId))
+          .limit(1)
+          .then((rows) => rows.length > 0);
+        if (!runExists) {
+          throw conflict("Checkout run no longer exists; agent should request a fresh heartbeat");
+        }
+      }
+
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -2092,15 +2108,20 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!anchor) return [];
+        // postgres@3.4.8 can't bind Date in sql template literals (throws
+        // "The \"string\" argument must be of type string... Received an instance of Date").
+        // Serialize to ISO string — Postgres accepts it for timestamptz columns.
+        const anchorCreatedAt =
+          anchor.createdAt instanceof Date ? anchor.createdAt.toISOString() : anchor.createdAt;
         conditions.push(
           order === "asc"
             ? sql<boolean>`(
-                ${issueComments.createdAt} > ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} > ${anchor.id})
+                ${issueComments.createdAt} > ${anchorCreatedAt}
+                OR (${issueComments.createdAt} = ${anchorCreatedAt} AND ${issueComments.id} > ${anchor.id})
               )`
             : sql<boolean>`(
-                ${issueComments.createdAt} < ${anchor.createdAt}
-                OR (${issueComments.createdAt} = ${anchor.createdAt} AND ${issueComments.id} < ${anchor.id})
+                ${issueComments.createdAt} < ${anchorCreatedAt}
+                OR (${issueComments.createdAt} = ${anchorCreatedAt} AND ${issueComments.id} < ${anchor.id})
               )`,
         );
       }

@@ -40,8 +40,22 @@ export type BudgetEnforcementScope = {
   scopeId: string;
 };
 
+export type BudgetAutoPauseDetails = {
+  policyId: string;
+  scopeName: string;
+  metric: BudgetMetric;
+  windowKind: BudgetWindowKind;
+  amountLimit: number;
+  amountObserved: number;
+  incidentId: string;
+};
+
 export type BudgetServiceHooks = {
   cancelWorkForScope?: (scope: BudgetEnforcementScope) => Promise<void>;
+  onAutoPaused?: (
+    scope: BudgetEnforcementScope,
+    details: BudgetAutoPauseDetails,
+  ) => Promise<void>;
 };
 
 function currentUtcMonthWindow(now = new Date()) {
@@ -350,7 +364,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     policy: PolicyRow,
     thresholdType: BudgetThresholdType,
     amountObserved: number,
-  ) {
+  ): Promise<{ incident: IncidentRow; created: boolean; scopeName: string } | null> {
     const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
     const existing = await db
       .select()
@@ -364,12 +378,14 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         ),
       )
       .then((rows) => rows[0] ?? null);
-    if (existing) return existing;
+    if (existing) return { incident: existing, created: false, scopeName: "" };
 
     const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
+    const scopeName = normalizeScopeName(policy.scopeType as BudgetScopeType, scope.name);
+
     const payload = buildApprovalPayload({
       policy,
-      scopeName: normalizeScopeName(policy.scopeType as BudgetScopeType, scope.name),
+      scopeName,
       thresholdType,
       amountObserved,
       windowStart: start,
@@ -391,7 +407,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .then((rows) => rows[0] ?? null)
       : null;
 
-    return db
+    const inserted = await db
       .insert(budgetIncidents)
       .values({
         companyId: policy.companyId,
@@ -410,6 +426,9 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       })
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    if (!inserted) return null;
+    return { incident: inserted, created: true, scopeName };
   }
 
   async function resolveOpenSoftIncidents(policyId: string) {
@@ -600,6 +619,9 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             await resolveOpenSoftIncidents(row.id);
             await createIncidentIfNeeded(row, "hard", observedAmount);
             await pauseAndCancelScopeForBudget(row);
+            // No onAutoPaused here: this path is reached when the board lowers
+            // a budget below current spend. The actor already knows; alerting
+            // would be noise and violates the "manual pauses don't alert" rule.
           }
         }
       } else {
@@ -669,15 +691,15 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         const softThreshold = Math.ceil((policy.amount * policy.warnPercent) / 100);
 
         if (policy.notifyEnabled && observedAmount >= softThreshold) {
-          const softIncident = await createIncidentIfNeeded(policy, "soft", observedAmount);
-          if (softIncident) {
+          const softResult = await createIncidentIfNeeded(policy, "soft", observedAmount);
+          if (softResult) {
             await logActivity(db, {
               companyId: policy.companyId,
               actorType: "system",
               actorId: "budget_service",
               action: "budget.soft_threshold_crossed",
               entityType: "budget_incident",
-              entityId: softIncident.id,
+              entityId: softResult.incident.id,
               details: {
                 scopeType: policy.scopeType,
                 scopeId: policy.scopeId,
@@ -690,24 +712,60 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
 
         if (policy.hardStopEnabled && observedAmount >= policy.amount) {
           await resolveOpenSoftIncidents(policy.id);
-          const hardIncident = await createIncidentIfNeeded(policy, "hard", observedAmount);
+          const hardResult = await createIncidentIfNeeded(policy, "hard", observedAmount);
           await pauseAndCancelScopeForBudget(policy);
-          if (hardIncident) {
+          if (hardResult) {
             await logActivity(db, {
               companyId: policy.companyId,
               actorType: "system",
               actorId: "budget_service",
               action: "budget.hard_threshold_crossed",
               entityType: "budget_incident",
-              entityId: hardIncident.id,
+              entityId: hardResult.incident.id,
               details: {
                 scopeType: policy.scopeType,
                 scopeId: policy.scopeId,
                 amountObserved: observedAmount,
                 amountLimit: policy.amount,
-                approvalId: hardIncident.approvalId ?? null,
+                approvalId: hardResult.incident.approvalId ?? null,
               },
             });
+
+            // Fire onAutoPaused ONLY on newly-created hard incidents so
+            // resume/re-cross doesn't re-alert (idempotent via incident keying).
+            if (hardResult.created && hooks.onAutoPaused) {
+              try {
+                await hooks.onAutoPaused(
+                  {
+                    companyId: policy.companyId,
+                    scopeType: policy.scopeType as BudgetScopeType,
+                    scopeId: policy.scopeId,
+                  },
+                  {
+                    policyId: policy.id,
+                    scopeName: hardResult.scopeName,
+                    metric: policy.metric as BudgetMetric,
+                    windowKind: policy.windowKind as BudgetWindowKind,
+                    amountLimit: policy.amount,
+                    amountObserved: observedAmount,
+                    incidentId: hardResult.incident.id,
+                  },
+                );
+              } catch (err) {
+                // Never let an alert-delivery failure break budget enforcement.
+                await logActivity(db, {
+                  companyId: policy.companyId,
+                  actorType: "system",
+                  actorId: "budget_service",
+                  action: "budget.auto_pause_alert_failed",
+                  entityType: "budget_incident",
+                  entityId: hardResult.incident.id,
+                  details: {
+                    error: err instanceof Error ? err.message : String(err),
+                  },
+                });
+              }
+            }
           }
         }
       }

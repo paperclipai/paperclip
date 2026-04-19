@@ -27,6 +27,7 @@ function createAgent(id: string, name: string): Agent {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     lastHeartbeatAt: null,
+    lastActivityAt: null,
     metadata: {},
     createdAt: new Date(),
     updatedAt: new Date(),

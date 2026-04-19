@@ -3,7 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import { randomUUID } from "node:crypto";
-import { createDb, companies, agents, costEvents, financeEvents, projects } from "@paperclipai/db";
+import { createDb, companies, agents, costEvents, financeEvents, issues, projects } from "@paperclipai/db";
 import { costService } from "../services/costs.ts";
 import { financeService } from "../services/finance.ts";
 import {
@@ -59,6 +59,7 @@ const mockCostService = vi.hoisted(() => ({
   byBiller: vi.fn().mockResolvedValue([]),
   windowSpend: vi.fn().mockResolvedValue([]),
   byProject: vi.fn().mockResolvedValue([]),
+  listEvents: vi.fn().mockResolvedValue([]),
 }));
 const mockFinanceService = vi.hoisted(() => ({
   createEvent: vi.fn(),
@@ -88,11 +89,16 @@ function registerModuleMocks() {
     companyService: () => mockCompanyService,
     agentService: () => mockAgentService,
     heartbeatService: () => mockHeartbeatService,
+    issueService: () => ({ create: vi.fn() }),
     logActivity: mockLogActivity,
   }));
 
   vi.doMock("../services/quota-windows.js", () => ({
     fetchAllQuotaWindows: mockFetchAllQuotaWindows,
+  }));
+
+  vi.doMock("../services/budget-auto-pause-alert.js", () => ({
+    buildBudgetAutoPauseIssueHook: () => async () => {},
   }));
 }
 
@@ -137,6 +143,7 @@ beforeEach(() => {
   vi.resetModules();
   vi.doUnmock("../services/index.js");
   vi.doUnmock("../services/quota-windows.js");
+  vi.doUnmock("../services/budget-auto-pause-alert.js");
   vi.doUnmock("../routes/costs.js");
   vi.doUnmock("../middleware/index.js");
   registerModuleMocks();
@@ -196,6 +203,43 @@ describe("cost routes", () => {
   it("accepts valid finance event list limits", async () => {
     const { parseCostLimit } = await loadCostParsers();
     expect(parseCostLimit({ limit: "25" })).toBe(25);
+  });
+
+  it("returns cost-events list with default limit", async () => {
+    mockCostService.listEvents.mockResolvedValueOnce([
+      { id: "event-1", companyId: "company-1", agentId: "agent-1", costCents: 150 },
+    ]);
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/cost-events");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      costEvents: [
+        { id: "event-1", companyId: "company-1", agentId: "agent-1", costCents: 150 },
+      ],
+    });
+    expect(mockCostService.listEvents).toHaveBeenCalledWith("company-1", {
+      range: undefined,
+      agentId: undefined,
+      limit: 100,
+    });
+  });
+
+  it("passes agentId, since, and limit through to listEvents", async () => {
+    mockCostService.listEvents.mockResolvedValueOnce([]);
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/cost-events")
+      .query({
+        agentId: "agent-42",
+        since: "2026-04-01T00:00:00.000Z",
+        limit: "25",
+      });
+    expect(res.status).toBe(200);
+    expect(mockCostService.listEvents).toHaveBeenCalledWith("company-1", {
+      range: { from: new Date("2026-04-01T00:00:00.000Z") },
+      agentId: "agent-42",
+      limit: 25,
+    });
   });
 
   it("rejects company budget updates for board users outside the company", async () => {
@@ -388,5 +432,165 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(summary.estimatedDebitCents).toBe(2_000_000_000);
     expect(byKindRow?.debitCents).toBe(4_000_000_000);
     expect(byKindRow?.netCents).toBe(4_000_000_000);
+  });
+
+  it("aggregates per-issue cost with per-agent topContributors and distinct run count", async () => {
+    const companyId = randomUUID();
+    const agentA = randomUUID();
+    const agentB = randomUUID();
+    const issueId = randomUUID();
+    const otherIssueId = randomUUID();
+    const runA1 = randomUUID();
+    const runA2 = randomUUID();
+    const runB1 = randomUUID();
+    const runOther = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: agentA,
+        companyId,
+        name: "Platform",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: agentB,
+        companyId,
+        name: "QA",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        identifier: "T-1897",
+        title: "Cost drill-down",
+        status: "in_progress",
+        priority: "low",
+      },
+      {
+        id: otherIssueId,
+        companyId,
+        identifier: "T-1898",
+        title: "Other",
+        status: "todo",
+        priority: "low",
+      },
+    ]);
+
+    await db.insert(costEvents).values([
+      // agentA, two distinct runs on target issue
+      {
+        companyId, agentId: agentA, issueId,
+        provider: "anthropic", biller: "anthropic", billingType: "metered_api",
+        model: "claude-opus-4-7",
+        inputTokens: 100, cachedInputTokens: 40, outputTokens: 500, costCents: 3_000,
+        heartbeatRunId: runA1,
+        occurredAt: new Date("2026-04-15T10:00:00.000Z"),
+      },
+      // two rows sharing the same run — should count as one run, summed cost
+      {
+        companyId, agentId: agentA, issueId,
+        provider: "anthropic", biller: "anthropic", billingType: "metered_api",
+        model: "claude-opus-4-7",
+        inputTokens: 50, cachedInputTokens: 10, outputTokens: 200, costCents: 1_200,
+        heartbeatRunId: runA2,
+        occurredAt: new Date("2026-04-15T11:00:00.000Z"),
+      },
+      {
+        companyId, agentId: agentA, issueId,
+        provider: "anthropic", biller: "anthropic", billingType: "metered_api",
+        model: "claude-opus-4-7",
+        inputTokens: 20, cachedInputTokens: 0, outputTokens: 80, costCents: 800,
+        heartbeatRunId: runA2,
+        occurredAt: new Date("2026-04-15T11:30:00.000Z"),
+      },
+      // agentB, one run on target issue
+      {
+        companyId, agentId: agentB, issueId,
+        provider: "anthropic", biller: "anthropic", billingType: "metered_api",
+        model: "claude-sonnet-4-6",
+        inputTokens: 300, cachedInputTokens: 0, outputTokens: 600, costCents: 600,
+        heartbeatRunId: runB1,
+        occurredAt: new Date("2026-04-15T12:00:00.000Z"),
+      },
+      // unrelated issue — must be excluded
+      {
+        companyId, agentId: agentA, issueId: otherIssueId,
+        provider: "anthropic", biller: "anthropic", billingType: "metered_api",
+        model: "claude-opus-4-7",
+        inputTokens: 9999, cachedInputTokens: 0, outputTokens: 9999, costCents: 99_999,
+        heartbeatRunId: runOther,
+        occurredAt: new Date("2026-04-15T13:00:00.000Z"),
+      },
+    ]);
+
+    const summary = await costs.byIssue(companyId, issueId);
+
+    expect(summary.issueId).toBe(issueId);
+    expect(summary.identifier).toBe("T-1897");
+    expect(summary.totalCostCents).toBe(3_000 + 1_200 + 800 + 600);
+    expect(summary.runs).toBe(3); // runA1, runA2, runB1
+    expect(summary.totalInputTokens).toBe(100 + 50 + 20 + 300);
+    expect(summary.totalCachedInputTokens).toBe(40 + 10);
+    expect(summary.totalOutputTokens).toBe(500 + 200 + 80 + 600);
+
+    expect(summary.topContributors).toHaveLength(2);
+    const [top, second] = summary.topContributors;
+    expect(top.agentId).toBe(agentA);
+    expect(top.agentName).toBe("Platform");
+    expect(top.costCents).toBe(3_000 + 1_200 + 800);
+    expect(top.runs).toBe(2);
+    expect(second.agentId).toBe(agentB);
+    expect(second.agentName).toBe("QA");
+    expect(second.costCents).toBe(600);
+    expect(second.runs).toBe(1);
+  });
+
+  it("throws notFound when issue does not belong to company", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `A${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: `B${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: otherCompanyId,
+      identifier: "OTH-1",
+      title: "wrong tenant",
+      status: "todo",
+      priority: "low",
+    });
+
+    await expect(costs.byIssue(companyId, issueId)).rejects.toThrow(/not found/i);
   });
 });

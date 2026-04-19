@@ -315,6 +315,23 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .orderBy(costEvents.provider, costEvents.biller, costEvents.billingType, costEvents.model);
     },
 
+    listEvents: async (
+      companyId: string,
+      opts: { range?: CostDateRange; agentId?: string; limit?: number } = {},
+    ) => {
+      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      if (opts.agentId) conditions.push(eq(costEvents.agentId, opts.agentId));
+      if (opts.range?.from) conditions.push(gte(costEvents.occurredAt, opts.range.from));
+      if (opts.range?.to) conditions.push(lte(costEvents.occurredAt, opts.range.to));
+
+      return db
+        .select()
+        .from(costEvents)
+        .where(and(...conditions))
+        .orderBy(desc(costEvents.occurredAt), desc(costEvents.createdAt))
+        .limit(opts.limit ?? 100);
+    },
+
     byProject: async (companyId: string, range?: CostDateRange) => {
       const issueIdAsText = sql<string>`${issues.id}::text`;
       const runProjectLinks = db
@@ -363,6 +380,70 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions, sql`${effectiveProjectId} is not null`))
         .groupBy(effectiveProjectId, projects.name)
         .orderBy(desc(costCentsExpr));
+    },
+
+    /**
+     * Cost rollup for a single issue: totals + per-agent breakdown.
+     * Uses cost_events.issue_id directly (populated by heartbeat runs and
+     * paperclip-channel telemetry post-SHA-1865). Pre-SHA-1865 attribution
+     * is partial — acceptable for a board-level drill-down tool.
+     */
+    byIssue: async (companyId: string, issueId: string) => {
+      const issue = await db
+        .select({ id: issues.id, identifier: issues.identifier })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+
+      if (!issue) throw notFound("Issue not found");
+
+      const conditions = [
+        eq(costEvents.companyId, companyId),
+        eq(costEvents.issueId, issueId),
+      ];
+
+      const costCentsExpr = sumAsNumber(costEvents.costCents);
+      const runsExpr = sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`;
+
+      const [totalsRow] = await db
+        .select({
+          totalCostCents: costCentsExpr,
+          runs: runsExpr,
+          totalInputTokens: sumAsNumber(costEvents.inputTokens),
+          totalCachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
+          totalOutputTokens: sumAsNumber(costEvents.outputTokens),
+        })
+        .from(costEvents)
+        .where(and(...conditions));
+
+      const contributors = await db
+        .select({
+          agentId: costEvents.agentId,
+          agentName: agents.name,
+          costCents: costCentsExpr,
+          runs: runsExpr,
+        })
+        .from(costEvents)
+        .leftJoin(agents, eq(costEvents.agentId, agents.id))
+        .where(and(...conditions))
+        .groupBy(costEvents.agentId, agents.name)
+        .orderBy(desc(costCentsExpr));
+
+      return {
+        issueId: issue.id,
+        identifier: issue.identifier,
+        totalCostCents: Number(totalsRow?.totalCostCents ?? 0),
+        runs: Number(totalsRow?.runs ?? 0),
+        totalInputTokens: Number(totalsRow?.totalInputTokens ?? 0),
+        totalCachedInputTokens: Number(totalsRow?.totalCachedInputTokens ?? 0),
+        totalOutputTokens: Number(totalsRow?.totalOutputTokens ?? 0),
+        topContributors: contributors.map((row) => ({
+          agentId: row.agentId,
+          agentName: row.agentName,
+          costCents: Number(row.costCents),
+          runs: Number(row.runs),
+        })),
+      };
     },
   };
 }

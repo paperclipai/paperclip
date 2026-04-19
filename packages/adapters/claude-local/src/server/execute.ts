@@ -28,6 +28,7 @@ import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
   isClaudeMaxTurnsResult,
+  isClaudeRateLimitError,
   isClaudeUnknownSessionError,
 } from "./parse.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
@@ -543,12 +544,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     if (!parsed) {
+      const combinedOutput = `${proc.stdout}\n${proc.stderr}`;
+      const looksRateLimited = /you(?:'ve| have) hit your limit|rate limit|quota exceeded|usage limit|too many requests/i.test(combinedOutput);
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: false,
         errorMessage: parseFallbackErrorMessage(proc),
-        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+        errorCode: loginMeta.requiresLogin
+          ? "claude_auth_required"
+          : looksRateLimited
+            ? "rate_limited"
+            : null,
         errorMeta,
         resultJson: {
           stdout: proc.stdout,
@@ -592,7 +599,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+      errorCode: loginMeta.requiresLogin
+        ? "claude_auth_required"
+        : isClaudeRateLimitError(parsed)
+          ? "rate_limited"
+          : null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,

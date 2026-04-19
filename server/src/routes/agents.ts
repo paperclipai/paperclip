@@ -505,7 +505,16 @@ export function agentRoutes(db: Db) {
     };
   }
 
-  function normalizeNewAgentRuntimeConfig(runtimeConfig: unknown): Record<string, unknown> {
+  // For persistent HTTP-adapter agents the webhook push delivers real work in
+  // real time, so the periodic timer only needs to act as a liveness probe. A
+  // 20-minute default keeps drift detection in range while cutting no-op wakes
+  // to ~a third of the 300s default used for claude_local and friends.
+  const HTTP_ADAPTER_DEFAULT_INTERVAL_SEC = 1200;
+
+  function normalizeNewAgentRuntimeConfig(
+    runtimeConfig: unknown,
+    adapterType?: string | null,
+  ): Record<string, unknown> {
     const parsedRuntimeConfig = asRecord(runtimeConfig);
     const normalizedRuntimeConfig = parsedRuntimeConfig ? { ...parsedRuntimeConfig } : {};
     const parsedHeartbeat = asRecord(normalizedRuntimeConfig.heartbeat);
@@ -513,6 +522,10 @@ export function agentRoutes(db: Db) {
 
     if (parseBooleanLike(heartbeat.enabled) == null) {
       heartbeat.enabled = false;
+    }
+
+    if (adapterType === "http" && parseNumberLike(heartbeat.intervalSec) == null) {
+      heartbeat.intervalSec = HTTP_ADAPTER_DEFAULT_INTERVAL_SEC;
     }
 
     normalizedRuntimeConfig.heartbeat = heartbeat;
@@ -1056,6 +1069,7 @@ export function agentRoutes(db: Db) {
         adapterType: agentsTable.adapterType,
         runtimeConfig: agentsTable.runtimeConfig,
         lastHeartbeatAt: agentsTable.lastHeartbeatAt,
+        lastActivityAt: agentsTable.lastActivityAt,
         companyName: companies.name,
         companyIssuePrefix: companies.issuePrefix,
       })
@@ -1086,6 +1100,7 @@ export function agentRoutes(db: Db) {
           heartbeatEnabled: policy.enabled,
           schedulerActive: statusEligible && policy.enabled && policy.intervalSec > 0,
           lastHeartbeatAt: row.lastHeartbeatAt,
+          lastActivityAt: row.lastActivityAt,
         };
       })
       .filter((item) =>
@@ -1404,7 +1419,7 @@ export function agentRoutes(db: Db) {
     const normalizedHireInput = {
       ...hireInput,
       adapterConfig: normalizedAdapterConfig,
-      runtimeConfig: normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig),
+      runtimeConfig: normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig, hireInput.adapterType),
     };
 
     const company = await db
@@ -1571,7 +1586,7 @@ export function agentRoutes(db: Db) {
     const createdAgent = await svc.create(companyId, {
       ...createInput,
       adapterConfig: normalizedAdapterConfig,
-      runtimeConfig: normalizeNewAgentRuntimeConfig(createInput.runtimeConfig),
+      runtimeConfig: normalizeNewAgentRuntimeConfig(createInput.runtimeConfig, createInput.adapterType),
       status: "idle",
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,

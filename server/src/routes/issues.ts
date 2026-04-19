@@ -32,6 +32,7 @@ import { validate } from "../middleware/validate.js";
 import {
   accessService,
   agentService,
+  costService,
   executionWorkspaceService,
   feedbackService,
   goalService,
@@ -47,7 +48,7 @@ import {
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -149,6 +150,13 @@ function summarizeExecutionParticipants(
 function isClosedIssueStatus(status: string | null | undefined): status is "done" | "cancelled" {
   return status === "done" || status === "cancelled";
 }
+
+// SharpAPI fork: QA gate for close-to-done transitions.
+// Issues labeled with any of these can only be closed by an agent whose role === "qa".
+// Engineers must set status to "in_review" and @-mention QA for verification.
+// Refactor/docs-labeled issues are exempt and may self-close.
+const QA_GATED_LABEL_NAMES = new Set(["bug", "customer-report", "feature", "integrity-monitored"]);
+const QA_GATE_ENFORCER_ROLE = "qa";
 
 function shouldImplicitlyReopenCommentForAgent(input: {
   issueStatus: string | null | undefined;
@@ -301,6 +309,7 @@ export function issueRoutes(
   const access = accessService(db);
   const heartbeat = heartbeatService(db);
   const feedback = feedbackService(db);
+  const costs = costService(db);
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
@@ -592,6 +601,18 @@ export function issueRoutes(
     });
   });
 
+  // Company-scoped shim: agents often construct /companies/:companyId/issues/:id/...
+  // by pattern-matching from the list/create endpoint. Rewrite to canonical /issues/:id/...
+  // before route matching. The regex requires an issue ID segment after /issues/ so it
+  // does not interfere with GET/POST /companies/:companyId/issues (list & create).
+  router.use((req, _res, next) => {
+    const match = req.url.match(/^\/companies\/[^/]+\/issues\/([^/?]+)(\/[^?]*)?(\?.*)?$/);
+    if (match) {
+      req.url = `/issues/${match[1]}${match[2] || ""}${match[3] || ""}`;
+    }
+    next();
+  });
+
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -753,6 +774,18 @@ export function issueRoutes(
       currentExecutionWorkspace,
       workProducts,
     });
+  });
+
+  router.get("/issues/:id/cost-summary", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const summary = await costs.byIssue(issue.companyId, issue.id);
+    res.json(summary);
   });
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
@@ -1517,6 +1550,63 @@ export function issueRoutes(
       }
     }
 
+    // SharpAPI QA Auto-Handoff: when a non-QA agent sets a gated issue to
+    // `in_review`, automatically reassign to QA so the standard assignment
+    // wakeup fires. Closes the loop where engineers forget to @-mention QA.
+    // Skipped if the actor explicitly set an assignee in the same patch.
+    if (
+      updateFields.status === "in_review" &&
+      existing.status !== "in_review" &&
+      actor.actorType === "agent" &&
+      actor.agentId &&
+      updateFields.assigneeAgentId === undefined
+    ) {
+      const gatedLabels = ((existing as { labels?: Array<{ name: string }> }).labels ?? []).filter(
+        (l) => QA_GATED_LABEL_NAMES.has(l.name),
+      );
+      if (gatedLabels.length > 0) {
+        const actorAgent = await agentsSvc.getById(actor.agentId);
+        if (actorAgent?.role !== QA_GATE_ENFORCER_ROLE) {
+          const allAgents = await agentsSvc.list(existing.companyId);
+          const qaAgent = allAgents.find((a) => a.role === QA_GATE_ENFORCER_ROLE);
+          if (qaAgent && qaAgent.id !== existing.assigneeAgentId) {
+            updateFields.assigneeAgentId = qaAgent.id;
+            logger.info(
+              { issueId: existing.id, identifier: existing.identifier, qaAgentId: qaAgent.id, actorAgentId: actor.agentId },
+              "QA auto-handoff: reassigning gated issue to QA on in_review",
+            );
+          }
+        }
+      }
+    }
+
+    // SharpAPI QA Gate: block non-QA agents from closing gated issues to `done`.
+    // Users/board actors bypass this gate (they can still close directly).
+    if (
+      updateFields.status === "done" &&
+      existing.status !== "done" &&
+      actor.actorType === "agent" &&
+      actor.agentId
+    ) {
+      const gatedLabels = ((existing as { labels?: Array<{ name: string }> }).labels ?? []).filter(
+        (l) => QA_GATED_LABEL_NAMES.has(l.name),
+      );
+      if (gatedLabels.length > 0) {
+        const actorAgent = await agentsSvc.getById(actor.agentId);
+        if (actorAgent?.role !== QA_GATE_ENFORCER_ROLE) {
+          res.status(403).json({
+            error: `QA gate: issues labeled ${gatedLabels.map((l) => l.name).join(", ")} can only be closed to 'done' by an agent with role='${QA_GATE_ENFORCER_ROLE}'. Set status to 'in_review' and @-mention QA for verification.`,
+            qaGate: {
+              gatedLabels: gatedLabels.map((l) => l.name),
+              requiredRole: QA_GATE_ENFORCER_ROLE,
+              actorRole: actorAgent?.role ?? null,
+            },
+          });
+          return;
+        }
+      }
+    }
+
     let issue;
     try {
       if (transition.decision && decisionId) {
@@ -2078,6 +2168,84 @@ export function issueRoutes(
     res.json(updated);
   });
 
+  router.post("/issues/:id/defer-execution", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const rawResumeAt = typeof req.body?.resumeAt === "string" ? req.body.resumeAt : null;
+    const rawResumeInSec = Number.isFinite(req.body?.resumeInSeconds)
+      ? Number(req.body.resumeInSeconds)
+      : null;
+    let resumeAt: Date | null = null;
+    if (rawResumeAt) {
+      const parsed = new Date(rawResumeAt);
+      if (!Number.isNaN(parsed.getTime())) resumeAt = parsed;
+    } else if (rawResumeInSec && rawResumeInSec > 0) {
+      resumeAt = new Date(Date.now() + rawResumeInSec * 1000);
+    }
+    if (!resumeAt) {
+      res.status(400).json({ error: "resumeAt (ISO string) or resumeInSeconds (>0) is required" });
+      return;
+    }
+    if (resumeAt.getTime() <= Date.now() - 1000) {
+      res.status(400).json({ error: "resumeAt must be in the future" });
+      return;
+    }
+    const MAX_DEFER_MS = 60 * 60 * 1000;
+    if (resumeAt.getTime() > Date.now() + MAX_DEFER_MS) {
+      res.status(400).json({ error: "resumeAt too far in the future (max 1h)" });
+      return;
+    }
+
+    const reason = typeof req.body?.reason === "string" && req.body.reason.trim().length > 0
+      ? req.body.reason.trim().slice(0, 500)
+      : null;
+
+    // Must be executed by the agent that holds the checkout run for this issue.
+    if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
+    const actorRunId = requireAgentRunId(req, res);
+    if (req.actor.type === "agent" && !actorRunId) return;
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      res.status(403).json({ error: "Only the assigned agent can defer issue execution" });
+      return;
+    }
+
+    const row = await heartbeat.deferIssueExecution({
+      companyId: existing.companyId,
+      issueId: existing.id,
+      agentId: req.actor.agentId,
+      resumeAt,
+      reason,
+      requestedByActorType: "agent",
+      requestedByActorId: req.actor.agentId,
+    });
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.execution_deferred",
+      entityType: "issue",
+      entityId: existing.id,
+      details: {
+        identifier: existing.identifier,
+        resumeAt: resumeAt.toISOString(),
+        reason,
+        wakeupRequestId: row.id,
+      },
+    });
+
+    res.json({ wakeupRequestId: row.id, resumeAt: resumeAt.toISOString(), reason });
+  });
+
   router.post("/issues/:id/release", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
@@ -2113,6 +2281,137 @@ export function issueRoutes(
     });
 
     res.json(released);
+  });
+
+  // ── Merge approval actions ──────────────────────────────────────────
+  router.post("/issues/:id/approve-merge", async (req, res) => {
+    const id = req.params.id as string;
+    assertBoard(req);
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (issue.status !== "in_review") {
+      res.status(409).json({ error: "Issue must be in_review to approve merge" });
+      return;
+    }
+    if (!issue.assigneeAgentId) {
+      res.status(409).json({ error: "Issue has no assigned agent" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const note = typeof req.body.decisionNote === "string" ? req.body.decisionNote.trim() : "";
+    const body = note ? `Merge approved. ${note}` : "Merge approved.";
+
+    const comment = await svc.addComment(id, body, {
+      userId: actor.actorType === "user" ? actor.actorId : undefined,
+      runId: null,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: null,
+      runId: null,
+      action: "issue.merge_approved",
+      entityType: "issue",
+      entityId: id,
+      details: { identifier: issue.identifier, commentId: comment.id },
+    });
+
+    heartbeat
+      .wakeup(issue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "merge_approved",
+        payload: { issueId: id, commentId: comment.id },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: id,
+          taskId: id,
+          commentId: comment.id,
+          wakeReason: "merge_approved",
+          source: "issue.merge_approved",
+        },
+      })
+      .catch((err) =>
+        logger.warn({ err, issueId: id }, "failed to wake agent on merge approval"),
+      );
+
+    res.json({ issue, comment });
+  });
+
+  router.post("/issues/:id/request-changes", async (req, res) => {
+    const id = req.params.id as string;
+    assertBoard(req);
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (issue.status !== "in_review") {
+      res.status(409).json({ error: "Issue must be in_review to request changes" });
+      return;
+    }
+    if (!issue.assigneeAgentId) {
+      res.status(409).json({ error: "Issue has no assigned agent" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const note = typeof req.body.decisionNote === "string" ? req.body.decisionNote.trim() : "";
+    const body = note ? `Changes requested. ${note}` : "Changes requested.";
+
+    const updated = await svc.update(id, { status: "in_progress" });
+    if (!updated) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const comment = await svc.addComment(id, body, {
+      userId: actor.actorType === "user" ? actor.actorId : undefined,
+      runId: null,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: null,
+      runId: null,
+      action: "issue.changes_requested",
+      entityType: "issue",
+      entityId: id,
+      details: { identifier: issue.identifier, commentId: comment.id },
+    });
+
+    heartbeat
+      .wakeup(issue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "changes_requested",
+        payload: { issueId: id, commentId: comment.id },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: id,
+          taskId: id,
+          commentId: comment.id,
+          wakeReason: "changes_requested",
+          source: "issue.changes_requested",
+        },
+      })
+      .catch((err) =>
+        logger.warn({ err, issueId: id }, "failed to wake agent on changes requested"),
+      );
+
+    res.json({ issue: updated, comment });
   });
 
   router.get("/issues/:id/comments", async (req, res) => {

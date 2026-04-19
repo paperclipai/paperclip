@@ -39,13 +39,15 @@ export function errorHandler(
   _next: NextFunction,
 ) {
   if (err instanceof HttpError) {
-    if (err.status >= 500) {
+    if (err.status >= 400) {
       attachErrorContext(
         req,
         res,
         { message: err.message, stack: err.stack, name: err.name, details: err.details },
-        err,
+        err.status >= 500 ? err : undefined,
       );
+    }
+    if (err.status >= 500) {
       const tc = getTelemetryClient();
       if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name });
     }

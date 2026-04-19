@@ -6,6 +6,7 @@ import {
   DollarSign,
   History,
   Search,
+  ShieldCheck,
   SquarePen,
   Network,
   Boxes,
@@ -19,12 +20,14 @@ import { SidebarProjects } from "./SidebarProjects";
 import { SidebarAgents } from "./SidebarAgents";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { approvalsApi } from "../api/approvals";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 
 export function Sidebar() {
   const { openNewIssue } = useDialog();
@@ -37,6 +40,13 @@ export function Sidebar() {
     refetchInterval: 10_000,
   });
   const liveRunCount = liveRuns?.length ?? 0;
+  const { data: pendingApprovals } = useQuery({
+    queryKey: queryKeys.approvals.list(selectedCompanyId!, "pending"),
+    queryFn: () => approvalsApi.list(selectedCompanyId!, "pending"),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
+  const pendingApprovalCount = pendingApprovals?.length ?? 0;
 
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
@@ -88,12 +98,24 @@ export function Sidebar() {
             itemClassName="text-[13px] font-medium"
             missingBehavior="placeholder"
           />
+          <PluginLauncherOutlet
+            placementZones={["sidebar"]}
+            context={pluginContext}
+            className="flex flex-col gap-0.5"
+          />
         </div>
 
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          <SidebarNavItem
+            to="/approvals/pending"
+            label="Approvals"
+            icon={ShieldCheck}
+            badge={pendingApprovalCount > 0 ? pendingApprovalCount : undefined}
+            badgeTone={pendingApprovalCount > 0 ? "danger" : "default"}
+          />
         </SidebarSection>
 
         <SidebarProjects />

@@ -779,4 +779,48 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
   });
+
+  // SHA-1845: dispatch previously recomputed trigger.nextRunAt from
+  // triggeredAt=now() and wrote it on every run path. Under a slow-transaction
+  // race with tickScheduledTriggers, the stale dispatch write could clobber the
+  // scheduler's freshly-claimed value — leaving nextRunAt pinned in the past
+  // and stalling the routine. Manual/webhook fires also shouldn't perturb the
+  // cron schedule. Regression: after any dispatch, the trigger's nextRunAt
+  // must equal whatever value the scheduler / CRUD path last wrote.
+  it("dispatch does not overwrite trigger nextRunAt (SHA-1845)", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "every thirty",
+        cronExpression: "*/30 * * * *",
+        timezone: "America/New_York",
+      },
+      {},
+    );
+
+    // Simulate tickScheduledTriggers having just claimed a future slot.
+    const claimedNextRunAt = new Date("2030-06-01T12:30:00.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: claimedNextRunAt })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const run = await svc.runRoutine(routine.id, {
+      source: "manual",
+      triggerId: trigger.id,
+    });
+    expect(run.status).toBe("issue_created");
+
+    const afterManual = await db
+      .select({ nextRunAt: routineTriggers.nextRunAt, lastFiredAt: routineTriggers.lastFiredAt })
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id))
+      .then((rows) => rows[0]!);
+
+    // Scheduler's claim must survive a manual fire; lastFiredAt still advances.
+    expect(afterManual.nextRunAt?.toISOString()).toBe(claimedNextRunAt.toISOString());
+    expect(afterManual.lastFiredAt).not.toBeNull();
+  });
 });

@@ -34,7 +34,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: 0,
       signal: null,
       timedOut: false,
-      summary: `HTTP ${method} ${url}`,
+      summary: null,
     };
   } finally {
     if (timer) clearTimeout(timer);

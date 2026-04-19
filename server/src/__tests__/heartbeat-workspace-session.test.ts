@@ -234,6 +234,33 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
   });
 
+  it("preserves session context on re-assignment when task session already exists", () => {
+    expect(
+      shouldResetTaskSessionForWake(
+        { wakeReason: "issue_assigned", source: "issue.update" },
+        { hasExistingTaskSession: true },
+      ),
+    ).toBe(false);
+  });
+
+  it("still resets on first assignment when no task session exists", () => {
+    expect(
+      shouldResetTaskSessionForWake(
+        { wakeReason: "issue_assigned" },
+        { hasExistingTaskSession: false },
+      ),
+    ).toBe(true);
+  });
+
+  it("still resets on forceFreshSession even with an existing task session", () => {
+    expect(
+      shouldResetTaskSessionForWake(
+        { wakeReason: "issue_assigned", forceFreshSession: true },
+        { hasExistingTaskSession: true },
+      ),
+    ).toBe(true);
+  });
+
   it("resets session context on execution review wakes", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_review_requested" })).toBe(true);
   });

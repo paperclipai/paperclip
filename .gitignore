@@ -54,3 +54,7 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+
+# SharpAPI workspace-local
+.mcp.json
+webhook-listener/

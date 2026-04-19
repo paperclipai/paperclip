@@ -64,6 +64,7 @@
               "guides/agent-developer/writing-a-skill",
               "guides/agent-developer/task-workflow",
               "guides/agent-developer/comments-and-communication",
+              "guides/agent-developer/channel-driven-agents",
               "guides/agent-developer/handling-approvals",
               "guides/agent-developer/cost-reporting"
             ]

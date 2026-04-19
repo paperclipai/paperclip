@@ -49,3 +49,12 @@ The webhook receives a JSON payload with:
 ```
 
 The external agent uses `PAPERCLIP_API_URL` and an API key to call back to Paperclip.
+
+## Heartbeat Interval
+
+For persistent HTTP-adapter agents, `runtimeConfig.heartbeat.intervalSec` is a liveness probe only — the adapter's webhook handles real-time work delivery (assignments, comments, mentions) via push. Timer wakes that arrive while the queue is empty are no-op roundtrips.
+
+New HTTP-adapter agents therefore default to `intervalSec: 1200` (20 minutes) instead of the 300s default used for `claude_local`/`codex_local`. This is still frequent enough to catch liveness drift (a dead channel MCP, a crashed `claude+` that tmux missed) while avoiding the ~90 unnecessary wakes/24h that 300s produces for a well-plumbed channel agent.
+
+Agents that genuinely benefit from a shorter cadence can override via `PATCH /agents/{id}` with an explicit `runtimeConfig.heartbeat.intervalSec`.
+
