@@ -2125,6 +2125,53 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0]);
   }
 
+  async function emitRunLifecyclePluginEvent(
+    run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<void> {
+    const actionByStatus: Record<string, string> = {
+      running: "agent.run.started",
+      succeeded: "agent.run.finished",
+      failed: "agent.run.failed",
+      cancelled: "agent.run.cancelled",
+    };
+    const action = actionByStatus[run.status];
+    if (!action) return;
+    const details: Record<string, unknown> = {
+      agentId: run.agentId,
+      runId: run.id,
+    };
+    const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    if (issueId && action === "agent.run.started") {
+      const issue = await db
+        .select({ title: issues.title, description: issues.description })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (issue) {
+        details.issueTitle = issue.title;
+        details.issueDescription = issue.description;
+      }
+    }
+    if (action === "agent.run.finished" || action === "agent.run.failed") {
+      const resultJson = run.resultJson ?? null;
+      const stdoutExcerpt = run.stdoutExcerpt ?? null;
+      if (stdoutExcerpt) details.output = stdoutExcerpt;
+      if (resultJson) details.result = typeof resultJson === "string" ? resultJson : JSON.stringify(resultJson);
+    }
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: run.agentId,
+      runId: run.id,
+      action,
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      details,
+    });
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -2153,6 +2200,7 @@ export function heartbeatService(db: Db) {
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
+      await emitRunLifecyclePluginEvent(updated);
     }
 
     return updated;
@@ -2656,6 +2704,7 @@ export function heartbeatService(db: Db) {
         finishedAt: claimed.finishedAt ? new Date(claimed.finishedAt).toISOString() : null,
       },
     });
+    await emitRunLifecyclePluginEvent(claimed);
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
 
