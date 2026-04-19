@@ -37,7 +37,7 @@ import {
   PLUGIN_STATUSES,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
-import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
+import { pluginLifecycleManager, type PluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import { getPluginUiContributionMetadata, pluginLoader } from "../services/plugin-loader.js";
 import { logActivity } from "../services/activity-log.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
@@ -246,6 +246,28 @@ export interface PluginRouteBridgeDeps {
   streamBus?: PluginStreamBus;
 }
 
+/**
+ * Optional dependencies for sharing the plugin lifecycle manager.
+ *
+ * When provided, the plugin routes reuse the caller's shared
+ * `PluginLifecycleManager` instance instead of constructing a private one.
+ * This is required for dynamic enable/disable to propagate lifecycle events
+ * to other subscribers (notably the plugin tool dispatcher) — if the routes
+ * build their own lifecycle, its `EventEmitter` is distinct from the one
+ * the dispatcher is listening on, so `plugin.enabled` events never reach
+ * the dispatcher and dynamically enabled plugins don't register their tools
+ * until the server restarts.
+ *
+ * When omitted, the routes construct a local lifecycle manager using `loader`
+ * plus any `workerManager` available from `bridgeDeps`/`webhookDeps`. This
+ * preserves backwards compatibility for callers (and tests) that haven't
+ * been updated to pass the shared instance.
+ */
+export interface PluginRouteLifecycleDeps {
+  /** The shared lifecycle manager constructed alongside the tool dispatcher. */
+  lifecycle: PluginLifecycleManager;
+}
+
 /** Request body for POST /api/plugins/tools/execute */
 interface PluginToolExecuteRequest {
   /** Fully namespaced tool name (e.g., "acme.linear:search-issues"). */
@@ -307,10 +329,11 @@ export function pluginRoutes(
   webhookDeps?: PluginRouteWebhookDeps,
   toolDeps?: PluginRouteToolDeps,
   bridgeDeps?: PluginRouteBridgeDeps,
+  lifecycleDeps?: PluginRouteLifecycleDeps,
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
-  const lifecycle = pluginLifecycleManager(db, {
+  const lifecycle = lifecycleDeps?.lifecycle ?? pluginLifecycleManager(db, {
     loader,
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
   });

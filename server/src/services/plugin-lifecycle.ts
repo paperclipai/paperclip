@@ -255,6 +255,28 @@ export interface PluginLifecycleManager {
     event: K,
     listener: (payload: LifecycleEventPayload<K>) => void,
   ): void;
+
+  /**
+   * Attach a runtime-capable `PluginLoader` after the manager has been
+   * constructed.
+   *
+   * The lifecycle manager needs a loader with runtime services (e.g.
+   * `loadSingle`, `unloadSingle`, `cleanupInstallArtifacts`, `upgradePlugin`)
+   * to perform runtime activation on enable/disable/upgrade/unload. Because
+   * the loader itself depends on the lifecycle manager at construction time,
+   * the two are built in a two-step handshake:
+   *
+   * 1. Construct the lifecycle manager with `workerManager` only.
+   * 2. Build the loader (passing the lifecycle manager in as a dep).
+   * 3. Call `lifecycle.setLoader(loader)` so the lifecycle manager routes
+   *    runtime calls through the same loader used elsewhere in the server.
+   *
+   * Without this handshake, two distinct lifecycle instances end up being
+   * constructed — one for the tool dispatcher (listener side) and one for
+   * the HTTP routes (emitter side) — and `plugin.enabled` events emitted by
+   * the routes never reach the dispatcher's listener.
+   */
+  setLoader(loader: PluginLoader): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +342,7 @@ export function pluginLifecycleManager(
   }
 
   const registry = pluginRegistryService(db);
-  const pluginLoaderInstance = loaderArg ?? pluginLoader(db);
+  let pluginLoaderInstance: PluginLoader = loaderArg ?? pluginLoader(db);
   const emitter = new EventEmitter();
   emitter.setMaxListeners(100); // plugins may have many listeners; 100 is a safe upper bound
 
@@ -816,6 +838,11 @@ export function pluginLifecycleManager(
 
     once(event, listener) {
       emitter.once(event, listener);
+    },
+
+    // -- setLoader --------------------------------------------------------
+    setLoader(loader: PluginLoader): void {
+      pluginLoaderInstance = loader;
     },
   };
 }
