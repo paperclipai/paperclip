@@ -61,6 +61,7 @@
 #   ./upgrade.sh               # resume/monitor only
 #   ./upgrade.sh --restore     # force-restore agents from failed run
 #   ./upgrade.sh --status      # show current state
+#   ./upgrade.sh --force-drain # treat unverifiable drain state as drained (use when API is known-unreachable)
 
 set -euo pipefail
 
@@ -303,9 +304,13 @@ check_drained() {
     rm -f "$DRAIN_START_FILE"
     return 0
   elif [ "$live_count" = "unknown" ]; then
-    log "WARN: Could not check live runs, proceeding"
-    rm -f "$DRAIN_START_FILE"
-    return 0
+    if [ "${FORCE_DRAIN:-0}" = "1" ]; then
+      log "WARN: Could not check live runs — proceeding anyway (--force-drain active)"
+      rm -f "$DRAIN_START_FILE"
+      return 0
+    fi
+    log "WARN: Could not check live runs — treating as not drained (use --force-drain to override)"
+    return 1
   fi
   if [ "$elapsed" -ge "$DRAIN_MAX_AGE_SEC" ]; then
     log "ERROR: $live_count run(s) still active after ${elapsed}s — giving up"
@@ -379,7 +384,9 @@ case "${1:-}" in
 esac
 
 MODE="resume"
+FORCE_DRAIN=0
 [ "${1:-}" = "--start" ] && MODE="start"
+[ "${1:-}" = "--force-drain" ] && FORCE_DRAIN=1
 
 acquire_lock
 
