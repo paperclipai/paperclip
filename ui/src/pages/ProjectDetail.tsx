@@ -162,6 +162,7 @@ function ColorPicker({
 
 function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -197,7 +198,14 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
       issuesApi.update(id, data),
-    onSuccess: () => {
+    onSuccess: (updatedIssue) => {
+      for (const warning of updatedIssue.warnings ?? []) {
+        pushToast({
+          title: "Issue wakeup warning",
+          body: warning.message,
+          tone: "warn",
+        });
+      }
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
     },

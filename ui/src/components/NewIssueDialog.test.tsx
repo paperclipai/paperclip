@@ -391,6 +391,12 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
+    await waitForCondition(() =>
+      Array.from(container.querySelectorAll("select")).some((element) =>
+        Array.from(element.options).some((option) => option.value === "isolated_workspace"),
+      ),
+    );
+
     const modeSelect = Array.from(container.querySelectorAll("select")).find((element) =>
       Array.from(element.options).some((option) => option.value === "isolated_workspace"),
     ) as HTMLSelectElement | undefined;

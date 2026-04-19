@@ -450,6 +450,13 @@ export function NewIssueDialog() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+      for (const warning of issue.warnings ?? []) {
+        pushToast({
+          title: "Issue wakeup warning",
+          body: warning.message,
+          tone: "warn",
+        });
+      }
       if (draftTimer.current) clearTimeout(draftTimer.current);
       if (failures.length > 0) {
         const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();

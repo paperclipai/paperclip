@@ -488,7 +488,7 @@ Each column header has a `+` button to create a new issue in that status.
 
 Within each column, cards default to **Most recent** ordering. `Done` cards sort by `completedAt`, `Cancelled` cards sort by `cancelledAt`, and all other statuses sort by latest activity.
 
-When board filters or search empty a status that still has source issues, the kanban hides that column and shows a notice listing the hidden statuses instead of leaving ambiguous empty columns behind.
+The kanban keeps every status column visible. When filters or search remove cards from a status, that column stays visible with an in-column filtered-count notice, and truly empty statuses render a normal-width empty state instead of collapsing into a sliver.
 
 ---
 

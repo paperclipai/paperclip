@@ -4,6 +4,7 @@ import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
@@ -78,6 +79,7 @@ const COO_SEED_STRIPPED_ADAPTER_CONFIG_KEYS = [
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
   const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -617,6 +619,13 @@ export function OnboardingWizard() {
           })
         );
         issueRef = issue.identifier ?? issue.id;
+        for (const warning of issue.warnings ?? []) {
+          pushToast({
+            title: "Issue wakeup warning",
+            body: warning.message,
+            tone: "warn",
+          });
+        }
         setCreatedIssueRef(issueRef);
         queryClient.invalidateQueries({
           queryKey: queryKeys.issues.list(createdCompanyId)

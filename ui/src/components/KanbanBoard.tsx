@@ -68,6 +68,7 @@ interface KanbanBoardProps {
 function KanbanColumn({
   status,
   issues,
+  filteredOutCount,
   visibleCount,
   onShowMore,
   agents,
@@ -76,6 +77,7 @@ function KanbanColumn({
 }: {
   status: string;
   issues: Issue[];
+  filteredOutCount: number;
   visibleCount: number;
   onShowMore: () => void;
   agents?: Agent[];
@@ -85,24 +87,22 @@ function KanbanColumn({
   const { setNodeRef, isOver } = useDroppable({ id: status });
   const visibleIssues = issues.slice(0, visibleCount);
   const hiddenCount = Math.max(0, issues.length - visibleIssues.length);
-
-  const isEmpty = issues.length === 0;
+  const totalCount = issues.length + filteredOutCount;
+  const isEmpty = totalCount === 0;
 
   return (
     <div
       data-kanban-column-status={status}
-      className={`flex flex-col shrink-0 transition-[width,min-width] ${isEmpty && !isOver ? "min-w-[96px] w-[96px]" : "min-w-[260px] w-[260px]"}`}
+      className="flex w-[260px] min-w-[260px] shrink-0 flex-col"
     >
       <div className="flex items-center gap-2 px-2 py-2 mb-1">
         <StatusIcon status={status} />
         <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground truncate">
           {formatIssueStatusLabel(status)}
         </span>
-        {(!isEmpty || isOver) && (
-          <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
-            {issues.length}
-          </span>
-        )}
+        <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
+          {totalCount}
+        </span>
       </div>
       <div
         ref={setNodeRef}
@@ -124,6 +124,22 @@ function KanbanColumn({
             />
           ))}
         </SortableContext>
+        {isEmpty && (
+          <div
+            data-kanban-empty-placeholder={status}
+            className="rounded-md border border-dashed border-border bg-background/70 px-2.5 py-6 text-center text-xs text-muted-foreground"
+          >
+            No issues
+          </div>
+        )}
+        {filteredOutCount > 0 && (
+          <div
+            data-kanban-filtered-placeholder={status}
+            className="rounded-md border border-dashed border-border bg-background/70 px-2.5 py-2 text-xs text-muted-foreground"
+          >
+            {filteredOutCount} issue{filteredOutCount === 1 ? "" : "s"} hidden by current filters
+          </div>
+        )}
         {hiddenCount > 0 && (
           <button
             type="button"
@@ -292,17 +308,15 @@ export function KanbanBoard({
     return grouped;
   }, [allIssues, issues]);
 
-  const hiddenStatuses = useMemo(
+  const filteredOutCountByStatus = useMemo(
     () =>
-      boardStatuses.filter(
-        (status) => (sourceColumnIssues[status]?.length ?? 0) > 0 && (columnIssues[status]?.length ?? 0) === 0,
-      ),
+      Object.fromEntries(
+        boardStatuses.map((status) => [
+          status,
+          Math.max(0, (sourceColumnIssues[status]?.length ?? 0) - (columnIssues[status]?.length ?? 0)),
+        ]),
+      ) as Record<string, number>,
     [columnIssues, sourceColumnIssues],
-  );
-
-  const visibleStatuses = useMemo(
-    () => boardStatuses.filter((status) => !hiddenStatuses.includes(status)),
-    [hiddenStatuses],
   );
 
   const activeIssue = useMemo(
@@ -348,23 +362,6 @@ export function KanbanBoard({
 
   return (
     <div className="space-y-3">
-      {hiddenStatuses.length > 0 && (
-        <div
-          data-kanban-hidden-statuses
-          className="flex flex-wrap items-center gap-1.5 px-1 text-[11px] text-muted-foreground"
-        >
-          <span className="font-medium">Hidden by current filters</span>
-          {hiddenStatuses.map((status) => (
-            <span
-              key={status}
-              data-kanban-hidden-status-chip={status}
-              className="inline-flex items-center rounded-full border border-border bg-muted/40 px-2 py-0.5 font-medium text-muted-foreground"
-            >
-              {formatIssueStatusLabel(status)}
-            </span>
-          ))}
-        </div>
-      )}
       <DndContext
         sensors={sensors}
         onDragStart={handleDragStart}
@@ -372,11 +369,12 @@ export function KanbanBoard({
         onDragEnd={handleDragEnd}
       >
         <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">
-          {visibleStatuses.map((status) => (
+          {boardStatuses.map((status) => (
             <KanbanColumn
               key={status}
               status={status}
               issues={columnIssues[status] ?? []}
+              filteredOutCount={filteredOutCountByStatus[status] ?? 0}
               visibleCount={visibleCountByStatus[status] ?? COLUMN_PAGE_SIZE}
               onShowMore={() =>
                 setVisibleCountByStatus((prev) => ({

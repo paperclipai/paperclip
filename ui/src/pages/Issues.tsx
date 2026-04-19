@@ -106,7 +106,14 @@ export function Issues() {
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
       issuesApi.update(id, data),
-    onSuccess: () => {
+    onSuccess: (updatedIssue) => {
+      for (const warning of updatedIssue.warnings ?? []) {
+        pushToast({
+          title: "Issue wakeup warning",
+          body: warning.message,
+          tone: "warn",
+        });
+      }
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
     },
     onError: (err) => {

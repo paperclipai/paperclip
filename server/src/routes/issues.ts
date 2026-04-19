@@ -64,7 +64,10 @@ import {
   normalizeContentType,
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
-import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  queueIssueAssignmentWakeup,
+  type IssueAssignmentWakeupWarning,
+} from "../services/issue-assignment-wakeup.js";
 import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { issueMergeService } from "../services/issue-merge.js";
@@ -1102,6 +1105,8 @@ export function issueRoutes(
     }
     logger.warn({ err, issueId: context.issueId, agentId: context.agentId }, message);
   }
+
+  type IssueMutationWakeupWarning = IssueAssignmentWakeupWarning & { reason: string; agentId: string };
 
   async function runSingleFileUpload(req: Request, res: Response) {
     await new Promise<void>((resolve, reject) => {
@@ -2515,7 +2520,7 @@ export function issueRoutes(
       },
     });
 
-    void queueIssueAssignmentWakeup({
+    const assigneeWakeup = await queueIssueAssignmentWakeup({
       heartbeat,
       issue,
       reason: "issue_assigned",
@@ -2524,8 +2529,13 @@ export function issueRoutes(
       requestedByActorType: actor.actorType,
       requestedByActorId: actor.actorId,
     });
+    const warning = assigneeWakeup.status === "warning" && assigneeWakeup.warning ? assigneeWakeup.warning : null;
 
-    res.status(201).json(await buildIssueDetailPayload(issue));
+    const issuePayload = await buildIssueDetailPayload(issue);
+    res.status(201).json({
+      ...issuePayload,
+      ...(warning ? { warnings: [warning] } : {}),
+    });
   });
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
@@ -3066,6 +3076,26 @@ export function issueRoutes(
     }
     const assigneeChanged =
       issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
+    const wakeupWarnings: IssueMutationWakeupWarning[] = [];
+    if (
+      assigneeChanged &&
+      issue.assigneeAgentId &&
+      !["backlog", "done", "cancelled"].includes(issue.status)
+    ) {
+      const assigneeWakeup = await queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "update",
+        contextSource: "issue.update",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        wakeupPayload: interruptedRunId ? { interruptedRunId } : undefined,
+      });
+      if (assigneeWakeup.status === "warning" && assigneeWakeup.warning) {
+        wakeupWarnings.push({ ...assigneeWakeup.warning, reason: "issue_assigned", agentId: issue.assigneeAgentId });
+      }
+    }
     const enteredInReview =
       existing.status !== "in_review" && issue.status === "in_review";
     const statusChangedFromBacklog =
@@ -3084,26 +3114,6 @@ export function issueRoutes(
             : issue.id;
         wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
       };
-
-      if (assigneeChanged && issue.assigneeAgentId && !["backlog", "done", "cancelled"].includes(issue.status)) {
-        addWakeup(issue.assigneeAgentId, {
-          source: "assignment",
-          triggerDetail: "system",
-          reason: "issue_assigned",
-          payload: {
-            issueId: issue.id,
-            mutation: "update",
-            ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: issue.id,
-            source: "issue.update",
-            ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
-        });
-      }
 
       if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId && !["done", "cancelled"].includes(issue.status)) {
         addWakeup(issue.assigneeAgentId, {
@@ -3251,6 +3261,7 @@ export function issueRoutes(
     res.json({
       ...issuePayload,
       comment,
+      ...(wakeupWarnings.length > 0 ? { warnings: wakeupWarnings } : {}),
     });
   });
 

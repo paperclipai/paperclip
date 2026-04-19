@@ -691,7 +691,14 @@ export function IssueDetail() {
 
   const updateIssue = useMutation({
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
-    onSuccess: () => {
+    onSuccess: (updatedIssue) => {
+      for (const warning of updatedIssue.warnings ?? []) {
+        pushToast({
+          title: "Issue wakeup warning",
+          body: warning.message,
+          tone: "warn",
+        });
+      }
       invalidateIssue();
     },
     onError: (err) => {
@@ -863,6 +870,13 @@ export function IssueDetail() {
         setOptimisticComments((current) =>
           current.filter((entry) => entry.clientId !== context.optimisticCommentId),
         );
+      }
+      for (const warning of result.warnings ?? []) {
+        pushToast({
+          title: "Issue wakeup warning",
+          body: warning.message,
+          tone: "warn",
+        });
       }
 
       const { comment, ...nextIssue } = result;

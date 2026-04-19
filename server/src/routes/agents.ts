@@ -78,6 +78,7 @@ import { resolveHermesRuntimeConfig } from "../services/hermes-config.js";
 
 export function agentRoutes(db: Db) {
   const SINGLETON_EXECUTIVE_ROLES = new Set(["ceo", "cto", "cmo", "cfo", "coo"]);
+  const LIVE_RUN_ACTIVITY_WINDOW_MS = 150_000;
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
@@ -97,6 +98,24 @@ export function agentRoutes(db: Db) {
     "instructionsFilePath",
     "agentsMdPath",
   ] as const;
+
+  function hasFreshHeartbeatActivity(run: {
+    lastActivityAt: Date | null;
+    updatedAt: Date | null;
+    startedAt: Date | null;
+    createdAt: Date;
+  }) {
+    const cutoffMs = Date.now() - LIVE_RUN_ACTIVITY_WINDOW_MS;
+    const lastActivity = run.lastActivityAt ?? run.updatedAt ?? run.startedAt ?? run.createdAt;
+    return lastActivity.getTime() >= cutoffMs;
+  }
+
+  function getLiveRunFreshnessPredicate() {
+    const cutoff = new Date(Date.now() - LIVE_RUN_ACTIVITY_WINDOW_MS).toISOString();
+    return sql`
+      coalesce(${heartbeatRuns.lastActivityAt}, ${heartbeatRuns.updatedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${cutoff}::timestamptz
+    `;
+  }
 
   const router = Router();
   const svc = agentService(db);
@@ -2210,6 +2229,7 @@ export function agentRoutes(db: Db) {
         and(
           eq(heartbeatRuns.companyId, companyId),
           inArray(heartbeatRuns.status, ["queued", "running"]),
+          getLiveRunFreshnessPredicate(),
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));
@@ -2373,6 +2393,7 @@ export function agentRoutes(db: Db) {
         and(
           eq(heartbeatRuns.companyId, issue.companyId),
           inArray(heartbeatRuns.status, ["queued", "running"]),
+          getLiveRunFreshnessPredicate(),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
         ),
       )
@@ -2393,7 +2414,7 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, issue.companyId);
 
     let run = issue.executionRunId ? await heartbeat.getRun(issue.executionRunId) : null;
-    if (run && run.status !== "queued" && run.status !== "running") {
+    if (run && (!["queued", "running"].includes(run.status) || !hasFreshHeartbeatActivity(run))) {
       run = null;
     }
 
@@ -2401,7 +2422,7 @@ export function agentRoutes(db: Db) {
       const candidateRun = await heartbeat.getActiveRunForAgent(issue.assigneeAgentId);
       const candidateContext = asRecord(candidateRun?.contextSnapshot);
       const candidateIssueId = asNonEmptyString(candidateContext?.issueId);
-      if (candidateRun && candidateIssueId === issue.id) {
+      if (candidateRun && candidateIssueId === issue.id && hasFreshHeartbeatActivity(candidateRun)) {
         run = candidateRun;
       }
     }

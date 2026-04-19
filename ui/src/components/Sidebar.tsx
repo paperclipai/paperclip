@@ -49,31 +49,46 @@ export function Sidebar() {
 
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
-      <div className="flex items-center gap-1 px-3 h-12 shrink-0">
-        {selectedCompany?.brandColor && (
-          <div
-            className="w-4 h-4 rounded-sm shrink-0 ml-1"
-            style={{ backgroundColor: selectedCompany.brandColor }}
+      <div className="shrink-0 border-b border-border/60 px-3 py-3">
+        <div className="flex items-start gap-3">
+          <img
+            src="/orchestrero-mark.png"
+            alt="Orchestrero mark"
+            className="mt-0.5 h-8 w-8 shrink-0 rounded-lg border border-border/60 bg-muted/30 p-1 object-contain"
           />
-        )}
-        <span className="flex-1 text-sm font-bold text-foreground truncate pl-1">
-          {selectedCompany?.name ?? "Select company"}
-        </span>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="text-muted-foreground shrink-0"
-          onClick={openSearch}
-        >
-          <Search className="h-4 w-4" />
-        </Button>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              Orchestrero
+            </p>
+            <div className="mt-1 flex min-w-0 items-center gap-2">
+              {selectedCompany?.brandColor && (
+                <div
+                  className="h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: selectedCompany.brandColor }}
+                />
+              )}
+              <span className="truncate text-sm font-semibold text-foreground">
+                {selectedCompany?.name ?? "Select company"}
+              </span>
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="mt-0.5 shrink-0 text-muted-foreground"
+            aria-label="Search"
+            onClick={openSearch}
+          >
+            <Search className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
           {/* New Issue button aligned with nav items */}
           <button
+            type="button"
             onClick={() => openNewIssue()}
             className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >

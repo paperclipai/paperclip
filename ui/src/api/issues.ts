@@ -15,8 +15,16 @@ import type {
 } from "@paperclipai/shared";
 import { api } from "./client";
 
+export type IssueWakeupWarning = {
+  code: string;
+  message: string;
+  reason?: string;
+  agentId?: string;
+};
+
 export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
+  warnings?: IssueWakeupWarning[];
 };
 
 export const issuesApi = {
@@ -79,7 +87,7 @@ export const issuesApi = {
   unarchiveFromInbox: (id: string) =>
     api.delete<{ id: string; archivedAt: Date } | { ok: true }>(`/issues/${id}/inbox-archive`),
   create: (companyId: string, data: Record<string, unknown>) =>
-    api.post<Issue>(`/companies/${companyId}/issues`, data),
+    api.post<IssueUpdateResponse>(`/companies/${companyId}/issues`, data),
   archiveClosed: (companyId: string, input?: { olderThanDays?: number }) =>
     api.post<{
       archivedCount: number;

@@ -81,6 +81,7 @@ This avoids inventing a new visual system inside the rebrand pass while still gr
 Update user-visible app surfaces such as:
 
 - nav/app logo references
+- sidebar header lockups that pair the Orchestrero mark/name with current company context
 - manifest names
 - invite/onboarding copy
 - docs/help links in the app shell

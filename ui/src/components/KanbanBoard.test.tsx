@@ -172,7 +172,7 @@ describe("KanbanBoard", () => {
     });
   });
 
-  it("hides columns emptied by filters and shows a notice listing them", () => {
+  it("keeps filtered-out statuses visible and shows the hidden count inside the column", () => {
     const root = createRoot(container);
     const backlogIssue = createIssue({
       id: "issue-backlog",
@@ -197,12 +197,68 @@ describe("KanbanBoard", () => {
       );
     });
 
-    expect(container.textContent).toContain("Hidden by current filters");
-    expect(container.textContent).toContain("Backlog");
-    expect(container.querySelector('[data-kanban-hidden-statuses]')).not.toBeNull();
-    expect(container.querySelector('[data-kanban-hidden-status-chip="backlog"]')).not.toBeNull();
-    expect(container.querySelector('[data-kanban-column-status="backlog"]')).toBeNull();
+    expect(container.querySelector('[data-kanban-hidden-statuses]')).toBeNull();
+    const backlogColumn = container.querySelector('[data-kanban-column-status="backlog"]');
+    expect(backlogColumn).not.toBeNull();
+    expect(backlogColumn?.className).toContain("min-w-[260px]");
     expect(container.querySelector('[data-kanban-column-status="todo"]')).not.toBeNull();
+    expect(container.querySelector('[data-kanban-filtered-placeholder="backlog"]')?.textContent).toContain(
+      "1 issue hidden by current filters",
+    );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps empty statuses visible as full columns with explicit empty-state copy", () => {
+    const root = createRoot(container);
+    const todoIssue = createIssue({
+      id: "issue-todo",
+      identifier: "PAP-3",
+      title: "Todo issue",
+      status: "todo",
+    });
+
+    act(() => {
+      root.render(
+        <KanbanBoard
+          issues={[todoIssue]}
+          onUpdateIssue={() => undefined}
+        />,
+      );
+    });
+
+    expect(container.querySelectorAll("[data-kanban-column-status]").length).toBe(7);
+    const backlogColumn = container.querySelector('[data-kanban-column-status="backlog"]');
+    expect(backlogColumn).not.toBeNull();
+    expect(backlogColumn?.className).toContain("min-w-[260px]");
+    expect(container.querySelector('[data-kanban-empty-placeholder="backlog"]')?.textContent).toContain(
+      "No issues",
+    );
+    expect(container.querySelectorAll("[data-kanban-empty-placeholder]").length).toBe(6);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows the full seven-column board even when there are no issues yet", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <KanbanBoard
+          issues={[]}
+          onUpdateIssue={() => undefined}
+        />,
+      );
+    });
+
+    expect(container.querySelectorAll("[data-kanban-column-status]").length).toBe(7);
+    expect(container.querySelectorAll("[data-kanban-empty-placeholder]").length).toBe(7);
+    expect(container.textContent).toContain("Backlog");
+    expect(container.textContent).toContain("Cancelled");
 
     act(() => {
       root.unmount();

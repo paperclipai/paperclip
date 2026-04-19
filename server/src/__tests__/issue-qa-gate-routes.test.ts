@@ -243,7 +243,11 @@ describe("issue QA gate routes", () => {
   });
 
   afterEach(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The issue routes intentionally fire-and-forget wakeups and QA auto-fix
+    // hooks after sending the response. Give those tasks time to settle before
+    // the next case resets shared mocks, or later tests can observe leaked
+    // background work from the previous request.
+    await new Promise((resolve) => setTimeout(resolve, 100));
   });
 
   it("rejects delivery issue done transition when current status is not in_review", async () => {
