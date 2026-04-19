@@ -32,6 +32,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
+import { resolveCredentialEnv } from "./credentials.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
@@ -3399,6 +3400,25 @@ export function heartbeatService(db: Db) {
       projectEnv: projectContext?.env ?? null,
       secretsSvc,
     });
+    if (agent.credentialId) {
+      try {
+        const credResolution = await resolveCredentialEnv(db, agent.id, agent.credentialId);
+        if (Object.keys(credResolution.env).length > 0) {
+          resolvedConfig.env = {
+            ...parseObject(resolvedConfig.env),
+            ...credResolution.env,
+          };
+          for (const key of Object.keys(credResolution.env)) {
+            secretKeys.add(key);
+          }
+        }
+      } catch (err) {
+        logger.error(
+          { agentId: agent.id, credentialId: agent.credentialId, err: err instanceof Error ? err.message : String(err) },
+          "failed to apply provider credential env to execution run",
+        );
+      }
+    }
     const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
       db,
       companyId: agent.companyId,

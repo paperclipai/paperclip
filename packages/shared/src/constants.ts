@@ -240,6 +240,14 @@ export const SECRET_PROVIDERS = [
 ] as const;
 export type SecretProvider = (typeof SECRET_PROVIDERS)[number];
 
+export const CREDENTIAL_TYPES = [
+  "claude_oauth",
+  "claude_api_key",
+  "gemini_api_key",
+  "openai_api_key",
+] as const;
+export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
+
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
 
@@ -408,6 +416,7 @@ export const PERMISSION_KEYS = [
   "tasks:assign",
   "tasks:assign_scope",
   "joins:approve",
+  "credentials:manage",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 

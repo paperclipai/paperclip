@@ -9,12 +9,14 @@ import {
   index,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
+import { providerCredentials } from "./provider_credentials.js";
 
 export const agents = pgTable(
   "agents",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
+    credentialId: uuid("credential_id").references(() => providerCredentials.id),
     name: text("name").notNull(),
     role: text("role").notNull().default("general"),
     title: text("title"),

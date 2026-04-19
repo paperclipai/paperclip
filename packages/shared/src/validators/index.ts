@@ -217,6 +217,13 @@ export {
 } from "./secret.js";
 
 export {
+  createProviderCredentialSchema,
+  updateProviderCredentialSchema,
+  type CreateProviderCredential,
+  type UpdateProviderCredential,
+} from "./provider-credential.js";
+
+export {
   createRoutineSchema,
   updateRoutineSchema,
   createRoutineTriggerSchema,
