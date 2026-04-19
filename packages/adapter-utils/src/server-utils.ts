@@ -1,6 +1,10 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -55,9 +59,78 @@ export async function killAllRunningProcesses(graceMs = 5000): Promise<void> {
   }
 }
 
-/** Sweep `/proc` for orphaned `claude --print` subprocesses (PPID=1) whose
- *  command line references a `paperclip-skills-*` tempdir, plus stale tempdirs
- *  themselves. Linux-only — other platforms no-op. Catches the hard-crash
+interface OrphanCandidate {
+  pid: number;
+  cmdline: string;
+}
+
+/** Enumerate orphaned `claude --print` subprocesses (PPID=1) whose command
+ *  line references a `paperclip-skills-*` tempdir. Linux reads `/proc`
+ *  directly (fast, no subprocess); macOS shells out to `ps`. Other
+ *  platforms return an empty list. */
+async function findOrphanClaudeCandidates(): Promise<OrphanCandidate[]> {
+  const self = process.pid;
+  if (process.platform === "linux") {
+    const out: OrphanCandidate[] = [];
+    let procEntries: Dirent[] = [];
+    try {
+      procEntries = await fs.readdir("/proc", { withFileTypes: true });
+    } catch {
+      return out;
+    }
+    for (const entry of procEntries) {
+      if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+      const pid = Number(entry.name);
+      if (pid === self) continue;
+      try {
+        const cmdlineBuf = await fs.readFile(`/proc/${pid}/cmdline`);
+        const cmdline = cmdlineBuf.toString().replace(/\0/g, " ").trim();
+        if (!matchesClaudeOrphan(cmdline)) continue;
+        const status = await fs.readFile(`/proc/${pid}/status`, "utf-8");
+        const ppidLine = status.split("\n").find((l) => l.startsWith("PPid:"));
+        const ppid = ppidLine ? Number(ppidLine.split(/\s+/)[1]) : 0;
+        if (ppid !== 1) continue;
+        out.push({ pid, cmdline });
+      } catch { /* vanished mid-scan or permission denied */ }
+    }
+    return out;
+  }
+  if (process.platform === "darwin") {
+    try {
+      // `-o` fields are space-padded; take pid + ppid then the rest as command.
+      const { stdout } = await execFileAsync("ps", ["-Ao", "pid=,ppid=,command="], {
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      const out: OrphanCandidate[] = [];
+      for (const line of stdout.split("\n")) {
+        const m = line.trimStart().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+        if (!m) continue;
+        const pid = Number(m[1]);
+        const ppid = Number(m[2]);
+        const cmdline = m[3];
+        if (pid === self || ppid !== 1) continue;
+        if (!matchesClaudeOrphan(cmdline)) continue;
+        out.push({ pid, cmdline });
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function matchesClaudeOrphan(cmdline: string): boolean {
+  if (!cmdline.includes("--print")) return false;
+  if (!cmdline.includes("/tmp/paperclip-skills-")) return false;
+  // Match the `claude` binary either as the command itself or at a path
+  // (avoid matching e.g. "anthropicclaudemock").
+  return /(^|\/)claude(\s|$)/.test(cmdline);
+}
+
+/** Sweep for orphaned `claude --print` subprocesses (PPID=1) whose command
+ *  line references a `paperclip-skills-*` tempdir, plus stale tempdirs
+ *  themselves. Linux + macOS; other platforms no-op. Catches the hard-crash
  *  case where the Node parent died without running its shutdown handler and
  *  left Claude CLI children alive. Intended to run once at server startup. */
 export async function sweepOrphanedClaudeProcesses(
@@ -65,37 +138,14 @@ export async function sweepOrphanedClaudeProcesses(
 ): Promise<{ killedPids: number[]; removedTempdirs: string[] }> {
   const killedPids: number[] = [];
   const removedTempdirs: string[] = [];
-  if (process.platform !== "linux") return { killedPids, removedTempdirs };
 
-  let procEntries: Dirent[] = [];
-  try {
-    procEntries = await fs.readdir("/proc", { withFileTypes: true });
-  } catch {
-    return { killedPids, removedTempdirs };
-  }
-
-  for (const entry of procEntries) {
-    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-    const pid = Number(entry.name);
-    if (pid === process.pid) continue;
-
+  const candidates = await findOrphanClaudeCandidates();
+  for (const { pid, cmdline } of candidates) {
     try {
-      const cmdlineBuf = await fs.readFile(`/proc/${pid}/cmdline`);
-      const cmdline = cmdlineBuf.toString().replace(/\0/g, " ").trim();
-      if (!/(^|\/)claude(\s|$)/.test(cmdline) || !cmdline.includes("--print")) continue;
-      if (!cmdline.includes("/tmp/paperclip-skills-")) continue;
-
-      const status = await fs.readFile(`/proc/${pid}/status`, "utf-8");
-      const ppidLine = status.split("\n").find((l) => l.startsWith("PPid:"));
-      const ppid = ppidLine ? Number(ppidLine.split(/\s+/)[1]) : 0;
-      if (ppid !== 1) continue; // only orphans reparented to init
-
-      try {
-        process.kill(pid, "SIGTERM");
-        killedPids.push(pid);
-        log(`killed orphan claude process at startup`, { pid, cmdline: cmdline.slice(0, 200) });
-      } catch { /* already gone */ }
-    } catch { /* process vanished mid-scan or permission denied */ }
+      process.kill(pid, "SIGTERM");
+      killedPids.push(pid);
+      log(`killed orphan claude process at startup`, { pid, cmdline: cmdline.slice(0, 200) });
+    } catch { /* already gone */ }
   }
 
   // Give SIGTERM a moment, then SIGKILL anything still alive.
@@ -111,16 +161,18 @@ export async function sweepOrphanedClaudeProcesses(
 
   // Clean stale skills tempdirs regardless of whether we killed anything.
   // Generous threshold: only remove dirs idle >1h so we don't race a live run.
+  // `os.tmpdir()` covers `/tmp` on Linux and `/var/folders/...` on macOS.
+  const tmpRoot = os.tmpdir();
   let tmpEntries: Dirent[] = [];
   try {
-    tmpEntries = await fs.readdir("/tmp", { withFileTypes: true });
+    tmpEntries = await fs.readdir(tmpRoot, { withFileTypes: true });
   } catch {
     return { killedPids, removedTempdirs };
   }
   const staleCutoff = Date.now() - 60 * 60 * 1000;
   for (const entry of tmpEntries) {
     if (!entry.isDirectory() || !entry.name.startsWith("paperclip-skills-")) continue;
-    const full = `/tmp/${entry.name}`;
+    const full = path.join(tmpRoot, entry.name);
     try {
       const stat = await fs.stat(full);
       if (stat.mtimeMs >= staleCutoff) continue;

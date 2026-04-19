@@ -4046,11 +4046,27 @@ export function heartbeatService(db: Db) {
     resumeQueuedRuns,
 
     tickTimers: async (now = new Date()) => {
-      const allAgents = await db.select().from(agents);
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
 
+      // Fast path: skip the full agent scan when no agent has a timer-enabled
+      // heartbeat policy. When all agents use routines + wake-on-demand
+      // (the expected steady state), this reduces the tick to a single
+      // O(1) EXISTS probe instead of selecting every agent row.
+      const [probe] = await db
+        .select({
+          anyEnabled: sql<boolean>`EXISTS (
+            SELECT 1 FROM ${agents}
+            WHERE ${agents.status} NOT IN ('paused','terminated','pending_approval')
+              AND COALESCE(${agents.runtimeConfig}->'heartbeat'->>'enabled','true') = 'true'
+              AND COALESCE((${agents.runtimeConfig}->'heartbeat'->>'intervalSec')::int,0) > 0
+          )`,
+        })
+        .from(sql`(SELECT 1) AS probe`);
+      if (!probe?.anyEnabled) return { checked, enqueued, skipped };
+
+      const allAgents = await db.select().from(agents);
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
         const policy = parseHeartbeatPolicy(agent);
