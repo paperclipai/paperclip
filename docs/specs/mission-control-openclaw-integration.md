@@ -139,6 +139,24 @@ Use the smallest write that preserves operator-visible state:
 
 If a chat message changes who owns the work, who should act next, whether the work is blocked, whether a human is needed, or what the current next step is, it must not remain chat-only.
 
+#### 5.3 Structured handoff required versus comment-only allowed
+
+A structured handoff or equivalent structured mission-control patch is required whenever any of the following become true for a tracked issue:
+
+- ownership changes
+- the expected next actor changes, even if formal owner coordination stays with `Main`
+- blocker or waiting responsibility changes
+- durable mission-control state would otherwise need to be inferred from chat or transcript text
+
+Comment-only updates are allowed only when all of the following remain true:
+
+- the message is progress narration, clarification, or other non-durable discussion
+- no ownership change happened
+- no expected-next-actor change happened
+- no blocker, waiting, escalation, or next-step state changed
+
+Rule: if the operator inbox, latest handoff summary, or later Telegram emergence would become wrong without rereading comments, the update was not comment-only and must be structured.
+
 ### 6. When Work Stays In Chat Versus Becomes A Tracked Issue
 
 #### 6.1 Leave work in chat/comment form when all of these are true
@@ -258,6 +276,8 @@ A structured ownership or handoff update is required when any of these routing t
 - a specialist finishes its slice and the next durable responsibility returns to `Main`
 - `Personal OS` discovers that a tracked item is actually product/build/design work
 - the current owner can no longer move the issue forward without another mapped actor taking responsibility
+- the expected next actor changes even if `Main` remains the durable owner for coordination
+- waiting or blocked responsibility moves from one mapped actor to another
 
 These triggers should update the existing issue surface with the smallest coherent patch:
 
@@ -281,6 +301,14 @@ Use these defaults to keep routing predictable:
 | `Ork` or `Stitch` completes a slice and waits for cross-agent decision or operator synthesis | `ownerAgentId=Main` | handoff back to `Main` with outcome, requested next step, and any unblock condition |
 
 Rule: the handoff should make the next accountable owner explicit enough that the operator inbox is correct without rereading discussion.
+
+Operational default: if `Personal OS` surfaces a product/build implementation need, route it back through the existing mission-control surface instead of owning it ad hoc. That means:
+
+- hand off to `Main` when coordination, prioritization, or specialist selection is still required
+- hand off directly to `Ork` when engineering ownership is already clear
+- hand off directly to `Stitch` when design/product-specialist ownership is already clear
+
+Do not leave that state only in comments just because `Personal OS` found it first.
 
 ### 8. Handoff Minimums
 
@@ -407,5 +435,6 @@ This slice is complete when later implementation follows these rules:
 - specialty routing keeps `Main` as the coordination surface, routes engineering execution to `Ork`, routes design/product-specialist execution to `Stitch`, and prevents `Personal OS` from durably owning product/build implementation by default
 - delegation triggers are explicit enough that cross-agent ownership changes do not rely on ad hoc chat interpretation
 - blocked, waiting, handoff, and resume context is expressed through existing mission-control metadata without replacing `issues.status`
-- chat-only messages are allowed only for non-durable discussion
+- structured handoffs are required whenever ownership, expected-next-actor, or blocker/waiting responsibility changes, or durable state would otherwise be inferred from chat
+- chat-only messages are allowed only for non-durable discussion, clarification, or progress narration with no ownership/state/next-actor change
 - no additional mission-control task or dashboard model is introduced to support this integration
