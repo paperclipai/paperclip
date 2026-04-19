@@ -1,10 +1,10 @@
 /**
  * Shared attachment content-type configuration.
  *
- * By default only image types are allowed.  Set the
+ * By default a curated set of image/document/text types are allowed. Set the
  * `PAPERCLIP_ALLOWED_ATTACHMENT_TYPES` environment variable to a
  * comma-separated list of MIME types or wildcard patterns to expand the
- * allowed set.
+ * allowed set for routes that use this allowlist.
  *
  * Examples:
  *   PAPERCLIP_ALLOWED_ATTACHMENT_TYPES=image/*,application/pdf
@@ -27,6 +27,19 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "application/json",
   "text/csv",
   "text/html",
+  "application/zip",
+  "application/x-zip-compressed",
+];
+
+export const DEFAULT_ATTACHMENT_CONTENT_TYPE = "application/octet-stream";
+export const SVG_CONTENT_TYPE = "image/svg+xml";
+export const INLINE_ATTACHMENT_TYPES: readonly string[] = [
+  "image/*",
+  "application/pdf",
+  "text/plain",
+  "text/markdown",
+  "application/json",
+  "text/csv",
 ];
 
 /**
@@ -59,16 +72,22 @@ export function matchesContentType(contentType: string, allowedPatterns: string[
   });
 }
 
+export function normalizeContentType(contentType: string | null | undefined): string {
+  const normalized = (contentType ?? "").trim().toLowerCase();
+  return normalized || DEFAULT_ATTACHMENT_CONTENT_TYPE;
+}
+
+export function isInlineAttachmentContentType(contentType: string): boolean {
+  return matchesContentType(contentType, [...INLINE_ATTACHMENT_TYPES]);
+}
+
 // ---------- Module-level singletons read once at startup ----------
 
-const allowedPatterns: string[] = parseAllowedTypes(
-  process.env.PAPERCLIP_ALLOWED_ATTACHMENT_TYPES,
-);
+const allowedPatterns: string[] = parseAllowedTypes(process.env.PAPERCLIP_ALLOWED_ATTACHMENT_TYPES);
 
 /** Convenience wrapper using the process-level allowed list. */
 export function isAllowedContentType(contentType: string): boolean {
   return matchesContentType(contentType, allowedPatterns);
 }
 
-export const MAX_ATTACHMENT_BYTES =
-  Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
