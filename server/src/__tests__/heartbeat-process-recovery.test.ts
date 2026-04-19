@@ -226,6 +226,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    runUpdatedAt?: Date;
+    agentRuntimeConfig?: Record<string, unknown>;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -250,7 +252,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: input?.agentStatus ?? "paused",
       adapterType: input?.adapterType ?? "codex_local",
       adapterConfig: {},
-      runtimeConfig: {},
+      runtimeConfig: input?.agentRuntimeConfig ?? {},
       permissions: {},
     });
 
@@ -282,7 +284,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
       startedAt: now,
-      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: input?.runUpdatedAt ?? new Date("2026-03-19T00:00:00.000Z"),
     });
 
     if (input?.includeIssue !== false) {
@@ -516,6 +518,54 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
     expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("reaps a process_detached run after 2x agent interval without activity", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    // Use a small interval (60s) so the threshold is the 600s floor.
+    // Set updatedAt 20 minutes in the past relative to "now" — well over the
+    // 600s/10min floor but well under any plausible clock skew.
+    const stalenessMs = 20 * 60 * 1000;
+    const runUpdatedAt = new Date(Date.now() - stalenessMs);
+
+    const { agentId, runId, issueId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      runErrorCode: "process_detached",
+      runError: `Lost in-memory process handle, but child pid ${child.pid} is still alive`,
+      runUpdatedAt,
+      agentRuntimeConfig: { heartbeat: { intervalSec: 60 } },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    // Stuck-detached runs must NOT be retried (the pid is suspect under PID
+    // recycling; a retry would not address the root cause).
+    expect(runs).toHaveLength(1);
+
+    const failedRun = runs[0];
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_stuck");
+    expect(failedRun?.error).toContain("stuck");
+    expect(failedRun?.finishedAt).not.toBeNull();
+
+    // The issue execution lock must be released so future runs can claim it.
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
