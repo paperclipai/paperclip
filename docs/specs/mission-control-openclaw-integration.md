@@ -14,11 +14,11 @@ This slice covers only:
 - how those actors create or update tracked Paperclip issues
 - when a message must become a structured Paperclip update versus remaining chat/comment text
 - task-status sync rules for mapping OpenClaw-side progress onto existing Paperclip issue status
+- specialty-routing policy for deciding which of those mapped actors should own or execute the next durable Paperclip slice
 
 This slice does not yet define:
 
 - Telegram emergence rules
-- broader specialty-routing policy beyond the minimum ownership defaults below
 
 ### 2. Reuse-First Constraints
 
@@ -87,6 +87,30 @@ Minimum policy enforced by this spec:
 - `Main` remains the default coordination surface.
 - `Personal OS` must not become the durable owner for product/build implementation when `Main`, `Ork`, or `Stitch` should own it.
 - When implementation work is delegated, ownership should move to the specialist who is expected to drive it, not remain vaguely attached to whoever mentioned it in chat.
+
+### 4.1 Specialty boundaries
+
+These actor boundaries exist to keep routing legible in the existing Paperclip ownership model:
+
+| Actor | Primary lane | Own directly by default | Must hand off by default |
+|---|---|---|---|
+| `Main` | company-level coordination, routing, prioritization, operator-visible synthesis | issue intake, cross-agent coordination, deciding the next specialist, durable routing updates, multi-party follow-through | deep engineering implementation, design-production work, or personal/admin follow-through once a specialist lane is clear |
+| `Ork` | engineering execution | build, code change, debugging, technical verification, implementation planning tied to a deliverable | broad operator coordination, personal/admin errands, and design/product-specialist execution that does not require engineering ownership |
+| `Stitch` | design and product-specialist execution | design direction, UX/UI work, product-spec shaping, artifact review from a design/product lens | general company coordination, engineering implementation ownership, and personal/admin errands |
+| `Personal OS` | personal/admin/operator support | scheduling, reminders, note capture, operator follow-ups, personal logistics, lightweight administrative tasks | product/build implementation, engineering execution, and design/product-specialist deliverables that should stay on the core mission-control lanes |
+
+Routing must use these existing actors and ownership fields, not a parallel concept of "active lane" or "routing queue."
+
+### 4.2 Durable ownership rule
+
+The durable owner should be the agent that is accountable for driving the current execution slice to its next operator-visible state.
+
+- Keep `ownerAgentId=Main` when the issue is still in coordination, triage, specialist selection, or multi-party follow-through.
+- Move `ownerAgentId` to `Ork` when the next durable slice is engineering execution.
+- Move `ownerAgentId` to `Stitch` when the next durable slice is design or product-specialist execution.
+- Allow `ownerAgentId=Personal OS` only when the issue is genuinely personal/admin/operator support work.
+
+Rule: ownership follows responsibility for the next durable slice, not whoever most recently spoke.
 
 ### 5. Structured Update Contract
 
@@ -168,6 +192,18 @@ Rule: prefer updating the existing issue over opening sibling issues for the sam
 
 `Main` may leave discussion in chat/comments when it is only exploring, clarifying, or acknowledging progress.
 
+`Main` should remain owner when:
+
+- the operator still needs a single coordination surface for the issue
+- the next move is deciding between specialists rather than executing within one specialty
+- the work requires parallel follow-up across multiple specialists or the human board
+
+`Main` should hand off ownership when:
+
+- one specialist is now clearly responsible for delivering the next meaningful slice
+- leaving the issue owned by `Main` would force the operator to infer execution ownership from comments
+- the delegated specialist is expected to drive the next update, deliverable, or unblock decision
+
 #### 7.2 Ork, Stitch, and Personal OS
 
 These specialists should publish structured updates when they change control-plane state, not for every internal thought.
@@ -186,6 +222,65 @@ They may leave work in chat/comments for:
 - execution narration
 - tool chatter
 - tentative ideas that do not yet change durable issue state
+
+#### 7.3 Specialty-based routing policy
+
+When a tracked issue needs specialty routing, integration logic should pick the narrowest existing owner that matches the next durable slice:
+
+1. If the issue is still coordination, intake, prioritization, or cross-agent synthesis, keep it with `Main`.
+2. If the next durable slice is engineering implementation, debugging, code verification, or build execution, route to `Ork`.
+3. If the next durable slice is design execution, UX/UI iteration, product-spec shaping, or artifact review from a design/product-specialist lane, route to `Stitch`.
+4. If the next durable slice is personal/admin/operator support, route to `Personal OS`.
+5. If multiple specialties are involved, keep `Main` as owner until one specialist is clearly accountable for the next deliverable, then hand off.
+
+If no single specialist clearly owns the next durable slice yet, default back to `Main` rather than guessing.
+
+#### 7.4 Personal OS restriction
+
+`Personal OS` is explicitly not a catch-all implementation owner.
+
+It must hand work back to `Main` or a specialist when the issue becomes:
+
+- product implementation
+- engineering execution
+- code/debug/verification work
+- design or product-specialist artifact production
+- a cross-agent coordination problem rather than a personal/admin task
+
+`Personal OS` may remain a collaborator or comment author on those issues, but it should not remain the durable owner just because it surfaced the need first.
+
+#### 7.5 Delegation triggers
+
+A structured ownership or handoff update is required when any of these routing triggers occur:
+
+- the next durable slice changes from coordination to a specialist lane
+- the next durable slice changes from one specialist lane to another
+- a specialist finishes its slice and the next durable responsibility returns to `Main`
+- `Personal OS` discovers that a tracked item is actually product/build/design work
+- the current owner can no longer move the issue forward without another mapped actor taking responsibility
+
+These triggers should update the existing issue surface with the smallest coherent patch:
+
+- `ownerAgentId` when durable responsibility changes
+- `assigneeAgentId` when the next executor is known
+- `missionControl.handoff` when responsibility is being passed explicitly
+- `missionControl.nextStep` when the routed actor has a new durable instruction
+- `issues.status` only if operator-visible execution expectations changed under section 9
+
+#### 7.6 Handoff rules by routing case
+
+Use these defaults to keep routing predictable:
+
+| Routing case | Expected owner result | Expected structured context |
+|---|---|---|
+| `Main -> Ork` for implementation | `ownerAgentId=Ork` | structured handoff plus next step; move status only if execution expectation changed |
+| `Main -> Stitch` for design/product-specialist execution | `ownerAgentId=Stitch` | structured handoff plus next step; move status only if execution expectation changed |
+| `Main -> Personal OS` for genuine personal/admin support | `ownerAgentId=Personal OS` | structured handoff when follow-through matters beyond chat |
+| `Personal OS -> Main` because work is actually coordination or needs specialist selection | `ownerAgentId=Main` | structured handoff or owner change plus clarified next step |
+| `Personal OS -> Ork` or `Stitch` because implementation/design ownership is now clear | specialist owns | structured handoff; `Personal OS` may remain collaborator |
+| `Ork` or `Stitch` completes a slice and waits for cross-agent decision or operator synthesis | `ownerAgentId=Main` | handoff back to `Main` with outcome, requested next step, and any unblock condition |
+
+Rule: the handoff should make the next accountable owner explicit enough that the operator inbox is correct without rereading discussion.
 
 ### 8. Handoff Minimums
 
@@ -309,6 +404,8 @@ This slice is complete when later implementation follows these rules:
 - every structured mission-control write from `Main`, `Ork`, `Stitch`, or `Personal OS` resolves to a real Paperclip agent id
 - ownership, blocker, waiting, escalation, and handoff changes are represented through existing issue fields rather than transcript inference
 - OpenClaw-side progress maps into existing Paperclip issue statuses rather than introducing adapter-specific task states
+- specialty routing keeps `Main` as the coordination surface, routes engineering execution to `Ork`, routes design/product-specialist execution to `Stitch`, and prevents `Personal OS` from durably owning product/build implementation by default
+- delegation triggers are explicit enough that cross-agent ownership changes do not rely on ad hoc chat interpretation
 - blocked, waiting, handoff, and resume context is expressed through existing mission-control metadata without replacing `issues.status`
 - chat-only messages are allowed only for non-durable discussion
 - no additional mission-control task or dashboard model is introduced to support this integration

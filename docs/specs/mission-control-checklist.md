@@ -17,7 +17,7 @@ This feature is only done when:
 - Branch: `feat/mission-control-customization-lane`
 - Implementation owner: `ork`
 - Product/orchestration owner: `main`
-- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, the first operator controls in `IssueProperties`, and the first operational inbox views are now in place; `Resume` now records the existing `resumed` workflow state instead of clearing context, `Resolve handoff` now clears active handoff state through the same issue update surface and keeps handoff/history wording legible, `Reassign owner` now promotes the active handoff target through the same owner/mission-control plumbing so ownership stays clean, `Escalate` now raises `needsHumanAttention` through the same minimal mission-control payload while preserving any existing workflow state, `Inbox` now exposes practical operational view chips for the broader operator queue, Main/Ork/Stitch/Personal OS owner slices when those agents exist, needs-human, blocked/waiting, and recent handoffs by reusing the existing issue filter/view plumbing, the operator queue now stays high-signal in mixed inbox batches by limiting that view to mission-control ownership/attention/handoff/workflow lanes instead of every open issue, the latest handoff-summary lane now treats structured `issue.handoff_updated` activity as the durable handoff/history source instead of letting reviewer/approver churn masquerade as mission-control handoffs, the latest activity-summary lane now ignores generic `issue.comment_added` churn so neither run-linked transcript comments nor plain manual operational comments overwrite fresher mission-control workflow-state updates, realistic mixed mission-control run coverage now verifies that structured handoffs remain durable while `needsHumanAttention` escalations summarize as a compact high-signal activity instead of falling back to generic task-detail wording, and a dedicated spec now defines the initial OpenClaw mission-control glue for identity mapping, the boundary between structured issue updates and chat-only discussion, and the reuse-first task-status sync contract
+- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, the first operator controls in `IssueProperties`, and the first operational inbox views are now in place; `Resume` now records the existing `resumed` workflow state instead of clearing context, `Resolve handoff` now clears active handoff state through the same issue update surface and keeps handoff/history wording legible, `Reassign owner` now promotes the active handoff target through the same owner/mission-control plumbing so ownership stays clean, `Escalate` now raises `needsHumanAttention` through the same minimal mission-control payload while preserving any existing workflow state, `Inbox` now exposes practical operational view chips for the broader operator queue, Main/Ork/Stitch/Personal OS owner slices when those agents exist, needs-human, blocked/waiting, and recent handoffs by reusing the existing issue filter/view plumbing, the operator queue now stays high-signal in mixed inbox batches by limiting that view to mission-control ownership/attention/handoff/workflow lanes instead of every open issue, the latest handoff-summary lane now treats structured `issue.handoff_updated` activity as the durable handoff/history source instead of letting reviewer/approver churn masquerade as mission-control handoffs, the latest activity-summary lane now ignores generic `issue.comment_added` churn so neither run-linked transcript comments nor plain manual operational comments overwrite fresher mission-control workflow-state updates, realistic mixed mission-control run coverage now verifies that structured handoffs remain durable while `needsHumanAttention` escalations summarize as a compact high-signal activity instead of falling back to generic task-detail wording, and the dedicated OpenClaw integration spec now also defines the first durable specialty-routing policy: `Main` stays the coordination surface, `Ork` owns engineering execution, `Stitch` owns design/product-specialist execution, `Personal OS` is restricted to personal/admin support, and delegation triggers/handoff defaults are explicit on the existing mission-control issue surface
 
 ## Checklist
 
@@ -78,10 +78,10 @@ This feature is only done when:
 - [x] Define identity mapping between OpenClaw agents and Paperclip ownership fields
 - [x] Define when work stays in chat vs becomes a tracked Paperclip task
 - [x] Define how task status sync should work
-- [ ] Define specialty-based routing rules across Main, Ork, Stitch, and Personal OS
-- [ ] Ensure Personal OS defers product/build implementation work to Main/Ork/Stitch instead of owning it directly
-- [ ] Ensure Main remains the coordination surface while Ork owns engineering execution and Stitch owns design/product-specialist work
-- [ ] Define delegation triggers and handoff rules so cross-agent routing happens predictably instead of ad hoc
+- [x] Define specialty-based routing rules across Main, Ork, Stitch, and Personal OS
+- [x] Ensure Personal OS defers product/build implementation work to Main/Ork/Stitch instead of owning it directly
+- [x] Ensure Main remains the coordination surface while Ork owns engineering execution and Stitch owns design/product-specialist work
+- [x] Define delegation triggers and handoff rules so cross-agent routing happens predictably instead of ad hoc
 - [ ] Verify delegation behavior with at least one real cross-agent scenario
 
 ### 7. Telegram emergence and behavior
@@ -100,13 +100,13 @@ This feature is only done when:
 - [ ] Decide whether to open PR / merge / continue iteration
 
 ## Current recommended next slice
-- Refine specialty-routing policy for Main/Ork/Stitch/Personal OS now that the identity and structured-update boundary is explicit
+- Verify the routing policy with at least one real cross-agent scenario, preferably one where `Personal OS` surfaces work that must be rerouted through `Main` to `Ork` or `Stitch`
 
 ## Current blockers
-- No hard blocker for this slice
+- No hard blocker for the docs/spec slice that just landed
 - Repo-wide `pnpm -r typecheck` is currently blocked by an unrelated duplicate DB migration number (`0057_gentle_mission_control.sql` and `0057_tidy_join_requests.sql`)
 - Broader verification hit an unrelated existing ordering-sensitive failure in `server/src/__tests__/issues-service.test.ts` (`wakes parents only when all direct children are terminal` expects a different `childIssueIds` order)
-- Main remaining gap is the rest of OpenClaw integration glue, especially specialty-routing policy, delegation rules, and real-use validation on top of the workflow-state, operational-view, summary-noise, and now-specified status-sync foundation
+- Main remaining gap is real-use OpenClaw integration validation on top of the now-specified identity, structured-update boundary, status-sync contract, and specialty-routing/delegation policy
 
 ## Update rule for Ork
 When meaningful progress lands, Ork should update this checklist with:
