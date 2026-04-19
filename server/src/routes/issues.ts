@@ -99,6 +99,39 @@ function readWakeTargetIssueId(wakeup: unknown, fallback: string): string {
   return fallback;
 }
 
+// AJL-550 — non-blocking same-owner parent+child overlap detector.
+// Fires a structured warn log when the pre-loop topology from AJL-444 → AJL-446
+// is detected on a child issue: both parent and child assigned to the same
+// supervisory owner, both in_progress, child has zero open grandchildren.
+// Fire-and-forget by contract: never rejects the mutation, never throws.
+function runOverlapDetector(
+  svc: ReturnType<typeof issueService>,
+  childIssueId: string,
+  source: string,
+): void {
+  try {
+    void Promise.resolve(svc.detectSameOwnerParentChildOverlap(childIssueId))
+      .then((overlap) => {
+        if (overlap && overlap.kind === "same_owner_parent_child_idle_grandchildren") {
+          logger.warn(
+            {
+              issueId: overlap.childId,
+              parentId: overlap.parentId,
+              ownerAgentId: overlap.ownerAgentId,
+              ownerUserId: overlap.ownerUserId,
+              totalGrandchildren: overlap.totalGrandchildren,
+              source,
+            },
+            "overlap.detected kind=same_owner_parent_child_idle_grandchildren",
+          );
+        }
+      })
+      .catch((err) => logger.warn({ err, issueId: childIssueId, source }, "overlap detector failed"));
+  } catch (err) {
+    logger.warn({ err, issueId: childIssueId, source }, "overlap detector failed synchronously");
+  }
+}
+
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type ActivityIssueRelationSummary = {
@@ -1397,6 +1430,9 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
+    // AJL-550 — overlap detector (non-blocking).
+    runOverlapDetector(svc, issue.id, "routes.issues.create");
+
     res.status(201).json(issue);
   });
 
@@ -2016,6 +2052,9 @@ export function issueRoutes(
           .wakeup(agentId, wakeup)
           .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
       }
+
+      // AJL-550 — overlap detector (non-blocking).
+      runOverlapDetector(svc, issue.id, "routes.issues.update");
     })();
 
     res.json({ ...issueResponse, comment });

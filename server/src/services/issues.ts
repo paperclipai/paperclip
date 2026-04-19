@@ -1465,6 +1465,100 @@ export function issueService(db: Db) {
       return { kind: "umbrella_idle_no_child" as const, totalChildren: children.length };
     },
 
+    /**
+     * AJL-550 — same-owner parent+child overlap detector.
+     *
+     * Detects the exact pre-loop topology from AJL-444 → AJL-446:
+     *  - child and its parent are both assigned to the same supervisory owner
+     *    (same agentId OR same userId, whichever is set)
+     *  - both are in_progress
+     *  - the child has zero open grandchildren
+     *    (open = status in {todo, in_progress, blocked, in_review})
+     *
+     * Returns either `no_overlap` with a structured reason, or
+     * `same_owner_parent_child_idle_grandchildren` with ownership identifiers
+     * suitable for a structured warn log.
+     *
+     * Non-blocking: callers fire-and-forget and emit a log on match.
+     */
+    detectSameOwnerParentChildOverlap: async (childIssueId: string) => {
+      const child = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          parentId: issues.parentId,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issues)
+        .where(eq(issues.id, childIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!child) {
+        return { kind: "no_overlap" as const, reason: "child_not_found" as const };
+      }
+      if (!child.parentId) {
+        return { kind: "no_overlap" as const, reason: "no_parent" as const };
+      }
+      if (child.status !== "in_progress") {
+        return { kind: "no_overlap" as const, reason: "child_not_in_progress" as const };
+      }
+
+      const parent = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, child.companyId), eq(issues.id, child.parentId)))
+        .then((rows) => rows[0] ?? null);
+      if (!parent) {
+        return { kind: "no_overlap" as const, reason: "parent_not_found" as const };
+      }
+      if (parent.status !== "in_progress") {
+        return { kind: "no_overlap" as const, reason: "parent_not_in_progress" as const };
+      }
+
+      const agentMatch =
+        parent.assigneeAgentId !== null &&
+        child.assigneeAgentId !== null &&
+        parent.assigneeAgentId === child.assigneeAgentId;
+      const userMatch =
+        parent.assigneeUserId !== null &&
+        child.assigneeUserId !== null &&
+        parent.assigneeUserId === child.assigneeUserId;
+      if (!agentMatch && !userMatch) {
+        return { kind: "no_overlap" as const, reason: "different_owners" as const };
+      }
+
+      const grandchildren = await db
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.companyId, child.companyId), eq(issues.parentId, child.id)));
+
+      const openExecutableStatuses = new Set(["todo", "in_progress", "blocked", "in_review"]);
+      const openGrandchildCount = grandchildren.filter((g) => openExecutableStatuses.has(g.status)).length;
+      if (openGrandchildCount > 0) {
+        return {
+          kind: "no_overlap" as const,
+          reason: "child_has_open_grandchildren" as const,
+          totalGrandchildren: grandchildren.length,
+          openGrandchildCount,
+        };
+      }
+
+      return {
+        kind: "same_owner_parent_child_idle_grandchildren" as const,
+        parentId: parent.id,
+        childId: child.id,
+        ownerAgentId: agentMatch ? parent.assigneeAgentId : null,
+        ownerUserId: userMatch ? parent.assigneeUserId : null,
+        totalGrandchildren: grandchildren.length,
+      };
+    },
+
     create: async (
       companyId: string,
       data: IssueCreateInput,

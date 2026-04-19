@@ -1688,3 +1688,250 @@ describeEmbeddedPostgres("issueService.classifyUmbrellaWakeState", () => {
     expect(state).toEqual({ kind: "leaf", totalChildren: 0 });
   });
 });
+
+// AJL-550 — same-owner parent+child overlap detector.
+describeEmbeddedPostgres("issueService.detectSameOwnerParentChildOverlap", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-service-overlap-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  async function seedAgent(companyId: string, id: string = randomUUID()) {
+    await db.insert(agents).values({
+      id,
+      companyId,
+      name: `Agent-${id.slice(0, 8)}`,
+      role: "engineer",
+      status: "paused",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return id;
+  }
+
+  async function seedIssue(companyId: string, overrides: Partial<typeof issues.$inferInsert> = {}) {
+    const id = overrides.id ?? randomUUID();
+    await db.insert(issues).values({
+      id,
+      companyId,
+      title: "Issue",
+      status: "todo",
+      priority: "medium",
+      ...overrides,
+    });
+    return id;
+  }
+
+  it("detects overlap when same-owner parent+child are in_progress with no open grandchildren", async () => {
+    const companyId = await seedCompany();
+    const ownerAgentId = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+    });
+    const child = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parent,
+      assigneeAgentId: ownerAgentId,
+    });
+    // grandchild is closed → doesn't rescue the overlap
+    await seedIssue(companyId, { status: "done", parentId: child });
+
+    const result = await svc.detectSameOwnerParentChildOverlap(child);
+    expect(result.kind).toBe("same_owner_parent_child_idle_grandchildren");
+    if (result.kind === "same_owner_parent_child_idle_grandchildren") {
+      expect(result.parentId).toBe(parent);
+      expect(result.childId).toBe(child);
+      expect(result.ownerAgentId).toBe(ownerAgentId);
+      expect(result.ownerUserId).toBeNull();
+      expect(result.totalGrandchildren).toBe(1);
+    }
+  });
+
+  it("detects overlap with no grandchildren at all", async () => {
+    const companyId = await seedCompany();
+    const ownerAgentId = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+    });
+    const child = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parent,
+      assigneeAgentId: ownerAgentId,
+    });
+
+    const result = await svc.detectSameOwnerParentChildOverlap(child);
+    expect(result.kind).toBe("same_owner_parent_child_idle_grandchildren");
+  });
+
+  it("does not flag overlap when the child has an open grandchild (executable work)", async () => {
+    const companyId = await seedCompany();
+    const ownerAgentId = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+    });
+    const child = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parent,
+      assigneeAgentId: ownerAgentId,
+    });
+    await seedIssue(companyId, { status: "in_progress", parentId: child });
+
+    const result = await svc.detectSameOwnerParentChildOverlap(child);
+    expect(result.kind).toBe("no_overlap");
+    if (result.kind === "no_overlap") {
+      expect(result.reason).toBe("child_has_open_grandchildren");
+    }
+  });
+
+  it("treats blocked and in_review grandchildren as open (no overlap)", async () => {
+    const companyId = await seedCompany();
+    const ownerAgentId = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+    });
+    const child = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parent,
+      assigneeAgentId: ownerAgentId,
+    });
+    await seedIssue(companyId, { status: "blocked", parentId: child });
+    await seedIssue(companyId, { status: "in_review", parentId: child });
+
+    const result = await svc.detectSameOwnerParentChildOverlap(child);
+    expect(result.kind).toBe("no_overlap");
+    if (result.kind === "no_overlap") {
+      expect(result.reason).toBe("child_has_open_grandchildren");
+    }
+  });
+
+  it("does not flag overlap when assignees differ (different_owners)", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: await seedAgent(companyId),
+    });
+    const child = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parent,
+      assigneeAgentId: await seedAgent(companyId),
+    });
+
+    const result = await svc.detectSameOwnerParentChildOverlap(child);
+    expect(result.kind).toBe("no_overlap");
+    if (result.kind === "no_overlap") {
+      expect(result.reason).toBe("different_owners");
+    }
+  });
+
+  it("matches overlap on shared assigneeUserId (human supervisor)", async () => {
+    const companyId = await seedCompany();
+    const ownerUserId = `user-${randomUUID()}`;
+    const parent = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeUserId: ownerUserId,
+    });
+    const child = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parent,
+      assigneeUserId: ownerUserId,
+    });
+
+    const result = await svc.detectSameOwnerParentChildOverlap(child);
+    expect(result.kind).toBe("same_owner_parent_child_idle_grandchildren");
+    if (result.kind === "same_owner_parent_child_idle_grandchildren") {
+      expect(result.ownerAgentId).toBeNull();
+      expect(result.ownerUserId).toBe(ownerUserId);
+    }
+  });
+
+  it("does not flag overlap when parent or child is not in_progress", async () => {
+    const companyId = await seedCompany();
+    const ownerAgentId = await seedAgent(companyId);
+
+    const parentTodo = await seedIssue(companyId, {
+      status: "todo",
+      assigneeAgentId: ownerAgentId,
+    });
+    const childA = await seedIssue(companyId, {
+      status: "in_progress",
+      parentId: parentTodo,
+      assigneeAgentId: ownerAgentId,
+    });
+    const resultA = await svc.detectSameOwnerParentChildOverlap(childA);
+    expect(resultA.kind).toBe("no_overlap");
+    if (resultA.kind === "no_overlap") {
+      expect(resultA.reason).toBe("parent_not_in_progress");
+    }
+
+    const parentOk = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+    });
+    const childB = await seedIssue(companyId, {
+      status: "todo",
+      parentId: parentOk,
+      assigneeAgentId: ownerAgentId,
+    });
+    const resultB = await svc.detectSameOwnerParentChildOverlap(childB);
+    expect(resultB.kind).toBe("no_overlap");
+    if (resultB.kind === "no_overlap") {
+      expect(resultB.reason).toBe("child_not_in_progress");
+    }
+  });
+
+  it("returns no_overlap for an issue with no parent", async () => {
+    const companyId = await seedCompany();
+    const leaf = await seedIssue(companyId, {
+      status: "in_progress",
+      assigneeAgentId: await seedAgent(companyId),
+    });
+    const result = await svc.detectSameOwnerParentChildOverlap(leaf);
+    expect(result.kind).toBe("no_overlap");
+    if (result.kind === "no_overlap") {
+      expect(result.reason).toBe("no_parent");
+    }
+  });
+
+  it("returns no_overlap for an unknown issue id (defensive default)", async () => {
+    const result = await svc.detectSameOwnerParentChildOverlap(randomUUID());
+    expect(result.kind).toBe("no_overlap");
+    if (result.kind === "no_overlap") {
+      expect(result.reason).toBe("child_not_found");
+    }
+  });
+});
