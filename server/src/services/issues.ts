@@ -748,6 +748,16 @@ function summarizeIssueUpdate(details: Record<string, unknown> | null): string |
   if (record.status !== undefined && previous?.status !== record.status) {
     return typeof record.status === "string" ? `Changed status to ${record.status.replace(/_/g, " ")}` : "Changed status";
   }
+  const missionControl = asRecord(record.missionControl);
+  const previousMissionControl = asRecord(previous?.missionControl);
+  const needsHumanAttention = missionControl?.needsHumanAttention;
+  const previousNeedsHumanAttention = previousMissionControl?.needsHumanAttention;
+  if (
+    typeof needsHumanAttention === "boolean"
+    && needsHumanAttention !== previousNeedsHumanAttention
+  ) {
+    return needsHumanAttention ? "Marked needs human attention" : "Cleared needs human attention";
+  }
   if (record.missionControl !== undefined || record.executionPolicy !== undefined || record.blockedByIssueIds !== undefined) {
     return "Updated task details";
   }

@@ -17,7 +17,7 @@ This feature is only done when:
 - Branch: `feat/mission-control-customization-lane`
 - Implementation owner: `ork`
 - Product/orchestration owner: `main`
-- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, the first operator controls in `IssueProperties`, and the first operational inbox views are now in place; `Resume` now records the existing `resumed` workflow state instead of clearing context, `Resolve handoff` now clears active handoff state through the same issue update surface and keeps handoff/history wording legible, `Reassign owner` now promotes the active handoff target through the same owner/mission-control plumbing so ownership stays clean, `Escalate` now raises `needsHumanAttention` through the same minimal mission-control payload while preserving any existing workflow state, `Inbox` now exposes practical operational view chips for the broader operator queue, Main/Ork/Stitch/Personal OS owner slices when those agents exist, needs-human, blocked/waiting, and recent handoffs by reusing the existing issue filter/view plumbing, the operator queue now stays high-signal in mixed inbox batches by limiting that view to mission-control ownership/attention/handoff/workflow lanes instead of every open issue, the latest handoff-summary lane now treats structured `issue.handoff_updated` activity as the durable handoff/history source instead of letting reviewer/approver churn masquerade as mission-control handoffs, and the latest activity-summary lane now ignores generic `issue.comment_added` churn so neither run-linked transcript comments nor plain manual operational comments overwrite fresher mission-control workflow-state updates. The remaining gap is broader history/use validation on top of the summary-noise cleanup
+- Current state: foundational metadata, ownership, filters, visibility primitives, structured handoffs, explicit workflow-state modeling, the first operator controls in `IssueProperties`, and the first operational inbox views are now in place; `Resume` now records the existing `resumed` workflow state instead of clearing context, `Resolve handoff` now clears active handoff state through the same issue update surface and keeps handoff/history wording legible, `Reassign owner` now promotes the active handoff target through the same owner/mission-control plumbing so ownership stays clean, `Escalate` now raises `needsHumanAttention` through the same minimal mission-control payload while preserving any existing workflow state, `Inbox` now exposes practical operational view chips for the broader operator queue, Main/Ork/Stitch/Personal OS owner slices when those agents exist, needs-human, blocked/waiting, and recent handoffs by reusing the existing issue filter/view plumbing, the operator queue now stays high-signal in mixed inbox batches by limiting that view to mission-control ownership/attention/handoff/workflow lanes instead of every open issue, the latest handoff-summary lane now treats structured `issue.handoff_updated` activity as the durable handoff/history source instead of letting reviewer/approver churn masquerade as mission-control handoffs, the latest activity-summary lane now ignores generic `issue.comment_added` churn so neither run-linked transcript comments nor plain manual operational comments overwrite fresher mission-control workflow-state updates, and realistic mixed mission-control run coverage now verifies that structured handoffs remain durable while `needsHumanAttention` escalations summarize as a compact high-signal activity instead of falling back to generic task-detail wording
 
 ## Checklist
 
@@ -70,7 +70,7 @@ This feature is only done when:
 - [x] Durable history for meaningful handoffs and state changes
 - [x] Clear latest meaningful actor/update display
 - [x] Avoid transcript-noise creep in summaries
-- [ ] Verify history remains high-signal and compact
+- [x] Verify history remains high-signal and compact
 
 ### 6. OpenClaw integration glue and delegation rules
 - [ ] Define how Main creates/updates Paperclip tasks
@@ -100,13 +100,14 @@ This feature is only done when:
 - [ ] Decide whether to open PR / merge / continue iteration
 
 ## Current recommended next slice
-- Verify history remains compact/high-signal against real mission-control runs instead of only targeted fixtures
-- After that, move into OpenClaw integration glue for how Main/Ork/Stitch/Personal OS publish structured task updates and handoffs
+- Move into OpenClaw integration glue for how Main/Ork/Stitch/Personal OS publish structured task updates and handoffs
+- Start with identity mapping plus the rules for when Main/Ork/Stitch/Personal OS create structured task updates vs leave work in chat
 
 ## Current blockers
 - No hard blocker for this slice
 - Repo-wide `pnpm -r typecheck` is currently blocked by an unrelated duplicate DB migration number (`0057_gentle_mission_control.sql` and `0057_tidy_join_requests.sql`)
-- Main remaining gap is broader history verification and real-use validation on top of the workflow-state and operational-view foundation
+- Broader verification hit an unrelated existing ordering-sensitive failure in `server/src/__tests__/issues-service.test.ts` (`wakes parents only when all direct children are terminal` expects a different `childIssueIds` order)
+- Main remaining gap is OpenClaw integration glue and real-use validation on top of the workflow-state, operational-view, and summary-noise foundation
 
 ## Update rule for Ork
 When meaningful progress lands, Ork should update this checklist with:

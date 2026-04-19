@@ -1042,6 +1042,142 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("keeps realistic mission-control history compact when a handoff is followed by escalation and run chatter", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const mainAgentId = randomUUID();
+    const orkAgentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Coordinate the next implementation slice",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(agents).values([
+      {
+        id: mainAgentId,
+        companyId,
+        name: "Main",
+        role: "coordinator",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: orkAgentId,
+        companyId,
+        name: "Ork",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: orkAgentId,
+      invocationSource: "manual",
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "agent",
+        actorId: mainAgentId,
+        agentId: mainAgentId,
+        action: "issue.handoff_updated",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date("2026-04-18T15:00:00.000Z"),
+        details: {
+          missionControl: {
+            handoff: {
+              fromAgentId: mainAgentId,
+              toAgentId: orkAgentId,
+              reason: "Engineering implementation",
+              requestedNextStep: "Take ownership of the patch",
+              unblockCondition: "Patch is merged",
+            },
+          },
+          _previous: {
+            missionControl: {
+              handoff: null,
+            },
+          },
+        },
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date("2026-04-18T15:05:00.000Z"),
+        details: {
+          missionControl: {
+            needsHumanAttention: true,
+          },
+          _previous: {
+            missionControl: {
+              needsHumanAttention: false,
+            },
+          },
+        },
+      },
+      {
+        companyId,
+        actorType: "agent",
+        actorId: orkAgentId,
+        agentId: orkAgentId,
+        runId,
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date("2026-04-18T15:06:00.000Z"),
+        details: {
+          commentId: randomUUID(),
+          bodySnippet: "Working through the patch now; I will update once the operator reviews it.",
+        },
+      },
+    ]);
+
+    const [result] = await svc.list(companyId, {});
+
+    expect(result?.latestActivitySummary).toMatchObject({
+      text: "Marked needs human attention",
+      action: "issue.updated",
+      actorType: "user",
+      actorId: "user-1",
+    });
+    expect(result?.latestHandoffSummary).toMatchObject({
+      text: "Created handoff",
+      action: "issue.handoff_updated",
+      actorType: "agent",
+      actorId: mainAgentId,
+      agentId: mainAgentId,
+    });
+  });
+
   it("trims list payload fields that can grow large on issue index routes", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
