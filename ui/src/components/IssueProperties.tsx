@@ -3,12 +3,14 @@ import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
+import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap } from "../lib/company-members";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { formatAssigneeUserLabel } from "../lib/assignees";
@@ -187,6 +189,11 @@ export function IssueProperties({
     queryFn: () => agentsApi.list(companyId!),
     enabled: !!companyId,
   });
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(companyId!),
+    queryFn: () => accessApi.listUserDirectory(companyId!),
+    enabled: !!companyId,
+  });
 
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(companyId!),
@@ -257,13 +264,21 @@ export function IssueProperties({
     () => sortAgentsByRecency((agents ?? []).filter((a) => a.status !== "terminated"), recentAssigneeIds),
     [agents, recentAssigneeIds],
   );
+  const userLabelMap = useMemo(
+    () => buildCompanyUserLabelMap(companyMembers?.users),
+    [companyMembers?.users],
+  );
+  const otherUserOptions = useMemo(
+    () => buildCompanyUserInlineOptions(companyMembers?.users, { excludeUserIds: [currentUserId, issue.createdByUserId] }),
+    [companyMembers?.users, currentUserId, issue.createdByUserId],
+  );
 
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
-  const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId);
+  const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
   const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
@@ -499,6 +514,31 @@ export function IssueProperties({
             {creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester"}
           </button>
         )}
+        {otherUserOptions
+          .filter((option) => {
+            if (!assigneeSearch.trim()) return true;
+            const q = assigneeSearch.toLowerCase();
+            return `${option.label} ${option.searchText ?? ""}`.toLowerCase().includes(q);
+          })
+          .map((option) => {
+            const userId = option.id.slice("user:".length);
+            return (
+              <button
+                key={option.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  issue.assigneeUserId === userId && "bg-accent",
+                )}
+                onClick={() => {
+                  onUpdate({ assigneeAgentId: null, assigneeUserId: userId });
+                  setAssigneeOpen(false);
+                }}
+              >
+                <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+                {option.label}
+              </button>
+            );
+          })}
         {sortedAgents
           .filter((a) => {
             if (!assigneeSearch.trim()) return true;
@@ -571,6 +611,24 @@ export function IssueProperties({
             {creatorUserLabel ? creatorUserLabel : "Requester"}
           </button>
         )}
+        {otherUserOptions
+          .filter((option) => {
+            if (!search.trim()) return true;
+            return `${option.label} ${option.searchText ?? ""}`.toLowerCase().includes(search.toLowerCase());
+          })
+          .map((option) => (
+            <button
+              key={`${stageType}:${option.id}`}
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                values.includes(option.id) && "bg-accent",
+              )}
+              onClick={() => toggleExecutionParticipant(stageType, option.id)}
+            >
+              <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+              {option.label}
+            </button>
+          ))}
         {sortedAgents
           .filter((agent) => {
             if (!search.trim()) return true;

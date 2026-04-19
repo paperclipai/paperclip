@@ -536,7 +536,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("tracks the first heartbeat with the agent role instead of adapter type", async () => {
-    const { runId } = await seedRunFixture({
+    const { agentId, runId } = await seedRunFixture({
       agentStatus: "running",
       includeIssue: false,
     });
@@ -548,6 +548,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       mockTelemetryClient,
       expect.objectContaining({
         agentRole: "engineer",
+        agentId,
       }),
     );
   });

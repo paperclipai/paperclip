@@ -436,9 +436,6 @@ async function searchWindow(
 
   for (let page = 2; page <= pageCount; page += 1) {
     const response = await searchPage(client, options, start, end, page, 100);
-    if (response.incomplete_results) {
-      throw new Error(`GitHub returned incomplete search results for window ${windowKey} on page ${page}`);
-    }
     ingestSearchItems(cache, response.items, shas);
   }
 
@@ -512,7 +509,7 @@ function sortFilteredShas(cache: CacheFile, shas: string[]): string[] {
 }
 
 function formatQueryDate(value: Date): string {
-  return new Date(Math.floor(value.getTime() / 1000) * 1000).toISOString().replace(".000Z", "Z");
+  return value.toISOString().replace(".000Z", "Z");
 }
 
 function ingestSearchItems(cache: CacheFile, items: SearchCommitItem[], shas: Set<string>) {
@@ -848,14 +845,6 @@ class GitHubClient {
 
       if (response.ok) {
         return (await response.json()) as T;
-      }
-
-      const retryAfter = response.headers.get("retry-after");
-      if ((response.status === 403 || response.status === 429) && retryAfter) {
-        const waitMs = Math.max(Number.parseInt(retryAfter, 10) * 1000, 1_000);
-        console.error(`GitHub secondary rate limit hit for ${pathname}; waiting ${Math.ceil(waitMs / 1000)}s...`);
-        await sleep(waitMs);
-        continue;
       }
 
       const remaining = response.headers.get("x-ratelimit-remaining");

@@ -31,7 +31,7 @@ let setOverridePaused: typeof import("../adapters/registry.js").setOverridePause
 let adapterRoutes: typeof import("../routes/adapters.js").adapterRoutes;
 let errorHandler: typeof import("../middleware/index.js").errorHandler;
 
-function createApp() {
+function createApp(actorOverrides: Partial<Express.Request["actor"]> = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -41,6 +41,7 @@ function createApp() {
       companyIds: [],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actorOverrides,
     };
     next();
   });
@@ -165,5 +166,19 @@ describe("adapter routes", () => {
     expect(builtin.body).not.toMatchObject({
       fields: [{ key: "mode" }],
     });
+  });
+
+  it("rejects signed-in users without org access", async () => {
+    const app = createApp({
+      userId: "outsider-1",
+      source: "session",
+      companyIds: [],
+      memberships: [],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app).get("/api/adapters/claude_local/config-schema");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
   });
 });

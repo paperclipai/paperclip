@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  authUsers,
   companies,
   createDb,
   projects,
@@ -47,6 +48,7 @@ import {
 const ORIGINAL_CWD = process.cwd();
 const ORIGINAL_ENV = { ...process.env };
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const itEmbeddedPostgres = embeddedPostgresSupport.supported ? it : it.skip;
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -372,6 +374,97 @@ describe("worktree helpers", () => {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
+
+  itEmbeddedPostgres(
+    "seeds authenticated users into minimally cloned worktree instances",
+    async () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-auth-seed-"));
+      const worktreeRoot = path.join(tempRoot, "PAP-999-auth-seed");
+      const sourceHome = path.join(tempRoot, "source-home");
+      const sourceConfigDir = path.join(sourceHome, "instances", "source");
+      const sourceConfigPath = path.join(sourceConfigDir, "config.json");
+      const sourceEnvPath = path.join(sourceConfigDir, ".env");
+      const sourceKeyPath = path.join(sourceConfigDir, "secrets", "master.key");
+      const worktreeHome = path.join(tempRoot, ".paperclip-worktrees");
+      const originalCwd = process.cwd();
+      const sourceDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-auth-source-");
+
+      try {
+        const sourceDbClient = createDb(sourceDb.connectionString);
+        await sourceDbClient.insert(authUsers).values({
+          id: "user-existing",
+          email: "existing@paperclip.ing",
+          name: "Existing User",
+          emailVerified: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+        fs.mkdirSync(path.dirname(sourceKeyPath), { recursive: true });
+        fs.mkdirSync(worktreeRoot, { recursive: true });
+
+        const sourceConfig = buildSourceConfig();
+        sourceConfig.database = {
+          mode: "postgres",
+          embeddedPostgresDataDir: path.join(sourceConfigDir, "db"),
+          embeddedPostgresPort: 54329,
+          backup: {
+            enabled: true,
+            intervalMinutes: 60,
+            retentionDays: 30,
+            dir: path.join(sourceConfigDir, "backups"),
+          },
+          connectionString: sourceDb.connectionString,
+        };
+        sourceConfig.logging.logDir = path.join(sourceConfigDir, "logs");
+        sourceConfig.storage.localDisk.baseDir = path.join(sourceConfigDir, "storage");
+        sourceConfig.secrets.localEncrypted.keyFilePath = sourceKeyPath;
+
+        fs.writeFileSync(sourceConfigPath, JSON.stringify(sourceConfig, null, 2) + "\n", "utf8");
+        fs.writeFileSync(sourceEnvPath, "", "utf8");
+        fs.writeFileSync(sourceKeyPath, "source-master-key", "utf8");
+
+        process.chdir(worktreeRoot);
+        await worktreeInitCommand({
+          name: "PAP-999-auth-seed",
+          home: worktreeHome,
+          fromConfig: sourceConfigPath,
+          force: true,
+        });
+
+        const targetConfig = JSON.parse(
+          fs.readFileSync(path.join(worktreeRoot, ".paperclip", "config.json"), "utf8"),
+        ) as PaperclipConfig;
+        const { default: EmbeddedPostgres } = await import("embedded-postgres");
+        const targetPg = new EmbeddedPostgres({
+          databaseDir: targetConfig.database.embeddedPostgresDataDir,
+          user: "paperclip",
+          password: "paperclip",
+          port: targetConfig.database.embeddedPostgresPort,
+          persistent: true,
+          initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+          onLog: () => {},
+          onError: () => {},
+        });
+
+        await targetPg.start();
+        try {
+          const targetDb = createDb(
+            `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
+          );
+          const seededUsers = await targetDb.select().from(authUsers);
+          expect(seededUsers.some((row) => row.email === "existing@paperclip.ing")).toBe(true);
+        } finally {
+          await targetPg.stop();
+        }
+      } finally {
+        process.chdir(originalCwd);
+        await sourceDb.cleanup();
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    20000,
+  );
 
   it("avoids ports already claimed by sibling worktree instance configs", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-claimed-ports-"));
