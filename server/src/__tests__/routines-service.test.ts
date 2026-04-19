@@ -1196,6 +1196,57 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(blocker?.description).toContain("If this is a visual review routine and browser or vision access is unavailable");
   });
 
+  it.each([
+    ["terminated", "Cannot assign work to terminated agents", "the routine's saved assignee is terminated"],
+    ["pending_approval", "Cannot assign work to pending approval agents", "the routine's saved assignee is pending approval"],
+  ] as const)(
+    "creates an unassigned automated blocker when the schedule assignee becomes %s before dispatch",
+    async (agentStatus, failureMessage, ownerMessage) => {
+      const { agentId, routine, svc } = await seedFixture();
+
+      const { trigger } = await svc.createTrigger(routine.id, {
+        kind: "schedule",
+        label: "daily",
+        cronExpression: "0 10 * * *",
+        timezone: "UTC",
+      }, {});
+
+      await db
+        .update(agents)
+        .set({ status: agentStatus })
+        .where(eq(agents.id, agentId));
+      await db
+        .update(routineTriggers)
+        .set({ nextRunAt: new Date("2026-04-13T10:00:00.000Z") })
+        .where(eq(routineTriggers.id, trigger.id));
+
+      const result = await svc.tickScheduledTriggers(new Date("2026-04-13T10:00:00.000Z"));
+      expect(result.triggered).toBe(1);
+
+      const run = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id))
+        .then((rows) => rows[0] ?? null);
+      expect(run?.status).toBe("failed");
+      expect(run?.failureReason).toContain(failureMessage);
+      expect(run?.linkedIssueId).toBeTruthy();
+
+      const blocker = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, run!.linkedIssueId!))
+        .then((rows) => rows[0] ?? null);
+      expect(blocker?.title).toBe(`Blocked routine: ${routine.title}`);
+      expect(blocker?.status).toBe("blocked");
+      expect(blocker?.assigneeAgentId).toBeNull();
+      expect(blocker?.originKind).toBe("manual");
+      expect(blocker?.description).toContain(failureMessage);
+      expect(blocker?.description).toContain(ownerMessage);
+      expect(blocker?.description).toContain("Route this blocker to the routine owner or responsible maintainer");
+    },
+  );
+
   it("cleans up automated blocker issues if dispatch failure finalization rolls back", async () => {
     const { companyId, routine, svc } = await seedFixture({
       wakeup: async () => {

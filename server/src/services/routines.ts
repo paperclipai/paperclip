@@ -323,11 +323,15 @@ function formatRoutineFailureDescription(input: {
   source: "schedule" | "manual" | "api" | "webhook";
   runId: string;
   failureReason: string;
+  blockerAssigneeAgentId?: string | null;
+  fallbackReason?: string | null;
 }) {
   const triggerLabel = input.trigger?.label?.trim() || input.trigger?.kind || "none";
   const triggerId = input.trigger?.id ?? "none";
-  const owner = input.routine.assigneeAgentId
+  const owner = input.blockerAssigneeAgentId
     ? "The routine assignee owns this blocker until they route it to the right maintainer or confirm the next run can create a normal execution issue."
+    : input.fallbackReason
+      ? `No assignable routine assignee is available: ${input.fallbackReason}. Route this blocker to the routine owner or responsible maintainer before rerunning the routine.`
     : "No default routine assignee is configured. Assign this blocker to the routine owner or responsible maintainer before rerunning the routine.";
   return [
     "## Blocker",
@@ -393,6 +397,45 @@ export function routineService(db: Db, deps: { heartbeat?: RoutineHeartbeatDeps 
     if (agent.companyId !== companyId) throw unprocessable("Assignee must belong to same company");
     if (agent.status === "pending_approval") throw conflict("Cannot assign routines to pending approval agents");
     if (agent.status === "terminated") throw conflict("Cannot assign routines to terminated agents");
+  }
+
+  async function resolveAutomatedFailureAssignee(routine: typeof routines.$inferSelect) {
+    if (!routine.assigneeAgentId) {
+      return { assigneeAgentId: null, fallbackReason: null };
+    }
+
+    const agent = await db
+      .select({ id: agents.id, companyId: agents.companyId, status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, routine.assigneeAgentId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!agent) {
+      return {
+        assigneeAgentId: null,
+        fallbackReason: "the routine's saved assignee no longer exists",
+      };
+    }
+    if (agent.companyId !== routine.companyId) {
+      return {
+        assigneeAgentId: null,
+        fallbackReason: "the routine's saved assignee belongs to a different company",
+      };
+    }
+    if (agent.status === "pending_approval") {
+      return {
+        assigneeAgentId: null,
+        fallbackReason: "the routine's saved assignee is pending approval",
+      };
+    }
+    if (agent.status === "terminated") {
+      return {
+        assigneeAgentId: null,
+        fallbackReason: "the routine's saved assignee is terminated",
+      };
+    }
+
+    return { assigneeAgentId: routine.assigneeAgentId, fallbackReason: null };
   }
 
   async function assertProject(companyId: string, projectId: string | null | undefined) {
@@ -705,15 +748,20 @@ export function routineService(db: Db, deps: { heartbeat?: RoutineHeartbeatDeps 
     failureReason: string;
   }) {
     if (input.source !== "schedule" && input.source !== "webhook") return null;
+    const failureAssignee = await resolveAutomatedFailureAssignee(input.routine);
     return issueSvc.create(input.routine.companyId, {
       projectId: input.routine.projectId,
       goalId: input.routine.goalId,
       parentId: input.routine.parentIssueId,
       title: `Blocked routine: ${input.routine.title}`,
-      description: formatRoutineFailureDescription(input),
+      description: formatRoutineFailureDescription({
+        ...input,
+        blockerAssigneeAgentId: failureAssignee.assigneeAgentId,
+        fallbackReason: failureAssignee.fallbackReason,
+      }),
       status: "blocked",
       priority: input.routine.priority,
-      assigneeAgentId: input.routine.assigneeAgentId,
+      assigneeAgentId: failureAssignee.assigneeAgentId,
       originKind: "manual",
     });
   }
