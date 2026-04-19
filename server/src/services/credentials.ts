@@ -160,6 +160,7 @@ export function credentialService(db: Db) {
  * - `claude_api_key`: sets ANTHROPIC_API_KEY.
  * - `gemini_api_key`: sets GEMINI_API_KEY and GOOGLE_API_KEY.
  * - `openai_api_key`: sets OPENAI_API_KEY (covers codex-local and cursor-local).
+ * - `openrouter_api_key`: sets OPENROUTER_API_KEY (covers opencode-local).
  */
 export async function resolveCredentialEnv(
   db: Db,
@@ -239,6 +240,15 @@ export async function resolveCredentialEnv(
         return { env: {} };
       }
       return { env: { OPENAI_API_KEY: apiKey, CURSOR_API_KEY: apiKey } };
+    }
+
+    case "openrouter_api_key": {
+      const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
+      if (!apiKey) {
+        logger.warn({ agentId, credentialId }, "openrouter_api_key credential missing apiKey");
+        return { env: {} };
+      }
+      return { env: { OPENROUTER_API_KEY: apiKey } };
     }
 
     default:

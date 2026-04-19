@@ -1459,6 +1459,7 @@ const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
   claude_api_key: "Claude API Key",
   gemini_api_key: "Gemini API Key",
   openai_api_key: "OpenAI API Key",
+  openrouter_api_key: "OpenRouter API Key",
 };
 
 function credentialTypesForAdapterType(adapterType: string): Set<CredentialType> {
@@ -1470,6 +1471,13 @@ function credentialTypesForAdapterType(adapterType: string): Set<CredentialType>
     case "codex_local":
     case "cursor":
       return new Set<CredentialType>(["openai_api_key"]);
+    case "opencode_local":
+      return new Set<CredentialType>([
+        "openrouter_api_key",
+        "openai_api_key",
+        "claude_api_key",
+        "gemini_api_key",
+      ]);
     default:
       return new Set<CredentialType>();
   }

@@ -757,6 +757,7 @@ const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
   claude_api_key: "Claude API Key",
   gemini_api_key: "Gemini API Key",
   openai_api_key: "OpenAI API Key",
+  openrouter_api_key: "OpenRouter API Key",
 };
 
 const CREDENTIAL_TYPE_OPTIONS: CredentialType[] = [
@@ -764,6 +765,7 @@ const CREDENTIAL_TYPE_OPTIONS: CredentialType[] = [
   "claude_api_key",
   "gemini_api_key",
   "openai_api_key",
+  "openrouter_api_key",
 ];
 
 function credentialPlaceholder(type: CredentialType): string {
@@ -776,6 +778,8 @@ function credentialPlaceholder(type: CredentialType): string {
       return "Paste AIza... key...";
     case "openai_api_key":
       return "Paste sk-... key...";
+    case "openrouter_api_key":
+      return "Paste sk-or-... key...";
   }
 }
 

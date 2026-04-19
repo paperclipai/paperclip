@@ -245,6 +245,7 @@ export const CREDENTIAL_TYPES = [
   "claude_api_key",
   "gemini_api_key",
   "openai_api_key",
+  "openrouter_api_key",
 ] as const;
 export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
 
