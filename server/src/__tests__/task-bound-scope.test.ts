@@ -207,7 +207,7 @@ describe("task-bound scope enforcement", () => {
   });
 
   it("PATCH: non-bound issue → 422 task_bound_scope", async () => {
-    const other = makeOtherIssue();
+    const other = makeOtherIssue({ assigneeAgentId: "other-agent-id" });
     mockIssueService.getById.mockResolvedValue(other);
 
     const res = await request(createAgentApp())
@@ -216,6 +216,22 @@ describe("task-bound scope enforcement", () => {
 
     expect(res.status).toBe(422);
     expect(res.body.gate).toBe("task_bound_scope");
+  });
+
+  // ----- Agent assigned to non-bound issue: access granted -----
+
+  it("PATCH: task-bound agent accessing own assigned issue → allowed", async () => {
+    // Agent is assigned to a non-bound issue → access should be granted
+    // despite being task-bound to a different issue
+    const other = makeOtherIssue({ assigneeAgentId: AGENT_ID });
+    mockIssueService.getById.mockResolvedValue(other);
+    mockIssueService.update.mockResolvedValue(other);
+
+    const res = await request(createAgentApp())
+      .patch(`/api/issues/${OTHER_ISSUE_ID}`)
+      .send({ status: "done", comment: "Done" });
+
+    expect(res.status).toBe(200);
   });
 
   // ----- GET /issues/:id -----
@@ -232,7 +248,7 @@ describe("task-bound scope enforcement", () => {
   });
 
   it("GET /issues/:id: non-bound issue → 200 (reads allowed across scope)", async () => {
-    const other = makeOtherIssue();
+    const other = makeOtherIssue({ assigneeAgentId: "other-agent-id" });
     mockIssueService.getById.mockResolvedValue(other);
 
     const res = await request(createAgentApp())
@@ -257,7 +273,7 @@ describe("task-bound scope enforcement", () => {
   });
 
   it("checkout: non-bound issue → 422 task_bound_scope", async () => {
-    const other = makeOtherIssue({ status: "todo" });
+    const other = makeOtherIssue({ status: "todo", assigneeAgentId: "other-agent-id" });
     mockIssueService.getById.mockResolvedValue(other);
 
     const res = await request(createAgentApp())
@@ -282,7 +298,7 @@ describe("task-bound scope enforcement", () => {
   });
 
   it("comment: non-bound issue → 422 task_bound_scope", async () => {
-    const other = makeOtherIssue();
+    const other = makeOtherIssue({ assigneeAgentId: "other-agent-id" });
     mockIssueService.getById.mockResolvedValue(other);
 
     const res = await request(createAgentApp())
@@ -392,7 +408,7 @@ describe("task-bound scope enforcement", () => {
   // ----- Activity log records scope block -----
 
   it("activity log records scope block with boundIssueId + endpoint", async () => {
-    const other = makeOtherIssue();
+    const other = makeOtherIssue({ assigneeAgentId: "other-agent-id" });
     mockIssueService.getById.mockResolvedValue(other);
 
     await request(createAgentApp())
@@ -415,7 +431,7 @@ describe("task-bound scope enforcement", () => {
   // ----- GET /issues/:id/comments: read guard -----
 
   it("GET /issues/:id/comments: non-bound → 200 (reads allowed across scope)", async () => {
-    const other = makeOtherIssue();
+    const other = makeOtherIssue({ assigneeAgentId: "other-agent-id" });
     mockIssueService.getById.mockResolvedValue(other);
 
     const res = await request(createAgentApp())

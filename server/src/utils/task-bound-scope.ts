@@ -4,6 +4,7 @@ export interface TaskBoundScope {
   isTaskBound: boolean;
   boundIssueId: string | null;
   runId: string | null;
+  agentId: string | null;
 }
 
 const SCOPE_KEY = Symbol("taskBoundScope");
@@ -25,18 +26,20 @@ export async function resolveTaskBoundScope(
   getIssue?: (issueId: string) => Promise<{ originKind?: string | null } | null | undefined>,
 ): Promise<TaskBoundScope> {
   if (req.actor.type !== "agent") {
-    return { isTaskBound: false, boundIssueId: null, runId: null };
+    return { isTaskBound: false, boundIssueId: null, runId: null, agentId: null };
   }
 
   const runId = req.actor.runId?.trim() || null;
+  const agentId = req.actor.agentId?.trim() || null;
+
   if (!runId) {
-    return { isTaskBound: false, boundIssueId: null, runId: null };
+    return { isTaskBound: false, boundIssueId: null, runId: null, agentId };
   }
 
   const run = await getRun(runId);
   if (!run) {
     // Fail-closed: run not found → task-bound with no valid issue (blocks everything)
-    return { isTaskBound: true, boundIssueId: null, runId };
+    return { isTaskBound: true, boundIssueId: null, runId, agentId };
   }
 
   const ctx = run.contextSnapshot as Record<string, unknown> | null;
@@ -44,7 +47,7 @@ export async function resolveTaskBoundScope(
 
   if (!issueId) {
     // Timer wake / global heartbeat — no issue context → full access
-    return { isTaskBound: false, boundIssueId: null, runId };
+    return { isTaskBound: false, boundIssueId: null, runId, agentId };
   }
 
   // Named agents (SPE, Research Agent, SrCxD, etc.) must remain free to work on
@@ -54,11 +57,11 @@ export async function resolveTaskBoundScope(
   if (getIssue) {
     const issue = await getIssue(issueId);
     if (issue?.originKind === "routine_execution") {
-      return { isTaskBound: false, boundIssueId: null, runId };
+      return { isTaskBound: false, boundIssueId: null, runId, agentId };
     }
   }
 
-  return { isTaskBound: true, boundIssueId: issueId, runId };
+  return { isTaskBound: true, boundIssueId: issueId, runId, agentId };
 }
 
 /**
@@ -86,17 +89,30 @@ export interface TaskBoundAccessOptions {
    * inspect related issues without losing write isolation.
    */
   allowReadAcrossScope?: boolean;
+  /**
+   * Async function to look up the assignee of a given issue.
+   * When provided and the agent is assigned to the target issue, access is granted
+   * even across task-bound scope. This unblocks agents acting on their own assigned
+   * work while task-bound to a routine coordination issue.
+   */
+  getIssueAssignee?: (issueId: string) => Promise<string | null>;
 }
 
 /**
  * Checks whether a task-bound agent is allowed to access a given issue.
  * Returns null if access is permitted, or a gate object if blocked.
+ *
+ * Access is always granted when:
+ * - Agent is not task-bound
+ * - Target issue is the bound issue (normal self-mutate)
+ * - Target issue is assigned to the same agent (agent accessing their own work)
+ * - allowReadAcrossScope is true and the agent is only reading (GET/HEAD)
  */
-export function assertTaskBoundAccess(
+export async function assertTaskBoundAccess(
   scope: TaskBoundScope,
   targetIssueId: string,
   options: TaskBoundAccessOptions = {},
-): { gate: string; reason: string } | null {
+): Promise<{ gate: string; reason: string } | null> {
   if (!scope.isTaskBound) return null;
 
   if (!scope.boundIssueId) {
@@ -106,13 +122,24 @@ export function assertTaskBoundAccess(
     };
   }
 
-  if (scope.boundIssueId !== targetIssueId) {
-    if (options.allowReadAcrossScope) return null;
-    return {
-      gate: "task_bound_scope",
-      reason: `Agent is bound to task ${scope.boundIssueId} and cannot access task ${targetIssueId}.`,
-    };
+  if (scope.boundIssueId === targetIssueId) {
+    return null;
   }
 
-  return null;
+  // Allow access when the agent is assigned to the target issue.
+  // This unblocks the common case where an agent needs to act on their
+  // own assigned work while task-bound to a routine coordination issue.
+  if (scope.agentId && options.getIssueAssignee) {
+    const assigneeId = await options.getIssueAssignee(targetIssueId);
+    if (assigneeId === scope.agentId) return null;
+  }
+
+  // allowReadAcrossScope: permit cross-scope reads (GET/HEAD) when scope resolved.
+  // Fail-closed cases (unknown run / no bound issue) already blocked above.
+  if (options.allowReadAcrossScope) return null;
+
+  return {
+    gate: "task_bound_scope",
+    reason: `Agent is bound to task ${scope.boundIssueId} and cannot access task ${targetIssueId}.`,
+  };
 }

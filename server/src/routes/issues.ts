@@ -106,6 +106,10 @@ export function issueRoutes(
   /**
    * Task-bound scope enforcement. Returns true if access is allowed,
    * false if blocked (response already sent). Board users always pass.
+   *
+   * Resolves the target issue's assignee and grants access when the current
+   * agent is assigned to it — allowing agents to act on their own assigned
+   * work even when task-bound to a routine coordination issue.
    */
   async function enforceTaskBoundScope(
     req: Request,
@@ -117,7 +121,17 @@ export function issueRoutes(
     // Read-only routes may inspect any issue in the same company — writes remain
     // bound-issue only. Fail-closed (unknown run) still blocks reads.
     const allowReadAcrossScope = req.method === "GET" || req.method === "HEAD";
-    const block = assertTaskBoundAccess(scope, issue.id, { allowReadAcrossScope });
+    const block = await assertTaskBoundAccess(scope, issue.id, {
+      allowReadAcrossScope,
+      getIssueAssignee: async (targetIssueId: string) => {
+        // Use the already-fetched issue when possible to avoid extra DB call
+        if (targetIssueId === issue.id) {
+          return (issue as { assigneeAgentId?: string | null }).assigneeAgentId ?? null;
+        }
+        const resolved = await svc.getById(targetIssueId);
+        return resolved?.assigneeAgentId ?? null;
+      },
+    });
     if (!block) return true;
     // Watchdog bypass: agents holding `tickets:bypass_authoring_gates` scan the
     // fleet and nudge non-bound issues by design. Permit writes across scope
@@ -470,13 +484,10 @@ export function issueRoutes(
   ): Promise<{ gate: string; reason: string } | null> {
     if (req.actor.type !== "agent") return null;
     if (targetStatus !== "done") return null;
-    // Routine executions self-close without QA review
-    if (issue.originKind === "routine_execution") return null;
-
     // Routine execution tasks are system tasks run by the Monitor agent.
     // They do not go through in_review and do not require QA: PASS from a
     // separate reviewer. Skipping both gates to prevent recurrence of the
-    // "CEO timeout on pipeline stagnation monitor" pattern (DLD-3220).
+    // "CEO timeout on pipeline stagnation monitor" pattern (DLD-3220/DLD-3246).
     // Root cause: Monitor posts CEO gate waiver requests for every cycle but
     // CEO cannot respond when in error state. Fix: exclude at the gate level.
     if (issue.originKind === "routine_execution") return null;
