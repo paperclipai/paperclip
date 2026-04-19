@@ -572,6 +572,15 @@ if [ "$phase" = "swapping" ]; then
     fi
   fi
 
+  log "Building artifacts in live repo..."
+  if ! pnpm build 2>>"$LOG_FILE"; then
+    log "ERROR: Build failed in live repo — restoring agents and aborting"
+    systemctl --user start "$SERVICE_NAME" 2>>"$LOG_FILE" || true
+    restore_heartbeats
+    full_cleanup
+    exit 1
+  fi
+
   if [ -n "$ORIGIN" ]; then
     log "Pushing to $ORIGIN..."
     git push "$ORIGIN" "$UPSTREAM_BRANCH" 2>>"$LOG_FILE" || log "WARN: Push to $ORIGIN failed (non-fatal)"
