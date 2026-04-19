@@ -2550,9 +2550,9 @@ export function heartbeatService(db: Db) {
         await tx
           .update(issues)
           .set({
-            executionRunId: null,
-            executionAgentNameKey: null,
-            executionLockedAt: null,
+            executionRunId: retryRun.id,
+            executionAgentNameKey: normalizeAgentNameKey(agent.name),
+            executionLockedAt: now,
             updatedAt: now,
           })
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));

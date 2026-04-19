@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   companies,
   createDb,
   executionWorkspaces,
@@ -42,6 +43,33 @@ async function ensureIssueRelationsTable(db: ReturnType<typeof createDb>) {
       "updated_at" timestamptz NOT NULL DEFAULT now()
     );
   `));
+}
+
+async function insertHeartbeatRunsWithWakeups(
+  db: ReturnType<typeof createDb>,
+  runs: typeof heartbeatRuns.$inferInsert | Array<typeof heartbeatRuns.$inferInsert>,
+) {
+  const runList = Array.isArray(runs) ? runs : [runs];
+  const wakeupRows = runList.map((run) => ({
+    id: run.wakeupRequestId as string,
+    companyId: run.companyId,
+    agentId: run.agentId,
+    source: run.invocationSource === "assignment" ? "assignment" : "automation",
+    triggerDetail: run.triggerDetail ?? "system",
+    reason: "issue_assigned",
+    payload: (
+      typeof run.contextSnapshot === "object"
+      && run.contextSnapshot
+      && "issueId" in run.contextSnapshot
+      && typeof run.contextSnapshot.issueId === "string"
+    )
+      ? { issueId: run.contextSnapshot.issueId }
+      : {},
+    status: "queued",
+  }));
+
+  await db.insert(agentWakeupRequests).values(wakeupRows);
+  await db.insert(heartbeatRuns).values(runList);
 }
 
 if (!embeddedPostgresSupport.supported) {
@@ -406,7 +434,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       permissions: {},
     });
 
-    await db.insert(heartbeatRuns).values({
+    await insertHeartbeatRunsWithWakeups(db, {
       id: staleRunId,
       companyId,
       agentId,
@@ -492,7 +520,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       permissions: {},
     });
 
-    await db.insert(heartbeatRuns).values({
+    await insertHeartbeatRunsWithWakeups(db, {
       id: checkoutRunId,
       companyId,
       agentId,
@@ -505,7 +533,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       updatedAt: new Date("2026-04-19T17:00:00.000Z"),
     });
 
-    await db.insert(heartbeatRuns).values({
+    await insertHeartbeatRunsWithWakeups(db, {
       id: unrelatedRunId,
       companyId,
       agentId,
@@ -597,7 +625,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       permissions: {},
     });
 
-    await db.insert(heartbeatRuns).values({
+    await insertHeartbeatRunsWithWakeups(db, {
       id: checkoutRunId,
       companyId,
       agentId,
@@ -682,7 +710,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       permissions: {},
     });
 
-    await db.insert(heartbeatRuns).values([
+    await insertHeartbeatRunsWithWakeups(db, [
       {
         id: checkoutRunId,
         companyId,
@@ -781,7 +809,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       permissions: {},
     });
 
-    await db.insert(heartbeatRuns).values([
+    await insertHeartbeatRunsWithWakeups(db, [
       {
         id: checkoutRunId,
         companyId,
@@ -882,7 +910,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       permissions: {},
     });
 
-    await db.insert(heartbeatRuns).values([
+    await insertHeartbeatRunsWithWakeups(db, [
       {
         id: checkoutRunId,
         companyId,
