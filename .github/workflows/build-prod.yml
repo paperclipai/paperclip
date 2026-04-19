@@ -1,8 +1,8 @@
-name: "Build: Production (master) / Dev (dev)"
+name: "Build: Production"
 
 on:
   push:
-    branches: [master, dev]
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -33,20 +33,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve image name
-        id: image
-        run: |
-          if [ "${{ github.ref_name }}" = "master" ]; then
-            echo "name=ghcr.io/farhoodliquor/paperclip" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=ghcr.io/farhoodliquor/paperclip-dev" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ steps.image.outputs.name }}
+          images: ghcr.io/farhoodliquor/paperclip
           tags: |
             type=raw,value=latest
             type=sha,prefix=
