@@ -37,9 +37,7 @@ vi.mock("../services/index.js", () => ({
     reportRunActivity: vi.fn(async () => undefined),
   }),
   instanceSettingsService: () => ({
-    getExperimental: vi.fn(async () => ({  assetService: () => ({}),
-  chatService: () => ({}),
-})),
+    getExperimental: vi.fn(async () => ({})),
     getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
   }),
   issueApprovalService: () => ({}),
@@ -50,6 +48,8 @@ vi.mock("../services/index.js", () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
   workProductService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
 }));
 
 function registerModuleMocks() {
@@ -65,10 +65,7 @@ function registerModuleMocks() {
       reportRunActivity: vi.fn(async () => undefined),
     }),
     instanceSettingsService: () => ({
-      getExperimental: vi.fn(async () => ({  chatService: () => ({}),
-  chatProcessService: () => ({}),
-    assetService: () => ({}),
-  })),
+      getExperimental: vi.fn(async () => ({})),
       getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
     }),
     issueApprovalService: () => ({}),
@@ -79,6 +76,9 @@ function registerModuleMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
+    assetService: () => ({}),
+    chatService: () => ({}),
+    chatProcessService: () => ({}),
   }));
 }
 

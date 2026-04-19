@@ -25,10 +25,10 @@ vi.mock("../services/index.js", () => ({
     getById: vi.fn(),
   }),
   documentService: () => ({
-    getIssueDocumentPayload: vi.fn(async () => ({  assetService: () => ({}),
-  chatService: () => ({}),
-})),
+    getIssueDocumentPayload: vi.fn(async () => ({})),
   }),
+  assetService: () => ({}),
+  chatService: () => ({}),
   executionWorkspaceService: () => ({
     getById: vi.fn(),
   }),

@@ -58,9 +58,9 @@ describe("GET /health", () => {
 
     expect(res.status).toBe(503);
     expect(res.body).toMatchObject({
-      status: "degraded",
+      status: "unhealthy",
       version: serverVersion,
-      database: { status: "disconnected" },
+      error: "database_unreachable",
     });
   });
 

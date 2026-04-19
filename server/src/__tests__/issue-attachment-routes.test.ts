@@ -35,12 +35,11 @@ function registerRouteMocks() {
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
       listIssueVotesForUser: vi.fn(async () => []),
-      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false   assetService: () => ({}),
-  chatService: () => ({}),
-  chatProcessService: () => ({}),
-    instanceSettingsService: () => ({}),
-  })),
+      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
     }),
+    assetService: () => ({}),
+    chatService: () => ({}),
+    chatProcessService: () => ({}),
     goalService: () => ({}),
     heartbeatService: () => ({
       wakeup: vi.fn(async () => undefined),

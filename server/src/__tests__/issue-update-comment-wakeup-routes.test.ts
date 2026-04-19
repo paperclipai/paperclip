@@ -32,10 +32,10 @@ vi.mock("../services/index.js", () => ({
     resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
       ambiguous: false,
       agent: { id: raw },
-      assetService: () => ({}),
-  chatService: () => ({}),
-})),
+    })),
   }),
+  assetService: () => ({}),
+  chatService: () => ({}),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({
@@ -75,13 +75,11 @@ function registerModuleMocks() {
       resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
         ambiguous: false,
         agent: { id: raw },
-        chatService: () => ({}),
-  chatProcessService: () => ({}),
-    feedbackService: () => ({}),
-    instanceSettingsService: () => ({}),
-    assetService: () => ({}),
-  })),
+      })),
     }),
+    assetService: () => ({}),
+    chatService: () => ({}),
+    chatProcessService: () => ({}),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
