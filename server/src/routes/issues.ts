@@ -1927,29 +1927,34 @@ export function issueRoutes(
         }
       }
 
+      const PARENT_WAKE_STATUSES = ["done", "cancelled", "blocked"] as const;
       const becameTerminal =
-        !["done", "cancelled"].includes(existing.status) && ["done", "cancelled"].includes(issue.status);
+        !PARENT_WAKE_STATUSES.includes(existing.status as typeof PARENT_WAKE_STATUSES[number])
+        && PARENT_WAKE_STATUSES.includes(issue.status as typeof PARENT_WAKE_STATUSES[number]);
       if (becameTerminal && issue.parentId) {
         const parent = await svc.getWakeableParentAfterChildCompletion(issue.parentId);
         if (parent) {
+          const wakeReason = issue.status === "blocked" ? "issue_child_blocked" : "issue_children_completed";
           addWakeup(parent.assigneeAgentId, {
             source: "automation",
             triggerDetail: "system",
-            reason: "issue_children_completed",
+            reason: wakeReason,
             payload: {
               issueId: parent.id,
               completedChildIssueId: issue.id,
               childIssueIds: parent.childIssueIds,
+              childStatus: issue.status,
             },
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
             contextSnapshot: {
               issueId: parent.id,
               taskId: parent.id,
-              wakeReason: "issue_children_completed",
-              source: "issue.children_completed",
+              wakeReason,
+              source: issue.status === "blocked" ? "issue.child_blocked" : "issue.children_completed",
               completedChildIssueId: issue.id,
               childIssueIds: parent.childIssueIds,
+              childStatus: issue.status,
             },
           });
         }
