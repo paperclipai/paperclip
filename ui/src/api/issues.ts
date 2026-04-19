@@ -41,6 +41,9 @@ export const issuesApi = {
       includeRoutineExecutions?: boolean;
       q?: string;
       limit?: number;
+      dueDate?: string;
+      dueFrom?: string;
+      dueTo?: string;
     },
   ) => {
     const params = new URLSearchParams();
@@ -61,6 +64,9 @@ export const issuesApi = {
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.q) params.set("q", filters.q);
     if (filters?.limit) params.set("limit", String(filters.limit));
+    if (filters?.dueDate) params.set("dueDate", filters.dueDate);
+    if (filters?.dueFrom) params.set("dueFrom", filters.dueFrom);
+    if (filters?.dueTo) params.set("dueTo", filters.dueTo);
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },

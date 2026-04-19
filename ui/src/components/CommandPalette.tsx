@@ -28,6 +28,9 @@ import {
   History,
   SquarePen,
   Plus,
+  Calendar,
+  CalendarDays,
+  CalendarRange,
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
@@ -153,6 +156,22 @@ export function CommandPalette() {
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
             Issues
+          </CommandItem>
+          <CommandItem onSelect={() => go("/tasks/today")}>
+            <Calendar className="mr-2 h-4 w-4" />
+            Today
+          </CommandItem>
+          <CommandItem onSelect={() => go("/tasks/tomorrow")}>
+            <CalendarDays className="mr-2 h-4 w-4" />
+            Tomorrow
+          </CommandItem>
+          <CommandItem onSelect={() => go("/tasks/next-7-days")}>
+            <CalendarRange className="mr-2 h-4 w-4" />
+            Next 7 Days
+          </CommandItem>
+          <CommandItem onSelect={() => go("/tasks/calendar")}>
+            <CalendarDays className="mr-2 h-4 w-4" />
+            Calendar
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Hexagon className="mr-2 h-4 w-4" />

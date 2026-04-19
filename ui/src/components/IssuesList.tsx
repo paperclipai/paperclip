@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialog } from "../context/DialogContext";
@@ -56,6 +56,7 @@ import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTr
 import { KanbanBoard } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
+import { dateHeading } from "../lib/issue-date-ranges";
 import type { Issue, Project } from "@paperclipai/shared";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
@@ -66,9 +67,9 @@ const ISSUE_ROW_RENDER_BATCH_DELAY_MS = 0;
 /* ── View state ── */
 
 export type IssueViewState = IssueFilterState & {
-  sortField: "status" | "priority" | "title" | "created" | "updated";
+  sortField: "status" | "priority" | "title" | "created" | "due" | "updated";
   sortDir: "asc" | "desc";
-  groupBy: "status" | "priority" | "assignee" | "workspace" | "parent" | "none";
+  groupBy: "status" | "priority" | "assignee" | "workspace" | "parent" | "dueDate" | "none";
   viewMode: "list" | "board";
   nestingEnabled: boolean;
   collapsedGroups: string[];
@@ -86,23 +87,52 @@ const defaultViewState: IssueViewState = {
   collapsedParents: [],
 };
 
-function getViewState(key: string): IssueViewState {
+function buildDefaultViewState(
+  defaultViewMode: IssueViewState["viewMode"] = defaultViewState.viewMode,
+  patch?: Partial<IssueViewState>,
+): IssueViewState {
+  return { ...defaultViewState, viewMode: defaultViewMode, ...patch };
+}
+
+function applyLockedViewState(
+  state: IssueViewState,
+  lockedViewMode?: IssueViewState["viewMode"],
+  lockedGroupBy?: IssueViewState["groupBy"],
+): IssueViewState {
+  return {
+    ...state,
+    ...(lockedViewMode ? { viewMode: lockedViewMode } : {}),
+    ...(lockedGroupBy ? { groupBy: lockedGroupBy } : {}),
+  };
+}
+
+function getViewState(
+  key: string,
+  defaultViewMode?: IssueViewState["viewMode"],
+  patch?: Partial<IssueViewState>,
+): IssueViewState {
+  const fallbackState = buildDefaultViewState(defaultViewMode, patch);
   try {
     const raw = localStorage.getItem(key);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return { ...defaultViewState, ...parsed, ...normalizeIssueFilterState(parsed) };
+      return { ...fallbackState, ...parsed, ...normalizeIssueFilterState(parsed), ...patch };
     }
   } catch { /* ignore */ }
-  return { ...defaultViewState };
+  return fallbackState;
 }
 
 function saveViewState(key: string, state: IssueViewState) {
   localStorage.setItem(key, JSON.stringify(state));
 }
 
-function getInitialViewState(key: string, initialAssignees?: string[]): IssueViewState {
-  const stored = getViewState(key);
+function getInitialViewState(
+  key: string,
+  initialAssignees?: string[],
+  defaultViewMode?: IssueViewState["viewMode"],
+  patch?: Partial<IssueViewState>,
+): IssueViewState {
+  const stored = getViewState(key, defaultViewMode, patch);
   if (!initialAssignees) return stored;
   return {
     ...stored,
@@ -115,8 +145,10 @@ function getInitialWorkspaceViewState(
   key: string,
   initialAssignees?: string[],
   initialWorkspaces?: string[],
+  defaultViewMode?: IssueViewState["viewMode"],
+  patch?: Partial<IssueViewState>,
 ): IssueViewState {
-  const stored = getInitialViewState(key, initialAssignees);
+  const stored = getInitialViewState(key, initialAssignees, defaultViewMode, patch);
   if (!initialWorkspaces) return stored;
   return {
     ...stored,
@@ -165,6 +197,11 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
         return dir * a.title.localeCompare(b.title);
       case "created":
         return dir * (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      case "due":
+        if (!a.dueDate && !b.dueDate) return 0;
+        if (!a.dueDate) return 1;
+        if (!b.dueDate) return -1;
+        return dir * a.dueDate.localeCompare(b.dueDate);
       case "updated":
         return dir * (new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
       default:
@@ -201,6 +238,10 @@ interface IssuesListProps {
   projectId?: string;
   viewStateKey: string;
   issueLinkState?: unknown;
+  defaultViewMode?: IssueViewState["viewMode"];
+  defaultViewStatePatch?: Partial<IssueViewState>;
+  lockedViewMode?: IssueViewState["viewMode"];
+  lockedGroupBy?: IssueViewState["groupBy"];
   initialAssignees?: string[];
   initialWorkspaces?: string[];
   initialSearch?: string;
@@ -208,6 +249,9 @@ interface IssuesListProps {
   baseCreateIssueDefaults?: Record<string, unknown>;
   createIssueLabel?: string;
   enableRoutineVisibilityFilter?: boolean;
+  defaultNewIssueValues?: Record<string, string | undefined>;
+  emptyMessage?: string;
+  topContent?: ReactNode;
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
@@ -284,6 +328,10 @@ export function IssuesList({
   projectId,
   viewStateKey,
   issueLinkState,
+  defaultViewMode,
+  defaultViewStatePatch,
+  lockedViewMode,
+  lockedGroupBy,
   initialAssignees,
   initialWorkspaces,
   initialSearch,
@@ -291,6 +339,9 @@ export function IssuesList({
   baseCreateIssueDefaults,
   createIssueLabel,
   enableRoutineVisibilityFilter = false,
+  defaultNewIssueValues,
+  emptyMessage = "No issues match the current filters or search.",
+  topContent,
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
@@ -317,9 +368,37 @@ export function IssuesList({
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
   const initialAssigneesKey = initialAssignees?.join("|") ?? "";
   const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
+  const defaultViewStatePatchKey = JSON.stringify(defaultViewStatePatch ?? {});
+  const viewStateContextKey = [
+    scopedKey,
+    initialAssigneesKey,
+    initialWorkspacesKey,
+    defaultViewMode ?? "",
+    lockedViewMode ?? "",
+    lockedGroupBy ?? "",
+    defaultViewStatePatchKey,
+  ].join("::");
+  const buildInitialIssueViewStateForContext = useCallback(() => {
+    const base = getInitialWorkspaceViewState(
+      scopedKey,
+      initialAssignees,
+      initialWorkspaces,
+      defaultViewMode,
+      defaultViewStatePatch,
+    );
+    return applyLockedViewState(base, lockedViewMode, lockedGroupBy);
+  }, [
+    defaultViewMode,
+    defaultViewStatePatch,
+    initialAssignees,
+    initialWorkspaces,
+    lockedGroupBy,
+    lockedViewMode,
+    scopedKey,
+  ]);
 
   const [viewState, setViewState] = useState<IssueViewState>(() =>
-    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces),
+    buildInitialIssueViewStateForContext(),
   );
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
@@ -334,14 +413,13 @@ export function IssuesList({
   }, [initialSearch]);
 
   // Reload view state whenever the persisted context changes.
-  const prevViewStateContextKey = useRef(`${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`);
+  const prevViewStateContextKey = useRef(viewStateContextKey);
   useEffect(() => {
-    const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`;
-    if (prevViewStateContextKey.current !== nextContextKey) {
-      prevViewStateContextKey.current = nextContextKey;
-      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces));
+    if (prevViewStateContextKey.current !== viewStateContextKey) {
+      prevViewStateContextKey.current = viewStateContextKey;
+      setViewState(buildInitialIssueViewStateForContext());
     }
-  }, [scopedKey, initialAssignees, initialAssigneesKey, initialWorkspaces, initialWorkspacesKey]);
+  }, [buildInitialIssueViewStateForContext, viewStateContextKey]);
 
   const prevColumnsScopedKey = useRef(scopedKey);
   useEffect(() => {
@@ -353,11 +431,11 @@ export function IssuesList({
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     setViewState((prev) => {
-      const next = { ...prev, ...patch };
+      const next = applyLockedViewState({ ...prev, ...patch }, lockedViewMode, lockedGroupBy);
       saveViewState(scopedKey, next);
       return next;
     });
-  }, [scopedKey]);
+  }, [lockedGroupBy, lockedViewMode, scopedKey]);
 
   // Prune stale IDs from collapsedParents whenever the issue list changes.
   // Deleted or reassigned issues leave orphan IDs in localStorage; this keeps
@@ -625,6 +703,20 @@ export function IssuesList({
           items: groups[key]!,
         }));
     }
+    if (viewState.groupBy === "dueDate") {
+      const groups = groupBy(filtered, (i) => i.dueDate ?? "__no_due");
+      return Object.keys(groups)
+        .sort((a, b) => {
+          if (a === "__no_due") return 1;
+          if (b === "__no_due") return -1;
+          return a.localeCompare(b);
+        })
+        .map((key) => ({
+          key,
+          label: key === "__no_due" ? "No due date" : dateHeading(key),
+          items: groups[key]!,
+        }));
+    }
     // assignee
     const groups = groupBy(
       filtered,
@@ -664,6 +756,9 @@ export function IssuesList({
 
   const newIssueDefaults = useCallback((groupKey?: string) => {
     const defaults: Record<string, unknown> = { ...(baseCreateIssueDefaults ?? {}) };
+    for (const [key, value] of Object.entries(defaultNewIssueValues ?? {})) {
+      if (value) defaults[key] = value;
+    }
     if (projectId && defaults.projectId === undefined) defaults.projectId = projectId;
     if (groupKey) {
       if (viewState.groupBy === "status") defaults.status = groupKey;
@@ -677,9 +772,12 @@ export function IssuesList({
         if (parentIssue) Object.assign(defaults, buildSubIssueDefaultsForViewer(parentIssue, currentUserId));
         else defaults.parentId = groupKey;
       }
+      else if (viewState.groupBy === "dueDate" && groupKey !== "__no_due") {
+        defaults.dueDate = groupKey;
+      }
     }
     return defaults;
-  }, [baseCreateIssueDefaults, currentUserId, issueById, projectId, viewState.groupBy]);
+  }, [baseCreateIssueDefaults, currentUserId, defaultNewIssueValues, issueById, projectId, viewState.groupBy]);
 
   const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Issue";
   const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Issue";
@@ -733,22 +831,24 @@ export function IssuesList({
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           {/* View mode toggle */}
-          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1">
-            <button
-              className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-              onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
-            >
-              <List className="h-3.5 w-3.5" />
-            </button>
-            <button
-              className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-              onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
-            >
-              <Columns3 className="h-3.5 w-3.5" />
-            </button>
-          </div>
+          {!lockedViewMode && (
+            <div className="flex items-center border border-border rounded-md overflow-hidden mr-1">
+              <button
+                className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                onClick={() => updateView({ viewMode: "list" })}
+                title="List view"
+              >
+                <List className="h-3.5 w-3.5" />
+              </button>
+              <button
+                className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                onClick={() => updateView({ viewMode: "board" })}
+                title="Board view"
+              >
+                <Columns3 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
 
           {viewState.viewMode === "list" && (
             <Button
@@ -801,6 +901,7 @@ export function IssuesList({
                     ["priority", "Priority"],
                     ["title", "Title"],
                     ["created", "Created"],
+                    ["due", "Due date"],
                     ["updated", "Updated"],
                   ] as const).map(([field, label]) => (
                     <button
@@ -830,7 +931,7 @@ export function IssuesList({
           )}
 
           {/* Group (list view only) */}
-          {viewState.viewMode === "list" && (
+          {viewState.viewMode === "list" && !lockedGroupBy && (
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Group">
@@ -845,6 +946,7 @@ export function IssuesList({
                     ["assignee", "Assignee"],
                     ["workspace", "Workspace"],
                     ["parent", "Parent Issue"],
+                    ["dueDate", "Due Date"],
                     ["none", "None"],
                   ] as const).map(([value, label]) => (
                     <button
@@ -865,6 +967,8 @@ export function IssuesList({
         </div>
       </div>
 
+      {topContent}
+
       {isLoading && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
@@ -875,7 +979,7 @@ export function IssuesList({
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No issues match the current filters or search."
+          message={emptyMessage}
           action={createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />

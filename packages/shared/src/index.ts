@@ -577,6 +577,7 @@ export {
   createIssueSchema,
   createChildIssueSchema,
   createIssueLabelSchema,
+  issueDueDateSchema,
   updateIssueSchema,
   issueExecutionPolicySchema,
   issueExecutionStateSchema,

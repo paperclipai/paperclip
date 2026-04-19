@@ -31,4 +31,16 @@ describe("issuesApi.list", () => {
       "/companies/company-1/issues?workspaceId=workspace-1&limit=1000",
     );
   });
+
+  it("passes due date filters through to the company issues endpoint", async () => {
+    await issuesApi.list("company-1", {
+      dueDate: "2026-04-19",
+      dueFrom: "2026-04-19",
+      dueTo: "2026-04-25",
+    });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?dueDate=2026-04-19&dueFrom=2026-04-19&dueTo=2026-04-25",
+    );
+  });
 });
