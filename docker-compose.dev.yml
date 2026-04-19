@@ -75,6 +75,39 @@ services:
 
         wait "$$PG_PID"
 
+  # Dev-only: one-shot sidecar that inserts a bootstrap CEO invite so
+  # we can claim the first admin without shell access on the host.
+  # Idempotent — skips if an instance_admin already exists or an active
+  # bootstrap invite is already outstanding. Remove this service once
+  # we have a reliable exec-into-container path.
+  bootstrap-invite:
+    image: postgres:17-alpine
+    restart: "no"
+    depends_on:
+      paperclip-db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      BOOTSTRAP_TOKEN_HASH: ${BOOTSTRAP_TOKEN_HASH:?BOOTSTRAP_TOKEN_HASH must be set}
+    command:
+      - sh
+      - -c
+      - |
+        psql -h paperclip-db -U paperclip -d paperclip -v ON_ERROR_STOP=1 <<SQL
+        INSERT INTO invites (invite_type, token_hash, allowed_join_types, expires_at, invited_by_user_id)
+        SELECT 'bootstrap_ceo', '$$BOOTSTRAP_TOKEN_HASH', 'human',
+               NOW() + INTERVAL '72 hours', 'system'
+        WHERE NOT EXISTS (
+          SELECT 1 FROM instance_user_roles WHERE role = 'instance_admin'
+        ) AND NOT EXISTS (
+          SELECT 1 FROM invites
+          WHERE invite_type = 'bootstrap_ceo'
+            AND revoked_at IS NULL
+            AND accepted_at IS NULL
+            AND expires_at > NOW()
+        );
+        SQL
+
   server:
     build: .
     restart: unless-stopped
