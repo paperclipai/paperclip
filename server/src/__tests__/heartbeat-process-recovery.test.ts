@@ -568,6 +568,74 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBeNull();
   });
 
+  it("does NOT reap a process_detached run while still under the threshold", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    // intervalSec=60 → threshold = max(120s, 600s) = 600s. Use 5 minutes
+    // staleness — well under the 600s floor, so no reap.
+    const stalenessMs = 5 * 60 * 1000;
+    const runUpdatedAt = new Date(Date.now() - stalenessMs);
+
+    const { runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      runErrorCode: "process_detached",
+      runError: `Lost in-memory process handle, but child pid ${child.pid} is still alive`,
+      runUpdatedAt,
+      agentRuntimeConfig: { heartbeat: { intervalSec: 60 } },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result.reaped).toBe(0);
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_detached");
+  });
+
+  it("scales the stuck-detached threshold to 2x interval when interval > 300s", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    // intervalSec=400 → threshold = max(800s, 600s) = 800s. The 600s floor must
+    // NOT clamp here. Stage staleness at 700s: above the floor but below 2x
+    // interval, so the run must remain.
+    const stalenessMs = 700 * 1000;
+    const runUpdatedAt = new Date(Date.now() - stalenessMs);
+
+    const { runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      runErrorCode: "process_detached",
+      runError: `Lost in-memory process handle, but child pid ${child.pid} is still alive`,
+      runUpdatedAt,
+      agentRuntimeConfig: { heartbeat: { intervalSec: 400 } },
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    // Below 2x interval — no reap.
+    const firstResult = await heartbeat.reapOrphanedRuns();
+    expect(firstResult.reaped).toBe(0);
+    let run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_detached");
+
+    // Now age the run further so it crosses 2x interval (900s > 800s) — reap.
+    await db
+      .update(heartbeatRuns)
+      .set({ updatedAt: new Date(Date.now() - 900 * 1000) })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const secondResult = await heartbeat.reapOrphanedRuns();
+    expect(secondResult.reaped).toBe(1);
+    run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_stuck");
+  });
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,
