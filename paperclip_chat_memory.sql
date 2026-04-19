@@ -1,14 +1,13 @@
 -- paperclip_chat_memory.sql
 -- Chat-Memory für den Paperclip CEO Voice & Telegram Workflow (V1).
--- Separate Tabelle, damit Luna-Memory (tg_chat_memory) nicht vermischt wird.
+-- Schema ist identisch zu n8n_chat_histories, so wie es das
+-- LangChain-Postgres-Chat-Memory-Node erwartet (JSONB message-Spalte).
 
 CREATE TABLE IF NOT EXISTS paperclip_chat_memory (
-  id         bigserial PRIMARY KEY,
-  session_id text        NOT NULL,
-  role       text        NOT NULL,
-  content    text        NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now()
+  id          serial                PRIMARY KEY,
+  session_id  varchar(255)          NOT NULL,
+  message     jsonb                 NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS paperclip_chat_memory_session_idx
-  ON paperclip_chat_memory (session_id, created_at DESC);
+  ON paperclip_chat_memory (session_id);
