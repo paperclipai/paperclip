@@ -2321,6 +2321,8 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     const actorAgentId = req.actor.type === "agent" ? req.actor.agentId : null;
+    // BLA-554: the issue assignee may post plain comments without an active run checkout.
+    // Scoped to: agent is the assignee, and the comment is not a reopen or interrupt request.
     const isPmCommentAuthority = req.actor.type === "agent"
       && !!actorAgentId
       && actorAgentId === issue.assigneeAgentId

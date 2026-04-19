@@ -644,6 +644,73 @@ describe("issue comment reopen routes", () => {
     );
   });
 
+  // BLA-554 / BLA-768: isPmCommentAuthority bypass regression tests.
+  // The bypass only matters when the issue is in_progress (checkout enforcement is active).
+  it("allows the assignee agent to post a plain comment on an in_progress issue without a run checkout", async () => {
+    const issue = { ...makeIssue("todo"), status: "in_progress" as const };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-bypass",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      body: "status update",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: issue.assigneeAgentId,
+      authorUserId: null,
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "status update" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+  });
+
+  it("rejects assignee agent comment with reopen=true on in_progress issue without a run checkout", async () => {
+    const issue = { ...makeIssue("todo"), status: "in_progress" as const };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "reopen this", reopen: true });
+
+    expect(res.status).toBe(401);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects assignee agent comment with interrupt=true on in_progress issue without a run checkout", async () => {
+    const issue = { ...makeIssue("todo"), status: "in_progress" as const };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "interrupt please", interrupt: true });
+
+    expect(res.status).toBe(401);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it("wakes the return assignee with execution_changes_requested", async () => {
     const policy = await normalizePolicy({
       stages: [
