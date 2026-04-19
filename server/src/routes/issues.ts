@@ -468,6 +468,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const extraFields: Record<string, unknown> = {};
     if (dueDateRaw !== undefined) extraFields.dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
     if (assignerPolicyTier) extraFields.assignerPolicyTier = assignerPolicyTier;
+    // Auto-promote backlog → todo when an assignee is set so the agent actually gets woken up
+    if ((createBody.assigneeAgentId || createBody.assigneeUserId) && (!createBody.status || createBody.status === "backlog")) {
+      createBody.status = "todo";
+    }
 
     let issue;
     try {
@@ -502,7 +506,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       details: { title: issue.title, identifier: issue.identifier },
     });
 
-    if (issue.assigneeAgentId && issue.status !== "backlog") {
+    if (issue.assigneeAgentId) {
       void heartbeat
         .wakeup(issue.assigneeAgentId, {
           source: "assignment",
@@ -655,7 +659,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
 
-      if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      if (assigneeChanged && issue.assigneeAgentId) {
         wakeups.set(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
