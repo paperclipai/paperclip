@@ -340,6 +340,18 @@ export function agentService(db: Db) {
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
     }
 
+    if (normalizedPatch.status === "paused" && existing.status !== "paused") {
+      if (!normalizedPatch.pauseReason) normalizedPatch.pauseReason = "manual";
+      if (!normalizedPatch.pausedAt) normalizedPatch.pausedAt = new Date();
+    } else if (
+      normalizedPatch.status &&
+      normalizedPatch.status !== "paused" &&
+      existing.status === "paused"
+    ) {
+      normalizedPatch.pauseReason = null;
+      normalizedPatch.pausedAt = null;
+    }
+
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
