@@ -135,12 +135,12 @@ function ExtractionRow({
               <img
                 src={extraction.thumbnailUrl}
                 alt=""
-                className="h-9 w-16 rounded object-cover flex-shrink-0"
+                className="h-9 w-16 rounded object-cover flex-shrink-0 hidden sm:block"
               />
             )}
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-medium text-sm text-gray-900 dark:text-gray-100 truncate max-w-xs">
+                <span className="font-medium text-sm text-gray-900 dark:text-gray-100 truncate max-w-[160px] sm:max-w-xs">
                   {extraction.title ?? extraction.url}
                 </span>
                 <VerdictBadge report={extraction.report} />
@@ -150,12 +150,12 @@ function ExtractionRow({
                 {extraction.durationSec != null && (
                   <span>{formatDuration(extraction.durationSec)}</span>
                 )}
-                {extraction.viewCount != null && <span>{formatViews(extraction.viewCount)}</span>}
+                {extraction.viewCount != null && <span className="hidden sm:inline">{formatViews(extraction.viewCount)}</span>}
               </div>
             </div>
           </div>
         </td>
-        <td className="py-3 pr-4 text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
+        <td className="py-3 pr-4 text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap hidden sm:table-cell">
           {new Date(extraction.createdAt).toLocaleDateString()}
         </td>
         <td className="py-3 pr-4">
@@ -356,12 +356,12 @@ export function YouTube() {
             }}
             onKeyDown={handleKeyDown}
             placeholder="https://www.youtube.com/watch?v=..."
-            className="flex-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
+            className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
           />
           <button
             onClick={handleSubmit}
             disabled={submitMutation.isPending || !url.trim()}
-            className="flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50 transition-colors"
+            className="flex flex-shrink-0 items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50 transition-colors"
           >
             {submitMutation.isPending ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -394,7 +394,7 @@ export function YouTube() {
           <p className="text-sm">No extractions yet. Paste a YouTube URL above to get started.</p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+        <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50 dark:border-gray-800 dark:bg-gray-800/50">
@@ -402,7 +402,7 @@ export function YouTube() {
                 <th className="py-2.5 pr-4 text-left font-medium text-gray-600 dark:text-gray-400">
                   Video
                 </th>
-                <th className="py-2.5 pr-4 text-left font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                <th className="py-2.5 pr-4 text-left font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap hidden sm:table-cell">
                   Submitted
                 </th>
                 <th className="py-2.5 pr-4 text-left font-medium text-gray-600 dark:text-gray-400">
