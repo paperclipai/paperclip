@@ -221,6 +221,31 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
   });
 
+  it("creates draft routines without a project or default assignee", async () => {
+    const { companyId, svc } = await seedFixture();
+
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId: null,
+        goalId: null,
+        parentIssueId: null,
+        title: "draft routine",
+        description: "No defaults yet",
+        assigneeAgentId: null,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    expect(routine.projectId).toBeNull();
+    expect(routine.assigneeAgentId).toBeNull();
+    expect(routine.status).toBe("paused");
+  });
+
   it("wakes the assignee when a routine creates a fresh execution issue", async () => {
     const { agentId, routine, svc, wakeups } = await seedFixture();
 
@@ -332,7 +357,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         projectId,
         goalId: null,
         parentIssueId: null,
-        title: "repo triage",
+        title: "repo triage for {{repo}}",
         description: "Review {{repo}} for {{priority}} bugs",
         assigneeAgentId: agentId,
         priority: "medium",
@@ -346,6 +371,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       },
       {},
     );
+    expect(variableRoutine.variables.map((variable) => variable.name)).toEqual(["repo", "priority"]);
 
     const run = await svc.runRoutine(variableRoutine.id, {
       source: "manual",
@@ -353,7 +379,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
 
     const storedIssue = await db
-      .select({ description: issues.description })
+      .select({ title: issues.title, description: issues.description })
       .from(issues)
       .where(eq(issues.id, run.linkedIssueId!))
       .then((rows) => rows[0] ?? null);
@@ -363,6 +389,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(routineRuns.id, run.id))
       .then((rows) => rows[0] ?? null);
 
+    expect(storedIssue?.title).toBe("repo triage for paperclip");
     expect(storedIssue?.description).toBe("Review paperclip for high bugs");
     expect(storedRun?.triggerPayload).toEqual({
       variables: {
@@ -432,6 +459,73 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" },
     });
+  });
+
+  it("runs draft routines with one-off agent and project overrides", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const draftRoutine = await svc.create(
+      companyId,
+      {
+        projectId: null,
+        goalId: null,
+        parentIssueId: null,
+        title: "draft dispatch",
+        description: "Pick defaults at run time",
+        assigneeAgentId: null,
+        priority: "medium",
+        status: "paused",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    const run = await svc.runRoutine(draftRoutine.id, {
+      source: "manual",
+      projectId,
+      assigneeAgentId: agentId,
+    });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toBeTruthy();
+
+    const storedIssue = await db
+      .select({
+        projectId: issues.projectId,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+
+    expect(storedIssue).toEqual({
+      projectId,
+      assigneeAgentId: agentId,
+    });
+  });
+
+  it("rejects enabling automation for routines without a default agent", async () => {
+    const { companyId, svc } = await seedFixture();
+    const draftRoutine = await svc.create(
+      companyId,
+      {
+        projectId: null,
+        goalId: null,
+        parentIssueId: null,
+        title: "draft routine",
+        description: null,
+        assigneeAgentId: null,
+        priority: "medium",
+        status: "paused",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    await expect(
+      svc.update(draftRoutine.id, { status: "active" }, {}),
+    ).rejects.toThrow(/default agent required/i);
   });
 
   it("blocks schedule triggers when required variables do not have defaults", async () => {
@@ -616,5 +710,73 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
     expect(run.linkedIssueId).toBeTruthy();
+  });
+
+  it("accepts GitHub-style X-Hub-Signature-256 with github_hmac signing mode", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "github_hmac",
+      },
+      {},
+    );
+
+    const payload = { action: "opened", pull_request: { number: 1 } };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+      .update(rawBody)
+      .digest("hex")}`;
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      hubSignatureHeader: signature,
+      rawBody,
+      payload,
+    });
+
+    expect(run.source).toBe("webhook");
+    expect(run.status).toBe("issue_created");
+  });
+
+  it("rejects invalid signature for github_hmac signing mode", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "github_hmac",
+      },
+      {},
+    );
+
+    const rawBody = Buffer.from(JSON.stringify({ ok: true }));
+
+    await expect(
+      svc.firePublicTrigger(trigger.publicId!, {
+        hubSignatureHeader: "sha256=0000000000000000000000000000000000000000000000000000000000000000",
+        rawBody,
+        payload: { ok: true },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("accepts any request with none signing mode", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "none",
+      },
+      {},
+    );
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      payload: { event: "error.created" },
+    });
+
+    expect(run.source).toBe("webhook");
+    expect(run.status).toBe("issue_created");
   });
 });

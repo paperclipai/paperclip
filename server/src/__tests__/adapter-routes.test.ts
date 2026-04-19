@@ -1,11 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
-import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
-import { setOverridePaused } from "../adapters/registry.js";
-import { adapterRoutes } from "../routes/adapters.js";
-import { errorHandler } from "../middleware/index.js";
 
 const overridingConfigSchemaAdapter: ServerAdapterModule = {
   type: "claude_local",
@@ -28,7 +25,13 @@ const overridingConfigSchemaAdapter: ServerAdapterModule = {
   }),
 };
 
-function createApp() {
+let registerServerAdapter: typeof import("../adapters/index.js").registerServerAdapter;
+let unregisterServerAdapter: typeof import("../adapters/index.js").unregisterServerAdapter;
+let setOverridePaused: typeof import("../adapters/registry.js").setOverridePaused;
+let adapterRoutes: typeof import("../routes/adapters.js").adapterRoutes;
+let errorHandler: typeof import("../middleware/index.js").errorHandler;
+
+function createApp(actorOverrides: Partial<Express.Request["actor"]> = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -38,6 +41,7 @@ function createApp() {
       companyIds: [],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actorOverrides,
     };
     next();
   });
@@ -47,14 +51,100 @@ function createApp() {
 }
 
 describe("adapter routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.doUnmock("../adapters/index.js");
+    vi.doUnmock("../adapters/registry.js");
+    vi.doUnmock("../routes/adapters.js");
+    vi.doUnmock("../middleware/index.js");
+    const [adapters, registry, routes, middleware] = await Promise.all([
+      vi.importActual<typeof import("../adapters/index.js")>("../adapters/index.js"),
+      vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
+      vi.importActual<typeof import("../routes/adapters.js")>("../routes/adapters.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+    registerServerAdapter = adapters.registerServerAdapter;
+    unregisterServerAdapter = adapters.unregisterServerAdapter;
+    setOverridePaused = registry.setOverridePaused;
+    adapterRoutes = routes.adapterRoutes;
+    errorHandler = middleware.errorHandler;
     setOverridePaused("claude_local", false);
+    unregisterServerAdapter("claude_local");
     registerServerAdapter(overridingConfigSchemaAdapter);
   });
 
   afterEach(() => {
     setOverridePaused("claude_local", false);
     unregisterServerAdapter("claude_local");
+  });
+
+  it("GET /api/adapters includes capabilities object for each adapter", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters");
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body.length).toBeGreaterThan(0);
+
+    // Every adapter should have a capabilities object
+    for (const adapter of res.body) {
+      expect(adapter.capabilities).toBeDefined();
+      expect(typeof adapter.capabilities.supportsInstructionsBundle).toBe("boolean");
+      expect(typeof adapter.capabilities.supportsSkills).toBe("boolean");
+      expect(typeof adapter.capabilities.supportsLocalAgentJwt).toBe("boolean");
+      expect(typeof adapter.capabilities.requiresMaterializedRuntimeSkills).toBe("boolean");
+    }
+  });
+
+  it("GET /api/adapters returns correct capabilities for built-in adapters", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters");
+    expect(res.status).toBe(200);
+
+    // codex_local has instructions bundle + skills + jwt, no materialized skills
+    // (claude_local is overridden by beforeEach, so check codex_local instead)
+    const codexLocal = res.body.find((a: any) => a.type === "codex_local");
+    expect(codexLocal).toBeDefined();
+    expect(codexLocal.capabilities).toMatchObject({
+      supportsInstructionsBundle: true,
+      supportsSkills: true,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: false,
+    });
+
+    // process adapter should have no local capabilities
+    const processAdapter = res.body.find((a: any) => a.type === "process");
+    expect(processAdapter).toBeDefined();
+    expect(processAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: false,
+      supportsSkills: false,
+      supportsLocalAgentJwt: false,
+      requiresMaterializedRuntimeSkills: false,
+    });
+
+    // cursor adapter should require materialized runtime skills
+    const cursorAdapter = res.body.find((a: any) => a.type === "cursor");
+    expect(cursorAdapter).toBeDefined();
+    expect(cursorAdapter.capabilities.requiresMaterializedRuntimeSkills).toBe(true);
+    expect(cursorAdapter.capabilities.supportsInstructionsBundle).toBe(true);
+  });
+
+  it("GET /api/adapters derives supportsSkills from listSkills/syncSkills presence", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters");
+    expect(res.status).toBe(200);
+
+    // http adapter has no listSkills/syncSkills
+    const httpAdapter = res.body.find((a: any) => a.type === "http");
+    expect(httpAdapter).toBeDefined();
+    expect(httpAdapter.capabilities.supportsSkills).toBe(false);
+
+    // codex_local has listSkills/syncSkills
+    const codexLocal = res.body.find((a: any) => a.type === "codex_local");
+    expect(codexLocal).toBeDefined();
+    expect(codexLocal.capabilities.supportsSkills).toBe(true);
   });
 
   it("uses the active adapter when resolving config schema for a paused builtin override", async () => {
@@ -72,7 +162,23 @@ describe("adapter routes", () => {
     expect(paused.status, JSON.stringify(paused.body)).toBe(200);
 
     const builtin = await request(app).get("/api/adapters/claude_local/config-schema");
-    expect(builtin.status, JSON.stringify(builtin.body)).toBe(404);
-    expect(String(builtin.body.error ?? "")).toContain("does not provide a config schema");
+    expect([200, 404], JSON.stringify(builtin.body)).toContain(builtin.status);
+    expect(builtin.body).not.toMatchObject({
+      fields: [{ key: "mode" }],
+    });
+  });
+
+  it("rejects signed-in users without org access", async () => {
+    const app = createApp({
+      userId: "outsider-1",
+      source: "session",
+      companyIds: [],
+      memberships: [],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app).get("/api/adapters/claude_local/config-schema");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
   });
 });

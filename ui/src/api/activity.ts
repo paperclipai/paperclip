@@ -5,12 +5,14 @@ export interface RunForIssue {
   runId: string;
   status: string;
   agentId: string;
+  adapterType: string;
   startedAt: string | null;
   finishedAt: string | null;
   createdAt: string;
   invocationSource: string;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
+  logBytes?: number | null;
 }
 
 export interface IssueForRun {

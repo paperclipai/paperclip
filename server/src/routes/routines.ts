@@ -34,7 +34,7 @@ export function routineRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") return;
     if (req.actor.type !== "agent" || !req.actor.agentId) throw unauthorized();
-    if (assigneeAgentId && assigneeAgentId !== req.actor.agentId) {
+    if (assigneeAgentId !== req.actor.agentId) {
       throw forbidden("Agents can only manage routines assigned to themselves");
     }
   }
@@ -114,7 +114,11 @@ export function routineRoutes(db: Db) {
     if (statusWillActivate) {
       await assertBoardCanAssignTasks(req, routine.companyId);
     }
-    if (req.actor.type === "agent" && req.body.assigneeAgentId && req.body.assigneeAgentId !== req.actor.agentId) {
+    if (
+      req.actor.type === "agent" &&
+      req.body.assigneeAgentId !== undefined &&
+      req.body.assigneeAgentId !== req.actor.agentId
+    ) {
       throw forbidden("Agents can only assign routines to themselves");
     }
     const updated = await svc.update(routine.id, req.body, {
@@ -293,6 +297,7 @@ export function routineRoutes(db: Db) {
     const result = await svc.firePublicTrigger(req.params.publicId as string, {
       authorizationHeader: req.header("authorization"),
       signatureHeader: req.header("x-paperclip-signature"),
+      hubSignatureHeader: req.header("x-hub-signature-256"),
       timestampHeader: req.header("x-paperclip-timestamp"),
       idempotencyKey: req.header("idempotency-key"),
       rawBody: (req as { rawBody?: Buffer }).rawBody ?? null,

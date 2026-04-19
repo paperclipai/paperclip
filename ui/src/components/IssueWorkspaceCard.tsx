@@ -8,6 +8,7 @@ import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Check, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
 
 /* -------------------------------------------------------------------------- */
@@ -156,6 +157,25 @@ function statusBadge(status: string) {
   );
 }
 
+function IssueWorkspaceCardSkeleton() {
+  return (
+    <div className="rounded-lg border border-border p-3 space-y-3" data-testid="issue-workspace-card-skeleton">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-4 w-4 rounded-full" />
+          <Skeleton className="h-4 w-36" />
+          <Skeleton className="h-5 w-16 rounded-full" />
+        </div>
+        <Skeleton className="h-6 w-14" />
+      </div>
+      <div className="space-y-2">
+        <Skeleton className="h-3 w-40" />
+        <Skeleton className="h-3 w-full" />
+      </div>
+    </div>
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Main component                                                             */
 /* -------------------------------------------------------------------------- */
@@ -195,14 +215,15 @@ export function IssueWorkspaceCard({
   const companyId = issue.companyId ?? selectedCompanyId;
   const [editing, setEditing] = useState(initialEditing);
 
-  const { data: experimentalSettings } = useQuery({
+  const { data: experimentalSettings, isLoading: experimentalSettingsLoading } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
   });
 
+  const projectWorkspacePolicyEnabled = Boolean(project?.executionWorkspacePolicy?.enabled);
   const policyEnabled = experimentalSettings?.enableIsolatedWorkspaces === true
-    && Boolean(project?.executionWorkspacePolicy?.enabled);
+    && projectWorkspacePolicyEnabled;
 
   const workspace = issue.currentExecutionWorkspace as ExecutionWorkspace | null | undefined;
 
@@ -313,6 +334,10 @@ export function IssueWorkspaceCard({
     setDraftExecutionWorkspaceId(issue.executionWorkspaceId ?? "");
     setEditing(false);
   }, [currentSelection, issue.executionWorkspaceId]);
+
+  if (project && projectWorkspacePolicyEnabled && experimentalSettingsLoading) {
+    return <IssueWorkspaceCardSkeleton />;
+  }
 
   if (!policyEnabled || !project) return null;
 

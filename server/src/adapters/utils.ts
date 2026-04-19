@@ -13,7 +13,7 @@ type BuildInvocationEnvForLogsOptions = {
   resolvedCommandEnvKey?: string;
 };
 
-export const runningProcesses: Map<string, { child: ChildProcess; graceSec: number }> =
+export const runningProcesses: Map<string, { child: ChildProcess; graceSec: number; processGroupId: number | null }> =
   serverUtils.runningProcesses;
 export const MAX_CAPTURE_BYTES = serverUtils.MAX_CAPTURE_BYTES;
 export const MAX_EXCERPT_BYTES = serverUtils.MAX_EXCERPT_BYTES;
@@ -38,7 +38,6 @@ export function buildInvocationEnvForLogs(
   env: Record<string, string>,
   options: BuildInvocationEnvForLogsOptions = {},
 ): Record<string, string> {
-  // TODO: Remove this fallback once @paperclipai/adapter-utils exports buildInvocationEnvForLogs everywhere we consume it.
   const maybeBuildInvocationEnvForLogs = (
     serverUtils as typeof serverUtils & {
       buildInvocationEnvForLogs?: (

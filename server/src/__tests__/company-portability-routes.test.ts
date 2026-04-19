@@ -49,9 +49,23 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
 }));
 
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    budgetService: () => mockBudgetService,
+    companyPortabilityService: () => mockCompanyPortabilityService,
+    companyService: () => mockCompanyService,
+    feedbackService: () => mockFeedbackService,
+    logActivity: mockLogActivity,
+  }));
+}
+
 async function createApp(actor: Record<string, unknown>) {
-  const { companyRoutes } = await import("../routes/companies.js");
-  const { errorHandler } = await import("../middleware/index.js");
+  const [{ companyRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/companies.js")>("../routes/companies.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -66,12 +80,11 @@ async function createApp(actor: Record<string, unknown>) {
 describe("company portability routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    mockAgentService.getById.mockReset();
-    mockCompanyPortabilityService.exportBundle.mockReset();
-    mockCompanyPortabilityService.previewExport.mockReset();
-    mockCompanyPortabilityService.previewImport.mockReset();
-    mockCompanyPortabilityService.importBundle.mockReset();
-    mockLogActivity.mockReset();
+    vi.doUnmock("../routes/companies.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.resetAllMocks();
   });
 
   it("rejects non-CEO agents from CEO-safe export preview routes", async () => {
@@ -125,9 +138,7 @@ describe("company portability routes", () => {
       .send({ include: { company: true, agents: true, projects: true } });
 
     expect(res.status).toBe(200);
-    expect(mockCompanyPortabilityService.previewExport).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111", {
-      include: { company: true, agents: true, projects: true },
-    });
+    expect(res.body.rootPath).toBe("paperclip");
   });
 
   it("rejects replace collision strategy on CEO-safe import routes", async () => {
@@ -178,5 +189,135 @@ describe("company portability routes", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Board access required");
+  });
+
+  it("requires instance admin for new-company import preview", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["11111111-1111-4111-8111-111111111111"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/import/preview")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: true, agents: true, projects: false, issues: false },
+        target: { mode: "new_company", newCompanyName: "Imported Test" },
+        collisionStrategy: "rename",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Instance admin");
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+  });
+
+  it("rejects replace collision strategy on CEO-safe import apply routes", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      role: "ceo",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/11111111-1111-4111-8111-111111111111/imports/apply")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: true, agents: true, projects: false, issues: false },
+        target: { mode: "existing_company", companyId: "11111111-1111-4111-8111-111111111111" },
+        collisionStrategy: "replace",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("does not allow replace");
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-CEO agents from CEO-safe import preview routes", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      role: "engineer",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/11111111-1111-4111-8111-111111111111/imports/preview")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: true, agents: true, projects: false, issues: false },
+        target: { mode: "existing_company", companyId: "11111111-1111-4111-8111-111111111111" },
+        collisionStrategy: "rename",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only CEO agents");
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-CEO agents from CEO-safe import apply routes", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      role: "engineer",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/11111111-1111-4111-8111-111111111111/imports/apply")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: true, agents: true, projects: false, issues: false },
+        target: { mode: "existing_company", companyId: "11111111-1111-4111-8111-111111111111" },
+        collisionStrategy: "rename",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only CEO agents");
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+  });
+
+  it("requires instance admin for new-company import apply", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["11111111-1111-4111-8111-111111111111"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/import")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: true, agents: true, projects: false, issues: false },
+        target: { mode: "new_company", newCompanyName: "Imported Test" },
+        collisionStrategy: "rename",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Instance admin");
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
   });
 });
