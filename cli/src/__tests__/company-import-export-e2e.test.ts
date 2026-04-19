@@ -169,6 +169,7 @@ async function stopServerProcess(child: ServerProcess | null) {
     setTimeout(() => {
       if (child.exitCode === null) {
         child.kill("SIGKILL");
+        resolve();
       }
     }, 5_000);
   });
@@ -267,6 +268,12 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     child.stderr?.on("data", (chunk) => {
       output.stderr.push(String(chunk));
     });
+
+    const killOnExit = () => {
+      if (child.exitCode === null) child.kill("SIGKILL");
+    };
+    process.on("exit", killOnExit);
+    child.once("exit", () => process.off("exit", killOnExit));
 
     await waitForServer(apiBase, child, output);
   }, 60_000);
