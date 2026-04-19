@@ -3310,6 +3310,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const [isFollowing, setIsFollowing] = useState(false);
   const [isStreamingConnected, setIsStreamingConnected] = useState(false);
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("nice");
+  const [invocationOpen, setInvocationOpen] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
   const pendingLogLineRef = useRef("");
   const scrollContainerRef = useRef<ScrollContainer | null>(null);
@@ -3707,8 +3708,19 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         censorUsernameInLogs={censorUsernameInLogs}
       />
       {adapterInvokePayload && (
-        <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-          <div className="text-xs font-medium text-muted-foreground">Invocation</div>
+        <div className="rounded-lg border border-border bg-background/60">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-muted/50 transition-colors"
+            onClick={() => setInvocationOpen((value) => !value)}
+            aria-expanded={invocationOpen}
+            aria-controls="invocation-details"
+          >
+            <span className="text-xs font-medium text-muted-foreground">Invocation</span>
+            {invocationOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
+          </button>
+          {invocationOpen && (
+          <div id="invocation-details" className="px-3 pb-3 space-y-2">
           {typeof adapterInvokePayload.adapterType === "string" && (
             <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
           )}
@@ -3768,6 +3780,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
               </pre>
             </div>
           )}
+          </div>
+          )}
         </div>
       )}
 
@@ -3824,6 +3838,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           entries={transcript}
           mode={transcriptMode}
           streaming={isLive}
+          collapseStdout
           emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
         />
         {logError && (

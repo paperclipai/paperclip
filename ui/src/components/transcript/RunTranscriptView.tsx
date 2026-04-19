@@ -1211,6 +1211,8 @@ export function RunTranscriptView({
   const blocks = useMemo(() => normalizeTranscript(entries, streaming), [entries, streaming]);
   const visibleBlocks = limit ? blocks.slice(-limit) : blocks;
   const visibleEntries = limit ? entries.slice(-limit) : entries;
+  const orderedBlocks = [...visibleBlocks].reverse();
+  const orderedEntries = [...visibleEntries].reverse();
 
   if (entries.length === 0) {
     return (
@@ -1223,17 +1225,17 @@ export function RunTranscriptView({
   if (mode === "raw") {
     return (
       <div className={className}>
-        <RawTranscriptView entries={visibleEntries} density={density} />
+        <RawTranscriptView entries={orderedEntries} density={density} />
       </div>
     );
   }
 
   return (
     <div className={cn("space-y-3", className)}>
-      {visibleBlocks.map((block, index) => (
+      {orderedBlocks.map((block, index) => (
         <div
           key={`${block.type}-${block.ts}-${index}`}
-          className={cn(index === visibleBlocks.length - 1 && streaming && "animate-in fade-in slide-in-from-bottom-1 duration-300")}
+          className={cn(index === 0 && streaming && "animate-in fade-in slide-in-from-top-1 duration-300")}
         >
           {block.type === "message" && <TranscriptMessageBlock block={block} density={density} />}
           {block.type === "thinking" && (
