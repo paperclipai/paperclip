@@ -90,6 +90,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "gemini_local",
   "opencode_local",
   "pi_local",
+  "hermes_local",
 ]);
 
 type RuntimeConfigSecretResolver = Pick<
@@ -2462,11 +2463,13 @@ export function heartbeatService(db: Db) {
     const reaped: string[] = [];
 
     for (const { run, adapterType } of activeRuns) {
+      logger.warn({ runId: run.id, adapterType, processPid: run.processPid, rpSize: runningProcesses.size, areSize: activeRunExecutions.size, staleMs: staleThresholdMs }, "[reaper-debug] considering orphan");
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
-        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        const stalenessAnchor = run.startedAt ?? run.processStartedAt ?? run.createdAt;
+        const refTime = new Date(stalenessAnchor).getTime();
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
@@ -3637,7 +3640,7 @@ export function heartbeatService(db: Db) {
         sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
       );
 
-      const issue = await tx
+      let issue: { id: string; companyId: string } | null = await tx
         .select({
           id: issues.id,
           companyId: issues.companyId,
@@ -3646,7 +3649,44 @@ export function heartbeatService(db: Db) {
         .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
         .then((rows) => rows[0] ?? null);
 
-      if (!issue) return;
+      if (!issue) {
+        // Race fix: Fix-B (svc.update on PATCH reassign / status-change) clears
+        // executionRunId synchronously before this release runs, so the primary lookup
+        // above finds nothing.  However, enqueueWakeup's async transaction may run
+        // concurrently: it sees executionRunId = null, re-stamps it to our run via the
+        // legacy-run path (run still "running" at that point), and inserts a
+        // deferred_issue_execution wake — all before its own transaction commits.
+        // If releaseIssueExecutionAndPromote exits here, that deferred wake is orphaned
+        // until the next timer fires (~70 min).
+        //
+        // Fix: lock the issue by contextSnapshot.issueId and promote any deferred wakes
+        // whose payload references it, as long as no *other* run now owns the lock.
+        const runCtx = run.contextSnapshot as Record<string, unknown> | null;
+        const ctxIssueId = typeof runCtx?.issueId === "string" ? runCtx.issueId : null;
+        if (!ctxIssueId) return null;
+
+        await tx.execute(
+          sql`select id from issues where id = ${ctxIssueId} and company_id = ${run.companyId} for update`,
+        );
+        const candidate = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, ctxIssueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null);
+
+        if (
+          !candidate ||
+          (candidate.executionRunId !== null && candidate.executionRunId !== run.id)
+        ) {
+          // Issue not found, or a different run now owns the execution lock — skip.
+          return null;
+        }
+        issue = { id: candidate.id, companyId: candidate.companyId };
+      }
 
       await tx
         .update(issues)

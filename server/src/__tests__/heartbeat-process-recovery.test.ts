@@ -3,9 +3,11 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  agentRuntimeState,
   agents,
   agentWakeupRequests,
   companies,
+  companySkills,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -138,7 +140,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
@@ -169,6 +173,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    startedAt?: Date;
+    updatedAt?: Date;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -224,8 +230,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processLossRetryCount: input?.processLossRetryCount ?? 0,
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
-      startedAt: now,
-      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      startedAt: input?.startedAt ?? now,
+      updatedAt: input?.updatedAt ?? new Date("2026-03-19T00:00:00.000Z"),
     });
 
     if (input?.includeIssue !== false) {
@@ -306,6 +312,27 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("uses startedAt instead of updatedAt for stale orphaned run detection", async () => {
+    const nowMs = Date.now();
+    const { runId } = await seedRunFixture({
+      adapterType: "hermes_local",
+      includeIssue: false,
+      processPid: null,
+      startedAt: new Date(nowMs - 60 * 60 * 1000),
+      updatedAt: new Date(nowMs - 10 * 1000),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 30 * 60 * 1000 });
+
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+  });
+
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
     const orphan = await spawnOrphanedProcessGroup();
     cleanupPids.add(orphan.descendantPid);
@@ -370,6 +397,68 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
     expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("promotes a deferred wake when executionRunId was pre-cleared by Fix-B (TBG-198 regression)", async () => {
+    // Regression for the race in releaseIssueExecutionAndPromote:
+    // Fix-B clears executionRunId synchronously during a PATCH reassign, so by the time
+    // releaseIssueExecutionAndPromote runs, the primary lookup (WHERE executionRunId = run.id)
+    // finds nothing and exits — leaving any concurrently-created deferred wake orphaned.
+    // The fix adds a fallback lookup via contextSnapshot.issueId.
+    const { companyId, issueId } = await seedRunFixture({
+      processPid: 999_999_999, // dead pid → will be reaped
+      processLossRetryCount: 1, // retry already exhausted → goes straight to releaseIssueExecutionAndPromote
+    });
+
+    // Simulate Fix-B: clear executionRunId on the issue (as PATCH does on reassign).
+    await db
+      .update(issues)
+      .set({ executionRunId: null, executionAgentNameKey: null })
+      .where(eq(issues.id, issueId));
+
+    // Create a second QA agent and a deferred wake for it, as enqueueWakeup would have.
+    const qaAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: qaAgentId,
+      companyId,
+      name: "QAInspector",
+      role: "qa",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const deferredWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId: qaAgentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId, mutation: "update" },
+      status: "deferred_issue_execution",
+    });
+
+    // Reaping the orphaned run triggers releaseIssueExecutionAndPromote.
+    // Without the fix, the deferred wake would stay deferred forever.
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    const deferredWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+
+    // The deferred wake must have been promoted out of deferred_issue_execution.
+    // startNextQueuedRunForAgent may immediately claim it (queued → claimed),
+    // so accept any status that is not deferred_issue_execution.
+    expect(deferredWake?.status).not.toBe("deferred_issue_execution");
+    expect(["queued", "claimed", "running", "failed"]).toContain(deferredWake?.status);
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
