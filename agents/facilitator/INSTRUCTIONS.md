@@ -43,8 +43,14 @@ Diff live `adapterConfig.promptTemplate` + `instructionsFilePath` content agains
 
 ### 6. Token efficiency (weekly only)
 
-Scan recent runs' `usageJson.inputTokens`/`outputTokens` + live `promptTemplate`s. Waste signals: prompts restating INSTRUCTIONS.md · peers consuming materially more input for similar work · high-input runs with low useful output · same endpoint refetched within a run.
-File one followup to Planner with the pattern + cited run IDs when something is substantively wrong. Don't auto-edit prompts. Don't file on noise.
+One call: `GET /api/companies/{companyId}/sessions/summary?windowDays=7`. Returns per-agent `runCount`, `sessionCount`, `singleRunSessionPct`, `meanRunsPerSession`, `maxRunsPerSession`, `tokensPerRun`, `cacheHitPct`, plus raw/cached/output token totals. Flag thresholds:
+
+- **`tokensPerRun` jumped >20%** vs previous sweep for any agent → prompt bloat regression. File followup to Planner with agent + old/new numbers.
+- **`tokensPerRun` > 1.5M** for task-scoped agents (Worker, Reviewer, Architect) → investigate prompt surface (`INSTRUCTIONS.md` + `promptTemplate` + tool list). Architect ~400k is the floor; 3-5× that is fixable.
+- **`cacheHitPct` < 80%** for any agent → session rotation firing on wrong triggers. File bug.
+- **`singleRunSessionPct` > 50% for Coordinator / Planner / Facilitator** → routine wakes aren't amortizing; their policy expects long sessions. (Not a bug for Worker / Reviewer / Architect — task-scoped, 1-run is by design.)
+
+Record this sweep's `tokensPerRun` per agent in the routine task's comment so the next sweep can diff. Don't auto-edit prompts. File one followup to Planner per distinct pattern (don't duplicate — grep existing first).
 
 ### 7. Report (always)
 
