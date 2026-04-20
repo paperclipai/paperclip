@@ -1,0 +1,40 @@
+[project]
+name = "blackbox"
+version = "0.1.0"
+description = "ConsultAdd RFP Research Agent — agency dossiers with qualification scoring"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.15.0",
+    "anthropic>=0.86.0",
+    "httpx>=0.28.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "pymupdf>=1.25.0",
+    "python-docx>=1.1.0",
+    "rich>=13.9.0",
+    "duckduckgo-search>=8.1.1",
+    "pyyaml>=6.0.3",
+    "python-dotenv>=1.2.2",
+]
+
+[project.scripts]
+blackbox = "blackbox.cli:app"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = ["smoke: requires real API keys (ANTHROPIC_API_KEY, BRAVE_API_KEY)"]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.25.0",
+    "respx>=0.22.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/blackbox"]
