@@ -8,7 +8,7 @@ import {
   issues as issuesTable,
   pluginLogs,
 } from "@paperclipai/db";
-import { eq, and, like, desc, inArray, or, sql } from "drizzle-orm";
+import { eq, and, like, desc, inArray, sql } from "drizzle-orm";
 import type {
   HostServices,
   Company,
@@ -694,7 +694,7 @@ export function buildHostServices(
         billingCode: billingCode ?? null,
       };
     }
-    const scopeCondition = scopeConditions.length === 1 ? scopeConditions[0]! : or(...scopeConditions);
+    const scopeCondition = scopeConditions.length === 1 ? scopeConditions[0]! : and(...scopeConditions);
     const [row] = await db
       .select({
         costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,

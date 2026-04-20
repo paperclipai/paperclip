@@ -6,6 +6,7 @@ import {
   agentWakeupRequests,
   agents,
   companies,
+  costEvents,
   createDb,
   heartbeatRuns,
   issueRelations,
@@ -52,6 +53,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
@@ -262,5 +264,109 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         reason: "mission_advance",
       }),
     ).rejects.toThrow("Issue is blocked by unresolved blockers");
+  });
+
+  it("narrows orchestration cost summaries by subtree and billing code", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const rootIssueId = randomUUID();
+    const childIssueId = randomUUID();
+    const unrelatedIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: rootIssueId,
+        companyId,
+        title: "Root mission",
+        status: "todo",
+        priority: "medium",
+        billingCode: "mission:alpha",
+      },
+      {
+        id: childIssueId,
+        companyId,
+        parentId: rootIssueId,
+        title: "Child mission",
+        status: "todo",
+        priority: "medium",
+        billingCode: "mission:alpha",
+      },
+      {
+        id: unrelatedIssueId,
+        companyId,
+        title: "Different mission",
+        status: "todo",
+        priority: "medium",
+        billingCode: "mission:alpha",
+      },
+    ]);
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        issueId: rootIssueId,
+        billingCode: "mission:alpha",
+        provider: "test",
+        model: "unit",
+        inputTokens: 10,
+        cachedInputTokens: 1,
+        outputTokens: 2,
+        costCents: 100,
+        occurredAt: new Date(),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: childIssueId,
+        billingCode: "mission:alpha",
+        provider: "test",
+        model: "unit",
+        inputTokens: 20,
+        cachedInputTokens: 2,
+        outputTokens: 4,
+        costCents: 200,
+        occurredAt: new Date(),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: childIssueId,
+        billingCode: "mission:beta",
+        provider: "test",
+        model: "unit",
+        inputTokens: 30,
+        cachedInputTokens: 3,
+        outputTokens: 6,
+        costCents: 300,
+        occurredAt: new Date(),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: unrelatedIssueId,
+        billingCode: "mission:alpha",
+        provider: "test",
+        model: "unit",
+        inputTokens: 40,
+        cachedInputTokens: 4,
+        outputTokens: 8,
+        costCents: 400,
+        occurredAt: new Date(),
+      },
+    ]);
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const summary = await services.issues.getOrchestrationSummary({
+      companyId,
+      issueId: rootIssueId,
+      includeSubtree: true,
+    });
+
+    expect(new Set(summary.subtreeIssueIds)).toEqual(new Set([rootIssueId, childIssueId]));
+    expect(summary.costs).toMatchObject({
+      billingCode: "mission:alpha",
+      costCents: 300,
+      inputTokens: 30,
+      cachedInputTokens: 3,
+      outputTokens: 6,
+    });
   });
 });
