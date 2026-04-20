@@ -279,14 +279,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
 
   // Fetch adapter models for the effective adapter type
+  const adapterModelHints: Record<string, string> | undefined =
+    !isCreate && typeof config.gheHost === "string" && config.gheHost.trim().length > 0
+      ? { gheHost: config.gheHost.trim() as string }
+      : undefined;
   const {
     data: fetchedModels,
     error: fetchedModelsError,
   } = useQuery({
     queryKey: selectedCompanyId
-      ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType)
+      ? [...queryKeys.agents.adapterModels(selectedCompanyId, adapterType), adapterModelHints?.gheHost ?? ""]
       : ["agents", "none", "adapter-models", adapterType],
-    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType),
+    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, adapterModelHints),
     enabled: Boolean(selectedCompanyId),
   });
   const models = fetchedModels ?? externalModels ?? [];

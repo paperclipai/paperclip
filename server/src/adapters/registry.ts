@@ -80,6 +80,19 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  execute as copilotLocalExecute,
+  testEnvironment as copilotLocalTestEnvironment,
+  listCopilotLocalSkills,
+  syncCopilotLocalSkills,
+  detectCopilotLocalModel,
+  listCopilotLocalModels,
+  sessionCodec as copilotLocalSessionCodec,
+} from "@paperclipai/adapter-copilot-local/server";
+import {
+  agentConfigurationDoc as copilotLocalAgentConfigurationDoc,
+  models as copilotLocalModels,
+} from "@paperclipai/adapter-copilot-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -216,6 +229,21 @@ const hermesLocalAdapter: ServerAdapterModule = {
   detectModel: () => detectModelFromHermes(),
 };
 
+const copilotLocalAdapter: ServerAdapterModule = {
+  type: "copilot_local",
+  execute: copilotLocalExecute,
+  testEnvironment: copilotLocalTestEnvironment,
+  listSkills: listCopilotLocalSkills,
+  syncSkills: syncCopilotLocalSkills,
+  models: copilotLocalModels,
+  listModels: listCopilotLocalModels,
+  detectModel: detectCopilotLocalModel,
+  sessionCodec: copilotLocalSessionCodec,
+  sessionManagement: getAdapterSessionManagement("copilot_local") ?? undefined,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: copilotLocalAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -237,6 +265,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    copilotLocalAdapter,
     processAdapter,
     httpAdapter,
   ]) {
@@ -340,11 +369,11 @@ export function getServerAdapter(type: string): ServerAdapterModule {
   return findActiveServerAdapter(type) ?? processAdapter;
 }
 
-export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+export async function listAdapterModels(type: string, hints?: Record<string, unknown>): Promise<{ id: string; label: string }[]> {
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
   if (adapter.listModels) {
-    const discovered = await adapter.listModels();
+    const discovered = await adapter.listModels(hints);
     if (discovered.length > 0) return discovered;
   }
   return adapter.models ?? [];

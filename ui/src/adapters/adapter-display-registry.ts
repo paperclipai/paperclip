@@ -14,6 +14,7 @@ import {
   Sparkles,
   Terminal,
   Cpu,
+  Github,
 } from "lucide-react";
 import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
 import { HermesIcon } from "@/components/HermesIcon";
@@ -95,6 +96,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Bot,
     comingSoon: true,
     disabledLabel: "Configure OpenClaw within the App",
+  },
+  copilot_local: {
+    label: "GitHub Copilot",
+    description: "Local Copilot CLI agent with GHE + BYOK support",
+    icon: Github,
   },
   process: {
     label: "Process",

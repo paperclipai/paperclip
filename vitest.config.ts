@@ -6,6 +6,7 @@ export default defineConfig({
       "packages/db",
       "packages/adapter-utils",
       "packages/adapters/codex-local",
+      "packages/adapters/copilot-local",
       "packages/adapters/opencode-local",
       "server",
       "ui",

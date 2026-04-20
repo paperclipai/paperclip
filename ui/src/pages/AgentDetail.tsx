@@ -1720,6 +1720,15 @@ function PromptsTab({
     externalBundleRef.current = null;
   }, [agent.id]);
 
+  const isLocal =
+    agent.adapterType === "claude_local" ||
+    agent.adapterType === "codex_local" ||
+    agent.adapterType === "copilot_local" ||
+    agent.adapterType === "gemini_local" ||
+    agent.adapterType === "opencode_local" ||
+    agent.adapterType === "pi_local" ||
+    agent.adapterType === "hermes_local" ||
+    agent.adapterType === "cursor";
   const getCapabilities = useAdapterCapabilities();
   const isLocal = getCapabilities(agent.adapterType).supportsInstructionsBundle;
 

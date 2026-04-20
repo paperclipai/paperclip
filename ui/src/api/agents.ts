@@ -44,6 +44,17 @@ export interface ClaudeLoginResult {
   stderr: string;
 }
 
+export interface CopilotLoginResult {
+  success: boolean;
+  output: string;
+  errorMessage: string | null;
+}
+
+export interface CopilotLoginChunk {
+  stream: "stdout" | "stderr";
+  text: string;
+}
+
 export interface OrgNode {
   id: string;
   name: string;
@@ -163,10 +174,14 @@ export const agentsApi = {
     api.get<AgentTaskSession[]>(agentPath(id, companyId, "/task-sessions")),
   resetSession: (id: string, taskKey?: string | null, companyId?: string) =>
     api.post<void>(agentPath(id, companyId, "/runtime-state/reset-session"), { taskKey: taskKey ?? null }),
-  adapterModels: (companyId: string, type: string) =>
-    api.get<AdapterModel[]>(
-      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models`,
-    ),
+  adapterModels: (companyId: string, type: string, hints?: Record<string, string>) => {
+    const params = hints && Object.keys(hints).length > 0
+      ? "?" + new URLSearchParams(hints).toString()
+      : "";
+    return api.get<AdapterModel[]>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models${params}`,
+    );
+  },
   detectModel: (companyId: string, type: string) =>
     api.get<DetectedAdapterModel | null>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/detect-model`,
@@ -194,6 +209,67 @@ export const agentsApi = {
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
+  /**
+   * Initiates Copilot device-flow login via SSE.  The server streams `chunk`
+   * events with real-time stdout/stderr (including the one-time device code)
+   * followed by a final `done` event with the full CopilotLoginResult.
+   */
+  loginWithCopilot: (
+    id: string,
+    callbacks: {
+      onChunk: (chunk: CopilotLoginChunk) => void;
+      onDone: (result: CopilotLoginResult) => void;
+      onError?: (error: Error) => void;
+    },
+    companyId?: string,
+  ): { abort: () => void } => {
+    const controller = new AbortController();
+    const url = `/api${agentPath(id, companyId, "/copilot-login")}`;
+    fetch(url, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => null);
+          throw new Error(
+            (errBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
+          );
+        }
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error("No response body");
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop() ?? "";
+          for (const part of parts) {
+            const eventMatch = part.match(/^event:\s*(.+)$/m);
+            const dataMatch = part.match(/^data:\s*(.+)$/m);
+            if (!eventMatch || !dataMatch) continue;
+            const eventType = eventMatch[1];
+            try {
+              const payload = JSON.parse(dataMatch[1]!);
+              if (eventType === "chunk") callbacks.onChunk(payload);
+              else if (eventType === "done") callbacks.onDone(payload);
+            } catch {
+              // Malformed SSE data — skip
+            }
+          }
+        }
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        callbacks.onError?.(err instanceof Error ? err : new Error(String(err)));
+      });
+    return { abort: () => controller.abort() };
+  },
   availableSkills: () =>
     api.get<{ skills: AvailableSkill[] }>("/skills/available"),
 };

@@ -62,6 +62,7 @@ import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
+import { copilotLogin } from "@paperclipai/adapter-copilot-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -81,6 +82,7 @@ export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
+    copilot_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
     hermes_local: "instructionsFilePath",
@@ -843,7 +845,11 @@ export function agentRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const type = assertKnownAdapterType(req.params.type as string);
-    const models = await listAdapterModels(type);
+    // Forward query params as hints so adapters can use config context (e.g. gheHost)
+    const hints = Object.keys(req.query).length > 0
+      ? Object.fromEntries(Object.entries(req.query).map(([k, v]) => [k, String(v ?? "")]))
+      : undefined;
+    const models = await listAdapterModels(type, hints);
     res.json(models);
   });
 
@@ -2352,6 +2358,63 @@ export function agentRoutes(db: Db) {
     });
 
     res.json(result);
+  });
+
+  router.post("/agents/:id/copilot-login", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+    if (agent.adapterType !== "copilot_local") {
+      res.status(400).json({ error: "Login is only supported for copilot_local agents" });
+      return;
+    }
+
+    const config = asRecord(agent.adapterConfig) ?? {};
+    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(agent.companyId, config);
+    const gheHost = typeof runtimeConfig.gheHost === "string" ? runtimeConfig.gheHost : undefined;
+    const command = typeof runtimeConfig.command === "string" ? runtimeConfig.command : undefined;
+
+    // Copilot uses a device-flow that prints a one-time code the user must
+    // enter in the browser.  We stream SSE so the UI can show the code as
+    // soon as it appears — without waiting for the full login to complete.
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    res.flushHeaders();
+    res.write(":ok\n\n");
+
+    let closed = false;
+    req.on("close", () => { closed = true; });
+
+    const result = await copilotLogin({
+      gheHost,
+      command,
+      onChunk: (chunk) => {
+        if (closed || !res.writable) return;
+        try {
+          res.write(`event: chunk\ndata: ${JSON.stringify(chunk)}\n\n`);
+        } catch {
+          // Connection closed — ignore
+        }
+      },
+    });
+
+    if (!closed && res.writable) {
+      try {
+        res.write(`event: done\ndata: ${JSON.stringify(result)}\n\n`);
+      } catch {
+        // Connection closed — ignore
+      }
+    }
+    res.end();
   });
 
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {

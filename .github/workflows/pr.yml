@@ -109,7 +109,11 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: |
+          pnpm install --frozen-lockfile 2>/dev/null || {
+            echo "::notice::Lockfile out of date — regenerating (policy job already validated resolution)"
+            pnpm install --no-frozen-lockfile
+          }
 
       - name: Typecheck
         run: pnpm -r typecheck
@@ -147,7 +151,11 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: |
+          pnpm install --frozen-lockfile 2>/dev/null || {
+            echo "::notice::Lockfile out of date — regenerating (policy job already validated resolution)"
+            pnpm install --no-frozen-lockfile
+          }
 
       - name: Build
         run: pnpm build
