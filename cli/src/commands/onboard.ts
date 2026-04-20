@@ -600,6 +600,42 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     p.log.info(`Using existing ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} in ${pc.dim(envFilePath)}`);
   }
 
+  let existingConfig: PaperclipConfig | null = null;
+  if (configExists(opts.config)) {
+    try {
+      existingConfig = readConfig(opts.config);
+    } catch {
+      // Invalid or corrupted config — skip merging, fall back to defaults
+    }
+  }
+
+  if (existingConfig && setupMode === "quickstart") {
+    database = {
+      ...database,
+      ...(existingConfig.database ?? {}),
+      ...(existingConfig.database?.backup != null
+        ? { backup: { ...database.backup, ...existingConfig.database.backup } }
+        : {}),
+    };
+    logging = { ...logging, ...(existingConfig.logging ?? {}) };
+    server = { ...server, ...(existingConfig.server ?? {}) };
+    auth = { ...auth, ...(existingConfig.auth ?? {}) };
+    storage = {
+      ...storage,
+      ...(existingConfig.storage ?? {}),
+      localDisk: { ...storage.localDisk, ...(existingConfig.storage?.localDisk ?? {}) },
+      s3: { ...storage.s3, ...(existingConfig.storage?.s3 ?? {}) },
+    };
+    secrets = {
+      ...secrets,
+      ...(existingConfig.secrets ?? {}),
+      localEncrypted: { ...secrets.localEncrypted, ...(existingConfig.secrets?.localEncrypted ?? {}) },
+    };
+    if (!llm && existingConfig.llm) {
+      llm = existingConfig.llm;
+    }
+  }
+
   const config: PaperclipConfig = {
     $meta: {
       version: 1,
