@@ -258,5 +258,10 @@
   "project.workspaceJobCompleted": "워크스페이스 작업이 완료됐어요.",
   "project.workspaceServiceStopped": "워크스페이스 서비스가 중지됐어요.",
   "project.workspaceServiceRestarted": "워크스페이스 서비스가 재시작됐어요.",
-  "project.workspaceServiceStarted": "워크스페이스 서비스가 시작됐어요."
+  "project.workspaceServiceStarted": "워크스페이스 서비스가 시작됐어요.",
+  "detail.servicesAndJobs": "서비스 및 작업",
+  "detail.source": "출처:",
+  "detail.sourceExecutionOverride": "실행 워크스페이스 오버라이드",
+  "detail.sourceProjectDefault": "프로젝트 워크스페이스 기본값",
+  "detail.sourceNone": "없음"
 }

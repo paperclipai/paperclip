@@ -535,7 +535,7 @@ export function CompanyAccess() {
       <Dialog open={!!removingMember} onOpenChange={(open) => !open && setRemovingMemberId(null)}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>Remove member</DialogTitle>
+            <DialogTitle>{t("companyAccess.removeMember", { defaultValue: "Remove member" })}</DialogTitle>
             <DialogDescription>
               Archive {memberDisplayName(removingMember)} and move active assignments before hiding this user from assignment fields.
             </DialogDescription>
@@ -547,22 +547,22 @@ export function CompanyAccess() {
                 <div className="text-sm text-muted-foreground">{removingMember.user?.email || removingMember.principalId}</div>
                 <div className="mt-2 text-sm text-muted-foreground">
                   {assignedIssuesQuery.isLoading
-                    ? "Checking assigned issues..."
+                    ? t("companyAccess.checkingAssignedIssues", { defaultValue: "Checking assigned issues..." })
                     : `${assignedIssues.length} open assigned issue${assignedIssues.length === 1 ? "" : "s"}`}
                 </div>
               </div>
 
               {assignedIssues.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-sm font-medium">Issue reassignment</div>
+                  <div className="text-sm font-medium">{t("companyAccess.issueReassignment", { defaultValue: "Issue reassignment" })}</div>
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                     value={reassignmentTarget}
                     onChange={(event) => setReassignmentTarget(event.target.value)}
                   >
-                    <option value="__unassigned">Leave unassigned</option>
+                    <option value="__unassigned">{t("companyAccess.leaveUnassigned", { defaultValue: "Leave unassigned" })}</option>
                     {activeReassignmentUsers.length > 0 ? (
-                      <optgroup label="Humans">
+                      <optgroup label={t("companyAccess.humans", { defaultValue: "Humans" })}>
                         {activeReassignmentUsers.map((member) => (
                           <option key={member.id} value={`user:${member.principalId}`}>
                             {memberDisplayName(member)}
@@ -571,7 +571,7 @@ export function CompanyAccess() {
                       </optgroup>
                     ) : null}
                     {activeReassignmentAgents.length > 0 ? (
-                      <optgroup label="Agents">
+                      <optgroup label={t("companyAccess.agents", { defaultValue: "Agents" })}>
                         {activeReassignmentAgents.map((agent) => (
                           <option key={agent.id} value={`agent:${agent.id}`}>
                             {agent.name} ({agent.role})

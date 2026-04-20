@@ -539,13 +539,13 @@ export function ExecutionWorkspaceDetail() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Services and jobs</CardTitle>
+            <CardTitle>{t("detail.servicesAndJobs", { defaultValue: "Services and jobs" })}</CardTitle>
             <CardDescription>
-              Source: {runtimeConfigSource === "execution_workspace"
-                ? "execution workspace override"
+              {t("detail.source", { defaultValue: "Source:" })} {runtimeConfigSource === "execution_workspace"
+                ? t("detail.sourceExecutionOverride", { defaultValue: "execution workspace override" })
                 : runtimeConfigSource === "project_workspace"
-                  ? "project workspace default"
-                  : "none"}
+                  ? t("detail.sourceProjectDefault", { defaultValue: "project workspace default" })
+                  : t("detail.sourceNone", { defaultValue: "none" })}
             </CardDescription>
           </CardHeader>
           <CardContent>

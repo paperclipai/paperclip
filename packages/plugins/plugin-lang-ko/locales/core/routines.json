@@ -183,5 +183,7 @@
   "draft": "초안",
   "noDefaultAgent": "기본 에이전트 없음",
   "noProject": "프로젝트 없음",
-  "toastRoutineDraftBody": "초안이 저장되었습니다. 자동화를 활성화하려면 기본 에이전트를 추가하세요."
+  "toastRoutineDraftBody": "초안이 저장되었습니다. 자동화를 활성화하려면 기본 에이전트를 추가하세요.",
+  "detail.in": "의",
+  "composerIn": "의"
 }

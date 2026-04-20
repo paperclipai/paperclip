@@ -629,5 +629,11 @@
   "invite.submittingJoinRequest": "Submitting join request",
   "invite.submittingRequest": "Submitting request...",
   "invite.willSubmit": "This will {{action}}.",
-  "invite.working": "Working..."
+  "invite.working": "Working...",
+  "companyAccess.removeMember": "Remove member",
+  "companyAccess.issueReassignment": "Issue reassignment",
+  "companyAccess.leaveUnassigned": "Leave unassigned",
+  "companyAccess.checkingAssignedIssues": "Checking assigned issues...",
+  "companyAccess.humans": "Humans",
+  "companyAccess.agents": "Agents"
 }

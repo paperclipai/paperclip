@@ -629,5 +629,11 @@
   "invite.submittingJoinRequest": "합류 요청 제출 중",
   "invite.submittingRequest": "요청 제출 중...",
   "invite.willSubmit": "이 작업은 {{action}}.",
-  "invite.working": "처리 중..."
+  "invite.working": "처리 중...",
+  "companyAccess.removeMember": "멤버 제거",
+  "companyAccess.issueReassignment": "이슈 재할당",
+  "companyAccess.leaveUnassigned": "미할당 상태로 두기",
+  "companyAccess.checkingAssignedIssues": "할당된 이슈 확인 중...",
+  "companyAccess.humans": "사람",
+  "companyAccess.agents": "에이전트"
 }

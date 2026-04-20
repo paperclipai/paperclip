@@ -183,5 +183,7 @@
   "draft": "Draft",
   "noDefaultAgent": "No default agent",
   "noProject": "No project",
-  "toastRoutineDraftBody": "Draft saved. Add a default agent before enabling automation."
+  "toastRoutineDraftBody": "Draft saved. Add a default agent before enabling automation.",
+  "detail.in": "in",
+  "composerIn": "in"
 }

@@ -409,5 +409,9 @@
   "filters.hide_routine_runs": "루틴 실행 숨기기",
   "list.createLabel": "{{label}} 생성",
   "list.newLabel": "새 {{label}}",
-  "properties.clickToCopy": "클릭하여 복사"
+  "properties.clickToCopy": "클릭하여 복사",
+  "event.updatedThisTask": "이 작업을 업데이트했습니다",
+  "event.status": "상태",
+  "event.assignee": "담당자",
+  "event.run": "실행"
 }
