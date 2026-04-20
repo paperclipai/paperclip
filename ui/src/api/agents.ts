@@ -140,6 +140,11 @@ export const agentsApi = {
     data: { path: string; content: string; clearLegacyPromptTemplate?: boolean },
     companyId?: string,
   ) => api.put<AgentInstructionsFileDetail>(agentPath(id, companyId, "/instructions-bundle/file"), data),
+  generateInstructionsBundle: (id: string, companyId?: string) =>
+    api.post<{ model: string; files: Array<{ path: string; content: string }> }>(
+      agentPath(id, companyId, "/instructions/generate"),
+      {},
+    ),
   deleteInstructionsFile: (id: string, relativePath: string, companyId?: string) =>
     api.delete<AgentInstructionsBundle>(
       agentPath(id, companyId, `/instructions-bundle/file?path=${encodeURIComponent(relativePath)}`),
