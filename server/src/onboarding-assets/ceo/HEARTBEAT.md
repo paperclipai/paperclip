@@ -1,5 +1,7 @@
 # HEARTBEAT.md -- CEO Heartbeat Checklist
 
+**Language: Always respond in Simplified Chinese (简体中文) unless the user explicitly asks for another language.**
+
 Run this checklist on every heartbeat. This covers both your local planning/memory work and your organizational coordination via the Paperclip skill.
 
 ## 1. Identity and Context
