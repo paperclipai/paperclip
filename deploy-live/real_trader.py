@@ -2603,6 +2603,12 @@ def format_live_close_msg(pos: LivePosition, portfolio: Portfolio) -> str:
     return "\n".join(lines)
 
 
+def _toggle_dry_run():
+    """Toggle the global DRY_RUN flag."""
+    global DRY_RUN
+    DRY_RUN = not DRY_RUN
+
+
 class TelegramCommandListener:
     """Polls Telegram for bot commands and dispatches them."""
 
@@ -2670,8 +2676,7 @@ class TelegramCommandListener:
             await send_telegram(session, "*START received* — trading resumed")
 
         elif text == "/dryrun":
-            global DRY_RUN
-            DRY_RUN = not DRY_RUN
+            _toggle_dry_run()
             mode = "ON" if DRY_RUN else "OFF"
             await send_telegram(session, f"*DRY RUN toggled {mode}*")
 
@@ -2687,3 +2692,492 @@ class TelegramCommandListener:
                 except Exception as e:
                     lines.append(f"  {ex_name}: ERROR ({e})")
             await send_telegram(session, "\n".join(lines))
+
+
+# ===========================================================================
+# Task 9: Main Loop
+# ===========================================================================
+
+async def main():
+    """Main entry point — full trading loop with entry/exit scanning."""
+    from logging.handlers import RotatingFileHandler
+
+    # -- Logging setup --
+    log_dir = str(DATA_DIR)
+    file_handler = RotatingFileHandler(
+        os.path.join(log_dir, "real_trader.log"),
+        maxBytes=10 * 1024 * 1024,  # 10 MB
+        backupCount=5,
+    )
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"
+    ))
+    log.addHandler(file_handler)
+    log.setLevel(logging.INFO)
+
+    mode = "DRY RUN" if DRY_RUN else "LIVE"
+    log.info(f"=== Real Trader starting [{mode}] ===")
+    log.info(f"Capital=${STARTING_CAPITAL} MaxPos=${MAX_CONCURRENT} "
+             f"Entry={ENTRY_SPREAD_PCT}% Exit={EXIT_SPREAD_PCT}%")
+
+    # -- Create aiohttp session --
+    connector = aiohttp.TCPConnector(limit=100, ttl_dns_cache=300)
+    session = aiohttp.ClientSession(connector=connector)
+
+    try:
+        # -- Create executors --
+        executors = create_executors(session)
+        if not executors:
+            log.critical("No exchange executors configured — check API keys")
+            await session.close()
+            return
+        log.info(f"Executors created: {list(executors.keys())}")
+
+        # -- Test auth on all exchanges --
+        for ex_name, executor in executors.items():
+            try:
+                bal = await executor.get_balance()
+                avail = bal.get("availBal", 0)
+                log.info(f"AUTH OK {ex_name}: ${avail:.2f} available")
+            except Exception as e:
+                log.warning(f"AUTH FAILED {ex_name}: {e}")
+
+        # -- Create LiveTrader + TelegramCommandListener --
+        trader = LiveTrader(executors)
+        tg_listener = TelegramCommandListener(trader)
+
+        # -- Discover symbols --
+        symbols = await discover_symbols(session)
+        trader.symbols_set = set(symbols)
+        log.info(f"Discovered {len(symbols)} symbols across {len(executors)} exchanges")
+
+        # -- Reconcile positions on startup --
+        mismatches = await trader.risk_mgr.reconcile_positions(session)
+        if mismatches:
+            log.warning(f"Startup reconciliation: {mismatches}")
+
+        # -- Refresh balances --
+        await trader.risk_mgr.refresh_balances()
+
+        # -- Start WS feeds --
+        await _exchange_ws.start(session)
+        await _ob_ws.start(session)
+        _ob_ws.update_active_symbols(trader.symbols_set)
+
+        # -- Refresh funding rates --
+        await refresh_funding_rates(session)
+
+        # -- Send startup Telegram --
+        n_open = len(trader.portfolio.open_positions)
+        startup_msg = (
+            f"*Real Trader Started [{mode}]*\n"
+            f"Exchanges: {', '.join(executors.keys())}\n"
+            f"Symbols: {len(symbols)}\n"
+            f"Equity: ${trader.portfolio.equity:.2f}\n"
+            f"Open positions: {n_open}\n"
+            f"Entry: {ENTRY_SPREAD_PCT}%  Exit: {EXIT_SPREAD_PCT}%"
+        )
+        await send_telegram(session, startup_msg)
+
+        # -- Signal handlers for graceful shutdown --
+        loop = asyncio.get_running_loop()
+
+        def _signal_handler(sig):
+            log.info(f"Received signal {sig} — initiating graceful shutdown")
+            trader.running = False
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _signal_handler, sig)
+
+        # -- Timing trackers --
+        last_tg_poll = 0.0
+        last_state_save = time.time()
+        last_status_log = time.time()
+        last_tg_status = time.time()
+        last_funding_refresh = time.time()
+        last_symbol_refresh = time.time()
+        heartbeat_path = os.path.join(log_dir, "heartbeat")
+
+        # ============================
+        # MAIN LOOP
+        # ============================
+        log.info("Entering main loop")
+        while trader.running:
+            cycle_start = time.time()
+            try:
+                # -- Heartbeat --
+                try:
+                    with open(heartbeat_path, "w") as f:
+                        f.write(str(int(time.time())))
+                except Exception:
+                    pass
+
+                # -- Poll Telegram commands every 5s --
+                if time.time() - last_tg_poll >= 5:
+                    await tg_listener.poll_commands(session)
+                    last_tg_poll = time.time()
+
+                # -- Refresh balances --
+                await trader.risk_mgr.refresh_balances()
+
+                # -- Retry degraded positions --
+                await trader.trade_executor.retry_degraded_positions()
+
+                # -- Refresh funding rates every 5 min --
+                if time.time() - last_funding_refresh >= 300:
+                    await refresh_funding_rates(session)
+                    last_funding_refresh = time.time()
+
+                # -- Refresh symbols every 30 min --
+                if time.time() - last_symbol_refresh >= 1800:
+                    new_symbols = await discover_symbols(session)
+                    if new_symbols:
+                        trader.symbols_set = set(new_symbols)
+                        _ob_ws.update_active_symbols(trader.symbols_set)
+                        log.info(f"Symbol refresh: {len(new_symbols)} symbols")
+                    last_symbol_refresh = time.time()
+
+                # -- Fetch prices from all exchanges --
+                fetch_results = await asyncio.gather(
+                    *[f(session, trader.symbols_set) for f in BATCH_FETCHERS],
+                    return_exceptions=True,
+                )
+
+                # Build price cache: symbol -> [PriceQuote, ...]
+                by_symbol: Dict[str, List[PriceQuote]] = {}
+                for result in fetch_results:
+                    if isinstance(result, Exception):
+                        continue
+                    for q in result:
+                        if q.symbol in trader.symbols_set and q.mid > 0:
+                            by_symbol.setdefault(q.symbol, []).append(q)
+                trader.price_cache = by_symbol
+
+                # Track last quote time per exchange
+                for quotes in by_symbol.values():
+                    for q in quotes:
+                        trader.last_quote_time[q.exchange] = time.time()
+
+                # ---- CHECK EXITS on open positions ----
+                for pos in list(trader.portfolio.open_positions):
+                    if pos.status == "DEGRADED":
+                        continue
+                    quotes = by_symbol.get(pos.symbol, [])
+                    if not quotes:
+                        continue
+
+                    # Find current prices for the short and long exchanges
+                    q_short = None
+                    q_long = None
+                    for q in quotes:
+                        if q.exchange == pos.exchange_short and q.instrument == pos.instrument_short:
+                            q_short = q
+                        if q.exchange == pos.exchange_long and q.instrument == pos.instrument_long:
+                            q_long = q
+
+                    if not q_short or not q_long:
+                        continue
+
+                    # Current spread: short_bid - long_ask (what we'd get exiting now)
+                    if q_long.ask > 0:
+                        current_spread = (q_short.bid - q_long.ask) / q_long.ask * 100
+                    else:
+                        continue
+
+                    pos.current_spread_pct = current_spread
+                    if current_spread > pos.peak_spread_pct:
+                        pos.peak_spread_pct = current_spread
+
+                    # Update baseline
+                    pair_key = trader._pair_key(pos.symbol, pos.exchange_short,
+                                                pos.instrument_short, pos.exchange_long,
+                                                pos.instrument_long)
+                    trader.update_baseline_spreads(pair_key, current_spread)
+
+                    # -- Exit conditions --
+                    hold_minutes = (datetime.now(timezone.utc) - pos.entry_time).total_seconds() / 60
+                    exit_reason = ""
+
+                    # 1) Convergence exit
+                    exit_threshold = trader.get_dynamic_exit_threshold(pair_key)
+                    if current_spread <= exit_threshold:
+                        exit_reason = "convergence"
+
+                    # 2) Timeout exit
+                    if not exit_reason and hold_minutes >= AGED_POSITION_FORCE_EXIT_MINUTES:
+                        exit_reason = "timeout"
+
+                    # 3) Dynamic exit (trailing stop on profit)
+                    if not exit_reason and DYNAMIC_EXIT_ENABLED and pos.peak_spread_pct > pos.entry_spread_pct * 0.5:
+                        profit_from_peak = pos.peak_spread_pct - current_spread
+                        trail_trigger = pos.peak_spread_pct * DYNAMIC_EXIT_TRAIL_PCT
+                        if profit_from_peak > trail_trigger and current_spread < pos.entry_spread_pct * DYNAMIC_EXIT_PROFIT_LOCK_PCT:
+                            exit_reason = "dynamic_exit"
+
+                    # 4) Aged position warning (Telegram only, no exit)
+                    if not exit_reason and hold_minutes >= AGED_POSITION_WARN_MINUTES:
+                        # Just log, don't exit yet
+                        pass
+
+                    if exit_reason:
+                        success = await trader.trade_executor.close_position(
+                            pos, current_spread, exit_reason
+                        )
+                        if success:
+                            # Update blacklist if loss
+                            if pos.net_pnl_usd < 0 and pos.size_usd > 0:
+                                pnl_pct = pos.net_pnl_usd / pos.size_usd * 100
+                                trader.update_symbol_blacklist(pos.symbol, pnl_pct)
+                            # Update pair stats
+                            if pair_key not in trader.pair_stats:
+                                trader.pair_stats[pair_key] = {"wins": 0, "losses": 0, "total_pnl": 0.0}
+                            stats = trader.pair_stats[pair_key]
+                            stats["total_pnl"] += pos.net_pnl_usd
+                            if pos.net_pnl_usd > 0:
+                                stats["wins"] += 1
+                            else:
+                                stats["losses"] += 1
+                            # Send Telegram close notification
+                            close_msg = format_live_close_msg(pos, trader.portfolio)
+                            await send_telegram(session, close_msg, reply_to=pos.telegram_msg_id)
+
+                # ---- CHECK KILL SWITCH ----
+                if trader.check_kill_switch():
+                    log.critical("KILL SWITCH — drawdown limit exceeded")
+                    await trader.risk_mgr.trigger_kill_switch("drawdown_exceeded")
+                    await send_telegram(session, "*KILL SWITCH ACTIVATED* — drawdown limit exceeded")
+
+                # ---- SCAN FOR ENTRY CANDIDATES ----
+                can_trade, trade_reason = trader.risk_mgr.can_trade()
+                candidates = []
+
+                if can_trade and len(trader.portfolio.open_positions) < MAX_CONCURRENT:
+                    for symbol, quotes in by_symbol.items():
+                        if len(quotes) < 2:
+                            continue
+                        if symbol in DELISTED_SYMBOLS or symbol in BLOCKED_SYMBOLS:
+                            continue
+                        if trader.check_symbol_blacklist(symbol):
+                            continue
+                        if trader.positions_for_symbol(symbol) >= 1:
+                            continue
+
+                        # Check all pair combinations
+                        for i in range(len(quotes)):
+                            for j in range(len(quotes)):
+                                if i == j:
+                                    continue
+                                q_high = quotes[i]
+                                q_low = quotes[j]
+
+                                # Skip if same exchange+instrument
+                                if q_high.exchange == q_low.exchange and q_high.instrument == q_low.instrument:
+                                    continue
+
+                                # Skip disabled exchanges
+                                if q_high.exchange in DISABLED_EXCHANGES or q_low.exchange in DISABLED_EXCHANGES:
+                                    continue
+
+                                # Spread: (high_ask - low_bid) / low_bid
+                                # For entry: we sell at bid on high, buy at ask on low
+                                if q_low.ask <= 0:
+                                    continue
+                                spread_pct = (q_high.bid - q_low.ask) / q_low.ask * 100
+
+                                # Sanity check
+                                if spread_pct > MAX_SANE_SPREAD_PCT or spread_pct < 0:
+                                    continue
+
+                                # Update spread tracking
+                                pair_key = trader._pair_key(symbol, q_high.exchange,
+                                                            q_high.instrument, q_low.exchange,
+                                                            q_low.instrument)
+                                trader.update_symbol_spread(symbol, spread_pct)
+                                trader.update_baseline_spreads(pair_key, spread_pct)
+
+                                # Compute fees
+                                fees_pct = trader.compute_fees(
+                                    q_high.exchange, q_low.exchange,
+                                    q_high.instrument, q_low.instrument
+                                ) * 100  # Convert to pct
+
+                                # Entry threshold: spread must exceed fees + minimum profit
+                                effective_threshold = max(ENTRY_SPREAD_PCT, fees_pct * 2.5)
+                                if spread_pct < effective_threshold:
+                                    continue
+
+                                # Volume filter
+                                min_vol = max(q_high.volume_24h_usd, q_low.volume_24h_usd)
+                                if min_vol < MIN_VOLUME_USD:
+                                    continue
+
+                                # Breakout guard
+                                if trader.is_breakout(symbol):
+                                    continue
+
+                                # Stale price filter
+                                now_ts = time.time()
+                                if (now_ts - q_high.timestamp.timestamp() > STALE_PRICE_SECONDS or
+                                        now_ts - q_low.timestamp.timestamp() > STALE_PRICE_SECONDS):
+                                    continue
+
+                                # Check risk limits
+                                size_usd = min(
+                                    trader.portfolio.equity * POSITION_SIZE_PCT,
+                                    MAX_POSITION_USD,
+                                )
+                                can_open, open_reason = trader.risk_mgr.can_open_position(
+                                    q_high.exchange, q_low.exchange, size_usd
+                                )
+                                if not can_open:
+                                    continue
+
+                                # Score candidate by spread minus fees
+                                score = spread_pct - fees_pct
+                                # Pair preference: boost pairs with good history
+                                ps = trader.pair_stats.get(pair_key, {})
+                                if ps.get("wins", 0) > ps.get("losses", 0):
+                                    score += 0.05  # Small boost for historically good pairs
+
+                                candidates.append({
+                                    "symbol": symbol,
+                                    "q_high": q_high,
+                                    "q_low": q_low,
+                                    "spread_pct": spread_pct,
+                                    "fees_pct": fees_pct,
+                                    "size_usd": size_usd,
+                                    "score": score,
+                                    "pair_key": pair_key,
+                                })
+
+                # ---- EXECUTE TOP CANDIDATES ----
+                if candidates:
+                    candidates.sort(key=lambda c: c["score"], reverse=True)
+                    # Deduplicate by symbol (only one entry per symbol)
+                    seen_symbols = set()
+                    for cand in candidates:
+                        if cand["symbol"] in seen_symbols:
+                            continue
+                        if len(trader.portfolio.open_positions) >= MAX_CONCURRENT:
+                            break
+
+                        seen_symbols.add(cand["symbol"])
+                        log.info(
+                            f"CANDIDATE {cand['symbol']} "
+                            f"{cand['q_high'].exchange}/{cand['q_high'].instrument} -> "
+                            f"{cand['q_low'].exchange}/{cand['q_low'].instrument} "
+                            f"spread={cand['spread_pct']:.3f}% fees={cand['fees_pct']:.3f}% "
+                            f"score={cand['score']:.3f}"
+                        )
+
+                        pos = await trader.trade_executor.open_position(
+                            cand["symbol"], cand["q_high"], cand["q_low"],
+                            cand["spread_pct"], cand["size_usd"], session,
+                        )
+                        if pos:
+                            open_msg = format_live_open_msg(pos, trader.portfolio)
+                            msg_id = await send_telegram(session, open_msg)
+                            pos.telegram_msg_id = msg_id
+
+                # ---- RECONCILIATION ----
+                mismatches = await trader.risk_mgr.reconcile_positions(session)
+                if mismatches:
+                    await send_telegram(session,
+                                        f"*RECONCILIATION ALERT*\n{chr(10).join(mismatches)}")
+
+                # ---- SAVE STATE every 30s ----
+                if time.time() - last_state_save >= 30:
+                    trader._save_state()
+                    last_state_save = time.time()
+
+                # ---- STATUS LOG every 5 min ----
+                if time.time() - last_status_log >= 300:
+                    p = trader.portfolio
+                    n_open = len(p.open_positions)
+                    log.info(
+                        f"STATUS equity=${p.equity:.2f} pnl=${p.total_pnl_usd:+.2f} "
+                        f"open={n_open} trades={p.total_trades} "
+                        f"wins={p.total_wins} dd={p.max_drawdown_pct:.2f}%"
+                    )
+                    last_status_log = time.time()
+
+                # ---- TELEGRAM STATUS every 30 min ----
+                if time.time() - last_tg_status >= 1800:
+                    p = trader.portfolio
+                    n_open = len(p.open_positions)
+                    wr = (p.total_wins / p.total_trades * 100) if p.total_trades > 0 else 0
+                    status_msg = (
+                        f"*Heartbeat [{mode}]*\n"
+                        f"Equity: ${p.equity:.2f}  |  P&L: ${p.total_pnl_usd:+.2f}\n"
+                        f"Open: {n_open}/{MAX_CONCURRENT}  |  Trades: {p.total_trades}  |  WR: {wr:.1f}%\n"
+                        f"DD: {p.max_drawdown_pct:.2f}%  |  Prices: {len(by_symbol)} symbols"
+                    )
+                    await send_telegram(session, status_msg)
+                    last_tg_status = time.time()
+
+                # ---- EQUITY HISTORY ----
+                now = datetime.now(timezone.utc)
+                trader.equity_history.append({
+                    "t": now.isoformat(),
+                    "v": round(trader.portfolio.equity, 2),
+                })
+                if len(trader.equity_history) > 10000:
+                    trader.equity_history = trader.equity_history[-10000:]
+
+                # Update peak equity
+                equity = trader.portfolio.equity
+                if equity > trader.portfolio.peak_equity:
+                    trader.portfolio.peak_equity = equity
+
+            except Exception as e:
+                log.error(f"Main loop error: {e}", exc_info=True)
+
+            # ---- ADAPTIVE SLEEP ----
+            cycle_time = time.time() - cycle_start
+            if trader.portfolio.open_positions:
+                sleep_time = max(0, POLL_INTERVAL_FAST - cycle_time)
+            else:
+                sleep_time = max(0, POLL_INTERVAL_SLOW - cycle_time)
+            if sleep_time > 0:
+                await asyncio.sleep(sleep_time)
+
+        # ============================
+        # GRACEFUL SHUTDOWN
+        # ============================
+        log.info("Graceful shutdown initiated")
+        await send_telegram(session, "*Shutting down...* Closing all positions")
+
+        # Close all open positions
+        for pos in list(trader.portfolio.open_positions):
+            if pos.status == "CLOSED":
+                continue
+            log.info(f"Shutdown: closing #{pos.id} {pos.symbol}")
+            success = await trader.trade_executor.close_position(pos, 0.0, "shutdown")
+            if success:
+                close_msg = format_live_close_msg(pos, trader.portfolio)
+                await send_telegram(session, close_msg, reply_to=pos.telegram_msg_id)
+
+        # Save final state
+        trader._save_state()
+
+        # Stop WS feeds
+        await _exchange_ws.stop()
+        await _ob_ws.stop()
+
+        # Final Telegram
+        p = trader.portfolio
+        final_msg = (
+            f"*Real Trader Stopped*\n"
+            f"Final equity: ${p.equity:.2f}\n"
+            f"Total P&L: ${p.total_pnl_usd:+.2f}\n"
+            f"Trades: {p.total_trades}  |  DD: {p.max_drawdown_pct:.2f}%"
+        )
+        await send_telegram(session, final_msg)
+        log.info("Shutdown complete")
+
+    finally:
+        await session.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
