@@ -160,7 +160,17 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-      const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
+      const userId = req.actor.userId;
+      if (!userId) throw unauthorized();
+      // owner/admin 멤버십 사람 유저는 회사 내 할당을 명시 grant 없이 수행할 수 있다.
+      const membership = await access.getMembership(companyId, "user", userId);
+      if (
+        membership?.status === "active" &&
+        (membership.membershipRole === "owner" || membership.membershipRole === "admin")
+      ) {
+        return;
+      }
+      const allowed = await access.canUser(companyId, userId, "tasks:assign");
       if (!allowed) throw forbidden("Missing permission: tasks:assign");
       return;
     }
