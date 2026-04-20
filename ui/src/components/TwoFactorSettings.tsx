@@ -60,7 +60,7 @@ export function TwoFactorSettings() {
       return result;
     },
     onSuccess: (result) => {
-      if (!result) {
+      if (!result || !result.totpURI || !result.backupCodes) {
         setError("Failed to enable 2FA");
         return;
       }
@@ -115,7 +115,7 @@ export function TwoFactorSettings() {
       return await authApi.twoFactor.generateBackupCodes({ password });
     },
     onSuccess: (result) => {
-      if (!result) {
+      if (!result || !result.backupCodes) {
         setError("Failed to regenerate backup codes");
         return;
       }
