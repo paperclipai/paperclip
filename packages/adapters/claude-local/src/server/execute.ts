@@ -33,6 +33,7 @@ import {
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
+import { normalizeClaudeModelId } from "../model-id.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -302,7 +303,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
-  const model = asString(config.model, "");
+  const configuredModel = asString(config.model, "");
+  const model = normalizeClaudeModelId(configuredModel);
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
@@ -474,6 +476,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const commandNotes: string[] = [];
     if (!resumeSessionId) {
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
+    }
+    if (configuredModel.trim().length > 0 && model !== configuredModel.trim()) {
+      commandNotes.push(`Normalized Claude model "${configuredModel.trim()}" → "${model}".`);
     }
     if (attemptInstructionsFilePath && !resumeSessionId) {
       commandNotes.push(

@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
+import {
+  DEFAULT_COPILOT_LOCAL_MODEL,
+  models as copilotFallbackModels,
+} from "@paperclipai/adapter-copilot-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
@@ -62,6 +66,16 @@ describe("adapter model listing", () => {
 
     const models = await listAdapterModels("codex_local");
     expect(models).toEqual(codexFallbackModels);
+  });
+
+  it("returns copilot fallback models including the default Copilot selection", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const models = await listAdapterModels("copilot_local");
+
+    expect(models).toEqual(copilotFallbackModels);
+    expect(models[0]?.id).toBe(DEFAULT_COPILOT_LOCAL_MODEL);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
 
