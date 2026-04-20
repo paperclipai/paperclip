@@ -1452,8 +1452,12 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
+  const expectsPathRemoval =
+    input.workspace.providerType === "git_worktree" ||
+    (input.workspace.providerType === "local_fs" && createdByRuntime);
   const cleaned =
     !workspacePath ||
+    !expectsPathRemoval ||
     !(await directoryExists(workspacePath));
 
   return {

@@ -1759,6 +1759,8 @@ export function issueRoutes(
       previous.status !== undefined &&
       issue.status === "todo";
     const reopenFromStatus = reopened ? existing.status : null;
+    const closedByThisUpdate =
+      !isClosed && previous.status !== undefined && isClosedIssueStatus(issue.status);
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
@@ -1984,7 +1986,7 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        const skipAssigneeCommentWake = selfComment || isClosed || closedByThisUpdate;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
