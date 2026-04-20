@@ -63,3 +63,5 @@ export { environmentalReadings } from "./environmental_readings.js";
 export { healthScores } from "./health_scores.js";
 export { creditLedger, creditEventTypeEnum } from "./credit_ledger.js";
 export { creditBurnRates } from "./credit_burn_rates.js";
+export { estateAssets, estateAssetTypeEnum } from "./estate_assets.js";
+export { estateFinancialAccounts, estateBalanceHistory, financialAccountTypeEnum } from "./estate_financial_accounts.js";
