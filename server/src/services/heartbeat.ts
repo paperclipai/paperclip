@@ -1060,6 +1060,41 @@ function shouldAutoCheckoutIssueForWake(input: {
   return true;
 }
 
+function shouldTreatIssueAsStandingEventGatedWork(
+  issue: Pick<typeof issues.$inferSelect, "title" | "description">,
+) {
+  const text = `${issue.title ?? ""}\n${issue.description ?? ""}`.trim().toLowerCase();
+  if (!text) return false;
+
+  // These surfaces intentionally stay open between heartbeats. Their "in_progress"
+  // state reflects standing ownership and scheduled/event-gated follow-up, not a
+  // continuously live runner.
+  if (
+    text.includes("coordination thread") ||
+    text.includes("comments only") ||
+    text.includes("driver-owned tracker") ||
+    text.includes("monitor fleet health each ops loop") ||
+    text.includes("source of truth for stage, phases, gates")
+  ) {
+    return true;
+  }
+
+  const hasStandingSurfaceKeyword =
+    /\bmonitor\b/.test(text) ||
+    /\bwatch\b/.test(text) ||
+    /\btracker\b/.test(text);
+  if (!hasStandingSurfaceKeyword) return false;
+
+  return (
+    /\bproof[- ]window\b/.test(text) ||
+    /\bweekly reporting cadence\b/.test(text) ||
+    /\bweekly check[- ]in schedule\b/.test(text) ||
+    /\bregime watch conditions?\b/.test(text) ||
+    /\bmonitor weekly alongside\b/.test(text) ||
+    /\bpost weekly to this issue\b/.test(text)
+  );
+}
+
 function isCheckoutConflictError(error: unknown): boolean {
   return error instanceof HttpError && error.status === 409 && error.message === "Issue checkout conflict";
 }
@@ -3032,6 +3067,11 @@ export function heartbeatService(db: Db) {
       }
 
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (issue.status === "in_progress" && shouldTreatIssueAsStandingEventGatedWork(issue)) {
         result.skipped += 1;
         continue;
       }

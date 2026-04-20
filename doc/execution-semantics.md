@@ -212,6 +212,11 @@ Recovery rule:
 
 This is an active-work continuity recovery.
 
+Exception:
+
+- event-gated standing surfaces that clearly operate as coordination threads, driver-owned trackers, or proof-window monitor/watch lanes are allowed to remain `in_progress` without a live runner between heartbeats
+- for those issues, missing live execution is treated as expected idle time between check-ins instead of a continuation-loss failure
+
 ## 9. Startup and Periodic Reconciliation
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.

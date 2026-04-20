@@ -308,6 +308,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runStatus: "failed" | "timed_out" | "cancelled" | "succeeded";
     retryReason?: "assignment_recovery" | "issue_continuation_needed" | null;
     assignToUser?: boolean;
+    title?: string;
+    description?: string | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -377,7 +379,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Recover stranded assigned work",
+      title: input.title ?? "Recover stranded assigned work",
+      description: input.description ?? null,
       status: input.status,
       priority: "medium",
       assigneeAgentId: input.assignToUser ? null : agentId,
@@ -649,6 +652,80 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain("Latest retry failure: `process_lost` - run failed before issue advanced.");
+  });
+
+  it("leaves proof-window monitor lanes in progress instead of re-enqueuing continuation", async () => {
+    const { issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      title: "Paper-Trading Monitor: sig_lc_sector_rotation_v2b — 30-day proof window",
+      description: [
+        "Active monitoring during a 30-day paper-trading proof window.",
+        "Weekly reporting cadence applies until the window closes.",
+      ].join("\n"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(runs).toHaveLength(1);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("does not block proof-window monitor lanes after the continuation retry was already used", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      title: "Deferred PT Watch: sig_lc_sector_rotation_v1 — regime trigger for paper-trading activation",
+      description: [
+        "Monitor weekly alongside the active proof-window lanes.",
+        "Post weekly to this issue until the activation trigger fires.",
+      ].join("\n"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("does not auto-block coordination threads after continuation loss", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      title: "Driver Sync — Twin Driver Coordination Thread",
+      description: "Coordination thread for Ops Driver and Design Driver. Comments only.",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
   });
 
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {
