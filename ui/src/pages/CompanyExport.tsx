@@ -17,7 +17,7 @@ import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
 import { projectsApi } from "../api/projects";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -959,14 +959,13 @@ export function CompanyExport() {
           </div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 text-sm">
-              <Checkbox
-                id="include-secrets"
+              <ToggleSwitch
                 checked={includeSecrets}
-                onCheckedChange={(checked) => setIncludeSecrets(Boolean(checked))}
+                onCheckedChange={setIncludeSecrets}
               />
-              <label htmlFor="include-secrets" className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors">
+              <span className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors" onClick={() => setIncludeSecrets(!includeSecrets)}>
                 Include secrets
-              </label>
+              </span>
               {includeSecrets && (
                 <span className="text-xs text-amber-500">(secrets exported as plaintext)</span>
               )}
