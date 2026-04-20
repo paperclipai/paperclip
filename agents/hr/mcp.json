@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "outlook": {
+      "command": "/usr/local/bin/node",
+      "args": ["/Users/karthikkhatavkar/paperclip/paperclip/packages/mcp-outlook/dist/stdio.js"]
+    },
+    "brave-search": {
+      "command": "/Users/karthikkhatavkar/.npm-global/bin/mcp-server-brave-search",
+      "env": {
+        "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+      }
+    },
+    "duckduckgo": {
+      "command": "/Users/karthikkhatavkar/.npm-global/bin/duckduckgo-mcp"
+    },
+    "fetch": {
+      "command": "/Users/karthikkhatavkar/.npm-global/bin/mcp-fetch"
+    },
+    "playwright": {
+      "command": "/Users/karthikkhatavkar/.npm-global/bin/playwright-mcp",
+      "args": ["--browser", "chromium", "--headless"]
+    },
+    "hunter": {
+      "command": "/usr/local/bin/node",
+      "args": ["/Users/karthikkhatavkar/paperclip/paperclip/packages/mcp-hunter/dist/stdio.js"]
+    }
+  }
+}
