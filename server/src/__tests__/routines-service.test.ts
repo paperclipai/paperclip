@@ -175,8 +175,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   }
 
   it("cancels orphaned routine issues before creating a fresh execution issue", async () => {
-    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const orphanedRunIds = [randomUUID(), randomUUID()];
+    const orphanedHeartbeatRunIds = [randomUUID(), randomUUID()];
     const orphanedIssues = await Promise.all(orphanedRunIds.map((originRunId, index) => issueSvc.create(companyId, {
       projectId: routine.projectId,
       title: routine.title,
@@ -200,10 +201,21 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       linkedIssueId: issue.id,
       completedAt: new Date(`2026-03-20T12:0${index}:00.000Z`),
     })));
+    await db.insert(heartbeatRuns).values(orphanedIssues.map((issue, index) => ({
+      id: orphanedHeartbeatRunIds[index]!,
+      companyId,
+      agentId,
+      invocationSource: "assignment" as const,
+      triggerDetail: "system",
+      status: "completed" as const,
+      contextSnapshot: { issueId: issue.id },
+      startedAt: new Date(`2026-03-20T12:0${index}:15.000Z`),
+      finishedAt: new Date(`2026-03-20T12:0${index}:20.000Z`),
+    })));
     await Promise.all(orphanedIssues.map((issue, index) => db
       .update(issues)
       .set({
-        executionRunId: orphanedRunIds[index]!,
+        executionRunId: orphanedHeartbeatRunIds[index]!,
         executionLockedAt: new Date(`2026-03-20T12:0${index}:30.000Z`),
       })
       .where(eq(issues.id, issue.id))));
@@ -261,8 +273,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   it("does not overwrite completed routine runs when cleaning up reopened orphaned issues", async () => {
-    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const completedRunId = randomUUID();
+    const completedHeartbeatRunId = randomUUID();
     const reopenedIssue = await issueSvc.create(companyId, {
       projectId: routine.projectId,
       title: routine.title,
@@ -286,10 +299,21 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       linkedIssueId: reopenedIssue.id,
       completedAt: new Date("2026-03-20T12:05:00.000Z"),
     });
+    await db.insert(heartbeatRuns).values({
+      id: completedHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      contextSnapshot: { issueId: reopenedIssue.id },
+      startedAt: new Date("2026-03-20T12:00:30.000Z"),
+      finishedAt: new Date("2026-03-20T12:05:00.000Z"),
+    });
     await db
       .update(issues)
       .set({
-        executionRunId: completedRunId,
+        executionRunId: completedHeartbeatRunId,
         executionLockedAt: new Date("2026-03-20T12:05:00.000Z"),
       })
       .where(eq(issues.id, reopenedIssue.id));
