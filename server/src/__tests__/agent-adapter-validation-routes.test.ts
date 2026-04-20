@@ -222,4 +222,24 @@ describe("agent routes adapter validation", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
   });
+
+  it("reports missing working directory (not PATH) when saving opencode_local with a non-existent cwd", async () => {
+    const app = await createApp();
+    const missingCwd = "/tmp/paperclip-opencode-missing-cwd-does-not-exist-1234567890";
+    const res = await request(app).post("/api/companies/company-1/agents").send({
+      name: "OpenCode Agent",
+      adapterType: "opencode_local",
+      adapterConfig: {
+        cwd: missingCwd,
+        model: "openai/gpt-4o-mini",
+      },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    const errText = String(res.body.error ?? res.body.message ?? "");
+    expect(errText).toContain("Invalid opencode_local adapterConfig");
+    expect(errText).toContain("Working directory does not exist");
+    expect(errText).toContain(missingCwd);
+    expect(errText).not.toContain("Verify adapter command");
+  });
 });

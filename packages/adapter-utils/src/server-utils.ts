@@ -1141,11 +1141,36 @@ export async function runChildProcess(
           runningProcesses.delete(runId);
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
-          const msg =
-            errno === "ENOENT"
-              ? `Failed to start command "${command}" in "${opts.cwd}". Verify adapter command, working directory, and PATH (${pathValue}).`
-              : `Failed to start command "${command}" in "${opts.cwd}": ${err.message}`;
-          reject(new Error(msg));
+          if (errno === "ENOENT") {
+            void fs
+              .stat(opts.cwd)
+              .then(
+                (stats) => {
+                  if (!stats.isDirectory()) {
+                    reject(new Error(`Working directory is not a directory: "${opts.cwd}"`));
+                    return;
+                  }
+                  reject(
+                    new Error(
+                      `Failed to start command "${command}" in "${opts.cwd}". Verify adapter command, working directory, and PATH (${pathValue}).`,
+                    ),
+                  );
+                },
+                (statErr: NodeJS.ErrnoException) => {
+                  if (statErr.code === "ENOENT") {
+                    reject(new Error(`Working directory does not exist: "${opts.cwd}"`));
+                    return;
+                  }
+                  reject(
+                    new Error(
+                      `Failed to start command "${command}" in "${opts.cwd}". Verify adapter command, working directory, and PATH (${pathValue}).`,
+                    ),
+                  );
+                },
+              );
+            return;
+          }
+          reject(new Error(`Failed to start command "${command}" in "${opts.cwd}": ${err.message}`));
         });
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {

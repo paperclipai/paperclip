@@ -44,6 +44,7 @@ import {
   normalizeAgentUrlKey,
 } from "@paperclipai/shared";
 import {
+  ensureAbsoluteDirectory,
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -2817,6 +2818,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (adapterType !== "opencode_local") return;
     const { config: runtimeConfig } = await secrets.resolveAdapterConfigForRuntime(companyId, adapterConfig);
     const runtimeEnv = isPlainRecord(runtimeConfig.env) ? runtimeConfig.env : {};
+    const rawCwd = runtimeConfig.cwd;
+    if (typeof rawCwd === "string" && rawCwd.trim().length > 0) {
+      try {
+        await ensureAbsoluteDirectory(rawCwd, { createIfMissing: false });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+      }
+    }
     try {
       await ensureOpenCodeModelConfiguredAndAvailable({
         model: runtimeConfig.model,
