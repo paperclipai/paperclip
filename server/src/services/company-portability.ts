@@ -4288,7 +4288,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             }
           }
           if (Object.keys(env).length > 0) {
-            normalizedAdapter.adapterConfig.env = env;
+            normalizedAdapter.adapterConfig.env = await secrets.normalizeEnvBindingsForPersistence(targetCompany.id, env as any, { strictMode: strictSecretsMode });
           }
         }
 
