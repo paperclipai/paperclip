@@ -68,8 +68,8 @@ function composite(
   };
 }
 
-const TEXT_LIGHT = "#f8fafc";
-const TEXT_DARK = "#111827";
+const TEXT_LIGHT = "#FAFAF7";
+const TEXT_DARK = "#191919";
 
 /**
  * Pick a readable text color for a solid background.

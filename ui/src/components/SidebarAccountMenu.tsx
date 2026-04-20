@@ -156,7 +156,7 @@ export function SidebarAccountMenu({
                 </div>
                 <p className="truncate text-sm text-muted-foreground">{secondaryLabel}</p>
                 {version ? (
-                  <p className="mt-1 text-xs text-muted-foreground">Paperclip v{version}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">AiTeamCorp v{version}</p>
                 ) : null}
               </div>
             </div>

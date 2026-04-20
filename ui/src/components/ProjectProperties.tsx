@@ -727,7 +727,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     {codebase.effectiveLocalFolder}
                   </div>
                   {codebase.origin === "managed_checkout" && (
-                    <div className="text-[11px] text-muted-foreground">Paperclip-managed folder.</div>
+                    <div className="text-[11px] text-muted-foreground">AiTeamCorp-managed folder.</div>
                   )}
                 </div>
                 <div className="flex items-center gap-1">

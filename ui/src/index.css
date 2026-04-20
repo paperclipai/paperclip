@@ -1,6 +1,12 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Anthropic-inspired free fonts:
+   - Inter (Styrene alternative, sans UI)
+   - Source Serif 4 (Tiempos alternative, display serif)
+   - Fira Code (Anthropic actually uses this for mono) */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=Fira+Code:wght@400;500;600&display=swap");
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
@@ -40,78 +46,85 @@
   --radius-md: 0.5rem;
   --radius-lg: 0px;
   --radius-xl: 0px;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-serif: "Source Serif 4", ui-serif, Georgia, "Times New Roman", serif;
+  --font-mono: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
+/* Anthropic UI Kit palette mapped to shadcn CSS variables.
+   Brand: Slate (darks), Cloud (greys), Ivory (warm lights),
+          Anthropic Orange (Book Cloth / Kraft / Manilla),
+          UI accents (Orange / Purple / Blue), State (Focus / Error). */
 :root {
   color-scheme: light;
   --radius: 0;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --background: #FAFAF7;        /* Ivory Light */
+  --foreground: #191919;        /* Slate Dark */
+  --card: #FFFFFF;
+  --card-foreground: #191919;
+  --popover: #FFFFFF;
+  --popover-foreground: #191919;
+  --primary: #CC785C;           /* Book Cloth — Anthropic Orange */
+  --primary-foreground: #FAFAF7;
+  --secondary: #F0F0EB;         /* Ivory Medium */
+  --secondary-foreground: #191919;
+  --muted: #F0F0EB;
+  --muted-foreground: #666663;  /* Cloud Dark */
+  --accent: #EBDBBC;            /* Manilla */
+  --accent-foreground: #191919;
+  --destructive: #BF4D43;       /* State Error */
+  --destructive-foreground: #FAFAF7;
+  --border: #E5E4DF;            /* Ivory Dark */
+  --input: #E5E4DF;
+  --ring: #CC785C;
+  --chart-1: #CC785C;           /* Book Cloth */
+  --chart-2: #D4A27F;           /* Kraft */
+  --chart-3: #207FDE;           /* UI Blue */
+  --chart-4: #9B87F5;           /* UI Purple */
+  --chart-5: #91918D;           /* Cloud Medium */
+  --sidebar: #F0F0EB;
+  --sidebar-foreground: #191919;
+  --sidebar-primary: #CC785C;
+  --sidebar-primary-foreground: #FAFAF7;
+  --sidebar-accent: #E5E4DF;
+  --sidebar-accent-foreground: #191919;
+  --sidebar-border: #E5E4DF;
+  --sidebar-ring: #CC785C;
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.985 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.637 0.237 25.331);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.269 0 0);
-  --input: oklch(0.269 0 0);
-  --ring: oklch(0.439 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.145 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.269 0 0);
-  --sidebar-ring: oklch(0.439 0 0);
+  --background: #191919;        /* Slate Dark */
+  --foreground: #FAFAF7;        /* Ivory Light */
+  --card: #262625;              /* Slate Medium */
+  --card-foreground: #FAFAF7;
+  --popover: #262625;
+  --popover-foreground: #FAFAF7;
+  --primary: #D97757;           /* UI Orange — brighter on dark bg */
+  --primary-foreground: #191919;
+  --secondary: #262625;
+  --secondary-foreground: #FAFAF7;
+  --muted: #262625;
+  --muted-foreground: #91918D;  /* Cloud Medium */
+  --accent: #40403E;            /* Slate Light */
+  --accent-foreground: #FAFAF7;
+  --destructive: #BF4D43;
+  --destructive-foreground: #FAFAF7;
+  --border: #40403E;
+  --input: #40403E;
+  --ring: #D97757;
+  --chart-1: #D97757;
+  --chart-2: #D4A27F;
+  --chart-3: #207FDE;
+  --chart-4: #9B87F5;
+  --chart-5: #91918D;
+  --sidebar: #191919;
+  --sidebar-foreground: #FAFAF7;
+  --sidebar-primary: #D97757;
+  --sidebar-primary-foreground: #191919;
+  --sidebar-accent: #40403E;
+  --sidebar-accent-foreground: #FAFAF7;
+  --sidebar-border: #40403E;
+  --sidebar-ring: #D97757;
 }
 
 @layer base {
@@ -124,13 +137,21 @@
   }
   body {
     @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
     height: 100%;
     overflow: hidden;
   }
   h1,
   h2,
   h3 {
+    font-family: var(--font-serif);
     text-wrap: balance;
+  }
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-mono);
   }
   /* Prevent double-tap-to-zoom on interactive elements for mobile */
   a,
@@ -419,14 +440,14 @@
 }
 
 .paperclip-mdxeditor-content a:not(.paperclip-mention-chip):not(.paperclip-project-mention-chip) {
-  color: color-mix(in oklab, var(--foreground) 76%, #0969da 24%);
+  color: color-mix(in oklab, var(--foreground) 76%, #207FDE 24%);
   text-decoration: underline;
   text-underline-offset: 0.15em;
   cursor: pointer;
 }
 
 .dark .paperclip-mdxeditor-content a:not(.paperclip-mention-chip):not(.paperclip-project-mention-chip) {
-  color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
+  color: color-mix(in oklab, var(--foreground) 80%, #61AAF2 20%);
 }
 
 .paperclip-mdxeditor-content a.paperclip-mention-chip,
@@ -746,7 +767,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 }
 
 .paperclip-markdown a {
-  color: color-mix(in oklab, var(--foreground) 76%, #0969da 24%);
+  color: color-mix(in oklab, var(--foreground) 76%, #207FDE 24%);
   text-decoration: underline;
   text-underline-offset: 0.15em;
   cursor: pointer;
@@ -757,7 +778,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 }
 
 .dark .paperclip-markdown a {
-  color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
+  color: color-mix(in oklab, var(--foreground) 80%, #61AAF2 20%);
 }
 
 .paperclip-markdown blockquote {
