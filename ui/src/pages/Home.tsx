@@ -14,9 +14,8 @@ import type { Company } from "@paperclipai/shared";
 export function HomePage() {
   const navigate = useNavigate();
   const { openOnboarding } = useDialog();
-  const { selectedOrg, loading: orgsLoading } = useOrg();
+  const { organizations, selectedOrg, setSelectedOrgId, loading: orgsLoading } = useOrg();
   const { setSelectedCompanyId } = useCompany();
-  const { setSelectedOrgId } = useOrg();
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -72,10 +71,24 @@ export function HomePage() {
         <div className="mb-8 flex items-end justify-between gap-4">
           <div className="min-w-0">
             <h1 className="text-2xl font-semibold">Welcome back</h1>
-            <p className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
-              <Building2 className="size-4" />
-              <span className="truncate">{selectedOrg?.name ?? "No organization selected"}</span>
-            </p>
+            <div className="mt-2 flex items-center gap-2">
+              <Building2 className="size-4 text-muted-foreground" />
+              {organizations.length > 0 ? (
+                <select
+                  className="rounded-md border border-border bg-background px-2 py-1 text-sm outline-none"
+                  value={selectedOrg?.id ?? ""}
+                  onChange={(e) => setSelectedOrgId(e.target.value)}
+                >
+                  {organizations.map((org) => (
+                    <option key={org.id} value={org.id}>
+                      {org.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="text-sm text-muted-foreground">No organization selected</span>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <Button variant="outline" asChild>

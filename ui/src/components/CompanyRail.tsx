@@ -302,7 +302,9 @@ function orgInitials(name: string) {
 function OrgSwitcherChip() {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const { organizations, selectedOrg, setSelectedOrgId, loading } = useOrg();
+  const { companies, setSelectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
 
   const label = selectedOrg?.name ?? (loading ? "…" : "Org");
@@ -311,6 +313,23 @@ function OrgSwitcherChip() {
   function handleSelect(orgId: string) {
     setSelectedOrgId(orgId);
     setOpen(false);
+
+    const firstSegment = location.pathname.split("/").filter(Boolean)[0] ?? "";
+    const currentPrefixCompany = companies.find(
+      (c) => c.issuePrefix === firstSegment,
+    );
+    if (!currentPrefixCompany) return;
+    if (currentPrefixCompany.organizationId === orgId) return;
+
+    const nextCompany = companies.find(
+      (c) => c.organizationId === orgId && c.status !== "archived",
+    );
+    if (nextCompany) {
+      setSelectedCompanyId(nextCompany.id, { source: "manual" });
+      navigate(`/${nextCompany.issuePrefix}/dashboard`);
+    } else {
+      navigate("/home");
+    }
   }
 
   function handleManage() {
