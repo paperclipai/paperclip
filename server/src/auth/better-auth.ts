@@ -3,12 +3,14 @@ import type { IncomingHttpHeaders } from "node:http";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
+import { twoFactor } from "better-auth/plugins";
 import type { Db } from "@paperclipai/db";
 import {
   authAccounts,
   authSessions,
   authUsers,
   authVerifications,
+  twoFactor as twoFactorTable,
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
@@ -99,6 +101,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
   const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
 
   const authConfig = {
+    appName: "Paperclip",
     baseURL: baseUrl,
     secret,
     trustedOrigins: effectiveTrustedOrigins,
@@ -109,6 +112,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
         session: authSessions,
         account: authAccounts,
         verification: authVerifications,
+        twoFactor: twoFactorTable,
       },
     }),
     emailAndPassword: {
@@ -116,6 +120,11 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
+    plugins: [
+      twoFactor({
+        skipVerificationOnEnable: false,
+      }),
+    ],
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: isHttpOnly }),
   };
 
