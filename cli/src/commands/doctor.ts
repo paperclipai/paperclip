@@ -29,7 +29,7 @@ export async function doctor(opts: {
   yes?: boolean;
 }): Promise<{ passed: number; warned: number; failed: number }> {
   printAiTeamCorpCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclip doctor ")));
+  p.intro(pc.bgCyan(pc.black(" aiteamcorp doctor ")));
 
   const configPath = resolveConfigPath(opts.config);
   loadAiTeamCorpEnvFile(configPath);

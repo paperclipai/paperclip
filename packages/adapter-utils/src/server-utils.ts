@@ -113,7 +113,7 @@ function buildManagedSkillOrigin(entry: { required?: boolean }): Pick<
 > {
   if (entry.required) {
     return {
-      origin: "paperclip_required",
+      origin: "aiteamcorp_required",
       originLabel: "Required by AiTeamCorp",
       readOnly: false,
     };

@@ -200,13 +200,18 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+// hermes-paperclip-adapter is a third-party npm package whose types still
+// reference @paperclipai/adapter-utils. After renaming the workspace scope
+// to @aiteamcorp/adapter-utils, TypeScript sees two structurally-identical
+// AdapterSkillContext types and refuses to unify them. The cast is safe:
+// runtime shape is unchanged; the two modules expose the same interface.
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: hermesExecute,
   testEnvironment: hermesTestEnvironment,
   sessionCodec: hermesSessionCodec,
-  listSkills: hermesListSkills,
-  syncSkills: hermesSyncSkills,
+  listSkills: hermesListSkills as unknown as ServerAdapterModule["listSkills"],
+  syncSkills: hermesSyncSkills as unknown as ServerAdapterModule["syncSkills"],
   models: hermesModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,

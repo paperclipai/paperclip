@@ -1293,7 +1293,7 @@ async function buildAgentContext(
         entryBody,
       }
       : null,
-    paperclip: {
+    aiteamcorp: {
       schemaVersion: FEEDBACK_SCHEMA_VERSION,
       bundleVersion: FEEDBACK_BUNDLE_VERSION,
     },

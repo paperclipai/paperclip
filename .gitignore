@@ -10,7 +10,7 @@ drizzle/meta/
 coverage/
 .DS_Store
 data/
-.paperclip/
+.aiteamcorp/
 .pnpm-store/
 tmp-*
 cli/tmp/
@@ -40,7 +40,7 @@ feedback-export-*
 *.tmp
 .vscode/
 .claude/settings.local.json
-.paperclip-local/
+.aiteamcorp-local/
 /.idea/
 /.agents/
 

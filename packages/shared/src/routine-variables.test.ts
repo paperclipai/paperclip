@@ -41,7 +41,7 @@ describe("routine variable helpers", () => {
         repo: "aiteamcorp",
         priority: "high",
       }),
-    ).toBe("Review paperclip for high");
+    ).toBe("Review aiteamcorp for high");
   });
 
   it("identifies built-in variable names", () => {
@@ -71,6 +71,6 @@ describe("routine variable helpers", () => {
     const allVars = { ...builtins, repo: "aiteamcorp" };
     expect(
       interpolateRoutineTemplate("Report for {{date}} on {{repo}}", allVars),
-    ).toBe(`Report for ${builtins.date} on paperclip`);
+    ).toBe(`Report for ${builtins.date} on aiteamcorp`);
   });
 });

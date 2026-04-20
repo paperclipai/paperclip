@@ -87,7 +87,7 @@ PAYLOAD="$(jq -nc \
       AITEAMCORP_APPROVAL_ID: $approvalId,
       AITEAMCORP_APPROVAL_STATUS: $approvalStatus,
       AITEAMCORP_LINKED_ISSUE_IDS: $linkedIssueIds,
-      paperclip_session_key: ("aiteamcorp:run:" + $runId)
+      aiteamcorp_session_key: ("aiteamcorp:run:" + $runId)
     }
   }')"
 

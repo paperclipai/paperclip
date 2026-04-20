@@ -34,7 +34,7 @@ Operational fields:
 Notes:
 - Pi supports multiple providers and models. Use \`pi --list-models\` to list available options.
 - AiTeamCorp requires an explicit \`model\` value for \`pi_local\` agents.
-- Sessions are stored in ~/.pi/paperclips/ and resumed with --session.
+- Sessions are stored in ~/.pi/aiteamcorp-sessions/ and resumed with --session.
 - All tools (read, bash, edit, write, grep, find, ls) are enabled by default.
 - Agent instructions are appended to Pi's system prompt via --append-system-prompt, while the user task is sent via -p.
 `;

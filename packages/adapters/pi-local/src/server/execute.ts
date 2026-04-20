@@ -29,7 +29,7 @@ import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
-const AITEAMCORP_SESSIONS_DIR = path.join(os.homedir(), ".pi", "paperclips");
+const AITEAMCORP_SESSIONS_DIR = path.join(os.homedir(), ".pi", "aiteamcorp-sessions");
 const PI_AGENT_SKILLS_DIR = path.join(os.homedir(), ".pi", "agent", "skills");
 
 function firstNonEmptyLine(text: string): string {
@@ -355,7 +355,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     args.push("--tools", "read,bash,edit,write,grep,find,ls");
     args.push("--session", sessionFile);
 
-    // Add AiTeamCorp skills directory so Pi can load the paperclip skill
+    // Add AiTeamCorp skills directory so Pi can load the aiteamcorp skill
     args.push("--skill", PI_AGENT_SKILLS_DIR);
 
     if (extraArgs.length > 0) args.push(...extraArgs);

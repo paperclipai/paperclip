@@ -141,7 +141,7 @@ describe("worktree helpers", () => {
   });
 
   it("rejects worktree:make names that are not safe directory/branch names", () => {
-    expect(() => resolveWorktreeMakeTargetPath("paperclip/pr-432")).toThrow(
+    expect(() => resolveWorktreeMakeTargetPath("aiteamcorp/pr-432")).toThrow(
       "Worktree name must contain only letters, numbers, dots, underscores, or dashes.",
     );
   });
@@ -680,7 +680,7 @@ describe("worktree helpers", () => {
     });
     const sourcePaths = resolveWorktreeLocalPaths({
       cwd: sourceRoot,
-      homeDir: path.join(tempRoot, ".paperclip-source"),
+      homeDir: path.join(tempRoot, ".aiteamcorp-source"),
       instanceId: "default",
     });
     const originalCwd = process.cwd();
@@ -760,7 +760,7 @@ describe("worktree helpers", () => {
     });
     const sourcePaths = resolveWorktreeLocalPaths({
       cwd: sourceRoot,
-      homeDir: path.join(tempRoot, ".paperclip-source"),
+      homeDir: path.join(tempRoot, ".aiteamcorp-source"),
       instanceId: "default",
     });
     const originalCwd = process.cwd();

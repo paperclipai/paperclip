@@ -3,11 +3,11 @@ set -euo pipefail
 
 base_cwd="${AITEAMCORP_WORKSPACE_BASE_CWD:?AITEAMCORP_WORKSPACE_BASE_CWD is required}"
 worktree_cwd="${AITEAMCORP_WORKSPACE_CWD:?AITEAMCORP_WORKSPACE_CWD is required}"
-paperclip_home="${AITEAMCORP_HOME:-$HOME/.aiteamcorp}"
-paperclip_instance_id="${AITEAMCORP_INSTANCE_ID:-default}"
-paperclip_dir="$worktree_cwd/.aiteamcorp"
-worktree_config_path="$paperclip_dir/config.json"
-worktree_env_path="$paperclip_dir/.env"
+aiteamcorp_home="${AITEAMCORP_HOME:-$HOME/.aiteamcorp}"
+aiteamcorp_instance_id="${AITEAMCORP_INSTANCE_ID:-default}"
+aiteamcorp_dir="$worktree_cwd/.aiteamcorp"
+worktree_config_path="$aiteamcorp_dir/config.json"
+worktree_env_path="$aiteamcorp_dir/.env"
 worktree_name="${AITEAMCORP_WORKSPACE_BRANCH:-$(basename "$worktree_cwd")}"
 
 if [[ ! -d "$base_cwd" ]]; then
@@ -25,11 +25,11 @@ if [[ -z "$source_config_path" && ( -e "$base_cwd/.aiteamcorp/config.json" || -L
   source_config_path="$base_cwd/.aiteamcorp/config.json"
 fi
 if [[ -z "$source_config_path" ]]; then
-  source_config_path="$paperclip_home/instances/$paperclip_instance_id/config.json"
+  source_config_path="$aiteamcorp_home/instances/$aiteamcorp_instance_id/config.json"
 fi
 source_env_path="$(dirname "$source_config_path")/.env"
 
-mkdir -p "$paperclip_dir"
+mkdir -p "$aiteamcorp_dir"
 
 run_isolated_worktree_init() {
   local base_cli_runner="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
@@ -62,7 +62,7 @@ run_isolated_worktree_init() {
   return 127
 }
 
-paperclipai_command_available() {
+aiteamcorp_command_available() {
   if command -v pnpm >/dev/null 2>&1 && pnpm aiteamcorp --help >/dev/null 2>&1; then
     return 0
   fi
@@ -84,7 +84,7 @@ write_fallback_worktree_config() {
   WORKTREE_NAME="$worktree_name" \
   BASE_CWD="$base_cwd" \
   WORKTREE_CWD="$worktree_cwd" \
-  AITEAMCORP_DIR="$paperclip_dir" \
+  AITEAMCORP_DIR="$aiteamcorp_dir" \
   SOURCE_CONFIG_PATH="$source_config_path" \
   SOURCE_ENV_PATH="$source_env_path" \
   AITEAMCORP_WORKTREES_DIR="${AITEAMCORP_WORKTREES_DIR:-}" \
@@ -332,7 +332,7 @@ main().catch((error) => {
 EOF
 }
 
-if paperclipai_command_available; then
+if aiteamcorp_command_available; then
   run_isolated_worktree_init
 else
   echo "aiteamcorp CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2

@@ -25,7 +25,7 @@ function mockJsonResponse(body: unknown, status = 200) {
   });
 }
 
-describe("paperclip MCP tools", () => {
+describe("aiteamcorp MCP tools", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });

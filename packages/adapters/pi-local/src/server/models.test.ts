@@ -12,7 +12,7 @@ describe("pi models", () => {
   });
 
   it("returns an empty list when discovery command is unavailable", async () => {
-    process.env.AITEAMCORP_PI_COMMAND = "__paperclip_missing_pi_command__";
+    process.env.AITEAMCORP_PI_COMMAND = "__aiteamcorp_missing_pi_command__";
     await expect(listPiModels()).resolves.toEqual([]);
   });
 
@@ -23,7 +23,7 @@ describe("pi models", () => {
   });
 
   it("rejects when discovery cannot run for configured model", async () => {
-    process.env.AITEAMCORP_PI_COMMAND = "__paperclip_missing_pi_command__";
+    process.env.AITEAMCORP_PI_COMMAND = "__aiteamcorp_missing_pi_command__";
     await expect(
       ensurePiModelConfiguredAndAvailable({
         model: "xai/grok-4",

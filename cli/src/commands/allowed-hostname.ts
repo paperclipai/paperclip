@@ -8,7 +8,7 @@ export async function addAllowedHostname(host: string, opts: { config?: string }
   const config = readConfig(opts.config);
 
   if (!config) {
-    p.log.error(`No config found at ${configPath}. Run ${pc.cyan("paperclip onboard")} first.`);
+    p.log.error(`No config found at ${configPath}. Run ${pc.cyan("aiteamcorp onboard")} first.`);
     return;
   }
 

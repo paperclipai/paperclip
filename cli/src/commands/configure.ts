@@ -77,7 +77,7 @@ export async function configure(opts: {
   section?: string;
 }): Promise<void> {
   printAiTeamCorpCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclip configure ")));
+  p.intro(pc.bgCyan(pc.black(" aiteamcorp configure ")));
   const configPath = resolveConfigPath(opts.config);
 
   if (!configExists(opts.config)) {

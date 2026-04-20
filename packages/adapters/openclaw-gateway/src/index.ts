@@ -40,13 +40,13 @@ Request behavior fields:
 
 Session routing fields:
 - sessionKeyStrategy (string, optional): issue (default), fixed, or run
-- sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)
+- sessionKey (string, optional): fixed session key when strategy=fixed (default aiteamcorp)
 
 Standard outbound payload additions:
-- paperclip (object): standardized AiTeamCorp context added to every gateway agent request
-- paperclip.workspace (object, optional): resolved execution workspace for this run
-- paperclip.workspaces (array, optional): additional workspace hints AiTeamCorp exposed to the run
-- paperclip.workspaceRuntime (object, optional): reserved workspace runtime metadata when explicitly supplied outside normal heartbeat execution
+- aiteamcorp (object): standardized AiTeamCorp context added to every gateway agent request
+- aiteamcorp.workspace (object, optional): resolved execution workspace for this run
+- aiteamcorp.workspaces (array, optional): additional workspace hints AiTeamCorp exposed to the run
+- aiteamcorp.workspaceRuntime (object, optional): reserved workspace runtime metadata when explicitly supplied outside normal heartbeat execution
 
 Standard result metadata supported:
 - meta.runtimeServices (array, optional): normalized adapter-managed runtime service reports
