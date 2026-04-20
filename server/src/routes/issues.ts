@@ -1874,7 +1874,7 @@ export function issueRoutes(
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
-      });
+      }, { skipUpdatedAt: true }); // Issue already updated above, skip redundant UPDATE to avoid contention
 
       await logActivity(db, {
         companyId: issue.companyId,
