@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => ({
   esbuild:
     mode === "production"
       ? {
-          drop: ["console", "debugger"],
+          // drop: ["console", "debugger"], // temporarily disabled for rail-switcher diagnostics
           legalComments: "none",
         }
       : undefined,
