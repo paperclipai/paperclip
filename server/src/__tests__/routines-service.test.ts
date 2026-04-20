@@ -349,6 +349,66 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
   });
 
+  it("auto-expires an orphan execution issue whose heartbeat run has finished and creates a fresh one", async () => {
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+    const orphanHeartbeatRunId = randomUUID();
+    const orphanIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "todo",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: orphanIssue.id,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: orphanHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      contextSnapshot: { issueId: orphanIssue.id },
+      startedAt: new Date("2026-03-20T12:01:00.000Z"),
+      finishedAt: new Date("2026-03-20T12:02:00.000Z"),
+    });
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: orphanHeartbeatRunId,
+        executionLockedAt: new Date("2026-03-20T12:01:00.000Z"),
+      })
+      .where(eq(issues.id, orphanIssue.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).not.toBe(orphanIssue.id);
+
+    const orphanAfter = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, orphanIssue.id))
+      .then((rows) => rows[0]);
+    expect(orphanAfter?.status).toBe("cancelled");
+    expect(orphanAfter?.executionRunId).toBeNull();
+  });
+
   it("interpolates routine variables into the execution issue and stores resolved values", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
     const variableRoutine = await svc.create(

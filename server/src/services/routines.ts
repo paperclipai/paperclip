@@ -590,6 +590,37 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     }
   }
 
+  // Finds an open routine_execution issue that still satisfies the
+  // `issues_open_routine_execution_uq` partial unique index
+  // (status in open set AND executionRunId is not null) but whose
+  // referenced heartbeat run has reached a terminal state. Such an
+  // issue is an orphan: the worker died or never picked it up, and
+  // without expiring it the routine silently fails every future fire
+  // with a 23505 conflict. Returns the orphan row or null.
+  async function findOrphanExecutionIssue(routine: typeof routines.$inferSelect, executor: Db = db) {
+    const rows = await executor
+      .select({ issue: issues, runStatus: heartbeatRuns.status })
+      .from(issues)
+      .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, issues.executionRunId))
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt));
+    for (const row of rows) {
+      if (!row.runStatus || !LIVE_HEARTBEAT_RUN_STATUSES.includes(row.runStatus)) {
+        return row.issue;
+      }
+    }
+    return null;
+  }
+
   async function findLiveExecutionIssue(routine: typeof routines.$inferSelect, executor: Db = db) {
     const executionBoundIssue = await executor
       .select()
@@ -706,6 +737,39 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
     const description = interpolateRoutineTemplate(input.routine.description, allVariables);
     const triggerPayload = mergeRoutineRunPayload(input.payload, resolvedVariables);
+
+    // Expire any orphan execution issue up-front, before the transaction
+    // starts. The partial unique index `issues_open_routine_execution_uq`
+    // covers open routine_execution issues with executionRunId set; if a
+    // previous fire created a ticket whose heartbeat run later reached a
+    // terminal state without closing the issue, future fires would hit
+    // `23505` forever. Cancelling orphans here commits immediately so the
+    // retry inside the transaction below sees the slot freed.
+    if (input.routine.concurrencyPolicy !== "always_enqueue") {
+      const orphan = await findOrphanExecutionIssue(input.routine);
+      if (orphan) {
+        logger.warn(
+          {
+            routineId: input.routine.id,
+            orphanIssueId: orphan.id,
+            orphanExecutionRunId: orphan.executionRunId,
+          },
+          "auto-expiring orphan routine_execution issue to unblock next fire",
+        );
+        await db
+          .update(issues)
+          .set({
+            status: "cancelled",
+            cancelledAt: new Date(),
+            executionRunId: null,
+            checkoutRunId: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, orphan.id));
+      }
+    }
+
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
