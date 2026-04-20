@@ -4,7 +4,9 @@ import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useOrg } from "../context/OrgContext";
 import { companiesApi } from "../api/companies";
+import { organizationsApi } from "../api/organizations";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
@@ -69,6 +71,7 @@ const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
   const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
+  const { selectedOrgId } = useOrg();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -387,6 +390,16 @@ export function OnboardingWizard() {
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
+      if (selectedOrgId) {
+        try {
+          await organizationsApi.attachCompany(selectedOrgId, company.id);
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.organizations.companies(selectedOrgId),
+          });
+        } catch (attachErr) {
+          console.error("Failed to attach company to organization", attachErr);
+        }
+      }
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
 
       if (companyGoal.trim()) {
