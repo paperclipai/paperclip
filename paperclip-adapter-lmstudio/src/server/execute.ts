@@ -215,6 +215,13 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
   const maxRunSeconds = asNumber(config.maxRunSeconds, 300);
   const runDeadlineMs = Date.now() + maxRunSeconds * 1000;
 
+  // Parse comma-separated list of additional paths the agent is allowed to write to.
+  // Useful for pointing at an Obsidian vault on an external volume.
+  const allowedWriteRoots = asString(config.allowedWriteRoots, "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+
   if (!model) {
     return {
       exitCode: 1,
@@ -368,6 +375,7 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
         args,
         cwd,
         paperclipCtx,
+        allowedWriteRoots,
       });
 
       // Track checkout and terminal-status updates for the post-run guard

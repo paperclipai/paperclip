@@ -93,6 +93,12 @@ export function createServerAdapter(): ServerAdapterModule {
             hint: "Wallclock-Budget pro Run. Verhindert durchlaufende Tool-Schleifen, die LM Studio stundenlang belasten.",
           },
           {
+            key: "allowedWriteRoots",
+            label: "Zusätzlich erlaubte Schreib-Pfade",
+            type: "text" as const,
+            hint: "Kommagetrennte absolute Pfade, in die der Agent zusätzlich zum Arbeitsverzeichnis schreiben darf (z.B. Obsidian-Vault auf externem Volume).",
+          },
+          {
             key: "instructionsFilePath",
             label: "Instructions File (AGENTS.md)",
             type: "text" as const,

@@ -11,8 +11,8 @@ export interface ToolResult {
   isError: boolean;
 }
 
-async function readFileHandler(args: Record<string, unknown>, cwd: string): Promise<ToolResult> {
-  const targetPath = safePath(cwd, String(args.path));
+async function readFileHandler(args: Record<string, unknown>, cwd: string, allowedWriteRoots: string[]): Promise<ToolResult> {
+  const targetPath = safePath(cwd, String(args.path), allowedWriteRoots);
   const content = await readFile(targetPath, "utf-8");
 
   let lines = content.split("\n");
@@ -23,8 +23,8 @@ async function readFileHandler(args: Record<string, unknown>, cwd: string): Prom
   return { content: lines.join("\n"), isError: false };
 }
 
-async function writeFileHandler(args: Record<string, unknown>, cwd: string): Promise<ToolResult> {
-  const targetPath = safePath(cwd, String(args.path));
+async function writeFileHandler(args: Record<string, unknown>, cwd: string, allowedWriteRoots: string[]): Promise<ToolResult> {
+  const targetPath = safePath(cwd, String(args.path), allowedWriteRoots);
   await mkdir(dirname(targetPath), { recursive: true });
   const content = String(args.content);
   await writeFile(targetPath, content, "utf-8");
@@ -32,8 +32,8 @@ async function writeFileHandler(args: Record<string, unknown>, cwd: string): Pro
   return { content: `File written: ${args.path} (${size} bytes)`, isError: false };
 }
 
-async function listDirectoryHandler(args: Record<string, unknown>, cwd: string): Promise<ToolResult> {
-  const targetPath = safePath(cwd, String(args.path ?? "."));
+async function listDirectoryHandler(args: Record<string, unknown>, cwd: string, allowedWriteRoots: string[]): Promise<ToolResult> {
+  const targetPath = safePath(cwd, String(args.path ?? "."), allowedWriteRoots);
   const entries = await readdir(targetPath, { withFileTypes: true });
   const lines = entries.map((e) => {
     const suffix = e.isDirectory() ? "/" : "";
@@ -42,8 +42,8 @@ async function listDirectoryHandler(args: Record<string, unknown>, cwd: string):
   return { content: lines.join("\n"), isError: false };
 }
 
-async function globHandler(args: Record<string, unknown>, cwd: string): Promise<ToolResult> {
-  const basePath = safePath(cwd, String(args.path ?? "."));
+async function globHandler(args: Record<string, unknown>, cwd: string, allowedWriteRoots: string[]): Promise<ToolResult> {
+  const basePath = safePath(cwd, String(args.path ?? "."), allowedWriteRoots);
   const pattern = String(args.pattern);
   const matches: string[] = [];
   for await (const entry of globPromise(pattern, { cwd: basePath })) {
@@ -52,15 +52,15 @@ async function globHandler(args: Record<string, unknown>, cwd: string): Promise<
   return { content: matches.join("\n"), isError: false };
 }
 
-async function grepHandler(args: Record<string, unknown>, cwd: string): Promise<ToolResult> {
-  const basePath = safePath(cwd, String(args.path ?? "."));
+async function grepHandler(args: Record<string, unknown>, cwd: string, allowedWriteRoots: string[]): Promise<ToolResult> {
+  const basePath = safePath(cwd, String(args.path ?? "."), allowedWriteRoots);
   const pattern = String(args.pattern);
   const globFilter = args.glob ? String(args.glob) : "**/*";
   const regex = new RegExp(pattern);
 
   const results: string[] = [];
   for await (const entry of globPromise(globFilter, { cwd: basePath })) {
-    const fullPath = safePath(basePath, entry);
+    const fullPath = safePath(basePath, entry, allowedWriteRoots);
     try {
       const content = await readFile(fullPath, "utf-8");
       const lines = content.split("\n");
@@ -81,14 +81,15 @@ export async function executeFsTool(
   name: string,
   args: Record<string, unknown>,
   cwd: string,
+  allowedWriteRoots: string[] = [],
 ): Promise<ToolResult> {
   try {
     switch (name) {
-      case "fs_read_file": return await readFileHandler(args, cwd);
-      case "fs_write_file": return await writeFileHandler(args, cwd);
-      case "fs_list_directory": return await listDirectoryHandler(args, cwd);
-      case "fs_glob": return await globHandler(args, cwd);
-      case "fs_grep": return await grepHandler(args, cwd);
+      case "fs_read_file": return await readFileHandler(args, cwd, allowedWriteRoots);
+      case "fs_write_file": return await writeFileHandler(args, cwd, allowedWriteRoots);
+      case "fs_list_directory": return await listDirectoryHandler(args, cwd, allowedWriteRoots);
+      case "fs_glob": return await globHandler(args, cwd, allowedWriteRoots);
+      case "fs_grep": return await grepHandler(args, cwd, allowedWriteRoots);
       default:
         return { content: `Unknown fs tool: ${name}`, isError: true };
     }
