@@ -2149,13 +2149,16 @@ class TradeExecutor:
                 await self._emergency_close_leg(ex_short, symbol, "buy", result_short.filled_usd, pos_id)
                 await self._emergency_close_leg(ex_long, symbol, "sell", result_long.filled_usd, pos_id)
                 return None
+            # Use actual fill prices, or market quotes as fallback (DRY_RUN returns 0)
+            fill_price_short = result_short.fill_price if result_short.fill_price > 0 else q_high.bid
+            fill_price_long = result_long.fill_price if result_long.fill_price > 0 else q_low.ask
             pos = LivePosition(
                 id=pos_id, symbol=symbol,
                 exchange_short=q_high.exchange, exchange_long=q_low.exchange,
                 instrument_short=q_high.instrument, instrument_long=q_low.instrument,
                 entry_spread_pct=spread_pct,
-                entry_price_short=result_short.fill_price,
-                entry_price_long=result_long.fill_price,
+                entry_price_short=fill_price_short,
+                entry_price_long=fill_price_long,
                 size_usd=actual_size,
                 entry_time=datetime.now(timezone.utc),
                 order_id_short=result_short.order_id,
@@ -2212,7 +2215,8 @@ class TradeExecutor:
         )
         self.portfolio.positions.append(fallback_pos)
 
-    async def close_position(self, pos: LivePosition, current_spread: float, reason: str) -> bool:
+    async def close_position(self, pos: LivePosition, current_spread: float, reason: str,
+                             q_short: Optional[PriceQuote] = None, q_long: Optional[PriceQuote] = None) -> bool:
         ex_short = self.executors.get(pos.exchange_short)
         ex_long = self.executors.get(pos.exchange_long)
         if not ex_short or not ex_long:
@@ -2229,6 +2233,19 @@ class TradeExecutor:
         self._log_order(result_long, "exit_long", pos.id)
 
         if result_short.success and result_long.success:
+            # Use market quotes as fallback when fill_price is 0 (DRY_RUN)
+            if result_short.fill_price <= 0 and q_short:
+                result_short = OrderResult(
+                    result_short.success, result_short.order_id, result_short.exchange,
+                    result_short.symbol, result_short.side, result_short.size_usd,
+                    result_short.filled_usd, q_short.ask, result_short.fees_usd,
+                    result_short.timestamp, result_short.latency_ms, result_short.error)
+            if result_long.fill_price <= 0 and q_long:
+                result_long = OrderResult(
+                    result_long.success, result_long.order_id, result_long.exchange,
+                    result_long.symbol, result_long.side, result_long.size_usd,
+                    result_long.filled_usd, q_long.bid, result_long.fees_usd,
+                    result_long.timestamp, result_long.latency_ms, result_long.error)
             self._finalize_close(pos, result_short, result_long, current_spread, reason)
             return True
 
@@ -3122,7 +3139,8 @@ async def main():
 
                     if exit_reason:
                         success = await trader.trade_executor.close_position(
-                            pos, current_spread, exit_reason
+                            pos, current_spread, exit_reason,
+                            q_short=q_short, q_long=q_long
                         )
                         if success:
                             # Update blacklist if loss

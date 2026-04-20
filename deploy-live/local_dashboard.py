@@ -631,4 +631,6 @@ def index():
 if __name__ == "__main__":
     print(f"[local_dashboard] Proxying to {REMOTE_BASE}")
     print(f"[local_dashboard] Open http://localhost:3000")
-    app.run(host="0.0.0.0", port=3000, debug=False)
+    port = int(os.environ.get("LOCAL_PORT", "3001"))
+    print(f"[local_dashboard] Open http://localhost:{port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
