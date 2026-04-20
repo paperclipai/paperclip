@@ -263,5 +263,12 @@
   "detail.source": "출처:",
   "detail.sourceExecutionOverride": "실행 워크스페이스 오버라이드",
   "detail.sourceProjectDefault": "프로젝트 워크스페이스 기본값",
-  "detail.sourceNone": "없음"
+  "detail.sourceNone": "없음",
+  "page.breadcrumb": "워크스페이스",
+  "page.heading": "워크스페이스",
+  "page.noActivity": "아직 워크스페이스 활동이 없어요.",
+  "content.noNonDefaultActivity": "아직 비기본 워크스페이스 활동이 없어요.",
+  "content.cleanupAttentionNeeded": "정리 주의 필요",
+  "page.workspaceCountOne": "워크스페이스 1개",
+  "page.workspaceCountMany": "워크스페이스 {{count}}개"
 }

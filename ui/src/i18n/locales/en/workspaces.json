@@ -263,5 +263,12 @@
   "detail.source": "Source:",
   "detail.sourceExecutionOverride": "execution workspace override",
   "detail.sourceProjectDefault": "project workspace default",
-  "detail.sourceNone": "none"
+  "detail.sourceNone": "none",
+  "page.breadcrumb": "Workspaces",
+  "page.heading": "Workspaces",
+  "page.noActivity": "No workspace activity yet.",
+  "content.noNonDefaultActivity": "No non-default workspace activity yet.",
+  "content.cleanupAttentionNeeded": "Cleanup attention needed",
+  "page.workspaceCountOne": "1 workspace",
+  "page.workspaceCountMany": "{{count}} workspaces"
 }
