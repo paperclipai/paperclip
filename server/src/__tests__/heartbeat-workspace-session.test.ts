@@ -404,6 +404,21 @@ describe("comment wake batching", () => {
     expect(merged.wakeCommentId).toBe("comment-2");
     expect(merged.paperclipWake).toBeUndefined();
   });
+
+  it("keeps forceFreshSession sticky once any coalesced wake requests it", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        forceFreshSession: true,
+      },
+      {
+        issueId: "issue-1",
+        forceFreshSession: false,
+      },
+    );
+
+    expect(merged.forceFreshSession).toBe(true);
+  });
 });
 
 describe("buildExplicitResumeSessionOverride", () => {

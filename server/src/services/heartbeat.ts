@@ -1201,6 +1201,9 @@ export function mergeCoalescedContextSnapshot(
     ...existing,
     ...incoming,
   };
+  if (existing.forceFreshSession === true || incoming.forceFreshSession === true) {
+    merged.forceFreshSession = true;
+  }
   const mergedCommentIds = mergeWakeCommentIds(existing, incoming);
   if (mergedCommentIds.length > 0) {
     const latestCommentId = mergedCommentIds[mergedCommentIds.length - 1];
