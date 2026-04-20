@@ -20,6 +20,7 @@ import base64
 import collections
 import math
 import statistics
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
@@ -224,5 +225,102 @@ DELISTED_SYMBOLS: set = {
 # ---------------------------------------------------------------------------
 DATA_DIR: Path = Path(os.environ.get("DATA_DIR", "/tmp/real_trader_data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+@dataclass
+class PriceQuote:
+    exchange: str
+    symbol: str
+    bid: float
+    ask: float
+    mid: float
+    volume_24h_usd: float
+    funding_rate: float
+    instrument: str = "PERP"
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
+class OrderResult:
+    success: bool
+    order_id: str
+    exchange: str
+    symbol: str
+    side: str              # "buy" or "sell"
+    size_usd: float        # requested
+    filled_usd: float      # actual filled
+    fill_price: float      # average fill price
+    fees_usd: float        # actual fees charged
+    timestamp: float
+    latency_ms: float = 0.0
+    error: str = ""
+
+
+@dataclass
+class LivePosition:
+    id: int
+    symbol: str
+    exchange_short: str
+    exchange_long: str
+    instrument_short: str
+    instrument_long: str
+    entry_spread_pct: float
+    entry_price_short: float
+    entry_price_long: float
+    size_usd: float
+    entry_time: datetime
+    # Real order tracking
+    order_id_short: str = ""
+    order_id_long: str = ""
+    order_id_close_short: str = ""
+    order_id_close_long: str = ""
+    # Status
+    status: str = "OPEN"           # OPEN, CLOSING, CLOSED, DEGRADED
+    degraded_leg: str = ""         # "short" or "long" if one leg stuck
+    # Spread tracking
+    peak_spread_pct: float = 0.0
+    current_spread_pct: float = 0.0
+    # Exit
+    exit_time: Optional[datetime] = None
+    exit_spread_pct: float = 0.0
+    exit_price_short: float = 0.0
+    exit_price_long: float = 0.0
+    exit_reason: str = ""
+    # P&L
+    entry_fees_usd: float = 0.0
+    exit_fees_usd: float = 0.0
+    gross_pnl_usd: float = 0.0
+    net_pnl_usd: float = 0.0
+    # Telegram
+    telegram_msg_id: Optional[int] = None
+    # Retry tracking for degraded positions
+    close_retry_count: int = 0
+    last_close_attempt: Optional[float] = None
+
+
+@dataclass
+class Portfolio:
+    starting_capital: float
+    cash: float
+    positions: List[LivePosition] = field(default_factory=list)
+    closed_positions: List[LivePosition] = field(default_factory=list)
+    next_id: int = 1
+    total_trades: int = 0
+    total_wins: int = 0
+    total_pnl_usd: float = 0.0
+    peak_equity: float = 0.0
+    max_drawdown_pct: float = 0.0
+
+    @property
+    def open_positions(self) -> List[LivePosition]:
+        return [p for p in self.positions if p.status in ("OPEN", "CLOSING", "DEGRADED")]
+
+    @property
+    def equity(self) -> float:
+        unrealized = sum(p.net_pnl_usd for p in self.open_positions)
+        return self.cash + unrealized
+
 
 # Classes, functions, and main loop will be added in subsequent tasks.
