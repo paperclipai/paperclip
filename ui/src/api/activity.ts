@@ -20,6 +20,7 @@ export interface RunForIssue {
   continuationAttempt?: number;
   lastUsefulActionAt?: string | null;
   nextAction?: string | null;
+  commentsPostedCount?: number | null;
 }
 
 export interface IssueForRun {

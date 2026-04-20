@@ -364,6 +364,12 @@ export function activityService(db: Db) {
 
     runsForIssue: async (companyId: string, issueId: string) => {
       scheduleRunLivenessBackfill(companyId, issueId);
+      const commentsPostedCountSubquery = sql<number>`
+        (select count(*)::int from ${issueComments}
+         where ${issueComments.createdByRunId} = ${heartbeatRuns.id}
+           and ${issueComments.issueId} = ${issueId}
+           and ${issueComments.companyId} = ${companyId})
+      `.as("commentsPostedCount");
       return db
         .select({
           runId: heartbeatRuns.id,
@@ -382,6 +388,7 @@ export function activityService(db: Db) {
           continuationAttempt: heartbeatRuns.continuationAttempt,
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
+          commentsPostedCount: commentsPostedCountSubquery,
         })
         .from(heartbeatRuns)
         .innerJoin(
