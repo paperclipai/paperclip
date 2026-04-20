@@ -1,7 +1,7 @@
 ---
 name: deal-with-security-advisory
 description: >
-  Handle a GitHub Security Advisory response for Paperclip, including
+  Handle a GitHub Security Advisory response for AiTeamCorp, including
   confidential fix development in a temporary private fork, human coordination
   on advisory-thread comments, CVE request, synchronized advisory publication,
   and immediate security release steps.

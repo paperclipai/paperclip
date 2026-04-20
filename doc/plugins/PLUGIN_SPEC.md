@@ -278,7 +278,7 @@ Rules:
 
 - plugin contributions are additive by default
 - plugins may not override core routes or core actions by name collision
-- UI slot IDs are automatically namespaced by plugin ID (e.g. `@paperclip/plugin-linear:sync-health-widget`), so cross-plugin collisions are structurally impossible
+- UI slot IDs are automatically namespaced by plugin ID (e.g. `@aiteamcorp/plugin-linear:sync-health-widget`), so cross-plugin collisions are structurally impossible
 - if a single plugin declares duplicate slot IDs within its own manifest, the host must reject at install time
 
 ## 10. Package Contract
@@ -295,7 +295,7 @@ Suggested `package.json` keys:
 
 ```json
 {
-  "name": "@paperclip/plugin-linear",
+  "name": "@aiteamcorp/plugin-linear",
   "version": "0.1.0",
   "aiteamcorpPlugin": {
     "manifest": "./dist/manifest.js",
@@ -1505,7 +1505,7 @@ This spec directly supports the following plugin types:
 - `@paperclip/plugin-workspace-files`
 - `@paperclip/plugin-terminal`
 - `@paperclip/plugin-git`
-- `@paperclip/plugin-linear`
+- `@aiteamcorp/plugin-linear`
 - `@paperclip/plugin-github-issues`
 - `@paperclip/plugin-grafana`
 - `@paperclip/plugin-runtime-processes`

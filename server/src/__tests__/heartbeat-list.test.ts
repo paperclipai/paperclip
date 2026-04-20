@@ -42,7 +42,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
@@ -96,7 +96,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
@@ -146,7 +146,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });

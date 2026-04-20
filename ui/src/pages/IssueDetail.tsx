@@ -94,7 +94,7 @@ import {
   MessageSquare,
   MoreHorizontal,
   MoreVertical,
-  Paperclip,
+  AiTeamCorp,
   Plus,
   Repeat,
   SlidersHorizontal,
@@ -2414,7 +2414,7 @@ export function IssueDetail() {
             agents={agents}
             projects={projects}
             projectId={issue.projectId ?? undefined}
-            viewStateKey={`paperclip:issue-detail:${issue.id}:subissues-view`}
+            viewStateKey={`aiteamcorp:issue-detail:${issue.id}:subissues-view`}
             issueLinkState={resolvedIssueDetailState ?? location.state}
             searchFilters={{ parentId: issue.id }}
             baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
@@ -2639,7 +2639,7 @@ export function IssueDetail() {
               currentUserId={currentUserId}
               userLabelMap={userLabelMap}
               userProfileMap={userProfileMap}
-              draftKey={`paperclip:issue-comment-draft:${issue.id}`}
+              draftKey={`aiteamcorp:issue-comment-draft:${issue.id}`}
               reassignOptions={commentReassignOptions}
               currentAssigneeValue={actualAssigneeValue}
               suggestedAssigneeValue={suggestedAssigneeValue}

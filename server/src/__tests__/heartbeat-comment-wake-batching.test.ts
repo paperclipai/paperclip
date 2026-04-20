@@ -247,7 +247,7 @@ describe("heartbeat comment wake batching", () => {
     try {
       await db.insert(companies).values({
         id: companyId,
-        name: "Paperclip",
+        name: "AiTeamCorp",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
       });
@@ -440,7 +440,7 @@ describe("heartbeat comment wake batching", () => {
     try {
       await db.insert(companies).values({
         id: companyId,
-        name: "Paperclip",
+        name: "AiTeamCorp",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
       });
@@ -626,7 +626,7 @@ describe("heartbeat comment wake batching", () => {
     try {
       await db.insert(companies).values({
         id: companyId,
-        name: "Paperclip",
+        name: "AiTeamCorp",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
       });
@@ -778,7 +778,7 @@ describe("heartbeat comment wake batching", () => {
     try {
       await db.insert(companies).values({
         id: companyId,
-        name: "Paperclip",
+        name: "AiTeamCorp",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
       });
@@ -940,7 +940,7 @@ describe("heartbeat comment wake batching", () => {
     try {
       await db.insert(companies).values({
         id: companyId,
-        name: "Paperclip",
+        name: "AiTeamCorp",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
       });

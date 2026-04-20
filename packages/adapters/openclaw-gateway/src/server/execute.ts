@@ -147,10 +147,10 @@ export function resolveSessionKey(input: {
 }): string {
   const fallback = input.configuredSessionKey ?? "aiteamcorp";
   if (input.strategy === "run") {
-    return prefixSessionKeyForAgent(`paperclip:run:${input.runId}`, input.agentId);
+    return prefixSessionKeyForAgent(`aiteamcorp:run:${input.runId}`, input.agentId);
   }
   if (input.strategy === "issue" && input.issueId) {
-    return prefixSessionKeyForAgent(`paperclip:issue:${input.issueId}`, input.agentId);
+    return prefixSessionKeyForAgent(`aiteamcorp:issue:${input.issueId}`, input.agentId);
   }
   return prefixSessionKeyForAgent(fallback, input.agentId);
 }
@@ -409,7 +409,7 @@ function buildWakeText(
     "",
     "HTTP rules:",
     "- Use Authorization: Bearer $AITEAMCORP_API_KEY on every API call.",
-    "- Use X-Paperclip-Run-Id: $AITEAMCORP_RUN_ID on every mutating API call.",
+    "- Use X-AiTeamCorp-Run-Id: $AITEAMCORP_RUN_ID on every mutating API call.",
     "- Use only /api endpoints listed below.",
     "- Do NOT call guessed endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat.",
     "",
@@ -510,8 +510,8 @@ function buildStandardAiTeamCorpPayload(
   }
 
   return {
-    ...templatePaperclip,
-    ...standardPaperclip,
+    ...templateAiTeamCorp,
+    ...standardAiTeamCorp,
   };
 }
 

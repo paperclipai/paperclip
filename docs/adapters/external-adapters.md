@@ -37,7 +37,7 @@ my-adapter/
 
 ```json
 {
-  "name": "my-paperclip-adapter",
+  "name": "my-aiteamcorp-adapter",
   "version": "1.0.0",
   "type": "module",
   "license": "MIT",
@@ -261,13 +261,13 @@ Check levels:
 
 ```sh
 # Via the AiTeamCorp UI
-# Settings → Adapters → Install from npm → "my-paperclip-adapter"
+# Settings → Adapters → Install from npm → "my-aiteamcorp-adapter"
 
 # Or via API
 curl -X POST http://localhost:3102/api/adapters \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"packageName": "my-paperclip-adapter"}'
+  -d '{"packageName": "my-aiteamcorp-adapter"}'
 ```
 
 ### From local directory
@@ -288,7 +288,7 @@ For development, you can also edit `~/.aiteamcorp/adapter-plugins.json` directly
 ```json
 [
   {
-    "packageName": "my-paperclip-adapter",
+    "packageName": "my-aiteamcorp-adapter",
     "localPath": "/home/user/my-adapter",
     "type": "my_adapter",
     "installedAt": "2026-03-30T12:00:00.000Z"

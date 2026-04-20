@@ -11,7 +11,7 @@ services:
       HOME: "/home/reviewer"
       CODEX_HOME: "/home/reviewer/.codex"
       CLAUDE_HOME: "/home/reviewer/.claude"
-      AITEAMCORP_HOME: "/home/reviewer/.paperclip-review"
+      AITEAMCORP_HOME: "/home/reviewer/.aiteamcorp-review"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"

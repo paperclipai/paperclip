@@ -71,7 +71,7 @@ function renderApiAccessNote(env: Record<string, string>): string {
     "GET example:",
     `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $AITEAMCORP_API_KEY\\" \\"$AITEAMCORP_API_URL/api/agents/me\\"" })`,
     "POST/PATCH example:",
-    `  run_shell_command({ command: "curl -s -X POST -H \\"Authorization: Bearer $AITEAMCORP_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $AITEAMCORP_RUN_ID\\" -d '{...}' \\"$AITEAMCORP_API_URL/api/issues/{id}/checkout\\"" })`,
+    `  run_shell_command({ command: "curl -s -X POST -H \\"Authorization: Bearer $AITEAMCORP_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-AiTeamCorp-Run-Id: $AITEAMCORP_RUN_ID\\" -d '{...}' \\"$AITEAMCORP_API_URL/api/issues/{id}/checkout\\"" })`,
     "",
     "",
   ].join("\n");

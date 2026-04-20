@@ -1321,7 +1321,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
         const rawBody = input.rawBody ?? Buffer.from(JSON.stringify(input.payload ?? {}));
         // Accept X-Hub-Signature-256 (GitHub/Sentry) or fall back to the
-        // generic X-Paperclip-Signature header so operators can use github_hmac
+        // generic X-AiTeamCorp-Signature header so operators can use github_hmac
         // mode with either header convention.
         const providedSignature = (input.hubSignatureHeader ?? input.signatureHeader)?.trim() ?? "";
         if (!providedSignature) throw unauthorized();

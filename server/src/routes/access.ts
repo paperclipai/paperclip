@@ -1811,7 +1811,7 @@ function toUserProfile(
 }
 
 async function resolveActorEmail(db: Db, req: Request): Promise<string | null> {
-  if (isLocalImplicit(req)) return "local@paperclip.local";
+  if (isLocalImplicit(req)) return "local@aiteamcorp.local";
   const userId = req.actor.userId;
   if (!userId) return null;
   const user = await db

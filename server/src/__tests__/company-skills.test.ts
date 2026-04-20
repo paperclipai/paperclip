@@ -99,7 +99,7 @@ describe("project workspace skill discovery", () => {
     await writeSkillDir(workspace, "Workspace Root");
     await writeSkillDir(path.join(workspace, "skills", "find-skills"), "Find Skills");
     await writeSkillDir(path.join(workspace, ".agents", "skills", "release"), "Release");
-    await writeSkillDir(path.join(workspace, "skills", ".system", "aiteamcorp"), "Paperclip");
+    await writeSkillDir(path.join(workspace, "skills", ".system", "aiteamcorp"), "AiTeamCorp");
     await fs.writeFile(path.join(workspace, "README.md"), "# ignore\n", "utf8");
 
     const discovered = await discoverProjectWorkspaceSkillDirectories({

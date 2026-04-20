@@ -331,7 +331,7 @@ Sign up as creator → Connect Stripe
   → Track installs, revenue, reviews on creator dashboard
 ```
 
-### 5.3 Creator: Export from Paperclip → Publish
+### 5.3 Creator: Export from AiTeamCorp → Publish
 
 ```
 Running AiTeamCorp company → "Export as Blueprint" (CLI or UI)
@@ -515,7 +515,7 @@ blueprint/
 - [ ] Purchase flow
 - [ ] Review system
 - [ ] Creator analytics dashboard
-- [ ] "Export from Paperclip" CLI command
+- [ ] "Export from AiTeamCorp" CLI command
 
 ### Phase 3: Growth
 - [ ] Search with relevance ranking

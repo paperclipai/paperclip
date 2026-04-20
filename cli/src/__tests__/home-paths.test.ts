@@ -29,7 +29,7 @@ describe("home path resolution", () => {
     process.env.AITEAMCORP_HOME = "~/paperclip-home";
 
     const home = resolveAiTeamCorpHomeDir();
-    expect(home).toBe(path.resolve(os.homedir(), "paperclip-home"));
+    expect(home).toBe(path.resolve(os.homedir(), "aiteamcorp-home"));
     expect(resolveAiTeamCorpInstanceId("dev_1")).toBe("dev_1");
   });
 

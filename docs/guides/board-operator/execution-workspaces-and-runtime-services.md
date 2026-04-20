@@ -3,7 +3,7 @@ title: Execution Workspaces And Runtime Services
 summary: How project runtime configuration, execution workspaces, and issue runs fit together
 ---
 
-This guide documents the intended runtime model for projects, execution workspaces, and issue runs in Paperclip.
+This guide documents the intended runtime model for projects, execution workspaces, and issue runs in AiTeamCorp.
 
 AiTeamCorp now presents this as a workspace-command model:
 

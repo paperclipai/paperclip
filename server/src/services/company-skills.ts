@@ -289,10 +289,10 @@ function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: R
     ?? asString(metadata?.aiteamcorpSkillKey),
   );
   if (direct) return direct;
-  const paperclip = isPlainRecord(metadata?.paperclip) ? metadata?.paperclip as Record<string, unknown> : null;
+  const aiteamcorp = isPlainRecord(metadata?.paperclip) ? metadata?.aiteamcorp as Record<string, unknown> : null;
   return normalizeSkillKey(
-    asString(paperclip?.skillKey)
-    ?? asString(paperclip?.key),
+    asString(aiteamcorp?.skillKey)
+    ?? asString(aiteamcorp?.key),
   );
 }
 
@@ -306,7 +306,7 @@ function deriveCanonicalSkillKey(
   if (explicitKey) return explicitKey;
 
   const sourceKind = asString(metadata?.sourceKind);
-  if (sourceKind === "paperclip_bundled") {
+  if (sourceKind === "aiteamcorp_bundled") {
     return `aiteamcorporated-collab/ai-team-coprorated/${slug}`;
   }
 
@@ -1404,7 +1404,7 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
 } {
   const metadata = getSkillMeta(skill);
   const localSkillDir = normalizeSkillDirectory(skill);
-  if (metadata.sourceKind === "paperclip_bundled") {
+  if (metadata.sourceKind === "aiteamcorp_bundled") {
     return {
       editable: false,
       editableReason: "Bundled AiTeamCorp skills are read-only.",
@@ -1536,12 +1536,12 @@ export function companySkillService(db: Db) {
             ...skill,
             metadata: {
               ...(skill.metadata ?? {}),
-              sourceKind: "paperclip_bundled",
+              sourceKind: "aiteamcorp_bundled",
             },
           }),
           metadata: {
             ...(skill.metadata ?? {}),
-            sourceKind: "paperclip_bundled",
+            sourceKind: "aiteamcorp_bundled",
           },
         })))
         .catch(() => [] as ImportedSkill[]);
@@ -2158,7 +2158,7 @@ export function companySkillService(db: Db) {
       }
       if (!source) continue;
 
-      const required = sourceKind === "paperclip_bundled";
+      const required = sourceKind === "aiteamcorp_bundled";
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
@@ -2306,7 +2306,7 @@ export function companySkillService(db: Db) {
       const incomingKind = asString(incomingMeta.sourceKind);
       if (
         existing
-        && existingMeta.sourceKind === "paperclip_bundled"
+        && existingMeta.sourceKind === "aiteamcorp_bundled"
         && incomingKind === "github"
         && incomingOwner === "paperclipai"
         && incomingRepo === "aiteamcorp"

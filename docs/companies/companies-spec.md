@@ -21,7 +21,7 @@ The format is designed to:
 - require no central registry
 - support attribution and pinned references to upstream files
 - extend the existing Agent Skills ecosystem without redefining it
-- be useful outside Paperclip
+- be useful outside AiTeamCorp
 
 ## 2. Core Principles
 
@@ -66,7 +66,7 @@ projects/<slug>/PROJECT.md
 projects/<slug>/tasks/<slug>/TASK.md
 tasks/<slug>/TASK.md
 skills/<slug>/SKILL.md
-.paperclip.yaml
+.aiteamcorp.yaml
 
 HEARTBEAT.md
 SOUL.md
@@ -268,7 +268,7 @@ recurring: true
 ### Recurring Tasks
 
 - the base package only needs to say whether a task is recurring
-- vendors may attach the actual schedule / trigger / runtime fidelity in a vendor extension such as `.paperclip.yaml`
+- vendors may attach the actual schedule / trigger / runtime fidelity in a vendor extension such as `.aiteamcorp.yaml`
 - this keeps `TASK.md` portable while still allowing richer runtime systems to round-trip their own automation details
 - legacy packages may still use `schedule.recurrence` during transition, but exporters should prefer `recurring: true`
 
@@ -418,10 +418,10 @@ Suggested import UI behavior:
 
 Vendor-specific data should live outside the base package shape.
 
-For Paperclip, the preferred fidelity extension is:
+For AiTeamCorp, the preferred fidelity extension is:
 
 ```text
-.paperclip.yaml
+.aiteamcorp.yaml
 ```
 
 Example uses:
@@ -444,7 +444,7 @@ Rules:
 Suggested AiTeamCorp shape:
 
 ```yaml
-schema: paperclip/v1
+schema: aiteamcorp/v1
 agents:
   claudecoder:
     adapter:
@@ -491,7 +491,7 @@ A compliant exporter should:
 - preserve task descriptions and recurring-task declarations when exporting tasks
 - omit empty/default fields
 - default to the vendor-neutral base package
-- AiTeamCorp exporters should emit `.paperclip.yaml` as a sidecar by default
+- AiTeamCorp exporters should emit `.aiteamcorp.yaml` as a sidecar by default
 - preserve attribution and source references
 - prefer `referenced` over silent vendoring for third-party content
 - preserve `SKILL.md` as-is when exporting compatible skills
@@ -541,13 +541,13 @@ AiTeamCorp can map this spec to its runtime model like this:
   - `SKILL.md` -> imported skill package
   - `sources[]` -> provenance and pinned upstream refs
 - AiTeamCorp extension:
-  - `.paperclip.yaml` -> adapter config, runtime config, env input declarations, permissions, budgets, routine triggers, and other Paperclip-specific fidelity
+  - `.aiteamcorp.yaml` -> adapter config, runtime config, env input declarations, permissions, budgets, routine triggers, and other Paperclip-specific fidelity
 
 Inline Paperclip-only metadata that must live inside a shared markdown file should use:
 
 - `metadata.paperclip`
 
-That keeps the base format broader than Paperclip.
+That keeps the base format broader than AiTeamCorp.
 
 This specification itself remains vendor-neutral and intended for any agent-company runtime, not only Paperclip.
 
@@ -557,7 +557,7 @@ AiTeamCorp should cut over to this markdown-first package model as the primary p
 
 `paperclip.manifest.json` does not need to be preserved as a compatibility requirement for the future package system.
 
-For Paperclip, this should be treated as a hard cutover in product direction rather than a long-lived dual-format strategy.
+For AiTeamCorp, this should be treated as a hard cutover in product direction rather than a long-lived dual-format strategy.
 
 ## 21. Minimal Example
 
@@ -583,7 +583,7 @@ lean-dev-shop/
 Optional:
 
 ```text
-.paperclip.yaml
+.aiteamcorp.yaml
 ```
 ```
 

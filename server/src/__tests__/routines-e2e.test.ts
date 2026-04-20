@@ -179,7 +179,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
     });

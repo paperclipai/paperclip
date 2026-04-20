@@ -704,7 +704,7 @@ export function CompanyImport() {
   }, [companyAgents]);
 
   const localZipHelpText =
-    "Upload a .zip exported directly from Paperclip. Re-zipped archives created by Finder, Explorer, or other zip tools may not import correctly.";
+    "Upload a .zip exported directly from AiTeamCorp. Re-zipped archives created by Finder, Explorer, or other zip tools may not import correctly.";
 
   useEffect(() => {
     setBreadcrumbs([

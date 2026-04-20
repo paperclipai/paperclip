@@ -26,7 +26,7 @@ vi.mock("@/api/access", () => ({
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "company-1",
-    selectedCompany: { id: "company-1", name: "Paperclip" },
+    selectedCompany: { id: "company-1", name: "AiTeamCorp" },
   }),
 }));
 
@@ -67,7 +67,7 @@ describe("CompanyAccess", () => {
           updatedAt: "2026-04-10T00:00:00.000Z",
           user: {
             id: "user-1",
-            email: "codexcoder@paperclip.local",
+            email: "codexcoder@aiteamcorp.local",
             name: "Codex Coder",
             image: null,
           },
@@ -88,11 +88,11 @@ describe("CompanyAccess", () => {
         createdAt: "2026-04-10T00:00:00.000Z",
         requesterUser: {
           id: "user-2",
-          email: "board@paperclip.local",
+          email: "board@aiteamcorp.local",
           name: "Board User",
           image: null,
         },
-        requestEmailSnapshot: "board@paperclip.local",
+        requestEmailSnapshot: "board@aiteamcorp.local",
         requestingUserId: "user-2",
         invite: {
           allowedJoinTypes: "human",

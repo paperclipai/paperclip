@@ -133,7 +133,7 @@ describe("company portability", () => {
     }));
     companySvc.getById.mockResolvedValue({
       id: "company-1",
-      name: "Paperclip",
+      name: "AiTeamCorp",
       description: null,
       issuePrefix: "PAP",
       brandColor: "#5c5fff",
@@ -143,7 +143,7 @@ describe("company portability", () => {
     });
     companySvc.create.mockResolvedValue({
       id: "company-imported",
-      name: "Imported Paperclip",
+      name: "Imported AiTeamCorp",
       requireBoardApprovalForNewAgents: true,
     });
     agentSvc.list.mockResolvedValue([
@@ -284,7 +284,7 @@ describe("company portability", () => {
         slug: "aiteamcorp",
         name: "aiteamcorp",
         description: "AiTeamCorp coordination skill",
-        markdown: "---\nname: paperclip\ndescription: AiTeamCorp coordination skill\n---\n\n# Paperclip\n",
+        markdown: "---\nname: paperclip\ndescription: AiTeamCorp coordination skill\n---\n\n# AiTeamCorp\n",
         sourceType: "github",
         sourceLocator: "https://github.com/aiteamcorporated-collab/ai-team-coprorated/tree/master/skills/aiteamcorp",
         sourceRef: "0123456789abcdef0123456789abcdef01234567",
@@ -347,7 +347,7 @@ describe("company portability", () => {
         path: relativePath,
         kind: relativePath === "SKILL.md" ? "skill" : "reference",
         content: relativePath === "SKILL.md"
-          ? "---\nname: paperclip\ndescription: AiTeamCorp coordination skill\n---\n\n# Paperclip\n"
+          ? "---\nname: paperclip\ndescription: AiTeamCorp coordination skill\n---\n\n# AiTeamCorp\n"
           : "# API\n",
         language: "markdown",
         markdown: true,
@@ -430,7 +430,7 @@ describe("company portability", () => {
       },
     });
 
-    expect(asTextFile(exported.files["COMPANY.md"])).toContain('name: "Paperclip"');
+    expect(asTextFile(exported.files["COMPANY.md"])).toContain('name: "AiTeamCorp"');
     expect(asTextFile(exported.files["COMPANY.md"])).toContain('schema: "agentcompanies/v1"');
     expect(asTextFile(exported.files["agents/claudecoder/AGENTS.md"])).toContain("You are ClaudeCoder.");
     expect(asTextFile(exported.files["agents/claudecoder/AGENTS.md"])).toContain("skills:");
@@ -442,8 +442,8 @@ describe("company portability", () => {
     expect(asTextFile(exported.files["skills/company/PAP/company-playbook/SKILL.md"])).toContain("# Company Playbook");
     expect(asTextFile(exported.files["skills/company/PAP/company-playbook/references/checklist.md"])).toContain("# Checklist");
 
-    const extension = asTextFile(exported.files[".paperclip.yaml"]);
-    expect(extension).toContain('schema: "paperclip/v1"');
+    const extension = asTextFile(exported.files[".aiteamcorp.yaml"]);
+    expect(extension).toContain('schema: "aiteamcorp/v1"');
     expect(extension).not.toContain("promptTemplate");
     expect(extension).not.toContain("instructionsFilePath");
     expect(extension).not.toContain("command:");
@@ -504,7 +504,7 @@ describe("company portability", () => {
       },
     });
 
-    expect(asTextFile(exported.files[".paperclip.yaml"])).toContain([
+    expect(asTextFile(exported.files[".aiteamcorp.yaml"])).toContain([
       "sidebar:",
       "  agents:",
       '    - "claudecoder"',
@@ -532,7 +532,7 @@ describe("company portability", () => {
       expandReferencedSkills: true,
     });
 
-    expect(asTextFile(exported.files["skills/aiteamcorporated-collab/ai-team-coprorated/aiteamcorp/SKILL.md"])).toContain("# Paperclip");
+    expect(asTextFile(exported.files["skills/aiteamcorporated-collab/ai-team-coprorated/aiteamcorp/SKILL.md"])).toContain("# AiTeamCorp");
     expect(asTextFile(exported.files["skills/aiteamcorporated-collab/ai-team-coprorated/aiteamcorp/SKILL.md"])).toContain("metadata:");
     expect(asTextFile(exported.files["skills/aiteamcorporated-collab/ai-team-coprorated/aiteamcorp/references/api.md"])).toContain("# API");
   });
@@ -573,7 +573,7 @@ describe("company portability", () => {
     expect(exported.files["skills/aiteamcorporated-collab/ai-team-coprorated/aiteamcorp/SKILL.md"]).toBeDefined();
   });
 
-  it("exports the company logo into images/ and references it from .paperclip.yaml", async () => {
+  it("exports the company logo into images/ and references it from .aiteamcorp.yaml", async () => {
     const storage = {
       getObject: vi.fn().mockResolvedValue({
         stream: Readable.from([Buffer.from("png-bytes")]),
@@ -581,7 +581,7 @@ describe("company portability", () => {
     };
     companySvc.getById.mockResolvedValue({
       id: "company-1",
-      name: "Paperclip",
+      name: "AiTeamCorp",
       description: null,
       issuePrefix: "PAP",
       brandColor: "#5c5fff",
@@ -614,7 +614,7 @@ describe("company portability", () => {
       data: Buffer.from("png-bytes").toString("base64"),
       contentType: "image/png",
     });
-    expect(exported.files[".paperclip.yaml"]).toContain('logoPath: "images/company-logo.png"');
+    expect(exported.files[".aiteamcorp.yaml"]).toContain('logoPath: "images/company-logo.png"');
   });
 
   it("exports duplicate skill slugs into readable namespaced paths", async () => {
@@ -664,7 +664,7 @@ describe("company portability", () => {
         },
       },
       {
-        id: "skill-paperclip",
+        id: "skill-aiteamcorp",
         companyId: "company-1",
         key: "aiteamcorporated-collab/ai-team-coprorated/release-changelog",
         slug: "release-changelog",
@@ -678,7 +678,7 @@ describe("company portability", () => {
         compatibility: "compatible",
         fileInventory: [{ path: "SKILL.md", kind: "skill" }],
         metadata: {
-          sourceKind: "paperclip_bundled",
+          sourceKind: "aiteamcorp_bundled",
           owner: "paperclipai",
           repo: "aiteamcorp",
           ref: "0123456789abcdef0123456789abcdef01234567",
@@ -782,7 +782,7 @@ describe("company portability", () => {
             defaultRef: "main",
             visibility: "default",
             setupCommand: "pnpm install",
-            cleanupCommand: "rm -rf .paperclip-tmp",
+            cleanupCommand: "rm -rf .aiteamcorp-tmp",
             remoteProvider: null,
             remoteWorkspaceRef: null,
             sharedWorkspaceKey: null,
@@ -847,7 +847,7 @@ describe("company portability", () => {
       },
     });
 
-    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    const extension = asTextFile(exported.files[".aiteamcorp.yaml"]);
     expect(extension).toContain("workspaces:");
     expect(extension).toContain("main-repo:");
     expect(extension).toContain('repoUrl: "https://github.com/aiteamcorporated-collab/ai-team-coprorated.git"');
@@ -859,7 +859,7 @@ describe("company portability", () => {
 
     companySvc.create.mockResolvedValue({
       id: "company-imported",
-      name: "Imported Paperclip",
+      name: "Imported AiTeamCorp",
     });
     accessSvc.ensureMembership.mockResolvedValue(undefined);
     agentSvc.list.mockResolvedValue([]);
@@ -915,7 +915,7 @@ describe("company portability", () => {
       },
       target: {
         mode: "new_company",
-        newCompanyName: "Imported Paperclip",
+        newCompanyName: "Imported AiTeamCorp",
       },
       collisionStrategy: "rename",
     }, "user-1");
@@ -944,7 +944,7 @@ describe("company portability", () => {
 
   it("infers portable git metadata from a local checkout without task warning fan-out", async () => {
     const portability = companyPortabilityService({} as any);
-    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-portability-git-"));
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-portability-git-"));
     execFileSync("git", ["init"], { cwd: repoDir, stdio: "ignore" });
     execFileSync("git", ["checkout", "-b", "main"], { cwd: repoDir, stdio: "ignore" });
     execFileSync("git", ["remote", "add", "origin", "https://github.com/aiteamcorporated-collab/ai-team-coprorated.git"], {
@@ -956,7 +956,7 @@ describe("company portability", () => {
       {
         id: "project-1",
         name: "AiTeamCorp App",
-        urlKey: "paperclip-app",
+        urlKey: "aiteamcorp-app",
         description: "Ship it",
         leadAgentId: null,
         targetDate: null,
@@ -1020,7 +1020,7 @@ describe("company portability", () => {
       },
     });
 
-    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    const extension = asTextFile(exported.files[".aiteamcorp.yaml"]);
     expect(extension).toContain('repoUrl: "https://github.com/aiteamcorporated-collab/ai-team-coprorated.git"');
     expect(extension).toContain('projectWorkspaceKey: "aiteamcorp"');
     expect(exported.warnings).not.toContainEqual(expect.stringContaining("does not have a portable repoUrl"));
@@ -1130,7 +1130,7 @@ describe("company portability", () => {
     expect(exported.warnings.filter((warning) => warning.includes("could not be exported portably"))).toHaveLength(1);
   });
 
-  it("reads env inputs back from .paperclip.yaml during preview import", async () => {
+  it("reads env inputs back from .aiteamcorp.yaml during preview import", async () => {
     const portability = companyPortabilityService({} as any);
 
     const exported = await portability.exportBundle("company-1", {
@@ -1156,7 +1156,7 @@ describe("company portability", () => {
       },
       target: {
         mode: "new_company",
-        newCompanyName: "Imported Paperclip",
+        newCompanyName: "Imported AiTeamCorp",
       },
       agents: "all",
       collisionStrategy: "rename",
@@ -1230,7 +1230,7 @@ describe("company portability", () => {
       },
     });
 
-    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    const extension = asTextFile(exported.files[".aiteamcorp.yaml"]);
     expect(extension).toContain("OPENAI_API_KEY:");
     expect(extension).toContain("DOCS_MODE:");
     expect(extension).toContain("GITHUB_TOKEN:");
@@ -1242,7 +1242,7 @@ describe("company portability", () => {
     expect(extension).toContain('kind: "plain"');
   });
 
-  it("reads project env inputs back from .paperclip.yaml during preview import", async () => {
+  it("reads project env inputs back from .aiteamcorp.yaml during preview import", async () => {
     const portability = companyPortabilityService({} as any);
 
     projectSvc.list.mockResolvedValue([
@@ -1290,7 +1290,7 @@ describe("company portability", () => {
       },
       target: {
         mode: "new_company",
-        newCompanyName: "Imported Paperclip",
+        newCompanyName: "Imported AiTeamCorp",
       },
       agents: "all",
       collisionStrategy: "rename",
@@ -1414,7 +1414,7 @@ describe("company portability", () => {
     });
 
     expect(asTextFile(exported.files["tasks/monday-review/TASK.md"])).toContain('recurring: true');
-    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    const extension = asTextFile(exported.files[".aiteamcorp.yaml"]);
     expect(extension).toContain("routines:");
     expect(extension).toContain("monday-review:");
     expect(extension).toContain('cronExpression: "0 9 * * 1"');
@@ -1444,7 +1444,7 @@ describe("company portability", () => {
 
     companySvc.create.mockResolvedValue({
       id: "company-imported",
-      name: "Imported Paperclip",
+      name: "Imported AiTeamCorp",
     });
     accessSvc.ensureMembership.mockResolvedValue(undefined);
     agentSvc.create.mockResolvedValue({
@@ -1463,7 +1463,7 @@ describe("company portability", () => {
       "COMPANY.md": [
         "---",
         'schema: "agentcompanies/v1"',
-        'name: "Imported Paperclip"',
+        'name: "Imported AiTeamCorp"',
         "---",
         "",
       ].join("\n"),
@@ -1492,8 +1492,8 @@ describe("company portability", () => {
         "Review pipeline health.",
         "",
       ].join("\n"),
-      ".paperclip.yaml": [
-        'schema: "paperclip/v1"',
+      ".aiteamcorp.yaml": [
+        'schema: "aiteamcorp/v1"',
         "routines:",
         "  monday-review:",
         '    status: "paused"',
@@ -1513,9 +1513,9 @@ describe("company portability", () => {
     };
 
     const preview = await portability.previewImport({
-      source: { type: "inline", rootPath: "paperclip-demo", files },
+      source: { type: "inline", rootPath: "aiteamcorp-demo", files },
       include: { company: true, agents: true, projects: true, issues: true, skills: false },
-      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+      target: { mode: "new_company", newCompanyName: "Imported AiTeamCorp" },
       agents: "all",
       collisionStrategy: "rename",
     });
@@ -1529,9 +1529,9 @@ describe("company portability", () => {
     ]);
 
     const result = await portability.importBundle({
-      source: { type: "inline", rootPath: "paperclip-demo", files },
+      source: { type: "inline", rootPath: "aiteamcorp-demo", files },
       include: { company: true, agents: true, projects: true, issues: true, skills: false },
-      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+      target: { mode: "new_company", newCompanyName: "Imported AiTeamCorp" },
       agents: "all",
       collisionStrategy: "rename",
     }, "user-1");
@@ -1568,7 +1568,7 @@ describe("company portability", () => {
 
     companySvc.create.mockResolvedValue({
       id: "company-imported",
-      name: "Imported Paperclip",
+      name: "Imported AiTeamCorp",
     });
     accessSvc.ensureMembership.mockResolvedValue(undefined);
     agentSvc.create.mockResolvedValue({
@@ -1584,7 +1584,7 @@ describe("company portability", () => {
     projectSvc.list.mockResolvedValue([]);
 
     const files = {
-      "COMPANY.md": ['---', 'schema: "agentcompanies/v1"', 'name: "Imported Paperclip"', "---", ""].join("\n"),
+      "COMPANY.md": ['---', 'schema: "agentcompanies/v1"', 'name: "Imported AiTeamCorp"', "---", ""].join("\n"),
       "agents/claudecoder/AGENTS.md": ['---', 'name: "ClaudeCoder"', "---", "", "You write code.", ""].join("\n"),
       "projects/launch/PROJECT.md": ['---', 'name: "Launch"', "---", ""].join("\n"),
       "tasks/monday-review/TASK.md": [
@@ -1608,9 +1608,9 @@ describe("company portability", () => {
     };
 
     const preview = await portability.previewImport({
-      source: { type: "inline", rootPath: "paperclip-demo", files },
+      source: { type: "inline", rootPath: "aiteamcorp-demo", files },
       include: { company: true, agents: true, projects: true, issues: true, skills: false },
-      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+      target: { mode: "new_company", newCompanyName: "Imported AiTeamCorp" },
       agents: "all",
       collisionStrategy: "rename",
     });
@@ -1622,9 +1622,9 @@ describe("company portability", () => {
     }));
 
     await portability.importBundle({
-      source: { type: "inline", rootPath: "paperclip-demo", files },
+      source: { type: "inline", rootPath: "aiteamcorp-demo", files },
       include: { company: true, agents: true, projects: true, issues: true, skills: false },
-      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+      target: { mode: "new_company", newCompanyName: "Imported AiTeamCorp" },
       agents: "all",
       collisionStrategy: "rename",
     }, "user-1");
@@ -1643,9 +1643,9 @@ describe("company portability", () => {
     const preview = await portability.previewImport({
       source: {
         type: "inline",
-        rootPath: "paperclip-demo",
+        rootPath: "aiteamcorp-demo",
         files: {
-          "COMPANY.md": ['---', 'schema: "agentcompanies/v1"', 'name: "Imported Paperclip"', "---", ""].join("\n"),
+          "COMPANY.md": ['---', 'schema: "agentcompanies/v1"', 'name: "Imported AiTeamCorp"', "---", ""].join("\n"),
           "tasks/monday-review/TASK.md": [
             "---",
             'name: "Monday Review"',
@@ -1658,7 +1658,7 @@ describe("company portability", () => {
         },
       },
       include: { company: true, agents: false, projects: false, issues: true, skills: false },
-      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+      target: { mode: "new_company", newCompanyName: "Imported AiTeamCorp" },
       collisionStrategy: "rename",
     });
 
@@ -1666,12 +1666,12 @@ describe("company portability", () => {
     expect(preview.errors).toContain("Recurring task monday-review must declare an assignee to import as a routine.");
   });
 
-  it("imports a vendor-neutral package without .paperclip.yaml", async () => {
+  it("imports a vendor-neutral package without .aiteamcorp.yaml", async () => {
     const portability = companyPortabilityService({} as any);
 
     companySvc.create.mockResolvedValue({
       id: "company-imported",
-      name: "Imported Paperclip",
+      name: "Imported AiTeamCorp",
     });
     accessSvc.ensureMembership.mockResolvedValue(undefined);
     agentSvc.create.mockResolvedValue({
@@ -1682,16 +1682,16 @@ describe("company portability", () => {
     const preview = await portability.previewImport({
       source: {
         type: "inline",
-        rootPath: "paperclip-demo",
+        rootPath: "aiteamcorp-demo",
         files: {
           "COMPANY.md": [
             "---",
             'schema: "agentcompanies/v1"',
-            'name: "Imported Paperclip"',
+            'name: "Imported AiTeamCorp"',
             'description: "Portable company package"',
             "---",
             "",
-            "# Imported Paperclip",
+            "# Imported AiTeamCorp",
             "",
           ].join("\n"),
           "agents/claudecoder/AGENTS.md": [
@@ -1715,14 +1715,14 @@ describe("company portability", () => {
       },
       target: {
         mode: "new_company",
-        newCompanyName: "Imported Paperclip",
+        newCompanyName: "Imported AiTeamCorp",
       },
       agents: "all",
       collisionStrategy: "rename",
     });
 
     expect(preview.errors).toEqual([]);
-    expect(preview.manifest.company?.name).toBe("Imported Paperclip");
+    expect(preview.manifest.company?.name).toBe("Imported AiTeamCorp");
     expect(preview.manifest.agents).toEqual([
       expect.objectContaining({
         slug: "claudecoder",
@@ -1735,16 +1735,16 @@ describe("company portability", () => {
     await portability.importBundle({
       source: {
         type: "inline",
-        rootPath: "paperclip-demo",
+        rootPath: "aiteamcorp-demo",
         files: {
           "COMPANY.md": [
             "---",
             'schema: "agentcompanies/v1"',
-            'name: "Imported Paperclip"',
+            'name: "Imported AiTeamCorp"',
             'description: "Portable company package"',
             "---",
             "",
-            "# Imported Paperclip",
+            "# Imported AiTeamCorp",
             "",
           ].join("\n"),
           "agents/claudecoder/AGENTS.md": [
@@ -1768,14 +1768,14 @@ describe("company portability", () => {
       },
       target: {
         mode: "new_company",
-        newCompanyName: "Imported Paperclip",
+        newCompanyName: "Imported AiTeamCorp",
       },
       agents: "all",
       collisionStrategy: "rename",
     }, "user-1");
 
     expect(companySvc.create).toHaveBeenCalledWith(expect.objectContaining({
-      name: "Imported Paperclip",
+      name: "Imported AiTeamCorp",
       description: "Portable company package",
     }));
     expect(agentSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
@@ -1875,7 +1875,7 @@ describe("company portability", () => {
       },
     });
 
-    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    const extension = asTextFile(exported.files[".aiteamcorp.yaml"]);
     expect(extension).toContain("APIKEY:");
     expect(extension).toContain("GITHUBAUTH:");
     expect(extension).toContain("PRIVATEKEY:");
@@ -1890,7 +1890,7 @@ describe("company portability", () => {
 
     companySvc.create.mockResolvedValue({
       id: "company-imported",
-      name: "Imported Paperclip",
+      name: "Imported AiTeamCorp",
     });
     accessSvc.ensureMembership.mockResolvedValue(undefined);
     agentSvc.create.mockResolvedValue({
@@ -1923,7 +1923,7 @@ describe("company portability", () => {
       },
       target: {
         mode: "new_company",
-        newCompanyName: "Imported Paperclip",
+        newCompanyName: "Imported AiTeamCorp",
       },
       agents: "all",
       collisionStrategy: "rename",
@@ -1955,12 +1955,12 @@ describe("company portability", () => {
     };
     companySvc.create.mockResolvedValue({
       id: "company-imported",
-      name: "Imported Paperclip",
+      name: "Imported AiTeamCorp",
       logoAssetId: null,
     });
     companySvc.update.mockResolvedValue({
       id: "company-imported",
-      name: "Imported Paperclip",
+      name: "Imported AiTeamCorp",
       logoAssetId: "asset-created",
     });
     agentSvc.create.mockResolvedValue({
@@ -1983,7 +1983,7 @@ describe("company portability", () => {
       data: Buffer.from("png-bytes").toString("base64"),
       contentType: "image/png",
     };
-    exported.files[".paperclip.yaml"] = `${exported.files[".paperclip.yaml"]}`.replace(
+    exported.files[".aiteamcorp.yaml"] = `${exported.files[".aiteamcorp.yaml"]}`.replace(
       'brandColor: "#5c5fff"\n',
       'brandColor: "#5c5fff"\n  logoPath: "images/company-logo.png"\n',
     );
@@ -2004,7 +2004,7 @@ describe("company portability", () => {
       },
       target: {
         mode: "new_company",
-        newCompanyName: "Imported Paperclip",
+        newCompanyName: "Imported AiTeamCorp",
       },
       agents: "all",
       collisionStrategy: "rename",
@@ -2032,7 +2032,7 @@ describe("company portability", () => {
 
     companySvc.create.mockResolvedValue({
       id: "company-imported",
-      name: "Imported Paperclip",
+      name: "Imported AiTeamCorp",
     });
     agentSvc.create.mockResolvedValue({
       id: "agent-created",
@@ -2064,7 +2064,7 @@ describe("company portability", () => {
       },
       target: {
         mode: "new_company",
-        newCompanyName: "Imported Paperclip",
+        newCompanyName: "Imported AiTeamCorp",
       },
       agents: "all",
       collisionStrategy: "rename",
@@ -2087,7 +2087,7 @@ describe("company portability", () => {
 
     companySvc.create.mockResolvedValue({
       id: "company-imported",
-      name: "Imported Paperclip",
+      name: "Imported AiTeamCorp",
     });
     agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
       id: `agent-${String(input.name).toLowerCase()}`,
@@ -2121,7 +2121,7 @@ describe("company portability", () => {
       },
       target: {
         mode: "new_company",
-        newCompanyName: "Imported Paperclip",
+        newCompanyName: "Imported AiTeamCorp",
       },
       agents: "all",
       collisionStrategy: "rename",
@@ -2153,7 +2153,7 @@ describe("company portability", () => {
     projectSvc.list.mockResolvedValue([]);
     companySvc.getById.mockResolvedValue({
       id: "company-1",
-      name: "Paperclip",
+      name: "AiTeamCorp",
       description: "Existing company",
       brandColor: "#123456",
       requireBoardApprovalForNewAgents: false,
@@ -2230,7 +2230,7 @@ describe("company portability", () => {
 
     companySvc.create.mockResolvedValue({
       id: "company-imported",
-      name: "Imported Paperclip",
+      name: "Imported AiTeamCorp",
     });
     accessSvc.ensureMembership.mockResolvedValue(undefined);
     agentSvc.create.mockResolvedValue({
@@ -2263,7 +2263,7 @@ describe("company portability", () => {
       },
       target: {
         mode: "new_company",
-        newCompanyName: "Imported Paperclip",
+        newCompanyName: "Imported AiTeamCorp",
       },
       agents: "all",
       collisionStrategy: "rename",
@@ -2343,7 +2343,7 @@ describe("company portability", () => {
       include: { company: true, agents: false, projects: true, issues: true },
     });
 
-    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    const extension = asTextFile(exported.files[".aiteamcorp.yaml"]);
     expect(extension).toContain("labelIds:");
     expect(extension).toContain("label-a");
     expect(extension).toContain("label-b");
@@ -2376,7 +2376,7 @@ describe("company portability", () => {
 
     companySvc.create.mockResolvedValue({
       id: "company-imported",
-      name: "Imported Paperclip",
+      name: "Imported AiTeamCorp",
     });
     accessSvc.ensureMembership.mockResolvedValue(undefined);
     agentSvc.create.mockResolvedValue({
@@ -2416,7 +2416,7 @@ describe("company portability", () => {
       },
       target: {
         mode: "new_company",
-        newCompanyName: "Imported Paperclip",
+        newCompanyName: "Imported AiTeamCorp",
       },
       agents: ["claudecoder"],
       collisionStrategy: "rename",
@@ -2533,7 +2533,7 @@ describe("company portability", () => {
       },
       target: {
         mode: "new_company",
-        newCompanyName: "Imported Paperclip",
+        newCompanyName: "Imported AiTeamCorp",
       },
       agents: ["claudecoder"],
       collisionStrategy: "rename",

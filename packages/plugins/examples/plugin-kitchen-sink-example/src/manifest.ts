@@ -17,7 +17,7 @@ const manifest: AiTeamCorpPluginManifestV1 = {
   version: PLUGIN_VERSION,
   displayName: "Kitchen Sink (Example)",
   description: "Reference plugin that demonstrates the current AiTeamCorp plugin API surface, UI surfaces, bridge actions, events, jobs, webhooks, tools, local workspace access, and runtime diagnostics in one place.",
-  author: "Paperclip",
+  author: "AiTeamCorp",
   categories: ["ui", "automation", "workspace", "connector"],
   capabilities: [
     "companies.read",

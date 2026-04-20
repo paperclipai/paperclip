@@ -189,14 +189,14 @@ describe("createZipArchive", () => {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",
       },
-      "paperclip-demo",
+      "aiteamcorp-demo",
     );
 
     expect(readUint32(archive, 0)).toBe(0x04034b50);
 
     const firstNameLength = readUint16(archive, 26);
     const firstBodyLength = readUint32(archive, 18);
-    expect(readString(archive, 30, firstNameLength)).toBe("paperclip-demo/agents/ceo/AGENTS.md");
+    expect(readString(archive, 30, firstNameLength)).toBe("aiteamcorp-demo/agents/ceo/AGENTS.md");
     expect(readString(archive, 30 + firstNameLength, firstBodyLength)).toBe("# CEO\n");
 
     const secondOffset = 30 + firstNameLength + firstBodyLength;
@@ -204,7 +204,7 @@ describe("createZipArchive", () => {
 
     const secondNameLength = readUint16(archive, secondOffset + 26);
     const secondBodyLength = readUint32(archive, secondOffset + 18);
-    expect(readString(archive, secondOffset + 30, secondNameLength)).toBe("paperclip-demo/COMPANY.md");
+    expect(readString(archive, secondOffset + 30, secondNameLength)).toBe("aiteamcorp-demo/COMPANY.md");
     expect(readString(archive, secondOffset + 30 + secondNameLength, secondBodyLength)).toBe("# Company\n");
 
     const endOffset = archive.length - 22;
@@ -218,17 +218,17 @@ describe("createZipArchive", () => {
       {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",
-        ".paperclip.yaml": "schema: paperclip/v1\n",
+        ".aiteamcorp.yaml": "schema: aiteamcorp/v1\n",
       },
-      "paperclip-demo",
+      "aiteamcorp-demo",
     );
 
     await expect(readZipArchive(archive)).resolves.toEqual({
-      rootPath: "paperclip-demo",
+      rootPath: "aiteamcorp-demo",
       files: {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",
-        ".paperclip.yaml": "schema: paperclip/v1\n",
+        ".aiteamcorp.yaml": "schema: aiteamcorp/v1\n",
       },
     });
   });
@@ -242,11 +242,11 @@ describe("createZipArchive", () => {
           contentType: "image/png",
         },
       },
-      "paperclip-demo",
+      "aiteamcorp-demo",
     );
 
     await expect(readZipArchive(archive)).resolves.toEqual({
-      rootPath: "paperclip-demo",
+      rootPath: "aiteamcorp-demo",
       files: {
         "images/company-logo.png": {
           encoding: "base64",
@@ -257,17 +257,17 @@ describe("createZipArchive", () => {
     });
   });
 
-  it("reads standard DEFLATE zip archives created outside Paperclip", async () => {
+  it("reads standard DEFLATE zip archives created outside AiTeamCorp", async () => {
     const archive = createDeflatedZipArchive(
       {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",
       },
-      "paperclip-demo",
+      "aiteamcorp-demo",
     );
 
     await expect(readZipArchive(archive)).resolves.toEqual({
-      rootPath: "paperclip-demo",
+      rootPath: "aiteamcorp-demo",
       files: {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",
@@ -276,10 +276,10 @@ describe("createZipArchive", () => {
   });
 
   it("ignores directory entries from standard zip archives", async () => {
-    const archive = createZipArchiveWithDirectoryEntries("paperclip-demo");
+    const archive = createZipArchiveWithDirectoryEntries("aiteamcorp-demo");
 
     await expect(readZipArchive(archive)).resolves.toEqual({
-      rootPath: "paperclip-demo",
+      rootPath: "aiteamcorp-demo",
       files: {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",

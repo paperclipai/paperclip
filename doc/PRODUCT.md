@@ -70,7 +70,7 @@ More detailed task structure TBD.
 
 ## User Flow (Dream Scenario)
 
-1. Open Paperclip, create a new company
+1. Open AiTeamCorp, create a new company
 2. Define the company's goal: "Create the #1 AI note-taking app, $1M MRR in 3 months"
 3. Create the CEO
    - Choose an adapter (e.g., process adapter for Claude Code, HTTP adapter for OpenClaw)

@@ -184,7 +184,7 @@ describe("worktree merge history planner", () => {
 
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "AiTeamCorp",
       issuePrefix: "PAP",
       previewIssueCounterStart: 500,
       scopes: ["issues", "comments"],
@@ -208,7 +208,7 @@ describe("worktree merge history planner", () => {
   it("clears missing references and coerces in_progress without an assignee", () => {
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "AiTeamCorp",
       issuePrefix: "PAP",
       previewIssueCounterStart: 10,
       scopes: ["issues"],
@@ -250,7 +250,7 @@ describe("worktree merge history planner", () => {
   it("applies an explicit project mapping override instead of clearing the project", () => {
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "AiTeamCorp",
       issuePrefix: "PAP",
       previewIssueCounterStart: 10,
       scopes: ["issues"],
@@ -297,7 +297,7 @@ describe("worktree merge history planner", () => {
 
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "AiTeamCorp",
       issuePrefix: "PAP",
       previewIssueCounterStart: 10,
       scopes: ["issues"],
@@ -354,7 +354,7 @@ describe("worktree merge history planner", () => {
 
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "AiTeamCorp",
       issuePrefix: "PAP",
       previewIssueCounterStart: 10,
       scopes: ["issues", "comments"],
@@ -416,7 +416,7 @@ describe("worktree merge history planner", () => {
 
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "AiTeamCorp",
       issuePrefix: "PAP",
       previewIssueCounterStart: 10,
       scopes: ["issues", "comments"],
@@ -461,7 +461,7 @@ describe("worktree merge history planner", () => {
 
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
-      companyName: "Paperclip",
+      companyName: "AiTeamCorp",
       issuePrefix: "PAP",
       previewIssueCounterStart: 10,
       scopes: ["issues"],

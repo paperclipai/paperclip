@@ -631,20 +631,20 @@ function buildAgentSnippet(input: AgentSnippetInput) {
 
   const connectivityBlock =
     candidateUrls.length === 0
-      ? `No candidate URLs are available. Ask your user to configure a reachable hostname in Paperclip, then retry.
+      ? `No candidate URLs are available. Ask your user to configure a reachable hostname in AiTeamCorp, then retry.
 Suggested steps:
 - choose a hostname that resolves to the AiTeamCorp host from your runtime
 - run: pnpm aiteamcorp allowed-hostname <host>
-- restart Paperclip
+- restart AiTeamCorp
 - verify with: curl -fsS http://<host>:3100/api/health
 - regenerate this invite snippet`
-      : `If none are reachable, ask your user to add a reachable hostname in Paperclip, restart, and retry.
+      : `If none are reachable, ask your user to add a reachable hostname in AiTeamCorp, restart, and retry.
 Suggested command:
 - pnpm aiteamcorp allowed-hostname <host>
 Then verify with: curl -fsS <base-url>/api/health`;
 
   const resolutionLine = resolutionTestUrl
-    ? `\nYou MUST test Paperclip-to-gateway reachability, call: ${resolutionTestUrl}?url=<urlencoded-gateway-url> (using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
+    ? `\nYou MUST test AiTeamCorp-to-gateway reachability, call: ${resolutionTestUrl}?url=<urlencoded-gateway-url> (using the hostname that worked above). Do not assume your 172.x is necessarily reachable from AiTeamCorp. Test it. `
     : "";
 
   return `You're invited to join a AiTeamCorp organization.
@@ -653,7 +653,7 @@ The URLs you should try are:
 ${candidateList}
 
 Connectivity guidance:
-If you are running on a different machine than Paperclip, AiTeamCorp must be reachable at one of the hostnames used above.
+If you are running on a different machine than AiTeamCorp, AiTeamCorp must be reachable at one of the hostnames used above.
 Verify the hostname works from your runtime with: GET <base-url>/api/health
 
 ${connectivityBlock}
@@ -674,7 +674,7 @@ When you submit the join request, use:
 
 Do NOT use \`/v1/responses\` or \`/hooks/*\` in this join flow.
 
-Before you do anything, please respond to your user that you understand the instructions and you're going to work on them. Then do the step above in another session called "paperclip-onboarding" and then tell your user when you're done. Update your user in intermediate steps along the way so they know what's going on.
+Before you do anything, please respond to your user that you understand the instructions and you're going to work on them. Then do the step above in another session called "aiteamcorp-onboarding" and then tell your user when you're done. Update your user in intermediate steps along the way so they know what's going on.
 
 Then after you've connected to Paperclip (exchanged keys etc.) you MUST review and follow the onboarding instructions in onboarding.txt they give you.
 

@@ -185,7 +185,7 @@ export const pluginsApi = {
    * On success, the plugin is registered in the database and transitioned to
    * `ready` state. The response is the newly created `PluginRecord`.
    *
-   * @param params.packageName - npm package name (e.g. `@paperclip/plugin-linear`)
+   * @param params.packageName - npm package name (e.g. `@aiteamcorp/plugin-linear`)
    *   or a filesystem path when `isLocalPath` is `true`.
    * @param params.version - Target npm version tag/range (optional; defaults to latest).
    * @param params.isLocalPath - Set to `true` when `packageName` is a local path.

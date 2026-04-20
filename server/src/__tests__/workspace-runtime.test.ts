@@ -195,8 +195,8 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
 
 describe("ensureServerWorkspaceLinksCurrent", () => {
   it("relinks stale server workspace dependencies inside the current repo root", async () => {
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-"));
-    const staleRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-stale-"));
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-links-"));
+    const staleRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-links-stale-"));
     const serverNodeModulesScopeDir = path.join(repoRoot, "server", "node_modules", "@aiteamcorp");
     const expectedPackageDir = path.join(repoRoot, "packages", "db");
     const stalePackageDir = path.join(staleRoot, "db");
@@ -234,7 +234,7 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
   });
 
   it("skips relinking when server workspace dependencies already point at the repo", async () => {
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-current-"));
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-links-current-"));
     const serverNodeModulesScopeDir = path.join(repoRoot, "server", "node_modules", "@aiteamcorp");
     const expectedPackageDir = path.join(repoRoot, "packages", "db");
 
@@ -264,8 +264,8 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
   });
 
   it("skips relinking outside linked git worktrees", async () => {
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-non-worktree-"));
-    const staleRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-non-worktree-stale-"));
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-links-non-worktree-"));
+    const staleRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-links-non-worktree-stale-"));
     const serverNodeModulesScopeDir = path.join(repoRoot, "server", "node_modules", "@aiteamcorp");
     const expectedPackageDir = path.join(repoRoot, "packages", "db");
     const stalePackageDir = path.join(staleRoot, "db");
@@ -642,9 +642,9 @@ describe("realizeExecutionWorkspace", () => {
       [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
-        "printf '%s\\n' \"$AITEAMCORP_WORKSPACE_BRANCH\" > .paperclip-provision-branch",
+        "printf '%s\\n' \"$AITEAMCORP_WORKSPACE_BRANCH\" > .aiteamcorp-provision-branch",
         "printf '%s\\n' \"$AITEAMCORP_WORKSPACE_BASE_CWD\" > .aiteamcorp-provision-base",
-        "printf '%s\\n' \"$AITEAMCORP_WORKSPACE_CREATED\" > .paperclip-provision-created",
+        "printf '%s\\n' \"$AITEAMCORP_WORKSPACE_CREATED\" > .aiteamcorp-provision-created",
       ].join("\n"),
       "utf8",
     );
@@ -679,13 +679,13 @@ describe("realizeExecutionWorkspace", () => {
       },
     });
 
-    await expect(fs.readFile(path.join(workspace.cwd, ".paperclip-provision-branch"), "utf8")).resolves.toBe(
+    await expect(fs.readFile(path.join(workspace.cwd, ".aiteamcorp-provision-branch"), "utf8")).resolves.toBe(
       "PAP-448-run-provision-command\n",
     );
     await expect(fs.readFile(path.join(workspace.cwd, ".aiteamcorp-provision-base"), "utf8")).resolves.toBe(
       `${repoRoot}\n`,
     );
-    await expect(fs.readFile(path.join(workspace.cwd, ".paperclip-provision-created"), "utf8")).resolves.toBe(
+    await expect(fs.readFile(path.join(workspace.cwd, ".aiteamcorp-provision-created"), "utf8")).resolves.toBe(
       "true\n",
     );
 
@@ -717,7 +717,7 @@ describe("realizeExecutionWorkspace", () => {
       },
     });
 
-    await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-created"), "utf8")).resolves.toBe("false\n");
+    await expect(fs.readFile(path.join(reused.cwd, ".aiteamcorp-provision-created"), "utf8")).resolves.toBe("false\n");
   });
 
   it("uses the latest repo-managed provision script when reusing an existing worktree", async () => {
@@ -728,7 +728,7 @@ describe("realizeExecutionWorkspace", () => {
       [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
-        "printf 'v1\\n' > .paperclip-provision-version",
+        "printf 'v1\\n' > .aiteamcorp-provision-version",
       ].join("\n"),
       "utf8",
     );
@@ -763,14 +763,14 @@ describe("realizeExecutionWorkspace", () => {
       },
     });
 
-    await expect(fs.readFile(path.join(initial.cwd, ".paperclip-provision-version"), "utf8")).resolves.toBe("v1\n");
+    await expect(fs.readFile(path.join(initial.cwd, ".aiteamcorp-provision-version"), "utf8")).resolves.toBe("v1\n");
 
     await fs.writeFile(
       path.join(repoRoot, "scripts", "provision.sh"),
       [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
-        "printf 'v2\\n' > .paperclip-provision-version",
+        "printf 'v2\\n' > .aiteamcorp-provision-version",
       ].join("\n"),
       "utf8",
     );
@@ -807,14 +807,14 @@ describe("realizeExecutionWorkspace", () => {
       },
     });
 
-    await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-version"), "utf8")).resolves.toBe("v2\n");
+    await expect(fs.readFile(path.join(reused.cwd, ".aiteamcorp-provision-version"), "utf8")).resolves.toBe("v2\n");
   });
 
   it("writes an isolated repo-local AiTeamCorp config and worktree branding when provisioning", async () => {
     const repoRoot = await createTempRepo();
     const previousCwd = process.cwd();
     const aiteamcorpHome = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-worktree-home-"));
-    const isolatedWorktreeHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktrees-"));
+    const isolatedWorktreeHome = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-worktrees-"));
     const instanceId = "worktree-base";
     const sharedConfigDir = path.join(aiteamcorpHome, "instances", instanceId);
     const sharedConfigPath = path.join(sharedConfigDir, "config.json");
@@ -2723,7 +2723,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
@@ -2828,7 +2828,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
@@ -2918,7 +2918,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });

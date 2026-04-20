@@ -1,3 +1,3 @@
 [Pod]
-PodName=paperclip
+PodName=aiteamcorp
 PublishPort=3100:3100

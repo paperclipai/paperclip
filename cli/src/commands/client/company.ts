@@ -201,15 +201,15 @@ function normalizePortablePath(filePath: string): string {
 function shouldIncludePortableFile(filePath: string): boolean {
   const baseName = path.basename(filePath);
   const isMarkdown = baseName.endsWith(".md");
-  const isAiTeamCorpYaml = baseName === ".paperclip.yaml" || baseName === ".paperclip.yml";
+  const isAiTeamCorpYaml = baseName === ".aiteamcorp.yaml" || baseName === ".aiteamcorp.yml";
   const contentType = binaryContentTypeByExtension[path.extname(baseName).toLowerCase()];
   return isMarkdown || isAiTeamCorpYaml || Boolean(contentType);
 }
 
 function findPortableExtensionPath(files: Record<string, CompanyPortabilityFileEntry>): string | null {
-  if (files[".paperclip.yaml"] !== undefined) return ".paperclip.yaml";
-  if (files[".paperclip.yml"] !== undefined) return ".paperclip.yml";
-  return Object.keys(files).find((entry) => entry.endsWith("/.paperclip.yaml") || entry.endsWith("/.paperclip.yml")) ?? null;
+  if (files[".aiteamcorp.yaml"] !== undefined) return ".aiteamcorp.yaml";
+  if (files[".aiteamcorp.yml"] !== undefined) return ".aiteamcorp.yml";
+  return Object.keys(files).find((entry) => entry.endsWith("/.aiteamcorp.yaml") || entry.endsWith("/.aiteamcorp.yml")) ?? null;
 }
 
 function collectFilesUnderDirectory(

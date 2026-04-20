@@ -1,19 +1,19 @@
 [Unit]
-Description=Paperclip AI Agent Orchestrator
-Requires=paperclip-db.service
-After=paperclip-db.service
+Description=AiTeamCorp AI Agent Orchestrator
+Requires=aiteamcorp-db.service
+After=aiteamcorp-db.service
 
 [Container]
-Image=paperclip-local
-ContainerName=paperclip
+Image=aiteamcorp-local
+ContainerName=aiteamcorp
 Pod=aiteamcorp.pod
-Volume=%h/.local/share/paperclip:/paperclip:Z
+Volume=%h/.local/share/aiteamcorp:/aiteamcorp:Z
 Environment=HOST=0.0.0.0
 Environment=AITEAMCORP_HOME=/aiteamcorp
 Environment=AITEAMCORP_DEPLOYMENT_MODE=authenticated
 Environment=AITEAMCORP_DEPLOYMENT_EXPOSURE=private
 Environment=AITEAMCORP_PUBLIC_URL=http://localhost:3100
-EnvironmentFile=%h/.config/containers/systemd/paperclip.env
+EnvironmentFile=%h/.config/containers/systemd/aiteamcorp.env
 
 [Service]
 Restart=on-failure

@@ -1,5 +1,5 @@
 services:
-  paperclip:
+  aiteamcorp:
     build:
       context: ..
       dockerfile: Dockerfile
@@ -7,7 +7,7 @@ services:
       - "${AITEAMCORP_PORT:-3100}:3100"
     environment:
       HOST: "0.0.0.0"
-      AITEAMCORP_HOME: "/paperclip"
+      AITEAMCORP_HOME: "/aiteamcorp"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       AITEAMCORP_DEPLOYMENT_MODE: "authenticated"
@@ -15,4 +15,4 @@ services:
       AITEAMCORP_PUBLIC_URL: "${AITEAMCORP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
     volumes:
-      - "${AITEAMCORP_DATA_DIR:-../data/docker-paperclip}:/paperclip"
+      - "${AITEAMCORP_DATA_DIR:-../data/docker-aiteamcorp}:/aiteamcorp"

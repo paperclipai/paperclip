@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
   AITEAMCORP_OPEN_ON_LISTEN=false \
   HOST=0.0.0.0 \
   PORT=3100 \
-  HOME=/home/paperclip \
+  HOME=/home/aiteamcorp \
   LANG=en_US.UTF-8 \
   LC_ALL=en_US.UTF-8 \
   NPM_CONFIG_UPDATE_NOTIFIER=false \
@@ -26,15 +26,15 @@ RUN apt-get update \
   && apt-get update \
   && apt-get install -y --no-install-recommends nodejs \
   && locale-gen en_US.UTF-8 \
-  && groupadd --gid 10001 paperclip \
-  && useradd --create-home --shell /bin/bash --uid "${HOST_UID}" --gid 10001 paperclip \
-  && mkdir -p /paperclip /home/aiteamcorp/workspace \
-  && chown -R paperclip:paperclip /paperclip /home/paperclip \
+  && groupadd --gid 10001 aiteamcorp \
+  && useradd --create-home --shell /bin/bash --uid "${HOST_UID}" --gid 10001 aiteamcorp \
+  && mkdir -p /aiteamcorp /home/aiteamcorp/workspace \
+  && chown -R aiteamcorp:aiteamcorp /aiteamcorp /home/aiteamcorp \
   && rm -rf /var/lib/apt/lists/*
 
-VOLUME ["/paperclip"]
+VOLUME ["/aiteamcorp"]
 WORKDIR /home/aiteamcorp/workspace
 EXPOSE 3100
-USER paperclip
+USER aiteamcorp
 
 CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$AITEAMCORP_HOME\"; npx --yes \"paperclipai@${AITEAMCORP_VERSION}\" onboard --yes --data-dir \"$AITEAMCORP_HOME\""]

@@ -114,13 +114,13 @@ function buildManagedSkillOrigin(entry: { required?: boolean }): Pick<
   if (entry.required) {
     return {
       origin: "paperclip_required",
-      originLabel: "Required by Paperclip",
+      originLabel: "Required by AiTeamCorp",
       readOnly: false,
     };
   }
   return {
     origin: "company_managed",
-    originLabel: "Managed by Paperclip",
+    originLabel: "Managed by AiTeamCorp",
     readOnly: false,
   };
 }

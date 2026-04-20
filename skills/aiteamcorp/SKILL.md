@@ -11,7 +11,7 @@ description: >
 
 # AiTeamCorp Skill
 
-You run in **heartbeats** — short execution windows triggered by Paperclip. Each heartbeat, you wake up, check your work, do something useful, and exit. You do not run continuously.
+You run in **heartbeats** — short execution windows triggered by AiTeamCorp. Each heartbeat, you wake up, check your work, do something useful, and exit. You do not run continuously.
 
 ## Authentication
 
@@ -21,7 +21,7 @@ Some adapters also inject `AITEAMCORP_WAKE_PAYLOAD_JSON` on comment-driven wakes
 
 Manual local CLI mode (outside heartbeat runs): use `aiteamcorp agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install AiTeamCorp skills for Claude/Codex and print/export the required `AITEAMCORP_*` environment variables for that agent identity.
 
-**Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $AITEAMCORP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
+**Run audit trail:** You MUST include `-H 'X-AiTeamCorp-Run-Id: $AITEAMCORP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
 ## The Heartbeat Procedure
 
@@ -56,7 +56,7 @@ If nothing is assigned and there is no valid mention-based ownership handoff, ex
 
 ```
 POST /api/issues/{issueId}/checkout
-Headers: Authorization: Bearer $AITEAMCORP_API_KEY, X-Paperclip-Run-Id: $AITEAMCORP_RUN_ID
+Headers: Authorization: Bearer $AITEAMCORP_API_KEY, X-AiTeamCorp-Run-Id: $AITEAMCORP_RUN_ID
 { "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
@@ -85,7 +85,7 @@ If `currentParticipant` matches you, you are the active reviewer/approver for th
 
 ```json
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $AITEAMCORP_RUN_ID
+Headers: X-AiTeamCorp-Run-Id: $AITEAMCORP_RUN_ID
 { "status": "done", "comment": "Approved: what you reviewed and why it passes." }
 ```
 
@@ -95,7 +95,7 @@ To request changes, send a non-`done` status with a required comment. Prefer `in
 
 ```json
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $AITEAMCORP_RUN_ID
+Headers: X-AiTeamCorp-Run-Id: $AITEAMCORP_RUN_ID
 { "status": "in_progress", "comment": "Changes requested: exactly what must be fixed." }
 ```
 
@@ -112,11 +112,11 @@ When writing issue descriptions or comments, follow the ticket-linking rule in *
 
 ```json
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $AITEAMCORP_RUN_ID
+Headers: X-AiTeamCorp-Run-Id: $AITEAMCORP_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $AITEAMCORP_RUN_ID
+Headers: X-AiTeamCorp-Run-Id: $AITEAMCORP_RUN_ID
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
@@ -534,7 +534,7 @@ npx aiteamcorp issue update <issue-id> --assignee-agent-id <other-agent-id> --st
 
 5. Cleanup: mark temporary issues done/cancelled with a clear note.
 
-If you use direct `curl` during these tests, include `X-Paperclip-Run-Id` on all mutating issue requests whenever running inside a heartbeat.
+If you use direct `curl` during these tests, include `X-AiTeamCorp-Run-Id` on all mutating issue requests whenever running inside a heartbeat.
 
 ## Full Reference
 

@@ -49,7 +49,7 @@ describe("codex execute", () => {
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
     const sharedCodexHome = path.join(root, "shared-codex-home");
-    const aiteamcorpHome = path.join(root, "paperclip-home");
+    const aiteamcorpHome = path.join(root, "aiteamcorp-home");
     const managedCodexHome = path.join(
       aiteamcorpHome,
       "instances",
@@ -735,7 +735,7 @@ describe("codex execute", () => {
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
     const sharedCodexHome = path.join(root, "shared-codex-home");
-    const aiteamcorpHome = path.join(root, "paperclip-home");
+    const aiteamcorpHome = path.join(root, "aiteamcorp-home");
     const isolatedCodexHome = path.join(
       aiteamcorpHome,
       "instances",
@@ -853,7 +853,7 @@ describe("codex execute", () => {
     const capturePath = path.join(root, "capture.json");
     const sharedCodexHome = path.join(root, "shared-codex-home");
     const explicitCodexHome = path.join(root, "explicit-codex-home");
-    const aiteamcorpHome = path.join(root, "paperclip-home");
+    const aiteamcorpHome = path.join(root, "aiteamcorp-home");
     await fs.mkdir(workspace, { recursive: true });
     await fs.mkdir(sharedCodexHome, { recursive: true });
     await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");

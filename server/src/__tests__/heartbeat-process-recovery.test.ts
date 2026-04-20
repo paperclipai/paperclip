@@ -237,7 +237,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
     });
@@ -319,7 +319,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
     });

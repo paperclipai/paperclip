@@ -46,7 +46,7 @@ import {
   AlertTriangle,
   Tag,
   Calendar,
-  Paperclip,
+  AiTeamCorp,
   FileText,
   Loader2,
   ListTree,

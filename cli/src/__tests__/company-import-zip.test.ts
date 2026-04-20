@@ -22,21 +22,21 @@ describe("resolveInlineSourceFromPath", () => {
     const archive = createStoredZipArchive(
       {
         "COMPANY.md": "# Company\n",
-        ".paperclip.yaml": "schema: paperclip/v1\n",
+        ".aiteamcorp.yaml": "schema: aiteamcorp/v1\n",
         "agents/ceo/AGENT.md": "# CEO\n",
         "notes/todo.txt": "ignore me\n",
       },
-      "paperclip-demo",
+      "aiteamcorp-demo",
     );
     await writeFile(archivePath, archive);
 
     const resolved = await resolveInlineSourceFromPath(archivePath);
 
     expect(resolved).toEqual({
-      rootPath: "paperclip-demo",
+      rootPath: "aiteamcorp-demo",
       files: {
         "COMPANY.md": "# Company\n",
-        ".paperclip.yaml": "schema: paperclip/v1\n",
+        ".aiteamcorp.yaml": "schema: aiteamcorp/v1\n",
         "agents/ceo/AGENT.md": "# CEO\n",
       },
     });

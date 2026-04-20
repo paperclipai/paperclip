@@ -79,7 +79,7 @@ describe("plugin install and upgrade authz", () => {
 
   it("allows instance admins to install plugins", async () => {
     const pluginId = "11111111-1111-4111-8111-111111111111";
-    const pluginKey = "paperclip.example";
+    const pluginKey = "aiteamcorp.example";
     const discovered = {
       manifest: {
         id: pluginKey,
@@ -171,7 +171,7 @@ describe("plugin install and upgrade authz", () => {
     const pluginId = "11111111-1111-4111-8111-111111111111";
     mockRegistry.getById.mockResolvedValue({
       id: pluginId,
-      pluginKey: "paperclip.example",
+      pluginKey: "aiteamcorp.example",
       version: "1.0.0",
     });
     mockLifecycle.upgrade.mockResolvedValue({

@@ -25,7 +25,7 @@ RUN useradd --create-home --shell /bin/bash reviewer
 ENV HOME=/home/reviewer \
   CODEX_HOME=/home/reviewer/.codex \
   CLAUDE_HOME=/home/reviewer/.claude \
-  AITEAMCORP_HOME=/home/reviewer/.paperclip-review \
+  AITEAMCORP_HOME=/home/reviewer/.aiteamcorp-review \
   PNPM_HOME=/home/reviewer/.local/share/pnpm \
   PATH=/home/reviewer/.local/share/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 

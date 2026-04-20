@@ -356,7 +356,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     expect(exportResult.ok).toBe(true);
     expect(exportResult.filesWritten).toBeGreaterThan(0);
     expect(readFileSync(path.join(exportDir, "COMPANY.md"), "utf8")).toContain(sourceCompany.name);
-    expect(readFileSync(path.join(exportDir, ".paperclip.yaml"), "utf8")).toContain('schema: "paperclip/v1"');
+    expect(readFileSync(path.join(exportDir, ".aiteamcorp.yaml"), "utf8")).toContain('schema: "aiteamcorp/v1"');
 
     const importedNew = await runCliJson<{
       company: { id: string; name: string; action: string };
@@ -475,7 +475,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     const zipPath = path.join(tempRoot, "exported-company.zip");
     const portableFiles: Record<string, string> = {};
     collectTextFiles(exportDir, exportDir, portableFiles);
-    writeFileSync(zipPath, createStoredZipArchive(portableFiles, "paperclip-demo"));
+    writeFileSync(zipPath, createStoredZipArchive(portableFiles, "aiteamcorp-demo"));
 
     const importedFromZip = await runCliJson<{
       company: { id: string; name: string; action: string };

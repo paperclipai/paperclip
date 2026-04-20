@@ -72,7 +72,7 @@ describe("issueDetailBreadcrumb", () => {
       project: {
         id: "project-1",
         companyId: "company-1",
-        urlKey: "paperclip-app",
+        urlKey: "aiteamcorp-app",
         goalId: null,
         goalIds: [],
         goals: [],

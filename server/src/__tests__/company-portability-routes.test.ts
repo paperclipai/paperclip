@@ -123,7 +123,7 @@ describe("company portability routes", () => {
       fileInventory: [],
       counts: { files: 0, agents: 0, skills: 0, projects: 0, issues: 0 },
       warnings: [],
-      aiteamcorpExtensionPath: ".paperclip.yaml",
+      aiteamcorpExtensionPath: ".aiteamcorp.yaml",
     });
     const app = await createApp({
       type: "agent",

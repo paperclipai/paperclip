@@ -148,7 +148,7 @@ describe("feedbackService.saveIssueVote", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: `F${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
@@ -208,7 +208,7 @@ describe("feedbackService.saveIssueVote", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
@@ -219,8 +219,8 @@ describe("feedbackService.saveIssueVote", () => {
         companyId,
         key: "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp",
         slug: "aiteamcorp",
-        name: "Paperclip",
-        markdown: "# Paperclip",
+        name: "AiTeamCorp",
+        markdown: "# AiTeamCorp",
         sourceType: "catalog",
         sourceLocator: null,
         sourceRef: null,
@@ -352,7 +352,7 @@ describe("feedbackService.saveIssueVote", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: `D${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
@@ -421,7 +421,7 @@ describe("feedbackService.saveIssueVote", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
@@ -990,7 +990,7 @@ describe("feedbackService.saveIssueVote", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: `H${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });

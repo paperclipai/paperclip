@@ -61,7 +61,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
     });
@@ -90,7 +90,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
     });

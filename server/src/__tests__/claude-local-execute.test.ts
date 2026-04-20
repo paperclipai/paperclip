@@ -391,7 +391,7 @@ describe("claude execute", () => {
     const capturePath1 = path.join(root, "capture-1.json");
     const capturePath2 = path.join(root, "capture-2.json");
     const instructionsPath = path.join(root, "AGENTS.md");
-    const aiteamcorpHome = path.join(root, "paperclip-home");
+    const aiteamcorpHome = path.join(root, "aiteamcorp-home");
     await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(instructionsPath, "You are managed instructions.\n", "utf8");
     await writeFakeClaudeCommand(commandPath);
@@ -545,7 +545,7 @@ describe("claude execute", () => {
     const capturePath1 = path.join(root, "capture-before.json");
     const capturePath2 = path.join(root, "capture-after.json");
     const instructionsPath = path.join(root, "AGENTS.md");
-    const aiteamcorpHome = path.join(root, "paperclip-home");
+    const aiteamcorpHome = path.join(root, "aiteamcorp-home");
     const logs: string[] = [];
     await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(instructionsPath, "Version one instructions.\n", "utf8");

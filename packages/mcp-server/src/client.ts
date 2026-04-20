@@ -89,7 +89,7 @@ export class AiTeamCorpApiClient {
       headers["Content-Type"] = "application/json";
     }
     if ((options.includeRunId ?? isWriteMethod(method)) && this.config.runId) {
-      headers["X-Paperclip-Run-Id"] = this.config.runId;
+      headers["X-AiTeamCorp-Run-Id"] = this.config.runId;
     }
 
     const response = await fetch(url, {

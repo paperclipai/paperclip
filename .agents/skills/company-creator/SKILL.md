@@ -9,7 +9,7 @@ description: >
   "create a team of agents", "hire some agents", or when given a repo URL and
   asked to turn it into a company. Do NOT use for importing an existing company
   package (use the CLI import command instead) or for modifying a company that
-  is already running in Paperclip.
+  is already running in AiTeamCorp.
 ---
 
 # Company Creator
@@ -122,14 +122,14 @@ Create the directory structure and all files. Follow the spec's conventions exac
 │   └── <slug>/TASK.md        (if tasks are needed)
 ├── skills/
 │   └── <slug>/SKILL.md       (if custom skills are needed)
-└── .paperclip.yaml            (AiTeamCorp vendor extension)
+└── .aiteamcorp.yaml            (AiTeamCorp vendor extension)
 ```
 
 **Rules:**
 
 - Slugs must be URL-safe, lowercase, hyphenated
 - COMPANY.md gets `schema: agentcompanies/v1` - other files inherit it
-- Agent instructions go in the AGENTS.md body, not in .paperclip.yaml
+- Agent instructions go in the AGENTS.md body, not in .aiteamcorp.yaml
 - Skills referenced by shortname in AGENTS.md resolve to `skills/<shortname>/SKILL.md`
 - For external skills, use `sources` with `usage: referenced` (see spec section 12)
 - Do not export secrets, machine-local paths, or database IDs
@@ -185,9 +185,9 @@ Write all files, then give a brief summary:
 - Projects and tasks if any
 - The output path
 
-## .paperclip.yaml Guidelines
+## .aiteamcorp.yaml Guidelines
 
-The `.paperclip.yaml` file is the AiTeamCorp vendor extension. It configures adapters and env inputs per agent.
+The `.aiteamcorp.yaml` file is the AiTeamCorp vendor extension. It configures adapters and env inputs per agent.
 
 ### Adapter Rules
 
@@ -216,7 +216,7 @@ Only set an adapter when:
 
 Example with adapter (only when warranted):
 ```yaml
-schema: paperclip/v1
+schema: aiteamcorp/v1
 agents:
   release-engineer:
     adapter:
@@ -232,7 +232,7 @@ agents:
 
 Example — only agents with actual overrides appear:
 ```yaml
-schema: paperclip/v1
+schema: aiteamcorp/v1
 agents:
   release-engineer:
     inputs:
@@ -242,7 +242,7 @@ agents:
           requirement: optional
 ```
 
-In this example, only `release-engineer` appears because it needs `GH_TOKEN`. The other agents (ceo, cto, etc.) have no overrides, so they are omitted entirely from `.paperclip.yaml`.
+In this example, only `release-engineer` appears because it needs `GH_TOKEN`. The other agents (ceo, cto, etc.) have no overrides, so they are omitted entirely from `.aiteamcorp.yaml`.
 
 ## External Skill References
 

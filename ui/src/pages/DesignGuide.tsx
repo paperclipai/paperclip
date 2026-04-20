@@ -194,7 +194,7 @@ export function DesignGuide() {
       <div>
         <h2 className="text-xl font-bold">Design Guide</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Every component, style, and pattern used across Paperclip.
+          Every component, style, and pattern used across AiTeamCorp.
         </p>
       </div>
 

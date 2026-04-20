@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 const ADMIN_EMAIL =
   process.env.AITEAMCORP_RELEASE_SMOKE_EMAIL ??
   process.env.SMOKE_ADMIN_EMAIL ??
-  "smoke-admin@paperclip.local";
+  "smoke-admin@aiteamcorp.local";
 const ADMIN_PASSWORD =
   process.env.AITEAMCORP_RELEASE_SMOKE_PASSWORD ??
   process.env.SMOKE_ADMIN_PASSWORD ??

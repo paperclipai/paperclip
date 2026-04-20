@@ -1,7 +1,7 @@
 import type { Project } from "@aiteamcorp/shared";
 
-export const PROJECT_ORDER_UPDATED_EVENT = "paperclip:project-order-updated";
-const PROJECT_ORDER_STORAGE_PREFIX = "paperclip.projectOrder";
+export const PROJECT_ORDER_UPDATED_EVENT = "aiteamcorp:project-order-updated";
+const PROJECT_ORDER_STORAGE_PREFIX = "aiteamcorp.projectOrder";
 const ANONYMOUS_USER_ID = "anonymous";
 
 type ProjectOrderUpdatedDetail = {

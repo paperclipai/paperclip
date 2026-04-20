@@ -12,7 +12,7 @@ const manifest: AiTeamCorpPluginManifestV1 = {
   version: "0.2.0",
   displayName: "File Browser (Example)",
   description: "Example plugin that adds a Files link under each project in the sidebar, a file browser + editor tab on the project detail page, and per-comment file link annotations with a context menu action to open referenced files.",
-  author: "Paperclip",
+  author: "AiTeamCorp",
   categories: ["workspace", "ui"],
   capabilities: [
     "ui.sidebar.register",

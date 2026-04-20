@@ -127,7 +127,7 @@ Monitor and manage your autonomous businesses from anywhere.
 | ❌ Folders of agent configs are disorganized and you're re-inventing task management, communication, and coordination between agents. | ✅ AiTeamCorp gives you org charts, ticketing, delegation, and governance out of the box — so you run a company, not a pile of scripts. |
 | ❌ Runaway loops waste hundreds of dollars of tokens and max your quota before you even know what happened.                           | ✅ Cost tracking surfaces token budgets and throttles agents when they're out. Management prioritizes with budgets.                    |
 | ❌ You have recurring jobs (customer support, social, reports) and have to remember to manually kick them off.                        | ✅ Heartbeats handle regular work on a schedule. Management supervises.                                                                |
-| ❌ You have an idea, you have to find your repo, fire up Claude Code, keep a tab open, and babysit it.                                | ✅ Add a task in Paperclip. Your coding agent works on it until it's done. Management reviews their work.                              |
+| ❌ You have an idea, you have to find your repo, fire up Claude Code, keep a tab open, and babysit it.                                | ✅ Add a task in AiTeamCorp. Your coding agent works on it until it's done. Management reviews their work.                              |
 
 <br/>
 

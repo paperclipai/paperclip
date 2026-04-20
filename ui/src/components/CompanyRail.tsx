@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import { Paperclip, Plus } from "lucide-react";
+import { AiTeamCorp, Plus } from "lucide-react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   DndContext,

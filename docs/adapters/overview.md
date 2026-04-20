@@ -44,7 +44,7 @@ You can build and distribute adapters as standalone packages — no changes to A
 ```sh
 # Install from npm via API
 curl -X POST http://localhost:3102/api/adapters \
-  -d '{"packageName": "my-paperclip-adapter"}'
+  -d '{"packageName": "my-aiteamcorp-adapter"}'
 
 # Or link from a local directory
 curl -X POST http://localhost:3102/api/adapters \

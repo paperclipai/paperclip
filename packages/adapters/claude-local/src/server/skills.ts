@@ -42,7 +42,7 @@ async function buildClaudeSkillSnapshot(config: Record<string, unknown>): Promis
     managed: true,
     state: desiredSet.has(entry.key) ? "configured" : "available",
     origin: entry.required ? "paperclip_required" : "company_managed",
-    originLabel: entry.required ? "Required by Paperclip" : "Managed by Paperclip",
+    originLabel: entry.required ? "Required by AiTeamCorp" : "Managed by AiTeamCorp",
     readOnly: false,
     sourcePath: entry.source,
     targetPath: null,

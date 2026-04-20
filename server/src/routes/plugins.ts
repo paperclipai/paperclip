@@ -78,7 +78,7 @@ type PluginUiContribution = {
 
 /** Request body for POST /api/plugins/install */
 interface PluginInstallRequest {
-  /** npm package name (e.g., @paperclip/plugin-linear) or local path */
+  /** npm package name (e.g., @aiteamcorp/plugin-linear) or local path */
   packageName: string;
   /** Target version for npm packages (optional, defaults to latest) */
   version?: string;
@@ -118,7 +118,7 @@ const REPO_ROOT = path.resolve(__dirname, "../../..");
 const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
   {
     packageName: "@aiteamcorp/plugin-hello-world-example",
-    pluginKey: "paperclip.hello-world-example",
+    pluginKey: "aiteamcorp.hello-world-example",
     displayName: "Hello World Widget (Example)",
     description: "Reference UI plugin that adds a simple Hello World widget to the AiTeamCorp dashboard.",
     localPath: "packages/plugins/examples/plugin-hello-world-example",
@@ -420,7 +420,7 @@ export function pluginRoutes(
    * [
    *   {
    *     "pluginId": "plg_123",
-   *     "pluginKey": "paperclip.claude-usage",
+   *     "pluginKey": "aiteamcorp.claude-usage",
    *     "displayName": "Claude Usage",
    *     "version": "1.0.0",
    *     "uiEntryFile": "index.js",

@@ -45,7 +45,7 @@ export function authRoutes(db: Db) {
     const user = await loadCurrentUserProfile(db, req.actor.userId);
     res.json(authSessionSchema.parse({
       session: {
-        id: `paperclip:${req.actor.source ?? "none"}:${req.actor.userId}`,
+        id: `aiteamcorp:${req.actor.source ?? "none"}:${req.actor.userId}`,
         userId: req.actor.userId,
       },
       user,

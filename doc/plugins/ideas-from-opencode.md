@@ -322,7 +322,7 @@ Hooks like:
 
 make sense in `opencode`.
 
-For Paperclip, equivalent hooks into:
+For AiTeamCorp, equivalent hooks into:
 
 - approval decisions
 - issue checkout semantics
@@ -483,7 +483,7 @@ AiTeamCorp should treat plugin installation as a global instance-level action.
 
 Examples:
 
-- install `@paperclip/plugin-linear` once
+- install `@aiteamcorp/plugin-linear` once
 - make it available everywhere immediately
 - optionally store mappings over AiTeamCorp objects if one company maps to a different Linear team than another
 
@@ -616,7 +616,7 @@ An intentionally narrow first pass could look like this:
 import { definePlugin, z } from "@aiteamcorp/plugin-sdk";
 
 export default definePlugin({
-  id: "@paperclip/plugin-linear",
+  id: "@aiteamcorp/plugin-linear",
   version: "0.1.0",
   categories: ["connector", "ui"],
   capabilities: [
@@ -806,7 +806,7 @@ If it needs mappings over specific AiTeamCorp objects, those are plugin data, no
 Plugin-originated mutations should flow through the same activity log mechanism, with a dedicated `plugin` actor type:
 
 - `actor_type = plugin`
-- `actor_id = <plugin-id>` (e.g. `@paperclip/plugin-linear`)
+- `actor_id = <plugin-id>` (e.g. `@aiteamcorp/plugin-linear`)
 
 ## 4. Health and failure reporting
 
@@ -1249,7 +1249,7 @@ Note: GitHub/GitLab PR creation should likely live in a separate connector plugi
 
 ## Linear Issue Tracking
 
-Package idea: `@paperclip/plugin-linear`
+Package idea: `@aiteamcorp/plugin-linear`
 
 This plugin syncs AiTeamCorp work with Linear. It is useful for:
 
@@ -1372,7 +1372,7 @@ Main screens and interactions:
 Core workflows:
 
 - Board imports GitHub Issues for a repo into Paperclip.
-- GitHub webhooks update status/comment state in Paperclip.
+- GitHub webhooks update status/comment state in AiTeamCorp.
 - A PR is linked back to the AiTeamCorp issue so the board can follow delivery status.
 
 ### Hooks needed

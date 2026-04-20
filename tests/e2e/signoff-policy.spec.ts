@@ -84,7 +84,7 @@ async function agentPatch(
 ) {
   const runId = await invokeHeartbeat(board, agent.agentId);
   const res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
-    headers: { "X-Paperclip-Run-Id": runId },
+    headers: { "X-AiTeamCorp-Run-Id": runId },
     data,
   });
   return res;
@@ -101,7 +101,7 @@ async function agentCheckoutAndPatch(
   const runId = await invokeHeartbeat(board, agent.agentId);
   // Checkout (sets executionRunId so PATCH is allowed)
   const checkoutRes = await agent.request.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
-    headers: { "X-Paperclip-Run-Id": runId },
+    headers: { "X-AiTeamCorp-Run-Id": runId },
     data: { agentId: agent.agentId, expectedStatuses },
   });
   if (!checkoutRes.ok()) {
@@ -109,7 +109,7 @@ async function agentCheckoutAndPatch(
       const issueRunLock = await getIssueRunLockState(board, issueId);
       const lockedRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId;
       const res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
-        headers: { "X-Paperclip-Run-Id": lockedRunId ?? runId },
+        headers: { "X-AiTeamCorp-Run-Id": lockedRunId ?? runId },
         data: patchData,
       });
       if (res.ok() && issueRunLock.assigneeAgentId === agent.agentId) {
@@ -132,7 +132,7 @@ async function agentCheckoutAndPatch(
   }
   // PATCH with agent identity
   const res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
-    headers: { "X-Paperclip-Run-Id": runId },
+    headers: { "X-AiTeamCorp-Run-Id": runId },
     data: patchData,
   });
   return res;

@@ -77,6 +77,6 @@ Status quick guide:
 ## Rules
 
 - Always use the AiTeamCorp skill for coordination.
-- Always include `X-Paperclip-Run-Id` header on mutating API calls.
+- Always include `X-AiTeamCorp-Run-Id` header on mutating API calls.
 - Comment in concise markdown: status line + bullets + links.
 - Self-assign via checkout only when explicitly @-mentioned.

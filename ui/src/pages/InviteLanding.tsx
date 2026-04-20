@@ -551,10 +551,10 @@ export function InviteLandingPage() {
               />
               <div className="min-w-0">
                 <p className="text-xs uppercase tracking-[0.24em] text-zinc-500">
-                  You&apos;ve been invited to join Paperclip
+                  You&apos;ve been invited to join AiTeamCorp
                 </p>
                 <h1 className="mt-2 text-2xl font-semibold">
-                  {invite.inviteType === "bootstrap_ceo" ? "Set up Paperclip" : `Join ${companyDisplayName}`}
+                  {invite.inviteType === "bootstrap_ceo" ? "Set up AiTeamCorp" : `Join ${companyDisplayName}`}
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-300">
                   {showsAgentForm
@@ -799,7 +799,7 @@ export function InviteLandingPage() {
                       : isCurrentMember
                       ? `This account already belongs to ${companyDisplayName}.`
                       : `This will ${
-                          invite.inviteType === "bootstrap_ceo" ? "finish setting up Paperclip" : `submit or complete your join request for ${companyDisplayName}`
+                          invite.inviteType === "bootstrap_ceo" ? "finish setting up AiTeamCorp" : `submit or complete your join request for ${companyDisplayName}`
                         }.`}
                   </p>
                 </div>

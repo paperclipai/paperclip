@@ -111,7 +111,7 @@ describe("POST /companies/:companyId/invites", () => {
 
     const res = await request(app)
       .post("/api/companies/company-1/invites")
-      .set("host", "paperclip.example")
+      .set("host", "aiteamcorp.example")
       .set("x-forwarded-proto", "https")
       .send({
         allowedJoinTypes: "human",

@@ -113,7 +113,7 @@ async function createTempRepo() {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-execution-workspace-"));
   await runGit(repoRoot, ["init"]);
   await runGit(repoRoot, ["config", "user.name", "AiTeamCorp Test"]);
-  await runGit(repoRoot, ["config", "user.email", "test@paperclip.local"]);
+  await runGit(repoRoot, ["config", "user.email", "test@aiteamcorp.local"]);
   await fs.writeFile(path.join(repoRoot, "README.md"), "# Test repo\n", "utf8");
   await runGit(repoRoot, ["add", "README.md"]);
   await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
@@ -158,7 +158,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
     });
@@ -243,7 +243,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "AiTeamCorp",
       issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
     });

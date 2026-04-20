@@ -22,7 +22,7 @@ lean-dev-shop/
 │   └── weekly-standup/TASK.md
 ├── skills/
 │   └── code-review/SKILL.md
-└── .paperclip.yaml
+└── .aiteamcorp.yaml
 ```
 
 ## COMPANY.md

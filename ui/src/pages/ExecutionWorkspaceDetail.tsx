@@ -301,7 +301,7 @@ function ExecutionWorkspaceIssuesList({
       projects={projectOptions}
       liveIssueIds={liveIssueIds}
       projectId={project?.id}
-      viewStateKey="paperclip:execution-workspace-issues-view"
+      viewStateKey="aiteamcorp:execution-workspace-issues-view"
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );
@@ -470,7 +470,7 @@ export function ExecutionWorkspaceDetail() {
   if (workspaceId && activeTab === null) {
     let cachedTab: ExecutionWorkspaceTab = "configuration";
     try {
-      const storedTab = localStorage.getItem(`paperclip:execution-workspace-tab:${workspaceId}`);
+      const storedTab = localStorage.getItem(`aiteamcorp:execution-workspace-tab:${workspaceId}`);
       if (storedTab === "issues" || storedTab === "configuration" || storedTab === "runtime_logs") {
         cachedTab = storedTab;
       }
@@ -480,7 +480,7 @@ export function ExecutionWorkspaceDetail() {
 
   const handleTabChange = (tab: ExecutionWorkspaceTab) => {
     try {
-      localStorage.setItem(`paperclip:execution-workspace-tab:${workspace.id}`, tab);
+      localStorage.setItem(`aiteamcorp:execution-workspace-tab:${workspace.id}`, tab);
     } catch {}
     navigate(executionWorkspaceTabPath(workspace.id, tab));
   };

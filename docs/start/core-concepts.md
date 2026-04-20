@@ -63,7 +63,7 @@ You don't need to manually assign every task — set the goals and let the CEO o
 
 ## Heartbeats
 
-Agents don't run continuously. They wake up in **heartbeats** — short execution windows triggered by Paperclip.
+Agents don't run continuously. They wake up in **heartbeats** — short execution windows triggered by AiTeamCorp.
 
 A heartbeat can be triggered by:
 

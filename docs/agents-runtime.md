@@ -2,7 +2,7 @@
 
 Status: User-facing guide
 Last updated: 2026-03-26
-Audience: Operators setting up and running agents in Paperclip
+Audience: Operators setting up and running agents in AiTeamCorp
 
 ## 1. What this system does
 
