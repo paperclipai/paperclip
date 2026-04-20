@@ -22,6 +22,7 @@ import { useDialog } from "../context/DialogContext";
 import { GeneralSettingsProvider } from "../context/GeneralSettingsContext";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
+import { useOrg } from "../context/OrgContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
@@ -65,6 +66,7 @@ export function Layout() {
     setSelectedCompanyId,
   } = useCompany();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
+  const { selectedOrgId, setSelectedOrgId } = useOrg();
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
@@ -148,6 +150,12 @@ export function Layout() {
     selectedCompanyId,
     setSelectedCompanyId,
   ]);
+
+  useEffect(() => {
+    if (!matchedCompany?.organizationId) return;
+    if (selectedOrgId === matchedCompany.organizationId) return;
+    setSelectedOrgId(matchedCompany.organizationId);
+  }, [matchedCompany, selectedOrgId, setSelectedOrgId]);
 
   const togglePanel = togglePanelVisible;
   const openSearch = useCallback(() => {

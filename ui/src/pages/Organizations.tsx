@@ -123,17 +123,12 @@ export function Organizations() {
     },
   });
 
-  const attachedCompanyIds = useMemo(
-    () => new Set((orgCompaniesQuery.data ?? []).map((c) => c.id)),
-    [orgCompaniesQuery.data],
-  );
-
   const attachableCompanies = useMemo(
     () =>
       (allCompaniesQuery.data ?? []).filter(
-        (company) => !attachedCompanyIds.has(company.id),
+        (company) => !company.organizationId && company.status !== "archived",
       ),
-    [allCompaniesQuery.data, attachedCompanyIds],
+    [allCompaniesQuery.data],
   );
 
   function handleCreate() {

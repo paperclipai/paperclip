@@ -154,12 +154,21 @@ export function organizationRoutes(db: Db) {
     },
 
     async assignCompany(orgId: string, companyId: string) {
+      const [existing] = await db
+        .select({ id: companies.id, organizationId: companies.organizationId })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .limit(1);
+      if (!existing) return { status: "not_found" as const };
+      if (existing.organizationId && existing.organizationId !== orgId) {
+        return { status: "already_assigned" as const, organizationId: existing.organizationId };
+      }
       const [updated] = await db
         .update(companies)
         .set({ organizationId: orgId, updatedAt: new Date() })
         .where(eq(companies.id, companyId))
         .returning();
-      return updated ?? null;
+      return { status: "ok" as const, company: updated ?? null };
     },
 
     async unassignCompany(companyId: string) {
@@ -374,10 +383,15 @@ export function organizationRoutes(db: Db) {
 
     await assertOrgOwner(req, orgId);
 
-    const updated = await svc.assignCompany(orgId, companyId);
-    if (!updated) {
+    const result = await svc.assignCompany(orgId, companyId);
+    if (result.status === "not_found") {
       res.status(404).json({ error: "Company not found" });
       return;
+    }
+    if (result.status === "already_assigned") {
+      throw badRequest(
+        "Company already belongs to another organization. Detach it first before attaching.",
+      );
     }
 
     await logActivity(db, {
@@ -390,7 +404,7 @@ export function organizationRoutes(db: Db) {
       details: { organizationId: orgId },
     });
 
-    res.json(updated);
+    res.json(result.company);
   });
 
   // ── Unassign company from organization ───────────────────────────────
