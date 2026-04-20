@@ -1,6 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { constants as fsConstants, promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
+import type {
+  AdapterSkillEntry,
+  AdapterSkillSnapshot,
+} from "./types.js";
 
 export interface RunProcessResult {
   exitCode: number | null;
@@ -8,11 +12,14 @@ export interface RunProcessResult {
   timedOut: boolean;
   stdout: string;
   stderr: string;
+  pid: number | null;
+  startedAt: string | null;
 }
 
 interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
+  processGroupId: number | null;
 }
 
 interface SpawnTarget {
@@ -28,6 +35,28 @@ type ChildProcessWithEvents = ChildProcess & {
   ): ChildProcess;
 };
 
+function resolveProcessGroupId(child: ChildProcess) {
+  if (process.platform === "win32") return null;
+  return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
+}
+
+function signalRunningProcess(
+  running: Pick<RunningProcess, "child" | "processGroupId">,
+  signal: NodeJS.Signals,
+) {
+  if (process.platform !== "win32" && running.processGroupId && running.processGroupId > 0) {
+    try {
+      process.kill(-running.processGroupId, signal);
+      return;
+    } catch {
+      // Fall back to the direct child signal if group signaling fails.
+    }
+  }
+  if (!running.child.killed) {
+    running.child.kill(signal);
+  }
+}
+
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
@@ -38,8 +67,30 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
 ];
 
 export interface PaperclipSkillEntry {
-  name: string;
+  key: string;
+  runtimeName: string;
   source: string;
+  required?: boolean;
+  requiredReason?: string | null;
+}
+
+export interface InstalledSkillTarget {
+  targetPath: string | null;
+  kind: "symlink" | "directory" | "file";
+}
+
+interface PersistentSkillSnapshotOptions {
+  adapterType: string;
+  availableEntries: PaperclipSkillEntry[];
+  desiredSkills: string[];
+  installed: Map<string, InstalledSkillTarget>;
+  skillsHome: string;
+  locationLabel?: string | null;
+  installedDetail?: string | null;
+  missingDetail: string;
+  externalConflictDetail: string;
+  externalDetail: string;
+  warnings?: string[];
 }
 
 function normalizePathSlashes(value: string): string {
@@ -48,6 +99,49 @@ function normalizePathSlashes(value: string): string {
 
 function isMaintainerOnlySkillTarget(candidate: string): boolean {
   return normalizePathSlashes(candidate).includes("/.agents/skills/");
+}
+
+function skillLocationLabel(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function buildManagedSkillOrigin(entry: { required?: boolean }): Pick<
+  AdapterSkillEntry,
+  "origin" | "originLabel" | "readOnly"
+> {
+  if (entry.required) {
+    return {
+      origin: "paperclip_required",
+      originLabel: "Required by Paperclip",
+      readOnly: false,
+    };
+  }
+  return {
+    origin: "company_managed",
+    originLabel: "Managed by Paperclip",
+    readOnly: false,
+  };
+}
+
+function resolveInstalledEntryTarget(
+  skillsHome: string,
+  entryName: string,
+  dirent: Dirent,
+  linkedPath: string | null,
+): InstalledSkillTarget {
+  const fullPath = path.join(skillsHome, entryName);
+  if (dirent.isSymbolicLink()) {
+    return {
+      targetPath: linkedPath ? path.resolve(path.dirname(fullPath), linkedPath) : null,
+      kind: "symlink",
+    };
+  }
+  if (dirent.isDirectory()) {
+    return { targetPath: fullPath, kind: "directory" };
+  }
+  return { targetPath: fullPath, kind: "file" };
 }
 
 export function parseObject(value: unknown): Record<string, unknown> {
@@ -122,12 +216,323 @@ export function joinPromptSections(
     .join(separator);
 }
 
+type PaperclipWakeIssue = {
+  id: string | null;
+  identifier: string | null;
+  title: string | null;
+  status: string | null;
+  priority: string | null;
+};
+
+type PaperclipWakeExecutionPrincipal = {
+  type: "agent" | "user" | null;
+  agentId: string | null;
+  userId: string | null;
+};
+
+type PaperclipWakeExecutionStage = {
+  wakeRole: "reviewer" | "approver" | "executor" | null;
+  stageId: string | null;
+  stageType: string | null;
+  currentParticipant: PaperclipWakeExecutionPrincipal | null;
+  returnAssignee: PaperclipWakeExecutionPrincipal | null;
+  lastDecisionOutcome: string | null;
+  allowedActions: string[];
+};
+
+type PaperclipWakeComment = {
+  id: string | null;
+  issueId: string | null;
+  body: string;
+  bodyTruncated: boolean;
+  createdAt: string | null;
+  authorType: string | null;
+  authorId: string | null;
+};
+
+type PaperclipWakePayload = {
+  reason: string | null;
+  issue: PaperclipWakeIssue | null;
+  checkedOutByHarness: boolean;
+  executionStage: PaperclipWakeExecutionStage | null;
+  commentIds: string[];
+  latestCommentId: string | null;
+  comments: PaperclipWakeComment[];
+  requestedCount: number;
+  includedCount: number;
+  missingCount: number;
+  truncated: boolean;
+  fallbackFetchNeeded: boolean;
+};
+
+function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null {
+  const issue = parseObject(value);
+  const id = asString(issue.id, "").trim() || null;
+  const identifier = asString(issue.identifier, "").trim() || null;
+  const title = asString(issue.title, "").trim() || null;
+  const status = asString(issue.status, "").trim() || null;
+  const priority = asString(issue.priority, "").trim() || null;
+  if (!id && !identifier && !title) return null;
+  return {
+    id,
+    identifier,
+    title,
+    status,
+    priority,
+  };
+}
+
+function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | null {
+  const comment = parseObject(value);
+  const author = parseObject(comment.author);
+  const body = asString(comment.body, "");
+  if (!body.trim()) return null;
+  return {
+    id: asString(comment.id, "").trim() || null,
+    issueId: asString(comment.issueId, "").trim() || null,
+    body,
+    bodyTruncated: asBoolean(comment.bodyTruncated, false),
+    createdAt: asString(comment.createdAt, "").trim() || null,
+    authorType: asString(author.type, "").trim() || null,
+    authorId: asString(author.id, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
+  const principal = parseObject(value);
+  const typeRaw = asString(principal.type, "").trim().toLowerCase();
+  if (typeRaw !== "agent" && typeRaw !== "user") return null;
+  return {
+    type: typeRaw,
+    agentId: asString(principal.agentId, "").trim() || null,
+    userId: asString(principal.userId, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExecutionStage | null {
+  const stage = parseObject(value);
+  const wakeRoleRaw = asString(stage.wakeRole, "").trim().toLowerCase();
+  const wakeRole =
+    wakeRoleRaw === "reviewer" || wakeRoleRaw === "approver" || wakeRoleRaw === "executor"
+      ? wakeRoleRaw
+      : null;
+  const allowedActions = Array.isArray(stage.allowedActions)
+    ? stage.allowedActions
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+    : [];
+  const currentParticipant = normalizePaperclipWakeExecutionPrincipal(stage.currentParticipant);
+  const returnAssignee = normalizePaperclipWakeExecutionPrincipal(stage.returnAssignee);
+  const stageId = asString(stage.stageId, "").trim() || null;
+  const stageType = asString(stage.stageType, "").trim() || null;
+  const lastDecisionOutcome = asString(stage.lastDecisionOutcome, "").trim() || null;
+
+  if (!wakeRole && !stageId && !stageType && !currentParticipant && !returnAssignee && !lastDecisionOutcome && allowedActions.length === 0) {
+    return null;
+  }
+
+  return {
+    wakeRole,
+    stageId,
+    stageType,
+    currentParticipant,
+    returnAssignee,
+    lastDecisionOutcome,
+    allowedActions,
+  };
+}
+
+export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
+  const payload = parseObject(value);
+  const comments = Array.isArray(payload.comments)
+    ? payload.comments
+        .map((entry) => normalizePaperclipWakeComment(entry))
+        .filter((entry): entry is PaperclipWakeComment => Boolean(entry))
+    : [];
+  const commentWindow = parseObject(payload.commentWindow);
+  const commentIds = Array.isArray(payload.commentIds)
+    ? payload.commentIds
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+    : [];
+  const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
+
+  if (comments.length === 0 && commentIds.length === 0 && !executionStage && !normalizePaperclipWakeIssue(payload.issue)) {
+    return null;
+  }
+
+  return {
+    reason: asString(payload.reason, "").trim() || null,
+    issue: normalizePaperclipWakeIssue(payload.issue),
+    checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
+    executionStage,
+    commentIds,
+    latestCommentId: asString(payload.latestCommentId, "").trim() || null,
+    comments,
+    requestedCount: asNumber(commentWindow.requestedCount, comments.length || commentIds.length),
+    includedCount: asNumber(commentWindow.includedCount, comments.length),
+    missingCount: asNumber(commentWindow.missingCount, 0),
+    truncated: asBoolean(payload.truncated, false),
+    fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
+  };
+}
+
+export function stringifyPaperclipWakePayload(value: unknown): string | null {
+  const normalized = normalizePaperclipWakePayload(value);
+  if (!normalized) return null;
+  return JSON.stringify(normalized);
+}
+
+export function renderPaperclipWakePrompt(
+  value: unknown,
+  options: { resumedSession?: boolean } = {},
+): string {
+  const normalized = normalizePaperclipWakePayload(value);
+  if (!normalized) return "";
+  const resumedSession = options.resumedSession === true;
+  const executionStage = normalized.executionStage;
+  const principalLabel = (principal: PaperclipWakeExecutionPrincipal | null) => {
+    if (!principal || !principal.type) return "unknown";
+    if (principal.type === "agent") return principal.agentId ? `agent ${principal.agentId}` : "agent";
+    return principal.userId ? `user ${principal.userId}` : "user";
+  };
+
+  const lines = resumedSession
+      ? [
+        "## Paperclip Resume Delta",
+        "",
+        "You are resuming an existing Paperclip session.",
+        "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
+        "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
+        "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+        "",
+        `- reason: ${normalized.reason ?? "unknown"}`,
+        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
+        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+      ]
+    : [
+        "## Paperclip Wake Payload",
+        "",
+        "Treat this wake payload as the highest-priority change for the current heartbeat.",
+        "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
+        "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action.",
+        "Use this inline wake data first before refetching the issue thread.",
+        "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+        "",
+        `- reason: ${normalized.reason ?? "unknown"}`,
+        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
+        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+      ];
+
+  if (normalized.issue?.status) {
+    lines.push(`- issue status: ${normalized.issue.status}`);
+  }
+  if (normalized.issue?.priority) {
+    lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.checkedOutByHarness) {
+    lines.push("- checkout: already claimed by the harness for this run");
+  }
+  if (normalized.missingCount > 0) {
+    lines.push(`- omitted comments: ${normalized.missingCount}`);
+  }
+
+  if (executionStage) {
+    lines.push(
+      `- execution wake role: ${executionStage.wakeRole ?? "unknown"}`,
+      `- execution stage: ${executionStage.stageType ?? "unknown"}`,
+      `- execution participant: ${principalLabel(executionStage.currentParticipant)}`,
+      `- execution return assignee: ${principalLabel(executionStage.returnAssignee)}`,
+      `- last decision outcome: ${executionStage.lastDecisionOutcome ?? "none"}`,
+    );
+    if (executionStage.allowedActions.length > 0) {
+      lines.push(`- allowed actions: ${executionStage.allowedActions.join(", ")}`);
+    }
+    lines.push("");
+    if (executionStage.wakeRole === "reviewer" || executionStage.wakeRole === "approver") {
+      lines.push(
+        `You are waking as the active ${executionStage.wakeRole} for this issue.`,
+        "Do not execute the task itself or continue executor work.",
+        "Review the issue and choose one of the allowed actions above.",
+        "If you request changes, the workflow routes back to the stored return assignee.",
+        "",
+      );
+    } else if (executionStage.wakeRole === "executor") {
+      lines.push(
+        "You are waking because changes were requested in the execution workflow.",
+        "Address the requested changes on this issue and resubmit when the work is ready.",
+        "",
+      );
+    }
+  }
+
+  if (normalized.checkedOutByHarness) {
+    lines.push(
+      "",
+      "The harness already checked out this issue for the current run.",
+      "Do not call `/api/issues/{id}/checkout` again unless you intentionally switch to a different task.",
+      "",
+    );
+  }
+
+  if (normalized.comments.length > 0) {
+    lines.push("New comments in order:");
+  }
+
+  for (const [index, comment] of normalized.comments.entries()) {
+    const authorLabel = comment.authorId
+      ? `${comment.authorType ?? "unknown"} ${comment.authorId}`
+      : comment.authorType ?? "unknown";
+    lines.push(
+      `${index + 1}. comment ${comment.id ?? "unknown"} at ${comment.createdAt ?? "unknown"} by ${authorLabel}`,
+      comment.body,
+    );
+    if (comment.bodyTruncated) {
+      lines.push("[comment body truncated]");
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n").trim();
+}
+
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     redacted[key] = SENSITIVE_ENV_KEY.test(key) ? "***REDACTED***" : value;
   }
   return redacted;
+}
+
+export function buildInvocationEnvForLogs(
+  env: Record<string, string>,
+  options: {
+    runtimeEnv?: NodeJS.ProcessEnv | Record<string, string>;
+    includeRuntimeKeys?: string[];
+    resolvedCommand?: string | null;
+    resolvedCommandEnvKey?: string;
+  } = {},
+): Record<string, string> {
+  const merged: Record<string, string> = { ...env };
+  const runtimeEnv = options.runtimeEnv ?? {};
+
+  for (const key of options.includeRuntimeKeys ?? []) {
+    if (key in merged) continue;
+    const value = runtimeEnv[key];
+    if (typeof value !== "string" || value.length === 0) continue;
+    merged[key] = value;
+  }
+
+  const resolvedCommand = options.resolvedCommand?.trim();
+  if (resolvedCommand) {
+    merged[options.resolvedCommandEnvKey ?? "PAPERCLIP_RESOLVED_COMMAND"] = resolvedCommand;
+  }
+
+  return redactEnvForLogs(merged);
 }
 
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
@@ -198,10 +603,19 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
   return null;
 }
 
+export async function resolveCommandForLogs(command: string, cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
+  return (await resolveCommandPath(command, cwd, env)) ?? command;
+}
+
 function quoteForCmd(arg: string) {
   if (!arg.length) return '""';
   const escaped = arg.replace(/"/g, '""');
   return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
+}
+
+function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
+  const fallbackRoot = env.SystemRoot || process.env.SystemRoot || "C:\\Windows";
+  return path.join(fallbackRoot, "System32", "cmd.exe");
 }
 
 async function resolveSpawnTarget(
@@ -218,7 +632,9 @@ async function resolveSpawnTarget(
   }
 
   if (/\.(cmd|bat)$/i.test(executable)) {
-    const shell = env.ComSpec || process.env.ComSpec || "cmd.exe";
+    // Always use cmd.exe for .cmd/.bat wrappers. Some environments override
+    // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
+    const shell = resolveWindowsCmdShell(env);
     const commandLine = [quoteForCmd(executable), ...args.map(quoteForCmd)].join(" ");
     return {
       command: shell,
@@ -304,23 +720,172 @@ export async function listPaperclipSkillEntries(
     return entries
       .filter((entry) => entry.isDirectory())
       .map((entry) => ({
-        name: entry.name,
+        key: `paperclipai/paperclip/${entry.name}`,
+        runtimeName: entry.name,
         source: path.join(root, entry.name),
+        required: true,
+        requiredReason: "Bundled Paperclip skills are always available for local adapters.",
       }));
   } catch {
     return [];
   }
 }
 
+export async function readInstalledSkillTargets(skillsHome: string): Promise<Map<string, InstalledSkillTarget>> {
+  const entries = await fs.readdir(skillsHome, { withFileTypes: true }).catch(() => []);
+  const out = new Map<string, InstalledSkillTarget>();
+  for (const entry of entries) {
+    const fullPath = path.join(skillsHome, entry.name);
+    const linkedPath = entry.isSymbolicLink() ? await fs.readlink(fullPath).catch(() => null) : null;
+    out.set(entry.name, resolveInstalledEntryTarget(skillsHome, entry.name, entry, linkedPath));
+  }
+  return out;
+}
+
+export function buildPersistentSkillSnapshot(
+  options: PersistentSkillSnapshotOptions,
+): AdapterSkillSnapshot {
+  const {
+    adapterType,
+    availableEntries,
+    desiredSkills,
+    installed,
+    skillsHome,
+    locationLabel,
+    installedDetail,
+    missingDetail,
+    externalConflictDetail,
+    externalDetail,
+  } = options;
+  const availableByKey = new Map(availableEntries.map((entry) => [entry.key, entry]));
+  const desiredSet = new Set(desiredSkills);
+  const entries: AdapterSkillEntry[] = [];
+  const warnings = [...(options.warnings ?? [])];
+
+  for (const available of availableEntries) {
+    const installedEntry = installed.get(available.runtimeName) ?? null;
+    const desired = desiredSet.has(available.key);
+    let state: AdapterSkillEntry["state"] = "available";
+    let managed = false;
+    let detail: string | null = null;
+
+    if (installedEntry?.targetPath === available.source) {
+      managed = true;
+      state = desired ? "installed" : "stale";
+      detail = installedDetail ?? null;
+    } else if (installedEntry) {
+      state = "external";
+      detail = desired ? externalConflictDetail : externalDetail;
+    } else if (desired) {
+      state = "missing";
+      detail = missingDetail;
+    }
+
+    entries.push({
+      key: available.key,
+      runtimeName: available.runtimeName,
+      desired,
+      managed,
+      state,
+      sourcePath: available.source,
+      targetPath: path.join(skillsHome, available.runtimeName),
+      detail,
+      required: Boolean(available.required),
+      requiredReason: available.requiredReason ?? null,
+      ...buildManagedSkillOrigin(available),
+    });
+  }
+
+  for (const desiredSkill of desiredSkills) {
+    if (availableByKey.has(desiredSkill)) continue;
+    warnings.push(`Desired skill "${desiredSkill}" is not available from the Paperclip skills directory.`);
+    entries.push({
+      key: desiredSkill,
+      runtimeName: null,
+      desired: true,
+      managed: true,
+      state: "missing",
+      sourcePath: null,
+      targetPath: null,
+      detail: "Paperclip cannot find this skill in the local runtime skills directory.",
+      origin: "external_unknown",
+      originLabel: "External or unavailable",
+      readOnly: false,
+    });
+  }
+
+  for (const [name, installedEntry] of installed.entries()) {
+    if (availableEntries.some((entry) => entry.runtimeName === name)) continue;
+    entries.push({
+      key: name,
+      runtimeName: name,
+      desired: false,
+      managed: false,
+      state: "external",
+      origin: "user_installed",
+      originLabel: "User-installed",
+      locationLabel: skillLocationLabel(locationLabel),
+      readOnly: true,
+      sourcePath: null,
+      targetPath: installedEntry.targetPath ?? path.join(skillsHome, name),
+      detail: externalDetail,
+    });
+  }
+
+  entries.sort((left, right) => left.key.localeCompare(right.key));
+
+  return {
+    adapterType,
+    supported: true,
+    mode: "persistent",
+    desiredSkills,
+    entries,
+    warnings,
+  };
+}
+
+function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSkillEntry[] {
+  if (!Array.isArray(value)) return [];
+  const out: PaperclipSkillEntry[] = [];
+  for (const rawEntry of value) {
+    const entry = parseObject(rawEntry);
+    const key = asString(entry.key, asString(entry.name, "")).trim();
+    const runtimeName = asString(entry.runtimeName, asString(entry.name, "")).trim();
+    const source = asString(entry.source, "").trim();
+    if (!key || !runtimeName || !source) continue;
+    out.push({
+      key,
+      runtimeName,
+      source,
+      required: asBoolean(entry.required, false),
+      requiredReason:
+        typeof entry.requiredReason === "string" && entry.requiredReason.trim().length > 0
+          ? entry.requiredReason.trim()
+          : null,
+    });
+  }
+  return out;
+}
+
+export async function readPaperclipRuntimeSkillEntries(
+  config: Record<string, unknown>,
+  moduleDir: string,
+  additionalCandidates: string[] = [],
+): Promise<PaperclipSkillEntry[]> {
+  const configuredEntries = normalizeConfiguredPaperclipRuntimeSkills(config.paperclipRuntimeSkills);
+  if (configuredEntries.length > 0) return configuredEntries;
+  return listPaperclipSkillEntries(moduleDir, additionalCandidates);
+}
+
 export async function readPaperclipSkillMarkdown(
   moduleDir: string,
-  skillName: string,
+  skillKey: string,
 ): Promise<string | null> {
-  const normalized = skillName.trim().toLowerCase();
+  const normalized = skillKey.trim().toLowerCase();
   if (!normalized) return null;
 
   const entries = await listPaperclipSkillEntries(moduleDir);
-  const match = entries.find((entry) => entry.name === normalized);
+  const match = entries.find((entry) => entry.key === normalized);
   if (!match) return null;
 
   try {
@@ -328,6 +893,89 @@ export async function readPaperclipSkillMarkdown(
   } catch {
     return null;
   }
+}
+
+export function readPaperclipSkillSyncPreference(config: Record<string, unknown>): {
+  explicit: boolean;
+  desiredSkills: string[];
+} {
+  const raw = config.paperclipSkillSync;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { explicit: false, desiredSkills: [] };
+  }
+  const syncConfig = raw as Record<string, unknown>;
+  const desiredValues = syncConfig.desiredSkills;
+  const desired = Array.isArray(desiredValues)
+    ? desiredValues
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : [];
+  return {
+    explicit: Object.prototype.hasOwnProperty.call(raw, "desiredSkills"),
+    desiredSkills: Array.from(new Set(desired)),
+  };
+}
+
+function canonicalizeDesiredPaperclipSkillReference(
+  reference: string,
+  availableEntries: Array<{ key: string; runtimeName?: string | null }>,
+): string {
+  const normalizedReference = reference.trim().toLowerCase();
+  if (!normalizedReference) return "";
+
+  const exactKey = availableEntries.find((entry) => entry.key.trim().toLowerCase() === normalizedReference);
+  if (exactKey) return exactKey.key;
+
+  const byRuntimeName = availableEntries.filter((entry) =>
+    typeof entry.runtimeName === "string" && entry.runtimeName.trim().toLowerCase() === normalizedReference,
+  );
+  if (byRuntimeName.length === 1) return byRuntimeName[0]!.key;
+
+  const slugMatches = availableEntries.filter((entry) =>
+    entry.key.trim().toLowerCase().split("/").pop() === normalizedReference,
+  );
+  if (slugMatches.length === 1) return slugMatches[0]!.key;
+
+  return normalizedReference;
+}
+
+export function resolvePaperclipDesiredSkillNames(
+  config: Record<string, unknown>,
+  availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean }>,
+): string[] {
+  const preference = readPaperclipSkillSyncPreference(config);
+  const requiredSkills = availableEntries
+    .filter((entry) => entry.required)
+    .map((entry) => entry.key);
+  if (!preference.explicit) {
+    return Array.from(new Set(requiredSkills));
+  }
+  const desiredSkills = preference.desiredSkills
+    .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
+    .filter(Boolean);
+  return Array.from(new Set([...requiredSkills, ...desiredSkills]));
+}
+
+export function writePaperclipSkillSyncPreference(
+  config: Record<string, unknown>,
+  desiredSkills: string[],
+): Record<string, unknown> {
+  const next = { ...config };
+  const raw = next.paperclipSkillSync;
+  const current =
+    typeof raw === "object" && raw !== null && !Array.isArray(raw)
+      ? { ...(raw as Record<string, unknown>) }
+      : {};
+  current.desiredSkills = Array.from(
+    new Set(
+      desiredSkills
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  );
+  next.paperclipSkillSync = current;
+  return next;
 }
 
 export async function ensurePaperclipSkillSymlink(
@@ -423,6 +1071,7 @@ export async function runChildProcess(
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
+    onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
     stdin?: string;
   },
 ): Promise<RunProcessResult> {
@@ -452,16 +1101,21 @@ export async function runChildProcess(
         const child = spawn(target.command, target.args, {
           cwd: opts.cwd,
           env: mergedEnv,
+          detached: process.platform !== "win32",
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
+        const startedAt = new Date().toISOString();
+        const processGroupId = resolveProcessGroupId(child);
 
-        if (opts.stdin != null && child.stdin) {
-          child.stdin.write(opts.stdin);
-          child.stdin.end();
-        }
+        const spawnPersistPromise =
+          typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
+            ? opts.onSpawn({ pid: child.pid, processGroupId, startedAt }).catch((err) => {
+              onLogError(err, runId, "failed to record child process metadata");
+            })
+            : Promise.resolve();
 
-        runningProcesses.set(runId, { child, graceSec: opts.graceSec });
+        runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
         let stdout = "";
@@ -472,11 +1126,9 @@ export async function runChildProcess(
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
-                child.kill("SIGTERM");
+                signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(() => {
-                  if (!child.killed) {
-                    child.kill("SIGKILL");
-                  }
+                  signalRunningProcess({ child, processGroupId }, "SIGKILL");
                 }, Math.max(1, opts.graceSec) * 1000);
               }, opts.timeoutSec * 1000)
             : null;
@@ -496,6 +1148,15 @@ export async function runChildProcess(
             .then(() => opts.onLog("stderr", text))
             .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
         });
+
+        const stdin = child.stdin;
+        if (opts.stdin != null && stdin) {
+          void spawnPersistPromise.finally(() => {
+            if (child.killed || stdin.destroyed) return;
+            stdin.write(opts.stdin as string);
+            stdin.end();
+          });
+        }
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
@@ -519,6 +1180,8 @@ export async function runChildProcess(
               timedOut,
               stdout,
               stderr,
+              pid: child.pid ?? null,
+              startedAt,
             });
           });
         });

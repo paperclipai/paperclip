@@ -17,7 +17,9 @@ export function GeminiLocalConfigFields({
   config,
   eff,
   mark,
+  hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
+  if (hideInstructionsFile) return null;
   return (
     <>
       <Field label="Agent instructions file" hint={instructionsFileHint}>

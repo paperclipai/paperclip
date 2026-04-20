@@ -1,14 +1,18 @@
-import type {
-  HeartbeatRun,
-  HeartbeatRunEvent,
-  InstanceSchedulerHeartbeatAgent,
-} from "@paperclipai/shared";
+import type { HeartbeatRun, HeartbeatRunEvent, InstanceSchedulerHeartbeatAgent, WorkspaceOperation } from "@paperclipai/shared";
 import { api } from "./client";
 
-export interface ActiveRunForIssue extends HeartbeatRun {
+export interface ActiveRunForIssue {
+  id: string;
+  status: string;
+  invocationSource: string;
+  triggerDetail: string | null;
+  startedAt: string | Date | null;
+  finishedAt: string | Date | null;
+  createdAt: string | Date;
   agentId: string;
   agentName: string;
   adapterType: string;
+  issueId?: string | null;
 }
 
 export interface LiveRunForIssue {
@@ -41,6 +45,12 @@ export const heartbeatsApi = {
   log: (runId: string, offset = 0, limitBytes = 256000) =>
     api.get<{ runId: string; store: string; logRef: string; content: string; nextOffset?: number }>(
       `/heartbeat-runs/${runId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
+    ),
+  workspaceOperations: (runId: string) =>
+    api.get<WorkspaceOperation[]>(`/heartbeat-runs/${runId}/workspace-operations`),
+  workspaceOperationLog: (operationId: string, offset = 0, limitBytes = 256000) =>
+    api.get<{ operationId: string; store: string; logRef: string; content: string; nextOffset?: number }>(
+      `/workspace-operations/${operationId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
     ),
   cancel: (runId: string) => api.post<void>(`/heartbeat-runs/${runId}/cancel`, {}),
   liveRunsForIssue: (issueId: string) =>

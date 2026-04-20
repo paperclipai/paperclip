@@ -4,14 +4,14 @@ import { notifyHireApproved } from "../services/hire-hook.js";
 
 // Mock the registry so we control whether the adapter has onHireApproved and what it does.
 vi.mock("../adapters/registry.js", () => ({
-  findServerAdapter: vi.fn(),
+  findActiveServerAdapter: vi.fn(),
 }));
 
 vi.mock("../services/activity-log.js", () => ({
   logActivity: vi.fn().mockResolvedValue(undefined),
 }));
 
-const { findServerAdapter } = await import("../adapters/registry.js");
+const { findActiveServerAdapter } = await import("../adapters/registry.js");
 const { logActivity } = await import("../services/activity-log.js");
 
 function mockDbWithAgent(agent: { id: string; companyId: string; name: string; adapterType: string; adapterConfig?: Record<string, unknown> }): Db {
@@ -39,7 +39,7 @@ afterEach(() => {
 
 describe("notifyHireApproved", () => {
   it("writes success activity when adapter hook returns ok", async () => {
-    vi.mocked(findServerAdapter).mockReturnValue({
+    vi.mocked(findActiveServerAdapter).mockReturnValue({
       type: "openclaw_gateway",
       onHireApproved: vi.fn().mockResolvedValue({ ok: true }),
     } as any);
@@ -88,11 +88,11 @@ describe("notifyHireApproved", () => {
       }),
     ).resolves.toBeUndefined();
 
-    expect(findServerAdapter).not.toHaveBeenCalled();
+    expect(findActiveServerAdapter).not.toHaveBeenCalled();
   });
 
   it("does nothing when adapter has no onHireApproved", async () => {
-    vi.mocked(findServerAdapter).mockReturnValue({ type: "process" } as any);
+    vi.mocked(findActiveServerAdapter).mockReturnValue({ type: "process" } as any);
 
     const db = mockDbWithAgent({
       id: "a1",
@@ -110,12 +110,12 @@ describe("notifyHireApproved", () => {
       }),
     ).resolves.toBeUndefined();
 
-    expect(findServerAdapter).toHaveBeenCalledWith("process");
+    expect(findActiveServerAdapter).toHaveBeenCalledWith("process");
     expect(logActivity).not.toHaveBeenCalled();
   });
 
   it("logs failed result when adapter onHireApproved returns ok=false", async () => {
-    vi.mocked(findServerAdapter).mockReturnValue({
+    vi.mocked(findActiveServerAdapter).mockReturnValue({
       type: "openclaw_gateway",
       onHireApproved: vi.fn().mockResolvedValue({ ok: false, error: "HTTP 500", detail: { status: 500 } }),
     } as any);
@@ -147,7 +147,7 @@ describe("notifyHireApproved", () => {
   });
 
   it("does not throw when adapter onHireApproved throws (non-fatal)", async () => {
-    vi.mocked(findServerAdapter).mockReturnValue({
+    vi.mocked(findActiveServerAdapter).mockReturnValue({
       type: "openclaw_gateway",
       onHireApproved: vi.fn().mockRejectedValue(new Error("Network error")),
     } as any);

@@ -63,16 +63,22 @@ function KanbanColumn({
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
+  const isEmpty = issues.length === 0;
+
   return (
-    <div className="flex flex-col min-w-[260px] w-[260px] shrink-0">
-      <div className="flex items-center gap-2 px-2 py-2 mb-1">
+    <div className={`flex flex-col shrink-0 transition-[width,min-width] ${isEmpty && !isOver ? "min-w-[48px] w-[48px]" : "min-w-[260px] w-[260px]"}`}>
+      <div className={`flex items-center gap-2 px-2 py-2 mb-1 ${isEmpty && !isOver ? "justify-center" : ""}`}>
         <StatusIcon status={status} />
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {statusLabel(status)}
-        </span>
-        <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
-          {issues.length}
-        </span>
+        {(!isEmpty || isOver) && (
+          <>
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {statusLabel(status)}
+            </span>
+            <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
+              {issues.length}
+            </span>
+          </>
+        )}
       </div>
       <div
         ref={setNodeRef}
@@ -142,6 +148,7 @@ function KanbanCard({
     >
       <Link
         to={`/issues/${issue.identifier ?? issue.id}`}
+        disableIssueQuicklook
         className="block no-underline text-inherit"
         onClick={(e) => {
           // Prevent navigation during drag

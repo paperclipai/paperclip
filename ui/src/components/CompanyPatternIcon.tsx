@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "../lib/utils";
 
 const BAYER_4X4 = [
@@ -10,8 +10,10 @@ const BAYER_4X4 = [
 
 interface CompanyPatternIconProps {
   companyName: string;
+  logoUrl?: string | null;
   brandColor?: string | null;
   className?: string;
+  logoFit?: "cover" | "contain";
 }
 
 function hashString(value: string): number {
@@ -159,8 +161,19 @@ function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, log
   return canvas.toDataURL("image/png");
 }
 
-export function CompanyPatternIcon({ companyName, brandColor, className }: CompanyPatternIconProps) {
+export function CompanyPatternIcon({
+  companyName,
+  logoUrl,
+  brandColor,
+  className,
+  logoFit = "cover",
+}: CompanyPatternIconProps) {
   const initial = companyName.trim().charAt(0).toUpperCase() || "?";
+  const [imageError, setImageError] = useState(false);
+  const logo = !imageError && typeof logoUrl === "string" && logoUrl.trim().length > 0 ? logoUrl : null;
+  useEffect(() => {
+    setImageError(false);
+  }, [logoUrl]);
   const patternDataUrl = useMemo(
     () => makeCompanyPatternDataUrl(companyName.trim().toLowerCase(), brandColor),
     [companyName, brandColor],
@@ -173,7 +186,17 @@ export function CompanyPatternIcon({ companyName, brandColor, className }: Compa
         className,
       )}
     >
-      {patternDataUrl ? (
+      {logo ? (
+        <img
+          src={logo}
+          alt={`${companyName} logo`}
+          onError={() => setImageError(true)}
+          className={cn(
+            "absolute inset-0 h-full w-full",
+            logoFit === "contain" ? "object-contain" : "object-cover",
+          )}
+        />
+      ) : patternDataUrl ? (
         <img
           src={patternDataUrl}
           alt=""
@@ -184,9 +207,11 @@ export function CompanyPatternIcon({ companyName, brandColor, className }: Compa
       ) : (
         <div className="absolute inset-0 bg-muted" />
       )}
-      <span className="relative z-10 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]">
-        {initial}
-      </span>
+      {!logo && (
+        <span className="relative z-10 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]">
+          {initial}
+        </span>
+      )}
     </div>
   );
 }

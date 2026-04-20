@@ -1,4 +1,6 @@
 export { execute, runClaudeLogin } from "./execute.js";
+export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
+export { listClaudeModels } from "./models.js";
 export { testEnvironment } from "./test.js";
 export {
   parseClaudeStreamJson,
@@ -6,6 +8,18 @@ export {
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
+export {
+  getQuotaWindows,
+  readClaudeAuthStatus,
+  readClaudeToken,
+  fetchClaudeQuota,
+  fetchClaudeCliQuota,
+  captureClaudeCliUsageText,
+  parseClaudeCliUsageText,
+  toPercent,
+  fetchWithTimeout,
+  claudeConfigDir,
+} from "./quota.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {
@@ -22,12 +36,16 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(record.cwd) ??
       readNonEmptyString(record.workdir) ??
       readNonEmptyString(record.folder);
+    const promptBundleKey =
+      readNonEmptyString(record.promptBundleKey) ??
+      readNonEmptyString(record.prompt_bundle_key);
     const workspaceId = readNonEmptyString(record.workspaceId) ?? readNonEmptyString(record.workspace_id);
     const repoUrl = readNonEmptyString(record.repoUrl) ?? readNonEmptyString(record.repo_url);
     const repoRef = readNonEmptyString(record.repoRef) ?? readNonEmptyString(record.repo_ref);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
+      ...(promptBundleKey ? { promptBundleKey } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
       ...(repoRef ? { repoRef } : {}),
@@ -41,12 +59,16 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(params.cwd) ??
       readNonEmptyString(params.workdir) ??
       readNonEmptyString(params.folder);
+    const promptBundleKey =
+      readNonEmptyString(params.promptBundleKey) ??
+      readNonEmptyString(params.prompt_bundle_key);
     const workspaceId = readNonEmptyString(params.workspaceId) ?? readNonEmptyString(params.workspace_id);
     const repoUrl = readNonEmptyString(params.repoUrl) ?? readNonEmptyString(params.repo_url);
     const repoRef = readNonEmptyString(params.repoRef) ?? readNonEmptyString(params.repo_ref);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
+      ...(promptBundleKey ? { promptBundleKey } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
       ...(repoRef ? { repoRef } : {}),

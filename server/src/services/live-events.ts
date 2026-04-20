@@ -34,7 +34,21 @@ export function publishLiveEvent(input: {
   return event;
 }
 
+export function publishGlobalLiveEvent(input: {
+  type: LiveEventType;
+  payload?: LiveEventPayload;
+}) {
+  const event = toLiveEvent({ companyId: "*", type: input.type, payload: input.payload });
+  emitter.emit("*", event);
+  return event;
+}
+
 export function subscribeCompanyLiveEvents(companyId: string, listener: LiveEventListener) {
   emitter.on(companyId, listener);
   return () => emitter.off(companyId, listener);
+}
+
+export function subscribeGlobalLiveEvents(listener: LiveEventListener) {
+  emitter.on("*", listener);
+  return () => emitter.off("*", listener);
 }

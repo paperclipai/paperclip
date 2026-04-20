@@ -19,16 +19,19 @@ describe("adapter session codecs", () => {
     const parsed = claudeSessionCodec.deserialize({
       session_id: "claude-session-1",
       folder: "/tmp/workspace",
+      prompt_bundle_key: "bundle-1",
     });
     expect(parsed).toEqual({
       sessionId: "claude-session-1",
       cwd: "/tmp/workspace",
+      promptBundleKey: "bundle-1",
     });
 
     const serialized = claudeSessionCodec.serialize(parsed);
     expect(serialized).toEqual({
       sessionId: "claude-session-1",
       cwd: "/tmp/workspace",
+      promptBundleKey: "bundle-1",
     });
     expect(claudeSessionCodec.getDisplayId?.(serialized ?? null)).toBe("claude-session-1");
   });

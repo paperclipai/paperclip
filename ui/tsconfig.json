@@ -13,7 +13,8 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "lexical": ["./node_modules/lexical/index.d.ts"]
     }
   },
   "include": ["src"]

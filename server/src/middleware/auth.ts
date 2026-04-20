@@ -7,6 +7,7 @@ import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
+import { boardAuthService } from "../services/board-auth.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -18,10 +19,18 @@ interface ActorMiddlewareOptions {
 }
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
+  const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
-        ? { type: "board", userId: "local-board", isInstanceAdmin: true, source: "local_implicit" }
+        ? {
+            type: "board",
+            userId: "local-board",
+            userName: "Local Board",
+            userEmail: null,
+            isInstanceAdmin: true,
+            source: "local_implicit",
+          }
         : { type: "none", source: "none" };
 
     const runIdHeader = req.header("x-paperclip-run-id");
@@ -47,7 +56,11 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
               .then((rows) => rows[0] ?? null),
             db
-              .select({ companyId: companyMemberships.companyId })
+              .select({
+                companyId: companyMemberships.companyId,
+                membershipRole: companyMemberships.membershipRole,
+                status: companyMemberships.status,
+              })
               .from(companyMemberships)
               .where(
                 and(
@@ -60,7 +73,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           req.actor = {
             type: "board",
             userId,
+            userName: session.user.name ?? null,
+            userEmail: session.user.email ?? null,
             companyIds: memberships.map((row) => row.companyId),
+            memberships,
             isInstanceAdmin: Boolean(roleRow),
             runId: runIdHeader ?? undefined,
             source: "session",
@@ -78,6 +94,28 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!token) {
       next();
       return;
+    }
+
+    const boardKey = await boardAuth.findBoardApiKeyByToken(token);
+    if (boardKey) {
+      const access = await boardAuth.resolveBoardAccess(boardKey.userId);
+      if (access.user) {
+        await boardAuth.touchBoardApiKey(boardKey.id);
+        req.actor = {
+          type: "board",
+          userId: boardKey.userId,
+          userName: access.user?.name ?? null,
+          userEmail: access.user?.email ?? null,
+          companyIds: access.companyIds,
+          memberships: access.memberships,
+          isInstanceAdmin: access.isInstanceAdmin,
+          keyId: boardKey.id,
+          runId: runIdHeader || undefined,
+          source: "board_key",
+        };
+        next();
+        return;
+      }
     }
 
     const tokenHash = hashToken(token);

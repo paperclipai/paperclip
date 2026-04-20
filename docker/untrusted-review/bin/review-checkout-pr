@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: review-checkout-pr <owner/repo|github-url> <pr-number> [checkout-dir]
+
+Examples:
+  review-checkout-pr paperclipai/paperclip 432
+  review-checkout-pr https://github.com/paperclipai/paperclip.git 432
+EOF
+}
+
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  usage >&2
+  exit 1
+fi
+
+normalize_repo_slug() {
+  local raw="$1"
+  raw="${raw#git@github.com:}"
+  raw="${raw#ssh://git@github.com/}"
+  raw="${raw#https://github.com/}"
+  raw="${raw#http://github.com/}"
+  raw="${raw%.git}"
+  printf '%s\n' "${raw#/}"
+}
+
+repo_slug="$(normalize_repo_slug "$1")"
+pr_number="$2"
+
+if [[ ! "$repo_slug" =~ ^[^/]+/[^/]+$ ]]; then
+  echo "Expected GitHub repo slug like owner/repo or a GitHub repo URL, got: $1" >&2
+  exit 1
+fi
+
+if [[ ! "$pr_number" =~ ^[0-9]+$ ]]; then
+  echo "PR number must be numeric, got: $pr_number" >&2
+  exit 1
+fi
+
+repo_key="${repo_slug//\//-}"
+mirror_dir="/work/repos/${repo_key}"
+checkout_dir="${3:-/work/checkouts/${repo_key}/pr-${pr_number}}"
+pr_ref="refs/remotes/origin/pr/${pr_number}"
+
+mkdir -p "$(dirname "$mirror_dir")" "$(dirname "$checkout_dir")"
+
+if [[ ! -d "$mirror_dir/.git" ]]; then
+  if command -v gh >/dev/null 2>&1; then
+    gh repo clone "$repo_slug" "$mirror_dir" -- --filter=blob:none
+  else
+    git clone --filter=blob:none "https://github.com/${repo_slug}.git" "$mirror_dir"
+  fi
+fi
+
+git -C "$mirror_dir" fetch --force origin "pull/${pr_number}/head:${pr_ref}"
+
+if [[ -e "$checkout_dir" ]]; then
+  printf '%s\n' "$checkout_dir"
+  exit 0
+fi
+
+git -C "$mirror_dir" worktree add --detach "$checkout_dir" "$pr_ref" >/dev/null
+printf '%s\n' "$checkout_dir"

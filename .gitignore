@@ -1,4 +1,7 @@
+node_modules
 node_modules/
+**/node_modules
+**/node_modules/
 dist/
 .env
 *.tsbuildinfo
@@ -31,13 +34,23 @@ server/src/**/*.js.map
 server/src/**/*.d.ts
 server/src/**/*.d.ts.map
 tmp/
+feedback-export-*
 
 # Editor / tool temp files
 *.tmp
 .vscode/
 .claude/settings.local.json
 .paperclip-local/
+/.idea/
+/.agents/
+
+# Doc maintenance cursor
+.doc-review-cursor
 
 # Playwright
 tests/e2e/test-results/
 tests/e2e/playwright-report/
+tests/release-smoke/test-results/
+tests/release-smoke/playwright-report/
+.superset/
+.claude/worktrees/

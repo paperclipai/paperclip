@@ -1,12 +1,16 @@
-import { useEffect, useState } from "react";
+import { ChangeEvent, useEffect, useState } from "react";
+import { Link } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToastActions } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
+import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check } from "lucide-react";
+import { Settings, Check, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -20,6 +24,8 @@ type AgentSnippetInput = {
   testResolutionUrl?: string | null;
 };
 
+const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+
 export function CompanySettings() {
   const {
     companies,
@@ -28,12 +34,14 @@ export function CompanySettings() {
     setSelectedCompanyId
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
-
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
   const [brandColor, setBrandColor] = useState("");
+  const [logoUrl, setLogoUrl] = useState("");
+  const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
 
   // Sync local state from selected company
   useEffect(() => {
@@ -41,6 +49,7 @@ export function CompanySettings() {
     setCompanyName(selectedCompany.name);
     setDescription(selectedCompany.description ?? "");
     setBrandColor(selectedCompany.brandColor ?? "");
+    setLogoUrl(selectedCompany.logoUrl ?? "");
   }, [selectedCompany]);
 
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -73,6 +82,27 @@ export function CompanySettings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
+  });
+
+  const feedbackSharingMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      companiesApi.update(selectedCompanyId!, {
+        feedbackDataSharingEnabled: enabled,
+      }),
+    onSuccess: (_company, enabled) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      pushToast({
+        title: enabled ? "Feedback sharing enabled" : "Feedback sharing disabled",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update feedback sharing",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const inviteMutation = useMutation({
@@ -128,12 +158,49 @@ export function CompanySettings() {
     }
   });
 
+  const syncLogoState = (nextLogoUrl: string | null) => {
+    setLogoUrl(nextLogoUrl ?? "");
+    void queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+  };
+
+  const logoUploadMutation = useMutation({
+    mutationFn: (file: File) =>
+      assetsApi
+        .uploadCompanyLogo(selectedCompanyId!, file)
+        .then((asset) => companiesApi.update(selectedCompanyId!, { logoAssetId: asset.assetId })),
+    onSuccess: (company) => {
+      syncLogoState(company.logoUrl);
+      setLogoUploadError(null);
+    }
+  });
+
+  const clearLogoMutation = useMutation({
+    mutationFn: () => companiesApi.update(selectedCompanyId!, { logoAssetId: null }),
+    onSuccess: (company) => {
+      setLogoUploadError(null);
+      syncLogoState(company.logoUrl);
+    }
+  });
+
+  function handleLogoFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    event.currentTarget.value = "";
+    if (!file) return;
+    setLogoUploadError(null);
+    logoUploadMutation.mutate(file);
+  }
+
+  function handleClearLogo() {
+    clearLogoMutation.mutate();
+  }
+
   useEffect(() => {
     setInviteError(null);
     setInviteSnippet(null);
     setSnippetCopied(false);
     setSnippetCopyDelightId(0);
   }, [selectedCompanyId]);
+
   const archiveMutation = useMutation({
     mutationFn: ({
       companyId,
@@ -224,11 +291,53 @@ export function CompanySettings() {
             <div className="shrink-0">
               <CompanyPatternIcon
                 companyName={companyName || selectedCompany.name}
+                logoUrl={logoUrl || null}
                 brandColor={brandColor || null}
                 className="rounded-[14px]"
               />
             </div>
-            <div className="flex-1 space-y-2">
+            <div className="flex-1 space-y-3">
+              <Field
+                label="Logo"
+                hint="Upload a PNG, JPEG, WEBP, GIF, or SVG logo image."
+              >
+                <div className="space-y-2">
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                    onChange={handleLogoFileChange}
+                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none file:mr-4 file:rounded-md file:border-0 file:bg-muted file:px-2.5 file:py-1 file:text-xs"
+                  />
+                  {logoUrl && (
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={handleClearLogo}
+                        disabled={clearLogoMutation.isPending}
+                      >
+                        {clearLogoMutation.isPending ? "Removing..." : "Remove logo"}
+                      </Button>
+                    </div>
+                  )}
+                  {(logoUploadMutation.isError || logoUploadError) && (
+                    <span className="text-xs text-destructive">
+                      {logoUploadError ??
+                        (logoUploadMutation.error instanceof Error
+                          ? logoUploadMutation.error.message
+                          : "Logo upload failed")}
+                    </span>
+                  )}
+                  {clearLogoMutation.isError && (
+                    <span className="text-xs text-destructive">
+                      {clearLogoMutation.error.message}
+                    </span>
+                  )}
+                  {logoUploadMutation.isPending && (
+                    <span className="text-xs text-muted-foreground">Uploading logo...</span>
+                  )}
+                </div>
+              </Field>
               <Field
                 label="Brand color"
                 hint="Sets the hue for the company icon. Leave empty for auto-generated color."
@@ -285,15 +394,15 @@ export function CompanySettings() {
           {generalMutation.isError && (
             <span className="text-xs text-destructive">
               {generalMutation.error instanceof Error
-                ? generalMutation.error.message
-                : "Failed to save"}
+                  ? generalMutation.error.message
+                  : "Failed to save"}
             </span>
           )}
         </div>
       )}
 
       {/* Hiring */}
-      <div className="space-y-4">
+      <div className="space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Hiring
         </div>
@@ -303,12 +412,55 @@ export function CompanySettings() {
             hint="New agent hires stay pending until approved by board."
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
+            toggleTestId="company-settings-team-approval-toggle"
           />
         </div>
       </div>
 
-      {/* Invites */}
       <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Feedback Sharing
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <ToggleField
+            label="Allow sharing voted AI outputs with Paperclip Labs"
+            hint="Only AI-generated outputs you explicitly vote on are eligible for feedback sharing."
+            checked={!!selectedCompany.feedbackDataSharingEnabled}
+            onChange={(enabled) => feedbackSharingMutation.mutate(enabled)}
+          />
+          <p className="text-sm text-muted-foreground">
+            Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.
+          </p>
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <div>
+              Terms version: {selectedCompany.feedbackDataSharingTermsVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION}
+            </div>
+            {selectedCompany.feedbackDataSharingConsentAt ? (
+              <div>
+                Enabled {new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString()}
+                {selectedCompany.feedbackDataSharingConsentByUserId
+                  ? ` by ${selectedCompany.feedbackDataSharingConsentByUserId}`
+                  : ""}
+              </div>
+            ) : (
+              <div>Sharing is currently disabled.</div>
+            )}
+            {FEEDBACK_TERMS_URL ? (
+              <a
+                href={FEEDBACK_TERMS_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex text-foreground underline underline-offset-4"
+              >
+                Read our terms of service
+              </a>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      {/* Invites */}
+      <div className="space-y-4" data-testid="company-settings-invites-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Invites
         </div>
@@ -321,6 +473,7 @@ export function CompanySettings() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
+              data-testid="company-settings-invites-generate-button"
               size="sm"
               onClick={() => inviteMutation.mutate()}
               disabled={inviteMutation.isPending}
@@ -334,7 +487,10 @@ export function CompanySettings() {
             <p className="text-sm text-destructive">{inviteError}</p>
           )}
           {inviteSnippet && (
-            <div className="rounded-md border border-border bg-muted/30 p-2">
+            <div
+              className="rounded-md border border-border bg-muted/30 p-2"
+              data-testid="company-settings-invites-snippet"
+            >
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs text-muted-foreground">
                   OpenClaw Invite Prompt
@@ -351,12 +507,14 @@ export function CompanySettings() {
               </div>
               <div className="mt-1 space-y-1.5">
                 <textarea
+                  data-testid="company-settings-invites-snippet-textarea"
                   className="h-[28rem] w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
                   value={inviteSnippet}
                   readOnly
                 />
                 <div className="flex justify-end">
                   <Button
+                    data-testid="company-settings-invites-copy-button"
                     size="sm"
                     variant="ghost"
                     onClick={async () => {
@@ -376,6 +534,33 @@ export function CompanySettings() {
               </div>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Import / Export */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Company Packages
+        </div>
+        <div className="rounded-md border border-border px-4 py-4">
+          <p className="text-sm text-muted-foreground">
+            Import and export have moved to dedicated pages accessible from the{" "}
+            <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
+          </p>
+          <div className="mt-3 flex items-center gap-2">
+            <Button size="sm" variant="outline" asChild>
+              <Link to="/company/export">
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                Export
+              </Link>
+            </Button>
+            <Button size="sm" variant="outline" asChild>
+              <Link to="/company/import">
+                <Upload className="mr-1.5 h-3.5 w-3.5" />
+                Import
+              </Link>
+            </Button>
+          </div>
         </div>
       </div>
 

@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
-import { useNavigate } from "@/lib/router";
+import { Link, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { agentUrl } from "../lib/utils";
+import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
-import { Network } from "lucide-react";
+import { Download, Network, Upload } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
 // Layout constants
@@ -115,16 +116,7 @@ function collectEdges(nodes: LayoutNode[]): Array<{ parent: LayoutNode; child: L
 
 // ── Status dot colors (raw hex for SVG) ─────────────────────────────────
 
-const adapterLabels: Record<string, string> = {
-  claude_local: "Claude",
-  codex_local: "Codex",
-  gemini_local: "Gemini",
-  opencode_local: "OpenCode",
-  cursor: "Cursor",
-  openclaw_gateway: "OpenClaw Gateway",
-  process: "Process",
-  http: "HTTP",
-};
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
 const statusDotColor: Record<string, string> = {
   running: "#22d3ee",
@@ -267,9 +259,24 @@ export function OrgChart() {
   }
 
   return (
+    <div className="flex flex-col h-full">
+    <div className="mb-2 flex items-center justify-start gap-2 shrink-0">
+      <Link to="/company/import">
+        <Button variant="outline" size="sm">
+          <Upload className="mr-1.5 h-3.5 w-3.5" />
+          Import company
+        </Button>
+      </Link>
+      <Link to="/company/export">
+        <Button variant="outline" size="sm">
+          <Download className="mr-1.5 h-3.5 w-3.5" />
+          Export company
+        </Button>
+      </Link>
+    </div>
     <div
       ref={containerRef}
-      className="w-full h-[calc(100vh-4rem)] overflow-hidden relative bg-muted/20 border border-border rounded-lg"
+      className="w-full flex-1 min-h-0 overflow-hidden relative bg-muted/20 border border-border rounded-lg"
       style={{ cursor: dragging ? "grabbing" : "grab" }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
@@ -409,7 +416,12 @@ export function OrgChart() {
                   </span>
                   {agent && (
                     <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
-                      {adapterLabels[agent.adapterType] ?? agent.adapterType}
+                      {getAdapterLabel(agent.adapterType)}
+                    </span>
+                  )}
+                  {agent && agent.capabilities && (
+                    <span className="text-[10px] text-muted-foreground/80 leading-tight mt-1 line-clamp-2">
+                      {agent.capabilities}
                     </span>
                   )}
                 </div>
@@ -419,10 +431,11 @@ export function OrgChart() {
         })}
       </div>
     </div>
+    </div>
   );
 }
 
-const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
+const roleLabels: Record<string, string> = AGENT_ROLE_LABELS;
 
 function roleLabel(role: string): string {
   return roleLabels[role] ?? role;

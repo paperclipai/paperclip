@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { Paperclip, Plus } from "lucide-react";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   DndContext,
   closestCenter,
-  PointerSensor,
+  MouseSensor,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -22,6 +22,8 @@ import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
+import { authApi } from "../api/auth";
+import { useCompanyOrder } from "../hooks/useCompanyOrder";
 import { useLocation, useNavigate } from "@/lib/router";
 import {
   Tooltip,
@@ -30,42 +32,6 @@ import {
 } from "@/components/ui/tooltip";
 import type { Company } from "@paperclipai/shared";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
-
-const ORDER_STORAGE_KEY = "paperclip.companyOrder";
-
-function getStoredOrder(): string[] {
-  try {
-    const raw = localStorage.getItem(ORDER_STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch { /* ignore */ }
-  return [];
-}
-
-function saveOrder(ids: string[]) {
-  localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(ids));
-}
-
-/** Sort companies by stored order, appending any new ones at the end. */
-function sortByStoredOrder(companies: Company[]): Company[] {
-  const order = getStoredOrder();
-  if (order.length === 0) return companies;
-
-  const byId = new Map(companies.map((c) => [c.id, c]));
-  const sorted: Company[] = [];
-
-  for (const id of order) {
-    const c = byId.get(id);
-    if (c) {
-      sorted.push(c);
-      byId.delete(id);
-    }
-  }
-  // Append any companies not in stored order
-  for (const c of byId.values()) {
-    sorted.push(c);
-  }
-  return sorted;
-}
 
 function SortableCompanyItem({
   company,
@@ -103,6 +69,10 @@ function SortableCompanyItem({
           <a
             href={`/${company.issuePrefix}/dashboard`}
             onClick={(e) => {
+              if (isDragging) {
+                e.preventDefault();
+                return;
+              }
               e.preventDefault();
               onSelect();
             }}
@@ -122,6 +92,7 @@ function SortableCompanyItem({
             >
               <CompanyPatternIcon
                 companyName={company.name}
+                logoUrl={company.logoUrl}
                 brandColor={company.brandColor}
                 className={cn(
                   isSelected
@@ -163,6 +134,11 @@ export function CompanyRail() {
     () => companies.filter((company) => company.status !== "archived"),
     [companies],
   );
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const companyIds = useMemo(() => sidebarCompanies.map((company) => company.id), [sidebarCompanies]);
 
   const liveRunsQueries = useQueries({
@@ -194,56 +170,15 @@ export function CompanyRail() {
     return result;
   }, [companyIds, sidebarBadgeQueries]);
 
-  // Maintain sorted order in local state, synced from companies + localStorage
-  const [orderedIds, setOrderedIds] = useState<string[]>(() =>
-    sortByStoredOrder(sidebarCompanies).map((c) => c.id)
-  );
-
-  // Re-sync orderedIds from localStorage whenever companies changes.
-  // Handles initial data load (companies starts as [] before query resolves)
-  // and subsequent refetches triggered by live updates.
-  useEffect(() => {
-    if (sidebarCompanies.length === 0) {
-      setOrderedIds([]);
-      return;
-    }
-    setOrderedIds(sortByStoredOrder(sidebarCompanies).map((c) => c.id));
-  }, [sidebarCompanies]);
-
-  // Sync order across tabs via the native storage event
-  useEffect(() => {
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key !== ORDER_STORAGE_KEY) return;
-      try {
-        const ids: string[] = e.newValue ? JSON.parse(e.newValue) : [];
-        setOrderedIds(ids);
-      } catch { /* ignore malformed data */ }
-    };
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
-  }, []);
-
-  // Re-derive when companies change (new company added/removed)
-  const orderedCompanies = useMemo(() => {
-    const byId = new Map(sidebarCompanies.map((c) => [c.id, c]));
-    const result: Company[] = [];
-    for (const id of orderedIds) {
-      const c = byId.get(id);
-      if (c) {
-        result.push(c);
-        byId.delete(id);
-      }
-    }
-    // Append any new companies not yet in our order
-    for (const c of byId.values()) {
-      result.push(c);
-    }
-    return result;
-  }, [sidebarCompanies, orderedIds]);
+  const { orderedCompanies, persistOrder } = useCompanyOrder({
+    companies: sidebarCompanies,
+    userId: currentUserId,
+  });
 
   // Require 8px of movement before starting a drag to avoid interfering with clicks
   const sensors = useSensors(
-    useSensor(PointerSensor, {
+    // Keep sidebar reordering mouse-only so touch input can scroll/tap without drag affordances.
+    useSensor(MouseSensor, {
       activationConstraint: { distance: 8 },
     })
   );
@@ -258,11 +193,9 @@ export function CompanyRail() {
       const newIndex = ids.indexOf(over.id as string);
       if (oldIndex === -1 || newIndex === -1) return;
 
-      const newIds = arrayMove(ids, oldIndex, newIndex);
-      setOrderedIds(newIds);
-      saveOrder(newIds);
+      persistOrder(arrayMove(ids, oldIndex, newIndex));
     },
-    [orderedCompanies]
+    [orderedCompanies, persistOrder]
   );
 
   return (

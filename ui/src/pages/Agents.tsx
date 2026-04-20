@@ -20,16 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
-const adapterLabels: Record<string, string> = {
-  claude_local: "Claude",
-  codex_local: "Codex",
-  gemini_local: "Gemini",
-  opencode_local: "OpenCode",
-  cursor: "Cursor",
-  openclaw_gateway: "OpenClaw Gateway",
-  process: "Process",
-  http: "HTTP",
-};
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
@@ -45,17 +36,21 @@ function matchesFilter(status: string, tab: FilterTab, showTerminated: boolean):
 }
 
 function filterAgents(agents: Agent[], tab: FilterTab, showTerminated: boolean): Agent[] {
-  return agents.filter((a) => matchesFilter(a.status, tab, showTerminated));
+  return agents
+    .filter((a) => matchesFilter(a.status, tab, showTerminated))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean): OrgNode[] {
-  return nodes.reduce<OrgNode[]>((acc, node) => {
-    const filteredReports = filterOrgTree(node.reports, tab, showTerminated);
-    if (matchesFilter(node.status, tab, showTerminated) || filteredReports.length > 0) {
-      acc.push({ ...node, reports: filteredReports });
-    }
-    return acc;
-  }, []);
+  return nodes
+    .reduce<OrgNode[]>((acc, node) => {
+      const filteredReports = filterOrgTree(node.reports, tab, showTerminated);
+      if (matchesFilter(node.status, tab, showTerminated) || filteredReports.length > 0) {
+        acc.push({ ...node, reports: filteredReports });
+      }
+      return acc;
+    }, [])
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function Agents() {
@@ -86,8 +81,8 @@ export function Agents() {
   });
 
   const { data: runs } = useQuery({
-    queryKey: queryKeys.heartbeats(selectedCompanyId!),
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.liveRuns(selectedCompanyId!), "agents-page"],
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
     refetchInterval: 15_000,
   });
@@ -229,6 +224,7 @@ export function Agents() {
                 title={agent.name}
                 subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
                 to={agentUrl(agent)}
+                className={agent.pausedAt && tab !== "paused" ? "opacity-50" : ""}
                 leading={
                   <span className="relative flex h-2.5 w-2.5">
                     <span
@@ -258,7 +254,7 @@ export function Agents() {
                         />
                       )}
                       <span className="text-xs text-muted-foreground font-mono w-14 text-right">
-                        {adapterLabels[agent.adapterType] ?? agent.adapterType}
+                        {getAdapterLabel(agent.adapterType)}
                       </span>
                       <span className="text-xs text-muted-foreground w-16 text-right">
                         {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
@@ -285,7 +281,7 @@ export function Agents() {
       {effectiveView === "org" && filteredOrg.length > 0 && (
         <div className="border border-border py-1">
           {filteredOrg.map((node) => (
-            <OrgTreeNode key={node.id} node={node} depth={0} agentMap={agentMap} liveRunByAgent={liveRunByAgent} />
+            <OrgTreeNode key={node.id} node={node} depth={0} agentMap={agentMap} liveRunByAgent={liveRunByAgent} tab={tab} />
           ))}
         </div>
       )}
@@ -310,11 +306,13 @@ function OrgTreeNode({
   depth,
   agentMap,
   liveRunByAgent,
+  tab,
 }: {
   node: OrgNode;
   depth: number;
   agentMap: Map<string, Agent>;
   liveRunByAgent: Map<string, { runId: string; liveCount: number }>;
+  tab: FilterTab;
 }) {
   const agent = agentMap.get(node.id);
 
@@ -324,7 +322,7 @@ function OrgTreeNode({
     <div style={{ paddingLeft: depth * 24 }}>
       <Link
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
-        className="flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit"
+        className={cn("flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit", agent?.pausedAt && tab !== "paused" && "opacity-50")}
       >
         <span className="relative flex h-2.5 w-2.5 shrink-0">
           <span className={`absolute inline-flex h-full w-full rounded-full ${statusColor}`} />
@@ -359,7 +357,7 @@ function OrgTreeNode({
             {agent && (
               <>
                 <span className="text-xs text-muted-foreground font-mono w-14 text-right">
-                  {adapterLabels[agent.adapterType] ?? agent.adapterType}
+                  {getAdapterLabel(agent.adapterType)}
                 </span>
                 <span className="text-xs text-muted-foreground w-16 text-right">
                   {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
@@ -375,7 +373,7 @@ function OrgTreeNode({
       {node.reports && node.reports.length > 0 && (
         <div className="border-l border-border/50 ml-4">
           {node.reports.map((child) => (
-            <OrgTreeNode key={child.id} node={child} depth={depth + 1} agentMap={agentMap} liveRunByAgent={liveRunByAgent} />
+            <OrgTreeNode key={child.id} node={child} depth={depth + 1} agentMap={agentMap} liveRunByAgent={liveRunByAgent} tab={tab} />
           ))}
         </div>
       )}

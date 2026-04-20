@@ -3,40 +3,46 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node scripts/dev-runner.mjs watch",
-    "dev:watch": "node scripts/dev-runner.mjs watch",
-    "dev:once": "node scripts/dev-runner.mjs dev",
+    "preflight:workspace-links": "node cli/node_modules/tsx/dist/cli.mjs scripts/ensure-workspace-package-links.ts",
+    "dev": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
+    "dev:watch": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
+    "dev:once": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts dev",
+    "dev:list": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-service.ts list",
+    "dev:stop": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-service.ts stop",
     "dev:server": "pnpm --filter @paperclipai/server dev",
     "dev:ui": "pnpm --filter @paperclipai/ui dev",
-    "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
-    "test": "vitest",
-    "test:run": "vitest run",
+    "build": "pnpm run preflight:workspace-links && pnpm -r build",
+    "typecheck": "pnpm run preflight:workspace-links && pnpm -r typecheck",
+    "test": "pnpm run test:run",
+    "test:watch": "pnpm run preflight:workspace-links && vitest",
+    "test:run": "pnpm run preflight:workspace-links && vitest run",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
-    "release:start": "./scripts/release-start.sh",
     "release": "./scripts/release.sh",
-    "release:preflight": "./scripts/release-preflight.sh",
+    "release:canary": "./scripts/release.sh canary",
+    "release:stable": "./scripts/release.sh stable",
     "release:github": "./scripts/create-github-release.sh",
     "release:rollback": "./scripts/rollback-latest.sh",
-    "changeset": "changeset",
-    "version-packages": "changeset version",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "docs:dev": "cd docs && npx mintlify dev",
     "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",
     "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",
     "smoke:openclaw-sse-standalone": "./scripts/smoke/openclaw-sse-standalone.sh",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
-    "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed"
+    "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed",
+    "test:e2e:multiuser-authenticated": "npx playwright test --config tests/e2e/playwright-multiuser-authenticated.config.ts",
+    "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
+    "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",
+    "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
+    "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.30.0",
-    "cross-env": "^10.1.0",
     "@playwright/test": "^1.58.2",
+    "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
@@ -44,5 +50,13 @@
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@9.15.4"
+  "packageManager": "pnpm@9.15.4",
+  "pnpm": {
+    "patchedDependencies": {
+      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
+    },
+    "overrides": {
+      "rollup": ">=4.59.0"
+    }
+  }
 }

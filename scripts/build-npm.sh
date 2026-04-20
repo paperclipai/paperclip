@@ -15,9 +15,11 @@ CLI_DIR="$REPO_ROOT/cli"
 DIST_DIR="$CLI_DIR/dist"
 
 skip_checks=false
+skip_typecheck=false
 for arg in "$@"; do
   case "$arg" in
     --skip-checks) skip_checks=true ;;
+    --skip-typecheck) skip_typecheck=true ;;
   esac
 done
 
@@ -32,12 +34,16 @@ else
 fi
 
 # ── Step 2: TypeScript type-check ──────────────────────────────────────────────
-echo "  [2/5] Type-checking..."
-cd "$REPO_ROOT"
-pnpm -r typecheck
+if [ "$skip_typecheck" = false ]; then
+  echo "  [2/6] Type-checking..."
+  cd "$REPO_ROOT"
+  pnpm -r typecheck
+else
+  echo "  [2/6] Skipping type-check (--skip-typecheck)"
+fi
 
 # ── Step 3: Bundle CLI with esbuild ────────────────────────────────────────────
-echo "  [3/5] Bundling CLI with esbuild..."
+echo "  [3/6] Bundling CLI with esbuild..."
 cd "$CLI_DIR"
 rm -rf dist
 
