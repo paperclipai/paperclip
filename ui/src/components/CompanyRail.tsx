@@ -140,15 +140,15 @@ function SortableCompanyItem({
 }
 
 export function CompanyRail() {
-  const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { companiesInOrg, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openOnboarding } = useDialog();
   const navigate = useNavigate();
   const location = useLocation();
   const isInstanceRoute = location.pathname.startsWith("/instance/");
   const highlightedCompanyId = isInstanceRoute ? null : selectedCompanyId;
   const sidebarCompanies = useMemo(
-    () => companies.filter((company) => company.status !== "archived"),
-    [companies],
+    () => companiesInOrg.filter((company) => company.status !== "archived"),
+    [companiesInOrg],
   );
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,

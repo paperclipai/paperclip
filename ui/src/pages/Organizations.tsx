@@ -3,14 +3,13 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Building2, Plus, Trash2, Users, Building as BuildingIcon } from "lucide-react";
 import { organizationsApi } from "../api/organizations";
 import { companiesApi } from "../api/companies";
-import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Link } from "@/lib/router";
 
 export function Organizations() {
-  const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
 
@@ -19,10 +18,6 @@ export function Organizations() {
   const [newOrgName, setNewOrgName] = useState("");
   const [addMemberEmail, setAddMemberEmail] = useState("");
   const [attachCompanyId, setAttachCompanyId] = useState("");
-
-  useEffect(() => {
-    setBreadcrumbs([{ label: "Organizations" }]);
-  }, [setBreadcrumbs]);
 
   const { data: organizations = [], isLoading: orgsLoading } = useQuery({
     queryKey: queryKeys.organizations.list,
@@ -164,11 +159,20 @@ export function Organizations() {
   }
 
   return (
-    <div className="max-w-5xl space-y-6">
-      <div className="flex items-center gap-2">
-        <Building2 className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Organizations</h1>
-      </div>
+    <div className="min-h-screen bg-muted/20">
+      <header className="border-b border-border bg-background">
+        <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-4">
+          <div className="flex items-center gap-2">
+            <Building2 className="size-4 text-muted-foreground" />
+            <span className="text-base font-semibold">Organizations</span>
+          </div>
+          <Link to="/home" className="text-sm text-muted-foreground hover:text-foreground">
+            Back to home
+          </Link>
+        </div>
+      </header>
+
+      <main className="mx-auto w-full max-w-5xl space-y-6 px-6 py-10">
 
       <div className="grid grid-cols-1 md:grid-cols-[240px_1fr] gap-6">
         {/* Sidebar: org list */}
@@ -449,6 +453,7 @@ export function Organizations() {
           )}
         </div>
       </div>
+      </main>
     </div>
   );
 }
