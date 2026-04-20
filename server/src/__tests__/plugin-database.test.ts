@@ -68,6 +68,18 @@ describe("plugin database SQL validation", () => {
       validatePluginRuntimeExecute("UPDATE public.issues SET title = $1", "plugin_test")
     ).toThrow(/namespace/i);
   });
+
+  it("targets anonymous DO blocks without rejecting do-prefixed aliases", () => {
+    expect(() =>
+      validatePluginRuntimeQuery(
+        "SELECT EXTRACT(DOW FROM created_at) AS do_flag FROM plugin_test.rows",
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginMigrationStatement("DO $$ BEGIN END $$;", "plugin_test")
+    ).toThrow(/disallowed/i);
+  });
 });
 
 describeEmbeddedPostgres("plugin database namespaces", () => {

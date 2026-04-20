@@ -161,7 +161,7 @@ function assertNoBannedSql(statement: string): void {
     /\bsecurity\s+definer\b/,
     /\bcopy\b/,
     /\bcall\b/,
-    /\bdo\b/,
+    /\bdo\s+(?:\$\$|language\b)/,
   ];
   const matched = banned.find((pattern) => pattern.test(normalized));
   if (matched) {
@@ -261,6 +261,7 @@ export function validatePluginRuntimeExecute(query: string, namespace: string): 
 }
 
 function bindSql(statement: string, params: readonly unknown[] = []): SQL {
+  // Safe only after callers run the plugin SQL validators above.
   if (params.length === 0) return sql.raw(statement);
   const chunks: SQL[] = [];
   let cursor = 0;

@@ -157,6 +157,52 @@ describe("plugin scoped API routes", () => {
     expect(workerManager.call.mock.calls[0]?.[2].headers.authorization).toBeUndefined();
   });
 
+  it("only forwards allowlisted response headers from plugin routes", async () => {
+    const apiRoutes = manifest([
+      {
+        routeKey: "summary.get",
+        method: "GET",
+        path: "/companies/:companySlug/summary",
+        auth: "board",
+        capability: "api.routes.register",
+        companyResolution: { from: "query", key: "companyId" },
+      },
+    ]);
+    const { app } = await createApp({
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      },
+      plugin: {
+        id: pluginId,
+        pluginKey: apiRoutes.id,
+        status: "ready",
+        manifestJson: apiRoutes,
+      },
+      workerResult: {
+        status: 200,
+        body: { handled: true },
+        headers: {
+          "cache-control": "no-store",
+          "content-security-policy": "default-src 'none'",
+          location: "https://example.invalid",
+          "x-request-id": "plugin-request",
+        },
+      },
+    });
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/api/companies/acme/summary?companyId=${companyId}`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.headers["x-request-id"]).toBe("plugin-request");
+    expect(res.headers["content-security-policy"]).toBeUndefined();
+    expect(res.headers.location).toBeUndefined();
+  });
+
   it("enforces agent checkout ownership before dispatching issue-scoped POST routes", async () => {
     const apiRoutes = manifest([
       {

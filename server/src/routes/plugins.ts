@@ -23,7 +23,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import { and, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, pluginLogs, pluginWebhookDeliveries } from "@paperclipai/db";
@@ -123,6 +123,12 @@ const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const PLUGIN_API_BODY_LIMIT_BYTES = 1_000_000;
+const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
+  "cache-control",
+  "etag",
+  "last-modified",
+  "x-request-id",
+]);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
@@ -398,6 +404,17 @@ export function pluginRoutes(
       }
     }
     return headers;
+  }
+
+  function applyPluginScopedApiResponseHeaders(
+    res: Response,
+    headers: Record<string, string> | undefined,
+  ): void {
+    for (const [name, value] of Object.entries(headers ?? {})) {
+      const lower = name.toLowerCase();
+      if (!PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST.has(lower)) continue;
+      res.setHeader(lower, value);
+    }
   }
 
   function normalizeQuery(query: Request["query"]): Record<string, string | string[]> {
@@ -1447,11 +1464,7 @@ export function pluginRoutes(
       const status = Number.isInteger(result.status) && Number(result.status) >= 200 && Number(result.status) <= 599
         ? Number(result.status)
         : 200;
-      for (const [name, value] of Object.entries(result.headers ?? {})) {
-        const lower = name.toLowerCase();
-        if (lower === "set-cookie" || lower === "authorization" || lower === "cookie") continue;
-        res.setHeader(name, value);
-      }
+      applyPluginScopedApiResponseHeaders(res, result.headers);
       if (status === 204) {
         res.status(status).end();
       } else {
