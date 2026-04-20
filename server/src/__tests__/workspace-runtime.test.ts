@@ -372,6 +372,46 @@ describe("realizeExecutionWorkspace", () => {
     expect(second.branchName).toBe(first.branchName);
   });
 
+  it("falls back to the resolved workspace when git worktree strategy is requested for a non-git cwd", async () => {
+    const fallbackCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fallback-workspace-"));
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: fallbackCwd,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-4020",
+        title: "Projectless issues fail instantly",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Claude Code",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.strategy).toBe("project_primary");
+    expect(realized.cwd).toBe(fallbackCwd);
+    expect(realized.created).toBe(false);
+    expect(realized.branchName).toBeNull();
+    expect(realized.worktreePath).toBeNull();
+    expect(realized.warnings).toEqual([
+      `Workspace strategy requested git worktree, but base cwd "${fallbackCwd}" is not a git checkout. Using the resolved workspace directly for this run.`,
+    ]);
+  });
+
   it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {
     const repoRoot = await createTempRepo();
     const branchName = "PAP-447-add-worktree-support";
