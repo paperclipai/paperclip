@@ -23,7 +23,7 @@ import {
   projects,
 } from "@paperclipai/db";
 import type { IssueRelationIssueSummary } from "@paperclipai/shared";
-import { extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
+import { extractAgentMentionIds, extractProjectMentionIds, isUuidLike, deriveAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -2570,14 +2570,30 @@ export function issueService(db: Db) {
         if (normalized) tokens.add(normalized.toLowerCase());
       }
 
+      // Also extract urlKey-based mentions: [@Name](/GSTA/agents/<urlKey>) or [Name](/GSTA/agents/<urlKey>)
+      const urlKeyMentionRe = /\[[^\]]*]\(\/[^/]+\/agents\/([^)\s]+)\)/gi;
+      const mentionedUrlKeys = new Set<string>();
+      let urlKeyMatch: RegExpExecArray | null;
+      while ((urlKeyMatch = urlKeyMentionRe.exec(body)) !== null) {
+        const urlKey = urlKeyMatch[1].toLowerCase().trim();
+        if (urlKey) mentionedUrlKeys.add(urlKey);
+      }
+
       const explicitAgentMentionIds = extractAgentMentionIds(body);
-      if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
+      if (tokens.size === 0 && explicitAgentMentionIds.length === 0 && mentionedUrlKeys.size === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
       const resolved = new Set<string>(explicitAgentMentionIds);
       for (const agent of rows) {
         if (tokens.has(agent.name.toLowerCase())) {
           resolved.add(agent.id);
+        }
+        // Match against urlKey derived from agent name
+        if (mentionedUrlKeys.size > 0) {
+          const agentUrlKey = deriveAgentUrlKey(agent.name, agent.id);
+          if (mentionedUrlKeys.has(agentUrlKey)) {
+            resolved.add(agent.id);
+          }
         }
       }
       return [...resolved];
