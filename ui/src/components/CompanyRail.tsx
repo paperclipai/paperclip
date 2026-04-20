@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Check, Paperclip, Plus, Settings } from "lucide-react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
@@ -290,63 +290,41 @@ function orgInitials(name: string) {
   return `${parts[0]![0]}${parts[parts.length - 1]![0]}`.toUpperCase();
 }
 
+function pushRoute(path: string) {
+  window.history.pushState({}, "", path);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
 function OrgSwitcherChip() {
   const [open, setOpen] = useState(false);
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { organizations, selectedOrg, selectedOrgId, setSelectedOrgId, loading } = useOrg();
-  const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { organizations, selectedOrg, setSelectedOrgId, loading } = useOrg();
+  const { companies, setSelectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
-
-  useEffect(() => {
-    console.log("[rail-org-switch] STATE", { pathname: location.pathname, selectedOrgId, selectedCompanyId });
-  }, [location.pathname, selectedOrgId, selectedCompanyId]);
 
   const label = selectedOrg?.name ?? (loading ? "…" : "Org");
   const initials = orgInitials(label);
 
   function handleSelect(orgId: string) {
-    console.log("[rail-org-switch] click", { orgId, currentOrgId: selectedOrg?.id, totalCompanies: companies.length, pathnameBefore: location.pathname });
     setOpen(false);
-    if (selectedOrg?.id === orgId) {
-      console.log("[rail-org-switch] same org, bail");
-      return;
-    }
+    if (selectedOrg?.id === orgId) return;
 
     const nextCompany = companies.find(
       (c) => c.organizationId === orgId && c.status !== "archived",
     );
-    console.log("[rail-org-switch] nextCompany", nextCompany ? { id: nextCompany.id, prefix: nextCompany.issuePrefix, orgId: nextCompany.organizationId } : null);
 
+    setSelectedOrgId(orgId);
     if (nextCompany) {
-      setSelectedOrgId(orgId);
       setSelectedCompanyId(nextCompany.id, { source: "manual" });
-      const target = `/${nextCompany.issuePrefix}/dashboard`;
-      console.log("[rail-org-switch] navigate to", target, "typeof navigate:", typeof navigate);
-      const result = navigate(target);
-      console.log("[rail-org-switch] navigate returned", result);
-      setTimeout(() => {
-        console.log("[rail-org-switch] post-navigate +50ms", { pathname: window.location.pathname });
-        if (window.location.pathname !== target) {
-          console.log("[rail-org-switch] URL didn't change — trying window.history.pushState");
-          window.history.pushState({}, "", target);
-          window.dispatchEvent(new PopStateEvent("popstate"));
-          setTimeout(() => {
-            console.log("[rail-org-switch] post-pushState", { pathname: window.location.pathname });
-          }, 50);
-        }
-      }, 100);
+      pushRoute(`/${nextCompany.issuePrefix}/dashboard`);
     } else {
-      console.log("[rail-org-switch] no company, navigate /home");
-      setSelectedOrgId(orgId);
-      navigate("/home");
+      pushRoute("/home");
     }
   }
 
   function handleManage() {
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
-    navigate("/organizations");
+    pushRoute("/organizations");
   }
 
   return (
@@ -361,7 +339,7 @@ function OrgSwitcherChip() {
           {initials}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" side="right" sideOffset={8} className="w-64 p-1" disablePortal>
+      <PopoverContent align="start" side="right" sideOffset={8} className="w-64 p-1">
         <div className="flex flex-col">
           {organizations.length > 0 ? (
             <>
@@ -372,19 +350,7 @@ function OrgSwitcherChip() {
                 <button
                   key={org.id}
                   type="button"
-                  onPointerDown={(e) => {
-                    console.log("[rail-org-switch] onPointerDown", org.id);
-                    e.stopPropagation();
-                  }}
-                  onMouseDown={(e) => {
-                    console.log("[rail-org-switch] onMouseDown", org.id);
-                    e.stopPropagation();
-                  }}
-                  onClick={(e) => {
-                    console.log("[rail-org-switch] onClick", org.id);
-                    e.stopPropagation();
-                    handleSelect(org.id);
-                  }}
+                  onClick={() => handleSelect(org.id)}
                   className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-left hover:bg-accent hover:text-accent-foreground"
                 >
                   <span className="flex h-5 w-5 items-center justify-center rounded bg-muted text-[10px] font-semibold">
