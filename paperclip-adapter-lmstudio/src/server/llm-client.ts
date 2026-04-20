@@ -191,3 +191,30 @@ export async function streamChatCompletion(req: StreamRequest): Promise<string> 
 
   return fullText;
 }
+
+export type ProbeResult = { ok: true } | { ok: false; reason: string };
+
+export async function probeEndpoint(url: string, timeoutMs: number): Promise<ProbeResult> {
+  try {
+    const response = await fetch(`${url}/v1/models`, {
+      method: "GET",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) {
+      return { ok: false, reason: `HTTP ${response.status} ${response.statusText}`.trim() };
+    }
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof Error) {
+      if (err.name === "AbortError" || /aborted|timeout/i.test(err.message)) {
+        return { ok: false, reason: `timeout after ${timeoutMs}ms` };
+      }
+      const code = (err as { cause?: { code?: string } }).cause?.code;
+      if (code) {
+        return { ok: false, reason: `${code} (${err.message})` };
+      }
+      return { ok: false, reason: err.message };
+    }
+    return { ok: false, reason: String(err) };
+  }
+}
