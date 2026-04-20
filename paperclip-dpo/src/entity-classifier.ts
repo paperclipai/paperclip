@@ -32,7 +32,39 @@ export async function classifyEntities(
           { role: "user", content: text },
         ],
         stream: false,
-        response_format: { type: "json_object" },
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "ClassifierResponse",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                findings: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      type: {
+                        type: "string",
+                        enum: ["PERSON", "FIRMA", "ORT", "GESCHAEFTSGEHEIMNIS", "ART_9"],
+                      },
+                      value: { type: "string" },
+                      confidence: {
+                        type: "string",
+                        enum: ["low", "medium", "high"],
+                      },
+                    },
+                    required: ["type", "value", "confidence"],
+                    additionalProperties: false,
+                  },
+                },
+              },
+              required: ["findings"],
+              additionalProperties: false,
+            },
+          },
+        },
       }),
       signal: AbortSignal.timeout(cfg.timeoutMs),
     });
