@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// @vitest-environment-options {"url": "http://localhost/"}
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -209,6 +210,23 @@ vi.mock("../components/AgentIconPicker", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+// jsdom requires a URL to enable localStorage; polyfill when not available
+if (typeof window !== "undefined" && typeof window.localStorage?.clear !== "function") {
+  const _store = new Map<string, string>();
+  Object.defineProperty(window, "localStorage", {
+    value: {
+      getItem: (key: string) => _store.get(key) ?? null,
+      setItem: (key: string, value: string) => { _store.set(key, value); },
+      removeItem: (key: string) => { _store.delete(key); },
+      clear: () => { _store.clear(); },
+      get length() { return _store.size; },
+      key: (index: number) => [..._store.keys()][index] ?? null,
+    },
+    writable: false,
+    configurable: true,
+  });
+}
 
 function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
   return {
