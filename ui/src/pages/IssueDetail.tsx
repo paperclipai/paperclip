@@ -1247,6 +1247,26 @@ export function IssueDetail() {
       }
     },
   });
+
+  const deleteIssue = useMutation({
+    mutationFn: () => issuesApi.remove(issueId!),
+    onSuccess: () => {
+      const companyId = issue?.companyId ?? selectedCompanyId;
+      if (companyId) {
+        queryClient.invalidateQueries({ queryKey: ["issues", companyId] });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+      }
+      queryClient.removeQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      navigate(sourceBreadcrumb.href || "/issues");
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Task delete failed",
+        body: err instanceof Error ? err.message : "Unable to delete task",
+        tone: "error",
+      });
+    },
+  });
   const handleIssuePropertiesUpdate = useCallback((data: Record<string, unknown>) => {
     updateIssue.mutate(data);
   }, [updateIssue.mutate]);
@@ -2335,6 +2355,19 @@ export function IssueDetail() {
               >
                 <EyeOff className="h-3 w-3" />
                 Hide this Task
+              </button>
+              <div className="my-1 h-px bg-border" />
+              <button
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-destructive/10 text-destructive disabled:opacity-50 disabled:pointer-events-none"
+                disabled={deleteIssue.isPending}
+                onClick={() => {
+                  if (!window.confirm("Delete this task? This cannot be undone.")) return;
+                  deleteIssue.mutate();
+                  setMoreOpen(false);
+                }}
+              >
+                <Trash2 className="h-3 w-3" />
+                Delete this Task
               </button>
             </PopoverContent>
             </Popover>

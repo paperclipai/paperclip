@@ -43,6 +43,7 @@ import {
 } from "@/components/ui/tooltip";
 import type { Company } from "@paperclipai/shared";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
+import { InstanceAgentPauseControl } from "./InstanceAgentPauseControl";
 
 const ORDER_STORAGE_KEY = "paperclip.companyOrder";
 const MISSION_CONTROL_URL = "https://robert-dawson-mini-s-1.tail3dddf6.ts.net/";
@@ -295,6 +296,10 @@ export function CompanyRail() {
             <p>Mission Control</p>
           </TooltipContent>
         </Tooltip>
+      </div>
+
+      <div className="flex items-center justify-center w-full shrink-0 pb-2">
+        <InstanceAgentPauseControl side={tooltipSide} />
       </div>
 
       {/* Company list */}

@@ -12,6 +12,8 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
+  InstanceAgentPauseMutationResult,
+  InstanceAgentPauseState,
 } from "@paperclipai/shared";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
@@ -74,6 +76,11 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 
 export const agentsApi = {
   list: (companyId: string) => api.get<Agent[]>(`/companies/${companyId}/agents`),
+  instancePauseState: () => api.get<InstanceAgentPauseState>("/instance/agents/pause-state"),
+  pauseAllInstanceAgents: () =>
+    api.post<InstanceAgentPauseMutationResult>("/instance/agents/pause-all", {}),
+  resumeTokenPausedInstanceAgents: () =>
+    api.post<InstanceAgentPauseMutationResult>("/instance/agents/resume-token-paused", {}),
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
   listConfigurations: (companyId: string) =>
     api.get<Record<string, unknown>[]>(`/companies/${companyId}/agent-configurations`),

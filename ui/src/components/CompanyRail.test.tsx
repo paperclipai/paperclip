@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyRail } from "./CompanyRail";
+import { ApiError } from "../api/client";
 
 const MISSION_CONTROL_URL = "https://robert-dawson-mini-s-1.tail3dddf6.ts.net/";
 
@@ -63,6 +64,16 @@ const sidebarBadgesApiMock = vi.hoisted(() => ({
   get: vi.fn(),
 }));
 
+const agentsApiMock = vi.hoisted(() => ({
+  instancePauseState: vi.fn(),
+  pauseAllInstanceAgents: vi.fn(),
+  resumeTokenPausedInstanceAgents: vi.fn(),
+}));
+
+const toastActionsMock = vi.hoisted(() => ({
+  pushToast: vi.fn(),
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => companyState,
 }));
@@ -88,9 +99,42 @@ vi.mock("../api/sidebarBadges", () => ({
   sidebarBadgesApi: sidebarBadgesApiMock,
 }));
 
+vi.mock("../api/agents", () => ({
+  agentsApi: agentsApiMock,
+}));
+
+vi.mock("../context/ToastContext", () => ({
+  useToastActions: () => toastActionsMock,
+}));
+
 vi.mock("./CompanyPatternIcon", () => ({
   CompanyPatternIcon: ({ companyName }: { companyName: string }) => (
     <div data-testid="company-pattern-icon">{companyName.charAt(0)}</div>
+  ),
+}));
+
+vi.mock("@/components/ui/dropdown-menu", () => ({
+  DropdownMenu: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DropdownMenuTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
+  DropdownMenuContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DropdownMenuLabel: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DropdownMenuSeparator: () => <hr />,
+  DropdownMenuItem: ({
+    children,
+    disabled,
+    onSelect,
+  }: {
+    children: ReactNode;
+    disabled?: boolean;
+    onSelect?: (event: { preventDefault: () => void }) => void;
+  }) => (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onSelect?.({ preventDefault: vi.fn() })}
+    >
+      {children}
+    </button>
   ),
 }));
 
@@ -105,6 +149,31 @@ vi.mock("@/components/ui/tooltip", () => ({
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
+
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function waitForAssertion(assertion: () => void, attempts = 20) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await flush();
+    }
+  }
+
+  throw lastError;
+}
 
 async function renderCompanyRail() {
   container = document.createElement("div");
@@ -134,6 +203,11 @@ beforeEach(() => {
   routerState.navigate.mockReset();
   heartbeatsApiMock.liveRunsForCompany.mockReset();
   sidebarBadgesApiMock.get.mockReset();
+  agentsApiMock.instancePauseState.mockReset();
+  agentsApiMock.pauseAllInstanceAgents.mockReset();
+  agentsApiMock.resumeTokenPausedInstanceAgents.mockReset();
+  toastActionsMock.pushToast.mockReset();
+  vi.spyOn(window, "confirm").mockReturnValue(true);
   heartbeatsApiMock.liveRunsForCompany.mockResolvedValue([]);
   sidebarBadgesApiMock.get.mockResolvedValue({
     inbox: 0,
@@ -147,6 +221,62 @@ beforeEach(() => {
       next7Days: 0,
     },
   });
+  agentsApiMock.instancePauseState.mockResolvedValue({
+    counts: {
+      totalAgents: 3,
+      runnableAgents: 2,
+      tokenPausedAgents: 1,
+      manualPausedAgents: 0,
+      budgetPausedAgents: 0,
+      systemPausedAgents: 0,
+      otherPausedAgents: 0,
+      pendingApprovalAgents: 0,
+      terminatedAgents: 0,
+      scopedCompanyCount: 1,
+      activeRunCount: 1,
+    },
+    scopedCompanyIds: ["company-1"],
+  });
+  agentsApiMock.pauseAllInstanceAgents.mockResolvedValue({
+    counts: {
+      totalAgents: 3,
+      runnableAgents: 0,
+      tokenPausedAgents: 3,
+      manualPausedAgents: 0,
+      budgetPausedAgents: 0,
+      systemPausedAgents: 0,
+      otherPausedAgents: 0,
+      pendingApprovalAgents: 0,
+      terminatedAgents: 0,
+      scopedCompanyCount: 1,
+      activeRunCount: 0,
+    },
+    scopedCompanyIds: ["company-1"],
+    affectedCompanyIds: ["company-1"],
+    pausedAgents: 2,
+    resumedAgents: 0,
+    cancelledRuns: 1,
+  });
+  agentsApiMock.resumeTokenPausedInstanceAgents.mockResolvedValue({
+    counts: {
+      totalAgents: 3,
+      runnableAgents: 3,
+      tokenPausedAgents: 0,
+      manualPausedAgents: 0,
+      budgetPausedAgents: 0,
+      systemPausedAgents: 0,
+      otherPausedAgents: 0,
+      pendingApprovalAgents: 0,
+      terminatedAgents: 0,
+      scopedCompanyCount: 1,
+      activeRunCount: 0,
+    },
+    scopedCompanyIds: ["company-1"],
+    affectedCompanyIds: ["company-1"],
+    pausedAgents: 0,
+    resumedAgents: 1,
+    cancelledRuns: 0,
+  });
 });
 
 afterEach(async () => {
@@ -158,6 +288,7 @@ afterEach(async () => {
   container?.remove();
   root = null;
   container = null;
+  vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
@@ -175,5 +306,85 @@ describe("CompanyRail Mission Control shortcut", () => {
     expect(link?.getAttribute("rel")).toBe("noreferrer noopener");
     expect(link?.getAttribute("title")).toBe("Open Mission Control");
     expect(link?.querySelector('[data-testid="mission-control-external-badge"]')).not.toBeNull();
+  });
+});
+
+describe("CompanyRail agent token switch", () => {
+  it("renders the global token switch after loading instance pause state", async () => {
+    await renderCompanyRail();
+
+    await waitForAssertion(() => {
+      expect(agentsApiMock.instancePauseState).toHaveBeenCalled();
+      expect(container?.querySelector('button[aria-label="Agent token switch"]')).not.toBeNull();
+    });
+  });
+
+  it("confirms and pauses all runnable agents", async () => {
+    await renderCompanyRail();
+
+    await waitForAssertion(() => {
+      expect(container?.textContent).toContain("Pause all agents");
+      const button = Array.from(container!.querySelectorAll("button")).find((candidate) =>
+        candidate.textContent?.includes("Pause all agents"),
+      );
+      expect(button?.disabled).toBe(false);
+    });
+
+    const pauseButton = Array.from(container!.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Pause all agents"),
+    );
+    expect(pauseButton).not.toBeUndefined();
+
+    await act(async () => {
+      pauseButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("Pause 2 runnable agents"));
+      expect(agentsApiMock.pauseAllInstanceAgents).toHaveBeenCalled();
+      expect(toastActionsMock.pushToast).toHaveBeenCalledWith(expect.objectContaining({
+        title: "Agents paused",
+      }));
+    });
+  });
+
+  it("confirms and resumes only token-paused agents", async () => {
+    await renderCompanyRail();
+
+    await waitForAssertion(() => {
+      expect(container?.textContent).toContain("Resume token-paused agents");
+      const button = Array.from(container!.querySelectorAll("button")).find((candidate) =>
+        candidate.textContent?.includes("Resume token-paused agents"),
+      );
+      expect(button?.disabled).toBe(false);
+    });
+
+    const resumeButton = Array.from(container!.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Resume token-paused agents"),
+    );
+    expect(resumeButton).not.toBeUndefined();
+
+    await act(async () => {
+      resumeButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("Manual and budget-paused agents will stay paused"));
+      expect(agentsApiMock.resumeTokenPausedInstanceAgents).toHaveBeenCalled();
+      expect(toastActionsMock.pushToast).toHaveBeenCalledWith(expect.objectContaining({
+        title: "Agents resumed",
+      }));
+    });
+  });
+
+  it("hides the token switch for non-admin board sessions", async () => {
+    agentsApiMock.instancePauseState.mockRejectedValue(new ApiError("Forbidden", 403, null));
+
+    await renderCompanyRail();
+
+    await waitForAssertion(() => {
+      expect(agentsApiMock.instancePauseState).toHaveBeenCalled();
+      expect(container?.querySelector('button[aria-label="Agent token switch"]')).toBeNull();
+    });
   });
 });

@@ -15,6 +15,7 @@ import {
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
   type AgentSkillSnapshot,
+  type InstanceAgentPauseMutationResult,
   type InstanceSchedulerHeartbeatAgent,
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsBundleSchema,
@@ -1050,6 +1051,89 @@ export function agentRoutes(
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+  });
+
+  router.get("/instance/agents/pause-state", async (req, res) => {
+    assertInstanceAdmin(req);
+    res.json(await svc.getInstanceAgentPauseState());
+  });
+
+  router.post("/instance/agents/pause-all", async (req, res) => {
+    assertInstanceAdmin(req);
+    const actor = getActorInfo(req);
+    const result = await svc.pauseAllForTokenAvailability();
+    let cancelledRuns = 0;
+    const cancelledRunsByCompanyId = new Map<string, number>();
+
+    for (const agent of result.affectedAgents) {
+      const cancelledForAgent = await heartbeat.cancelActiveForAgent(agent.id);
+      cancelledRuns += cancelledForAgent;
+      if (cancelledForAgent > 0) {
+        cancelledRunsByCompanyId.set(
+          agent.companyId,
+          (cancelledRunsByCompanyId.get(agent.companyId) ?? 0) + cancelledForAgent,
+        );
+      }
+    }
+
+    await Promise.all(result.affectedCompanyIds.map((companyId) =>
+      logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agents.token_pause_applied",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          pausedAgents: result.affectedCompanyCounts.get(companyId) ?? 0,
+          cancelledRuns: cancelledRunsByCompanyId.get(companyId) ?? 0,
+          pauseReason: "token_availability",
+        },
+      }),
+    ));
+
+    const response: InstanceAgentPauseMutationResult = {
+      ...(await svc.getInstanceAgentPauseState()),
+      affectedCompanyIds: result.affectedCompanyIds,
+      pausedAgents: result.pausedAgents,
+      resumedAgents: 0,
+      cancelledRuns,
+    };
+    res.json(response);
+  });
+
+  router.post("/instance/agents/resume-token-paused", async (req, res) => {
+    assertInstanceAdmin(req);
+    const actor = getActorInfo(req);
+    const result = await svc.resumeTokenAvailabilityPaused();
+
+    await Promise.all(result.affectedCompanyIds.map((companyId) =>
+      logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agents.token_pause_resumed",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          resumedAgents: result.affectedCompanyCounts.get(companyId) ?? 0,
+          pauseReason: "token_availability",
+        },
+      }),
+    ));
+
+    const response: InstanceAgentPauseMutationResult = {
+      ...result.state,
+      affectedCompanyIds: result.affectedCompanyIds,
+      pausedAgents: 0,
+      resumedAgents: result.resumedAgents,
+      cancelledRuns: 0,
+    };
+    res.json(response);
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {

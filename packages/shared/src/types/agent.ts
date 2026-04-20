@@ -84,6 +84,32 @@ export interface Agent {
   updatedAt: Date;
 }
 
+export interface InstanceAgentPauseCounts {
+  totalAgents: number;
+  runnableAgents: number;
+  tokenPausedAgents: number;
+  manualPausedAgents: number;
+  budgetPausedAgents: number;
+  systemPausedAgents: number;
+  otherPausedAgents: number;
+  pendingApprovalAgents: number;
+  terminatedAgents: number;
+  scopedCompanyCount: number;
+  activeRunCount: number;
+}
+
+export interface InstanceAgentPauseState {
+  counts: InstanceAgentPauseCounts;
+  scopedCompanyIds: string[];
+}
+
+export interface InstanceAgentPauseMutationResult extends InstanceAgentPauseState {
+  affectedCompanyIds: string[];
+  pausedAgents: number;
+  resumedAgents: number;
+  cancelledRuns: number;
+}
+
 export interface AgentDetail extends Agent {
   chainOfCommand: AgentChainOfCommandEntry[];
   access: AgentAccessState;

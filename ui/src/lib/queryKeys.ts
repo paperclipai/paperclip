@@ -120,6 +120,7 @@ export const queryKeys = {
       ["instance", "pre-update-backup", targetVersion ?? "__none__"] as const,
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
     agentServiceHealth: ["instance", "agent-service-health"] as const,
+    agentPauseState: ["instance", "agent-pause-state"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
   },
   health: ["health"] as const,

@@ -240,6 +240,7 @@ export function InlineEditor({
           imageUploadHandler={imageUploadHandler}
           onDropFile={onDropFile}
           mentions={mentions}
+          openLinksOnClick={!multilineFocused}
           onSubmit={() => {
             finalizeMultilineBlurOrSubmit();
           }}

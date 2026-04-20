@@ -9,6 +9,7 @@ import {
   agentTaskSessions,
   agentWakeupRequests,
   activityLog,
+  companies,
   costEvents,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -16,7 +17,12 @@ import {
   issues,
   issueComments,
 } from "@paperclipai/db";
-import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import {
+  isUuidLike,
+  normalizeAgentUrlKey,
+  type InstanceAgentPauseState,
+  type PauseReason,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
@@ -41,6 +47,9 @@ const CONFIG_REVISION_FIELDS = [
   "budgetMonthlyCents",
   "metadata",
 ] as const;
+
+const RUNNABLE_AGENT_STATUSES = ["active", "idle", "running", "error"] as const;
+const TOKEN_AVAILABILITY_PAUSE_REASON = "token_availability" satisfies PauseReason;
 
 type ConfigRevisionField = (typeof CONFIG_REVISION_FIELDS)[number];
 type AgentConfigSnapshot = Pick<typeof agents.$inferSelect, ConfigRevisionField>;
@@ -372,6 +381,93 @@ export function agentService(db: Db) {
     return normalizedUpdated;
   }
 
+  async function getInstanceAgentPauseState(): Promise<InstanceAgentPauseState> {
+    const rows = await db
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        status: agents.status,
+        pauseReason: agents.pauseReason,
+      })
+      .from(agents)
+      .innerJoin(companies, eq(agents.companyId, companies.id))
+      .where(ne(companies.status, "archived"));
+
+    const activeRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .innerJoin(
+        agents,
+        and(
+          eq(heartbeatRuns.agentId, agents.id),
+          eq(heartbeatRuns.companyId, agents.companyId),
+        ),
+      )
+      .innerJoin(companies, eq(heartbeatRuns.companyId, companies.id))
+      .where(and(
+        ne(companies.status, "archived"),
+        inArray(heartbeatRuns.status, ["queued", "running"]),
+        inArray(agents.status, [...RUNNABLE_AGENT_STATUSES]),
+      ));
+
+    const scopedCompanyIds = new Set<string>();
+    const counts: InstanceAgentPauseState["counts"] = {
+      totalAgents: rows.length,
+      runnableAgents: 0,
+      tokenPausedAgents: 0,
+      manualPausedAgents: 0,
+      budgetPausedAgents: 0,
+      systemPausedAgents: 0,
+      otherPausedAgents: 0,
+      pendingApprovalAgents: 0,
+      terminatedAgents: 0,
+      scopedCompanyCount: 0,
+      activeRunCount: activeRuns.length,
+    };
+
+    for (const row of rows) {
+      scopedCompanyIds.add(row.companyId);
+      if (RUNNABLE_AGENT_STATUSES.includes(row.status as (typeof RUNNABLE_AGENT_STATUSES)[number])) {
+        counts.runnableAgents += 1;
+      }
+      if (row.status === "pending_approval") {
+        counts.pendingApprovalAgents += 1;
+      }
+      if (row.status === "terminated") {
+        counts.terminatedAgents += 1;
+      }
+      if (row.status !== "paused") continue;
+
+      if (row.pauseReason === TOKEN_AVAILABILITY_PAUSE_REASON) {
+        counts.tokenPausedAgents += 1;
+      } else if (row.pauseReason === "manual") {
+        counts.manualPausedAgents += 1;
+      } else if (row.pauseReason === "budget") {
+        counts.budgetPausedAgents += 1;
+      } else if (row.pauseReason === "system") {
+        counts.systemPausedAgents += 1;
+      } else {
+        counts.otherPausedAgents += 1;
+      }
+    }
+
+    const sortedCompanyIds = [...scopedCompanyIds].sort();
+    counts.scopedCompanyCount = sortedCompanyIds.length;
+
+    return {
+      counts,
+      scopedCompanyIds: sortedCompanyIds,
+    };
+  }
+
+  function countByCompany(rows: Array<{ companyId: string }>) {
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      counts.set(row.companyId, (counts.get(row.companyId) ?? 0) + 1);
+    }
+    return counts;
+  }
+
   return {
     list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
       const conditions = [eq(agents.companyId, companyId)];
@@ -409,7 +505,84 @@ export function agentService(db: Db) {
 
     update: updateAgent,
 
-    pause: async (id: string, reason: "manual" | "budget" | "system" = "manual") => {
+    getInstanceAgentPauseState,
+
+    pauseAllForTokenAvailability: async () => {
+      const targetRows = await db
+        .select({
+          id: agents.id,
+          companyId: agents.companyId,
+        })
+        .from(agents)
+        .innerJoin(companies, eq(agents.companyId, companies.id))
+        .where(and(
+          ne(companies.status, "archived"),
+          inArray(agents.status, [...RUNNABLE_AGENT_STATUSES]),
+        ));
+
+      if (targetRows.length > 0) {
+        await db
+          .update(agents)
+          .set({
+            status: "paused",
+            pauseReason: TOKEN_AVAILABILITY_PAUSE_REASON,
+            pausedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(inArray(agents.id, targetRows.map((row) => row.id)));
+      }
+
+      const affectedCompanyCounts = countByCompany(targetRows);
+
+      return {
+        state: await getInstanceAgentPauseState(),
+        affectedAgents: targetRows,
+        affectedAgentIds: targetRows.map((row) => row.id),
+        affectedCompanyIds: [...affectedCompanyCounts.keys()].sort(),
+        affectedCompanyCounts,
+        pausedAgents: targetRows.length,
+      };
+    },
+
+    resumeTokenAvailabilityPaused: async () => {
+      const targetRows = await db
+        .select({
+          id: agents.id,
+          companyId: agents.companyId,
+        })
+        .from(agents)
+        .innerJoin(companies, eq(agents.companyId, companies.id))
+        .where(and(
+          ne(companies.status, "archived"),
+          eq(agents.status, "paused"),
+          eq(agents.pauseReason, TOKEN_AVAILABILITY_PAUSE_REASON),
+        ));
+
+      if (targetRows.length > 0) {
+        await db
+          .update(agents)
+          .set({
+            status: "idle",
+            pauseReason: null,
+            pausedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(inArray(agents.id, targetRows.map((row) => row.id)));
+      }
+
+      const affectedCompanyCounts = countByCompany(targetRows);
+
+      return {
+        state: await getInstanceAgentPauseState(),
+        affectedAgents: targetRows,
+        affectedAgentIds: targetRows.map((row) => row.id),
+        affectedCompanyIds: [...affectedCompanyCounts.keys()].sort(),
+        affectedCompanyCounts,
+        resumedAgents: targetRows.length,
+      };
+    },
+
+    pause: async (id: string, reason: PauseReason = "manual") => {
       const existing = await getById(id);
       if (!existing) return null;
       if (existing.status === "terminated") throw conflict("Cannot pause terminated agent");
