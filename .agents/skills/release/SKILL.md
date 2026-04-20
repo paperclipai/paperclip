@@ -1,14 +1,14 @@
 ---
 name: release
 description: >
-  Coordinate a full Paperclip release across engineering verification, npm,
+  Coordinate a full AiTeamCorp release across engineering verification, npm,
   GitHub, smoke testing, and announcement follow-up. Use when leadership asks
   to ship a release, not merely to discuss versioning.
 ---
 
 # Release Coordination Skill
 
-Run the full Paperclip maintainer release workflow, not just an npm publish.
+Run the full AiTeamCorp maintainer release workflow, not just an npm publish.
 
 This skill coordinates:
 
@@ -53,7 +53,7 @@ Collect these inputs up front:
 
 ## Step 0 — Release Model
 
-Paperclip now uses a commit-driven release model:
+AiTeamCorp now uses a commit-driven release model:
 
 1. every push to `master` publishes a canary automatically
 2. canaries use `YYYY.MDD.P-canary.N`
@@ -210,7 +210,7 @@ Create or verify follow-up work for:
 
 - website changelog publishing
 - launch post / social announcement
-- release summary in Paperclip issue context
+- release summary in AiTeamCorp issue context
 
 These should reference the stable release, not the canary.
 

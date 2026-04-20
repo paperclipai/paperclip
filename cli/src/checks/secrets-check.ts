@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { AiTeamCorpConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
 
@@ -28,7 +28,7 @@ function decodeMasterKey(raw: string): Buffer | null {
 
 function withStrictModeNote(
   base: Pick<CheckResult, "name" | "status" | "message" | "canRepair" | "repair" | "repairHint">,
-  config: PaperclipConfig,
+  config: AiTeamCorpConfig,
 ): CheckResult {
   const strictModeDisabledInDeployedSetup =
     config.database.mode === "postgres" && config.secrets.strictMode === false;
@@ -45,7 +45,7 @@ function withStrictModeNote(
   };
 }
 
-export function secretsCheck(config: PaperclipConfig, configPath?: string): CheckResult {
+export function secretsCheck(config: AiTeamCorpConfig, configPath?: string): CheckResult {
   const provider = config.secrets.provider;
   if (provider !== "local_encrypted") {
     return {

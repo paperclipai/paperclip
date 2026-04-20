@@ -29,21 +29,21 @@ Codex uses `previous_response_id` for session continuity. The adapter serializes
 
 ## Skills Injection
 
-The adapter symlinks Paperclip skills into the global Codex skills directory (`~/.codex/skills`). Existing user skills are not overwritten.
+The adapter symlinks AiTeamCorp skills into the global Codex skills directory (`~/.codex/skills`). Existing user skills are not overwritten.
 
 ## Fast Mode
 
-When `fastMode` is enabled, Paperclip adds Codex config overrides equivalent to:
+When `fastMode` is enabled, AiTeamCorp adds Codex config overrides equivalent to:
 
 ```sh
 -c 'service_tier="fast"' -c 'features.fast_mode=true'
 ```
 
-Paperclip currently applies that only when the selected model is `gpt-5.4`. On other models, the toggle is preserved in config but ignored at execution time to avoid unsupported runs.
+AiTeamCorp currently applies that only when the selected model is `gpt-5.4`. On other models, the toggle is preserved in config but ignored at execution time to avoid unsupported runs.
 
 ## Managed `CODEX_HOME`
 
-When Paperclip is running inside a managed worktree instance (`AITEAMCORP_IN_WORKTREE=true`), the adapter instead uses a worktree-isolated `CODEX_HOME` under the Paperclip instance so Codex skills, sessions, logs, and other runtime state do not leak across checkouts. It seeds that isolated home from the user's main Codex home for shared auth/config continuity.
+When AiTeamCorp is running inside a managed worktree instance (`AITEAMCORP_IN_WORKTREE=true`), the adapter instead uses a worktree-isolated `CODEX_HOME` under the AiTeamCorp instance so Codex skills, sessions, logs, and other runtime state do not leak across checkouts. It seeds that isolated home from the user's main Codex home for shared auth/config continuity.
 
 ## Manual Local CLI
 
@@ -57,9 +57,9 @@ This installs any missing skills, creates an agent API key, and prints shell exp
 
 ## Instructions Resolution
 
-If `instructionsFilePath` is configured, Paperclip reads that file and prepends it to the stdin prompt sent to `codex exec` on every run.
+If `instructionsFilePath` is configured, AiTeamCorp reads that file and prepends it to the stdin prompt sent to `codex exec` on every run.
 
-This is separate from any workspace-level instruction discovery that Codex itself performs in the run `cwd`. Paperclip does not disable Codex-native repo instruction files, so a repo-local `AGENTS.md` may still be loaded by Codex in addition to the Paperclip-managed agent instructions.
+This is separate from any workspace-level instruction discovery that Codex itself performs in the run `cwd`. AiTeamCorp does not disable Codex-native repo instruction files, so a repo-local `AGENTS.md` may still be loaded by Codex in addition to the Paperclip-managed agent instructions.
 
 ## Environment Test
 

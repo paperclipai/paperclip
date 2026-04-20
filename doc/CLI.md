@@ -1,6 +1,6 @@
 # CLI Reference
 
-Paperclip CLI now supports both:
+AiTeamCorp CLI now supports both:
 
 - instance setup/diagnostics (`onboard`, `doctor`, `configure`, `env`, `allowed-hostname`)
 - control-plane client operations (issues, approvals, agents, activity, dashboard)
@@ -59,8 +59,8 @@ Company-scoped commands also support `--company-id <id>`.
 Use `--data-dir` on any CLI command to isolate all default local state (config/context/db/logs/storage/secrets) away from `~/.aiteamcorp`:
 
 ```sh
-pnpm aiteamcorp run --data-dir ./tmp/paperclip-dev
-pnpm aiteamcorp issue list --data-dir ./tmp/paperclip-dev
+pnpm aiteamcorp run --data-dir ./tmp/aiteamcorp-dev
+pnpm aiteamcorp issue list --data-dir ./tmp/aiteamcorp-dev
 ```
 
 ## Context Profiles
@@ -121,10 +121,10 @@ pnpm aiteamcorp agent get <agent-id>
 pnpm aiteamcorp agent local-cli <agent-id-or-shortname> --company-id <company-id>
 ```
 
-`agent local-cli` is the quickest way to run local Claude/Codex manually as a Paperclip agent:
+`agent local-cli` is the quickest way to run local Claude/Codex manually as a AiTeamCorp agent:
 
 - creates a new long-lived agent API key
-- installs missing Paperclip skills into `~/.codex/skills` and `~/.claude/skills`
+- installs missing AiTeamCorp skills into `~/.codex/skills` and `~/.claude/skills`
 - prints `export ...` lines for `AITEAMCORP_API_URL`, `AITEAMCORP_COMPANY_ID`, `AITEAMCORP_AGENT_ID`, and `AITEAMCORP_API_KEY`
 
 Example for shortname-based local setup:

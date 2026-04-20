@@ -87,7 +87,7 @@ describe("ProfileSettings", () => {
     vi.clearAllMocks();
   });
 
-  it("uploads a clicked avatar into Paperclip storage and persists the returned asset path", async () => {
+  it("uploads a clicked avatar into AiTeamCorp storage and persists the returned asset path", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },

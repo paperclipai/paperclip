@@ -39,7 +39,7 @@ import {
   rewriteLocalUrlPort,
   sanitizeWorktreeInstanceId,
 } from "../commands/worktree-lib.js";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { AiTeamCorpConfig } from "../config/schema.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -68,7 +68,7 @@ afterEach(() => {
   }
 });
 
-function buildSourceConfig(): PaperclipConfig {
+function buildSourceConfig(): AiTeamCorpConfig {
   return {
     $meta: {
       version: 1,
@@ -112,7 +112,7 @@ function buildSourceConfig(): PaperclipConfig {
         baseDir: "/tmp/main/storage",
       },
       s3: {
-        bucket: "paperclip",
+        bucket: "aiteamcorp",
         region: "us-east-1",
         prefix: "",
         forcePathStyle: false,
@@ -135,8 +135,8 @@ describe("worktree helpers", () => {
   });
 
   it("resolves worktree:make target paths under the user home directory", () => {
-    expect(resolveWorktreeMakeTargetPath("paperclip-pr-432")).toBe(
-      path.resolve(os.homedir(), "paperclip-pr-432"),
+    expect(resolveWorktreeMakeTargetPath("aiteamcorp-pr-432")).toBe(
+      path.resolve(os.homedir(), "aiteamcorp-pr-432"),
     );
   });
 
@@ -193,8 +193,8 @@ describe("worktree helpers", () => {
 
   it("builds isolated config and env paths for a worktree", () => {
     const paths = resolveWorktreeLocalPaths({
-      cwd: "/tmp/paperclip-feature",
-      homeDir: "/tmp/paperclip-worktrees",
+      cwd: "/tmp/aiteamcorp-feature",
+      homeDir: "/tmp/aiteamcorp-worktrees",
       instanceId: "feature-worktree-support",
     });
     const config = buildWorktreeConfig({
@@ -206,20 +206,20 @@ describe("worktree helpers", () => {
     });
 
     expect(config.database.embeddedPostgresDataDir).toBe(
-      path.resolve("/tmp/paperclip-worktrees", "instances", "feature-worktree-support", "db"),
+      path.resolve("/tmp/aiteamcorp-worktrees", "instances", "feature-worktree-support", "db"),
     );
     expect(config.database.embeddedPostgresPort).toBe(54339);
     expect(config.server.port).toBe(3110);
     expect(config.auth.publicBaseUrl).toBe("http://127.0.0.1:3110/");
     expect(config.storage.localDisk.baseDir).toBe(
-      path.resolve("/tmp/paperclip-worktrees", "instances", "feature-worktree-support", "data", "storage"),
+      path.resolve("/tmp/aiteamcorp-worktrees", "instances", "feature-worktree-support", "data", "storage"),
     );
 
     const env = buildWorktreeEnvEntries(paths, {
       name: "feature-worktree-support",
       color: "#3abf7a",
     });
-    expect(env.AITEAMCORP_HOME).toBe(path.resolve("/tmp/paperclip-worktrees"));
+    expect(env.AITEAMCORP_HOME).toBe(path.resolve("/tmp/aiteamcorp-worktrees"));
     expect(env.AITEAMCORP_INSTANCE_ID).toBe("feature-worktree-support");
     expect(env.AITEAMCORP_IN_WORKTREE).toBe("true");
     expect(env.AITEAMCORP_WORKTREE_NAME).toBe("feature-worktree-support");
@@ -359,7 +359,7 @@ describe("worktree helpers", () => {
         home: path.join(tempRoot, ".aiteamcorp-worktrees"),
       });
 
-      const envPath = path.join(repoRoot, ".paperclip", ".env");
+      const envPath = path.join(repoRoot, ".aiteamcorp", ".env");
       const envContents = fs.readFileSync(envPath, "utf8");
       expect(envContents).toContain("AITEAMCORP_AGENT_JWT_SECRET=worktree-shared-secret");
       expect(envContents).toContain("AITEAMCORP_WORKTREE_NAME=repo");
@@ -433,13 +433,13 @@ describe("worktree helpers", () => {
         });
 
         const targetConfig = JSON.parse(
-          fs.readFileSync(path.join(worktreeRoot, ".paperclip", "config.json"), "utf8"),
-        ) as PaperclipConfig;
+          fs.readFileSync(path.join(worktreeRoot, ".aiteamcorp", "config.json"), "utf8"),
+        ) as AiTeamCorpConfig;
         const { default: EmbeddedPostgres } = await import("embedded-postgres");
         const targetPg = new EmbeddedPostgres({
           databaseDir: targetConfig.database.embeddedPostgresDataDir,
-          user: "paperclip",
-          password: "paperclip",
+          user: "aiteamcorp",
+          password: "aiteamcorp",
           port: targetConfig.database.embeddedPostgresPort,
           persistent: true,
           initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -450,7 +450,7 @@ describe("worktree helpers", () => {
         await targetPg.start();
         try {
           const targetDb = createDb(
-            `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
+            `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/aiteamcorp`,
           );
           const seededUsers = await targetDb.select().from(authUsers);
           expect(seededUsers.some((row) => row.email === "existing@aiteamcorp.local")).toBe(true);
@@ -510,7 +510,7 @@ describe("worktree helpers", () => {
                 baseDir: path.join(siblingInstanceRoot, "storage"),
               },
               s3: {
-                bucket: "paperclip",
+                bucket: "aiteamcorp",
                 region: "us-east-1",
                 prefix: "",
                 forcePathStyle: false,
@@ -536,7 +536,7 @@ describe("worktree helpers", () => {
         home: homeDir,
       });
 
-      const config = JSON.parse(fs.readFileSync(path.join(repoRoot, ".paperclip", "config.json"), "utf8"));
+      const config = JSON.parse(fs.readFileSync(path.join(repoRoot, ".aiteamcorp", "config.json"), "utf8"));
       expect(config.server.port).toBeGreaterThan(3101);
       expect(config.database.embeddedPostgresPort).not.toBe(54330);
       expect(config.database.embeddedPostgresPort).not.toBe(config.server.port);
@@ -547,12 +547,12 @@ describe("worktree helpers", () => {
     }
   });
 
-  it("defaults the seed source config to the current repo-local Paperclip config", () => {
+  it("defaults the seed source config to the current repo-local AiTeamCorp config", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-worktree-source-config-"));
     const repoRoot = path.join(tempRoot, "repo");
-    const localConfigPath = path.join(repoRoot, ".paperclip", "config.json");
+    const localConfigPath = path.join(repoRoot, ".aiteamcorp", "config.json");
     const originalCwd = process.cwd();
-    const originalPaperclipConfig = process.env.AITEAMCORP_CONFIG;
+    const originalAiTeamCorpConfig = process.env.AITEAMCORP_CONFIG;
 
     try {
       fs.mkdirSync(path.dirname(localConfigPath), { recursive: true });
@@ -563,10 +563,10 @@ describe("worktree helpers", () => {
       expect(fs.realpathSync(resolveSourceConfigPath({}))).toBe(fs.realpathSync(localConfigPath));
     } finally {
       process.chdir(originalCwd);
-      if (originalPaperclipConfig === undefined) {
+      if (originalAiTeamCorpConfig === undefined) {
         delete process.env.AITEAMCORP_CONFIG;
       } else {
-        process.env.AITEAMCORP_CONFIG = originalPaperclipConfig;
+        process.env.AITEAMCORP_CONFIG = originalAiTeamCorpConfig;
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -577,7 +577,7 @@ describe("worktree helpers", () => {
     const sourceConfigPath = path.join(tempRoot, "source", "config.json");
     const targetRoot = path.join(tempRoot, "target");
     const originalCwd = process.cwd();
-    const originalPaperclipConfig = process.env.AITEAMCORP_CONFIG;
+    const originalAiTeamCorpConfig = process.env.AITEAMCORP_CONFIG;
 
     try {
       fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
@@ -591,10 +591,10 @@ describe("worktree helpers", () => {
       );
     } finally {
       process.chdir(originalCwd);
-      if (originalPaperclipConfig === undefined) {
+      if (originalAiTeamCorpConfig === undefined) {
         delete process.env.AITEAMCORP_CONFIG;
       } else {
-        process.env.AITEAMCORP_CONFIG = originalPaperclipConfig;
+        process.env.AITEAMCORP_CONFIG = originalAiTeamCorpConfig;
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -618,8 +618,8 @@ describe("worktree helpers", () => {
   it("derives worktree reseed target paths from the adjacent env file", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-worktree-reseed-target-"));
     const worktreeRoot = path.join(tempRoot, "repo");
-    const configPath = path.join(worktreeRoot, ".paperclip", "config.json");
-    const envPath = path.join(worktreeRoot, ".paperclip", ".env");
+    const configPath = path.join(worktreeRoot, ".aiteamcorp", "config.json");
+    const envPath = path.join(worktreeRoot, ".aiteamcorp", ".env");
 
     try {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -627,7 +627,7 @@ describe("worktree helpers", () => {
       fs.writeFileSync(
         envPath,
         [
-          "AITEAMCORP_HOME=/tmp/paperclip-worktrees",
+          "AITEAMCORP_HOME=/tmp/aiteamcorp-worktrees",
           "AITEAMCORP_INSTANCE_ID=pap-1132-chat",
         ].join("\n"),
         "utf8",
@@ -639,7 +639,7 @@ describe("worktree helpers", () => {
         }),
       ).toMatchObject({
         cwd: worktreeRoot,
-        homeDir: "/tmp/paperclip-worktrees",
+        homeDir: "/tmp/aiteamcorp-worktrees",
         instanceId: "pap-1132-chat",
       });
     } finally {
@@ -650,18 +650,18 @@ describe("worktree helpers", () => {
   it("rejects reseed targets without worktree env metadata", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-worktree-reseed-target-missing-"));
     const worktreeRoot = path.join(tempRoot, "repo");
-    const configPath = path.join(worktreeRoot, ".paperclip", "config.json");
+    const configPath = path.join(worktreeRoot, ".aiteamcorp", "config.json");
 
     try {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       fs.writeFileSync(configPath, JSON.stringify(buildSourceConfig()), "utf8");
-      fs.writeFileSync(path.join(worktreeRoot, ".paperclip", ".env"), "", "utf8");
+      fs.writeFileSync(path.join(worktreeRoot, ".aiteamcorp", ".env"), "", "utf8");
 
       expect(() =>
         resolveWorktreeReseedTargetPaths({
           configPath,
           rootPath: worktreeRoot,
-        })).toThrow("does not look like a worktree-local Paperclip instance");
+        })).toThrow("does not look like a worktree-local AiTeamCorp instance");
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -684,7 +684,7 @@ describe("worktree helpers", () => {
       instanceId: "default",
     });
     const originalCwd = process.cwd();
-    const originalPaperclipConfig = process.env.AITEAMCORP_CONFIG;
+    const originalAiTeamCorpConfig = process.env.AITEAMCORP_CONFIG;
 
     try {
       fs.mkdirSync(path.dirname(currentPaths.configPath), { recursive: true });
@@ -738,10 +738,10 @@ describe("worktree helpers", () => {
       expect(rewrittenEnv).toContain("AITEAMCORP_WORKTREE_COLOR=\"#112233\"");
     } finally {
       process.chdir(originalCwd);
-      if (originalPaperclipConfig === undefined) {
+      if (originalAiTeamCorpConfig === undefined) {
         delete process.env.AITEAMCORP_CONFIG;
       } else {
-        process.env.AITEAMCORP_CONFIG = originalPaperclipConfig;
+        process.env.AITEAMCORP_CONFIG = originalAiTeamCorpConfig;
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -764,7 +764,7 @@ describe("worktree helpers", () => {
       instanceId: "default",
     });
     const originalCwd = process.cwd();
-    const originalPaperclipConfig = process.env.AITEAMCORP_CONFIG;
+    const originalAiTeamCorpConfig = process.env.AITEAMCORP_CONFIG;
 
     try {
       fs.mkdirSync(path.dirname(currentPaths.configPath), { recursive: true });
@@ -793,7 +793,7 @@ describe("worktree helpers", () => {
             keyFilePath: sourcePaths.secretsKeyFilePath,
           },
         },
-      } as PaperclipConfig;
+      } as AiTeamCorpConfig;
 
       fs.writeFileSync(currentPaths.configPath, JSON.stringify(currentConfig, null, 2), "utf8");
       fs.writeFileSync(currentPaths.envPath, `AITEAMCORP_HOME=${homeDir}\nAITEAMCORP_INSTANCE_ID=${currentInstanceId}\n`, "utf8");
@@ -819,10 +819,10 @@ describe("worktree helpers", () => {
       expect(restoredMarker).toBe("keep me");
     } finally {
       process.chdir(originalCwd);
-      if (originalPaperclipConfig === undefined) {
+      if (originalAiTeamCorpConfig === undefined) {
         delete process.env.AITEAMCORP_CONFIG;
       } else {
-        process.env.AITEAMCORP_CONFIG = originalPaperclipConfig;
+        process.env.AITEAMCORP_CONFIG = originalAiTeamCorpConfig;
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -831,26 +831,26 @@ describe("worktree helpers", () => {
   it("rebinds same-repo workspace paths onto the current worktree root", () => {
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
-        workspaceCwd: "/Users/example/paperclip",
+        sourceRepoRoot: "/Users/example/aiteamcorp",
+        targetRepoRoot: "/Users/example/aiteamcorp-pr-432",
+        workspaceCwd: "/Users/example/aiteamcorp",
       }),
-    ).toBe("/Users/example/paperclip-pr-432");
+    ).toBe("/Users/example/aiteamcorp-pr-432");
 
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
+        sourceRepoRoot: "/Users/example/aiteamcorp",
+        targetRepoRoot: "/Users/example/aiteamcorp-pr-432",
         workspaceCwd: "/Users/example/aiteamcorp/packages/db",
       }),
-    ).toBe("/Users/example/paperclip-pr-432/packages/db");
+    ).toBe("/Users/example/aiteamcorp-pr-432/packages/db");
   });
 
   it("does not rebind paths outside the source repo root", () => {
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
+        sourceRepoRoot: "/Users/example/aiteamcorp",
+        targetRepoRoot: "/Users/example/aiteamcorp-pr-432",
         workspaceCwd: "/Users/example/other-project",
       }),
     ).toBeNull();
@@ -930,8 +930,8 @@ describe("worktree helpers", () => {
       });
 
       expect(fs.existsSync(path.join(worktreePath, ".git"))).toBe(true);
-      expect(fs.existsSync(path.join(worktreePath, ".paperclip", "config.json"))).toBe(true);
-      expect(fs.existsSync(path.join(worktreePath, ".paperclip", ".env"))).toBe(true);
+      expect(fs.existsSync(path.join(worktreePath, ".aiteamcorp", "config.json"))).toBe(true);
+      expect(fs.existsSync(path.join(worktreePath, ".aiteamcorp", ".env"))).toBe(true);
     } finally {
       process.chdir(originalCwd);
       homedirSpy.mockRestore();
@@ -956,18 +956,18 @@ describe("worktree helpers", () => {
       process.chdir(repoRoot);
       await worktreeRepairCommand({});
 
-      expect(fs.existsSync(path.join(repoRoot, ".paperclip", "config.json"))).toBe(false);
-      expect(fs.existsSync(path.join(repoRoot, ".paperclip", "worktrees"))).toBe(false);
+      expect(fs.existsSync(path.join(repoRoot, ".aiteamcorp", "config.json"))).toBe(false);
+      expect(fs.existsSync(path.join(repoRoot, ".aiteamcorp", "worktrees"))).toBe(false);
     } finally {
       process.chdir(originalCwd);
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 
-  it("repairs the current linked worktree when Paperclip metadata is missing", async () => {
+  it("repairs the current linked worktree when AiTeamCorp metadata is missing", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-worktree-repair-current-"));
     const repoRoot = path.join(tempRoot, "repo");
-    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", "repair-me");
+    const worktreePath = path.join(repoRoot, ".aiteamcorp", "worktrees", "repair-me");
     const sourceConfigPath = path.join(tempRoot, "source-config.json");
     const worktreeHome = path.join(tempRoot, ".aiteamcorp-worktrees");
     const worktreePaths = resolveWorktreeLocalPaths({
@@ -1002,8 +1002,8 @@ describe("worktree helpers", () => {
         noSeed: true,
       });
 
-      expect(fs.existsSync(path.join(worktreePath, ".paperclip", "config.json"))).toBe(true);
-      expect(fs.existsSync(path.join(worktreePath, ".paperclip", ".env"))).toBe(true);
+      expect(fs.existsSync(path.join(worktreePath, ".aiteamcorp", "config.json"))).toBe(true);
+      expect(fs.existsSync(path.join(worktreePath, ".aiteamcorp", ".env"))).toBe(true);
       expect(fs.existsSync(path.join(worktreePaths.instanceRoot, "marker.txt"))).toBe(false);
     } finally {
       process.chdir(originalCwd);
@@ -1017,7 +1017,7 @@ describe("worktree helpers", () => {
     const sourceConfigPath = path.join(tempRoot, "source-config.json");
     const worktreeHome = path.join(tempRoot, ".aiteamcorp-worktrees");
     const originalCwd = process.cwd();
-    const expectedWorktreePath = path.join(repoRoot, ".paperclip", "worktrees", "feature-repair-me");
+    const expectedWorktreePath = path.join(repoRoot, ".aiteamcorp", "worktrees", "feature-repair-me");
 
     try {
       fs.mkdirSync(repoRoot, { recursive: true });
@@ -1038,8 +1038,8 @@ describe("worktree helpers", () => {
       });
 
       expect(fs.existsSync(path.join(expectedWorktreePath, ".git"))).toBe(true);
-      expect(fs.existsSync(path.join(expectedWorktreePath, ".paperclip", "config.json"))).toBe(true);
-      expect(fs.existsSync(path.join(expectedWorktreePath, ".paperclip", ".env"))).toBe(true);
+      expect(fs.existsSync(path.join(expectedWorktreePath, ".aiteamcorp", "config.json"))).toBe(true);
+      expect(fs.existsSync(path.join(expectedWorktreePath, ".aiteamcorp", ".env"))).toBe(true);
     } finally {
       process.chdir(originalCwd);
       fs.rmSync(tempRoot, { recursive: true, force: true });

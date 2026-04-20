@@ -20,7 +20,7 @@ describe("pi local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("reports configured Paperclip skills and installs them into the Pi skills home", async () => {
+  it("reports configured AiTeamCorp skills and installs them into the Pi skills home", async () => {
     const home = await makeTempDir("paperclip-pi-skill-sync-");
     cleanupDirs.add(home);
 
@@ -46,10 +46,10 @@ describe("pi local skill sync", () => {
 
     const after = await syncPiSkills(ctx, [aiteamcorpKey]);
     expect(after.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".pi", "agent", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".pi", "agent", "skills", "aiteamcorp"))).isSymbolicLink()).toBe(true);
   });
 
-  it("keeps required bundled Paperclip skills installed even when the desired set is emptied", async () => {
+  it("keeps required bundled AiTeamCorp skills installed even when the desired set is emptied", async () => {
     const home = await makeTempDir("paperclip-pi-skill-prune-");
     cleanupDirs.add(home);
 
@@ -84,6 +84,6 @@ describe("pi local skill sync", () => {
     const after = await syncPiSkills(clearedCtx, []);
     expect(after.desiredSkills).toContain(aiteamcorpKey);
     expect(after.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".pi", "agent", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".pi", "agent", "skills", "aiteamcorp"))).isSymbolicLink()).toBe(true);
   });
 });

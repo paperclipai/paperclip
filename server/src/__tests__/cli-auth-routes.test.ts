@@ -113,7 +113,7 @@ describe("cli auth routes", () => {
     const app = await createApp({ type: "none", source: "none" });
     const [indexRes, skillRes] = await Promise.all([
       request(app).get("/api/skills/index"),
-      request(app).get("/api/skills/paperclip"),
+      request(app).get("/api/skills/aiteamcorp"),
     ]);
 
     expect(indexRes.status).toBe(401);
@@ -144,11 +144,11 @@ describe("cli auth routes", () => {
     };
 
     const app = await createApp({ type: "none", source: "none" }, db);
-    const res = await request(app).get("/api/invites/token-123/skills/paperclip");
+    const res = await request(app).get("/api/invites/token-123/skills/aiteamcorp");
 
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toContain("text/markdown");
-    expect(res.text).toContain("# Paperclip Skill");
+    expect(res.text).toContain("# AiTeamCorp Skill");
   });
 
   it("marks challenge status as requiring sign-in for anonymous viewers", async () => {

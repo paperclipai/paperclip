@@ -41,7 +41,7 @@ This starts:
 
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
 
-`pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
+`pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching AiTeamCorp dev runner is already alive, AiTeamCorp reports the existing process instead of starting a duplicate.
 
 Inspect or stop the current repo's managed dev runner:
 
@@ -118,7 +118,7 @@ pnpm aiteamcorp run
 
 ## Docker Quickstart (No local Node install)
 
-Build and run Paperclip in Docker:
+Build and run AiTeamCorp in Docker:
 
 ```sh
 docker build -t paperclip-local .
@@ -126,7 +126,7 @@ docker run --name paperclip \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e AITEAMCORP_HOME=/aiteamcorp \
-  -v "$(pwd)/data/docker-paperclip:/paperclip" \
+  -v "$(pwd)/data/docker-paperclip:/aiteamcorp" \
   paperclip-local
 ```
 
@@ -171,13 +171,13 @@ pnpm aiteamcorp configure --section storage
 
 ## Default Agent Workspaces
 
-When a local agent run has no resolved project/session workspace, Paperclip falls back to an agent home workspace under the instance root:
+When a local agent run has no resolved project/session workspace, AiTeamCorp falls back to an agent home workspace under the instance root:
 
 - `~/.aiteamcorp/instances/default/workspaces/<agent-id>`
 
 This path honors `AITEAMCORP_HOME` and `AITEAMCORP_INSTANCE_ID` in non-default setups.
 
-For `codex_local`, Paperclip also manages a per-company Codex home under the instance root and seeds it from the shared Codex login/config home (`$CODEX_HOME` or `~/.codex`):
+For `codex_local`, AiTeamCorp also manages a per-company Codex home under the instance root and seeds it from the shared Codex login/config home (`$CODEX_HOME` or `~/.codex`):
 
 - `~/.aiteamcorp/instances/default/companies/<company-id>/codex-home`
 
@@ -185,14 +185,14 @@ If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs f
 
 ## Worktree-local Instances
 
-When developing from multiple git worktrees, do not point two Paperclip servers at the same embedded PostgreSQL data directory.
+When developing from multiple git worktrees, do not point two AiTeamCorp servers at the same embedded PostgreSQL data directory.
 
-Instead, create a repo-local Paperclip config plus an isolated instance for the worktree:
+Instead, create a repo-local AiTeamCorp config plus an isolated instance for the worktree:
 
 ```sh
 paperclipai worktree init
 # or create the git worktree and initialize it in one step:
-pnpm aiteamcorp worktree:make paperclip-pr-432
+pnpm aiteamcorp worktree:make aiteamcorp-pr-432
 ```
 
 This command:
@@ -201,7 +201,7 @@ This command:
 - creates an isolated instance under `~/.aiteamcorp-worktrees/instances/<worktree-id>/`
 - when run inside a linked git worktree, mirrors the effective git hooks into that worktree's private git dir
 - picks a free app port and embedded PostgreSQL port
-- by default seeds the isolated DB in `minimal` mode from the current effective Paperclip instance/config (repo-local worktree config when present, otherwise the default instance) via a logical SQL snapshot
+- by default seeds the isolated DB in `minimal` mode from the current effective AiTeamCorp instance/config (repo-local worktree config when present, otherwise the default instance) via a logical SQL snapshot
 
 Seed modes:
 
@@ -297,9 +297,9 @@ cd /path/to/paperclip
 pnpm aiteamcorp worktree repair --branch PAP-1132-assistant-ui-pap-1131-make-issues-comments-be-like-a-chat
 ```
 
-For an already-created worktree where you want to keep the existing repo-local config/env and only overwrite the isolated database, use `worktree reseed` instead. Stop the target worktree's Paperclip server first so the command can replace the DB safely.
+For an already-created worktree where you want to keep the existing repo-local config/env and only overwrite the isolated database, use `worktree reseed` instead. Stop the target worktree's AiTeamCorp server first so the command can replace the DB safely.
 
-**`pnpm aiteamcorp worktree reseed [options]`** — Re-seed an existing worktree-local instance from another Paperclip instance or worktree while preserving the target worktree's current config, ports, and instance identity.
+**`pnpm aiteamcorp worktree reseed [options]`** — Re-seed an existing worktree-local instance from another AiTeamCorp instance or worktree while preserving the target worktree's current config, ports, and instance identity.
 
 | Option | Description |
 |---|---|
@@ -330,7 +330,7 @@ pnpm aiteamcorp worktree reseed \
   --seed-mode full
 ```
 
-**`pnpm aiteamcorp worktree:make <name> [options]`** — Create `~/NAME` as a git worktree, then initialize an isolated Paperclip instance inside it. This combines `git worktree add` with `worktree init` in a single step.
+**`pnpm aiteamcorp worktree:make <name> [options]`** — Create `~/NAME` as a git worktree, then initialize an isolated AiTeamCorp instance inside it. This combines `git worktree add` with `worktree init` in a single step.
 
 | Option | Description |
 |---|---|
@@ -349,12 +349,12 @@ pnpm aiteamcorp worktree reseed \
 Examples:
 
 ```sh
-pnpm aiteamcorp worktree:make paperclip-pr-432
+pnpm aiteamcorp worktree:make aiteamcorp-pr-432
 pnpm aiteamcorp worktree:make my-feature --start-point origin/main
 pnpm aiteamcorp worktree:make experiment --no-seed
 ```
 
-**`pnpm aiteamcorp worktree env [options]`** — Print shell exports for the current worktree-local Paperclip instance.
+**`pnpm aiteamcorp worktree env [options]`** — Print shell exports for the current worktree-local AiTeamCorp instance.
 
 | Option | Description |
 |---|---|
@@ -369,7 +369,7 @@ pnpm aiteamcorp worktree env --json
 eval "$(pnpm aiteamcorp worktree env)"
 ```
 
-For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `AITEAMCORP_WORKSPACE_*`, `AITEAMCORP_PROJECT_ID`, `AITEAMCORP_AGENT_ID`, and `AITEAMCORP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
+For project execution worktrees, AiTeamCorp can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `AITEAMCORP_WORKSPACE_*`, `AITEAMCORP_PROJECT_ID`, `AITEAMCORP_AGENT_ID`, and `AITEAMCORP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
 
 ## Quick Health Checks
 
@@ -400,7 +400,7 @@ If you set `DATABASE_URL`, the server will use that instead of embedded PostgreS
 
 ## Automatic DB Backups
 
-Paperclip can run automatic DB backups on a timer. Defaults:
+AiTeamCorp can run automatic DB backups on a timer. Defaults:
 
 - enabled
 - every 60 minutes
@@ -472,7 +472,7 @@ Default behavior:
 
 ## CLI Client Operations
 
-Paperclip CLI now includes client-side control-plane commands in addition to setup commands.
+AiTeamCorp CLI now includes client-side control-plane commands in addition to setup commands.
 
 Quick examples:
 
@@ -505,7 +505,7 @@ Agent-oriented invite onboarding now exposes machine-readable API docs:
 - `GET /api/invites/:token/onboarding` returns onboarding manifest details (registration endpoint, claim endpoint template, skill install hints).
 - `GET /api/invites/:token/onboarding.txt` returns a plain-text onboarding doc intended for both human operators and agents (llm.txt-style handoff), including optional inviter message and suggested network host candidates.
 - `GET /api/skills/index` lists available skill documents.
-- `GET /api/skills/paperclip` returns the Paperclip heartbeat skill markdown.
+- `GET /api/skills/aiteamcorp` returns the AiTeamCorp heartbeat skill markdown.
 
 ## OpenClaw Join Smoke Test
 
@@ -558,6 +558,6 @@ State behavior for this smoke script:
 
 Networking behavior for this smoke script:
 
-- auto-detects and prints a Paperclip host URL reachable from inside OpenClaw Docker
+- auto-detects and prints a AiTeamCorp host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `AITEAMCORP_HOST_FROM_CONTAINER` / `AITEAMCORP_HOST_PORT`)
-- if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `pnpm aiteamcorp allowed-hostname host.docker.internal` and restart Paperclip
+- if AiTeamCorp rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `pnpm aiteamcorp allowed-hostname host.docker.internal` and restart Paperclip

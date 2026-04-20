@@ -27,10 +27,10 @@ describe("routine variable helpers", () => {
   it("preserves existing metadata when syncing variables from a template", () => {
     expect(
       syncRoutineVariablesWithTemplate(["Triage {{repo}}", "Review {{repo}} and {{priority}}"], [
-        { name: "repo", label: "Repository", type: "text", defaultValue: "paperclip", required: true, options: [] },
+        { name: "repo", label: "Repository", type: "text", defaultValue: "aiteamcorp", required: true, options: [] },
       ]),
     ).toEqual([
-      { name: "repo", label: "Repository", type: "text", defaultValue: "paperclip", required: true, options: [] },
+      { name: "repo", label: "Repository", type: "text", defaultValue: "aiteamcorp", required: true, options: [] },
       { name: "priority", label: null, type: "text", defaultValue: null, required: true, options: [] },
     ]);
   });
@@ -38,7 +38,7 @@ describe("routine variable helpers", () => {
   it("interpolates provided variable values into the routine template", () => {
     expect(
       interpolateRoutineTemplate("Review {{repo}} for {{priority}}", {
-        repo: "paperclip",
+        repo: "aiteamcorp",
         priority: "high",
       }),
     ).toBe("Review paperclip for high");
@@ -68,7 +68,7 @@ describe("routine variable helpers", () => {
 
   it("interpolates built-in date variable alongside user variables", () => {
     const builtins = getBuiltinRoutineVariableValues();
-    const allVars = { ...builtins, repo: "paperclip" };
+    const allVars = { ...builtins, repo: "aiteamcorp" };
     expect(
       interpolateRoutineTemplate("Report for {{date}} on {{repo}}", allVars),
     ).toBe(`Report for ${builtins.date} on paperclip`);

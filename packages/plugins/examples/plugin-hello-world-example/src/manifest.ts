@@ -1,4 +1,4 @@
-import type { PaperclipPluginManifestV1 } from "@aiteamcorp/plugin-sdk";
+import type { AiTeamCorpPluginManifestV1 } from "@aiteamcorp/plugin-sdk";
 
 /**
  * Stable plugin ID used by host registration and namespacing.
@@ -11,12 +11,12 @@ const DASHBOARD_WIDGET_EXPORT_NAME = "HelloWorldDashboardWidget";
 /**
  * Minimal manifest demonstrating a UI-only plugin with one dashboard widget slot.
  */
-const manifest: PaperclipPluginManifestV1 = {
+const manifest: AiTeamCorpPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
   displayName: "Hello World Widget (Example)",
-  description: "Reference UI plugin that adds a simple Hello World widget to the Paperclip dashboard.",
+  description: "Reference UI plugin that adds a simple Hello World widget to the AiTeamCorp dashboard.",
   author: "Paperclip",
   categories: ["ui"],
   capabilities: ["ui.dashboardWidget.register"],

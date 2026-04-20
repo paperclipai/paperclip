@@ -8,7 +8,7 @@ import {
   upsertIssueDocumentSchema,
   linkIssueApprovalSchema,
 } from "@aiteamcorp/shared";
-import { PaperclipApiClient } from "./client.js";
+import { AiTeamCorpApiClient } from "./client.js";
 import { formatErrorResponse, formatTextResponse } from "./format.js";
 
 export interface ToolDefinition {
@@ -124,11 +124,11 @@ const apiRequestSchema = z.object({
   jsonBody: z.string().optional(),
 });
 
-export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
+export function createToolDefinitions(client: AiTeamCorpApiClient): ToolDefinition[] {
   return [
     makeTool(
       "aiteamcorpMe",
-      "Get the current authenticated Paperclip actor details",
+      "Get the current authenticated AiTeamCorp actor details",
       z.object({}),
       async () => client.requestJson("GET", "/agents/me"),
     ),

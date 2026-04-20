@@ -115,9 +115,9 @@ describe("cursor execute", () => {
           "AITEAMCORP_RUN_ID",
         ]),
       );
-      expect(capture.prompt).toContain("Paperclip runtime note:");
+      expect(capture.prompt).toContain("AiTeamCorp runtime note:");
       expect(capture.prompt).toContain("AITEAMCORP_API_KEY");
-      expect(invocationPrompt).toContain("Paperclip runtime note:");
+      expect(invocationPrompt).toContain("AiTeamCorp runtime note:");
       expect(invocationPrompt).toContain("AITEAMCORP_API_URL");
     } finally {
       if (previousHome === undefined) {
@@ -195,7 +195,7 @@ describe("cursor execute", () => {
     await fs.mkdir(workspace, { recursive: true });
     await writeFakeCursorCommand(commandPath);
 
-    const aiteamcorpDir = await createSkillDir(runtimeSkillsRoot, "paperclip");
+    const aiteamcorpDir = await createSkillDir(runtimeSkillsRoot, "aiteamcorp");
     const asciiHeartDir = await createSkillDir(runtimeSkillsRoot, "ascii-heart");
 
     const previousHome = process.env.HOME;
@@ -223,10 +223,10 @@ describe("cursor execute", () => {
           model: "auto",
           aiteamcorpRuntimeSkills: [
             {
-              name: "paperclip",
+              name: "aiteamcorp",
               source: aiteamcorpDir,
               required: true,
-              requiredReason: "Bundled Paperclip skills are always available for local adapters.",
+              requiredReason: "Bundled AiTeamCorp skills are always available for local adapters.",
             },
             {
               name: "ascii-heart",

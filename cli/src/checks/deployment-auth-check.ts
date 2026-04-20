@@ -1,8 +1,8 @@
 import { inferBindModeFromHost } from "@aiteamcorp/shared";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { AiTeamCorpConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 
-export function deploymentAuthCheck(config: PaperclipConfig): CheckResult {
+export function deploymentAuthCheck(config: AiTeamCorpConfig): CheckResult {
   const mode = config.server.deploymentMode;
   const exposure = config.server.exposure;
   const auth = config.auth;

@@ -43,7 +43,7 @@ interface AdapterSettings {
 // Paths
 // ---------------------------------------------------------------------------
 
-const AITEAMCORP_DIR = path.join(os.homedir(), ".paperclip");
+const AITEAMCORP_DIR = path.join(os.homedir(), ".aiteamcorp");
 const ADAPTER_PLUGINS_DIR = path.join(AITEAMCORP_DIR, "adapter-plugins");
 const ADAPTER_PLUGINS_STORE_PATH = path.join(AITEAMCORP_DIR, "adapter-plugins.json");
 const ADAPTER_SETTINGS_PATH = path.join(AITEAMCORP_DIR, "adapter-settings.json");
@@ -67,7 +67,7 @@ function ensureDirs(): void {
       name: "paperclip-adapter-plugins",
       version: "0.0.0",
       private: true,
-      description: "Managed directory for Paperclip external adapter plugins. Do not edit manually.",
+      description: "Managed directory for AiTeamCorp external adapter plugins. Do not edit manually.",
     }, null, 2) + "\n");
   }
 }

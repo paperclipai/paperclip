@@ -439,19 +439,19 @@
   margin-top: 1.1em;
 }
 
-.aiteamcorp-mdxeditor-content a:not(.aiteamcorp-mention-chip):not(.paperclip-project-mention-chip) {
+.aiteamcorp-mdxeditor-content a:not(.aiteamcorp-mention-chip):not(.aiteamcorp-project-mention-chip) {
   color: color-mix(in oklab, var(--foreground) 76%, #207FDE 24%);
   text-decoration: underline;
   text-underline-offset: 0.15em;
   cursor: pointer;
 }
 
-.dark .aiteamcorp-mdxeditor-content a:not(.aiteamcorp-mention-chip):not(.paperclip-project-mention-chip) {
+.dark .aiteamcorp-mdxeditor-content a:not(.aiteamcorp-mention-chip):not(.aiteamcorp-project-mention-chip) {
   color: color-mix(in oklab, var(--foreground) 80%, #61AAF2 20%);
 }
 
 .aiteamcorp-mdxeditor-content a.aiteamcorp-mention-chip,
-.aiteamcorp-mdxeditor-content a.paperclip-project-mention-chip {
+.aiteamcorp-mdxeditor-content a.aiteamcorp-project-mention-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
@@ -478,7 +478,7 @@ a.aiteamcorp-mention-chip[data-mention-kind="project"]::before {
   width: 0.45rem;
   height: 0.45rem;
   border-radius: 999px;
-  background-color: var(--paperclip-mention-project-color, currentColor);
+  background-color: var(--aiteamcorp-mention-project-color, currentColor);
 }
 
 .aiteamcorp-mdxeditor-content a.aiteamcorp-mention-chip[data-mention-kind="agent"]::before,
@@ -486,8 +486,8 @@ a.aiteamcorp-mention-chip[data-mention-kind="agent"]::before {
   width: 0.75rem;
   height: 0.75rem;
   background-color: currentColor;
-  -webkit-mask-image: var(--paperclip-mention-icon-mask);
-  mask-image: var(--paperclip-mention-icon-mask);
+  -webkit-mask-image: var(--aiteamcorp-mention-icon-mask);
+  mask-image: var(--aiteamcorp-mention-icon-mask);
   -webkit-mask-position: center;
   mask-position: center;
   -webkit-mask-repeat: no-repeat;
@@ -640,14 +640,14 @@ a.aiteamcorp-mention-chip[data-mention-kind="agent"]::before {
 /* Rendered markdown code blocks & inline code (prose/MarkdownBody context).
    Dark theme code blocks with compact sizing.
    Override prose CSS variables so prose-invert can't revert to defaults. */
-.paperclip-markdown {
+.aiteamcorp-markdown {
   --tw-prose-pre-bg: #1e1e2e;
   --tw-prose-pre-code: #cdd6f4;
   --tw-prose-invert-pre-bg: #1e1e2e;
   --tw-prose-invert-pre-code: #cdd6f4;
 }
 
-.paperclip-markdown pre {
+.aiteamcorp-markdown pre {
   border: 1px solid color-mix(in oklab, var(--foreground) 12%, transparent) !important;
   border-radius: calc(var(--radius) - 3px) !important;
   background-color: #1e1e2e !important;
@@ -659,12 +659,12 @@ a.aiteamcorp-mention-chip[data-mention-kind="agent"]::before {
   white-space: pre;
 }
 
-.paperclip-markdown code {
+.aiteamcorp-markdown code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 1em;
 }
 
-.paperclip-markdown pre code {
+.aiteamcorp-markdown pre code {
   font-size: inherit;
   color: inherit;
   background: none;
@@ -688,55 +688,55 @@ a.aiteamcorp-mention-chip[data-mention-kind="agent"]::before {
   background-color: #ffffff0f;
 }
 
-.paperclip-markdown {
+.aiteamcorp-markdown {
   color: var(--foreground);
   font-size: 0.9375rem;
   line-height: 1.6;
 }
 
-.paperclip-markdown > :first-child {
+.aiteamcorp-markdown > :first-child {
   margin-top: 0;
 }
 
-.paperclip-markdown > :last-child {
+.aiteamcorp-markdown > :last-child {
   margin-bottom: 0;
 }
 
-.paperclip-markdown :where(p, ul, ol, blockquote, pre, table) {
+.aiteamcorp-markdown :where(p, ul, ol, blockquote, pre, table) {
   margin-top: 0.7rem;
   margin-bottom: 0.7rem;
 }
 
-.paperclip-markdown :where(ul, ol) {
+.aiteamcorp-markdown :where(ul, ol) {
   padding-left: 1.15rem;
 }
 
-.paperclip-markdown ul {
+.aiteamcorp-markdown ul {
   list-style-type: disc;
 }
 
-.paperclip-markdown ol {
+.aiteamcorp-markdown ol {
   list-style-type: decimal;
 }
 
-.paperclip-markdown li {
+.aiteamcorp-markdown li {
   margin: 0.14rem 0;
   padding-left: 0.2rem;
 }
 
-.paperclip-markdown li > :where(p, ul, ol) {
+.aiteamcorp-markdown li > :where(p, ul, ol) {
   margin-top: 0.3rem;
   margin-bottom: 0.3rem;
 }
 
-.paperclip-markdown li::marker {
+.aiteamcorp-markdown li::marker {
   color: var(--muted-foreground);
 }
 
-.paperclip-markdown h1,
-.paperclip-markdown h2,
-.paperclip-markdown h3,
-.paperclip-markdown h4 {
+.aiteamcorp-markdown h1,
+.aiteamcorp-markdown h2,
+.aiteamcorp-markdown h3,
+.aiteamcorp-markdown h4 {
   margin-top: 1.75rem;
   margin-bottom: 0.45rem;
   color: var(--foreground);
@@ -745,64 +745,64 @@ a.aiteamcorp-mention-chip[data-mention-kind="agent"]::before {
   line-height: 1.3;
 }
 
-.paperclip-markdown h1 {
+.aiteamcorp-markdown h1 {
   font-size: 1.5rem;
 }
 
-.paperclip-markdown h2 {
+.aiteamcorp-markdown h2 {
   font-size: 1.25rem;
 }
 
-.paperclip-markdown h3 {
+.aiteamcorp-markdown h3 {
   font-size: 1.05rem;
 }
 
-.paperclip-markdown h4 {
+.aiteamcorp-markdown h4 {
   font-size: 0.95rem;
 }
 
-.paperclip-markdown :where(strong, b) {
+.aiteamcorp-markdown :where(strong, b) {
   color: var(--foreground);
   font-weight: 600;
 }
 
-.paperclip-markdown a {
+.aiteamcorp-markdown a {
   color: color-mix(in oklab, var(--foreground) 76%, #207FDE 24%);
   text-decoration: underline;
   text-underline-offset: 0.15em;
   cursor: pointer;
 }
 
-.paperclip-markdown a.aiteamcorp-mention-chip {
+.aiteamcorp-markdown a.aiteamcorp-mention-chip {
   text-decoration: none;
 }
 
-.dark .paperclip-markdown a {
+.dark .aiteamcorp-markdown a {
   color: color-mix(in oklab, var(--foreground) 80%, #61AAF2 20%);
 }
 
-.paperclip-markdown blockquote {
+.aiteamcorp-markdown blockquote {
   margin-left: 0;
   padding-left: 0.95rem;
   border-left: 0.24rem solid color-mix(in oklab, var(--border) 84%, var(--muted-foreground) 16%);
   color: var(--muted-foreground);
 }
 
-.paperclip-markdown hr {
+.aiteamcorp-markdown hr {
   margin: 1.25rem 0;
   border-color: var(--border);
 }
 
-.paperclip-markdown img {
+.aiteamcorp-markdown img {
   border-radius: calc(var(--radius) + 2px);
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent);
 }
 
-.paperclip-markdown table {
+.aiteamcorp-markdown table {
   width: 100%;
 }
 
-.paperclip-markdown th {
+.aiteamcorp-markdown th {
   font-weight: 600;
   text-align: left;
 }
@@ -843,7 +843,7 @@ a.aiteamcorp-mention-chip[data-mention-kind="agent"]::before {
 
 /* Project mention chips rendered inside MarkdownBody */
 a.aiteamcorp-mention-chip,
-a.paperclip-project-mention-chip {
+a.aiteamcorp-project-mention-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;

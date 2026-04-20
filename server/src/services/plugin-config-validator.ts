@@ -35,7 +35,7 @@ export function validateInstanceConfig(
   const applyFormats = (addFormats as any).default ?? addFormats;
   applyFormats(ajv);
   // Register the secret-ref format used by plugin manifests to mark fields that
-  // hold a Paperclip secret UUID rather than a raw value. The format is a UI
+  // hold a AiTeamCorp secret UUID rather than a raw value. The format is a UI
   // hint only — UUID validation happens in the secrets handler at resolve time.
   ajv.addFormat("secret-ref", { validate: () => true });
   const validate = ajv.compile(schema);

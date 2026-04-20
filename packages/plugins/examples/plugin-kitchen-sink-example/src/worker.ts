@@ -7,7 +7,7 @@ import {
   PLUGIN_STATE_SCOPE_KINDS,
   definePlugin,
   runWorker,
-  type PaperclipPlugin,
+  type AiTeamCorpPlugin,
   type PluginContext,
   type PluginEntityQuery,
   type PluginEvent,
@@ -843,7 +843,7 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
     TOOL_NAMES.companySummary,
     {
       displayName: "Kitchen Sink Company Summary",
-      description: "Summarizes current company counts from the Paperclip APIs.",
+      description: "Summarizes current company counts from the AiTeamCorp APIs.",
       parametersSchema: { type: "object", properties: {} },
     },
     async (_params, runCtx): Promise<ToolResult> => {
@@ -946,7 +946,7 @@ async function registerJobs(ctx: PluginContext): Promise<void> {
   });
 }
 
-const plugin: PaperclipPlugin = definePlugin({
+const plugin: AiTeamCorpPlugin = definePlugin({
   async setup(ctx) {
     currentContext = ctx;
     runtimeLaunchers.set(RUNTIME_LAUNCHER.id, RUNTIME_LAUNCHER);

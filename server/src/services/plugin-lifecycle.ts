@@ -40,7 +40,7 @@ import type { Db } from "@aiteamcorp/db";
 import type {
   PluginStatus,
   PluginRecord,
-  PaperclipPluginManifestV1,
+  AiTeamCorpPluginManifestV1,
 } from "@aiteamcorp/shared";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { pluginLoader, type PluginLoader } from "./plugin-loader.js";

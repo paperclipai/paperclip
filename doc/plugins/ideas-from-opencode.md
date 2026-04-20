@@ -2,9 +2,9 @@
 
 Status: design report, not a V1 commitment
 
-Paperclip V1 explicitly excludes a plugin framework in [doc/SPEC-implementation.md](../SPEC-implementation.md), but the long-horizon spec says the architecture should leave room for extensions. This report studies the `opencode` plugin system and translates the useful patterns into a Paperclip-shaped design.
+AiTeamCorp V1 explicitly excludes a plugin framework in [doc/SPEC-implementation.md](../SPEC-implementation.md), but the long-horizon spec says the architecture should leave room for extensions. This report studies the `opencode` plugin system and translates the useful patterns into a Paperclip-shaped design.
 
-Assumption for this document: Paperclip is a single-tenant operator-controlled instance. Plugin installation should therefore be global across the instance. "Companies" are still first-class Paperclip objects, but they are organizational records, not tenant-isolation boundaries for plugin trust or installation.
+Assumption for this document: AiTeamCorp is a single-tenant operator-controlled instance. Plugin installation should therefore be global across the instance. "Companies" are still first-class AiTeamCorp objects, but they are organizational records, not tenant-isolation boundaries for plugin trust or installation.
 
 ## Executive Summary
 
@@ -21,16 +21,16 @@ That model works well for a local coding tool. It should not be copied literally
 
 The main conclusion is:
 
-- Paperclip should copy `opencode`'s typed SDK, deterministic loading, low authoring friction, and clear extension surfaces.
-- Paperclip should not copy `opencode`'s trust model, project-local plugin loading, "override by name collision" behavior, or arbitrary in-process mutation hooks for core business logic.
-- Paperclip should use multiple extension classes instead of one generic plugin bag:
+- AiTeamCorp should copy `opencode`'s typed SDK, deterministic loading, low authoring friction, and clear extension surfaces.
+- AiTeamCorp should not copy `opencode`'s trust model, project-local plugin loading, "override by name collision" behavior, or arbitrary in-process mutation hooks for core business logic.
+- AiTeamCorp should use multiple extension classes instead of one generic plugin bag:
   - trusted in-process modules for low-level platform concerns like agent adapters, storage providers, secret providers, and possibly run-log backends
   - out-of-process plugins for most third-party integrations like Linear, GitHub Issues, Grafana, Stripe, and schedulers
   - plugin-contributed agent tools (namespaced, not override-by-collision)
   - plugin-shipped React UI loaded into host extension slots via a typed bridge
   - a typed event bus with server-side filtering and plugin-to-plugin events, plus scheduled jobs for automation
 
-If Paperclip does this well, the examples you listed become straightforward:
+If AiTeamCorp does this well, the examples you listed become straightforward:
 
 - file browser / terminal / git workflow / child process tracking become workspace plugins that resolve paths from the host and handle OS operations directly
 - Linear / GitHub / Grafana / Stripe become connector plugins
@@ -54,7 +54,7 @@ Primary files reviewed:
 - `https://github.com/anomalyco/opencode/blob/a965a062595403a8e0083e85770315d5dc9628ab/packages/web/src/content/docs/custom-tools.mdx`
 - `https://github.com/anomalyco/opencode/blob/a965a062595403a8e0083e85770315d5dc9628ab/packages/web/src/content/docs/ecosystem.mdx`
 
-Relevant Paperclip files reviewed for current extension seams:
+Relevant AiTeamCorp files reviewed for current extension seams:
 
 - [server/src/adapters/registry.ts](../../server/src/adapters/registry.ts)
 - [ui/src/adapters/registry.ts](../../ui/src/adapters/registry.ts)
@@ -192,7 +192,7 @@ The most aggressive part of the design:
 - custom tools can override built-in tools by name
 
 That is very powerful for a local coding assistant.
-It is too dangerous for Paperclip core actions.
+It is too dangerous for AiTeamCorp core actions.
 
 However, the concept of plugins contributing agent-usable tools is very valuable for Paperclip — as long as plugin tools are namespaced (cannot shadow core tools) and capability-gated.
 
@@ -237,7 +237,7 @@ This is one of the best parts of the design.
 - host internals can evolve behind the loader
 - runtime code and plugin code have a clean contract boundary
 
-Paperclip should absolutely do this.
+AiTeamCorp should absolutely do this.
 
 ## 2. Deterministic loading and precedence
 
@@ -247,7 +247,7 @@ Paperclip should absolutely do this.
 - how config merges
 - what order wins
 
-Paperclip should copy this discipline.
+AiTeamCorp should copy this discipline.
 
 ## 3. Low-ceremony authoring
 
@@ -268,29 +268,29 @@ The `tool()` helper is excellent:
 - easy to document
 - easy for runtime validation
 
-Paperclip should adopt this style for plugin actions, automations, and UI schemas.
+AiTeamCorp should adopt this style for plugin actions, automations, and UI schemas.
 
 ## 5. Built-in features and plugins use similar shapes
 
 `opencode` uses the same hook system for internal and external plugin-style behavior in several places.
 That reduces special cases.
 
-Paperclip can benefit from that with adapters, secret backends, storage providers, and connector modules.
+AiTeamCorp can benefit from that with adapters, secret backends, storage providers, and connector modules.
 
 ## 6. Incremental extension, not giant abstraction upfront
 
 `opencode` did not design a giant marketplace platform first.
 It added concrete extension points that real features needed.
 
-That is the correct mindset for Paperclip too.
+That is the correct mindset for AiTeamCorp too.
 
-## What Paperclip Should Not Copy Directly
+## What AiTeamCorp Should Not Copy Directly
 
 ## 1. In-process arbitrary plugin code as the default
 
 `opencode` is basically a local agent runtime, so unsandboxed plugin execution is acceptable for its audience.
 
-Paperclip is a control plane for an operator-managed instance with company objects.
+AiTeamCorp is a control plane for an operator-managed instance with company objects.
 The risk profile is different:
 
 - secrets matter
@@ -304,12 +304,12 @@ Default third-party plugins should not run with unrestricted in-process access t
 
 `opencode` has project-local plugin folders because the tool is centered around a codebase.
 
-Paperclip is not project-scoped. It is instance-scoped.
+AiTeamCorp is not project-scoped. It is instance-scoped.
 The comparable unit is:
 
 - instance-installed plugin package
 
-Paperclip should not auto-load arbitrary code from a workspace repo like `.aiteamcorp/plugins` or project directories.
+AiTeamCorp should not auto-load arbitrary code from a workspace repo like `.aiteamcorp/plugins` or project directories.
 
 ## 3. Arbitrary mutation hooks on core business decisions
 
@@ -337,7 +337,7 @@ Core invariants should stay in core code, not become hook-rewritable.
 
 Allowing a plugin to replace a built-in tool by name is useful in a local agent product.
 
-Paperclip should not allow plugins to silently replace:
+AiTeamCorp should not allow plugins to silently replace:
 
 - core routes
 - core mutating actions
@@ -351,7 +351,7 @@ Extension should be additive or explicitly delegated, never accidental shadowing
 ## 5. Auto-install and execute from user config
 
 `opencode`'s "install dependencies at startup" flow is ergonomic.
-For Paperclip it would be risky because it combines:
+For AiTeamCorp it would be risky because it combines:
 
 - package installation
 - code loading
@@ -359,26 +359,26 @@ For Paperclip it would be risky because it combines:
 
 inside the control-plane server startup path.
 
-Paperclip should require an explicit operator install step.
+AiTeamCorp should require an explicit operator install step.
 
-## Why Paperclip Needs A Different Shape
+## Why AiTeamCorp Needs A Different Shape
 
 The products are solving different problems.
 
 | Topic | OpenCode | Paperclip |
 |---|---|---|
 | Primary unit | local project/worktree | single-tenant operator instance with company objects |
-| Trust assumption | local power user on own machine | operator managing one trusted Paperclip instance |
+| Trust assumption | local power user on own machine | operator managing one trusted AiTeamCorp instance |
 | Failure blast radius | local session/runtime | entire company control plane |
 | Extension style | mutate runtime behavior freely | preserve governance and auditability |
 | UI model | local app can load local behavior | board UI must stay coherent and safe |
 | Security model | host-trusted local plugins | needs capability boundaries and auditability |
 
-That means Paperclip should borrow the good ideas from `opencode` but use a stricter architecture.
+That means AiTeamCorp should borrow the good ideas from `opencode` but use a stricter architecture.
 
-## Paperclip Already Has Useful Pre-Plugin Seams
+## AiTeamCorp Already Has Useful Pre-Plugin Seams
 
-Paperclip has several extension-like seams already:
+AiTeamCorp has several extension-like seams already:
 
 - server adapter registry: [server/src/adapters/registry.ts](../../server/src/adapters/registry.ts)
 - UI adapter registry: [ui/src/adapters/registry.ts](../../ui/src/adapters/registry.ts)
@@ -388,10 +388,10 @@ Paperclip has several extension-like seams already:
 - activity log and live event emission: [server/src/services/activity-log.ts](../../server/src/services/activity-log.ts)
 
 This is good news.
-Paperclip does not need to invent extensibility from scratch.
+AiTeamCorp does not need to invent extensibility from scratch.
 It needs to unify and harden existing seams.
 
-## Recommended Paperclip Plugin Model
+## Recommended AiTeamCorp Plugin Model
 
 ## 1. Use multiple extension classes
 
@@ -411,7 +411,7 @@ This split is the most important design recommendation in this report.
 
 ## 2. Keep low-level modules separate from third-party plugins
 
-Paperclip already has this pattern implicitly:
+AiTeamCorp already has this pattern implicitly:
 
 - adapters are one thing
 - storage providers are another
@@ -422,7 +422,7 @@ Keep that separation.
 I would formalize it like this:
 
 - `module` means trusted code loaded by the host for low-level runtime services
-- `plugin` means integration code that talks to Paperclip through a typed plugin protocol and capability model
+- `plugin` means integration code that talks to AiTeamCorp through a typed plugin protocol and capability model
 
 This avoids trying to force Stripe, a PTY terminal, and a new agent adapter into the same abstraction.
 
@@ -438,7 +438,7 @@ For third-party plugins, the primary API should be:
 - contribute tools that agents can use during runs
 - write plugin-owned state
 - add additive UI surfaces
-- invoke explicit Paperclip actions through the API
+- invoke explicit AiTeamCorp actions through the API
 
 Do not make third-party plugins responsible for:
 
@@ -479,17 +479,17 @@ Later, if untrusted third-party plugins become common, the host can move to ifra
 ## 5. Make installation global and keep mappings/config separate
 
 `opencode` is mostly user-level local config.
-Paperclip should treat plugin installation as a global instance-level action.
+AiTeamCorp should treat plugin installation as a global instance-level action.
 
 Examples:
 
 - install `@paperclip/plugin-linear` once
 - make it available everywhere immediately
-- optionally store mappings over Paperclip objects if one company maps to a different Linear team than another
+- optionally store mappings over AiTeamCorp objects if one company maps to a different Linear team than another
 
 ## 6. Use project workspaces as the primary anchor for local tooling
 
-Paperclip already has a concrete workspace model for projects:
+AiTeamCorp already has a concrete workspace model for projects:
 
 - projects expose `workspaces` and `primaryWorkspace`
 - the database already has `project_workspaces`
@@ -514,7 +514,7 @@ In other words:
 
 ## 7. Let plugins contribute agent tools
 
-`opencode` makes tools a first-class extension point. This is one of the highest-value surfaces for Paperclip too.
+`opencode` makes tools a first-class extension point. This is one of the highest-value surfaces for AiTeamCorp too.
 
 A Linear plugin should be able to contribute a `search-linear-issues` tool that agents use during runs. A git plugin should contribute `create-branch` and `get-diff`. A file browser plugin should contribute `read-file` and `list-directory`.
 
@@ -572,15 +572,15 @@ This is critical for operators. Without observability, debugging plugin issues r
 
 ## 13. Ship a test harness and starter template
 
-A `@aiteamcorp/plugin-test-harness` package should provide a mock host with in-memory stores, synthetic event emission, and `getData`/`performAction`/`executeTool` simulation. Plugin authors should be able to write unit tests without a running Paperclip instance.
+A `@aiteamcorp/plugin-test-harness` package should provide a mock host with in-memory stores, synthetic event emission, and `getData`/`performAction`/`executeTool` simulation. Plugin authors should be able to write unit tests without a running AiTeamCorp instance.
 
 A `create-aiteamcorp-plugin` CLI should scaffold a working plugin with manifest, worker, UI bundle, test file, and build config.
 
-Low authoring friction was called out as one of `opencode`'s best qualities. The test harness and starter template are how Paperclip achieves the same.
+Low authoring friction was called out as one of `opencode`'s best qualities. The test harness and starter template are how AiTeamCorp achieves the same.
 
 ## 14. Support hot plugin lifecycle
 
-Plugin install, uninstall, upgrade, and config changes should take effect without restarting the Paperclip server. This is critical for developer workflow and operator experience.
+Plugin install, uninstall, upgrade, and config changes should take effect without restarting the AiTeamCorp server. This is critical for developer workflow and operator experience.
 
 The out-of-process worker architecture makes this natural:
 
@@ -595,7 +595,7 @@ Each worker process is independent — starting, stopping, or replacing one work
 
 ## 15. Define SDK versioning and compatibility
 
-`opencode` does not have a formal SDK versioning story because plugins run in-process and are effectively pinned to the current runtime. Paperclip's out-of-process model means plugins may be built against one SDK version and run on a host that has moved forward. This needs explicit rules.
+`opencode` does not have a formal SDK versioning story because plugins run in-process and are effectively pinned to the current runtime. AiTeamCorp's out-of-process model means plugins may be built against one SDK version and run on a host that has moved forward. This needs explicit rules.
 
 Recommended approach:
 
@@ -639,7 +639,7 @@ export default definePlugin({
   }),
   async register(ctx) {
     ctx.jobs.register("linear-pull", { cron: "*/5 * * * *" }, async (job) => {
-      // sync Linear issues into plugin-owned state or explicit Paperclip entities
+      // sync Linear issues into plugin-owned state or explicit AiTeamCorp entities
     });
 
     // subscribe with optional server-side filter
@@ -762,7 +762,7 @@ The host does not wrap or proxy these operations. This keeps the core lean — n
 
 ## Governance And Safety Requirements
 
-Any Paperclip plugin system has to preserve core control-plane invariants from the repo docs.
+Any AiTeamCorp plugin system has to preserve core control-plane invariants from the repo docs.
 
 That means:
 
@@ -799,7 +799,7 @@ The board/operator sees this before installation.
 ## 2. Global installation
 
 A plugin is installed once and becomes available across the instance.
-If it needs mappings over specific Paperclip objects, those are plugin data, not enable/disable boundaries.
+If it needs mappings over specific AiTeamCorp objects, those are plugin data, not enable/disable boundaries.
 
 ## 3. Activity logging
 
@@ -842,7 +842,7 @@ That is too much power too early.
 
 The right mental model is:
 
-- reuse core tables when the data is clearly part of Paperclip itself
+- reuse core tables when the data is clearly part of AiTeamCorp itself
 - use generic extension tables for most plugin-owned state
 - only allow plugin-specific tables later, and only for trusted platform modules or a tightly controlled migration workflow
 
@@ -850,11 +850,11 @@ The right mental model is:
 
 ### 1. Core tables stay core
 
-If a concept is becoming part of Paperclip's actual product model, it should get a normal first-party table.
+If a concept is becoming part of AiTeamCorp's actual product model, it should get a normal first-party table.
 
 Examples:
 
-- `project_workspaces` is already a core table because project workspaces are now part of Paperclip itself
+- `project_workspaces` is already a core table because project workspaces are now part of AiTeamCorp itself
 - if a future "project git state" becomes a core feature rather than plugin-owned metadata, that should also be a first-party table
 
 ### 2. Most plugins should start in generic extension tables
@@ -869,9 +869,9 @@ This keeps the system manageable:
 - easier operator review
 - fewer chances for plugin schema drift to break the instance
 
-### 3. Scope plugin data to Paperclip objects before adding custom schemas
+### 3. Scope plugin data to AiTeamCorp objects before adding custom schemas
 
-A lot of plugin data naturally hangs off existing Paperclip objects:
+A lot of plugin data naturally hangs off existing AiTeamCorp objects:
 
 - project workspace plugin state should often scope to `project` or `project_workspace`
 - issue sync state should scope to `issue`
@@ -882,7 +882,7 @@ That gives a good default keying model before introducing custom tables.
 
 ### 4. Add trusted module migrations later, not arbitrary plugin migrations now
 
-If Paperclip eventually needs extension-owned tables, I would only allow that for:
+If AiTeamCorp eventually needs extension-owned tables, I would only allow that for:
 
 - trusted first-party packages
 - trusted platform modules
@@ -1251,10 +1251,10 @@ Note: GitHub/GitLab PR creation should likely live in a separate connector plugi
 
 Package idea: `@paperclip/plugin-linear`
 
-This plugin syncs Paperclip work with Linear. It is useful for:
+This plugin syncs AiTeamCorp work with Linear. It is useful for:
 
 - importing backlog from Linear
-- linking Paperclip issues to Linear issues
+- linking AiTeamCorp issues to Linear issues
 - syncing status, comments, and assignees
 - mapping company goals/projects to external product planning
 - giving board operators a single place to see sync health
@@ -1272,7 +1272,7 @@ Main screens and interactions:
 - Plugin settings:
   - Linear API token secret ref
   - workspace/team/project mappings
-  - status mapping between Paperclip and Linear
+  - status mapping between AiTeamCorp and Linear
   - sync direction: import only, export only, bidirectional
   - comment sync toggle
 - Linear overview page:
@@ -1294,7 +1294,7 @@ Main screens and interactions:
 Core workflows:
 
 - Board enables the plugin, maps a Linear team, and imports a backlog into Paperclip.
-- Paperclip issue status changes push to Linear and Linear comments arrive back through webhooks.
+- AiTeamCorp issue status changes push to Linear and Linear comments arrive back through webhooks.
 - Board resolves mapping conflicts from the plugin page instead of silently drifting state.
 
 ### Hooks needed
@@ -1331,13 +1331,13 @@ Important constraint:
 
 Package idea: `@paperclip/plugin-github-issues`
 
-This plugin syncs Paperclip issues with GitHub Issues and optionally links PRs. It is useful for:
+This plugin syncs AiTeamCorp issues with GitHub Issues and optionally links PRs. It is useful for:
 
 - importing repo backlogs
 - mirroring issue status and comments
-- linking PRs to Paperclip issues
+- linking PRs to AiTeamCorp issues
 - tracking cross-repo work from inside one company view
-- bridging engineering workflow with Paperclip task governance
+- bridging engineering workflow with AiTeamCorp task governance
 
 ### UX
 
@@ -1354,7 +1354,7 @@ Main screens and interactions:
   - org/repo mappings
   - label/status mapping
   - whether PR linking is enabled
-  - whether new Paperclip issues should create GitHub issues automatically
+  - whether new AiTeamCorp issues should create GitHub issues automatically
 - GitHub overview page:
   - repo mapping list
   - sync health and recent webhook events
@@ -1365,7 +1365,7 @@ Main screens and interactions:
   - actions: create GitHub issue, link existing issue, unlink, resync
   - comment/status sync timeline
 - Dashboard widget:
-  - open PRs linked to active Paperclip issues
+  - open PRs linked to active AiTeamCorp issues
   - webhook failures
   - sync lag metrics
 
@@ -1373,7 +1373,7 @@ Core workflows:
 
 - Board imports GitHub Issues for a repo into Paperclip.
 - GitHub webhooks update status/comment state in Paperclip.
-- A PR is linked back to the Paperclip issue so the board can follow delivery status.
+- A PR is linked back to the AiTeamCorp issue so the board can follow delivery status.
 
 ### Hooks needed
 
@@ -1412,7 +1412,7 @@ This plugin surfaces external metrics and dashboards inside Paperclip. It is use
 - company KPI visibility
 - infrastructure/incident monitoring
 - showing deploy, traffic, latency, or revenue charts next to work
-- creating Paperclip issues from anomalous metrics
+- creating AiTeamCorp issues from anomalous metrics
 
 ### UX
 
@@ -1432,7 +1432,7 @@ Main screens and interactions:
 - Dashboard widgets:
   - one or more metric cards on the main dashboard
   - quick trend view and last refresh time
-  - link out to Grafana and link in to the full Paperclip plugin page
+  - link out to Grafana and link in to the full AiTeamCorp plugin page
 - Full metrics page:
   - selected dashboard panels embedded or proxied
   - metric selector
@@ -1443,9 +1443,9 @@ Main screens and interactions:
 
 Core workflows:
 
-- Board sees service degradation or business KPI movement directly on the Paperclip dashboard.
+- Board sees service degradation or business KPI movement directly on the AiTeamCorp dashboard.
 - Board clicks into the full metrics page to inspect the relevant Grafana panels.
-- Board creates a Paperclip issue from a threshold breach with a metric snapshot attached.
+- Board creates a AiTeamCorp issue from a threshold breach with a metric snapshot attached.
 
 ### Hooks needed
 
@@ -1472,7 +1472,7 @@ Optional event subscriptions:
 Important constraint:
 
 - start read-only first
-- do not make Grafana alerting logic part of Paperclip core; keep it as additive signal and issue creation
+- do not make Grafana alerting logic part of AiTeamCorp core; keep it as additive signal and issue creation
 
 ## Child Process / Server Tracking
 
@@ -1590,7 +1590,7 @@ Core workflows:
 - Board enables the plugin and connects a Stripe account.
 - Webhooks and scheduled reconciliation keep plugin state current.
 - Revenue widgets appear on the main dashboard and can be linked to company goals.
-- Failed payment spikes or churn events can generate Paperclip issues for follow-up.
+- Failed payment spikes or churn events can generate AiTeamCorp issues for follow-up.
 
 ### Hooks needed
 
@@ -1611,7 +1611,7 @@ Recommended capabilities and extension points:
 
 Important constraint:
 
-- Stripe data should stay additive to Paperclip core
+- Stripe data should stay additive to AiTeamCorp core
 - it should not leak into core budgeting logic, which is specifically about model/token spend in V1
 
 ## Specific Patterns From OpenCode Worth Adopting
@@ -1707,8 +1707,8 @@ Only after Phase 1 is stable:
 
 If I had to collapse this report into one architectural decision, it would be:
 
-Paperclip should not implement "an OpenCode-style generic in-process hook system."
-Paperclip should implement "a plugin platform with multiple trust tiers":
+AiTeamCorp should not implement "an OpenCode-style generic in-process hook system."
+AiTeamCorp should implement "a plugin platform with multiple trust tiers":
 
 - trusted platform modules for low-level runtime integration
 - typed out-of-process plugins for instance-wide integrations and automation

@@ -4,13 +4,13 @@ Status: Current implementation guide
 Date: 2026-04-13
 Audience: Product and engineering
 
-This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
+This document explains how AiTeamCorp interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
 
 `doc/SPEC-implementation.md` remains the V1 contract. This document is the detailed execution model behind that contract.
 
 ## 1. Core Model
 
-Paperclip separates four concepts that are easy to blur together:
+AiTeamCorp separates four concepts that are easy to blur together:
 
 1. structure: parent/sub-issue relationships
 2. dependency: blocker relationships
@@ -27,11 +27,11 @@ An issue has at most one assignee.
 - `assigneeUserId` means the issue is owned by a human board user
 - both cannot be set at the same time
 
-This is a hard invariant. Paperclip is single-assignee by design.
+This is a hard invariant. AiTeamCorp is single-assignee by design.
 
 ## 3. Status Semantics
 
-Paperclip issue statuses are not just UI labels. They imply different expectations about ownership and execution.
+AiTeamCorp issue statuses are not just UI labels. They imply different expectations about ownership and execution.
 
 ### `backlog`
 
@@ -47,7 +47,7 @@ The issue is actionable but not actively claimed.
 
 - it may be assigned or unassigned
 - no checkout/execution lock is required yet
-- for agent-assigned work, Paperclip may still need a wake path to ensure the assignee actually sees it
+- for agent-assigned work, AiTeamCorp may still need a wake path to ensure the assignee actually sees it
 
 ### `in_progress`
 
@@ -90,16 +90,16 @@ The execution model differs depending on assignee type.
 
 Agent-owned issues are part of the control plane's execution loop.
 
-- Paperclip can wake the assignee
-- Paperclip can track runs linked to the issue
-- Paperclip can recover some lost execution state after crashes/restarts
+- AiTeamCorp can wake the assignee
+- AiTeamCorp can track runs linked to the issue
+- AiTeamCorp can recover some lost execution state after crashes/restarts
 
 ### User-owned issues
 
 User-owned issues are not executed by the heartbeat scheduler.
 
-- Paperclip can track the ownership and status
-- Paperclip cannot rely on heartbeat/run semantics to keep them moving
+- AiTeamCorp can track the ownership and status
+- AiTeamCorp cannot rely on heartbeat/run semantics to keep them moving
 - stranded-work reconciliation does not apply to them
 
 This is why `in_progress` can be strict for agents without forcing the same runtime rules onto human-held work.
@@ -117,11 +117,11 @@ These are related but not identical:
 - `checkoutRunId` answers who currently owns execution rights for the issue
 - `executionRunId` answers which run is actually live right now
 
-Paperclip already clears stale execution locks and can adopt some stale checkout locks when the original run is gone.
+AiTeamCorp already clears stale execution locks and can adopt some stale checkout locks when the original run is gone.
 
 ## 6. Parent/Sub-Issue vs Blockers
 
-Paperclip uses two different relationships for different jobs.
+AiTeamCorp uses two different relationships for different jobs.
 
 ### Parent/Sub-Issue (`parentId`)
 
@@ -150,7 +150,7 @@ If a parent is truly waiting on a child, model that with blockers. Do not rely o
 
 ## 7. Consistent Execution Path Rules
 
-For agent-assigned, non-terminal, actionable issues, Paperclip should not leave work in a state where nobody is working it and nothing will wake it.
+For agent-assigned, non-terminal, actionable issues, AiTeamCorp should not leave work in a state where nobody is working it and nothing will wake it.
 
 The relevant execution path depends on status.
 
@@ -176,7 +176,7 @@ A healthy active-work state means at least one of these is true:
 
 ## 8. Crash and Restart Recovery
 
-Paperclip now treats crash/restart recovery as a stranded-assigned-work problem, not just a stranded-run problem.
+AiTeamCorp now treats crash/restart recovery as a stranded-assigned-work problem, not just a stranded-run problem.
 
 There are two distinct failure modes.
 
@@ -191,8 +191,8 @@ Example:
 
 Recovery rule:
 
-- if the latest issue-linked run failed/timed out/cancelled and no live execution path remains, Paperclip queues one automatic assignment recovery wake
-- if that recovery wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and posts a visible comment
+- if the latest issue-linked run failed/timed out/cancelled and no live execution path remains, AiTeamCorp queues one automatic assignment recovery wake
+- if that recovery wake also finishes and the issue is still stranded, AiTeamCorp moves the issue to `blocked` and posts a visible comment
 
 This is a dispatch recovery, not a continuation recovery.
 
@@ -207,8 +207,8 @@ Example:
 
 Recovery rule:
 
-- Paperclip queues one automatic continuation wake
-- if that continuation wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and posts a visible comment
+- AiTeamCorp queues one automatic continuation wake
+- if that continuation wake also finishes and the issue is still stranded, AiTeamCorp moves the issue to `blocked` and posts a visible comment
 
 This is an active-work continuity recovery.
 
@@ -216,7 +216,7 @@ This is an active-work continuity recovery.
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.
 
-On startup and on the periodic recovery loop, Paperclip now does three things in sequence:
+On startup and on the periodic recovery loop, AiTeamCorp now does three things in sequence:
 
 1. reap orphaned `running` runs
 2. resume persisted `queued` runs
@@ -228,7 +228,7 @@ That last step is what closes the gap where issue state survives a crash but the
 
 These semantics do not change V1 into an auto-reassignment system.
 
-Paperclip still does not:
+AiTeamCorp still does not:
 
 - automatically reassign work to a different agent
 - infer dependency semantics from `parentId` alone
@@ -249,4 +249,4 @@ For a board operator, the intended meaning is:
 - parent/sub-issue explains structure
 - blockers explain waiting
 
-That is the execution contract Paperclip should present to operators.
+That is the execution contract AiTeamCorp should present to operators.

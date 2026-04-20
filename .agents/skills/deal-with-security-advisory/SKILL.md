@@ -67,7 +67,7 @@ git checkout -b security-fix
 
 ```
 
-**Do not edit `~/paperclip`** — the dev server is running off the `~/paperclip` master branch and we don't want to touch it. All work happens in the private fork clone.
+**Do not edit `~/aiteamcorp`** — the dev server is running off the `~/aiteamcorp` master branch and we don't want to touch it. All work happens in the private fork clone.
 
 **TIPS:**
 
@@ -162,7 +162,7 @@ gh api --method PATCH \
     {
       "package": {
         "ecosystem": "npm",
-        "name": "paperclip"
+        "name": "aiteamcorp"
       },
       "vulnerable_version_range": "< {{patchedVersion}}",
       "patched_versions": "{{patchedVersion}}"

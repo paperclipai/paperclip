@@ -24,7 +24,7 @@
 
 import type { Db } from "@aiteamcorp/db";
 import type {
-  PaperclipPluginManifestV1,
+  AiTeamCorpPluginManifestV1,
   PluginRecord,
 } from "@aiteamcorp/shared";
 import type { ToolRunContext, ToolResult } from "@aiteamcorp/plugin-sdk";
@@ -155,7 +155,7 @@ export interface PluginToolDispatcher {
    */
   registerPluginTools(
     pluginId: string,
-    manifest: PaperclipPluginManifestV1,
+    manifest: AiTeamCorpPluginManifestV1,
   ): void;
 
   /**
@@ -428,7 +428,7 @@ export function createPluginToolDispatcher(
 
     registerPluginTools(
       pluginId: string,
-      manifest: PaperclipPluginManifestV1,
+      manifest: AiTeamCorpPluginManifestV1,
     ): void {
       registry.registerPlugin(pluginId, manifest);
     },

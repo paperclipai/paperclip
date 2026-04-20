@@ -1,4 +1,4 @@
-# Paperclip Create Agent API Reference
+# AiTeamCorp Create Agent API Reference
 
 ## Core Endpoints
 

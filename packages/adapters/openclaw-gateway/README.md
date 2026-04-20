@@ -12,7 +12,7 @@ This adapter always uses WebSocket gateway transport.
 2. send `req connect` (protocol/client/auth/device payload)
 3. send `req agent`
 4. wait for completion via `req agent.wait`
-5. stream `event agent` frames into Paperclip logs/transcript parsing
+5. stream `event agent` frames into AiTeamCorp logs/transcript parsing
 
 ## Auth Modes
 

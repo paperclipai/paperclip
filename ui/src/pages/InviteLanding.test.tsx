@@ -272,7 +272,7 @@ describe("InviteLandingPage", () => {
       password: "wrongpass",
     });
     expect(container.textContent).toContain(
-      "That email and password did not match an existing Paperclip account. Check both fields, or create an account first if you are new here.",
+      "That email and password did not match an existing AiTeamCorp account. Check both fields, or create an account first if you are new here.",
     );
 
     await act(async () => {

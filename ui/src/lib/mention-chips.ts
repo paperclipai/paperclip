@@ -71,13 +71,13 @@ export function mentionChipInlineStyle(mention: ParsedMentionChip): CSSPropertie
   if (mention.kind === "project" && mention.color) {
     const projectStyle = projectMentionColors(mention.color);
     Object.assign(style, projectStyle);
-    style["--paperclip-mention-project-color"] = mention.color;
+    style["--aiteamcorp-mention-project-color"] = mention.color;
   }
 
   if (mention.kind === "agent") {
     const iconMask = buildAgentIconMask(mention.icon);
     if (iconMask) {
-      style["--paperclip-mention-icon-mask"] = iconMask;
+      style["--aiteamcorp-mention-icon-mask"] = iconMask;
     }
   }
 
@@ -90,7 +90,7 @@ export function applyMentionChipDecoration(element: HTMLElement, mention: Parsed
   element.setAttribute("contenteditable", "false");
   element.classList.add("aiteamcorp-mention-chip", `aiteamcorp-mention-chip--${mention.kind}`);
   if (mention.kind === "project") {
-    element.classList.add("paperclip-project-mention-chip");
+    element.classList.add("aiteamcorp-project-mention-chip");
   }
 
   const style = mentionChipInlineStyle(mention);
@@ -114,14 +114,14 @@ export function clearMentionChipDecoration(element: HTMLElement) {
     "aiteamcorp-mention-chip--project",
     "aiteamcorp-mention-chip--user",
     "aiteamcorp-mention-chip--skill",
-    "paperclip-project-mention-chip",
+    "aiteamcorp-project-mention-chip",
   );
   element.removeAttribute("contenteditable");
   element.style.removeProperty("border-color");
   element.style.removeProperty("background-color");
   element.style.removeProperty("color");
-  element.style.removeProperty("--paperclip-mention-project-color");
-  element.style.removeProperty("--paperclip-mention-icon-mask");
+  element.style.removeProperty("--aiteamcorp-mention-project-color");
+  element.style.removeProperty("--aiteamcorp-mention-icon-mask");
 }
 
 function projectMentionColors(color: string): Pick<CSSProperties, "borderColor" | "backgroundColor" | "color"> {

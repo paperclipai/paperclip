@@ -28,7 +28,7 @@ describe("claude local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("defaults to mounting all built-in Paperclip skills when no explicit selection exists", async () => {
+  it("defaults to mounting all built-in AiTeamCorp skills when no explicit selection exists", async () => {
     const snapshot = await listClaudeSkills({
       agentId: "agent-1",
       companyId: "company-1",
@@ -60,23 +60,23 @@ describe("claude local skill sync", () => {
     expect(snapshot.entries.find((entry) => entry.key === createAgentKey)?.state).toBe("configured");
   });
 
-  it("normalizes legacy flat Paperclip skill refs to canonical keys", async () => {
+  it("normalizes legacy flat AiTeamCorp skill refs to canonical keys", async () => {
     const snapshot = await listClaudeSkills({
       agentId: "agent-3",
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
         aiteamcorpSkillSync: {
-          desiredSkills: ["paperclip"],
+          desiredSkills: ["aiteamcorp"],
         },
       },
     });
 
     expect(snapshot.warnings).toEqual([]);
     expect(snapshot.desiredSkills).toContain(aiteamcorpKey);
-    expect(snapshot.desiredSkills).not.toContain("paperclip");
+    expect(snapshot.desiredSkills).not.toContain("aiteamcorp");
     expect(snapshot.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("configured");
-    expect(snapshot.entries.find((entry) => entry.key === "paperclip")).toBeUndefined();
+    expect(snapshot.entries.find((entry) => entry.key === "aiteamcorp")).toBeUndefined();
   });
 
   it("shows host-level user-installed Claude skills as read-only external entries", async () => {
@@ -104,7 +104,7 @@ describe("claude local skill sync", () => {
       originLabel: "User-installed",
       locationLabel: "~/.claude/skills",
       readOnly: true,
-      detail: "Installed outside Paperclip management in the Claude skills home.",
+      detail: "Installed outside AiTeamCorp management in the Claude skills home.",
     }));
   });
 });

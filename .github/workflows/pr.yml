@@ -155,7 +155,7 @@ jobs:
       - name: Install Playwright
         run: npx playwright install --with-deps chromium
 
-      - name: Generate Paperclip config
+      - name: Generate AiTeamCorp config
         run: |
           mkdir -p ~/.aiteamcorp/instances/default
           cat > ~/.aiteamcorp/instances/default/config.json << 'CONF'

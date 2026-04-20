@@ -31,7 +31,7 @@ export function resolveManagedCodexHomeDir(
   env: NodeJS.ProcessEnv,
   companyId?: string,
 ): string {
-  const aiteamcorpHome = nonEmpty(env.AITEAMCORP_HOME) ?? path.resolve(os.homedir(), ".paperclip");
+  const aiteamcorpHome = nonEmpty(env.AITEAMCORP_HOME) ?? path.resolve(os.homedir(), ".aiteamcorp");
   const instanceId = nonEmpty(env.AITEAMCORP_INSTANCE_ID) ?? DEFAULT_AITEAMCORP_INSTANCE_ID;
   return companyId
     ? path.resolve(aiteamcorpHome, "instances", instanceId, "companies", companyId, "codex-home")

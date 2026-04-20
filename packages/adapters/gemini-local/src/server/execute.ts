@@ -9,21 +9,21 @@ import {
   asNumber,
   asString,
   asStringArray,
-  buildPaperclipEnv,
+  buildAiTeamCorpEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
-  ensurePaperclipSkillSymlink,
+  ensureAiTeamCorpSkillSymlink,
   joinPromptSections,
   ensurePathInEnv,
-  readPaperclipRuntimeSkillEntries,
+  readAiTeamCorpRuntimeSkillEntries,
   resolveCommandForLogs,
-  resolvePaperclipDesiredSkillNames,
+  resolveAiTeamCorpDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   parseObject,
   renderTemplate,
-  renderPaperclipWakePrompt,
-  stringifyPaperclipWakePayload,
+  renderAiTeamCorpWakePrompt,
+  stringifyAiTeamCorpWakePayload,
   runChildProcess,
 } from "@aiteamcorp/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
@@ -49,13 +49,13 @@ function resolveGeminiBillingType(env: Record<string, string>): "api" | "subscri
     : "subscription";
 }
 
-function renderPaperclipEnvNote(env: Record<string, string>): string {
+function renderAiTeamCorpEnvNote(env: Record<string, string>): string {
   const aiteamcorpKeys = Object.keys(env)
     .filter((key) => key.startsWith("AITEAMCORP_"))
     .sort();
   if (aiteamcorpKeys.length === 0) return "";
   return [
-    "Paperclip runtime note:",
+    "AiTeamCorp runtime note:",
     `The following AITEAMCORP_* environment variables are available in this run: ${aiteamcorpKeys.join(", ")}`,
     "Do not assume these variables are missing without checking your shell environment.",
     "",
@@ -66,8 +66,8 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
 function renderApiAccessNote(env: Record<string, string>): string {
   if (!hasNonEmptyEnvValue(env, "AITEAMCORP_API_URL") || !hasNonEmptyEnvValue(env, "AITEAMCORP_API_KEY")) return "";
   return [
-    "Paperclip API access note:",
-    "Use run_shell_command with curl to make Paperclip API requests.",
+    "AiTeamCorp API access note:",
+    "Use run_shell_command with curl to make AiTeamCorp API requests.",
     "GET example:",
     `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $AITEAMCORP_API_KEY\\" \\"$AITEAMCORP_API_URL/api/agents/me\\"" })`,
     "POST/PATCH example:",
@@ -82,7 +82,7 @@ function geminiSkillsHome(): string {
 }
 
 /**
- * Inject Paperclip skills directly into `~/.gemini/skills/` via symlinks.
+ * Inject AiTeamCorp skills directly into `~/.gemini/skills/` via symlinks.
  * This avoids needing GEMINI_CLI_HOME overrides, so the CLI naturally finds
  * both its auth credentials and the injected skills in the real home directory.
  */
@@ -120,7 +120,7 @@ async function ensureGeminiSkillsInjected(
     const target = path.join(skillsHome, entry.runtimeName);
 
     try {
-      const result = await ensurePaperclipSkillSymlink(entry.source, target);
+      const result = await ensureAiTeamCorpSkillSymlink(entry.source, target);
       if (result === "skipped") continue;
       await onLog(
         "stderr",
@@ -140,7 +140,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+    "You are agent {{agent.id}} ({{agent.name}}). Continue your AiTeamCorp work.",
   );
   const command = asString(config.command, "gemini");
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
@@ -163,14 +163,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  const geminiSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredGeminiSkillNames = resolvePaperclipDesiredSkillNames(config, geminiSkillEntries);
+  const geminiSkillEntries = await readAiTeamCorpRuntimeSkillEntries(config, __moduleDir);
+  const desiredGeminiSkillNames = resolveAiTeamCorpDesiredSkillNames(config, geminiSkillEntries);
   await ensureGeminiSkillsInjected(onLog, geminiSkillEntries, desiredGeminiSkillNames);
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.AITEAMCORP_API_KEY === "string" && envConfig.AITEAMCORP_API_KEY.trim().length > 0;
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  const env: Record<string, string> = { ...buildAiTeamCorpEnv(agent) };
   env.AITEAMCORP_RUN_ID = runId;
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -195,7 +195,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.aiteamcorpWake);
+  const wakePayloadJson = stringifyAiTeamCorpWakePayload(context.aiteamcorpWake);
   if (wakeTaskId) env.AITEAMCORP_TASK_ID = wakeTaskId;
   if (wakeReason) env.AITEAMCORP_WAKE_REASON = wakeReason;
   if (wakeCommentId) env.AITEAMCORP_WAKE_COMMENT_ID = wakeCommentId;
@@ -303,11 +303,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.aiteamcorpWake, { resumedSession: Boolean(sessionId) });
+  const wakePrompt = renderAiTeamCorpWakePrompt(context.aiteamcorpWake, { resumedSession: Boolean(sessionId) });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.aiteamcorpSessionHandoffMarkdown, "").trim();
-  const aiteamcorpEnvNote = renderPaperclipEnvNote(env);
+  const aiteamcorpEnvNote = renderAiTeamCorpEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
   const prompt = joinPromptSections([
     instructionsPrefix,

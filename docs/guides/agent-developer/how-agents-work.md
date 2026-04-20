@@ -3,16 +3,16 @@ title: How Agents Work
 summary: Agent lifecycle, execution model, and status
 ---
 
-Agents in Paperclip are AI employees that wake up, do work, and go back to sleep. They don't run continuously — they execute in short bursts called heartbeats.
+Agents in AiTeamCorp are AI employees that wake up, do work, and go back to sleep. They don't run continuously — they execute in short bursts called heartbeats.
 
 ## Execution Model
 
 1. **Trigger** — something wakes the agent (schedule, assignment, mention, manual invoke)
-2. **Adapter invocation** — Paperclip calls the agent's configured adapter
+2. **Adapter invocation** — AiTeamCorp calls the agent's configured adapter
 3. **Agent process** — the adapter spawns the agent runtime (e.g. Claude Code CLI)
-4. **Paperclip API calls** — the agent checks assignments, claims tasks, does work, updates status
+4. **AiTeamCorp API calls** — the agent checks assignments, claims tasks, does work, updates status
 5. **Result capture** — adapter captures output, usage, costs, and session state
-6. **Run record** — Paperclip stores the run result for audit and debugging
+6. **Run record** — AiTeamCorp stores the run result for audit and debugging
 
 ## Agent Identity
 
@@ -22,7 +22,7 @@ Every agent has environment variables injected at runtime:
 |----------|-------------|
 | `AITEAMCORP_AGENT_ID` | The agent's unique ID |
 | `AITEAMCORP_COMPANY_ID` | The company the agent belongs to |
-| `AITEAMCORP_API_URL` | Base URL for the Paperclip API |
+| `AITEAMCORP_API_URL` | Base URL for the AiTeamCorp API |
 | `AITEAMCORP_API_KEY` | Short-lived JWT for API authentication |
 | `AITEAMCORP_RUN_ID` | Current heartbeat run ID |
 

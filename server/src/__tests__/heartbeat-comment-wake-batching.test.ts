@@ -68,8 +68,8 @@ async function startTempDatabase() {
   const EmbeddedPostgres = await getEmbeddedPostgresCtor();
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
+    user: "aiteamcorp",
+    password: "aiteamcorp",
     port,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -80,8 +80,8 @@ async function startTempDatabase() {
   await instance.start();
 
   const adminConnectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${port}/postgres`;
-  await ensurePostgresDatabase(adminConnectionString, "paperclip");
-  const connectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${port}/paperclip`;
+  await ensurePostgresDatabase(adminConnectionString, "aiteamcorp");
+  const connectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${port}/aiteamcorp`;
   await applyPendingMigrations(connectionString);
   return { connectionString, instance, dataDir };
 }
@@ -694,7 +694,7 @@ describe("heartbeat comment wake batching", () => {
           commentIds: [],
         },
       });
-      expect(String(firstPayload.message ?? "")).toContain("## Paperclip Wake Payload");
+      expect(String(firstPayload.message ?? "")).toContain("## AiTeamCorp Wake Payload");
       expect(String(firstPayload.message ?? "")).toContain("Do not switch to another issue until you have handled this wake.");
       expect(String(firstPayload.message ?? "")).toContain("- checkout: already claimed by the harness for this run");
       expect(String(firstPayload.message ?? "")).toContain(

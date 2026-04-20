@@ -1,6 +1,6 @@
 # Plugin Authoring Smoke Example
 
-A Paperclip plugin
+A AiTeamCorp plugin
 
 ## Development
 

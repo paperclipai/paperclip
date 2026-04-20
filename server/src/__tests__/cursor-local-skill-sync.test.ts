@@ -27,7 +27,7 @@ describe("cursor local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("reports configured Paperclip skills and installs them into the Cursor skills home", async () => {
+  it("reports configured AiTeamCorp skills and installs them into the Cursor skills home", async () => {
     const home = await makeTempDir("paperclip-cursor-skill-sync-");
     cleanupDirs.add(home);
 
@@ -53,16 +53,16 @@ describe("cursor local skill sync", () => {
 
     const after = await syncCursorSkills(ctx, [aiteamcorpKey]);
     expect(after.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".cursor", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".cursor", "skills", "aiteamcorp"))).isSymbolicLink()).toBe(true);
   });
 
-  it("recognizes company-library runtime skills supplied outside the bundled Paperclip directory", async () => {
+  it("recognizes company-library runtime skills supplied outside the bundled AiTeamCorp directory", async () => {
     const home = await makeTempDir("paperclip-cursor-runtime-skills-home-");
     const runtimeSkills = await makeTempDir("paperclip-cursor-runtime-skills-src-");
     cleanupDirs.add(home);
     cleanupDirs.add(runtimeSkills);
 
-    const aiteamcorpDir = await createSkillDir(runtimeSkills, "paperclip");
+    const aiteamcorpDir = await createSkillDir(runtimeSkills, "aiteamcorp");
     const asciiHeartDir = await createSkillDir(runtimeSkills, "ascii-heart");
 
     const ctx = {
@@ -75,11 +75,11 @@ describe("cursor local skill sync", () => {
         },
         aiteamcorpRuntimeSkills: [
           {
-            key: "paperclip",
-            runtimeName: "paperclip",
+            key: "aiteamcorp",
+            runtimeName: "aiteamcorp",
             source: aiteamcorpDir,
             required: true,
-            requiredReason: "Bundled Paperclip skills are always available for local adapters.",
+            requiredReason: "Bundled AiTeamCorp skills are always available for local adapters.",
           },
           {
             key: "ascii-heart",
@@ -95,7 +95,7 @@ describe("cursor local skill sync", () => {
 
     const before = await listCursorSkills(ctx);
     expect(before.warnings).toEqual([]);
-    expect(before.desiredSkills).toEqual(["paperclip", "ascii-heart"]);
+    expect(before.desiredSkills).toEqual(["aiteamcorp", "ascii-heart"]);
     expect(before.entries.find((entry) => entry.key === "ascii-heart")?.state).toBe("missing");
 
     const after = await syncCursorSkills(ctx, ["ascii-heart"]);
@@ -104,7 +104,7 @@ describe("cursor local skill sync", () => {
     expect((await fs.lstat(path.join(home, ".cursor", "skills", "ascii-heart"))).isSymbolicLink()).toBe(true);
   });
 
-  it("keeps required bundled Paperclip skills installed even when the desired set is emptied", async () => {
+  it("keeps required bundled AiTeamCorp skills installed even when the desired set is emptied", async () => {
     const home = await makeTempDir("paperclip-cursor-skill-prune-");
     cleanupDirs.add(home);
 
@@ -139,6 +139,6 @@ describe("cursor local skill sync", () => {
     const after = await syncCursorSkills(clearedCtx, []);
     expect(after.desiredSkills).toContain(aiteamcorpKey);
     expect(after.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".cursor", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".cursor", "skills", "aiteamcorp"))).isSymbolicLink()).toBe(true);
   });
 });

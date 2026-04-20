@@ -20,7 +20,7 @@ describe("opencode local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("reports configured Paperclip skills and installs them into the shared Claude/OpenCode skills home", async () => {
+  it("reports configured AiTeamCorp skills and installs them into the shared Claude/OpenCode skills home", async () => {
     const home = await makeTempDir("paperclip-opencode-skill-sync-");
     cleanupDirs.add(home);
 
@@ -47,10 +47,10 @@ describe("opencode local skill sync", () => {
 
     const after = await syncOpenCodeSkills(ctx, [aiteamcorpKey]);
     expect(after.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".claude", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".claude", "skills", "aiteamcorp"))).isSymbolicLink()).toBe(true);
   });
 
-  it("keeps required bundled Paperclip skills installed even when the desired set is emptied", async () => {
+  it("keeps required bundled AiTeamCorp skills installed even when the desired set is emptied", async () => {
     const home = await makeTempDir("paperclip-opencode-skill-prune-");
     cleanupDirs.add(home);
 
@@ -85,6 +85,6 @@ describe("opencode local skill sync", () => {
     const after = await syncOpenCodeSkills(clearedCtx, []);
     expect(after.desiredSkills).toContain(aiteamcorpKey);
     expect(after.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".claude", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".claude", "skills", "aiteamcorp"))).isSymbolicLink()).toBe(true);
   });
 });

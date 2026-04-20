@@ -197,8 +197,8 @@ describe("agent skill routes", () => {
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
       {
         key: "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp",
-        runtimeName: "paperclip",
-        source: "/tmp/paperclip",
+        runtimeName: "aiteamcorp",
+        source: "/tmp/aiteamcorp",
         required: true,
         requiredReason: "required",
       },
@@ -206,7 +206,7 @@ describe("agent skill routes", () => {
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(
       async (_companyId: string, requested: string[]) =>
         requested.map((value) =>
-          value === "paperclip"
+          value === "aiteamcorp"
             ? "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp"
             : value,
         ),
@@ -335,7 +335,7 @@ describe("agent skill routes", () => {
 
     const res = await request(await createApp())
       .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
-      .send({ desiredSkills: ["paperclip"] });
+      .send({ desiredSkills: ["aiteamcorp"] });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAgentService.update).toHaveBeenCalledWith(
@@ -358,7 +358,7 @@ describe("agent skill routes", () => {
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
-        desiredSkills: ["paperclip"],
+        desiredSkills: ["aiteamcorp"],
         adapterConfig: {},
       });
 
@@ -474,7 +474,7 @@ describe("agent skill routes", () => {
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
-        desiredSkills: ["paperclip"],
+        desiredSkills: ["aiteamcorp"],
         adapterConfig: {},
       });
 

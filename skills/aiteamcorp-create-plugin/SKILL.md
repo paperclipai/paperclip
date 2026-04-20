@@ -1,15 +1,15 @@
 ---
 name: paperclip-create-plugin
 description: >
-  Create new Paperclip plugins with the current alpha SDK/runtime. Use when
+  Create new AiTeamCorp plugins with the current alpha SDK/runtime. Use when
   scaffolding a plugin package, adding a new example plugin, or updating plugin
   authoring docs. Covers the supported worker/UI surface, route conventions,
   scaffold flow, and verification steps.
 ---
 
-# Create a Paperclip Plugin
+# Create a AiTeamCorp Plugin
 
-Use this skill when the task is to create, scaffold, or document a Paperclip plugin.
+Use this skill when the task is to create, scaffold, or document a AiTeamCorp plugin.
 
 ## 1. Ground rules
 
@@ -37,7 +37,7 @@ pnpm --filter @aiteamcorp/create-aiteamcorp-plugin build
 node packages/plugins/create-aiteamcorp-plugin/dist/index.js <npm-package-name> --output <target-dir>
 ```
 
-For a plugin that lives outside the Paperclip repo, pass `--sdk-path` and let the scaffold snapshot the local SDK/shared packages into `.aiteamcorp-sdk/`:
+For a plugin that lives outside the AiTeamCorp repo, pass `--sdk-path` and let the scaffold snapshot the local SDK/shared packages into `.aiteamcorp-sdk/`:
 
 ```bash
 pnpm --filter @aiteamcorp/create-aiteamcorp-plugin build
@@ -68,7 +68,7 @@ Make sure the plugin:
 - does not import host UI component stubs
 - keeps UI self-contained
 - uses `routePath` only on `page` slots
-- is installed into Paperclip from an absolute local path during development
+- is installed into AiTeamCorp from an absolute local path during development
 
 ## 4. If the plugin should appear in the app
 

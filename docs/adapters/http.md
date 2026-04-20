@@ -3,7 +3,7 @@ title: HTTP Adapter
 summary: HTTP webhook adapter
 ---
 
-The `http` adapter sends a webhook request to an external agent service. The agent runs externally and Paperclip just triggers it.
+The `http` adapter sends a webhook request to an external agent service. The agent runs externally and AiTeamCorp just triggers it.
 
 ## When to Use
 
@@ -26,9 +26,9 @@ The `http` adapter sends a webhook request to an external agent service. The age
 
 ## How It Works
 
-1. Paperclip sends a POST request to the configured URL
+1. AiTeamCorp sends a POST request to the configured URL
 2. The request body includes the execution context (agent ID, task info, wake reason)
-3. The external agent processes the request and calls back to the Paperclip API
+3. The external agent processes the request and calls back to the AiTeamCorp API
 4. Response from the webhook is captured as the run result
 
 ## Request Body

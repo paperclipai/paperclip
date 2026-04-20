@@ -1,9 +1,9 @@
 ---
 title: External Adapters
-summary: Build, package, and distribute adapters as plugins without modifying Paperclip source
+summary: Build, package, and distribute adapters as plugins without modifying AiTeamCorp source
 ---
 
-Paperclip supports external adapter plugins that can be installed from npm packages or local directories. External adapters work exactly like built-in adapters — they execute agents, parse output, and render transcripts — but they live in their own package and don't require changes to Paperclip's source code.
+AiTeamCorp supports external adapter plugins that can be installed from npm packages or local directories. External adapters work exactly like built-in adapters — they execute agents, parse output, and render transcripts — but they live in their own package and don't require changes to AiTeamCorp's source code.
 
 ## Built-in vs External
 
@@ -13,7 +13,7 @@ Paperclip supports external adapter plugins that can be installed from npm packa
 | Registration | Hardcoded in three registries | Loaded at startup via plugin system |
 | UI parser | Static import at build time | Dynamically loaded from API (see [UI Parser](/adapters/adapter-ui-parser)) |
 | Distribution | Ships with Paperclip | Published to npm or linked via `file:` |
-| Updates | Requires Paperclip release | Independent versioning |
+| Updates | Requires AiTeamCorp release | Independent versioning |
 
 ## Quick Start
 
@@ -41,7 +41,7 @@ my-adapter/
   "version": "1.0.0",
   "type": "module",
   "license": "MIT",
-  "paperclip": {
+  "aiteamcorp": {
     "adapterUiParser": "1.0.0"
   },
   "exports": {
@@ -146,7 +146,7 @@ import type {
 
 import {
   runChildProcess,
-  buildPaperclipEnv,
+  buildAiTeamCorpEnv,
   renderTemplate,
 } from "@aiteamcorp/adapter-utils/server-utils";
 
@@ -160,8 +160,8 @@ export async function execute(
   const command = String(config.command ?? "my-agent");
   const timeoutSec = Number(config.timeoutSec ?? 300);
 
-  // 2. Build environment with Paperclip vars injected
-  const env = buildPaperclipEnv(agent);
+  // 2. Build environment with AiTeamCorp vars injected
+  const env = buildAiTeamCorpEnv(agent);
 
   // 3. Render prompt template
   const prompt = config.promptTemplate
@@ -201,7 +201,7 @@ export async function execute(
 | Helper | Purpose |
 |--------|---------|
 | `runChildProcess(command, opts)` | Spawn a child process with timeout, grace period, and streaming callbacks |
-| `buildPaperclipEnv(agent)` | Inject `AITEAMCORP_*` environment variables |
+| `buildAiTeamCorpEnv(agent)` | Inject `AITEAMCORP_*` environment variables |
 | `renderTemplate(template, data)` | `{{variable}}` substitution in prompt templates |
 | `asString(v)`, `asNumber(v)`, `asBoolean(v)` | Safe config value extraction |
 
@@ -260,7 +260,7 @@ Check levels:
 ### From npm
 
 ```sh
-# Via the Paperclip UI
+# Via the AiTeamCorp UI
 # Settings → Adapters → Install from npm → "my-paperclip-adapter"
 
 # Or via API
@@ -279,7 +279,7 @@ curl -X POST http://localhost:3102/api/adapters \
   -d '{"localPath": "/home/user/my-adapter"}'
 ```
 
-Local adapters are symlinked into Paperclip's adapter directory. Changes to the source are picked up on server restart.
+Local adapters are symlinked into AiTeamCorp's adapter directory. Changes to the source are picked up on server restart.
 
 ### Via adapter-plugins.json
 
@@ -375,7 +375,7 @@ npm run build
 npm publish
 ```
 
-Other Paperclip users can then install your adapter by package name from the UI or API.
+Other AiTeamCorp users can then install your adapter by package name from the UI or API.
 
 ## Security
 

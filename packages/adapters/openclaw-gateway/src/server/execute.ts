@@ -6,10 +6,10 @@ import type {
 import {
   asNumber,
   asString,
-  buildPaperclipEnv,
+  buildAiTeamCorpEnv,
   parseObject,
-  renderPaperclipWakePrompt,
-  stringifyPaperclipWakePayload,
+  renderAiTeamCorpWakePrompt,
+  stringifyAiTeamCorpWakePayload,
 } from "@aiteamcorp/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
@@ -89,7 +89,7 @@ const PROTOCOL_VERSION = 3;
 const DEFAULT_SCOPES = ["operator.admin"];
 const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
-const DEFAULT_CLIENT_VERSION = "paperclip";
+const DEFAULT_CLIENT_VERSION = "aiteamcorp";
 const DEFAULT_ROLE = "operator";
 
 const SENSITIVE_LOG_KEY_PATTERN =
@@ -145,7 +145,7 @@ export function resolveSessionKey(input: {
   runId: string;
   issueId: string | null;
 }): string {
-  const fallback = input.configuredSessionKey ?? "paperclip";
+  const fallback = input.configuredSessionKey ?? "aiteamcorp";
   if (input.strategy === "run") {
     return prefixSessionKeyForAgent(`paperclip:run:${input.runId}`, input.agentId);
   }
@@ -318,7 +318,7 @@ function buildWakePayload(ctx: AdapterExecutionContext): WakePayload {
   };
 }
 
-function resolvePaperclipApiUrlOverride(value: unknown): string | null {
+function resolveAiTeamCorpApiUrlOverride(value: unknown): string | null {
   const raw = nonEmpty(value);
   if (!raw) return null;
   try {
@@ -330,16 +330,16 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
   }
 }
 
-const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/aiteamcorp-claimed-api-key.json";
 
 function resolveClaimedApiKeyPath(value: unknown): string {
   return nonEmpty(value) ?? DEFAULT_CLAIMED_API_KEY_PATH;
 }
 
-function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
-  const aiteamcorpApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.aiteamcorpApiUrl);
+function buildAiTeamCorpEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
+  const aiteamcorpApiUrlOverride = resolveAiTeamCorpApiUrlOverride(ctx.config.aiteamcorpApiUrl);
   const aiteamcorpEnv: Record<string, string> = {
-    ...buildPaperclipEnv(ctx.agent),
+    ...buildAiTeamCorpEnv(ctx.agent),
     AITEAMCORP_RUN_ID: ctx.runId,
   };
 
@@ -363,7 +363,7 @@ function buildWakeText(
   aiteamcorpEnv: Record<string, string>,
   structuredWakePrompt: string,
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  const claimedApiKeyPath = "~/.openclaw/workspace/aiteamcorp-claimed-api-key.json";
   const orderedKeys = [
     "AITEAMCORP_RUN_ID",
     "AITEAMCORP_AGENT_ID",
@@ -388,7 +388,7 @@ function buildWakeText(
   const apiBaseHint = aiteamcorpEnv.AITEAMCORP_API_URL ?? "<set AITEAMCORP_API_URL>";
 
   const lines = [
-    "Paperclip wake event for a cloud adapter.",
+    "AiTeamCorp wake event for a cloud adapter.",
     "",
     "Run this procedure now. Do not guess undocumented endpoints and do not ask for additional heartbeat docs.",
     "",
@@ -459,7 +459,7 @@ function joinWakePayloadSections(structuredWakePrompt: string, structuredWakeJso
   return sections.join("\n");
 }
 
-function buildStandardPaperclipPayload(
+function buildStandardAiTeamCorpPayload(
   ctx: AdapterExecutionContext,
   wakePayload: WakePayload,
   aiteamcorpEnv: Record<string, string>,
@@ -1100,9 +1100,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const disableDeviceAuth = parseBoolean(ctx.config.disableDeviceAuth, false);
 
   const wakePayload = buildWakePayload(ctx);
-  const aiteamcorpEnv = buildPaperclipEnvForWake(ctx, wakePayload);
-  const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.aiteamcorpWake);
-  const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.aiteamcorpWake);
+  const aiteamcorpEnv = buildAiTeamCorpEnvForWake(ctx, wakePayload);
+  const structuredWakePrompt = renderAiTeamCorpWakePrompt(ctx.context.aiteamcorpWake);
+  const structuredWakeJson = stringifyAiTeamCorpWakePayload(ctx.context.aiteamcorpWake);
   const wakeText = buildWakeText(
     wakePayload,
     aiteamcorpEnv,
@@ -1123,7 +1123,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
-  const aiteamcorpPayload = buildStandardPaperclipPayload(ctx, wakePayload, aiteamcorpEnv, payloadTemplate);
+  const aiteamcorpPayload = buildStandardAiTeamCorpPayload(ctx, wakePayload, aiteamcorpEnv, payloadTemplate);
 
   const agentParams: Record<string, unknown> = {
     ...payloadTemplate,

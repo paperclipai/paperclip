@@ -182,7 +182,7 @@ curl -sS -X POST "$AITEAMCORP_API_URL/api/companies/$AITEAMCORP_COMPANY_ID/agent
 
 ## Notes
 
-- Built-in Paperclip runtime skills are still added automatically when required by the adapter.
+- Built-in AiTeamCorp runtime skills are still added automatically when required by the adapter.
 - If a reference is missing or ambiguous, the API returns `422`.
 - Prefer linking back to the relevant issue, approval, and agent when you comment about skill changes.
 - Use company portability routes when you need whole-package import/export, not just a skill:

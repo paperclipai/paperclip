@@ -22,7 +22,7 @@ function findContextFileFromAncestors(startDir: string): string | null {
   let currentDir = absoluteStartDir;
 
   while (true) {
-    const candidate = path.resolve(currentDir, ".paperclip", DEFAULT_CONTEXT_BASENAME);
+    const candidate = path.resolve(currentDir, ".aiteamcorp", DEFAULT_CONTEXT_BASENAME);
     if (fs.existsSync(candidate)) {
       return candidate;
     }

@@ -646,7 +646,7 @@ export function adapterRoutes() {
   // ── GET /api/adapters/:type/ui-parser.js ─────────────────────────────────
   // Serve the self-contained UI parser JS for an adapter type.
   // This allows external adapters to provide custom run-log parsing
-  // without modifying Paperclip's source code.
+  // without modifying AiTeamCorp's source code.
   //
   // The adapter package must export a "./ui-parser" entry in package.json
   // pointing to a self-contained ESM module with zero runtime dependencies.

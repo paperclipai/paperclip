@@ -18,7 +18,7 @@ import {
   issueDocuments,
   issues,
 } from "@aiteamcorp/db";
-import { readPaperclipSkillSyncPreference } from "@aiteamcorp/adapter-utils/server-utils";
+import { readAiTeamCorpSkillSyncPreference } from "@aiteamcorp/adapter-utils/server-utils";
 import { claudeConfigDir, parseClaudeStreamJson } from "@aiteamcorp/adapter-claude-local/server";
 import { codexHomeDir, parseCodexJsonl } from "@aiteamcorp/adapter-codex-local/server";
 import { parseOpenCodeJsonl } from "@aiteamcorp/adapter-opencode-local/server";
@@ -35,7 +35,7 @@ import {
   type FeedbackTraceTargetSummary,
   type FeedbackVoteValue,
 } from "@aiteamcorp/shared";
-import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveHomeAwarePath, resolveAiTeamCorpInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import {
@@ -388,7 +388,7 @@ async function buildCodexTraceFiles(input: {
   }
 
   const managedRoot = path.join(
-    resolvePaperclipInstanceRoot(),
+    resolveAiTeamCorpInstanceRoot(),
     "companies",
     input.companyId,
     "codex-home",
@@ -1085,7 +1085,7 @@ async function buildAgentContext(
 
   const adapterConfig = asRecord(agent.adapterConfig) ?? {};
   const runtimeConfig = asRecord(agent.runtimeConfig) ?? {};
-  const desiredSkillRefs = uniqueNonEmpty(readPaperclipSkillSyncPreference(adapterConfig).desiredSkills).slice(0, MAX_SKILLS);
+  const desiredSkillRefs = uniqueNonEmpty(readAiTeamCorpSkillSyncPreference(adapterConfig).desiredSkills).slice(0, MAX_SKILLS);
   const availableSkills = desiredSkillRefs.length === 0
     ? []
     : await db
@@ -1351,7 +1351,7 @@ async function buildPayloadArtifacts(
   const basePayload = {
     schemaVersion: FEEDBACK_SCHEMA_VERSION,
     bundleVersion: FEEDBACK_BUNDLE_VERSION,
-    sourceApp: "paperclip",
+    sourceApp: "aiteamcorp",
     capturedAt: input.now.toISOString(),
     consentVersion: input.consentVersion,
     vote: {

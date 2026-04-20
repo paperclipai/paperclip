@@ -32,7 +32,7 @@ function jwtConfig() {
   return {
     secret,
     ttlSeconds: parseNumber(process.env.AITEAMCORP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
-    issuer: process.env.AITEAMCORP_AGENT_JWT_ISSUER ?? "paperclip",
+    issuer: process.env.AITEAMCORP_AGENT_JWT_ISSUER ?? "aiteamcorp",
     audience: process.env.AITEAMCORP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
   };
 }

@@ -3,7 +3,7 @@ title: Docker
 summary: Docker Compose quickstart
 ---
 
-Run Paperclip in Docker without installing Node or pnpm locally.
+Run AiTeamCorp in Docker without installing Node or pnpm locally.
 
 ## Compose Quickstart (Recommended)
 
@@ -35,7 +35,7 @@ docker run --name paperclip \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e AITEAMCORP_HOME=/aiteamcorp \
-  -v "$(pwd)/data/docker-paperclip:/paperclip" \
+  -v "$(pwd)/data/docker-paperclip:/aiteamcorp" \
   paperclip-local
 ```
 
@@ -64,7 +64,7 @@ docker run --name paperclip \
   -e AITEAMCORP_HOME=/aiteamcorp \
   -e OPENAI_API_KEY=sk-... \
   -e ANTHROPIC_API_KEY=sk-... \
-  -v "$(pwd)/data/docker-paperclip:/paperclip" \
+  -v "$(pwd)/data/docker-paperclip:/aiteamcorp" \
   paperclip-local
 ```
 

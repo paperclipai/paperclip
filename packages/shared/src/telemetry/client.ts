@@ -45,7 +45,7 @@ export class TelemetryClient {
     const events = this.queue.splice(0);
     const state = this.getState();
     const endpoints = this.resolveEndpoints();
-    const app = this.config.app ?? "paperclip";
+    const app = this.config.app ?? "aiteamcorp";
     const schemaVersion = this.config.schemaVersion ?? "1";
     const body = JSON.stringify({
       app,

@@ -3,7 +3,7 @@ title: Deployment Overview
 summary: Deployment modes at a glance
 ---
 
-Paperclip supports three deployment configurations, from zero-friction local to internet-facing production.
+AiTeamCorp supports three deployment configurations, from zero-friction local to internet-facing production.
 
 ## Deployment Modes
 

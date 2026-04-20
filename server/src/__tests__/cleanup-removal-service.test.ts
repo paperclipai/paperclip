@@ -160,7 +160,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       id: randomUUID(),
       companyId,
       key: "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp",
-      slug: "paperclip",
+      slug: "aiteamcorp",
       name: "Paperclip",
       markdown: "# Paperclip",
     });

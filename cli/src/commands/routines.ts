@@ -12,7 +12,7 @@ import {
   routines,
 } from "@aiteamcorp/db";
 import { eq, inArray } from "drizzle-orm";
-import { loadPaperclipEnvFile } from "../config/env.js";
+import { loadAiTeamCorpEnvFile } from "../config/env.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 
 type RoutinesDisableAllOptions = {
@@ -131,8 +131,8 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
   const logBuffer = createEmbeddedPostgresLogBuffer();
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
+    user: "aiteamcorp",
+    password: "aiteamcorp",
     port,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -194,8 +194,8 @@ async function openConfiguredDb(configPath: string): Promise<{
         config.database.embeddedPostgresPort,
       );
       const adminConnectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${embeddedHandle.port}/postgres`;
-      await ensurePostgresDatabase(adminConnectionString, "paperclip");
-      const connectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${embeddedHandle.port}/paperclip`;
+      await ensurePostgresDatabase(adminConnectionString, "aiteamcorp");
+      const connectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${embeddedHandle.port}/aiteamcorp`;
       await applyPendingMigrations(connectionString);
       const db = createDb(connectionString) as ClosableDb;
       return {
@@ -234,7 +234,7 @@ export async function disableAllRoutinesInConfig(
   options: Pick<RoutinesDisableAllOptions, "config" | "companyId">,
 ): Promise<DisableAllRoutinesResult> {
   const configPath = resolveConfigPath(options.config);
-  loadPaperclipEnvFile(configPath);
+  loadAiTeamCorpEnvFile(configPath);
   const companyId =
     nonEmpty(options.companyId)
     ?? nonEmpty(process.env.AITEAMCORP_COMPANY_ID)
@@ -257,8 +257,8 @@ export async function disableAllRoutinesInConfig(
         config.database.embeddedPostgresPort,
       );
       const adminConnectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${embeddedHandle.port}/postgres`;
-      await ensurePostgresDatabase(adminConnectionString, "paperclip");
-      const connectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${embeddedHandle.port}/paperclip`;
+      await ensurePostgresDatabase(adminConnectionString, "aiteamcorp");
+      const connectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${embeddedHandle.port}/aiteamcorp`;
       await applyPendingMigrations(connectionString);
       db = createDb(connectionString) as ClosableDb;
     } else {
@@ -337,7 +337,7 @@ export function registerRoutineCommands(program: Command): void {
     .command("disable-all")
     .description("Pause all non-archived routines in the configured local instance for one company")
     .option("-c, --config <path>", "Path to config file")
-    .option("-d, --data-dir <path>", "Paperclip data directory root (isolates state from ~/.aiteamcorp)")
+    .option("-d, --data-dir <path>", "AiTeamCorp data directory root (isolates state from ~/.aiteamcorp)")
     .option("-C, --company-id <id>", "Company ID")
     .option("--json", "Output raw JSON")
     .action(async (opts: RoutinesDisableAllOptions) => {

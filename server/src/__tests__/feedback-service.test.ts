@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { writePaperclipSkillSyncPreference } from "@aiteamcorp/adapter-utils/server-utils";
+import { writeAiTeamCorpSkillSyncPreference } from "@aiteamcorp/adapter-utils/server-utils";
 import {
   agents,
   applyPendingMigrations,
@@ -74,8 +74,8 @@ async function startTempDatabase() {
   const EmbeddedPostgres = await getEmbeddedPostgresCtor();
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
+    user: "aiteamcorp",
+    password: "aiteamcorp",
     port,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -86,8 +86,8 @@ async function startTempDatabase() {
   await instance.start();
 
   const adminConnectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${port}/postgres`;
-  await ensurePostgresDatabase(adminConnectionString, "paperclip");
-  const connectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${port}/paperclip`;
+  await ensurePostgresDatabase(adminConnectionString, "aiteamcorp");
+  const connectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${port}/aiteamcorp`;
   await applyPendingMigrations(connectionString);
   return { connectionString, dataDir, instance };
 }
@@ -218,7 +218,7 @@ describe("feedbackService.saveIssueVote", () => {
         id: randomUUID(),
         companyId,
         key: "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp",
-        slug: "paperclip",
+        slug: "aiteamcorp",
         name: "Paperclip",
         markdown: "# Paperclip",
         sourceType: "catalog",
@@ -247,7 +247,7 @@ describe("feedbackService.saveIssueVote", () => {
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
-      adapterConfig: writePaperclipSkillSyncPreference(
+      adapterConfig: writeAiTeamCorpSkillSyncPreference(
         {
           model: "gpt-5.4",
           instructionsBundleMode: "external",

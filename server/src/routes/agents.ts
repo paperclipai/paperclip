@@ -24,8 +24,8 @@ import {
   updateAgentSchema,
 } from "@aiteamcorp/shared";
 import {
-  readPaperclipSkillSyncPreference,
-  writePaperclipSkillSyncPreference,
+  readAiTeamCorpSkillSyncPreference,
+  writeAiTeamCorpSkillSyncPreference,
 } from "@aiteamcorp/adapter-utils/server-utils";
 import { trackAgentCreated } from "@aiteamcorp/shared/telemetry";
 import { validate } from "../middleware/validate.js";
@@ -752,7 +752,7 @@ export function agentRoutes(db: Db) {
     const desiredSkills = Array.from(new Set([...requiredSkills, ...resolvedRequestedSkills]));
 
     return {
-      adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, desiredSkills),
+      adapterConfig: writeAiTeamCorpSkillSyncPreference(adapterConfig, desiredSkills),
       desiredSkills,
       runtimeSkillEntries,
     };
@@ -899,7 +899,7 @@ export function agentRoutes(db: Db) {
 
     const adapter = findActiveServerAdapter(agent.adapterType);
     if (!adapter?.listSkills) {
-      const preference = readPaperclipSkillSyncPreference(
+      const preference = readAiTeamCorpSkillSyncPreference(
         agent.adapterConfig as Record<string, unknown>,
       );
       const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {

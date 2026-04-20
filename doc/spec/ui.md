@@ -1,11 +1,11 @@
-# Paperclip UI Spec
+# AiTeamCorp UI Spec
 
 Status: Draft
 Date: 2026-02-17
 
 ## 1. Design Philosophy
 
-Paperclip's UI is a professional-grade control plane, not a toy dashboard. It should feel like the kind of tool you live in all day — fast, keyboard-driven, information-dense without being cluttered, dark-themed by default. Every pixel should earn its place.
+AiTeamCorp's UI is a professional-grade control plane, not a toy dashboard. It should feel like the kind of tool you live in all day — fast, keyboard-driven, information-dense without being cluttered, dark-themed by default. Every pixel should earn its place.
 
 Design principles:
 
@@ -475,7 +475,7 @@ Similar to the issue list but for projects.
 ┌─────────────────────────────────────────────────────────┐
 │ Projects                                [+ New project] │
 ├─────────────────────────────────────────────────────────┤
-│ [icon] Paperclip Auth     Backlog     CTO     Feb 20   │
+│ [icon] AiTeamCorp Auth     Backlog     CTO     Feb 20   │
 │ [icon] Marketing Site     In Progress CMO     Mar 01   │
 │ [icon] API v2             Planned     CTO     Mar 15   │
 └─────────────────────────────────────────────────────────┘

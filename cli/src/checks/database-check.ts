@@ -1,9 +1,9 @@
 import fs from "node:fs";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { AiTeamCorpConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
 
-export async function databaseCheck(config: PaperclipConfig, configPath?: string): Promise<CheckResult> {
+export async function databaseCheck(config: AiTeamCorpConfig, configPath?: string): Promise<CheckResult> {
   if (config.database.mode === "postgres") {
     if (!config.database.connectionString) {
       return {

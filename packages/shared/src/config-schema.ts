@@ -67,7 +67,7 @@ export const storageLocalDiskConfigSchema = z.object({
 });
 
 export const storageS3ConfigSchema = z.object({
-  bucket: z.string().min(1).default("paperclip"),
+  bucket: z.string().min(1).default("aiteamcorp"),
   region: z.string().min(1).default("us-east-1"),
   endpoint: z.string().optional(),
   prefix: z.string().default(""),
@@ -80,7 +80,7 @@ export const storageConfigSchema = z.object({
     baseDir: "~/.aiteamcorp/instances/default/data/storage",
   }),
   s3: storageS3ConfigSchema.default({
-    bucket: "paperclip",
+    bucket: "aiteamcorp",
     region: "us-east-1",
     prefix: "",
     forcePathStyle: false,
@@ -121,7 +121,7 @@ export const aiteamcorpConfigSchema = z
         baseDir: "~/.aiteamcorp/instances/default/data/storage",
       },
       s3: {
-        bucket: "paperclip",
+        bucket: "aiteamcorp",
         region: "us-east-1",
         prefix: "",
         forcePathStyle: false,
@@ -183,7 +183,7 @@ export const aiteamcorpConfigSchema = z
     }
   });
 
-export type PaperclipConfig = z.infer<typeof aiteamcorpConfigSchema>;
+export type AiTeamCorpConfig = z.infer<typeof aiteamcorpConfigSchema>;
 export type LlmConfig = z.infer<typeof llmConfigSchema>;
 export type DatabaseConfig = z.infer<typeof databaseConfigSchema>;
 export type LoggingConfig = z.infer<typeof loggingConfigSchema>;

@@ -67,7 +67,7 @@ function writeTestConfig(configPath: string, tempRoot: string, connectionString:
         baseDir: path.join(tempRoot, "storage"),
       },
       s3: {
-        bucket: "paperclip",
+        bucket: "aiteamcorp",
         region: "us-east-1",
         prefix: "",
         forcePathStyle: false,

@@ -1,5 +1,5 @@
 /**
- * `@aiteamcorp/plugin-sdk` — Paperclip plugin worker-side SDK.
+ * `@aiteamcorp/plugin-sdk` — AiTeamCorp plugin worker-side SDK.
  *
  * This is the main entrypoint for plugin worker code.  For plugin UI bundles,
  * import from `@aiteamcorp/plugin-sdk/ui` instead.
@@ -91,7 +91,7 @@ export {
 // Plugin definition and lifecycle types
 export type {
   PluginDefinition,
-  PaperclipPlugin,
+  AiTeamCorpPlugin,
   PluginHealthDiagnostics,
   PluginConfigValidationResult,
   PluginWebhookInput,
@@ -211,7 +211,7 @@ export type {
 // Plugin authors import manifest types from here so they have a single
 // dependency (@aiteamcorp/plugin-sdk) for all plugin authoring needs.
 export type {
-  PaperclipPluginManifestV1,
+  AiTeamCorpPluginManifestV1,
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,

@@ -45,7 +45,7 @@ vi.mock("../config-file.js", () => ({
 }));
 vi.mock("../home-paths.js", () => ({
   resolveHomeAwarePath: vi.fn((p: string) => p),
-  resolveDefaultLogsDir: vi.fn(() => "/tmp/paperclip-test-logs"),
+  resolveDefaultLogsDir: vi.fn(() => "/tmp/aiteamcorp-test-logs"),
 }));
 
 describe("logger translateTime respects TZ environment variable", () => {

@@ -133,7 +133,7 @@ describe("auth routes", () => {
     });
   });
 
-  it("accepts Paperclip asset paths for avatars", async () => {
+  it("accepts AiTeamCorp asset paths for avatars", async () => {
     const app = await createApp(
       {
         type: "board",

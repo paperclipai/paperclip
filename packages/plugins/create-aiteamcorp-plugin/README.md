@@ -1,6 +1,6 @@
 # @aiteamcorp/create-aiteamcorp-plugin
 
-Scaffolding tool for creating new Paperclip plugins.
+Scaffolding tool for creating new AiTeamCorp plugins.
 
 ```bash
 npx @aiteamcorp/create-aiteamcorp-plugin my-plugin
@@ -31,7 +31,7 @@ The scaffold intentionally uses plain React elements rather than host-provided U
 
 Inside this repo, the generated package uses `@aiteamcorp/plugin-sdk` via `workspace:*`.
 
-Outside this repo, the scaffold snapshots `@aiteamcorp/plugin-sdk` from your local Paperclip checkout into a `.aiteamcorp-sdk/` tarball and points the generated package at that local file by default. You can override the SDK source explicitly:
+Outside this repo, the scaffold snapshots `@aiteamcorp/plugin-sdk` from your local AiTeamCorp checkout into a `.aiteamcorp-sdk/` tarball and points the generated package at that local file by default. You can override the SDK source explicitly:
 
 ```bash
 node packages/plugins/create-aiteamcorp-plugin/dist/index.js @acme/my-plugin \

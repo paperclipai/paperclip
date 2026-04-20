@@ -75,7 +75,7 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
       projectId,
       name: "Primary",
       sourceType: "local_path",
-      cwd: "/tmp/paperclip-authz-project",
+      cwd: "/tmp/aiteamcorp-authz-project",
       isPrimary: true,
     });
     return { projectId, projectWorkspaceId };
@@ -93,7 +93,7 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
       name: "Execution workspace",
       status: "active",
       providerType: "local_fs",
-      cwd: "/tmp/paperclip-authz-execution",
+      cwd: "/tmp/aiteamcorp-authz-execution",
     });
     return executionWorkspaceId;
   }

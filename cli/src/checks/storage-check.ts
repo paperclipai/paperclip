@@ -1,9 +1,9 @@
 import fs from "node:fs";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { AiTeamCorpConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
 
-export function storageCheck(config: PaperclipConfig, configPath?: string): CheckResult {
+export function storageCheck(config: AiTeamCorpConfig, configPath?: string): CheckResult {
   if (config.storage.provider === "local_disk") {
     const baseDir = resolveRuntimeLikePath(config.storage.localDisk.baseDir, configPath);
     if (!fs.existsSync(baseDir)) {

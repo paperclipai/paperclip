@@ -16,7 +16,7 @@ describe("agent skill contract", () => {
       originLabel: "User-installed",
       locationLabel: "~/.claude/skills",
       readOnly: true,
-      detail: "Installed outside Paperclip management.",
+      detail: "Installed outside AiTeamCorp management.",
     })).toMatchObject({
       origin: "user_installed",
       locationLabel: "~/.claude/skills",
@@ -32,7 +32,7 @@ describe("agent skill contract", () => {
       desiredSkills: [],
       entries: [{
         key: "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp",
-        runtimeName: "paperclip",
+        runtimeName: "aiteamcorp",
         desired: true,
         managed: true,
         state: "configured",

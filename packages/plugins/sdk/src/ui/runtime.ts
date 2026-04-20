@@ -15,7 +15,7 @@ function getBridgeRegistry(): PluginBridgeRegistry | undefined {
 
 function missingBridgeValueError(name: string): Error {
   return new Error(
-    `Paperclip plugin UI runtime is not initialized for "${name}". ` +
+    `AiTeamCorp plugin UI runtime is not initialized for "${name}". ` +
       'Ensure the host loaded the plugin bridge before rendering this UI module.',
   );
 }
@@ -47,5 +47,5 @@ export function renderSdkUiComponent<TProps>(
     return component(props);
   }
 
-  throw new Error(`Paperclip plugin UI component "${name}" is not callable`);
+  throw new Error(`AiTeamCorp plugin UI component "${name}" is not callable`);
 }

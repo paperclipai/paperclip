@@ -1,5 +1,5 @@
 /**
- * esbuild configuration for building the paperclipai CLI for npm.
+ * esbuild configuration for building the aiteamcorp CLI for npm.
  *
  * Bundles all workspace packages (@aiteamcorp/*) into a single file.
  * External npm packages remain as regular dependencies.

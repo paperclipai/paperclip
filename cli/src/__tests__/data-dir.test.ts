@@ -37,16 +37,16 @@ describe("applyDataDirOverride", () => {
 
   it("uses the provided instance id when deriving default config path", () => {
     const home = applyDataDirOverride({
-      dataDir: "/tmp/paperclip-alt",
+      dataDir: "/tmp/aiteamcorp-alt",
       instance: "dev_1",
       config: undefined,
       context: undefined,
     }, { hasConfigOption: true, hasContextOption: true });
 
-    expect(home).toBe(path.resolve("/tmp/paperclip-alt"));
+    expect(home).toBe(path.resolve("/tmp/aiteamcorp-alt"));
     expect(process.env.AITEAMCORP_INSTANCE_ID).toBe("dev_1");
     expect(process.env.AITEAMCORP_CONFIG).toBe(
-      path.resolve("/tmp/paperclip-alt", "instances", "dev_1", "config.json"),
+      path.resolve("/tmp/aiteamcorp-alt", "instances", "dev_1", "config.json"),
     );
   });
 
@@ -55,7 +55,7 @@ describe("applyDataDirOverride", () => {
     process.env.AITEAMCORP_CONTEXT = "/env/context.json";
 
     applyDataDirOverride({
-      dataDir: "/tmp/paperclip-alt",
+      dataDir: "/tmp/aiteamcorp-alt",
       config: "/flag/config.json",
       context: "/flag/context.json",
     }, { hasConfigOption: true, hasContextOption: true });
@@ -67,12 +67,12 @@ describe("applyDataDirOverride", () => {
   it("only applies defaults for options supported by the command", () => {
     applyDataDirOverride(
       {
-        dataDir: "/tmp/paperclip-alt",
+        dataDir: "/tmp/aiteamcorp-alt",
       },
       { hasConfigOption: false, hasContextOption: false },
     );
 
-    expect(process.env.AITEAMCORP_HOME).toBe(path.resolve("/tmp/paperclip-alt"));
+    expect(process.env.AITEAMCORP_HOME).toBe(path.resolve("/tmp/aiteamcorp-alt"));
     expect(process.env.AITEAMCORP_CONFIG).toBeUndefined();
     expect(process.env.AITEAMCORP_CONTEXT).toBeUndefined();
   });

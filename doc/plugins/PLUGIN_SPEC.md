@@ -1,8 +1,8 @@
-# Paperclip Plugin System Specification
+# AiTeamCorp Plugin System Specification
 
 Status: proposed complete spec for the post-V1 plugin system
 
-This document is the complete specification for Paperclip's plugin and extension architecture.
+This document is the complete specification for AiTeamCorp's plugin and extension architecture.
 It expands the brief plugin notes in [doc/SPEC.md](../SPEC.md) and should be read alongside the comparative analysis in [doc/plugins/ideas-from-opencode.md](./ideas-from-opencode.md).
 
 This is not part of the V1 implementation contract in [doc/SPEC-implementation.md](../SPEC-implementation.md).
@@ -20,8 +20,8 @@ Today, the practical deployment model is:
 
 Current limitations to keep in mind:
 
-- Plugin UI bundles currently run as same-origin JavaScript inside the main Paperclip app. Treat plugin UI as trusted code, not a sandboxed frontend capability boundary.
-- Manifest capabilities currently gate worker-side host RPC calls. They do not prevent plugin UI code from calling ordinary Paperclip HTTP APIs directly.
+- Plugin UI bundles currently run as same-origin JavaScript inside the main AiTeamCorp app. Treat plugin UI as trusted code, not a sandboxed frontend capability boundary.
+- Manifest capabilities currently gate worker-side host RPC calls. They do not prevent plugin UI code from calling ordinary AiTeamCorp HTTP APIs directly.
 - Runtime installs assume a writable local filesystem for the plugin package directory and plugin data directory.
 - Runtime npm installs assume `npm` is available in the running environment and that the host can reach the configured package registry.
 - Published npm packages are the intended install artifact for deployed plugins.
@@ -62,12 +62,12 @@ This spec does not cover:
 
 ## 2. Core Assumptions
 
-Paperclip plugin design is based on the following assumptions:
+AiTeamCorp plugin design is based on the following assumptions:
 
-1. Paperclip is single-tenant and self-hosted.
+1. AiTeamCorp is single-tenant and self-hosted.
 2. Plugin installation is global to the instance.
-3. "Companies" remain core Paperclip business objects, but they are not plugin trust boundaries.
-4. Board governance, approval gates, budget hard-stops, and core task invariants remain owned by Paperclip core.
+3. "Companies" remain core AiTeamCorp business objects, but they are not plugin trust boundaries.
+4. Board governance, approval gates, budget hard-stops, and core task invariants remain owned by AiTeamCorp core.
 5. Projects already have a real workspace model via `project_workspaces`, and local/runtime plugins should build on that instead of inventing a separate workspace abstraction.
 
 ## 3. Goals
@@ -75,7 +75,7 @@ Paperclip plugin design is based on the following assumptions:
 The plugin system must:
 
 1. Let operators install global instance-wide plugins.
-2. Let plugins add major capabilities without editing Paperclip core.
+2. Let plugins add major capabilities without editing AiTeamCorp core.
 3. Keep core governance and auditing intact.
 4. Support both local/runtime plugins and external SaaS connectors.
 5. Support future plugin categories such as:
@@ -102,11 +102,11 @@ The first plugin system must not:
 
 ### 5.1 Instance
 
-The single Paperclip deployment an operator installs and controls.
+The single AiTeamCorp deployment an operator installs and controls.
 
 ### 5.2 Company
 
-A first-class Paperclip business object inside the instance.
+A first-class AiTeamCorp business object inside the instance.
 
 ### 5.3 Project Workspace
 
@@ -115,7 +115,7 @@ Plugins resolve workspace paths from this model to locate local directories for 
 
 ### 5.4 Platform Module
 
-A trusted in-process extension loaded directly by Paperclip core.
+A trusted in-process extension loaded directly by AiTeamCorp core.
 
 Examples:
 
@@ -126,7 +126,7 @@ Examples:
 
 ### 5.5 Plugin
 
-An installable instance-wide extension package loaded through the Paperclip plugin runtime.
+An installable instance-wide extension package loaded through the AiTeamCorp plugin runtime.
 
 Examples:
 
@@ -150,7 +150,7 @@ Plugins may only call host APIs that are covered by granted capabilities.
 
 ## 6. Extension Classes
 
-Paperclip has two extension classes.
+AiTeamCorp has two extension classes.
 
 ## 6.1 Platform Modules
 
@@ -198,7 +198,7 @@ A plugin may declare more than one category.
 
 ## 7. Project Workspaces
 
-Paperclip already has a concrete workspace model:
+AiTeamCorp already has a concrete workspace model:
 
 - projects expose `workspaces`
 - projects expose `primaryWorkspace`
@@ -224,7 +224,7 @@ Examples:
 
 ## 8.1 On-Disk Layout
 
-Plugins live under the Paperclip instance directory.
+Plugins live under the AiTeamCorp instance directory.
 
 Suggested layout:
 
@@ -239,7 +239,7 @@ This on-disk model is the reason the current implementation expects a persistent
 
 ## 8.2 Operator Commands
 
-Paperclip should add CLI commands:
+AiTeamCorp should add CLI commands:
 
 - `pnpm aiteamcorp plugin list`
 - `pnpm aiteamcorp plugin install <package[@version]>`
@@ -310,14 +310,14 @@ Suggested `package.json` keys:
 Normative manifest shape:
 
 ```ts
-export interface PaperclipPluginManifestV1 {
+export interface AiTeamCorpPluginManifestV1 {
   id: string;
   apiVersion: 1;
   version: string;
   displayName: string;
   description: string;
   categories: Array<"connector" | "workspace" | "automation" | "ui">;
-  minimumPaperclipVersion?: string;
+  minimumAiTeamCorpVersion?: string;
   capabilities: string[];
   entrypoints: {
     worker: string;
@@ -358,7 +358,7 @@ Rules:
 
 ## 11. Agent Tools
 
-Plugins may contribute tools that Paperclip agents can use during runs.
+Plugins may contribute tools that AiTeamCorp agents can use during runs.
 
 ### 11.1 Tool Declaration
 
@@ -404,7 +404,7 @@ Third-party plugins run out-of-process by default.
 
 Default runtime:
 
-- Paperclip server starts one worker process per installed plugin
+- AiTeamCorp server starts one worker process per installed plugin
 - the worker process is a Node process
 - host and worker communicate over JSON-RPC on stdio
 
@@ -526,7 +526,7 @@ If the worker implements this method, it applies the new config without restarti
 
 ### 13.5 `onEvent`
 
-Receives one typed Paperclip domain event.
+Receives one typed AiTeamCorp domain event.
 
 Delivery semantics:
 
@@ -628,13 +628,13 @@ Plugins that need filesystem, git, terminal, or process operations handle those 
 
 ```ts
 /** Top-level helper for defining a plugin with type checking */
-export function definePlugin(definition: PluginDefinition): PaperclipPlugin;
+export function definePlugin(definition: PluginDefinition): AiTeamCorpPlugin;
 
 /** Re-exported from Zod for config schema definitions */
 export { z } from "zod";
 
 export interface PluginContext {
-  manifest: PaperclipPluginManifestV1;
+  manifest: AiTeamCorpPluginManifestV1;
   config: {
     get(): Promise<Record<string, unknown>>;
   };
@@ -1052,7 +1052,7 @@ The auto-generated form supports:
 - text inputs, number inputs, toggles, select dropdowns derived from schema types and enums
 - nested objects rendered as fieldsets
 - arrays rendered as repeatable field groups with add/remove controls
-- secret ref fields: any schema property annotated with `"format": "secret-ref"` renders as a secret picker that resolves through the Paperclip secret provider system rather than a plain text input
+- secret ref fields: any schema property annotated with `"format": "secret-ref"` renders as a secret picker that resolves through the AiTeamCorp secret provider system rather than a plain text input
 - validation messages derived from schema constraints (`required`, `minLength`, `pattern`, `minimum`, etc.)
 - a "Test Connection" action if the plugin declares a `validateConfig` RPC method — the host calls it and displays the result inline
 
@@ -1072,19 +1072,19 @@ This keeps the host lean — it does not need to maintain a parallel API surface
 
 ## 21.1 Database Principles
 
-1. Core Paperclip data stays in first-party tables.
+1. Core AiTeamCorp data stays in first-party tables.
 2. Most plugin-owned data starts in generic extension tables.
-3. Plugin data should scope to existing Paperclip objects before new tables are introduced.
+3. Plugin data should scope to existing AiTeamCorp objects before new tables are introduced.
 4. Arbitrary third-party schema migrations are out of scope for the first plugin system.
 
 ## 21.2 Core Table Reuse
 
-If data becomes part of the actual Paperclip product model, it should become a first-party table.
+If data becomes part of the actual AiTeamCorp product model, it should become a first-party table.
 
 Examples:
 
 - `project_workspaces` is already first-party
-- if Paperclip later decides git state is core product data, it should become a first-party table too
+- if AiTeamCorp later decides git state is core product data, it should become a first-party table too
 
 ## 21.3 Required Tables
 
@@ -1252,7 +1252,7 @@ Plugin config must never persist raw secret values.
 Rules:
 
 1. Plugin config stores secret refs only.
-2. Secret refs resolve through the existing Paperclip secret provider system.
+2. Secret refs resolve through the existing AiTeamCorp secret provider system.
 3. Plugin workers receive resolved secrets only at execution time.
 4. Secret values must never be written to:
    - plugin config JSON
@@ -1340,7 +1340,7 @@ When upgrading a plugin:
 
 ### 25.4 Hot Plugin Lifecycle
 
-Plugin install, uninstall, upgrade, and config changes **must** take effect without restarting the Paperclip server. This is a normative requirement, not optional.
+Plugin install, uninstall, upgrade, and config changes **must** take effect without restarting the AiTeamCorp server. This is a normative requirement, not optional.
 
 The architecture already supports this — plugins run as out-of-process workers with dynamic ESM imports, IPC bridges, and host-managed routing tables. This section makes the requirement explicit so implementations do not regress.
 
@@ -1479,7 +1479,7 @@ expect(data.syncedCount).toBeGreaterThan(0);
 
 ### 27.2 Local Plugin Development
 
-For developing a plugin against a running Paperclip instance:
+For developing a plugin against a running AiTeamCorp instance:
 
 - The operator installs the plugin from a local path: `pnpm aiteamcorp plugin install ./path/to/plugin`
 - The host watches the plugin directory for changes and restarts the worker on rebuild.
@@ -1622,9 +1622,9 @@ Workspace plugins (file browser, terminal, git, process tracking) do not require
 
 ## 31. Final Design Decision
 
-Paperclip should not implement a generic in-process hook bag modeled directly after local coding tools.
+AiTeamCorp should not implement a generic in-process hook bag modeled directly after local coding tools.
 
-Paperclip should implement:
+AiTeamCorp should implement:
 
 - trusted platform modules for low-level host integration
 - globally installed out-of-process plugins for additive instance-wide capabilities
@@ -1641,4 +1641,4 @@ Paperclip should implement:
 - test harness and starter template for low authoring friction
 - strict preservation of core governance and audit rules
 
-That is the complete target design for the Paperclip plugin system.
+That is the complete target design for the AiTeamCorp plugin system.

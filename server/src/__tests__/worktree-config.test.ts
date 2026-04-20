@@ -65,7 +65,7 @@ function buildLegacyConfig(sharedRoot: string) {
         baseDir: path.join(sharedRoot, "data", "storage"),
       },
       s3: {
-        bucket: "paperclip",
+        bucket: "aiteamcorp",
         region: "us-east-1",
         prefix: "",
         forcePathStyle: false,
@@ -85,10 +85,10 @@ describe("worktree config repair", () => {
   it("repairs legacy repo-local worktree config and env files into an isolated instance", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-worktree-repair-"));
     const worktreeRoot = path.join(tempRoot, "PAP-884-ai-commits-component");
-    const aiteamcorpDir = path.join(worktreeRoot, ".paperclip");
+    const aiteamcorpDir = path.join(worktreeRoot, ".aiteamcorp");
     const configPath = path.join(aiteamcorpDir, "config.json");
     const envPath = path.join(aiteamcorpDir, ".env");
-    const sharedRoot = path.join(tempRoot, ".paperclip", "instances", "default");
+    const sharedRoot = path.join(tempRoot, ".aiteamcorp", "instances", "default");
     const isolatedHome = path.join(tempRoot, ".aiteamcorp-worktrees");
 
     await fs.mkdir(aiteamcorpDir, { recursive: true });
@@ -96,7 +96,7 @@ describe("worktree config repair", () => {
     await fs.writeFile(
       envPath,
       [
-        "# Paperclip environment variables",
+        "# AiTeamCorp environment variables",
         "AITEAMCORP_IN_WORKTREE=true",
         "AITEAMCORP_WORKTREE_NAME=PAP-884-ai-commits-component",
         "AITEAMCORP_AGENT_JWT_SECRET=shared-secret",
@@ -142,10 +142,10 @@ describe("worktree config repair", () => {
   it("avoids sibling worktree ports when repairing legacy configs", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-worktree-repair-ports-"));
     const worktreeRoot = path.join(tempRoot, "PAP-880-thumbs-capture-for-evals-feature");
-    const aiteamcorpDir = path.join(worktreeRoot, ".paperclip");
+    const aiteamcorpDir = path.join(worktreeRoot, ".aiteamcorp");
     const configPath = path.join(aiteamcorpDir, "config.json");
     const envPath = path.join(aiteamcorpDir, ".env");
-    const sharedRoot = path.join(tempRoot, ".paperclip", "instances", "default");
+    const sharedRoot = path.join(tempRoot, ".aiteamcorp", "instances", "default");
     const isolatedHome = path.join(tempRoot, ".aiteamcorp-worktrees");
     const siblingInstanceRoot = path.join(isolatedHome, "instances", "pap-878-create-a-mine-tab-in-inbox");
 
@@ -155,7 +155,7 @@ describe("worktree config repair", () => {
     await fs.writeFile(
       envPath,
       [
-        "# Paperclip environment variables",
+        "# AiTeamCorp environment variables",
         "AITEAMCORP_IN_WORKTREE=true",
         "AITEAMCORP_WORKTREE_NAME=PAP-880-thumbs-capture-for-evals-feature",
         "",
@@ -211,7 +211,7 @@ describe("worktree config repair", () => {
     const isolatedHome = path.join(tempRoot, ".aiteamcorp-worktrees");
     const transientHome = path.join(tempRoot, "tests", "e2e", ".tmp", "multiuser-authenticated");
     const worktreeRoot = path.join(tempRoot, "PAP-989-multi-user-implementation-using-plan-from-pap-958");
-    const aiteamcorpDir = path.join(worktreeRoot, ".paperclip");
+    const aiteamcorpDir = path.join(worktreeRoot, ".aiteamcorp");
     const configPath = path.join(aiteamcorpDir, "config.json");
     const envPath = path.join(aiteamcorpDir, ".env");
     const instanceId = "pap-989-multi-user-implementation-using-plan-from-pap-958";
@@ -252,7 +252,7 @@ describe("worktree config repair", () => {
               baseDir: path.join(transientHome, "instances", instanceId, "data", "storage"),
             },
             s3: {
-              bucket: "paperclip",
+              bucket: "aiteamcorp",
               region: "us-east-1",
               prefix: "",
               forcePathStyle: false,
@@ -274,7 +274,7 @@ describe("worktree config repair", () => {
     await fs.writeFile(
       envPath,
       [
-        "# Paperclip environment variables",
+        "# AiTeamCorp environment variables",
         `AITEAMCORP_HOME=${JSON.stringify(isolatedHome)}`,
         `AITEAMCORP_INSTANCE_ID=${JSON.stringify(instanceId)}`,
         `AITEAMCORP_CONFIG=${JSON.stringify(configPath)}`,
@@ -316,15 +316,15 @@ describe("worktree config repair", () => {
   it("rebalances duplicate ports for already isolated worktree configs", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-worktree-rebalance-"));
     const isolatedHome = path.join(tempRoot, ".aiteamcorp-worktrees");
-    const repoWorktreesRoot = path.join(tempRoot, "repo", ".paperclip", "worktrees");
+    const repoWorktreesRoot = path.join(tempRoot, "repo", ".aiteamcorp", "worktrees");
     const siblingWorktreeRoot = path.join(repoWorktreesRoot, "PAP-878-create-a-mine-tab-in-inbox");
     const siblingInstanceRoot = path.join(isolatedHome, "instances", "pap-878-create-a-mine-tab-in-inbox");
     const currentWorktreeRoot = path.join(repoWorktreesRoot, "PAP-884-ai-commits-component");
-    const aiteamcorpDir = path.join(currentWorktreeRoot, ".paperclip");
+    const aiteamcorpDir = path.join(currentWorktreeRoot, ".aiteamcorp");
     const configPath = path.join(aiteamcorpDir, "config.json");
     const envPath = path.join(aiteamcorpDir, ".env");
     const currentInstanceRoot = path.join(isolatedHome, "instances", "pap-884-ai-commits-component");
-    const siblingConfigPath = path.join(siblingWorktreeRoot, ".paperclip", "config.json");
+    const siblingConfigPath = path.join(siblingWorktreeRoot, ".aiteamcorp", "config.json");
 
     await fs.mkdir(aiteamcorpDir, { recursive: true });
     await fs.mkdir(path.dirname(siblingConfigPath), { recursive: true });
@@ -362,7 +362,7 @@ describe("worktree config repair", () => {
               baseDir: path.join(currentInstanceRoot, "data", "storage"),
             },
             s3: {
-              bucket: "paperclip",
+              bucket: "aiteamcorp",
               region: "us-east-1",
               prefix: "",
               forcePathStyle: false,
@@ -384,7 +384,7 @@ describe("worktree config repair", () => {
     await fs.writeFile(
       envPath,
       [
-        "# Paperclip environment variables",
+        "# AiTeamCorp environment variables",
         "AITEAMCORP_IN_WORKTREE=true",
         "AITEAMCORP_WORKTREE_NAME=PAP-884-ai-commits-component",
         "",
@@ -438,7 +438,7 @@ describe("worktree config repair", () => {
   it("persists runtime-selected worktree ports back into config", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-worktree-ports-"));
     const worktreeRoot = path.join(tempRoot, "PAP-878-create-a-mine-tab-in-inbox");
-    const aiteamcorpDir = path.join(worktreeRoot, ".paperclip");
+    const aiteamcorpDir = path.join(worktreeRoot, ".aiteamcorp");
     const configPath = path.join(aiteamcorpDir, "config.json");
     const isolatedHome = path.join(tempRoot, ".aiteamcorp-worktrees");
     const instanceRoot = path.join(isolatedHome, "instances", "pap-878-create-a-mine-tab-in-inbox");
@@ -478,7 +478,7 @@ describe("worktree config repair", () => {
               baseDir: path.join(instanceRoot, "data", "storage"),
             },
             s3: {
-              bucket: "paperclip",
+              bucket: "aiteamcorp",
               region: "us-east-1",
               prefix: "",
               forcePathStyle: false,

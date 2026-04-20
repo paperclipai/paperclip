@@ -1,15 +1,15 @@
-# Paperclip MCP Server
+# AiTeamCorp MCP Server
 
 Model Context Protocol server for Paperclip.
 
-This package is a thin MCP wrapper over the existing Paperclip REST API. It does
+This package is a thin MCP wrapper over the existing AiTeamCorp REST API. It does
 not talk to the database directly and it does not reimplement business logic.
 
 ## Authentication
 
 The server reads its configuration from environment variables:
 
-- `AITEAMCORP_API_URL` - Paperclip base URL, for example `http://localhost:3100`
+- `AITEAMCORP_API_URL` - AiTeamCorp base URL, for example `http://localhost:3100`
 - `AITEAMCORP_API_KEY` - bearer token used for `/api` requests
 - `AITEAMCORP_COMPANY_ID` - optional default company for company-scoped tools
 - `AITEAMCORP_AGENT_ID` - optional default agent for checkout helpers

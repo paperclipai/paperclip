@@ -11,16 +11,16 @@ export interface AiTeamCorpIssueRuntimeReassignment {
   assigneeUserId: string | null;
 }
 
-export interface PaperclipIssueRuntimeSendOptions {
+export interface AiTeamCorpIssueRuntimeSendOptions {
   body: string;
   reopen?: boolean;
   reassignment?: AiTeamCorpIssueRuntimeReassignment;
 }
 
-interface UsePaperclipIssueRuntimeOptions {
+interface UseAiTeamCorpIssueRuntimeOptions {
   messages: readonly ThreadMessage[];
   isRunning: boolean;
-  onSend: (options: PaperclipIssueRuntimeSendOptions) => Promise<void>;
+  onSend: (options: AiTeamCorpIssueRuntimeSendOptions) => Promise<void>;
   onCancel?: (() => Promise<void>) | undefined;
 }
 
@@ -42,7 +42,7 @@ export function useAiTeamCorpIssueRuntime({
   isRunning,
   onSend,
   onCancel,
-}: UsePaperclipIssueRuntimeOptions) {
+}: UseAiTeamCorpIssueRuntimeOptions) {
   const onSendRef = useRef(onSend);
   const onCancelRef = useRef(onCancel);
 

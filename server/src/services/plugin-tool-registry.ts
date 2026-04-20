@@ -20,7 +20,7 @@
  */
 
 import type {
-  PaperclipPluginManifestV1,
+  AiTeamCorpPluginManifestV1,
   PluginToolDeclaration,
 } from "@aiteamcorp/shared";
 import type { ToolRunContext, ToolResult, ExecuteToolParams } from "@aiteamcorp/plugin-sdk";
@@ -112,7 +112,7 @@ export interface PluginToolRegistry {
    * @param pluginDbId - The plugin's database UUID, used for worker routing
    *   and availability checks. If omitted, `pluginId` is used (backwards-compat).
    */
-  registerPlugin(pluginId: string, manifest: PaperclipPluginManifestV1, pluginDbId?: string): void;
+  registerPlugin(pluginId: string, manifest: AiTeamCorpPluginManifestV1, pluginDbId?: string): void;
 
   /**
    * Remove all tool registrations for a plugin.
@@ -295,7 +295,7 @@ export function createPluginToolRegistry(
   // -----------------------------------------------------------------------
 
   return {
-    registerPlugin(pluginId: string, manifest: PaperclipPluginManifestV1, pluginDbId?: string): void {
+    registerPlugin(pluginId: string, manifest: AiTeamCorpPluginManifestV1, pluginDbId?: string): void {
       const dbId = pluginDbId ?? pluginId;
 
       // Remove any previously registered tools for this plugin (idempotent)

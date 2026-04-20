@@ -30,11 +30,11 @@ against the change summary from git history.
 - [ ] No removed adapters still listed
 - [ ] Logos and labels match current adapter names
 
-### "Paperclip is right for you if"
+### "AiTeamCorp is right for you if"
 - [ ] Use cases are still accurate
 - [ ] No claims about capabilities that don't exist
 
-### "Why Paperclip is special"
+### "Why AiTeamCorp is special"
 - [ ] Technical claims are accurate (atomic execution, governance, etc.)
 - [ ] No features listed that were removed or significantly changed
 

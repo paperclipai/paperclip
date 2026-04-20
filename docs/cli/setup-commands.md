@@ -33,7 +33,7 @@ Interactive first-time setup:
 pnpm aiteamcorp onboard
 ```
 
-If Paperclip is already configured, rerunning `onboard` keeps the existing config in place. Use `aiteamcorp configure` to change settings on an existing install.
+If AiTeamCorp is already configured, rerunning `onboard` keeps the existing config in place. Use `aiteamcorp configure` to change settings on an existing install.
 
 First prompt:
 
@@ -52,7 +52,7 @@ Non-interactive defaults + immediate start (opens browser on server listen):
 pnpm aiteamcorp onboard --yes
 ```
 
-On an existing install, `--yes` now preserves the current config and just starts Paperclip with that setup.
+On an existing install, `--yes` now preserves the current config and just starts AiTeamCorp with that setup.
 
 ## `aiteamcorp doctor`
 
@@ -118,6 +118,6 @@ AITEAMCORP_HOME=/custom/home AITEAMCORP_INSTANCE_ID=dev pnpm aiteamcorp run
 Or pass `--data-dir` directly on any command:
 
 ```sh
-pnpm aiteamcorp run --data-dir ./tmp/paperclip-dev
-pnpm aiteamcorp doctor --data-dir ./tmp/paperclip-dev
+pnpm aiteamcorp run --data-dir ./tmp/aiteamcorp-dev
+pnpm aiteamcorp doctor --data-dir ./tmp/aiteamcorp-dev
 ```

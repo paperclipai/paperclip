@@ -233,7 +233,7 @@ export type {
   PluginLauncherDeclaration,
   PluginMinimumHostVersion,
   PluginUiDeclaration,
-  PaperclipPluginManifestV1,
+  AiTeamCorpPluginManifestV1,
   PluginRecord,
   PluginStateRecord,
   PluginConfig,

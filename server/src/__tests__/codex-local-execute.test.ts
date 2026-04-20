@@ -65,9 +65,9 @@ describe("codex execute", () => {
     await writeFakeCodexCommand(commandPath);
 
     const previousHome = process.env.HOME;
-    const previousPaperclipHome = process.env.AITEAMCORP_HOME;
-    const previousPaperclipInstanceId = process.env.AITEAMCORP_INSTANCE_ID;
-    const previousPaperclipInWorktree = process.env.AITEAMCORP_IN_WORKTREE;
+    const previousAiTeamCorpHome = process.env.AITEAMCORP_HOME;
+    const previousAiTeamCorpInstanceId = process.env.AITEAMCORP_INSTANCE_ID;
+    const previousAiTeamCorpInWorktree = process.env.AITEAMCORP_IN_WORKTREE;
     const previousCodexHome = process.env.CODEX_HOME;
     process.env.HOME = root;
     process.env.AITEAMCORP_HOME = aiteamcorpHome;
@@ -129,12 +129,12 @@ describe("codex execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
-      if (previousPaperclipHome === undefined) delete process.env.AITEAMCORP_HOME;
-      else process.env.AITEAMCORP_HOME = previousPaperclipHome;
-      if (previousPaperclipInstanceId === undefined) delete process.env.AITEAMCORP_INSTANCE_ID;
-      else process.env.AITEAMCORP_INSTANCE_ID = previousPaperclipInstanceId;
-      if (previousPaperclipInWorktree === undefined) delete process.env.AITEAMCORP_IN_WORKTREE;
-      else process.env.AITEAMCORP_IN_WORKTREE = previousPaperclipInWorktree;
+      if (previousAiTeamCorpHome === undefined) delete process.env.AITEAMCORP_HOME;
+      else process.env.AITEAMCORP_HOME = previousAiTeamCorpHome;
+      if (previousAiTeamCorpInstanceId === undefined) delete process.env.AITEAMCORP_INSTANCE_ID;
+      else process.env.AITEAMCORP_INSTANCE_ID = previousAiTeamCorpInstanceId;
+      if (previousAiTeamCorpInWorktree === undefined) delete process.env.AITEAMCORP_IN_WORKTREE;
+      else process.env.AITEAMCORP_IN_WORKTREE = previousAiTeamCorpInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
       await fs.rm(root, { recursive: true, force: true });
@@ -188,7 +188,7 @@ describe("codex execute", () => {
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
       expect(commandNotes).toContain(
-        "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; Paperclip does not currently suppress that discovery.",
+        "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; AiTeamCorp does not currently suppress that discovery.",
       );
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
@@ -261,7 +261,7 @@ describe("codex execute", () => {
     }
   });
 
-  it("injects structured Paperclip wake payloads into env and prompt", async () => {
+  it("injects structured AiTeamCorp wake payloads into env and prompt", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-wake-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
@@ -354,7 +354,7 @@ describe("codex execute", () => {
         latestCommentId: "comment-2",
         commentIds: ["comment-1", "comment-2"],
       });
-      expect(capture.prompt).toContain("## Paperclip Wake Payload");
+      expect(capture.prompt).toContain("## AiTeamCorp Wake Payload");
       expect(capture.prompt).toContain("Treat this wake payload as the highest-priority change for the current heartbeat.");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
       expect(capture.prompt).toContain(
@@ -605,7 +605,7 @@ describe("codex execute", () => {
         checkedOutByHarness: true,
         commentIds: [],
       });
-      expect(capture.prompt).toContain("## Paperclip Wake Payload");
+      expect(capture.prompt).toContain("## AiTeamCorp Wake Payload");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
       expect(capture.prompt).toContain("- issue: PAP-1201 Fix gallery opening for inline images");
       expect(capture.prompt).toContain("- pending comments: 0/0");
@@ -712,12 +712,12 @@ describe("codex execute", () => {
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.argv).toEqual(expect.arrayContaining(["resume", "codex-session-1", "-"]));
-      expect(capture.prompt).toContain("## Paperclip Resume Delta");
+      expect(capture.prompt).toContain("## AiTeamCorp Resume Delta");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
       expect(capture.prompt).toContain("Second comment");
       expect(capture.prompt).not.toContain("Follow the paperclip heartbeat.");
       expect(capture.prompt).not.toContain("You are managed instructions.");
-      expect(invocationPrompt).toContain("## Paperclip Resume Delta");
+      expect(invocationPrompt).toContain("## AiTeamCorp Resume Delta");
       expect(invocationNotes).toContain(
         "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
       );
@@ -744,7 +744,7 @@ describe("codex execute", () => {
       "company-1",
       "codex-home",
     );
-    const homeSkill = path.join(isolatedCodexHome, "skills", "paperclip");
+    const homeSkill = path.join(isolatedCodexHome, "skills", "aiteamcorp");
     await fs.mkdir(workspace, { recursive: true });
     await fs.mkdir(sharedCodexHome, { recursive: true });
     await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");
@@ -752,9 +752,9 @@ describe("codex execute", () => {
     await writeFakeCodexCommand(commandPath);
 
     const previousHome = process.env.HOME;
-    const previousPaperclipHome = process.env.AITEAMCORP_HOME;
-    const previousPaperclipInstanceId = process.env.AITEAMCORP_INSTANCE_ID;
-    const previousPaperclipInWorktree = process.env.AITEAMCORP_IN_WORKTREE;
+    const previousAiTeamCorpHome = process.env.AITEAMCORP_HOME;
+    const previousAiTeamCorpInstanceId = process.env.AITEAMCORP_INSTANCE_ID;
+    const previousAiTeamCorpInWorktree = process.env.AITEAMCORP_IN_WORKTREE;
     const previousCodexHome = process.env.CODEX_HOME;
     process.env.HOME = root;
     process.env.AITEAMCORP_HOME = aiteamcorpHome;
@@ -828,18 +828,18 @@ describe("codex execute", () => {
       expect(logs).toContainEqual(
         expect.objectContaining({
           stream: "stdout",
-          chunk: expect.stringContaining('Injected Codex skill "paperclip"'),
+          chunk: expect.stringContaining('Injected Codex skill "aiteamcorp"'),
         }),
       );
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
-      if (previousPaperclipHome === undefined) delete process.env.AITEAMCORP_HOME;
-      else process.env.AITEAMCORP_HOME = previousPaperclipHome;
-      if (previousPaperclipInstanceId === undefined) delete process.env.AITEAMCORP_INSTANCE_ID;
-      else process.env.AITEAMCORP_INSTANCE_ID = previousPaperclipInstanceId;
-      if (previousPaperclipInWorktree === undefined) delete process.env.AITEAMCORP_IN_WORKTREE;
-      else process.env.AITEAMCORP_IN_WORKTREE = previousPaperclipInWorktree;
+      if (previousAiTeamCorpHome === undefined) delete process.env.AITEAMCORP_HOME;
+      else process.env.AITEAMCORP_HOME = previousAiTeamCorpHome;
+      if (previousAiTeamCorpInstanceId === undefined) delete process.env.AITEAMCORP_INSTANCE_ID;
+      else process.env.AITEAMCORP_INSTANCE_ID = previousAiTeamCorpInstanceId;
+      if (previousAiTeamCorpInWorktree === undefined) delete process.env.AITEAMCORP_IN_WORKTREE;
+      else process.env.AITEAMCORP_IN_WORKTREE = previousAiTeamCorpInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
       await fs.rm(root, { recursive: true, force: true });
@@ -860,9 +860,9 @@ describe("codex execute", () => {
     await writeFakeCodexCommand(commandPath);
 
     const previousHome = process.env.HOME;
-    const previousPaperclipHome = process.env.AITEAMCORP_HOME;
-    const previousPaperclipInstanceId = process.env.AITEAMCORP_INSTANCE_ID;
-    const previousPaperclipInWorktree = process.env.AITEAMCORP_IN_WORKTREE;
+    const previousAiTeamCorpHome = process.env.AITEAMCORP_HOME;
+    const previousAiTeamCorpInstanceId = process.env.AITEAMCORP_INSTANCE_ID;
+    const previousAiTeamCorpInWorktree = process.env.AITEAMCORP_IN_WORKTREE;
     const previousCodexHome = process.env.CODEX_HOME;
     process.env.HOME = root;
     process.env.AITEAMCORP_HOME = aiteamcorpHome;
@@ -905,17 +905,17 @@ describe("codex execute", () => {
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.codexHome).toBe(explicitCodexHome);
-      expect((await fs.lstat(path.join(explicitCodexHome, "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+      expect((await fs.lstat(path.join(explicitCodexHome, "skills", "aiteamcorp"))).isSymbolicLink()).toBe(true);
       await expect(fs.lstat(path.join(aiteamcorpHome, "instances", "worktree-1", "codex-home"))).rejects.toThrow();
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
-      if (previousPaperclipHome === undefined) delete process.env.AITEAMCORP_HOME;
-      else process.env.AITEAMCORP_HOME = previousPaperclipHome;
-      if (previousPaperclipInstanceId === undefined) delete process.env.AITEAMCORP_INSTANCE_ID;
-      else process.env.AITEAMCORP_INSTANCE_ID = previousPaperclipInstanceId;
-      if (previousPaperclipInWorktree === undefined) delete process.env.AITEAMCORP_IN_WORKTREE;
-      else process.env.AITEAMCORP_IN_WORKTREE = previousPaperclipInWorktree;
+      if (previousAiTeamCorpHome === undefined) delete process.env.AITEAMCORP_HOME;
+      else process.env.AITEAMCORP_HOME = previousAiTeamCorpHome;
+      if (previousAiTeamCorpInstanceId === undefined) delete process.env.AITEAMCORP_INSTANCE_ID;
+      else process.env.AITEAMCORP_INSTANCE_ID = previousAiTeamCorpInstanceId;
+      if (previousAiTeamCorpInWorktree === undefined) delete process.env.AITEAMCORP_IN_WORKTREE;
+      else process.env.AITEAMCORP_IN_WORKTREE = previousAiTeamCorpInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
       await fs.rm(root, { recursive: true, force: true });

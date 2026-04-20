@@ -44,8 +44,8 @@ import {
   normalizeAgentUrlKey,
 } from "@aiteamcorp/shared";
 import {
-  readPaperclipSkillSyncPreference,
-  writePaperclipSkillSyncPreference,
+  readAiTeamCorpSkillSyncPreference,
+  writeAiTeamCorpSkillSyncPreference,
 } from "@aiteamcorp/adapter-utils/server-utils";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@aiteamcorp/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
@@ -309,7 +309,7 @@ function deriveSkillExportDirCandidates(
   };
 
   if (sourceKind === "paperclip_bundled") {
-    pushSuffix("paperclip");
+    pushSuffix("aiteamcorp");
   }
 
   if (skill.sourceType === "github" || skill.sourceType === "skills_sh") {
@@ -490,7 +490,7 @@ type CompanyPackageIncludeEntry = {
   path: string;
 };
 
-type PaperclipExtensionDoc = {
+type AiTeamCorpExtensionDoc = {
   schema?: string;
   company?: Record<string, unknown> | null;
   agents?: Record<string, Record<string, unknown>> | null;
@@ -619,7 +619,7 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
     { path: ["timeoutSec"], value: 120 },
     { path: ["waitTimeoutMs"], value: 120000 },
     { path: ["sessionKeyStrategy"], value: "fixed" },
-    { path: ["sessionKey"], value: "paperclip" },
+    { path: ["sessionKey"], value: "aiteamcorp" },
     { path: ["role"], value: "operator" },
     { path: ["scopes"], value: ["operator.admin"] },
   ],
@@ -1078,7 +1078,7 @@ function buildLegacyRoutineTriggerFromRecurrence(
   }
 
   if (issue.legacyRecurrence.until != null || issue.legacyRecurrence.count != null) {
-    warnings.push(`Recurring task ${issue.slug} uses legacy recurrence end bounds; Paperclip will import the routine trigger without those limits.`);
+    warnings.push(`Recurring task ${issue.slug} uses legacy recurrence end bounds; AiTeamCorp will import the routine trigger without those limits.`);
   }
 
   let cronExpression: string | null = null;
@@ -1569,7 +1569,7 @@ function filterExportFiles(
   return filtered;
 }
 
-function findPaperclipExtensionPath(files: Record<string, CompanyPortabilityFileEntry>) {
+function findAiTeamCorpExtensionPath(files: Record<string, CompanyPortabilityFileEntry>) {
   if (typeof files[".paperclip.yaml"] === "string") return ".paperclip.yaml";
   if (typeof files[".paperclip.yml"] === "string") return ".paperclip.yml";
   return Object.keys(files).find((entry) => entry.endsWith("/.paperclip.yaml") || entry.endsWith("/.paperclip.yml")) ?? null;
@@ -2351,7 +2351,7 @@ function buildManifestFromPackageFiles(
   }
   const companyDoc = parseFrontmatterMarkdown(companyMarkdown);
   const companyFrontmatter = companyDoc.frontmatter;
-  const aiteamcorpExtensionPath = findPaperclipExtensionPath(normalizedFiles);
+  const aiteamcorpExtensionPath = findAiTeamCorpExtensionPath(normalizedFiles);
   const aiteamcorpExtension = aiteamcorpExtensionPath
     ? parseYamlFile(readPortableTextFile(normalizedFiles, aiteamcorpExtensionPath) ?? "")
     : {};
@@ -2797,7 +2797,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (mode === "agent_safe" && IMPORT_FORBIDDEN_ADAPTER_TYPES.has(effectiveAdapterType)) {
       throw forbidden(`Adapter type "${effectiveAdapterType}" is not allowed in safe imports`);
     }
-    const nextAdapterConfig = writePaperclipSkillSyncPreference({ ...adapterConfig }, desiredSkills);
+    const nextAdapterConfig = writeAiTeamCorpSkillSyncPreference({ ...adapterConfig }, desiredSkills);
     delete nextAdapterConfig.promptTemplate;
     delete nextAdapterConfig.bootstrapPromptTemplate;
     delete nextAdapterConfig.instructionsFilePath;
@@ -3262,7 +3262,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             .filter((inputValue) => inputValue.agentSlug === slug),
         );
         const reportsToSlug = agent.reportsTo ? (idToSlug.get(agent.reportsTo) ?? null) : null;
-        const desiredSkills = readPaperclipSkillSyncPreference(
+        const desiredSkills = readAiTeamCorpSkillSyncPreference(
           (agent.adapterConfig as Record<string, unknown>) ?? {},
         ).desiredSkills;
 

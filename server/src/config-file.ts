@@ -1,9 +1,9 @@
 import fs from "node:fs";
-import { aiteamcorpConfigSchema, type PaperclipConfig } from "@aiteamcorp/shared";
-import { resolvePaperclipConfigPath } from "./paths.js";
+import { aiteamcorpConfigSchema, type AiTeamCorpConfig } from "@aiteamcorp/shared";
+import { resolveAiTeamCorpConfigPath } from "./paths.js";
 
-export function readConfigFile(): PaperclipConfig | null {
-  const configPath = resolvePaperclipConfigPath();
+export function readConfigFile(): AiTeamCorpConfig | null {
+  const configPath = resolveAiTeamCorpConfigPath();
 
   if (!fs.existsSync(configPath)) return null;
 

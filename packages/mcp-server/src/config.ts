@@ -1,4 +1,4 @@
-export interface PaperclipMcpConfig {
+export interface AiTeamCorpMcpConfig {
   apiUrl: string;
   apiKey: string;
   companyId: string | null;
@@ -19,7 +19,7 @@ export function normalizeApiUrl(apiUrl: string): string {
   return trimmed.endsWith("/api") ? trimmed : `${trimmed}/api`;
 }
 
-export function readConfigFromEnv(env: NodeJS.ProcessEnv = process.env): PaperclipMcpConfig {
+export function readConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AiTeamCorpMcpConfig {
   const apiUrl = nonEmpty(env.AITEAMCORP_API_URL);
   if (!apiUrl) {
     throw new Error("Missing AITEAMCORP_API_URL");

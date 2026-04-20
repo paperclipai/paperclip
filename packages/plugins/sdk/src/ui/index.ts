@@ -1,5 +1,5 @@
 /**
- * `@aiteamcorp/plugin-sdk/ui` — Paperclip plugin UI SDK.
+ * `@aiteamcorp/plugin-sdk/ui` — AiTeamCorp plugin UI SDK.
  *
  * Import this subpath from plugin UI bundles (React components that run in
  * the host frontend).  Do **not** import this from plugin worker code.

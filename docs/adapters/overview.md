@@ -3,7 +3,7 @@ title: Adapters Overview
 summary: What adapters are and how they connect agents to Paperclip
 ---
 
-Adapters are the bridge between Paperclip's orchestration layer and agent runtimes. Each adapter knows how to invoke a specific type of AI agent and capture its results.
+Adapters are the bridge between AiTeamCorp's orchestration layer and agent runtimes. Each adapter knows how to invoke a specific type of AI agent and capture its results.
 
 ## How Adapters Work
 
@@ -39,7 +39,7 @@ These adapters ship as standalone npm packages and are installed via the plugin 
 
 ## External Adapters
 
-You can build and distribute adapters as standalone packages — no changes to Paperclip's source code required. External adapters are loaded at startup via the plugin system.
+You can build and distribute adapters as standalone packages — no changes to AiTeamCorp's source code required. External adapters are loaded at startup via the plugin system.
 
 ```sh
 # Install from npm via API
@@ -85,4 +85,4 @@ my-adapter/
 
 ## UI Parser Contract
 
-External adapters can ship a self-contained UI parser that tells the Paperclip web UI how to render their stdout. Without it, the UI uses a generic shell parser. See the [UI Parser Contract](/adapters/adapter-ui-parser) for details.
+External adapters can ship a self-contained UI parser that tells the AiTeamCorp web UI how to render their stdout. Without it, the UI uses a generic shell parser. See the [UI Parser Contract](/adapters/adapter-ui-parser) for details.

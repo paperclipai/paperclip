@@ -10,7 +10,7 @@ function findConfigFileFromAncestors(startDir: string): string | null {
   let currentDir = absoluteStartDir;
 
   while (true) {
-    const candidate = path.resolve(currentDir, ".paperclip", AITEAMCORP_CONFIG_BASENAME);
+    const candidate = path.resolve(currentDir, ".aiteamcorp", AITEAMCORP_CONFIG_BASENAME);
     if (fs.existsSync(candidate)) {
       return candidate;
     }
@@ -23,12 +23,12 @@ function findConfigFileFromAncestors(startDir: string): string | null {
   return null;
 }
 
-export function resolvePaperclipConfigPath(overridePath?: string): string {
+export function resolveAiTeamCorpConfigPath(overridePath?: string): string {
   if (overridePath) return path.resolve(overridePath);
   if (process.env.AITEAMCORP_CONFIG) return path.resolve(process.env.AITEAMCORP_CONFIG);
   return findConfigFileFromAncestors(process.cwd()) ?? resolveDefaultConfigPath();
 }
 
-export function resolvePaperclipEnvPath(overrideConfigPath?: string): string {
-  return path.resolve(path.dirname(resolvePaperclipConfigPath(overrideConfigPath)), AITEAMCORP_ENV_FILENAME);
+export function resolveAiTeamCorpEnvPath(overrideConfigPath?: string): string {
+  return path.resolve(path.dirname(resolveAiTeamCorpConfigPath(overrideConfigPath)), AITEAMCORP_ENV_FILENAME);
 }

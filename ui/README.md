@@ -1,6 +1,6 @@
 # @aiteamcorp/ui
 
-Published static assets for the Paperclip board UI.
+Published static assets for the AiTeamCorp board UI.
 
 ## What gets published
 

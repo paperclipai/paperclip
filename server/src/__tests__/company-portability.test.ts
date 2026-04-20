@@ -281,12 +281,12 @@ describe("company portability", () => {
         id: "skill-1",
         companyId: "company-1",
         key: aiteamcorpKey,
-        slug: "paperclip",
-        name: "paperclip",
-        description: "Paperclip coordination skill",
-        markdown: "---\nname: paperclip\ndescription: Paperclip coordination skill\n---\n\n# Paperclip\n",
+        slug: "aiteamcorp",
+        name: "aiteamcorp",
+        description: "AiTeamCorp coordination skill",
+        markdown: "---\nname: paperclip\ndescription: AiTeamCorp coordination skill\n---\n\n# Paperclip\n",
         sourceType: "github",
-        sourceLocator: "https://github.com/aiteamcorporated-collab/ai-team-coprorated/tree/master/skills/paperclip",
+        sourceLocator: "https://github.com/aiteamcorporated-collab/ai-team-coprorated/tree/master/skills/aiteamcorp",
         sourceRef: "0123456789abcdef0123456789abcdef01234567",
         trustLevel: "markdown_only",
         compatibility: "compatible",
@@ -297,10 +297,10 @@ describe("company portability", () => {
         metadata: {
           sourceKind: "github",
           owner: "paperclipai",
-          repo: "paperclip",
+          repo: "aiteamcorp",
           ref: "0123456789abcdef0123456789abcdef01234567",
           trackingRef: "master",
-          repoSkillDir: "skills/paperclip",
+          repoSkillDir: "skills/aiteamcorp",
         },
       },
       {
@@ -347,7 +347,7 @@ describe("company portability", () => {
         path: relativePath,
         kind: relativePath === "SKILL.md" ? "skill" : "reference",
         content: relativePath === "SKILL.md"
-          ? "---\nname: paperclip\ndescription: Paperclip coordination skill\n---\n\n# Paperclip\n"
+          ? "---\nname: paperclip\ndescription: AiTeamCorp coordination skill\n---\n\n# Paperclip\n"
           : "# API\n",
         language: "markdown",
         markdown: true,
@@ -418,7 +418,7 @@ describe("company portability", () => {
     });
   });
 
-  it("exports referenced skills as stubs by default with sanitized Paperclip extension data", async () => {
+  it("exports referenced skills as stubs by default with sanitized AiTeamCorp extension data", async () => {
     const portability = companyPortabilityService({} as any);
 
     const exported = await portability.exportBundle("company-1", {
@@ -461,7 +461,7 @@ describe("company portability", () => {
     expect(exported.warnings).toContain("Agent claudecoder PATH override was omitted from export because it is system-dependent.");
   });
 
-  it("exports default sidebar order into the Paperclip extension and manifest", async () => {
+  it("exports default sidebar order into the AiTeamCorp extension and manifest", async () => {
     const portability = companyPortabilityService({} as any);
 
     projectSvc.list.mockResolvedValue([
@@ -680,7 +680,7 @@ describe("company portability", () => {
         metadata: {
           sourceKind: "paperclip_bundled",
           owner: "paperclipai",
-          repo: "paperclip",
+          repo: "aiteamcorp",
           ref: "0123456789abcdef0123456789abcdef01234567",
           trackingRef: "master",
           repoSkillDir: "skills/release-changelog",
@@ -776,7 +776,7 @@ describe("company portability", () => {
             projectId: "project-1",
             name: "Main Repo",
             sourceType: "git_repo",
-            cwd: "/Users/dotta/paperclip",
+            cwd: "/Users/dotta/aiteamcorp",
             repoUrl: "https://github.com/aiteamcorporated-collab/ai-team-coprorated.git",
             repoRef: "main",
             defaultRef: "main",
@@ -799,7 +799,7 @@ describe("company portability", () => {
             projectId: "project-1",
             name: "Local Scratch",
             sourceType: "local_path",
-            cwd: "/tmp/paperclip-local",
+            cwd: "/tmp/aiteamcorp-local",
             repoUrl: null,
             repoRef: null,
             defaultRef: null,
@@ -853,7 +853,7 @@ describe("company portability", () => {
     expect(extension).toContain('repoUrl: "https://github.com/aiteamcorporated-collab/ai-team-coprorated.git"');
     expect(extension).toContain('defaultProjectWorkspaceKey: "main-repo"');
     expect(extension).toContain('projectWorkspaceKey: "main-repo"');
-    expect(extension).not.toContain("/Users/dotta/paperclip");
+    expect(extension).not.toContain("/Users/dotta/aiteamcorp");
     expect(extension).not.toContain("workspace-1");
     expect(exported.warnings).toContain("Project launch workspace Local Scratch was omitted from export because it does not have a portable repoUrl.");
 
@@ -955,7 +955,7 @@ describe("company portability", () => {
     projectSvc.list.mockResolvedValue([
       {
         id: "project-1",
-        name: "Paperclip App",
+        name: "AiTeamCorp App",
         urlKey: "paperclip-app",
         description: "Ship it",
         leadAgentId: null,
@@ -972,7 +972,7 @@ describe("company portability", () => {
             id: "workspace-1",
             companyId: "company-1",
             projectId: "project-1",
-            name: "paperclip",
+            name: "aiteamcorp",
             sourceType: "local_path",
             cwd: repoDir,
             repoUrl: null,
@@ -1022,7 +1022,7 @@ describe("company portability", () => {
 
     const extension = asTextFile(exported.files[".paperclip.yaml"]);
     expect(extension).toContain('repoUrl: "https://github.com/aiteamcorporated-collab/ai-team-coprorated.git"');
-    expect(extension).toContain('projectWorkspaceKey: "paperclip"');
+    expect(extension).toContain('projectWorkspaceKey: "aiteamcorp"');
     expect(exported.warnings).not.toContainEqual(expect.stringContaining("does not have a portable repoUrl"));
     expect(exported.warnings).not.toContainEqual(expect.stringContaining("reference workspace workspace-1"));
   });
@@ -1309,7 +1309,7 @@ describe("company portability", () => {
     });
   });
 
-  it("exports routines as recurring task packages with Paperclip routine extensions", async () => {
+  it("exports routines as recurring task packages with AiTeamCorp routine extensions", async () => {
     const portability = companyPortabilityService({} as any);
 
     projectSvc.list.mockResolvedValue([

@@ -109,12 +109,12 @@ async function ensureEmbeddedPostgresConnection(
       if (!matchesDataDir) {
         throw new Error("reachable postgres does not use the expected embedded data directory");
       }
-      await ensurePostgresDatabase(preferredAdminConnectionString, "paperclip");
+      await ensurePostgresDatabase(preferredAdminConnectionString, "aiteamcorp");
       process.emitWarning(
         `Adopting an existing PostgreSQL instance on port ${preferredPort} for embedded data dir ${dataDir} because postmaster.pid is missing.`,
       );
       return {
-        connectionString: `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${preferredPort}/paperclip`,
+        connectionString: `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${preferredPort}/aiteamcorp`,
         source: `embedded-postgres@${preferredPort}`,
         stop: async () => {},
       };
@@ -126,9 +126,9 @@ async function ensureEmbeddedPostgresConnection(
   if (runningPid) {
     const port = runningPort ?? preferredPort;
     const adminConnectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${port}/postgres`;
-    await ensurePostgresDatabase(adminConnectionString, "paperclip");
+    await ensurePostgresDatabase(adminConnectionString, "aiteamcorp");
     return {
-      connectionString: `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${port}/paperclip`,
+      connectionString: `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${port}/aiteamcorp`,
       source: `embedded-postgres@${port}`,
       stop: async () => {},
     };
@@ -136,8 +136,8 @@ async function ensureEmbeddedPostgresConnection(
 
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
+    user: "aiteamcorp",
+    password: "aiteamcorp",
     port: selectedPort,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -169,10 +169,10 @@ async function ensureEmbeddedPostgresConnection(
   }
 
   const adminConnectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${selectedPort}/postgres`;
-  await ensurePostgresDatabase(adminConnectionString, "paperclip");
+  await ensurePostgresDatabase(adminConnectionString, "aiteamcorp");
 
   return {
-    connectionString: `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${selectedPort}/paperclip`,
+    connectionString: `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${selectedPort}/aiteamcorp`,
     source: `embedded-postgres@${selectedPort}`,
     stop: async () => {
       await instance.stop();

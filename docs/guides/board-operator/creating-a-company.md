@@ -45,7 +45,7 @@ Each agent gets their own adapter config, role, and budget. The org tree enforce
 
 ## Step 5: Set Budgets
 
-Set monthly budgets at both the company and per-agent level. Paperclip enforces:
+Set monthly budgets at both the company and per-agent level. AiTeamCorp enforces:
 
 - **Soft alert** at 80% utilization
 - **Hard stop** at 100% — agents are auto-paused

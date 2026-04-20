@@ -17,7 +17,7 @@ function readJsonFile(filePath: string): Record<string, unknown> {
 
 function discoverWorkspacePackagePaths(rootDir: string): Map<string, string> {
   const packagePaths = new Map<string, string>();
-  const ignoredDirNames = new Set([".git", ".paperclip", "dist", "node_modules"]);
+  const ignoredDirNames = new Set([".git", ".aiteamcorp", "dist", "node_modules"]);
 
   function visit(dirPath: string) {
     const packageJsonPath = path.join(dirPath, "package.json");

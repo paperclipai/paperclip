@@ -40,7 +40,7 @@ describe("TelemetryClient periodic flush", () => {
     expect(requestInit?.headers).toEqual({ "Content-Type": "application/json" });
     const body = JSON.parse(String(requestInit?.body ?? "{}"));
     expect(body).toMatchObject({
-      app: "paperclip",
+      app: "aiteamcorp",
       schemaVersion: "1",
       installId: "test-install",
       version: "0.0.0-test",

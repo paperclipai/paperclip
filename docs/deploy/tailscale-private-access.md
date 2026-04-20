@@ -1,11 +1,11 @@
 ---
 title: Tailscale Private Access
-summary: Run Paperclip with Tailscale-friendly bind presets and connect from other devices
+summary: Run AiTeamCorp with Tailscale-friendly bind presets and connect from other devices
 ---
 
-Use this when you want to access Paperclip over Tailscale (or a private LAN/VPN) instead of only `localhost`.
+Use this when you want to access AiTeamCorp over Tailscale (or a private LAN/VPN) instead of only `localhost`.
 
-## 1. Start Paperclip in private authenticated mode
+## 1. Start AiTeamCorp in private authenticated mode
 
 ```sh
 pnpm dev --bind tailnet
@@ -39,9 +39,9 @@ tailscale ip -4
 
 You can also use your Tailscale MagicDNS hostname (for example `my-macbook.tailnet.ts.net`).
 
-## 3. Open Paperclip from another device
+## 3. Open AiTeamCorp from another device
 
-Use the Tailscale IP or MagicDNS host with the Paperclip port:
+Use the Tailscale IP or MagicDNS host with the AiTeamCorp port:
 
 ```txt
 http://<tailscale-host-or-ip>:3100
@@ -55,7 +55,7 @@ http://my-macbook.tailnet.ts.net:3100
 
 ## 4. Allow custom private hostnames when needed
 
-If you access Paperclip with a custom private hostname, add it to the allowlist:
+If you access AiTeamCorp with a custom private hostname, add it to the allowlist:
 
 ```sh
 pnpm aiteamcorp allowed-hostname my-macbook.tailnet.ts.net

@@ -19,7 +19,7 @@ import { plugins } from "./plugins.js";
  * `ctx.state.delete()` in the SDK.
  *
  * Scope kinds determine the granularity of isolation:
- * - `instance` — one value shared across the whole Paperclip instance
+ * - `instance` — one value shared across the whole AiTeamCorp instance
  * - `company` — one value per company
  * - `project` — one value per project
  * - `project_workspace` — one value per project workspace

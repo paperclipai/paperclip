@@ -20,7 +20,7 @@ describe("codex local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("reports configured Paperclip skills for workspace injection on the next run", async () => {
+  it("reports configured AiTeamCorp skills for workspace injection on the next run", async () => {
     const codexHome = await makeTempDir("paperclip-codex-skill-sync-");
     cleanupDirs.add(codexHome);
 
@@ -46,7 +46,7 @@ describe("codex local skill sync", () => {
     expect(before.entries.find((entry) => entry.key === aiteamcorpKey)?.detail).toContain("CODEX_HOME/skills/");
   });
 
-  it("does not persist Paperclip skills into CODEX_HOME during sync", async () => {
+  it("does not persist AiTeamCorp skills into CODEX_HOME during sync", async () => {
     const codexHome = await makeTempDir("paperclip-codex-skill-prune-");
     cleanupDirs.add(codexHome);
 
@@ -67,12 +67,12 @@ describe("codex local skill sync", () => {
     const after = await syncCodexSkills(configuredCtx, [aiteamcorpKey]);
     expect(after.mode).toBe("ephemeral");
     expect(after.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("configured");
-    await expect(fs.lstat(path.join(codexHome, "skills", "paperclip"))).rejects.toMatchObject({
+    await expect(fs.lstat(path.join(codexHome, "skills", "aiteamcorp"))).rejects.toMatchObject({
       code: "ENOENT",
     });
   });
 
-  it("keeps required bundled Paperclip skills configured even when the desired set is emptied", async () => {
+  it("keeps required bundled AiTeamCorp skills configured even when the desired set is emptied", async () => {
     const codexHome = await makeTempDir("paperclip-codex-skill-required-");
     cleanupDirs.add(codexHome);
 
@@ -95,7 +95,7 @@ describe("codex local skill sync", () => {
     expect(after.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("configured");
   });
 
-  it("normalizes legacy flat Paperclip skill refs before reporting configured state", async () => {
+  it("normalizes legacy flat AiTeamCorp skill refs before reporting configured state", async () => {
     const codexHome = await makeTempDir("paperclip-codex-legacy-skill-sync-");
     cleanupDirs.add(codexHome);
 
@@ -108,15 +108,15 @@ describe("codex local skill sync", () => {
           CODEX_HOME: codexHome,
         },
         aiteamcorpSkillSync: {
-          desiredSkills: ["paperclip"],
+          desiredSkills: ["aiteamcorp"],
         },
       },
     });
 
     expect(snapshot.warnings).toEqual([]);
     expect(snapshot.desiredSkills).toContain(aiteamcorpKey);
-    expect(snapshot.desiredSkills).not.toContain("paperclip");
+    expect(snapshot.desiredSkills).not.toContain("aiteamcorp");
     expect(snapshot.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("configured");
-    expect(snapshot.entries.find((entry) => entry.key === "paperclip")).toBeUndefined();
+    expect(snapshot.entries.find((entry) => entry.key === "aiteamcorp")).toBeUndefined();
   });
 });

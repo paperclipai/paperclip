@@ -72,8 +72,8 @@ import {
   type SessionCompactionPolicy,
 } from "@aiteamcorp/adapter-utils";
 import {
-  readPaperclipSkillSyncPreference,
-  writePaperclipSkillSyncPreference,
+  readAiTeamCorpSkillSyncPreference,
+  writeAiTeamCorpSkillSyncPreference,
 } from "@aiteamcorp/adapter-utils/server-utils";
 import { extractSkillMentionIds } from "@aiteamcorp/shared";
 
@@ -161,8 +161,8 @@ export function applyRunScopedMentionedSkillKeys(
   );
   if (normalizedSkillKeys.length === 0) return config;
 
-  const existingPreference = readPaperclipSkillSyncPreference(config);
-  return writePaperclipSkillSyncPreference(config, [
+  const existingPreference = readAiTeamCorpSkillSyncPreference(config);
+  return writeAiTeamCorpSkillSyncPreference(config, [
     ...existingPreference.desiredSkills,
     ...normalizedSkillKeys,
   ]);
@@ -1200,7 +1200,7 @@ export function mergeCoalescedContextSnapshot(
   return merged;
 }
 
-async function buildPaperclipWakePayload(input: {
+async function buildAiTeamCorpWakePayload(input: {
   db: Db;
   companyId: string;
   contextSnapshot: Record<string, unknown>;
@@ -1741,7 +1741,7 @@ export function heartbeatService(db: Db) {
       readNonEmptyString(latestRun.error);
 
     const handoffMarkdown = [
-      "Paperclip session handoff:",
+      "AiTeamCorp session handoff:",
       `- Previous session: ${sessionId}`,
       issueId ? `- Issue: ${issueId}` : "",
       `- Rotation reason: ${reason}`,
@@ -3053,7 +3053,7 @@ export function heartbeatService(db: Db) {
             previousStatus: "todo",
             latestRun,
             comment:
-              "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
+              "AiTeamCorp automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
               `but it still has no live execution path.${failureSummary ?? ""} ` +
               "Moving it to `blocked` so it is visible for intervention.",
           });
@@ -3090,7 +3090,7 @@ export function heartbeatService(db: Db) {
           previousStatus: "in_progress",
           latestRun,
           comment:
-            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+            "AiTeamCorp automatically retried continuation for this assigned `in_progress` issue after its live " +
             `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
             "Moving it to `blocked` so it is visible for intervention.",
         });
@@ -3340,7 +3340,7 @@ export function heartbeatService(db: Db) {
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
         }
       : null;
-    const aiteamcorpWakePayload = await buildPaperclipWakePayload({
+    const aiteamcorpWakePayload = await buildAiTeamCorpWakePayload({
       db,
       companyId: agent.companyId,
       contextSnapshot: context,

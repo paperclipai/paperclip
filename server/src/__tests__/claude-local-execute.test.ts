@@ -397,7 +397,7 @@ describe("claude execute", () => {
     await writeFakeClaudeCommand(commandPath);
 
     const previousHome = process.env.HOME;
-    const previousPaperclipHome = process.env.AITEAMCORP_HOME;
+    const previousAiTeamCorpHome = process.env.AITEAMCORP_HOME;
     process.env.HOME = root;
     process.env.AITEAMCORP_HOME = aiteamcorpHome;
 
@@ -524,16 +524,16 @@ describe("claude execute", () => {
       expect(capture1.instructionsFilePath?.startsWith(expectedRoot)).toBe(true);
       expect(capture1.instructionsContents).toContain("You are managed instructions.");
       expect(capture1.instructionsContents).toContain(`The above agent instructions were loaded from ${instructionsPath}.`);
-      expect(capture1.skillEntries).toContain("paperclip");
+      expect(capture1.skillEntries).toContain("aiteamcorp");
       expect(capture2.argv).toContain("--resume");
       expect(capture2.argv).toContain("claude-session-1");
-      expect(capture2.prompt).toContain("## Paperclip Resume Delta");
+      expect(capture2.prompt).toContain("## AiTeamCorp Resume Delta");
       expect(capture2.prompt).not.toContain("Follow the paperclip heartbeat.");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
-      if (previousPaperclipHome === undefined) delete process.env.AITEAMCORP_HOME;
-      else process.env.AITEAMCORP_HOME = previousPaperclipHome;
+      if (previousAiTeamCorpHome === undefined) delete process.env.AITEAMCORP_HOME;
+      else process.env.AITEAMCORP_HOME = previousAiTeamCorpHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -552,7 +552,7 @@ describe("claude execute", () => {
     await writeFakeClaudeCommand(commandPath);
 
     const previousHome = process.env.HOME;
-    const previousPaperclipHome = process.env.AITEAMCORP_HOME;
+    const previousAiTeamCorpHome = process.env.AITEAMCORP_HOME;
     process.env.HOME = root;
     process.env.AITEAMCORP_HOME = aiteamcorpHome;
 
@@ -633,8 +633,8 @@ describe("claude execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
-      if (previousPaperclipHome === undefined) delete process.env.AITEAMCORP_HOME;
-      else process.env.AITEAMCORP_HOME = previousPaperclipHome;
+      if (previousAiTeamCorpHome === undefined) delete process.env.AITEAMCORP_HOME;
+      else process.env.AITEAMCORP_HOME = previousAiTeamCorpHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   }, 15_000);

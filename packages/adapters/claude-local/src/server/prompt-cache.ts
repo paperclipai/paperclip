@@ -4,11 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, type Hash } from "node:crypto";
 import type { AdapterExecutionContext } from "@aiteamcorp/adapter-utils";
-import { ensurePaperclipSkillSymlink, type PaperclipSkillEntry } from "@aiteamcorp/adapter-utils/server-utils";
+import { ensureAiTeamCorpSkillSymlink, type AiTeamCorpSkillEntry } from "@aiteamcorp/adapter-utils/server-utils";
 
 const DEFAULT_AITEAMCORP_INSTANCE_ID = "default";
 
-type SkillEntry = PaperclipSkillEntry;
+type SkillEntry = AiTeamCorpSkillEntry;
 
 export interface ClaudePromptBundle {
   bundleKey: string;
@@ -25,7 +25,7 @@ function resolveManagedClaudePromptCacheRoot(
   env: NodeJS.ProcessEnv,
   companyId: string,
 ): string {
-  const aiteamcorpHome = nonEmpty(env.AITEAMCORP_HOME) ?? path.resolve(os.homedir(), ".paperclip");
+  const aiteamcorpHome = nonEmpty(env.AITEAMCORP_HOME) ?? path.resolve(os.homedir(), ".aiteamcorp");
   const instanceId = nonEmpty(env.AITEAMCORP_INSTANCE_ID) ?? DEFAULT_AITEAMCORP_INSTANCE_ID;
   return path.resolve(
     aiteamcorpHome,
@@ -147,7 +147,7 @@ export async function prepareClaudePromptBundle(input: {
   for (const entry of skills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
-      await ensurePaperclipSkillSymlink(entry.source, target);
+      await ensureAiTeamCorpSkillSymlink(entry.source, target);
     } catch (err) {
       await onLog(
         "stderr",

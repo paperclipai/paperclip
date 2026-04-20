@@ -285,7 +285,7 @@ describe("worktree merge history planner", () => {
   it("plans selected project imports and preserves project workspace links", () => {
     const sourceProject = makeProject({
       id: "source-project-1",
-      name: "Paperclip Evals",
+      name: "AiTeamCorp Evals",
       goalId: "goal-1",
     });
     const sourceWorkspace = makeProjectWorkspace({
@@ -323,7 +323,7 @@ describe("worktree merge history planner", () => {
 
     expect(plan.counts.projectsToImport).toBe(1);
     expect(plan.projectImports[0]).toMatchObject({
-      source: { id: "source-project-1", name: "Paperclip Evals" },
+      source: { id: "source-project-1", name: "AiTeamCorp Evals" },
       targetGoalId: "goal-1",
       workspaces: [{ id: "source-workspace-1" }],
     });
@@ -332,7 +332,7 @@ describe("worktree merge history planner", () => {
     expect(insert.targetProjectId).toBe("source-project-1");
     expect(insert.targetProjectWorkspaceId).toBe("source-workspace-1");
     expect(insert.projectResolution).toBe("imported");
-    expect(insert.mappedProjectName).toBe("Paperclip Evals");
+    expect(insert.mappedProjectName).toBe("AiTeamCorp Evals");
     expect(insert.adjustments).toEqual([]);
   });
 

@@ -99,7 +99,7 @@ describe("project workspace skill discovery", () => {
     await writeSkillDir(workspace, "Workspace Root");
     await writeSkillDir(path.join(workspace, "skills", "find-skills"), "Find Skills");
     await writeSkillDir(path.join(workspace, ".agents", "skills", "release"), "Release");
-    await writeSkillDir(path.join(workspace, "skills", ".system", "paperclip"), "Paperclip");
+    await writeSkillDir(path.join(workspace, "skills", ".system", "aiteamcorp"), "Paperclip");
     await fs.writeFile(path.join(workspace, "README.md"), "# ignore\n", "utf8");
 
     const discovered = await discoverProjectWorkspaceSkillDirectories({
@@ -113,7 +113,7 @@ describe("project workspace skill discovery", () => {
     expect(discovered).toEqual([
       { skillDir: path.resolve(workspace), inventoryMode: "project_root" },
       { skillDir: path.resolve(workspace, ".agents", "skills", "release"), inventoryMode: "full" },
-      { skillDir: path.resolve(workspace, "skills", ".system", "paperclip"), inventoryMode: "full" },
+      { skillDir: path.resolve(workspace, "skills", ".system", "aiteamcorp"), inventoryMode: "full" },
       { skillDir: path.resolve(workspace, "skills", "find-skills"), inventoryMode: "full" },
     ]);
   });
@@ -159,7 +159,7 @@ describe("project workspace skill discovery", () => {
         "  sources:",
         "    - kind: github-dir",
         "      repo: aiteamcorporated-collab/ai-team-coprorated",
-        "      path: skills/paperclip",
+        "      path: skills/aiteamcorp",
         "---",
         "",
         "# Inline Metadata Skill",
@@ -180,7 +180,7 @@ describe("project workspace skill discovery", () => {
         {
           kind: "github-dir",
           repo: "aiteamcorporated-collab/ai-team-coprorated",
-          path: "skills/paperclip",
+          path: "skills/aiteamcorp",
         },
       ],
     });

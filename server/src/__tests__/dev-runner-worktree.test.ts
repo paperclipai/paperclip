@@ -31,14 +31,14 @@ describe("dev-runner worktree env bootstrap", () => {
     expect(isLinkedGitWorktreeCheckout(root)).toBe(true);
   });
 
-  it("loads repo-local Paperclip env for initialized worktrees without overriding explicit env", () => {
+  it("loads repo-local AiTeamCorp env for initialized worktrees without overriding explicit env", () => {
     const root = createTempRoot("paperclip-dev-runner-worktree-env-");
-    fs.mkdirSync(path.join(root, ".paperclip"), { recursive: true });
+    fs.mkdirSync(path.join(root, ".aiteamcorp"), { recursive: true });
     fs.writeFileSync(path.join(root, ".git"), "gitdir: /tmp/aiteamcorp/.git/worktrees/feature\n", "utf8");
     fs.writeFileSync(
       resolveWorktreeEnvFilePath(root),
       [
-        "AITEAMCORP_HOME=/tmp/paperclip-worktrees",
+        "AITEAMCORP_HOME=/tmp/aiteamcorp-worktrees",
         "AITEAMCORP_INSTANCE_ID=feature-worktree",
         "AITEAMCORP_IN_WORKTREE=true",
         "AITEAMCORP_WORKTREE_NAME=feature-worktree",
@@ -57,7 +57,7 @@ describe("dev-runner worktree env bootstrap", () => {
       envPath: resolveWorktreeEnvFilePath(root),
       missingEnv: false,
     });
-    expect(env.AITEAMCORP_HOME).toBe("/tmp/paperclip-worktrees");
+    expect(env.AITEAMCORP_HOME).toBe("/tmp/aiteamcorp-worktrees");
     expect(env.AITEAMCORP_INSTANCE_ID).toBe("already-set");
     expect(env.AITEAMCORP_IN_WORKTREE).toBe("true");
     expect(env.AITEAMCORP_OPTIONAL).toBe("");

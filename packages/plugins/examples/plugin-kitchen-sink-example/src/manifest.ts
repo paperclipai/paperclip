@@ -1,4 +1,4 @@
-import type { PaperclipPluginManifestV1 } from "@aiteamcorp/plugin-sdk";
+import type { AiTeamCorpPluginManifestV1 } from "@aiteamcorp/plugin-sdk";
 import {
   DEFAULT_CONFIG,
   EXPORT_NAMES,
@@ -11,12 +11,12 @@ import {
   WEBHOOK_KEYS,
 } from "./constants.js";
 
-const manifest: PaperclipPluginManifestV1 = {
+const manifest: AiTeamCorpPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
   displayName: "Kitchen Sink (Example)",
-  description: "Reference plugin that demonstrates the current Paperclip plugin API surface, UI surfaces, bridge actions, events, jobs, webhooks, tools, local workspace access, and runtime diagnostics in one place.",
+  description: "Reference plugin that demonstrates the current AiTeamCorp plugin API surface, UI surfaces, bridge actions, events, jobs, webhooks, tools, local workspace access, and runtime diagnostics in one place.",
   author: "Paperclip",
   categories: ["ui", "automation", "workspace", "connector"],
   capabilities: [
@@ -159,7 +159,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       name: TOOL_NAMES.companySummary,
       displayName: "Kitchen Sink Company Summary",
-      description: "Summarizes the current company using the Paperclip domain APIs.",
+      description: "Summarizes the current company using the AiTeamCorp domain APIs.",
       parametersSchema: {
         type: "object",
         properties: {},

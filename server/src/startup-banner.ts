@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
+import { resolveAiTeamCorpConfigPath, resolveAiTeamCorpEnvPath } from "./paths.js";
 import type { BindMode, DeploymentExposure, DeploymentMode } from "@aiteamcorp/shared";
 
 import { parse as parseEnvFileContents } from "dotenv";
@@ -102,8 +102,8 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
   const baseUrl = `http://${baseHost}:${opts.listenPort}`;
   const apiUrl = `${baseUrl}/api`;
   const uiUrl = opts.uiMode === "none" ? "disabled" : baseUrl;
-  const configPath = resolvePaperclipConfigPath();
-  const envFilePath = resolvePaperclipEnvPath();
+  const configPath = resolveAiTeamCorpConfigPath();
+  const envFilePath = resolveAiTeamCorpEnvPath();
   const agentJwtSecret = resolveAgentJwtSecretStatus(envFilePath);
 
   const dbMode =

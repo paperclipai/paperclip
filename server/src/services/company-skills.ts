@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@aiteamcorp/db";
 import { companySkills } from "@aiteamcorp/db";
-import { readPaperclipSkillSyncPreference } from "@aiteamcorp/adapter-utils/server-utils";
-import type { PaperclipSkillEntry } from "@aiteamcorp/adapter-utils/server-utils";
+import { readAiTeamCorpSkillSyncPreference } from "@aiteamcorp/adapter-utils/server-utils";
+import type { AiTeamCorpSkillEntry } from "@aiteamcorp/adapter-utils/server-utils";
 import type {
   CompanySkill,
   CompanySkillCreateRequest,
@@ -28,7 +28,7 @@ import type {
 } from "@aiteamcorp/shared";
 import { normalizeAgentUrlKey } from "@aiteamcorp/shared";
 import { findActiveServerAdapter } from "../adapters/index.js";
-import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveAiTeamCorpInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
@@ -1311,7 +1311,7 @@ function resolveDesiredSkillKeys(
   skills: SkillReferenceTarget[],
   config: Record<string, unknown>,
 ) {
-  const preference = readPaperclipSkillSyncPreference(config);
+  const preference = readAiTeamCorpSkillSyncPreference(config);
   return Array.from(new Set(
     preference.desiredSkills
       .map((reference) => resolveSkillReference(skills, reference).skill?.key ?? normalizeSkillKey(reference))
@@ -1358,7 +1358,7 @@ export async function findMissingLocalSkillIds(
 }
 
 function resolveManagedSkillsRoot(companyId: string) {
-  return path.resolve(resolvePaperclipInstanceRoot(), "skills", companyId);
+  return path.resolve(resolveAiTeamCorpInstanceRoot(), "skills", companyId);
 }
 
 function resolveLocalSkillFilePath(skill: CompanySkill, relativePath: string) {
@@ -1407,9 +1407,9 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
   if (metadata.sourceKind === "paperclip_bundled") {
     return {
       editable: false,
-      editableReason: "Bundled Paperclip skills are read-only.",
-      sourceLabel: "Paperclip bundled",
-      sourceBadge: "paperclip",
+      editableReason: "Bundled AiTeamCorp skills are read-only.",
+      sourceLabel: "AiTeamCorp bundled",
+      sourceBadge: "aiteamcorp",
       sourcePath: null,
     };
   }
@@ -1457,8 +1457,8 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
       return {
         editable: true,
         editableReason: null,
-        sourceLabel: "Paperclip workspace",
-        sourceBadge: "paperclip",
+        sourceLabel: "AiTeamCorp workspace",
+        sourceBadge: "aiteamcorp",
         sourcePath: managedRoot,
       };
     }
@@ -2144,10 +2144,10 @@ export function companySkillService(db: Db) {
   async function listRuntimeSkillEntries(
     companyId: string,
     options: RuntimeSkillEntryOptions = {},
-  ): Promise<PaperclipSkillEntry[]> {
+  ): Promise<AiTeamCorpSkillEntry[]> {
     const skills = await listFull(companyId);
 
-    const out: PaperclipSkillEntry[] = [];
+    const out: AiTeamCorpSkillEntry[] = [];
     for (const skill of skills) {
       const sourceKind = asString(getSkillMeta(skill).sourceKind);
       let source = normalizeSkillDirectory(skill);
@@ -2165,7 +2165,7 @@ export function companySkillService(db: Db) {
         source,
         required,
         requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
+          ? "Bundled AiTeamCorp skills are always available for local adapters."
           : null,
       });
     }
@@ -2309,7 +2309,7 @@ export function companySkillService(db: Db) {
         && existingMeta.sourceKind === "paperclip_bundled"
         && incomingKind === "github"
         && incomingOwner === "paperclipai"
-        && incomingRepo === "paperclip"
+        && incomingRepo === "aiteamcorp"
       ) {
         out.push(existing);
         continue;

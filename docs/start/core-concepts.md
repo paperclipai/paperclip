@@ -3,7 +3,7 @@ title: Core Concepts
 summary: Companies, agents, issues, delegation, heartbeats, and governance
 ---
 
-Paperclip organizes autonomous AI work around six key concepts.
+AiTeamCorp organizes autonomous AI work around six key concepts.
 
 ## Company
 
@@ -15,7 +15,7 @@ A company is the top-level unit of organization. Each company has:
 - **Budget** — monthly spend limits in cents
 - **Task hierarchy** — all work traces back to the company goal
 
-One Paperclip instance can run multiple companies.
+One AiTeamCorp instance can run multiple companies.
 
 ## Agents
 

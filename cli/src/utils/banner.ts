@@ -11,7 +11,7 @@ const AITEAMCORP_ART = [
 
 const TAGLINE = "Open-source orchestration for zero-human companies";
 
-export function printPaperclipCliBanner(): void {
+export function printAiTeamCorpCliBanner(): void {
   const lines = [
     "",
     ...AITEAMCORP_ART.map((line) => pc.cyan(line)),

@@ -29,12 +29,12 @@ describe("ui branding", () => {
   it("resolves name, color, and text color for worktree branding", () => {
     const branding = getWorktreeUiBranding({
       AITEAMCORP_IN_WORKTREE: "true",
-      AITEAMCORP_WORKTREE_NAME: "paperclip-pr-432",
+      AITEAMCORP_WORKTREE_NAME: "aiteamcorp-pr-432",
       AITEAMCORP_WORKTREE_COLOR: "#4f86f7",
     });
 
     expect(branding.enabled).toBe(true);
-    expect(branding.name).toBe("paperclip-pr-432");
+    expect(branding.name).toBe("aiteamcorp-pr-432");
     expect(branding.color).toBe("#4f86f7");
     expect(branding.textColor).toMatch(/^#[0-9a-f]{6}$/);
     expect(branding.faviconHref).toContain("data:image/svg+xml,");
@@ -44,7 +44,7 @@ describe("ui branding", () => {
     const links = renderFaviconLinks(
       getWorktreeUiBranding({
         AITEAMCORP_IN_WORKTREE: "true",
-        AITEAMCORP_WORKTREE_NAME: "paperclip-pr-432",
+        AITEAMCORP_WORKTREE_NAME: "aiteamcorp-pr-432",
         AITEAMCORP_WORKTREE_COLOR: "#4f86f7",
       }),
     );
@@ -56,19 +56,19 @@ describe("ui branding", () => {
     const meta = renderRuntimeBrandingMeta(
       getWorktreeUiBranding({
         AITEAMCORP_IN_WORKTREE: "true",
-        AITEAMCORP_WORKTREE_NAME: "paperclip-pr-432",
+        AITEAMCORP_WORKTREE_NAME: "aiteamcorp-pr-432",
         AITEAMCORP_WORKTREE_COLOR: "#4f86f7",
       }),
     );
     expect(meta).toContain('name="aiteamcorp-worktree-name"');
-    expect(meta).toContain('content="paperclip-pr-432"');
+    expect(meta).toContain('content="aiteamcorp-pr-432"');
     expect(meta).toContain('name="aiteamcorp-worktree-color"');
   });
 
   it("rewrites the favicon and runtime branding blocks for worktree instances only", () => {
     const branded = applyUiBranding(TEMPLATE, {
       AITEAMCORP_IN_WORKTREE: "true",
-      AITEAMCORP_WORKTREE_NAME: "paperclip-pr-432",
+      AITEAMCORP_WORKTREE_NAME: "aiteamcorp-pr-432",
       AITEAMCORP_WORKTREE_COLOR: "#4f86f7",
     });
     expect(branded).toContain("data:image/svg+xml,");

@@ -4,7 +4,7 @@ import { getStoredBoardCredential, loginBoardCli } from "../../client/board-auth
 import { buildCliCommandLabel } from "../../client/command-label.js";
 import { readConfig } from "../../config/store.js";
 import { readContext, resolveProfile, type ClientContextProfile } from "../../client/context.js";
-import { ApiRequestError, PaperclipApiClient } from "../../client/http.js";
+import { ApiRequestError, AiTeamCorpApiClient } from "../../client/http.js";
 
 export interface BaseClientOptions {
   config?: string;
@@ -18,7 +18,7 @@ export interface BaseClientOptions {
 }
 
 export interface ResolvedClientContext {
-  api: PaperclipApiClient;
+  api: AiTeamCorpApiClient;
   companyId?: string;
   profileName: string;
   profile: ClientContextProfile;
@@ -27,11 +27,11 @@ export interface ResolvedClientContext {
 
 export function addCommonClientOptions(command: Command, opts?: { includeCompany?: boolean }): Command {
   command
-    .option("-c, --config <path>", "Path to Paperclip config file")
-    .option("-d, --data-dir <path>", "Paperclip data directory root (isolates state from ~/.aiteamcorp)")
+    .option("-c, --config <path>", "Path to AiTeamCorp config file")
+    .option("-d, --data-dir <path>", "AiTeamCorp data directory root (isolates state from ~/.aiteamcorp)")
     .option("--context <path>", "Path to CLI context file")
     .option("--profile <name>", "CLI context profile name")
-    .option("--api-base <url>", "Base URL for the Paperclip API")
+    .option("--api-base <url>", "Base URL for the AiTeamCorp API")
     .option("--api-key <token>", "Bearer token for agent-authenticated calls")
     .option("--json", "Output raw JSON");
 
@@ -73,7 +73,7 @@ export function resolveCommandContext(
     );
   }
 
-  const api = new PaperclipApiClient({
+  const api = new AiTeamCorpApiClient({
     apiBase,
     apiKey,
     recoverAuth: explicitApiKey || !canAttemptInteractiveBoardAuth()

@@ -30,13 +30,13 @@ afterEach(() => {
 
 describe("resolveDatabaseTarget", () => {
   it("uses DATABASE_URL from process env first", () => {
-    process.env.DATABASE_URL = "postgres://env-user:env-pass@db.example.com:5432/paperclip";
+    process.env.DATABASE_URL = "postgres://env-user:env-pass@db.example.com:5432/aiteamcorp";
 
     const target = resolveDatabaseTarget();
 
     expect(target).toMatchObject({
       mode: "postgres",
-      connectionString: "postgres://env-user:env-pass@db.example.com:5432/paperclip",
+      connectionString: "postgres://env-user:env-pass@db.example.com:5432/aiteamcorp",
       source: "DATABASE_URL",
     });
   });
@@ -47,19 +47,19 @@ describe("resolveDatabaseTarget", () => {
     fs.mkdirSync(projectDir, { recursive: true });
     process.chdir(projectDir);
     delete process.env.AITEAMCORP_CONFIG;
-    writeJson(path.join(projectDir, ".paperclip", "config.json"), {
+    writeJson(path.join(projectDir, ".aiteamcorp", "config.json"), {
       database: { mode: "embedded-postgres", embeddedPostgresPort: 54329 },
     });
     writeText(
-      path.join(projectDir, ".paperclip", ".env"),
-      'DATABASE_URL="postgres://file-user:file-pass@db.example.com:6543/paperclip"\n',
+      path.join(projectDir, ".aiteamcorp", ".env"),
+      'DATABASE_URL="postgres://file-user:file-pass@db.example.com:6543/aiteamcorp"\n',
     );
 
     const target = resolveDatabaseTarget();
 
     expect(target).toMatchObject({
       mode: "postgres",
-      connectionString: "postgres://file-user:file-pass@db.example.com:6543/paperclip",
+      connectionString: "postgres://file-user:file-pass@db.example.com:6543/aiteamcorp",
       source: "paperclip-env",
     });
   });
@@ -71,7 +71,7 @@ describe("resolveDatabaseTarget", () => {
     writeJson(configPath, {
       database: {
         mode: "postgres",
-        connectionString: "postgres://cfg-user:cfg-pass@db.example.com:5432/paperclip",
+        connectionString: "postgres://cfg-user:cfg-pass@db.example.com:5432/aiteamcorp",
       },
     });
 
@@ -79,7 +79,7 @@ describe("resolveDatabaseTarget", () => {
 
     expect(target).toMatchObject({
       mode: "postgres",
-      connectionString: "postgres://cfg-user:cfg-pass@db.example.com:5432/paperclip",
+      connectionString: "postgres://cfg-user:cfg-pass@db.example.com:5432/aiteamcorp",
       source: "config.database.connectionString",
     });
   });
