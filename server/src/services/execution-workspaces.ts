@@ -12,6 +12,7 @@ import type {
   ExecutionWorkspaceCloseGitReadiness,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceConfig,
+  WorkspaceRuntimeDesiredState,
   WorkspaceRuntimeService,
 } from "@paperclipai/shared";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
@@ -38,6 +39,20 @@ function readNullableString(value: unknown): string | null {
 function cloneRecord(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null;
   return { ...value };
+}
+
+function readDesiredState(value: unknown): WorkspaceRuntimeDesiredState | null {
+  return value === "running" || value === "stopped" || value === "manual" ? value : null;
+}
+
+function readServiceStates(value: unknown): ExecutionWorkspaceConfig["serviceStates"] {
+  if (!isRecord(value)) return null;
+  const entries = Object.entries(value).filter(([, state]) =>
+    state === "running" || state === "stopped" || state === "manual"
+  );
+  return entries.length > 0
+    ? Object.fromEntries(entries) as ExecutionWorkspaceConfig["serviceStates"]
+    : null;
 }
 
 async function pathExists(value: string | null | undefined) {
@@ -192,12 +207,8 @@ export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> |
     teardownCommand: readNullableString(raw.teardownCommand),
     cleanupCommand: readNullableString(raw.cleanupCommand),
     workspaceRuntime: cloneRecord(raw.workspaceRuntime),
-    desiredState: raw.desiredState === "running" || raw.desiredState === "stopped" ? raw.desiredState : null,
-    serviceStates: isRecord(raw.serviceStates)
-      ? Object.fromEntries(
-          Object.entries(raw.serviceStates).filter(([, state]) => state === "running" || state === "stopped"),
-        ) as ExecutionWorkspaceConfig["serviceStates"]
-      : null,
+    desiredState: readDesiredState(raw.desiredState),
+    serviceStates: readServiceStates(raw.serviceStates),
   };
 
   const hasConfig = Object.values(config).some((value) => {
@@ -235,18 +246,10 @@ export function mergeExecutionWorkspaceConfig(
     workspaceRuntime: patch.workspaceRuntime !== undefined ? cloneRecord(patch.workspaceRuntime) : current.workspaceRuntime,
     desiredState:
       patch.desiredState !== undefined
-        ? patch.desiredState === "running" || patch.desiredState === "stopped"
-          ? patch.desiredState
-          : null
+        ? readDesiredState(patch.desiredState)
         : current.desiredState,
     serviceStates:
-      patch.serviceStates !== undefined && isRecord(patch.serviceStates)
-        ? Object.fromEntries(
-            Object.entries(patch.serviceStates).filter(([, state]) => state === "running" || state === "stopped"),
-          ) as ExecutionWorkspaceConfig["serviceStates"]
-        : patch.serviceStates !== undefined
-          ? null
-          : current.serviceStates,
+      patch.serviceStates !== undefined ? readServiceStates(patch.serviceStates) : current.serviceStates,
   };
 
   const hasConfig = Object.values(nextConfig).some((value) => {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace } from "@paperclipai/shared";
+import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -19,18 +19,16 @@ import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveSta
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
-import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
-import { ProjectWorkspaceSummaryCard } from "../components/ProjectWorkspaceSummaryCard";
+import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { projectRouteRef } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-import { Loader2 } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
@@ -215,110 +213,6 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   );
 }
 
-function ProjectWorkspacesContent({
-  companyId,
-  projectId,
-  projectRef,
-  summaries,
-}: {
-  companyId: string;
-  projectId: string;
-  projectRef: string;
-  summaries: ReturnType<typeof buildProjectWorkspaceSummaries>;
-}) {
-  const queryClient = useQueryClient();
-  const [runtimeActionKey, setRuntimeActionKey] = useState<string | null>(null);
-  const [closingWorkspace, setClosingWorkspace] = useState<{
-    id: string;
-    name: string;
-    status: ExecutionWorkspace["status"];
-  } | null>(null);
-  const controlWorkspaceRuntime = useMutation({
-    mutationFn: async (input: {
-      key: string;
-      kind: "project_workspace" | "execution_workspace";
-      workspaceId: string;
-      action: "start" | "stop" | "restart";
-    }) => {
-      setRuntimeActionKey(`${input.key}:${input.action}`);
-      if (input.kind === "project_workspace") {
-        return await projectsApi.controlWorkspaceRuntimeServices(projectId, input.workspaceId, input.action, companyId);
-      }
-      return await executionWorkspacesApi.controlRuntimeServices(input.workspaceId, input.action);
-    },
-    onSettled: () => {
-      setRuntimeActionKey(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
-    },
-  });
-
-  if (summaries.length === 0) {
-    return <p className="text-sm text-muted-foreground">No non-default workspace activity yet.</p>;
-  }
-
-  const activeSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus !== "cleanup_failed");
-  const cleanupFailedSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus === "cleanup_failed");
-
-  return (
-    <>
-      <div className="space-y-4">
-        <div className="overflow-hidden rounded-xl border border-border bg-card">
-          {activeSummaries.map((summary) => (
-            <ProjectWorkspaceSummaryCard
-              key={summary.key}
-              projectRef={projectRef}
-              summary={summary}
-              runtimeActionKey={runtimeActionKey}
-              runtimeActionPending={controlWorkspaceRuntime.isPending}
-              onRuntimeAction={(input) => controlWorkspaceRuntime.mutate(input)}
-              onCloseWorkspace={(input) => setClosingWorkspace(input)}
-            />
-          ))}
-        </div>
-        {cleanupFailedSummaries.length > 0 ? (
-          <div className="space-y-2">
-            <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-              Cleanup attention needed
-            </div>
-            <div className="overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/5">
-              {cleanupFailedSummaries.map((summary) => (
-                <ProjectWorkspaceSummaryCard
-                  key={summary.key}
-                  projectRef={projectRef}
-                  summary={summary}
-                  runtimeActionKey={runtimeActionKey}
-                  runtimeActionPending={controlWorkspaceRuntime.isPending}
-                  onRuntimeAction={(input) => controlWorkspaceRuntime.mutate(input)}
-                  onCloseWorkspace={(input) => setClosingWorkspace(input)}
-                />
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
-      {closingWorkspace ? (
-        <ExecutionWorkspaceCloseDialog
-          workspaceId={closingWorkspace.id}
-          workspaceName={closingWorkspace.name}
-          currentStatus={closingWorkspace.status}
-          open
-          onOpenChange={(open) => {
-            if (!open) setClosingWorkspace(null);
-          }}
-          onClosed={() => {
-            queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
-            setClosingWorkspace(null);
-          }}
-        />
-      ) : null}
-    </>
-  );
-}
-
 /* ── Main project page ── */
 
 export function ProjectDetail() {
@@ -363,7 +257,6 @@ export function ProjectDetail() {
   const experimentalSettingsQuery = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const {
     slots: pluginDetailSlots,

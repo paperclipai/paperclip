@@ -138,6 +138,18 @@ export const createIssueSchema = z.object({
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
+export const createChildIssueSchema = createIssueSchema
+  .omit({
+    parentId: true,
+    inheritExecutionWorkspaceFromIssueId: true,
+  })
+  .extend({
+    acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+    blockParentUntilDone: z.boolean().optional().default(false),
+  });
+
+export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
+
 export const createIssueLabelSchema = z.object({
   name: z.string().trim().min(1).max(48),
   color: z.string().regex(/^#(?:[0-9a-fA-F]{6})$/, "Color must be a 6-digit hex value"),

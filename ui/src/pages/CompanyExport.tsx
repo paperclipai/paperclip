@@ -727,7 +727,7 @@ export function CompanyExport() {
 
   const downloadMutation = useMutation({
     mutationFn: () =>
-      companiesApi.exportPackage(selectedCompanyId!, {
+      companiesApi.exportBundle(selectedCompanyId!, {
         include: { company: true, agents: true, projects: true, issues: true },
         selectedFiles: Array.from(checkedFiles).sort(),
         sidebarOrder,

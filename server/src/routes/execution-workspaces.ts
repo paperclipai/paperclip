@@ -8,6 +8,7 @@ import {
   updateExecutionWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
 } from "@paperclipai/shared";
+import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
@@ -28,6 +29,9 @@ import {
   collectExecutionWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
 import { assertCanManageExecutionWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
+import { appendWithCap } from "../adapters/utils.js";
+
+const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 
 export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
@@ -112,7 +116,7 @@ export function executionWorkspaceRoutes(db: Db) {
 
     const workspaceCwd = existing.cwd;
     if (!workspaceCwd) {
-      res.status(422).json({ error: "Execution workspace needs a local path before Toca da IA can manage local runtime services" });
+      res.status(422).json({ error: "Execution workspace needs a local path before Paperclip can run workspace commands" });
       return;
     }
 
@@ -185,21 +189,6 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(422).json({ error: "Selected runtime service is not defined in this execution workspace runtime config" });
       return;
     }
-    if (
-      selectedRuntimeServiceId
-      && (selectedServiceIndex === undefined || selectedServiceIndex === null)
-      && !workspaceCommand
-    ) {
-      const liveConfigIndex = (existing.runtimeServices ?? []).find(
-        (s) => s.id === selectedRuntimeServiceId,
-      )?.configIndex;
-      if (liveConfigIndex === undefined || liveConfigIndex === null) {
-        res.status(422).json({
-          error: "Runtime service has no config position — it may have been registered before this workspace's runtime config was defined. Re-register the service or select it by service index instead.",
-        });
-        return;
-      }
-    }
     if (workspaceCommand?.kind === "job" && action !== "run") {
       res.status(422).json({ error: `Workspace job "${workspaceCommand.name}" can only be run` });
       return;
@@ -224,8 +213,8 @@ export function executionWorkspaceRoutes(db: Db) {
       executionWorkspaceId: existing.id,
     });
     let runtimeServiceCount = existing.runtimeServices?.length ?? 0;
-    const stdout: string[] = [];
-    const stderr: string[] = [];
+    let stdout = "";
+    let stderr = "";
 
     const operation = await recorder.recordOperation({
       phase: action === "stop" ? "workspace_teardown" : "workspace_provision",
@@ -325,14 +314,15 @@ export function executionWorkspaceRoutes(db: Db) {
         }
 
         const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
-          if (stream === "stdout") stdout.push(chunk);
-          else stderr.push(chunk);
+          if (stream === "stdout") stdout = appendWithCap(stdout, chunk, WORKSPACE_CONTROL_OUTPUT_MAX_CHARS);
+          else stderr = appendWithCap(stderr, chunk, WORKSPACE_CONTROL_OUTPUT_MAX_CHARS);
         };
 
         if (action === "stop" || action === "restart") {
           await stopRuntimeServicesForExecutionWorkspace({
             db,
             executionWorkspaceId: existing.id,
+            workspaceCwd,
             runtimeServiceId: selectedRuntimeServiceId,
           });
         }
@@ -368,32 +358,26 @@ export function executionWorkspaceRoutes(db: Db) {
           runtimeServiceCount = selectedRuntimeServiceId ? Math.max(0, (existing.runtimeServices?.length ?? 1) - 1) : 0;
         }
 
-        const currentDesiredState: "running" | "stopped" =
+        const currentDesiredState: WorkspaceRuntimeDesiredState =
           existing.config?.desiredState
           ?? ((existing.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running")
             ? "running"
             : "stopped");
-        // When targeting by runtimeServiceId without a known serviceIndex, resolve
-        // the configIndex from the live runtime service record so that
-        // buildWorkspaceRuntimeDesiredStatePatch can update serviceStates correctly.
-        // Without this, stopping a service by ID leaves desiredState=running and
-        // the reconciler restarts the service on the next tick.
-        const resolvedServiceIndex: number | null | undefined =
-          selectedServiceIndex !== undefined && selectedServiceIndex !== null
-            ? selectedServiceIndex
-            : selectedRuntimeServiceId
-              ? (existing.runtimeServices ?? []).find((s) => s.id === selectedRuntimeServiceId)?.configIndex ?? null
-              : null;
         const nextRuntimeState: {
-          desiredState: "running" | "stopped";
-          serviceStates: Record<string, "running" | "stopped"> | null | undefined;
-        } = buildWorkspaceRuntimeDesiredStatePatch({
-          config: { workspaceRuntime: effectiveRuntimeConfig },
-          currentDesiredState,
-          currentServiceStates: existing.config?.serviceStates ?? null,
-          action,
-          serviceIndex: resolvedServiceIndex,
-        });
+          desiredState: WorkspaceRuntimeDesiredState;
+          serviceStates: WorkspaceRuntimeServiceStateMap | null | undefined;
+        } = selectedRuntimeServiceId && (selectedServiceIndex === undefined || selectedServiceIndex === null)
+          ? {
+              desiredState: currentDesiredState,
+              serviceStates: existing.config?.serviceStates ?? null,
+            }
+          : buildWorkspaceRuntimeDesiredStatePatch({
+              config: { workspaceRuntime: effectiveRuntimeConfig },
+              currentDesiredState,
+              currentServiceStates: existing.config?.serviceStates ?? null,
+              action,
+              serviceIndex: selectedServiceIndex,
+            });
         const metadata = mergeExecutionWorkspaceConfig(existing.metadata as Record<string, unknown> | null, {
           desiredState: nextRuntimeState.desiredState,
           serviceStates: nextRuntimeState.serviceStates,
@@ -402,8 +386,8 @@ export function executionWorkspaceRoutes(db: Db) {
 
         return {
           status: "succeeded",
-          stdout: stdout.join(""),
-          stderr: stderr.join(""),
+          stdout,
+          stderr,
           system:
             action === "stop"
               ? "Stopped execution workspace runtime services.\n"
@@ -543,6 +527,7 @@ export function executionWorkspaceRoutes(db: Db) {
         await stopRuntimeServicesForExecutionWorkspace({
           db,
           executionWorkspaceId: existing.id,
+          workspaceCwd: existing.cwd,
         });
         const projectWorkspace = existing.projectWorkspaceId
           ? await db

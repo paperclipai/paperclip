@@ -10,6 +10,7 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockDocumentsService = vi.hoisted(() => ({
+  listIssueDocuments: vi.fn(),
   listIssueDocumentRevisions: vi.fn(),
   restoreIssueDocumentRevision: vi.fn(),
 }));
@@ -114,6 +115,25 @@ describe("issue document revision routes", () => {
       title: "Document revisions",
       status: "in_progress",
     });
+    mockDocumentsService.listIssueDocuments.mockResolvedValue([
+      {
+        id: "document-1",
+        companyId,
+        issueId,
+        key: "plan",
+        title: "Plan",
+        format: "markdown",
+        body: "# Plan",
+        latestRevisionId: "revision-2",
+        latestRevisionNumber: 2,
+        createdByAgentId: null,
+        createdByUserId: "board-user",
+        updatedByAgentId: null,
+        updatedByUserId: "board-user",
+        createdAt: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T12:10:00.000Z"),
+      },
+    ]);
     mockDocumentsService.listIssueDocumentRevisions.mockResolvedValue([
       {
         id: "revision-2",
@@ -167,6 +187,20 @@ describe("issue document revision routes", () => {
         body: "# Two",
       }),
     ]);
+  });
+
+  it("filters system documents by default on the document list route", async () => {
+    const res = await request(await createApp()).get(`/api/issues/${issueId}/documents`);
+
+    expect(res.status).toBe(200);
+    expect(mockDocumentsService.listIssueDocuments).toHaveBeenCalledWith(issueId, { includeSystem: false });
+    expect(res.body).toEqual([expect.objectContaining({ key: "plan" })]);
+  });
+
+  it("passes includeSystem=true through for debug document listing", async () => {
+    await request(await createApp()).get(`/api/issues/${issueId}/documents?includeSystem=true`);
+
+    expect(mockDocumentsService.listIssueDocuments).toHaveBeenCalledWith(issueId, { includeSystem: true });
   });
 
   it("restores a revision through the append-only route and logs the action", async () => {

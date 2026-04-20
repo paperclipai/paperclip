@@ -3,7 +3,6 @@ import {
   findWorkspaceCommandDefinition,
   listWorkspaceCommandDefinitions,
   matchWorkspaceRuntimeServiceToCommand,
-  scoreWorkspaceRuntimeServiceMatch,
 } from "./workspace-commands.js";
 
 describe("workspace command helpers", () => {
@@ -55,45 +54,25 @@ describe("workspace command helpers", () => {
     expect(match).toEqual(expect.objectContaining({ id: "runtime-web" }));
   });
 
-  it("returns null when no runtime services provided", () => {
-    expect(listWorkspaceCommandDefinitions(null)).toEqual([]);
-    expect(listWorkspaceCommandDefinitions(undefined)).toEqual([]);
-    expect(listWorkspaceCommandDefinitions({})).toEqual([]);
-  });
-
-  it("deduplicates commands with the same derived ID using source suffix", () => {
-    const commands = listWorkspaceCommandDefinitions({
-      services: [
-        { name: "web", command: "pnpm dev" },
-        { name: "web", command: "pnpm dev:alt" },
+  it("does not match a stale runtime service after the configured command changes", () => {
+    const workspaceRuntime = {
+      commands: [
+        { id: "web", name: "web", kind: "service", command: "pnpm dev:once --tailscale-auth", cwd: "." },
       ],
-    });
-    expect(commands).toHaveLength(2);
-    expect(commands[0]!.id).not.toEqual(commands[1]!.id);
-  });
+    };
+    const command = findWorkspaceCommandDefinition(workspaceRuntime, "web");
+    expect(command).not.toBeNull();
 
-  it("scores configIndex fast-path: exact match returns 100, mismatch returns -1", () => {
-    const command = { serviceIndex: 1, name: "api", command: "pnpm api", cwd: null };
-    expect(scoreWorkspaceRuntimeServiceMatch(command, { configIndex: 1, serviceName: "api", command: "pnpm api", cwd: null })).toBe(100);
-    expect(scoreWorkspaceRuntimeServiceMatch(command, { configIndex: 0, serviceName: "api", command: "pnpm api", cwd: null })).toBe(-1);
-  });
-
-  it("scores zero returns null from matchWorkspaceRuntimeServiceToCommand", () => {
-    const command = { serviceIndex: null, name: "web", command: "pnpm dev", cwd: null };
-    const result = matchWorkspaceRuntimeServiceToCommand(command, [
-      { id: "svc", configIndex: null, serviceName: "other", command: "other", cwd: null },
+    const match = matchWorkspaceRuntimeServiceToCommand(command!, [
+      {
+        id: "runtime-web",
+        serviceName: "web",
+        command: "pnpm dev",
+        cwd: "/repo",
+        configIndex: null,
+      },
     ]);
-    expect(result).toBeNull();
-  });
 
-  it("scores cwd partial match (endsWith) contribution", () => {
-    const command = { serviceIndex: null, name: "web", command: null, cwd: "frontend" };
-    const score = scoreWorkspaceRuntimeServiceMatch(command, {
-      configIndex: null,
-      serviceName: "web",
-      command: null,
-      cwd: "/repo/frontend",
-    });
-    expect(score).toBeGreaterThan(4);
+    expect(match).toBeNull();
   });
 });

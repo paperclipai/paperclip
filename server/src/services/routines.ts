@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   companySecrets,
+  executionWorkspaces,
   goals,
   heartbeatRuns,
   issues,
@@ -27,7 +28,9 @@ import type {
   UpdateRoutineTrigger,
 } from "@paperclipai/shared";
 import {
+  WORKSPACE_BRANCH_ROUTINE_VARIABLE,
   getBuiltinRoutineVariableValues,
+  extractRoutineVariableNames,
   interpolateRoutineTemplate,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
@@ -269,15 +272,23 @@ function resolveRoutineVariableValues(
     source: "schedule" | "manual" | "api" | "webhook";
     payload?: Record<string, unknown> | null;
     variables?: Record<string, unknown> | null;
+    automaticVariables?: Record<string, string | number | boolean>;
   },
 ) {
   if (variables.length === 0) return {} as Record<string, string | number | boolean>;
   const provided = collectProvidedRoutineVariables(input.source, input.payload, input.variables);
+  const automaticVariables = input.automaticVariables ?? {};
   const resolved: Record<string, string | number | boolean> = {};
   const missing: string[] = [];
 
   for (const variable of variables) {
-    const candidate = provided[variable.name] !== undefined ? provided[variable.name] : variable.defaultValue;
+    // Workspace-derived automatic values are authoritative for variables that
+    // Paperclip manages from execution context, so callers cannot override them.
+    const candidate = automaticVariables[variable.name] !== undefined
+      ? automaticVariables[variable.name]
+      : provided[variable.name] !== undefined
+        ? provided[variable.name]
+        : variable.defaultValue;
     const normalized = normalizeRoutineVariableValue(variable, candidate);
     if (normalized == null || (typeof normalized === "string" && normalized.trim().length === 0)) {
       if (variable.required) missing.push(variable.name);
@@ -307,6 +318,11 @@ function mergeRoutineRunPayload(
       ...variables,
     },
   };
+}
+
+function routineUsesWorkspaceBranch(routine: typeof routines.$inferSelect) {
+  return (routine.variables ?? []).some((variable) => variable.name === WORKSPACE_BRANCH_ROUTINE_VARIABLE)
+    || extractRoutineVariableNames([routine.title, routine.description]).includes(WORKSPACE_BRANCH_ROUTINE_VARIABLE);
 }
 
 export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
@@ -701,11 +717,34 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     if (!assigneeAgentId) {
       throw unprocessable("Default agent required");
     }
-    const resolvedVariables = resolveRoutineVariableValues(input.routine.variables ?? [], input);
-    const allVariables = { ...getBuiltinRoutineVariableValues(), ...resolvedVariables };
+    const automaticVariables: Record<string, string | number | boolean> = {};
+    if (input.executionWorkspaceId && routineUsesWorkspaceBranch(input.routine)) {
+      const workspace = await db
+        .select({
+          branchName: executionWorkspaces.branchName,
+          mode: executionWorkspaces.mode,
+        })
+        .from(executionWorkspaces)
+        .where(
+          and(
+            eq(executionWorkspaces.id, input.executionWorkspaceId),
+            eq(executionWorkspaces.companyId, input.routine.companyId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      const branchName = workspace?.branchName?.trim();
+      if (workspace && workspace.mode !== "shared_workspace" && branchName) {
+        automaticVariables[WORKSPACE_BRANCH_ROUTINE_VARIABLE] = branchName;
+      }
+    }
+    const resolvedVariables = resolveRoutineVariableValues(input.routine.variables ?? [], {
+      ...input,
+      automaticVariables,
+    });
+    const allVariables = { ...getBuiltinRoutineVariableValues(), ...automaticVariables, ...resolvedVariables };
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
     const description = interpolateRoutineTemplate(input.routine.description, allVariables);
-    const triggerPayload = mergeRoutineRunPayload(input.payload, resolvedVariables);
+    const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(

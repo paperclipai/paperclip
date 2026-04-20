@@ -13,8 +13,8 @@ export const executionWorkspaceConfigSchema = z.object({
   teardownCommand: z.string().optional().nullable(),
   cleanupCommand: z.string().optional().nullable(),
   workspaceRuntime: z.record(z.unknown()).optional().nullable(),
-  desiredState: z.enum(["running", "stopped"]).optional().nullable(),
-  serviceStates: z.record(z.enum(["running", "stopped"])).optional().nullable(),
+  desiredState: z.enum(["running", "stopped", "manual"]).optional().nullable(),
+  serviceStates: z.record(z.enum(["running", "stopped", "manual"])).optional().nullable(),
 }).strict();
 
 export const workspaceRuntimeControlTargetSchema = z.object({
@@ -99,7 +99,6 @@ export const workspaceRuntimeServiceSchema = z.object({
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 }).strict();
-
 export const executionWorkspaceCloseReadinessSchema = z.object({
   workspaceId: z.string().uuid(),
   state: executionWorkspaceCloseReadinessStateSchema,

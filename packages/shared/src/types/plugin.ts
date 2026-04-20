@@ -9,6 +9,13 @@ import type {
   PluginLauncherAction,
   PluginLauncherBounds,
   PluginLauncherRenderEnvironment,
+  PluginApiRouteAuthMode,
+  PluginApiRouteCheckoutPolicy,
+  PluginApiRouteMethod,
+  PluginDatabaseCoreReadTable,
+  PluginDatabaseMigrationStatus,
+  PluginDatabaseNamespaceMode,
+  PluginDatabaseNamespaceStatus,
 } from "../constants.js";
 
 // ---------------------------------------------------------------------------
@@ -20,6 +27,13 @@ import type {
  * Plugins provide these as plain JSON Schema compatible objects.
  */
 export type JsonSchema = Record<string, unknown>;
+
+export type {
+  PluginDatabaseCoreReadTable,
+  PluginDatabaseMigrationStatus,
+  PluginDatabaseNamespaceMode,
+  PluginDatabaseNamespaceStatus,
+} from "../constants.js";
 
 // ---------------------------------------------------------------------------
 // Manifest sub-types — nested declarations within PaperclipPluginManifestV1
@@ -190,6 +204,44 @@ export interface PluginUiDeclaration {
   launchers?: PluginLauncherDeclaration[];
 }
 
+/**
+ * Declares restricted database access for trusted orchestration plugins.
+ *
+ * The host derives the final namespace from the plugin key and optional slug,
+ * applies SQL migrations before worker startup, and gates runtime SQL through
+ * the `database.namespace.*` capabilities.
+ */
+export interface PluginDatabaseDeclaration {
+  /** Optional stable human-readable slug included in the host-derived namespace. */
+  namespaceSlug?: string;
+  /** SQL migration directory relative to the plugin package root. */
+  migrationsDir: string;
+  /** Public core tables this plugin may read or join at runtime. */
+  coreReadTables?: PluginDatabaseCoreReadTable[];
+}
+
+export type PluginApiRouteCompanyResolution =
+  | { from: "body"; key: string }
+  | { from: "query"; key: string }
+  | { from: "issue"; param: string };
+
+export interface PluginApiRouteDeclaration {
+  /** Stable plugin-defined route key passed to the worker. */
+  routeKey: string;
+  /** HTTP method accepted by this route. */
+  method: PluginApiRouteMethod;
+  /** Plugin-local path under `/api/plugins/:pluginId/api`, e.g. `/issues/:issueId/smoke`. */
+  path: string;
+  /** Actor class allowed to call the route. */
+  auth: PluginApiRouteAuthMode;
+  /** Capability required to expose the route. Currently `api.routes.register`. */
+  capability: "api.routes.register";
+  /** Optional checkout policy enforced by the host before worker dispatch. */
+  checkoutPolicy?: PluginApiRouteCheckoutPolicy;
+  /** How the host resolves company access for this route. */
+  companyResolution?: PluginApiRouteCompanyResolution;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1
 // ---------------------------------------------------------------------------
@@ -240,6 +292,10 @@ export interface PaperclipPluginManifestV1 {
   webhooks?: PluginWebhookDeclaration[];
   /** Agent tools this plugin contributes. Requires `agent.tools.register` capability. */
   tools?: PluginToolDeclaration[];
+  /** Restricted plugin-owned database namespace declaration. */
+  database?: PluginDatabaseDeclaration;
+  /** Scoped JSON API routes mounted under `/api/plugins/:pluginId/api/*`. */
+  apiRoutes?: PluginApiRouteDeclaration[];
   /**
    * Legacy top-level launcher declarations.
    * Prefer `ui.launchers` for new manifests.
@@ -284,6 +340,31 @@ export interface PluginRecord {
   installedAt: Date;
   /** Timestamp of the most recent status or metadata change. */
   updatedAt: Date;
+}
+
+export interface PluginDatabaseNamespaceRecord {
+  id: string;
+  pluginId: string;
+  pluginKey: string;
+  namespaceName: string;
+  namespaceMode: PluginDatabaseNamespaceMode;
+  status: PluginDatabaseNamespaceStatus;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface PluginMigrationRecord {
+  id: string;
+  pluginId: string;
+  pluginKey: string;
+  namespaceName: string;
+  migrationKey: string;
+  checksum: string;
+  pluginVersion: string;
+  status: PluginDatabaseMigrationStatus;
+  startedAt: Date;
+  appliedAt: Date | null;
+  errorMessage: string | null;
 }
 
 // ---------------------------------------------------------------------------

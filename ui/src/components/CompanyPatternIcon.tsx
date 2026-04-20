@@ -13,6 +13,7 @@ interface CompanyPatternIconProps {
   logoUrl?: string | null;
   brandColor?: string | null;
   className?: string;
+  logoFit?: "cover" | "contain";
 }
 
 function hashString(value: string): number {
@@ -165,6 +166,7 @@ export function CompanyPatternIcon({
   logoUrl,
   brandColor,
   className,
+  logoFit = "cover",
 }: CompanyPatternIconProps) {
   const initial = companyName.trim().charAt(0).toUpperCase() || "?";
   const [imageError, setImageError] = useState(false);
@@ -189,7 +191,10 @@ export function CompanyPatternIcon({
           src={logo}
           alt={`${companyName} logo`}
           onError={() => setImageError(true)}
-          className="absolute inset-0 h-full w-full object-cover"
+          className={cn(
+            "absolute inset-0 h-full w-full",
+            logoFit === "contain" ? "object-contain" : "object-cover",
+          )}
         />
       ) : patternDataUrl ? (
         <img
