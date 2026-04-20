@@ -12,6 +12,9 @@ import {
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { WebSocket } from "ws";
 
 type SessionKeyStrategy = "fixed" | "issue" | "run";
@@ -235,7 +238,36 @@ function tokenFromAuthHeader(rawHeader: string | null): string | null {
   return match ? nonEmpty(match[1]) : trimmed;
 }
 
-function resolveAuthToken(config: Record<string, unknown>, headers: Record<string, string>): string | null {
+type LocalOpenClawGatewayConfig = {
+  url?: string;
+  authToken?: string;
+};
+
+function readLocalOpenClawGatewayConfig(): LocalOpenClawGatewayConfig {
+  try {
+    const configPath = path.join(os.homedir(), ".openclaw", "openclaw.json");
+    const content = fs.readFileSync(configPath, "utf8");
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    const gateway = asRecord(parsed.gateway);
+    if (!gateway) return {};
+    const port = typeof gateway.port === "number" ? gateway.port : null;
+    const url = port ? `ws://127.0.0.1:${port}` : null;
+    const auth = asRecord(gateway.auth);
+    const authToken = nonEmpty(auth?.token) ?? nonEmpty(auth?.secret);
+    return {
+      ...(url ? { url } : {}),
+      ...(authToken ? { authToken } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function resolveAuthToken(
+  config: Record<string, unknown>,
+  headers: Record<string, string>,
+  localConfig?: LocalOpenClawGatewayConfig,
+): string | null {
   const explicit = nonEmpty(config.authToken) ?? nonEmpty(config.token);
   if (explicit) return explicit;
 
@@ -245,7 +277,13 @@ function resolveAuthToken(config: Record<string, unknown>, headers: Record<strin
   const authHeader =
     headerMapGetIgnoreCase(headers, "x-openclaw-auth") ??
     headerMapGetIgnoreCase(headers, "authorization");
-  return tokenFromAuthHeader(authHeader);
+  const fromHeader = tokenFromAuthHeader(authHeader);
+  if (fromHeader) return fromHeader;
+
+  // Fallback: read token from local OpenClaw config (~/.openclaw/openclaw.json).
+  // This prevents token drift from stranding local gateway agents when the gateway
+  // token rotates but adapterConfig is not updated.
+  return nonEmpty(localConfig?.authToken) ?? null;
 }
 
 function isSensitiveLogKey(key: string): boolean {
@@ -990,7 +1028,14 @@ function extractResultText(value: unknown): string | null {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const urlValue = asString(ctx.config.url, "").trim();
+  // Read local OpenClaw config as fallback for url and auth token.
+  // This prevents token drift from stranding local gateway agents when the
+  // gateway token rotates but adapterConfig has not been updated.
+  // Set disableLocalConfigFallback=true in adapterConfig to opt out (e.g. in tests).
+  const disableLocalConfigFallback = parseBoolean(ctx.config.disableLocalConfigFallback, false);
+  const localConfig = disableLocalConfigFallback ? {} : readLocalOpenClawGatewayConfig();
+
+  const urlValue = asString(ctx.config.url, "").trim() || localConfig.url || "";
   if (!urlValue) {
     return {
       exitCode: 1,
@@ -1031,7 +1076,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const transportHint = nonEmpty(ctx.config.streamTransport) ?? nonEmpty(ctx.config.transport);
 
   const headers = toStringRecord(ctx.config.headers);
-  const authToken = resolveAuthToken(parseObject(ctx.config), headers);
+  const authToken = resolveAuthToken(parseObject(ctx.config), headers, localConfig);
   const password = nonEmpty(ctx.config.password);
   const deviceToken = nonEmpty(ctx.config.deviceToken);
 
@@ -1097,6 +1142,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       commandArgs: ["ws", parsedUrl.toString(), "agent"],
       context: ctx.context,
     });
+  }
+
+  if (!asString(ctx.config.url, "").trim() && localConfig.url) {
+    await ctx.onLog(
+      "stdout",
+      `[openclaw-gateway] url not in adapterConfig; using local openclaw config: ${localConfig.url}\n`,
+    );
+  }
+  if (authToken && localConfig.authToken && authToken === localConfig.authToken) {
+    await ctx.onLog(
+      "stdout",
+      "[openclaw-gateway] auth token not in adapterConfig; using token from local openclaw config\n",
+    );
   }
 
   const outboundHeaderKeys = Object.keys(headers).sort();

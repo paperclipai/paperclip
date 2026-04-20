@@ -511,8 +511,8 @@ describe("openclaw gateway adapter execute", () => {
     }
   });
 
-  it("fails fast when url is missing", async () => {
-    const result = await execute(buildContext({}));
+  it("fails fast when url is missing and local config fallback is disabled", async () => {
+    const result = await execute(buildContext({ disableLocalConfigFallback: true }));
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("openclaw_gateway_url_missing");
   });
