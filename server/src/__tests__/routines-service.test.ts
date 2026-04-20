@@ -1,8 +1,9 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   companySecrets,
@@ -52,6 +53,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -78,6 +80,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         contextSnapshot?: Record<string, unknown>;
       },
     ) => Promise<unknown>;
+    cancelRun?: (runId: string) => Promise<unknown>;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -151,6 +154,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
             .where(eq(issues.id, issueId));
           return { id: queuedRunId };
         },
+        cancelRun: opts?.cancelRun,
       },
     });
     const issueSvc = issueService(db);
@@ -171,7 +175,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       {},
     );
 
-    return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
+    return { companyId, agentId, issuePrefix, issueSvc, projectId, routine, svc, wakeups };
   }
 
   it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
@@ -675,6 +679,764 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(issues.originId, routine.id));
 
     expect(routineIssues).toHaveLength(0);
+  });
+
+  it("cleans up queued wakeup artifacts when post-wakeup run finalization fails", async () => {
+    const { companyId, routine, svc } = await seedFixture({
+      wakeup: async (wakeupAgentId, wakeupOpts) => {
+        const issueId =
+          (typeof wakeupOpts.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+          (typeof wakeupOpts.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+          null;
+        if (!issueId) return null;
+
+        const wakeupRequest = await db.insert(agentWakeupRequests).values({
+          companyId,
+          agentId: wakeupAgentId,
+          source: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          reason: wakeupOpts.reason ?? null,
+          payload: wakeupOpts.payload ?? null,
+          status: "queued",
+          requestedByActorType: wakeupOpts.requestedByActorType ?? null,
+          requestedByActorId: wakeupOpts.requestedByActorId ?? null,
+        }).returning().then((rows) => rows[0]);
+
+        const queuedRun = await db.insert(heartbeatRuns).values({
+          companyId,
+          agentId: wakeupAgentId,
+          invocationSource: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
+        }).returning().then((rows) => rows[0]);
+
+        await db
+          .update(agentWakeupRequests)
+          .set({ runId: queuedRun.id })
+          .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+        await db
+          .update(issues)
+          .set({
+            executionRunId: queuedRun.id,
+            executionLockedAt: new Date(),
+          })
+          .where(eq(issues.id, issueId));
+        return { id: queuedRun.id };
+      },
+    });
+
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION routine_run_issue_created_update_explodes()
+      RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'routine run issue_created finalization exploded';
+      END;
+      $$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER routine_run_issue_created_update_explodes_trigger
+      BEFORE UPDATE ON routine_runs
+      FOR EACH ROW
+      WHEN (NEW.status = 'issue_created')
+      EXECUTE FUNCTION routine_run_issue_created_update_explodes();
+    `));
+
+    try {
+      await expect(
+        svc.runRoutine(routine.id, { source: "manual" }),
+      ).rejects.toThrow(/issue_created finalization exploded/i);
+
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toEqual([]);
+
+      const queuedRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId));
+      expect(queuedRuns).toEqual([]);
+
+      const wakeupRequests = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId));
+      expect(wakeupRequests).toEqual([]);
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS routine_run_issue_created_update_explodes_trigger ON routine_runs;
+        DROP FUNCTION IF EXISTS routine_run_issue_created_update_explodes();
+      `));
+    }
+  });
+
+  it("cancels wakeup artifacts that become claimed while queued cleanup runs", async () => {
+    const cancelledRunIds: string[] = [];
+    const { companyId, routine, svc } = await seedFixture({
+      wakeup: async (wakeupAgentId, wakeupOpts) => {
+        const issueId =
+          (typeof wakeupOpts.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+          (typeof wakeupOpts.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+          null;
+        if (!issueId) return null;
+
+        const wakeupRequest = await db.insert(agentWakeupRequests).values({
+          companyId,
+          agentId: wakeupAgentId,
+          source: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          reason: wakeupOpts.reason ?? null,
+          payload: wakeupOpts.payload ?? null,
+          status: "queued",
+          requestedByActorType: wakeupOpts.requestedByActorType ?? null,
+          requestedByActorId: wakeupOpts.requestedByActorId ?? null,
+        }).returning().then((rows) => rows[0]);
+
+        const queuedRun = await db.insert(heartbeatRuns).values({
+          companyId,
+          agentId: wakeupAgentId,
+          invocationSource: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
+        }).returning().then((rows) => rows[0]);
+
+        await db
+          .update(agentWakeupRequests)
+          .set({ runId: queuedRun.id })
+          .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+        await db
+          .update(issues)
+          .set({
+            executionRunId: queuedRun.id,
+            executionLockedAt: new Date(),
+          })
+          .where(eq(issues.id, issueId));
+        return { id: queuedRun.id };
+      },
+      cancelRun: async (runId) => {
+        cancelledRunIds.push(runId);
+        const run = await db
+          .select({ wakeupRequestId: heartbeatRuns.wakeupRequestId })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null);
+        const finishedAt = new Date();
+        await db
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt,
+            error: "Cancelled because routine dispatch finalization failed",
+            errorCode: "cancelled",
+          })
+          .where(eq(heartbeatRuns.id, runId));
+        if (run?.wakeupRequestId) {
+          await db
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt,
+              error: "Cancelled because routine dispatch finalization failed",
+            })
+            .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
+        }
+        await db
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionLockedAt: null,
+          })
+          .where(eq(issues.executionRunId, runId));
+      },
+    });
+
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION heartbeat_run_delete_claims_routine_wakeup()
+      RETURNS trigger AS $$
+      BEGIN
+        IF OLD.wakeup_request_id IS NOT NULL AND OLD.context_snapshot ->> 'issueId' IS NOT NULL THEN
+          UPDATE agent_wakeup_requests
+          SET status = 'claimed',
+              claimed_at = now(),
+              run_id = OLD.id,
+              updated_at = now()
+          WHERE id = OLD.wakeup_request_id;
+
+          INSERT INTO heartbeat_runs (
+            id,
+            company_id,
+            agent_id,
+            invocation_source,
+            trigger_detail,
+            status,
+            started_at,
+            wakeup_request_id,
+            context_snapshot,
+            created_at,
+            updated_at
+          ) VALUES (
+            OLD.id,
+            OLD.company_id,
+            OLD.agent_id,
+            OLD.invocation_source,
+            OLD.trigger_detail,
+            'running',
+            now(),
+            OLD.wakeup_request_id,
+            OLD.context_snapshot,
+            OLD.created_at,
+            now()
+          );
+        END IF;
+        RETURN OLD;
+      END;
+      $$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER heartbeat_run_delete_claims_routine_wakeup_trigger
+      AFTER DELETE ON heartbeat_runs
+      FOR EACH ROW
+      WHEN (OLD.status = 'queued')
+      EXECUTE FUNCTION heartbeat_run_delete_claims_routine_wakeup();
+
+      CREATE OR REPLACE FUNCTION routine_run_issue_created_update_explodes()
+      RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'routine run issue_created finalization exploded';
+      END;
+      $$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER routine_run_issue_created_update_explodes_trigger
+      BEFORE UPDATE ON routine_runs
+      FOR EACH ROW
+      WHEN (NEW.status = 'issue_created')
+      EXECUTE FUNCTION routine_run_issue_created_update_explodes();
+    `));
+
+    try {
+      await expect(
+        svc.runRoutine(routine.id, { source: "manual" }),
+      ).rejects.toThrow(/issue_created finalization exploded/i);
+
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toEqual([]);
+
+      const runs = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId));
+      expect(runs).toEqual([{ id: cancelledRunIds[0], status: "cancelled" }]);
+
+      const wakeupRequests = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId));
+      expect(wakeupRequests).toEqual([{ status: "cancelled" }]);
+
+      const activeRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(sql`${heartbeatRuns.companyId} = ${companyId} and ${heartbeatRuns.status} in ('queued', 'running')`);
+      expect(activeRuns).toEqual([]);
+      expect(cancelledRunIds).toHaveLength(1);
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS routine_run_issue_created_update_explodes_trigger ON routine_runs;
+        DROP FUNCTION IF EXISTS routine_run_issue_created_update_explodes();
+        DROP TRIGGER IF EXISTS heartbeat_run_delete_claims_routine_wakeup_trigger ON heartbeat_runs;
+        DROP FUNCTION IF EXISTS heartbeat_run_delete_claims_routine_wakeup();
+      `));
+    }
+  });
+
+  it("cancels claimed running wakeup artifacts when post-wakeup run finalization fails", async () => {
+    const cancelledRunIds: string[] = [];
+    const { companyId, routine, svc } = await seedFixture({
+      wakeup: async (wakeupAgentId, wakeupOpts) => {
+        const issueId =
+          (typeof wakeupOpts.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+          (typeof wakeupOpts.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+          null;
+        if (!issueId) return null;
+
+        const wakeupRequest = await db.insert(agentWakeupRequests).values({
+          companyId,
+          agentId: wakeupAgentId,
+          source: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          reason: wakeupOpts.reason ?? null,
+          payload: wakeupOpts.payload ?? null,
+          status: "queued",
+          requestedByActorType: wakeupOpts.requestedByActorType ?? null,
+          requestedByActorId: wakeupOpts.requestedByActorId ?? null,
+        }).returning().then((rows) => rows[0]);
+
+        const runningRun = await db.insert(heartbeatRuns).values({
+          companyId,
+          agentId: wakeupAgentId,
+          invocationSource: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          status: "running",
+          wakeupRequestId: wakeupRequest.id,
+          startedAt: new Date(),
+          contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
+        }).returning().then((rows) => rows[0]);
+
+        await db
+          .update(agentWakeupRequests)
+          .set({
+            runId: runningRun.id,
+            status: "claimed",
+            claimedAt: new Date(),
+          })
+          .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+        await db
+          .update(issues)
+          .set({
+            executionRunId: runningRun.id,
+            executionLockedAt: new Date(),
+          })
+          .where(eq(issues.id, issueId));
+        await db.insert(agentWakeupRequests).values({
+          companyId,
+          agentId: wakeupAgentId,
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_execution_deferred",
+          payload: { issueId },
+          status: "deferred_issue_execution",
+        });
+        return { id: runningRun.id };
+      },
+      cancelRun: async (runId) => {
+        cancelledRunIds.push(runId);
+        const run = await db
+          .select({ wakeupRequestId: heartbeatRuns.wakeupRequestId })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null);
+        const finishedAt = new Date();
+        await db
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt,
+            error: "Cancelled because routine dispatch finalization failed",
+            errorCode: "cancelled",
+          })
+          .where(eq(heartbeatRuns.id, runId));
+        if (run?.wakeupRequestId) {
+          await db
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt,
+              error: "Cancelled because routine dispatch finalization failed",
+            })
+            .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
+        }
+        await db
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionLockedAt: null,
+          })
+          .where(eq(issues.executionRunId, runId));
+      },
+    });
+
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION routine_run_issue_created_update_explodes()
+      RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'routine run issue_created finalization exploded';
+      END;
+      $$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER routine_run_issue_created_update_explodes_trigger
+      BEFORE UPDATE ON routine_runs
+      FOR EACH ROW
+      WHEN (NEW.status = 'issue_created')
+      EXECUTE FUNCTION routine_run_issue_created_update_explodes();
+    `));
+
+    try {
+      await expect(
+        svc.runRoutine(routine.id, { source: "manual" }),
+      ).rejects.toThrow(/issue_created finalization exploded/i);
+
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toEqual([]);
+
+      const runs = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId));
+      expect(runs).toEqual([{ id: cancelledRunIds[0], status: "cancelled" }]);
+
+      const wakeupRequests = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId));
+      expect(wakeupRequests).toEqual([{ status: "cancelled" }]);
+
+      const activeRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(sql`${heartbeatRuns.companyId} = ${companyId} and ${heartbeatRuns.status} in ('queued', 'running')`);
+      expect(activeRuns).toEqual([]);
+      expect(cancelledRunIds).toHaveLength(1);
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS routine_run_issue_created_update_explodes_trigger ON routine_runs;
+        DROP FUNCTION IF EXISTS routine_run_issue_created_update_explodes();
+      `));
+    }
+  });
+
+  it("advances a stale company issue counter before scheduled routine issue creation", async () => {
+    const { companyId, issuePrefix, routine, svc } = await seedFixture();
+    await db.insert(issues).values({
+      companyId,
+      projectId: routine.projectId,
+      title: "Existing issue",
+      description: "Created before the counter drifted",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 42,
+      identifier: `${issuePrefix}-42`,
+      originKind: "manual",
+    });
+    await db.update(companies).set({ issueCounter: 1 }).where(eq(companies.id, companyId));
+
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "daily",
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    }, {});
+
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2026-04-13T10:00:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const result = await svc.tickScheduledTriggers(new Date("2026-04-13T10:00:00.000Z"));
+    expect(result.triggered).toBe(1);
+
+    const run = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("issue_created");
+    expect(run?.linkedIssueId).toBeTruthy();
+
+    const createdIssue = await db
+      .select({ identifier: issues.identifier, issueNumber: issues.issueNumber })
+      .from(issues)
+      .where(eq(issues.id, run!.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(createdIssue).toEqual({
+      identifier: `${issuePrefix}-43`,
+      issueNumber: 43,
+    });
+  });
+
+  it("links automated routine dispatch failures to a visible blocked issue", async () => {
+    const { agentId, routine, svc } = await seedFixture({
+      wakeup: async () => {
+        throw new Error("queue unavailable");
+      },
+    });
+
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "daily",
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    }, {});
+
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2026-04-13T10:00:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const result = await svc.tickScheduledTriggers(new Date("2026-04-13T10:00:00.000Z"));
+    expect(result.triggered).toBe(1);
+
+    const run = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("failed");
+    expect(run?.failureReason).toContain("queue unavailable");
+    expect(run?.linkedIssueId).toBeTruthy();
+
+    const blocker = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, run!.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(blocker?.title).toBe(`Blocked routine: ${routine.title}`);
+    expect(blocker?.status).toBe("blocked");
+    expect(blocker?.assigneeAgentId).toBe(agentId);
+    expect(blocker?.originKind).toBe("manual");
+    expect(blocker?.description).toContain("queue unavailable");
+    expect(blocker?.description).toContain("If this is a visual review routine and browser or vision access is unavailable");
+  });
+
+  it.each([
+    ["terminated", "Cannot assign work to terminated agents", "the routine's saved assignee is terminated"],
+    ["pending_approval", "Cannot assign work to pending approval agents", "the routine's saved assignee is pending approval"],
+  ] as const)(
+    "creates an unassigned automated blocker when the schedule assignee becomes %s before dispatch",
+    async (agentStatus, failureMessage, ownerMessage) => {
+      const { agentId, routine, svc } = await seedFixture();
+
+      const { trigger } = await svc.createTrigger(routine.id, {
+        kind: "schedule",
+        label: "daily",
+        cronExpression: "0 10 * * *",
+        timezone: "UTC",
+      }, {});
+
+      await db
+        .update(agents)
+        .set({ status: agentStatus })
+        .where(eq(agents.id, agentId));
+      await db
+        .update(routineTriggers)
+        .set({ nextRunAt: new Date("2026-04-13T10:00:00.000Z") })
+        .where(eq(routineTriggers.id, trigger.id));
+
+      const result = await svc.tickScheduledTriggers(new Date("2026-04-13T10:00:00.000Z"));
+      expect(result.triggered).toBe(1);
+
+      const run = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id))
+        .then((rows) => rows[0] ?? null);
+      expect(run?.status).toBe("failed");
+      expect(run?.failureReason).toContain(failureMessage);
+      expect(run?.linkedIssueId).toBeTruthy();
+
+      const blocker = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, run!.linkedIssueId!))
+        .then((rows) => rows[0] ?? null);
+      expect(blocker?.title).toBe(`Blocked routine: ${routine.title}`);
+      expect(blocker?.status).toBe("blocked");
+      expect(blocker?.assigneeAgentId).toBeNull();
+      expect(blocker?.originKind).toBe("manual");
+      expect(blocker?.description).toContain(failureMessage);
+      expect(blocker?.description).toContain(ownerMessage);
+      expect(blocker?.description).toContain("Route this blocker to the routine owner or responsible maintainer");
+    },
+  );
+
+  it("cleans up automated blocker issues if dispatch failure finalization rolls back", async () => {
+    const { companyId, routine, svc } = await seedFixture({
+      wakeup: async () => {
+        throw new Error("queue unavailable");
+      },
+    });
+
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "daily",
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    }, {});
+
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2026-04-13T10:00:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION routine_run_failed_update_explodes()
+      RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'routine run finalization exploded';
+      END;
+      $$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER routine_run_failed_update_explodes_trigger
+      BEFORE UPDATE ON routine_runs
+      FOR EACH ROW
+      WHEN (NEW.status = 'failed')
+      EXECUTE FUNCTION routine_run_failed_update_explodes();
+    `));
+
+    try {
+      await expect(
+        svc.tickScheduledTriggers(new Date("2026-04-13T10:00:00.000Z")),
+      ).rejects.toThrow(/routine run finalization exploded/i);
+
+      const companyIssues = await db
+        .select({ id: issues.id, title: issues.title })
+        .from(issues)
+        .where(eq(issues.companyId, companyId));
+      expect(companyIssues).toEqual([]);
+
+      const runs = await db
+        .select({ id: routineRuns.id })
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id));
+      expect(runs).toEqual([]);
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS routine_run_failed_update_explodes_trigger ON routine_runs;
+        DROP FUNCTION IF EXISTS routine_run_failed_update_explodes();
+      `));
+    }
+  });
+
+  it("restores the scheduled trigger time if dispatch aborts after claiming a fire", async () => {
+    const { routine, svc } = await seedFixture();
+    const dueAt = new Date("2026-04-13T10:00:00.000Z");
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "daily",
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    }, {});
+
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: dueAt })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION routine_run_insert_explodes()
+      RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'routine run insert exploded';
+      END;
+      $$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER routine_run_insert_explodes_trigger
+      BEFORE INSERT ON routine_runs
+      FOR EACH ROW
+      EXECUTE FUNCTION routine_run_insert_explodes();
+    `));
+
+    try {
+      await expect(
+        svc.tickScheduledTriggers(dueAt),
+      ).rejects.toThrow(/routine run insert exploded/i);
+
+      const restoredTrigger = await db
+        .select({ nextRunAt: routineTriggers.nextRunAt })
+        .from(routineTriggers)
+        .where(eq(routineTriggers.id, trigger.id))
+        .then((rows) => rows[0] ?? null);
+      expect(restoredTrigger?.nextRunAt?.getTime()).toBe(dueAt.getTime());
+
+      const runs = await db
+        .select({ id: routineRuns.id })
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id));
+      expect(runs).toEqual([]);
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS routine_run_insert_explodes_trigger ON routine_runs;
+        DROP FUNCTION IF EXISTS routine_run_insert_explodes();
+      `));
+    }
+  });
+
+  it("links webhook variable validation failures to a visible blocked issue", async () => {
+    const { agentId, companyId, projectId, svc } = await seedFixture();
+    const variableRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "review {{repo}}",
+        description: "Review {{repo}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "repo", label: null, type: "text", defaultValue: null, required: true, options: [] },
+        ],
+      },
+      {},
+    );
+    const { trigger } = await svc.createTrigger(variableRoutine.id, {
+      kind: "webhook",
+      signingMode: "none",
+    }, {});
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      payload: { event: "opened" },
+    });
+
+    expect(run.source).toBe("webhook");
+    expect(run.status).toBe("failed");
+    expect(run.failureReason).toContain("Missing routine variables: repo");
+    expect(run.linkedIssueId).toBeTruthy();
+
+    const blocker = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(blocker?.title).toBe(`Blocked routine: ${variableRoutine.title}`);
+    expect(blocker?.status).toBe("blocked");
+    expect(blocker?.assigneeAgentId).toBe(agentId);
+    expect(blocker?.description).toContain("Missing routine variables: repo");
+  });
+
+  it("links webhook default-agent validation failures to a visible blocked issue", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await db
+      .update(routines)
+      .set({ assigneeAgentId: null })
+      .where(eq(routines.id, routine.id));
+    const routineWithoutAssignee = await svc.get(routine.id);
+    expect(routineWithoutAssignee?.status).toBe("active");
+    expect(routineWithoutAssignee?.assigneeAgentId).toBeNull();
+
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "webhook",
+      signingMode: "none",
+    }, {});
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      payload: { event: "opened" },
+    });
+
+    expect(run.source).toBe("webhook");
+    expect(run.status).toBe("failed");
+    expect(run.failureReason).toContain("Default agent required");
+    expect(run.linkedIssueId).toBeTruthy();
+
+    const blocker = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(blocker?.status).toBe("blocked");
+    expect(blocker?.assigneeAgentId).toBeNull();
+    expect(blocker?.description).toContain("No default routine assignee is configured");
   });
 
   it("accepts standard second-precision webhook timestamps for HMAC triggers", async () => {
