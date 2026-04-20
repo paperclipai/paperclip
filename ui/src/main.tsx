@@ -20,7 +20,21 @@ import { PluginLauncherProvider } from "./plugins/launchers";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
-initPluginBridge(React, ReactDOM);
+// Initialize i18n (side-effect: configures i18next singleton before React renders)
+import i18n from "./i18n";
+import "./i18n/types";
+
+import { loadLanguage } from "./i18n";
+
+initPluginBridge(React, ReactDOM, i18n);
+
+// Preload saved language if not EN (only EN is inlined in Core).
+// All other languages (ko, ja, es, etc.) are loaded from plugins.
+// Non-blocking — app renders immediately, translations arrive async.
+const savedLang = localStorage.getItem("paperclip.language");
+if (savedLang && savedLang !== "en") {
+  void loadLanguage(savedLang);
+}
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {

@@ -1703,68 +1703,82 @@ export function pluginLoader(
       );
 
       // ------------------------------------------------------------------
-      // 1. Resolve worker entrypoint
+      // 1. Check if this is a locale-only plugin (no worker needed)
       // ------------------------------------------------------------------
-      const workerEntrypoint = resolveWorkerEntrypoint(plugin, localPluginDir);
-      const packageRoot = resolvePluginPackageRoot(plugin, localPluginDir);
+      const isLocaleOnly = (manifest.locales?.length ?? 0) > 0
+        && (manifest.capabilities?.length ?? 0) === 0
+        && !manifest.entrypoints.worker;
 
-      // ------------------------------------------------------------------
-      // 2. Apply restricted database migrations before worker startup
-      // ------------------------------------------------------------------
-      const databaseNamespace = manifest.database
-        ? (await pluginDatabaseService(migrationDb).applyMigrations(pluginId, manifest, packageRoot))?.namespaceName ?? null
-        : null;
+      if (!isLocaleOnly) {
+        // ------------------------------------------------------------------
+        // 1b. Resolve worker entrypoint (standard plugins)
+        // ------------------------------------------------------------------
+        const workerEntrypoint = resolveWorkerEntrypoint(plugin, localPluginDir);
+        const packageRoot = resolvePluginPackageRoot(plugin, localPluginDir);
 
-      // ------------------------------------------------------------------
-      // 3. Build host handlers for this plugin
-      // ------------------------------------------------------------------
-      const hostHandlers = buildHostHandlers(pluginId, manifest);
+        // ------------------------------------------------------------------
+        // 2. Apply restricted database migrations before worker startup
+        // ------------------------------------------------------------------
+        const databaseNamespace = manifest.database
+          ? (await pluginDatabaseService(migrationDb).applyMigrations(pluginId, manifest, packageRoot))?.namespaceName ?? null
+          : null;
 
-      // ------------------------------------------------------------------
-      // 4. Retrieve plugin config (if any)
-      // ------------------------------------------------------------------
-      let config: Record<string, unknown> = {};
-      try {
-        const configRow = await registry.getConfig(pluginId);
-        if (configRow && typeof configRow === "object" && "configJson" in configRow) {
-          config = (configRow as { configJson: Record<string, unknown> }).configJson ?? {};
+        // ------------------------------------------------------------------
+        // 3. Build host handlers for this plugin
+        // ------------------------------------------------------------------
+        const hostHandlers = buildHostHandlers(pluginId, manifest);
+
+        // ------------------------------------------------------------------
+        // 4. Retrieve plugin config (if any)
+        // ------------------------------------------------------------------
+        let config: Record<string, unknown> = {};
+        try {
+          const configRow = await registry.getConfig(pluginId);
+          if (configRow && typeof configRow === "object" && "configJson" in configRow) {
+            config = (configRow as { configJson: Record<string, unknown> }).configJson ?? {};
+          }
+        } catch {
+          // Config may not exist yet — use empty object
+          log.debug({ pluginId }, "plugin-loader: no config found, using empty config");
         }
-      } catch {
-        // Config may not exist yet — use empty object
-        log.debug({ pluginId }, "plugin-loader: no config found, using empty config");
+
+        // ------------------------------------------------------------------
+        // 4. Spawn worker process
+        // ------------------------------------------------------------------
+        const workerOptions: WorkerStartOptions = {
+          entrypointPath: workerEntrypoint,
+          manifest,
+          config,
+          instanceInfo,
+          apiVersion: manifest.apiVersion,
+          databaseNamespace,
+          hostHandlers,
+          autoRestart: true,
+        };
+
+        // Repo-local plugin installs can resolve workspace TS sources at runtime
+        // (for example @paperclipai/shared exports). Run those workers through
+        // the tsx loader so first-party example plugins work in development.
+        if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
+          workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+        }
+
+        await workerManager.startWorker(pluginId, workerOptions);
+        registered.worker = true;
+
+        log.info(
+          { pluginId, pluginKey },
+          "plugin-loader: worker started",
+        );
+      } else {
+        log.info(
+          { pluginId, pluginKey },
+          "plugin-loader: locale-only plugin — skipping worker startup",
+        );
       }
 
       // ------------------------------------------------------------------
-      // 5. Spawn worker process
-      // ------------------------------------------------------------------
-      const workerOptions: WorkerStartOptions = {
-        entrypointPath: workerEntrypoint,
-        manifest,
-        config,
-        instanceInfo,
-        apiVersion: manifest.apiVersion,
-        databaseNamespace,
-        hostHandlers,
-        autoRestart: true,
-      };
-
-      // Repo-local plugin installs can resolve workspace TS sources at runtime
-      // (for example @paperclipai/shared exports). Run those workers through
-      // the tsx loader so first-party example plugins work in development.
-      if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
-        workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
-      }
-
-      await workerManager.startWorker(pluginId, workerOptions);
-      registered.worker = true;
-
-      log.info(
-        { pluginId, pluginKey },
-        "plugin-loader: worker started",
-      );
-
-      // ------------------------------------------------------------------
-      // 6. Sync job declarations and register with scheduler
+      // 5. Sync job declarations and register with scheduler
       // ------------------------------------------------------------------
       const jobDeclarations = manifest.jobs ?? [];
       if (jobDeclarations.length > 0) {
@@ -1901,6 +1915,9 @@ function resolveWorkerEntrypoint(
 ): string {
   const manifest = plugin.manifestJson;
   const workerRelPath = manifest.entrypoints.worker;
+  if (!workerRelPath) {
+    throw new Error(`Plugin "${manifest.id}" has no worker entrypoint declared`);
+  }
 
   // For local-path installs we persist the resolved package path; use it first
   if (plugin.packagePath && existsSync(plugin.packagePath)) {

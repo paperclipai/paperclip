@@ -21,6 +21,7 @@ import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import type { Issue } from "@paperclipai/shared";
+import { statusLabel } from "@/i18n/formatters";
 
 const boardStatuses = [
   "backlog",
@@ -31,10 +32,6 @@ const boardStatuses = [
   "done",
   "cancelled",
 ];
-
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 interface Agent {
   id: string;

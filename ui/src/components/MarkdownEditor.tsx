@@ -41,6 +41,7 @@ import { looksLikeMarkdownPaste } from "../lib/markdownPaste";
 import { normalizeMarkdown } from "../lib/normalize-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
+import i18n from "@/i18n";
 import { useEditorAutocomplete, type SkillCommandOption } from "../context/EditorAutocompleteContext";
 
 /* ---- Mention types ---- */
@@ -1180,7 +1181,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             !bordered && "inset-0 rounded-sm",
           )}
         >
-          Drop {onDropFile ? "file" : "image"} to upload
+          {onDropFile
+            ? i18n.t("editor.dropFileToUpload", { defaultValue: "Drop file to upload" })
+            : i18n.t("editor.dropImageToUpload", { defaultValue: "Drop image to upload" })}
         </div>
       )}
       {uploadError && (

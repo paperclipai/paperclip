@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import { X } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -65,6 +66,7 @@ export function EnvVarEditor({
   onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
   onChange: (env: Record<string, EnvBinding> | undefined) => void;
 }) {
+  const { t } = useTranslation("common");
   const [rows, setRows] = useState<Row[]>(() => toRows(value));
   const [sealError, setSealError] = useState<string | null>(null);
   const valueRef = useRef(value);
@@ -169,7 +171,7 @@ export function EnvVarEditor({
           <div key={index} className="flex items-center gap-1.5">
             <input
               className={cn(inputClass, "flex-[2]")}
-              placeholder="KEY"
+              placeholder={t("envVar.key", { defaultValue: "KEY" })}
               value={row.key}
               onChange={(event) => updateRow(index, { key: event.target.value })}
             />
@@ -183,8 +185,8 @@ export function EnvVarEditor({
                 })
               }
             >
-              <option value="plain">Plain</option>
-              <option value="secret">Secret</option>
+              <option value="plain">{t("envVar.plain", { defaultValue: "Plain" })}</option>
+              <option value="secret">{t("envVar.secret", { defaultValue: "Secret" })}</option>
             </select>
             {row.source === "secret" ? (
               <>
@@ -193,7 +195,7 @@ export function EnvVarEditor({
                   value={row.secretId}
                   onChange={(event) => updateRow(index, { secretId: event.target.value })}
                 >
-                  <option value="">Select secret...</option>
+                  <option value="">{t("envVar.select_secret", { defaultValue: "Select secret..." })}</option>
                   {secrets.map((secret) => (
                     <option key={secret.id} value={secret.id}>
                       {secret.name}

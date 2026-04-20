@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import type {
   PluginDataResult,
   PluginActionFn,
@@ -5,7 +6,7 @@ import type {
   PluginStreamResult,
   PluginToastFn,
 } from "./types.js";
-import { getSdkUiRuntimeValue } from "./runtime.js";
+import { getSdkUiRuntimeValue, getI18nBridge } from "./runtime.js";
 
 // ---------------------------------------------------------------------------
 // usePluginData
@@ -171,4 +172,84 @@ export function usePluginStream<T = unknown>(
 export function usePluginToast(): PluginToastFn {
   const impl = getSdkUiRuntimeValue<() => PluginToastFn>("usePluginToast");
   return impl();
+}
+
+// ---------------------------------------------------------------------------
+// usePluginTranslation
+// ---------------------------------------------------------------------------
+
+/**
+ * Return type for {@link usePluginTranslation}.
+ */
+export interface PluginTranslationResult {
+  /**
+   * Translate a key. Accepts either a defaultValue string or an options object.
+   *
+   * @example
+   * ```tsx
+   * t("greeting", "Hello!")
+   * t("greeting", { defaultValue: "Hello!", name: "Alice" })
+   * ```
+   */
+  t: (key: string, defaultValueOrOptions?: string | Record<string, unknown>) => string;
+  /** Current active language code (e.g., "en", "ko"). */
+  language: string;
+  /** Whether the i18n bridge is available (always true if host initialized). */
+  ready: boolean;
+}
+
+/**
+ * Access the host's i18n system from a plugin UI component.
+ *
+ * Provides a translation function and reactive language state so plugin
+ * components re-render when the user switches languages.
+ *
+ * The namespace parameter scopes keys to avoid collisions between plugins.
+ * Use dot-separated plugin namespace: `plugin.{pluginKey}.{ns}`.
+ *
+ * @param namespace - Optional namespace prefix prepended to every key.
+ *   If provided, `t("greeting")` resolves to `"plugin.myPlugin.messages:greeting"`.
+ *   If omitted, keys are passed through as-is (useful for accessing Core namespaces).
+ *
+ * @example
+ * ```tsx
+ * function MyWidget() {
+ *   const { t, language } = usePluginTranslation("plugin.myPlugin.messages");
+ *   return <h2>{t("title", "My Plugin")}</h2>;
+ * }
+ * ```
+ *
+ * @see docs/paperclip-analysis/15-i18n-architecture-design.md §3.5
+ */
+export function usePluginTranslation(namespace?: string): PluginTranslationResult {
+  const i18nBridge = getI18nBridge();
+
+  const [language, setLanguage] = useState(() => i18nBridge?.language() ?? "en");
+
+  useEffect(() => {
+    if (!i18nBridge) return;
+    const unsubscribe = i18nBridge.onLanguageChanged((lng) => {
+      setLanguage(lng);
+    });
+    return unsubscribe;
+  }, [i18nBridge]);
+
+  const t = (key: string, defaultValueOrOptions?: string | Record<string, unknown>): string => {
+    if (!i18nBridge) {
+      // Fallback when bridge not available
+      if (typeof defaultValueOrOptions === "string") return defaultValueOrOptions;
+      if (defaultValueOrOptions && typeof defaultValueOrOptions === "object" && "defaultValue" in defaultValueOrOptions) {
+        return String(defaultValueOrOptions.defaultValue);
+      }
+      return key;
+    }
+    const fullKey = namespace ? `${namespace}:${key}` : key;
+    return i18nBridge.t(fullKey, defaultValueOrOptions);
+  };
+
+  return {
+    t,
+    language,
+    ready: i18nBridge !== null,
+  };
 }

@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
+import i18n from "@/i18n";
 import {
   ChevronDown,
   ChevronRight,
@@ -451,7 +452,7 @@ const EnumField = React.memo(({
       disabled={disabled}
     >
       <SelectTrigger className="w-full">
-        <SelectValue placeholder="Select an option" />
+        <SelectValue placeholder={i18n.t("common:jsonSchema.selectAnOption", { defaultValue: "Select an option" })} />
       </SelectTrigger>
       <SelectContent>
         {options.map((option) => (
@@ -745,7 +746,7 @@ const ArrayField = React.memo(({
         ))}
         {items.length === 0 && (
           <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
-            No items added yet.
+            {i18n.t("common:jsonSchema.noItems", { defaultValue: "No items added yet." })}
           </div>
         )}
       </div>
@@ -1014,7 +1015,7 @@ export function JsonSchemaForm({
           className,
         )}
       >
-        No configuration options available.
+        {i18n.t("common:jsonSchema.noConfig", { defaultValue: "No configuration options available." })}
       </div>
     );
   }

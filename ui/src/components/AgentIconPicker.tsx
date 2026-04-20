@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import i18n from "@/i18n";
 import {
   type LucideIcon,
 } from "lucide-react";
@@ -46,7 +47,7 @@ export function AgentIconPicker({ value, onChange, children }: AgentIconPickerPr
       <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent className="w-72 p-3" align="start">
         <Input
-          placeholder="Search icons..."
+          placeholder={i18n.t("agents:searchIcons", { defaultValue: "Search icons..." })}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="mb-2 h-8 text-sm"

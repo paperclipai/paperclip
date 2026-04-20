@@ -37,6 +37,7 @@ import type {
   PluginUiSlotType,
 } from "@paperclipai/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
+import { loadPluginLocales } from "@/i18n";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -259,6 +260,30 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
         const SDK = globalThis.__paperclipPluginBridge__?.sdkUi ?? {};
         const { usePluginData, usePluginAction, useHostContext, usePluginStream, usePluginToast } = SDK;
         export { usePluginData, usePluginAction, useHostContext, usePluginStream, usePluginToast };
+
+        const React = globalThis.__paperclipPluginBridge__?.react;
+        function _getI18nBridge() { return globalThis.__paperclipPluginBridge__?.i18n ?? null; }
+        export function usePluginTranslation(namespace) {
+          const bridge = _getI18nBridge();
+          const [language, setLanguage] = React.useState(() => bridge?.language() ?? "en");
+          React.useEffect(() => {
+            if (!bridge) return;
+            const unsub = bridge.onLanguageChanged((lng) => setLanguage(lng));
+            return unsub;
+          }, [bridge]);
+          const t = (key, defaultValueOrOptions) => {
+            if (!bridge) {
+              if (typeof defaultValueOrOptions === "string") return defaultValueOrOptions;
+              if (defaultValueOrOptions && typeof defaultValueOrOptions === "object" && "defaultValue" in defaultValueOrOptions) {
+                return String(defaultValueOrOptions.defaultValue);
+              }
+              return key;
+            }
+            const fullKey = namespace ? namespace + ":" + key : key;
+            return bridge.t(fullKey, defaultValueOrOptions);
+          };
+          return { t, language, ready: bridge !== null };
+        }
       `;
       break;
   }
@@ -441,6 +466,19 @@ async function loadPluginModule(contribution: PluginUiContribution): Promise<voi
       }
 
       pluginLoadStates.set(moduleKey, "loaded");
+
+      // Convention-based plugin locale loading.
+      // Try to load locale JSONs from /_plugins/{pluginId}/ui/locales/{lang}/*.json
+      // Silently skips if no locales are found (non-blocking).
+      // Also re-loads on language change to support switching after initial mount.
+      const defaultNs = ["common", "messages"];
+      loadPluginLocales(pluginId, pluginKey, defaultNs).catch(() => {});
+
+      // Re-fetch plugin locales when user switches language
+      const { default: i18n } = await import("@/i18n");
+      i18n.on("languageChanged", () => {
+        loadPluginLocales(pluginId, pluginKey, defaultNs).catch(() => {});
+      });
     } catch (err) {
       pluginLoadStates.set(moduleKey, "error");
       console.error(`Failed to load UI module for plugin "${pluginKey}"`, err);
@@ -698,10 +736,12 @@ function slotContextToHostContext(
  */
 function PluginBridgeScope({
   pluginId,
+  pluginKey,
   context,
   children,
 }: {
   pluginId: string;
+  pluginKey: string;
   context: PluginSlotContext;
   children: ReactNode;
 }) {
@@ -711,7 +751,7 @@ function PluginBridgeScope({
   });
   const userId = session?.user?.id ?? session?.session?.userId ?? null;
   const hostContext = useMemo(() => slotContextToHostContext(context, userId), [context, userId]);
-  const value = useMemo(() => ({ pluginId, hostContext }), [pluginId, hostContext]);
+  const value = useMemo(() => ({ pluginId, pluginKey, hostContext }), [pluginId, pluginKey, hostContext]);
 
   return (
     <PluginBridgeContext.Provider value={value}>
@@ -759,7 +799,7 @@ export function PluginSlotMount({
     const node = createElement(component.component, { slot, context });
     return (
       <PluginSlotErrorBoundary slot={slot} className={className}>
-        <PluginBridgeScope pluginId={slot.pluginId} context={context}>
+        <PluginBridgeScope pluginId={slot.pluginId} pluginKey={slot.pluginKey} context={context}>
           {className ? <div className={className}>{node}</div> : node}
         </PluginBridgeScope>
       </PluginSlotErrorBoundary>

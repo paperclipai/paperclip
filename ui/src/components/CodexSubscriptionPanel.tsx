@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { QuotaWindow } from "@paperclipai/shared";
 import { cn, quotaSourceDisplayName } from "@/lib/utils";
 
@@ -27,7 +28,7 @@ function orderedWindows(windows: QuotaWindow[]): QuotaWindow[] {
   });
 }
 
-function detailText(window: QuotaWindow): string | null {
+function detailText(window: QuotaWindow, t: (key: string, options?: Record<string, unknown>) => string): string | null {
   if (typeof window.detail === "string" && window.detail.trim().length > 0) return window.detail.trim();
   if (!window.resetsAt) return null;
   const formatted = new Date(window.resetsAt).toLocaleString(undefined, {
@@ -37,7 +38,7 @@ function detailText(window: QuotaWindow): string | null {
     minute: "2-digit",
     timeZoneName: "short",
   });
-  return `Resets ${formatted}`;
+  return t("codexSubscription.resets", { defaultValue: "Resets {{date}}", date: formatted });
 }
 
 function fillClass(usedPercent: number | null): string {
@@ -57,6 +58,7 @@ export function CodexSubscriptionPanel({
   source = null,
   error = null,
 }: CodexSubscriptionPanelProps) {
+  const { t } = useTranslation("costs");
   const ordered = orderedWindows(windows);
   const accountWindows = ordered.filter((window) => !isModelSpecific(window.label));
   const modelWindows = ordered.filter((window) => isModelSpecific(window.label));
@@ -66,10 +68,10 @@ export function CodexSubscriptionPanel({
       <div className="flex items-start justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
           <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-            Codex subscription
+            {t("codexSubscription.title", { defaultValue: "Codex subscription" })}
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
-            Live Codex quota windows.
+            {t("codexSubscription.subtitle", { defaultValue: "Live Codex quota windows." })}
           </div>
         </div>
         {source ? (
@@ -88,7 +90,7 @@ export function CodexSubscriptionPanel({
       <div className="mt-4 space-y-5">
         <div className="space-y-3">
           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-            Account windows
+            {t("codexSubscription.accountWindows", { defaultValue: "Account windows" })}
           </div>
           <div className="space-y-3">
             {accountWindows.map((window) => (
@@ -100,7 +102,7 @@ export function CodexSubscriptionPanel({
         {modelWindows.length > 0 ? (
           <div className="space-y-3">
             <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-              Model windows
+              {t("codexSubscription.modelWindows", { defaultValue: "Model windows" })}
             </div>
             <div className="space-y-3">
               {modelWindows.map((window) => (
@@ -115,7 +117,8 @@ export function CodexSubscriptionPanel({
 }
 
 function QuotaWindowRow({ window }: { window: QuotaWindow }) {
-  const detail = detailText(window);
+  const { t } = useTranslation("costs");
+  const detail = detailText(window, t);
   if (window.usedPercent == null) {
     return (
       <div className="border border-border px-3.5 py-3">
@@ -142,7 +145,7 @@ function QuotaWindowRow({ window }: { window: QuotaWindow }) {
           ) : null}
         </div>
         <div className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
-          {window.usedPercent}% used
+          {t("codexSubscription.percentUsed", { defaultValue: "{{percent}}% used", percent: window.usedPercent })}
         </div>
       </div>
 
