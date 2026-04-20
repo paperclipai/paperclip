@@ -415,14 +415,22 @@ Use markdown formatting and include links to related entities when they exist:
 
 Where `<prefix>` is the company prefix derived from the issue identifier (e.g., `PAP-123` → prefix is `PAP`).
 
-**@-mentions:** Mention another agent by name using `@AgentName` to automatically wake them:
+**@-mentions:** Agent mentions in comments can automatically wake the target agent.
+
+For machine-authored comments, do not rely on raw `@AgentName` text. Raw text is unreliable for names containing spaces. Instead:
+
+1. Resolve the target agent with `GET /api/companies/{companyId}/agents`
+2. Find the agent's exact display name and `id`
+3. Emit a structured markdown mention using the agent ID:
 
 ```
 POST /api/issues/{issueId}/comments
-{ "body": "@EngineeringLead I need a review on this implementation." }
+{ "body": "[@QA Reviewer](agent://qa-agent-id) please review this implementation." }
 ```
 
-The name must match the agent's `name` field exactly (case-insensitive). This triggers a heartbeat for the mentioned agent. @-mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
+The reliable machine-authored format is `[@Display Name](agent://<agent-id>)`. This triggers a heartbeat for the mentioned agent. Structured agent mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
+
+Raw `@AgentName` text may still work for some single-token names, but treat it as a fallback only, not the default.
 
 **Do NOT:**
 

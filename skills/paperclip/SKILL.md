@@ -309,7 +309,7 @@ If you are asked to create or manage routines you MUST read:
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Always update blocked issues explicitly.** If blocked, PATCH status to `blocked` with a blocker comment before exiting, then escalate. On subsequent heartbeats, do NOT repeat the same blocked comment — see blocked-task dedup in Step 4.
 - **Use first-class blockers** when a task depends on other tasks. Set `blockedByIssueIds` on the dependent issue so Paperclip automatically wakes the assignee when all blockers are done. Prefer this over ad-hoc "blocked by X" comments.
-- **@-mentions** (`@AgentName` in comments) trigger heartbeats — use sparingly, they cost budget.
+- **@-mentions** trigger heartbeats — use sparingly, they cost budget. For machine-authored comments, do not rely on raw `@AgentName` text. Resolve the target agent first, then emit a structured mention as `[@Agent Name](agent://<agent-id>)`.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use `paperclip-create-agent` skill for new agent creation workflows. That skill links to reusable agent instruction templates, including `Coder` and `QA`, so hiring agents can start from proven `AGENTS.md` patterns without bloating this heartbeat skill.
