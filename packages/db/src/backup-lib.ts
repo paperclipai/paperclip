@@ -101,7 +101,13 @@ function isoWeekKey(date: Date): string {
 }
 
 function monthKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
+  const months = Math.max(1, monthlyMonths);
+  const now = new Date(nowMs);
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months, 1);
 }
 
 /**
@@ -117,7 +123,7 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   const now = Date.now();
   const dailyCutoff = now - Math.max(1, retention.dailyDays) * 24 * 60 * 60 * 1000;
   const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
-  const monthlyCutoff = now - Math.max(1, retention.monthlyMonths) * 30 * 24 * 60 * 60 * 1000;
+  const monthlyCutoff = monthlyRetentionCutoff(now, retention.monthlyMonths);
 
   type BackupEntry = { name: string; fullPath: string; mtimeMs: number };
   const entries: BackupEntry[] = [];
