@@ -540,8 +540,7 @@ export function accessService(db: Db) {
     if (!userId) return false;
     if (await isInstanceAdmin(userId)) return true;
     const membership = await getMembership(companyId, "user", userId);
-    if (membership && membership.membershipRole === "owner") return true;
-    return hasPermission(companyId, "user", userId, "company:settings");
+    return Boolean(membership && membership.membershipRole === "owner");
   }
 
   async function getProjectMembership(
