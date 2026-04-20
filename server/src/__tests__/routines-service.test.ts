@@ -185,7 +185,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   routineTest("cancels orphaned routine issues before creating a fresh execution issue", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const orphanedRunIds = [randomUUID(), randomUUID()];
-    const orphanedHeartbeatRunIds = [randomUUID(), randomUUID()];
+    const orphanedExecutionHeartbeatRunId = randomUUID();
     const orphanedIssues = await Promise.all(orphanedRunIds.map((originRunId, index) => issueSvc.create(companyId, {
       projectId: routine.projectId,
       title: routine.title,
@@ -209,24 +209,30 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       linkedIssueId: issue.id,
       completedAt: new Date(`2026-03-20T12:0${index}:00.000Z`),
     })));
-    await db.insert(heartbeatRuns).values(orphanedIssues.map((issue, index) => ({
-      id: orphanedHeartbeatRunIds[index]!,
+    await db.insert(heartbeatRuns).values({
+      id: orphanedExecutionHeartbeatRunId,
       companyId,
       agentId,
       invocationSource: "assignment" as const,
       triggerDetail: "system",
       status: "completed" as const,
-      contextSnapshot: { issueId: issue.id },
-      startedAt: new Date(`2026-03-20T12:0${index}:15.000Z`),
-      finishedAt: new Date(`2026-03-20T12:0${index}:20.000Z`),
-    })));
-    await Promise.all(orphanedIssues.map((issue, index) => db
+      contextSnapshot: { issueId: orphanedIssues[0]!.id },
+      startedAt: new Date("2026-03-20T12:00:15.000Z"),
+      finishedAt: new Date("2026-03-20T12:00:20.000Z"),
+    });
+    await db
       .update(issues)
       .set({
-        executionRunId: orphanedHeartbeatRunIds[index]!,
-        executionLockedAt: new Date(`2026-03-20T12:0${index}:30.000Z`),
+        executionRunId: orphanedExecutionHeartbeatRunId,
+        executionLockedAt: new Date("2026-03-20T12:00:30.000Z"),
       })
-      .where(eq(issues.id, issue.id))));
+      .where(eq(issues.id, orphanedIssues[0]!.id));
+    await db
+      .update(issues)
+      .set({
+        executionLockedAt: new Date("2026-03-20T12:01:30.000Z"),
+      })
+      .where(eq(issues.id, orphanedIssues[1]!.id));
 
     const detailBefore = await svc.getDetail(routine.id);
     expect(detailBefore?.activeIssue).toBeNull();
