@@ -137,6 +137,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "cursor",
   "gemini_local",
   "hermes_local",
+  "kiro_local",
   "opencode_local",
   "pi_local",
 ]);
