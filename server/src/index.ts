@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -576,6 +576,27 @@ export async function startServer(): Promise<StartedServer> {
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
+    });
+
+  void db
+    .select({ id: companies.id, name: companies.name })
+    .from(companies)
+    .where(isNull(companies.organizationId))
+    .then((orphans) => {
+      if (orphans.length === 0) return;
+      logger.warn(
+        { count: orphans.length, companies: orphans },
+        "companies without organization_id detected — migration 0061 backfill could not identify an owner; attach these to an organization manually",
+      );
+      void notifyOps(
+        `${orphans.length} company/companies have no organization — manual attach required: ${orphans
+          .map((c) => c.name)
+          .join(", ")}`,
+        "warn",
+      );
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup orphan-company scan failed");
     });
   
   if (config.heartbeatSchedulerEnabled) {

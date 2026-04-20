@@ -421,6 +421,20 @@
       "when": 1776700800000,
       "tag": "0059_two_factor_auth",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1776758400000,
+      "tag": "0060_org_project_rbac",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1776758460000,
+      "tag": "0061_personal_org_backfill",
+      "breakpoints": true
     }
   ]
 }

@@ -1,9 +1,11 @@
-import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { organizations } from "./organizations.js";
 
 export const companies = pgTable(
   "companies",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id").references(() => organizations.id),
     name: text("name").notNull(),
     description: text("description"),
     status: text("status").notNull().default("active"),
@@ -28,5 +30,6 @@ export const companies = pgTable(
   },
   (table) => ({
     issuePrefixUniqueIdx: uniqueIndex("companies_issue_prefix_idx").on(table.issuePrefix),
+    organizationIdx: index("companies_organization_idx").on(table.organizationId),
   }),
 );

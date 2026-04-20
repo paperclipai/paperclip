@@ -17,4 +17,5 @@ export { sidebarPreferenceRoutes } from "./sidebar-preferences.js";
 export { inboxDismissalRoutes } from "./inbox-dismissals.js";
 export { llmRoutes } from "./llms.js";
 export { accessRoutes } from "./access.js";
+export { organizationRoutes } from "./organizations.js";
 export { instanceSettingsRoutes } from "./instance-settings.js";

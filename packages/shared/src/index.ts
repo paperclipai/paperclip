@@ -64,6 +64,9 @@ export {
   JOIN_REQUEST_TYPES,
   JOIN_REQUEST_STATUSES,
   PERMISSION_KEYS,
+  PROJECT_PERMISSION_KEYS,
+  PROJECT_MEMBER_ROLES,
+  ORG_MEMBERSHIP_ROLES,
   PLUGIN_API_VERSION,
   PLUGIN_STATUSES,
   PLUGIN_CATEGORIES,
@@ -140,6 +143,9 @@ export {
   type JoinRequestType,
   type JoinRequestStatus,
   type PermissionKey,
+  type ProjectPermissionKey,
+  type ProjectMemberRole,
+  type OrgMembershipRole,
   type PluginStatus,
   type PluginCategory,
   type PluginCapability,
@@ -690,6 +696,8 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./validators/index.js";
+
+export { PROJECT_ROLE_PRESETS, type ProjectRolePreset } from "./role-presets.js";
 
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";

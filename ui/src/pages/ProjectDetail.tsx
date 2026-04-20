@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace } from "@paperclipai/shared";
+import {
+  PROJECT_COLORS,
+  PROJECT_PERMISSION_KEYS,
+  PROJECT_ROLE_PRESETS,
+  isUuidLike,
+  type BudgetPolicySummary,
+  type ExecutionWorkspace,
+} from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
+import { accessApi } from "../api/access";
 import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
@@ -26,15 +34,16 @@ import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspaceSummaryCard } from "../components/ProjectWorkspaceSummaryCard";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { projectRouteRef } from "../lib/utils";
+import { ToggleField } from "../components/agent-config-primitives";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-import { Loader2 } from "lucide-react";
+import { Loader2, Users, Shield, ChevronDown, ChevronRight, Trash2, Plus, Bot } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget" | "members";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -52,7 +61,604 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
   if (tab === "workspaces") return "workspaces";
+  if (tab === "members") return "members";
   return null;
+}
+
+/* ── Project permission labels ── */
+
+const PROJECT_PERMISSION_LABELS: Record<string, string> = {
+  "project:view": "View project",
+  "project:issues:create": "Create issues",
+  "project:issues:edit": "Edit issues",
+  "project:issues:delete": "Delete issues",
+  "project:issues:assign": "Assign issues",
+  "project:agents:use": "Use agents",
+  "project:settings": "Project settings",
+  "project:members:manage": "Manage members",
+};
+
+const PROJECT_PERMISSION_DESCRIPTIONS: Record<string, string> = {
+  "project:view": "View the project and its issues.",
+  "project:issues:create": "Create new issues in this project.",
+  "project:issues:edit": "Edit existing issues in this project.",
+  "project:issues:delete": "Delete issues from this project.",
+  "project:issues:assign": "Assign issues to members or agents.",
+  "project:agents:use": "Use agents within this project.",
+  "project:settings": "Modify project settings and configuration.",
+  "project:members:manage": "Add, remove, and manage project members.",
+};
+
+/* ── Members panel (lightweight, for overview area) ── */
+
+function MembersPanel({
+  projectId,
+  onGoToMembers,
+}: {
+  projectId: string;
+  onGoToMembers: () => void;
+}) {
+  const { data: members = [], isLoading } = useQuery({
+    queryKey: queryKeys.projects.members(projectId),
+    queryFn: () => projectsApi.listMembers(projectId),
+    enabled: !!projectId,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Members</div>
+        <p className="text-xs text-muted-foreground">Loading members...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <Users className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Members</span>
+          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {members.length}
+          </span>
+        </div>
+        <button
+          onClick={onGoToMembers}
+          className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+        >
+          Manage members
+        </button>
+      </div>
+      {members.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No members assigned yet.</p>
+      ) : (
+        <div className="space-y-1">
+          {members.slice(0, 5).map((member) => (
+            <div
+              key={member.id}
+              className="flex items-center gap-2 text-xs"
+            >
+              <span className="font-medium truncate">{member.displayName || member.email || member.principalId}</span>
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {member.role}
+              </span>
+            </div>
+          ))}
+          {members.length > 5 && (
+            <p className="text-[11px] text-muted-foreground">
+              +{members.length - 5} more
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Project Members Section (full management, for "Members" tab) ── */
+
+function ProjectMembersSection({ projectId, companyId }: { projectId: string; companyId: string }) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+
+  const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
+  const [editingGrants, setEditingGrants] = useState<Record<string, boolean>>({});
+  const [addMemberPrincipalId, setAddMemberPrincipalId] = useState("");
+  const [addMemberRole, setAddMemberRole] = useState("viewer");
+  const [addAgentId, setAddAgentId] = useState("");
+
+  const {
+    data: members = [],
+    isLoading: membersLoading,
+  } = useQuery({
+    queryKey: queryKeys.projects.members(projectId),
+    queryFn: () => projectsApi.listMembers(projectId),
+    enabled: !!projectId,
+  });
+
+  // Company members for the "add member" dropdown.
+  // In merge-upstream, accessApi.listMembers returns { members, access }, not an array.
+  const { data: companyMembersData } = useQuery({
+    queryKey: queryKeys.access.companyMembers(companyId),
+    queryFn: () => accessApi.listMembers(companyId).catch(() => ({ members: [], access: null } as any)),
+    enabled: !!companyId,
+    retry: false,
+  });
+  const companyMembers = useMemo(
+    () =>
+      (companyMembersData?.members ?? []).filter((m: any) => m.status === "active"),
+    [companyMembersData],
+  );
+
+  const { data: projectAgents = [] } = useQuery({
+    queryKey: queryKeys.projects.agents(projectId),
+    queryFn: () => projectsApi.listAgentsAccess(projectId),
+    enabled: !!projectId,
+  });
+
+  const { data: companyAgents = [] } = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+    enabled: !!companyId,
+  });
+
+  const availableCompanyMembers = useMemo(() => {
+    const existingPrincipalIds = new Set(members.map((m) => m.principalId));
+    return companyMembers.filter(
+      (cm: any) => cm.principalType === "user" && !existingPrincipalIds.has(cm.principalId),
+    );
+  }, [companyMembers, members]);
+
+  const availableAgents = useMemo(() => {
+    const existingAgentIds = new Set(projectAgents.map((pa) => pa.agentId));
+    return companyAgents.filter((a) => !existingAgentIds.has(a.id));
+  }, [companyAgents, projectAgents]);
+
+  const addMemberMutation = useMutation({
+    mutationFn: (data: { principalType: string; principalId: string; role: string }) =>
+      projectsApi.addMember(projectId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.members(projectId) });
+      setAddMemberPrincipalId("");
+      setAddMemberRole("viewer");
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to add member",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const permissionsMutation = useMutation({
+    mutationFn: ({ memberId, grants }: { memberId: string; grants: Array<{ permissionKey: string }> }) =>
+      projectsApi.updateMemberPermissions(projectId, memberId, grants),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.members(projectId) });
+      setExpandedMemberId(null);
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update permissions",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const applyPresetMutation = useMutation({
+    mutationFn: ({ memberId, presetId }: { memberId: string; presetId: string }) =>
+      projectsApi.applyMemberRolePreset(projectId, memberId, presetId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.members(projectId) });
+      setExpandedMemberId(null);
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to apply role preset",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const removeMemberMutation = useMutation({
+    mutationFn: (memberId: string) => projectsApi.removeMember(projectId, memberId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.members(projectId) });
+      setExpandedMemberId(null);
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to remove member",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const addAgentMutation = useMutation({
+    mutationFn: (agentId: string) => projectsApi.addAgentAccess(projectId, agentId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.agents(projectId) });
+      setAddAgentId("");
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to add agent to project",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const removeAgentMutation = useMutation({
+    mutationFn: (agentId: string) => projectsApi.removeAgentAccess(projectId, agentId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.agents(projectId) });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to remove agent from project",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  function startEditPermissions(member: { id: string; grants: Array<{ permissionKey: string }> }) {
+    if (expandedMemberId === member.id) {
+      setExpandedMemberId(null);
+      return;
+    }
+    const initial: Record<string, boolean> = {};
+    for (const key of PROJECT_PERMISSION_KEYS) {
+      initial[key] = (member.grants ?? []).some((g) => g.permissionKey === key);
+    }
+    setEditingGrants(initial);
+    setExpandedMemberId(member.id);
+  }
+
+  function handleSavePermissions(memberId: string) {
+    const grants: Array<{ permissionKey: string }> = [];
+    for (const key of PROJECT_PERMISSION_KEYS) {
+      if (editingGrants[key]) {
+        grants.push({ permissionKey: key });
+      }
+    }
+    permissionsMutation.mutate({ memberId, grants });
+  }
+
+  function handleAddMember() {
+    if (!addMemberPrincipalId) return;
+    const selected = companyMembers.find((cm: any) => cm.principalId === addMemberPrincipalId);
+    if (!selected) return;
+    addMemberMutation.mutate({
+      principalType: selected.principalType,
+      principalId: selected.principalId,
+      role: addMemberRole,
+    });
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Add Member */}
+      <div className="space-y-3">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Add Member
+        </div>
+        <div className="rounded-md border border-border px-4 py-4 space-y-3">
+          <div className="flex items-center gap-1.5">
+            <Users className="h-4 w-4 text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">
+              Add a company member to this project.
+            </span>
+          </div>
+          <div className="flex items-end gap-2 flex-wrap">
+            <div className="flex-1 min-w-[200px]">
+              <label className="text-xs text-muted-foreground mb-1 block">Member</label>
+              <select
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none"
+                value={addMemberPrincipalId}
+                onChange={(e) => setAddMemberPrincipalId(e.target.value)}
+              >
+                <option value="">Select a member...</option>
+                {availableCompanyMembers.map((cm: any) => {
+                  const label = cm.user?.name || cm.user?.email || cm.principalId;
+                  return (
+                    <option key={cm.principalId} value={cm.principalId}>
+                      {label} ({cm.principalType})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+            <div className="w-[140px]">
+              <label className="text-xs text-muted-foreground mb-1 block">Role</label>
+              <select
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none"
+                value={addMemberRole}
+                onChange={(e) => setAddMemberRole(e.target.value)}
+              >
+                {PROJECT_ROLE_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Button
+              size="sm"
+              onClick={handleAddMember}
+              disabled={!addMemberPrincipalId || addMemberMutation.isPending}
+            >
+              <Plus className="h-3.5 w-3.5 mr-1" />
+              {addMemberMutation.isPending ? "Adding..." : "Add"}
+            </Button>
+          </div>
+          {addMemberMutation.isError && (
+            <p className="text-xs text-destructive">
+              {addMemberMutation.error instanceof Error
+                ? addMemberMutation.error.message
+                : "Failed to add member"}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Project Members List */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            Project Members
+          </span>
+          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {members.length}
+          </span>
+        </div>
+        <div className="rounded-md border border-border px-4 py-4">
+          {membersLoading ? (
+            <p className="text-xs text-muted-foreground">Loading members...</p>
+          ) : members.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No members in this project yet.</p>
+          ) : (
+            <div className="space-y-1">
+              {members.map((member) => (
+                <div key={member.id}>
+                  <div
+                    className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2 cursor-pointer hover:bg-accent/50 transition-colors"
+                    onClick={() => startEditPermissions(member)}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-sm font-medium truncate">
+                        {member.displayName || member.email || member.principalId}
+                      </span>
+                      {member.email && member.displayName && (
+                        <span className="shrink-0 text-xs text-muted-foreground truncate max-w-[200px]">
+                          {member.email}
+                        </span>
+                      )}
+                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        {member.principalType}
+                      </span>
+                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        {member.role}
+                      </span>
+                      {(member.grants?.length ?? 0) > 0 && (
+                        <span className="shrink-0 rounded bg-indigo-500/10 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600">
+                          {member.grants.length} permissions
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Shield className="h-3.5 w-3.5 text-muted-foreground" />
+                      {expandedMemberId === member.id ? (
+                        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                      )}
+                    </div>
+                  </div>
+
+                  {expandedMemberId === member.id && (
+                    <div className="mt-1 space-y-2 rounded-md border border-border bg-muted/30 px-3 py-3">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-medium text-muted-foreground">
+                          Permissions
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {PROJECT_ROLE_PRESETS.map((preset) => (
+                            <button
+                              key={preset.id}
+                              onClick={() => {
+                                applyPresetMutation.mutate({ memberId: member.id, presetId: preset.id });
+                              }}
+                              className="rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                              title={preset.description}
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        {PROJECT_PERMISSION_KEYS.map((key) => (
+                          <ToggleField
+                            key={key}
+                            label={PROJECT_PERMISSION_LABELS[key] ?? key}
+                            hint={PROJECT_PERMISSION_DESCRIPTIONS[key]}
+                            checked={!!editingGrants[key]}
+                            onChange={(v) =>
+                              setEditingGrants((prev) => ({
+                                ...prev,
+                                [key]: v,
+                              }))
+                            }
+                          />
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-2 pt-1">
+                        <Button
+                          size="sm"
+                          onClick={() => handleSavePermissions(member.id)}
+                          disabled={permissionsMutation.isPending}
+                        >
+                          {permissionsMutation.isPending ? "Saving..." : "Save permissions"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setExpandedMemberId(null)}
+                        >
+                          Cancel
+                        </Button>
+                        <div className="ml-auto">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                            onClick={() => {
+                              if (window.confirm(`Remove ${member.displayName || member.email || "this member"} from the project?`)) {
+                                removeMemberMutation.mutate(member.id);
+                              }
+                            }}
+                            disabled={removeMemberMutation.isPending}
+                          >
+                            <Trash2 className="h-3.5 w-3.5 mr-1" />
+                            {removeMemberMutation.isPending ? "Removing..." : "Remove"}
+                          </Button>
+                        </div>
+                      </div>
+                      {permissionsMutation.isError && (
+                        <span className="text-xs text-destructive">
+                          {permissionsMutation.error instanceof Error
+                            ? permissionsMutation.error.message
+                            : "Failed to save permissions"}
+                        </span>
+                      )}
+                      {applyPresetMutation.isError && (
+                        <span className="text-xs text-destructive">
+                          {applyPresetMutation.error instanceof Error
+                            ? applyPresetMutation.error.message
+                            : "Failed to apply role preset"}
+                        </span>
+                      )}
+                      {removeMemberMutation.isError && (
+                        <span className="text-xs text-destructive">
+                          {removeMemberMutation.error instanceof Error
+                            ? removeMemberMutation.error.message
+                            : "Failed to remove member"}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Project Agents */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            Project Agents
+          </span>
+          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {projectAgents.length}
+          </span>
+        </div>
+        <div className="rounded-md border border-border px-4 py-4 space-y-3">
+          <div className="flex items-center gap-1.5">
+            <Bot className="h-4 w-4 text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">
+              Agents assigned to this project can be used to work on issues.
+            </span>
+          </div>
+
+          {projectAgents.length > 0 && (
+            <div className="space-y-1">
+              {projectAgents.map((pa) => (
+                <div
+                  key={pa.id}
+                  className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Bot className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <span className="text-sm font-medium truncate">
+                      {pa.agent.name}
+                    </span>
+                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      {pa.agent.role}
+                    </span>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="shrink-0 text-destructive hover:text-destructive hover:bg-destructive/10 h-7 text-xs px-2"
+                    onClick={() => {
+                      if (window.confirm(`Remove agent "${pa.agent.name}" from the project?`)) {
+                        removeAgentMutation.mutate(pa.agentId);
+                      }
+                    }}
+                    disabled={removeAgentMutation.isPending}
+                  >
+                    <Trash2 className="h-3 w-3 mr-1" />
+                    Remove
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-end gap-2 flex-wrap border-t border-border pt-3">
+            <div className="flex-1 min-w-[200px]">
+              <label className="text-xs text-muted-foreground mb-1 block">Add agent</label>
+              <select
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none"
+                value={addAgentId}
+                onChange={(e) => setAddAgentId(e.target.value)}
+              >
+                <option value="">Select an agent...</option>
+                {availableAgents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name} ({agent.role})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => {
+                if (addAgentId) addAgentMutation.mutate(addAgentId);
+              }}
+              disabled={!addAgentId || addAgentMutation.isPending}
+            >
+              <Plus className="h-3.5 w-3.5 mr-1" />
+              {addAgentMutation.isPending ? "Adding..." : "Add agent"}
+            </Button>
+          </div>
+          {addAgentMutation.isError && (
+            <p className="text-xs text-destructive">
+              {addAgentMutation.error instanceof Error
+                ? addAgentMutation.error.message
+                : "Failed to add agent"}
+            </p>
+          )}
+          {removeAgentMutation.isError && (
+            <p className="text-xs text-destructive">
+              {removeAgentMutation.error instanceof Error
+                ? removeAgentMutation.error.message
+                : "Failed to remove agent"}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ── Overview tab content ── */
@@ -505,6 +1111,10 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/workspaces`, { replace: true });
       return;
     }
+    if (activeTab === "members") {
+      navigate(`/projects/${canonicalProjectRef}/members`, { replace: true });
+      return;
+    }
     if (activeTab === "list") {
       if (filter) {
         navigate(`/projects/${canonicalProjectRef}/issues/${filter}`, { replace: true });
@@ -634,6 +1244,9 @@ export function ProjectDetail() {
     if (cachedTab === "budget") {
       return <Navigate to={`/projects/${canonicalProjectRef}/budget`} replace />;
     }
+    if (cachedTab === "members") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/members`} replace />;
+    }
     if (cachedTab === "workspaces" && workspaceTabDecisionLoaded && showWorkspacesTab) {
       return <Navigate to={`/projects/${canonicalProjectRef}/workspaces`} replace />;
     }
@@ -667,6 +1280,8 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/budget`);
     } else if (tab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`);
+    } else if (tab === "members") {
+      navigate(`/projects/${canonicalProjectRef}/members`);
     } else {
       navigate(`/projects/${canonicalProjectRef}/issues`);
     }
@@ -734,6 +1349,7 @@ export function ProjectDetail() {
             { value: "list", label: "Issues" },
             { value: "overview", label: "Overview" },
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
+            { value: "members", label: "Members" },
             { value: "configuration", label: "Configuration" },
             { value: "budget", label: "Budget" },
             ...pluginTabItems.map((item) => ({
@@ -748,14 +1364,22 @@ export function ProjectDetail() {
       </Tabs>
 
       {activeTab === "overview" && (
-        <OverviewContent
-          project={project}
-          onUpdate={(data) => updateProject.mutate(data)}
-          imageUploadHandler={async (file) => {
-            const asset = await uploadImage.mutateAsync(file);
-            return asset.contentPath;
-          }}
-        />
+        <>
+          <OverviewContent
+            project={project}
+            onUpdate={(data) => updateProject.mutate(data)}
+            imageUploadHandler={async (file) => {
+              const asset = await uploadImage.mutateAsync(file);
+              return asset.contentPath;
+            }}
+          />
+          {project.id && (
+            <MembersPanel
+              projectId={project.id}
+              onGoToMembers={() => handleTabChange("members")}
+            />
+          )}
+        </>
       )}
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
@@ -802,6 +1426,10 @@ export function ProjectDetail() {
           />
         </div>
       ) : null}
+
+      {activeTab === "members" && project?.id && resolvedCompanyId && (
+        <ProjectMembersSection projectId={project.id} companyId={resolvedCompanyId} />
+      )}
 
       {activePluginTab && (
         <PluginSlotMount

@@ -1,3 +1,5 @@
+export { organizations } from "./organizations.js";
+export { orgMemberships } from "./org_memberships.js";
 export { companies } from "./companies.js";
 export { companyLogos } from "./company_logos.js";
 export { authUsers, authSessions, authAccounts, authVerifications, authTwoFactors } from "./auth.js";
@@ -20,6 +22,9 @@ export { agentRuntimeState } from "./agent_runtime_state.js";
 export { agentTaskSessions } from "./agent_task_sessions.js";
 export { agentWakeupRequests } from "./agent_wakeup_requests.js";
 export { projects } from "./projects.js";
+export { projectMembers } from "./project_members.js";
+export { projectAgents } from "./project_agents.js";
+export { projectPermissionGrants } from "./project_permission_grants.js";
 export { projectWorkspaces } from "./project_workspaces.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
 export { workspaceOperations } from "./workspace_operations.js";

@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from "express";
+import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   createProjectSchema,
@@ -9,12 +10,15 @@ import {
   updateProjectSchema,
   updateProjectWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
+  PROJECT_ROLE_PRESETS,
+  PROJECT_PERMISSION_KEYS,
+  PROJECT_MEMBER_ROLES,
 } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
-import { conflict } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { projectService, logActivity, secretService, workspaceOperationService, accessService } from "../services/index.js";
+import { conflict, notFound } from "../errors.js";
+import { assertCompanyAccess, getActorInfo, requireProjectPermission, requireProjectAccess } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -30,9 +34,33 @@ import {
 import { assertCanManageProjectWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 
+// Inline zod schemas for project RBAC (kept local to avoid introducing new shared exports).
+const addProjectMemberSchema = z.object({
+  principalType: z.enum(["user", "agent"]),
+  principalId: z.string().min(1),
+  role: z.enum(PROJECT_MEMBER_ROLES).default("viewer"),
+});
+
+const updateProjectMemberPermissionsSchema = z.object({
+  grants: z.array(
+    z.object({
+      permissionKey: z.enum(PROJECT_PERMISSION_KEYS),
+    }),
+  ),
+});
+
+const addProjectAgentSchema = z.object({
+  agentId: z.string().uuid(),
+});
+
+const applyProjectRolePresetSchema = z.object({
+  presetId: z.enum(PROJECT_MEMBER_ROLES),
+});
+
 export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
+  const access = accessService(db);
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
@@ -621,6 +649,130 @@ export function projectRoutes(db: Db) {
     });
 
     res.json(project);
+  });
+
+  // --- Project Members ---
+
+  // List project members
+  router.get("/projects/:id/members", async (req, res) => {
+    const projectId = req.params.id as string;
+    const project = await svc.getById(projectId);
+    if (!project) throw notFound("Project not found");
+    await requireProjectAccess(req, access, project.companyId, projectId);
+    const members = await access.listProjectMembers(projectId);
+    res.json(members);
+  });
+
+  // Add project member
+  router.post("/projects/:id/members", validate(addProjectMemberSchema), async (req, res) => {
+    const projectId = req.params.id as string;
+    const project = await svc.getById(projectId);
+    if (!project) throw notFound("Project not found");
+    await requireProjectPermission(req, access, project.companyId, projectId, "project:members:manage");
+    const member = await access.addProjectMember(
+      projectId,
+      project.companyId,
+      req.body.principalType,
+      req.body.principalId,
+      req.body.role,
+      req.actor?.userId ?? null,
+    );
+    res.status(201).json(member);
+  });
+
+  // Update project member permissions (fine-tune)
+  router.patch(
+    "/projects/:id/members/:memberId/permissions",
+    validate(updateProjectMemberPermissionsSchema),
+    async (req, res) => {
+      const projectId = req.params.id as string;
+      const memberId = req.params.memberId as string;
+      const project = await svc.getById(projectId);
+      if (!project) throw notFound("Project not found");
+      await requireProjectPermission(req, access, project.companyId, projectId, "project:members:manage");
+      const updated = await access.setProjectMemberPermissions(
+        projectId,
+        memberId,
+        req.body.grants,
+        req.actor?.userId ?? null,
+      );
+      if (!updated) throw notFound("Member not found");
+      res.json(updated);
+    },
+  );
+
+  // Apply role preset to project member
+  router.post(
+    "/projects/:id/members/:memberId/role-preset",
+    validate(applyProjectRolePresetSchema),
+    async (req, res) => {
+      const projectId = req.params.id as string;
+      const memberId = req.params.memberId as string;
+      const project = await svc.getById(projectId);
+      if (!project) throw notFound("Project not found");
+      await requireProjectPermission(req, access, project.companyId, projectId, "project:members:manage");
+      const preset = PROJECT_ROLE_PRESETS.find((p) => p.id === req.body.presetId);
+      if (!preset) throw notFound("Preset not found");
+      const updated = await access.setProjectMemberPermissions(
+        projectId,
+        memberId,
+        preset.permissions.map((key) => ({ permissionKey: key })),
+        req.actor?.userId ?? null,
+      );
+      if (!updated) throw notFound("Member not found");
+      res.json({ ...updated, appliedPreset: req.body.presetId });
+    },
+  );
+
+  // Remove project member
+  router.delete("/projects/:id/members/:memberId", async (req, res) => {
+    const projectId = req.params.id as string;
+    const memberId = req.params.memberId as string;
+    const project = await svc.getById(projectId);
+    if (!project) throw notFound("Project not found");
+    await requireProjectPermission(req, access, project.companyId, projectId, "project:members:manage");
+    const removed = await access.removeProjectMember(projectId, memberId);
+    if (!removed) throw notFound("Member not found");
+    res.json(removed);
+  });
+
+  // --- Project Agents ---
+
+  // List project agents
+  router.get("/projects/:id/agents-access", async (req, res) => {
+    const projectId = req.params.id as string;
+    const project = await svc.getById(projectId);
+    if (!project) throw notFound("Project not found");
+    await requireProjectAccess(req, access, project.companyId, projectId);
+    const projectAgents = await access.listProjectAgents(projectId);
+    res.json(projectAgents);
+  });
+
+  // Add agent to project
+  router.post("/projects/:id/agents-access", validate(addProjectAgentSchema), async (req, res) => {
+    const projectId = req.params.id as string;
+    const project = await svc.getById(projectId);
+    if (!project) throw notFound("Project not found");
+    await requireProjectPermission(req, access, project.companyId, projectId, "project:members:manage");
+    const row = await access.addProjectAgent(projectId, project.companyId, req.body.agentId, req.actor?.userId ?? null);
+    res.status(201).json(row);
+  });
+
+  // Remove agent from project
+  router.delete("/projects/:id/agents-access/:agentId", async (req, res) => {
+    const projectId = req.params.id as string;
+    const agentId = req.params.agentId as string;
+    const project = await svc.getById(projectId);
+    if (!project) throw notFound("Project not found");
+    await requireProjectPermission(req, access, project.companyId, projectId, "project:members:manage");
+    const removed = await access.removeProjectAgent(projectId, agentId);
+    if (!removed) throw notFound("Agent not assigned to project");
+    res.json(removed);
+  });
+
+  // Project role presets list
+  router.get("/project-role-presets", (_req, res) => {
+    res.json(PROJECT_ROLE_PRESETS);
   });
 
   return router;

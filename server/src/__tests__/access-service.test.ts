@@ -2,10 +2,15 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  agents,
   companies,
   companyMemberships,
   createDb,
   principalPermissionGrants,
+  projectAgents,
+  projectMembers,
+  projectPermissionGrants,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -51,6 +56,11 @@ describeEmbeddedPostgres("access service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(projectAgents);
+    await db.delete(projectMembers);
+    await db.delete(projectPermissionGrants);
+    await db.delete(agents);
+    await db.delete(projects);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(companies);
@@ -95,5 +105,95 @@ describeEmbeddedPostgres("access service", () => {
       .where(eq(companyMemberships.id, owner.id))
       .then((rows) => rows[0]!);
     expect(unchanged.status).toBe("active");
+  });
+
+  describe("canAgentAccessProject (owner ∩ invites rule)", () => {
+    async function seedOwnerWithTwoProjectsAndAgent() {
+      const { company, owner } = await createCompanyWithOwner(db);
+      const ownerUserId = owner.principalId;
+
+      const [projectA, projectB] = await db
+        .insert(projects)
+        .values([
+          { companyId: company.id, name: `Project A ${randomUUID()}` },
+          { companyId: company.id, name: `Project B ${randomUUID()}` },
+        ])
+        .returning();
+
+      const agent = await db
+        .insert(agents)
+        .values({
+          companyId: company.id,
+          ownerUserId,
+          name: `Agent ${randomUUID()}`,
+        })
+        .returning()
+        .then((rows) => rows[0]!);
+
+      return { company, ownerUserId, projectA: projectA!, projectB: projectB!, agent };
+    }
+
+    it("grants access when agent is invited to a project its owner can access", async () => {
+      const { company, projectA, agent } = await seedOwnerWithTwoProjectsAndAgent();
+      const access = accessService(db);
+
+      await db.insert(projectAgents).values({
+        projectId: projectA.id,
+        companyId: company.id,
+        agentId: agent.id,
+      });
+
+      const allowed = await access.canAgentAccessProject(agent.id, projectA.id);
+      expect(allowed).toBe(true);
+    });
+
+    it("denies access to a sibling project in the same company when the agent is not invited", async () => {
+      const { company, projectA, projectB, agent } = await seedOwnerWithTwoProjectsAndAgent();
+      const access = accessService(db);
+
+      await db.insert(projectAgents).values({
+        projectId: projectA.id,
+        companyId: company.id,
+        agentId: agent.id,
+      });
+
+      const leaked = await access.canAgentAccessProject(agent.id, projectB.id);
+      expect(leaked).toBe(false);
+    });
+
+    it("denies access to a project in a company the agent's owner cannot reach", async () => {
+      const { agent } = await seedOwnerWithTwoProjectsAndAgent();
+
+      const foreign = await createCompanyWithOwner(db);
+      const [foreignProject] = await db
+        .insert(projects)
+        .values({ companyId: foreign.company.id, name: `Foreign ${randomUUID()}` })
+        .returning();
+
+      await db.insert(projectAgents).values({
+        projectId: foreignProject!.id,
+        companyId: foreign.company.id,
+        agentId: agent.id,
+      });
+
+      const access = accessService(db);
+      const leaked = await access.canAgentAccessProject(agent.id, foreignProject!.id);
+      expect(leaked).toBe(false);
+    });
+
+    it("denies access when the agent has no owner set", async () => {
+      const { company, projectA, agent } = await seedOwnerWithTwoProjectsAndAgent();
+      await db.update(agents).set({ ownerUserId: null }).where(eq(agents.id, agent.id));
+
+      await db.insert(projectAgents).values({
+        projectId: projectA.id,
+        companyId: company.id,
+        agentId: agent.id,
+      });
+
+      const access = accessService(db);
+      const allowed = await access.canAgentAccessProject(agent.id, projectA.id);
+      expect(allowed).toBe(false);
+    });
   });
 });
