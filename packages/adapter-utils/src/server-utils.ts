@@ -322,6 +322,9 @@ type PaperclipWakePayload = {
   fallbackFetchNeeded: boolean;
 };
 
+// Match markdown image links while allowing balanced parentheses in URLs.
+const MARKDOWN_IMAGE_LINK_RE = /!\[[^\]]*?\]\(((?:[^()]+|\([^()]*\))*)\)/g;
+
 function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null {
   const issue = parseObject(value);
   const id = asString(issue.id, "").trim() || null;
@@ -343,7 +346,7 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
   const comment = parseObject(value);
   const author = parseObject(comment.author);
   const body = asString(comment.body, "");
-  const sanitizedBody = body.replace(/!\[[^\]]*?\]\(([^)]+)\)/g, "[image attachment omitted: $1]");
+  const sanitizedBody = body.replace(MARKDOWN_IMAGE_LINK_RE, "[image attachment omitted: $1]");
   if (!sanitizedBody.trim()) return null;
   return {
     id: asString(comment.id, "").trim() || null,
