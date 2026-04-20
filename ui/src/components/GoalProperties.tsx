@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import type { Goal } from "@paperclipai/shared";
+import type { Goal, Agent } from "@paperclipai/shared";
 import { GOAL_STATUSES, GOAL_LEVELS } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { goalsApi } from "../api/goals";
@@ -12,6 +12,9 @@ import { formatDate, cn, agentUrl } from "../lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { Identity } from "./Identity";
+import { AgentIcon } from "./AgentIconPicker";
+import { User, ArrowUpRight } from "lucide-react";
 
 interface GoalPropertiesProps {
   goal: Goal;
@@ -70,8 +73,14 @@ function PickerButton({
   );
 }
 
+function isActiveAgent(agent: Agent, term: string): boolean {
+  return agent.status !== "terminated" && (!term || agent.name.toLowerCase().includes(term));
+}
+
 export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
   const { selectedCompanyId } = useCompany();
+  const [ownerOpen, setOwnerOpen] = useState(false);
+  const [ownerSearch, setOwnerSearch] = useState("");
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -89,9 +98,27 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
     ? agents?.find((a) => a.id === goal.ownerAgentId)
     : null;
 
+  const searchTerm: string = ownerSearch.trim().toLowerCase();
+  const filteredAgents: Agent[] = (agents ?? []).filter((a) => isActiveAgent(a, searchTerm));
+
   const parentGoal = goal.parentId
     ? allGoals?.find((g) => g.id === goal.parentId)
     : null;
+
+  function handleOwnerOpenChange(open: boolean): void {
+    setOwnerOpen(open);
+    if (!open) setOwnerSearch("");
+  }
+
+  function handleClearOwner(): void {
+    onUpdate?.({ ownerAgentId: null });
+    setOwnerOpen(false);
+  }
+
+  function handleSelectOwner(agentId: string): void {
+    onUpdate?.({ ownerAgentId: agentId });
+    setOwnerOpen(false);
+  }
 
   return (
     <div className="space-y-4">
@@ -125,15 +152,74 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
         </PropertyRow>
 
         <PropertyRow label="Owner">
-          {ownerAgent ? (
-            <Link
-              to={agentUrl(ownerAgent)}
-              className="text-sm hover:underline"
-            >
-              {ownerAgent.name}
+          {onUpdate ? (
+            <>
+              <Popover open={ownerOpen} onOpenChange={handleOwnerOpenChange}>
+                <PopoverTrigger asChild>
+                  <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
+                    {ownerAgent ? (
+                      <Identity name={ownerAgent.name} size="sm" />
+                    ) : (
+                      <>
+                        <User className="h-3.5 w-3.5 text-muted-foreground" />
+                        <span className="text-sm text-muted-foreground">No owner</span>
+                      </>
+                    )}
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-52 p-1" align="end" collisionPadding={16}>
+                  <input
+                    className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+                    placeholder="Search agents..."
+                    value={ownerSearch}
+                    onChange={(e) => setOwnerSearch(e.target.value)}
+                    autoFocus
+                  />
+                  <div className="max-h-48 overflow-y-auto overscroll-contain">
+                    <button
+                      className={cn(
+                        "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                        !goal.ownerAgentId && "bg-accent"
+                      )}
+                      onClick={handleClearOwner}
+                    >
+                      No owner
+                    </button>
+                    {filteredAgents.map((a) => (
+                      <button
+                        key={a.id}
+                        className={cn(
+                          "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                          a.id === goal.ownerAgentId && "bg-accent"
+                        )}
+                        onClick={() => handleSelectOwner(a.id)}
+                      >
+                        <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+                        {a.name}
+                      </button>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
+              {ownerAgent && (
+                <Link
+                  to={agentUrl(ownerAgent)}
+                  className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <ArrowUpRight className="h-3 w-3" />
+                </Link>
+              )}
+            </>
+          ) : ownerAgent ? (
+            <Link to={agentUrl(ownerAgent)} className="hover:underline">
+              <Identity name={ownerAgent.name} size="sm" />
             </Link>
           ) : (
-            <span className="text-sm text-muted-foreground">None</span>
+            <>
+              <User className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-sm text-muted-foreground">No owner</span>
+            </>
           )}
         </PropertyRow>
 
