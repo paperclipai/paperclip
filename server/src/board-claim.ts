@@ -68,7 +68,7 @@ export async function initializeBoardClaimChallenge(
 export function getBoardClaimWarningUrl(host: string, port: number): string | null {
   if (!activeChallenge) return null;
   if (activeChallenge.claimedAt || activeChallenge.expiresAt.getTime() <= Date.now()) return null;
-  const visibleHost = host === "0.0.0.0" ? "localhost" : host;
+  const visibleHost = host === "0.0.0.0" || host === "::" ? "localhost" : host;
   return `http://${visibleHost}:${port}/board-claim/${activeChallenge.token}?code=${activeChallenge.code}`;
 }
 
