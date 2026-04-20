@@ -866,6 +866,7 @@ describe("worktree helpers", () => {
       execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["config", "user.name", "Test User"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "commit.gpgsign", "false"], { cwd: repoRoot, stdio: "ignore" });
       fs.writeFileSync(path.join(repoRoot, "README.md"), "# temp\n", "utf8");
       execFileSync("git", ["add", "README.md"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: repoRoot, stdio: "ignore" });
@@ -899,7 +900,9 @@ describe("worktree helpers", () => {
       expect(fs.statSync(targetHookPath).mode & 0o111).not.toBe(0);
       expect(fs.readFileSync(targetTokensPath, "utf8")).toBe("secret-token\n");
     } finally {
-      execFileSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: repoRoot, stdio: "ignore" });
+      if (fs.existsSync(repoRoot) && fs.existsSync(worktreePath)) {
+        execFileSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: repoRoot, stdio: "ignore" });
+      }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
@@ -918,6 +921,7 @@ describe("worktree helpers", () => {
       execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["config", "user.name", "Test User"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "commit.gpgsign", "false"], { cwd: repoRoot, stdio: "ignore" });
       fs.writeFileSync(path.join(repoRoot, "README.md"), "# temp\n", "utf8");
       execFileSync("git", ["add", "README.md"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: repoRoot, stdio: "ignore" });

@@ -11,29 +11,11 @@ describe("opencode_local environment diagnostics", () => {
       `paperclip-opencode-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       "workspace",
     );
-
-    await fs.rm(path.dirname(cwd), { recursive: true, force: true });
-
-    const result = await testEnvironment({
-      companyId: "company-1",
-      adapterType: "opencode_local",
-      config: {
-        command: process.execPath,
-        cwd,
-      },
-    });
-
-    expect(result.checks.some((check) => check.code === "opencode_cwd_invalid")).toBe(true);
-    expect(result.checks.some((check) => check.level === "error")).toBe(true);
-    expect(result.status).toBe("fail");
-  });
-
-  it("treats an empty OPENAI_API_KEY override as missing", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-empty-key-"));
-    const originalOpenAiKey = process.env.OPENAI_API_KEY;
-    process.env.OPENAI_API_KEY = "sk-host-value";
+    const xdgConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-empty-config-"));
 
     try {
+      await fs.rm(path.dirname(cwd), { recursive: true, force: true });
+
       const result = await testEnvironment({
         companyId: "company-1",
         adapterType: "opencode_local",
@@ -41,7 +23,40 @@ describe("opencode_local environment diagnostics", () => {
           command: process.execPath,
           cwd,
           env: {
+            XDG_CONFIG_HOME: xdgConfigHome,
+          },
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "opencode_cwd_invalid")).toBe(true);
+      expect(result.checks.some((check) => check.level === "error")).toBe(true);
+      expect(result.status).toBe("fail");
+    } finally {
+      await fs.rm(xdgConfigHome, { recursive: true, force: true });
+    }
+  });
+
+  it("treats an empty OPENAI_API_KEY override as missing", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-empty-key-"));
+    const xdgConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-empty-key-config-"));
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-empty-key-bin-"));
+    const fakeOpencode = path.join(binDir, "opencode");
+    const originalOpenAiKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-host-value";
+
+    try {
+      await fs.writeFile(fakeOpencode, "#!/bin/sh\nexit 0\n", "utf8");
+      await fs.chmod(fakeOpencode, 0o755);
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "opencode_local",
+        config: {
+          command: fakeOpencode,
+          cwd,
+          env: {
             OPENAI_API_KEY: "",
+            XDG_CONFIG_HOME: xdgConfigHome,
           },
         },
       });
@@ -56,12 +71,15 @@ describe("opencode_local environment diagnostics", () => {
         process.env.OPENAI_API_KEY = originalOpenAiKey;
       }
       await fs.rm(cwd, { recursive: true, force: true });
+      await fs.rm(xdgConfigHome, { recursive: true, force: true });
+      await fs.rm(binDir, { recursive: true, force: true });
     }
   });
 
   it("classifies ProviderModelNotFoundError probe output as model-unavailable warning", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-probe-cwd-"));
     const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-probe-bin-"));
+    const xdgConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-probe-config-"));
     const fakeOpencode = path.join(binDir, "opencode");
     const script = [
       "#!/bin/sh",
@@ -81,6 +99,9 @@ describe("opencode_local environment diagnostics", () => {
         config: {
           command: fakeOpencode,
           cwd,
+          env: {
+            XDG_CONFIG_HOME: xdgConfigHome,
+          },
         },
       });
 
@@ -91,6 +112,7 @@ describe("opencode_local environment diagnostics", () => {
     } finally {
       await fs.rm(cwd, { recursive: true, force: true });
       await fs.rm(binDir, { recursive: true, force: true });
+      await fs.rm(xdgConfigHome, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 });

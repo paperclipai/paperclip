@@ -174,10 +174,96 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
-  it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
+  it("cancels orphaned routine issues before creating a fresh execution issue", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
-    const previousRunId = randomUUID();
-    const previousIssue = await issueSvc.create(companyId, {
+    const orphanedRunIds = [randomUUID(), randomUUID()];
+    const orphanedIssues = await Promise.all(orphanedRunIds.map((originRunId, index) => issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: index === 0 ? "todo" : "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId,
+    })));
+
+    await db.insert(routineRuns).values(orphanedIssues.map((issue, index) => ({
+      id: orphanedRunIds[index]!,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual" as const,
+      status: "issue_created" as const,
+      triggeredAt: new Date(`2026-03-20T12:0${index}:00.000Z`),
+      linkedIssueId: issue.id,
+      completedAt: new Date(`2026-03-20T12:0${index}:00.000Z`),
+    })));
+    await Promise.all(orphanedIssues.map((issue, index) => db
+      .update(issues)
+      .set({
+        executionRunId: orphanedRunIds[index]!,
+        executionLockedAt: new Date(`2026-03-20T12:0${index}:30.000Z`),
+      })
+      .where(eq(issues.id, issue.id))));
+
+    const detailBefore = await svc.getDetail(routine.id);
+    expect(detailBefore?.activeIssue).toBeNull();
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toBeTruthy();
+    expect(orphanedIssues.map((issue) => issue.id)).not.toContain(run.linkedIssueId);
+
+    const routineIssues = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        originRunId: issues.originRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+
+    expect(routineIssues).toHaveLength(3);
+    expect(
+      routineIssues
+        .filter((issue) => orphanedIssues.some((orphanedIssue) => orphanedIssue.id === issue.id))
+        .every(
+          (issue) =>
+            issue.status === "cancelled" &&
+            issue.executionRunId === null &&
+            issue.executionLockedAt === null,
+        ),
+    ).toBe(true);
+    expect(routineIssues.find((issue) => issue.id === run.linkedIssueId)?.status).toBe("todo");
+
+    const previousRuns = await db
+      .select({
+        id: routineRuns.id,
+        status: routineRuns.status,
+        failureReason: routineRuns.failureReason,
+      })
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id));
+
+    expect(
+      previousRuns
+        .filter((storedRun) => orphanedRunIds.includes(storedRun.id))
+        .every(
+          (storedRun) =>
+            storedRun.status === "failed" &&
+            storedRun.failureReason === "Execution issue lost its live heartbeat run",
+        ),
+    ).toBe(true);
+  });
+
+  it("does not overwrite completed routine runs when cleaning up reopened orphaned issues", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const completedRunId = randomUUID();
+    const reopenedIssue = await issueSvc.create(companyId, {
       projectId: routine.projectId,
       title: routine.title,
       description: routine.description,
@@ -186,39 +272,47 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       assigneeAgentId: routine.assigneeAgentId,
       originKind: "routine_execution",
       originId: routine.id,
-      originRunId: previousRunId,
+      originRunId: completedRunId,
     });
 
     await db.insert(routineRuns).values({
-      id: previousRunId,
+      id: completedRunId,
       companyId,
       routineId: routine.id,
       triggerId: null,
       source: "manual",
-      status: "issue_created",
+      status: "completed",
       triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
-      linkedIssueId: previousIssue.id,
-      completedAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: reopenedIssue.id,
+      completedAt: new Date("2026-03-20T12:05:00.000Z"),
     });
-
-    const detailBefore = await svc.getDetail(routine.id);
-    expect(detailBefore?.activeIssue).toBeNull();
+    await db
+      .update(issues)
+      .set({
+        executionRunId: completedRunId,
+        executionLockedAt: new Date("2026-03-20T12:05:00.000Z"),
+      })
+      .where(eq(issues.id, reopenedIssue.id));
 
     const run = await svc.runRoutine(routine.id, { source: "manual" });
     expect(run.status).toBe("issue_created");
-    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+    expect(run.linkedIssueId).not.toBe(reopenedIssue.id);
 
-    const routineIssues = await db
+    const storedCompletedRun = await db
       .select({
-        id: issues.id,
-        originRunId: issues.originRunId,
+        status: routineRuns.status,
+        failureReason: routineRuns.failureReason,
+        completedAt: routineRuns.completedAt,
       })
-      .from(issues)
-      .where(eq(issues.originId, routine.id));
+      .from(routineRuns)
+      .where(eq(routineRuns.id, completedRunId))
+      .then((rows) => rows[0] ?? null);
 
-    expect(routineIssues).toHaveLength(2);
-    expect(routineIssues.map((issue) => issue.id)).toContain(previousIssue.id);
-    expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+    expect(storedCompletedRun).toEqual({
+      status: "completed",
+      failureReason: null,
+      completedAt: new Date("2026-03-20T12:05:00.000Z"),
+    });
   });
 
   it("creates draft routines without a project or default assignee", async () => {

@@ -46,6 +46,7 @@ import { logActivity } from "./activity-log.js";
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const TERMINAL_ROUTINE_RUN_STATUSES = ["coalesced", "skipped", "completed", "failed"];
 const MAX_CATCH_UP_RUNS = 25;
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
@@ -640,6 +641,117 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  async function listOrphanedExecutionIssues(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+  ) {
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          sql`not exists (
+            select 1
+            from ${heartbeatRuns}
+            where ${heartbeatRuns.id} = ${issues.executionRunId}
+              and ${heartbeatRuns.status} in ('queued', 'running')
+          )`,
+          sql`not exists (
+            select 1
+            from ${heartbeatRuns}
+            where ${heartbeatRuns.companyId} = ${issues.companyId}
+              and ${heartbeatRuns.status} in ('queued', 'running')
+              and ${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${issues.id} as text)
+          )`,
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt));
+  }
+
+  async function failRoutineRunIfStillActive(
+    runId: string,
+    patch: Pick<typeof routineRuns.$inferInsert, "failureReason" | "completedAt">,
+    executor: Db = db,
+  ) {
+    return executor
+      .update(routineRuns)
+      .set({
+        status: "failed",
+        failureReason: patch.failureReason,
+        completedAt: patch.completedAt,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(routineRuns.id, runId),
+          sql`${routineRuns.status} not in (${sql.raw(TERMINAL_ROUTINE_RUN_STATUSES.map((status) => `'${status}'`).join(", "))})`,
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function cancelOrphanedExecutionIssues(
+    routine: typeof routines.$inferSelect,
+    cancelledAt: Date,
+    executor: Db = db,
+  ) {
+    if (routine.concurrencyPolicy === "always_enqueue") return [];
+    const orphanedIssues = await listOrphanedExecutionIssues(routine, executor);
+    const cancelledIssueIds: string[] = [];
+    for (const orphanedIssue of orphanedIssues) {
+      const cancelledIssue = await executor
+        .update(issues)
+        .set({
+          status: "cancelled",
+          cancelledAt,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionLockedAt: null,
+          updatedAt: cancelledAt,
+        })
+        .where(
+          and(
+            eq(issues.id, orphanedIssue.id),
+            eq(issues.companyId, routine.companyId),
+            eq(issues.originKind, "routine_execution"),
+            eq(issues.originId, routine.id),
+            inArray(issues.status, OPEN_ISSUE_STATUSES),
+            isNull(issues.hiddenAt),
+            sql`not exists (
+              select 1
+              from ${heartbeatRuns}
+              where ${heartbeatRuns.id} = ${issues.executionRunId}
+                and ${heartbeatRuns.status} in ('queued', 'running')
+            )`,
+            sql`not exists (
+              select 1
+              from ${heartbeatRuns}
+              where ${heartbeatRuns.companyId} = ${issues.companyId}
+                and ${heartbeatRuns.status} in ('queued', 'running')
+                and ${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${issues.id} as text)
+            )`,
+          ),
+        )
+        .returning({ id: issues.id, originRunId: issues.originRunId })
+        .then((rows) => rows[0] ?? null);
+      if (!cancelledIssue) continue;
+      if (cancelledIssue.originRunId) {
+        await failRoutineRunIfStillActive(cancelledIssue.originRunId, {
+          failureReason: "Execution issue lost its live heartbeat run",
+          completedAt: cancelledAt,
+        }, executor);
+      }
+      cancelledIssueIds.push(cancelledIssue.id);
+    }
+    return orphanedIssues.filter((issue) => cancelledIssueIds.includes(issue.id));
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -752,6 +864,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
+        await cancelOrphanedExecutionIssues(input.routine, triggeredAt, txDb);
         const activeIssue = await findLiveExecutionIssue(input.routine, txDb);
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
