@@ -3106,6 +3106,12 @@ async def main():
                     if current_spread > pos.peak_spread_pct:
                         pos.peak_spread_pct = current_spread
 
+                    # Update unrealized P&L from current market prices
+                    if pos.entry_price_short > 0 and pos.entry_price_long > 0:
+                        short_pnl = (pos.entry_price_short - q_short.ask) / pos.entry_price_short
+                        long_pnl = (q_long.bid - pos.entry_price_long) / pos.entry_price_long
+                        pos.net_pnl_usd = (short_pnl + long_pnl) * pos.size_usd - pos.entry_fees_usd
+
                     # Update baseline
                     pair_key = trader._pair_key(pos.symbol, pos.exchange_short,
                                                 pos.instrument_short, pos.exchange_long,
