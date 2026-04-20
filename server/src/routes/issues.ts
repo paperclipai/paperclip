@@ -97,6 +97,8 @@ type ExecutionStageWakeContext = {
   allowedActions: string[];
 };
 
+export const DEFAULT_BLOCK_ESCALATION_OPEN_STATUSES = "backlog,todo,in_progress,in_review,blocked";
+
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
   right: ParsedExecutionState["currentParticipant"] | null,
@@ -187,6 +189,37 @@ function diffExecutionParticipants(
     participants: nextParticipants,
     addedParticipants: nextParticipants.filter((participant) => !previousByKey.has(activityExecutionParticipantKey(participant))),
     removedParticipants: previousParticipants.filter((participant) => !nextByKey.has(activityExecutionParticipantKey(participant))),
+  };
+}
+
+function parseBooleanFlag(value: unknown) {
+  if (value === true || value === false) return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1") return true;
+    if (normalized === "false" || normalized === "0") return false;
+  }
+  return null;
+}
+
+export function parseIssueBlockEscalationConfig(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const enabled = parseBooleanFlag(record.enabled);
+  if (enabled !== true) return null;
+  const targetRole =
+    typeof record.targetRole === "string" && record.targetRole.trim().length > 0
+      ? record.targetRole.trim()
+      : null;
+  const openStatuses =
+    Array.isArray(record.openStatuses) &&
+    record.openStatuses.every((entry) => typeof entry === "string" && entry.trim().length > 0)
+      ? record.openStatuses.map((entry) => entry.trim()).join(",")
+      : DEFAULT_BLOCK_ESCALATION_OPEN_STATUSES;
+
+  return {
+    targetRole,
+    openStatuses,
   };
 }
 
@@ -339,6 +372,159 @@ export function issueRoutes(
       throw new HttpError(400, `Invalid ${field} query value`);
     }
     return parsed;
+  }
+
+  function buildAutoEscalationTitle(issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>, targetRole: string) {
+    const reference = issue.identifier?.trim() || issue.title.trim() || issue.id;
+    return `${targetRole.toUpperCase()} escalation: ${reference}`;
+  }
+
+  function buildAutoEscalationDescription(
+    issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+    actorAgent: { role: string; name: string; title?: string | null },
+    targetRole: string,
+    commentBody?: string,
+  ) {
+    const issueReference = issue.identifier?.trim() || issue.id;
+    const blockerNote = commentBody?.trim() || "No blocker comment was provided.";
+    return [
+      `${actorAgent.title ?? actorAgent.name} attempted to move parent issue ${issueReference} to blocked.`,
+      "",
+      `Parent issue: ${issueReference}`,
+      `Parent title: ${issue.title}`,
+      `Blocked by role: ${actorAgent.role}`,
+      `Escalation target role: ${targetRole}`,
+      `Status transition: ${issue.status} -> blocked`,
+      "",
+      "Blocker evidence:",
+      blockerNote,
+      "",
+      "Required outcome:",
+      "- Reproduce and explain the blocker",
+      `- Decide or implement the fix needed to unblock ${issueReference}`,
+      "- Leave explicit unblock guidance on the parent issue",
+    ].join("\n");
+  }
+
+  async function prepareRequiredRoleEscalationForBlockedIssue(
+    req: Request,
+    issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+    nextStatus: unknown,
+  ) {
+    if (nextStatus !== "blocked" || issue.status === "blocked") return null;
+    if (req.actor.type !== "agent" || !req.actor.agentId) return null;
+
+    const actorAgent = await agentsSvc.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== issue.companyId) return null;
+
+    const escalationConfig = parseIssueBlockEscalationConfig(actorAgent.adapterConfig?.issueBlockEscalation);
+    if (!escalationConfig) return null;
+    if (!escalationConfig.targetRole) {
+      throw new HttpError(
+        422,
+        "Cannot move issue to blocked until adapterConfig.issueBlockEscalation.targetRole is configured",
+      );
+    }
+
+    const targetAgent = await agentsSvc.getByRole(issue.companyId, escalationConfig.targetRole);
+    if (!targetAgent) {
+      throw new HttpError(
+        422,
+        `Cannot move issue to blocked until a ${escalationConfig.targetRole} escalation route exists for this company`,
+      );
+    }
+
+    return {
+      actorAgent,
+      targetAgent,
+      targetRole: escalationConfig.targetRole,
+      openStatuses: escalationConfig.openStatuses,
+    };
+  }
+
+  async function ensureRequiredRoleEscalationForBlockedIssue(
+    actor: ReturnType<typeof getActorInfo>,
+    issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+    escalationPlan: NonNullable<Awaited<ReturnType<typeof prepareRequiredRoleEscalationForBlockedIssue>>>,
+    commentBody?: string,
+  ) {
+    const { actorAgent, targetAgent, targetRole, openStatuses } = escalationPlan;
+
+    const existingEscalations = await svc.list(issue.companyId, {
+      parentId: issue.id,
+      assigneeAgentId: targetAgent.id,
+      status: openStatuses,
+      includeRoutineExecutions: true,
+    });
+    const existingEscalation =
+      existingEscalations.find((candidate) => candidate.originKind === "issue_escalation") ??
+      null;
+    if (existingEscalation) return existingEscalation;
+
+    const escalationIssue = await svc.create(issue.companyId, {
+      parentId: issue.id,
+      projectId: issue.projectId ?? null,
+      goalId: issue.goalId ?? null,
+      title: buildAutoEscalationTitle(issue, targetRole),
+      description: buildAutoEscalationDescription(issue, actorAgent, targetRole, commentBody),
+      status: "todo",
+      priority: issue.priority === "low" ? "medium" : issue.priority,
+      assigneeAgentId: targetAgent.id,
+      createdByAgentId: actorAgent.id,
+      originKind: "issue_escalation",
+      originId: issue.id,
+      originRunId: actor.runId ?? null,
+      requestDepth: (issue.requestDepth ?? 0) + 1,
+      inheritExecutionWorkspaceFromIssueId: issue.id,
+    });
+
+    await logActivity(db, {
+      companyId: escalationIssue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.created",
+      entityType: "issue",
+      entityId: escalationIssue.id,
+      details: {
+        title: escalationIssue.title,
+        identifier: escalationIssue.identifier,
+        parentIssueId: issue.id,
+        parentIssueIdentifier: issue.identifier,
+        source: "auto_role_blocker_escalation",
+      },
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.escalated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        escalationIssueId: escalationIssue.id,
+        escalationIssueIdentifier: escalationIssue.identifier,
+        escalationOwnerRole: targetRole,
+        source: "auto_role_blocker_escalation",
+      },
+    });
+
+    void queueIssueAssignmentWakeup({
+      heartbeat,
+      issue: escalationIssue,
+      reason: "issue_assigned",
+      mutation: "create",
+      contextSource: "issue.blocked_auto_escalation",
+      requestedByActorType: actor.actorType,
+      requestedByActorId: actor.actorId,
+    });
+
+    return escalationIssue;
   }
 
   async function runSingleFileUpload(req: Request, res: Response) {
@@ -1593,6 +1779,7 @@ export function issueRoutes(
       }
     }
 
+    const blockerEscalationPlan = await prepareRequiredRoleEscalationForBlockedIssue(req, existing, updateFields.status);
     let issue;
     try {
       if (transition.decision && decisionId) {
@@ -1658,6 +1845,10 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    const blockerEscalationIssue =
+      blockerEscalationPlan && issue.status === "blocked"
+        ? await ensureRequiredRoleEscalationForBlockedIssue(actor, issue, blockerEscalationPlan, commentBody)
+        : null;
     let issueResponse: typeof issue & { blockedBy?: unknown; blocks?: unknown } = issue;
     let updatedRelations: Awaited<ReturnType<typeof svc.getRelationSummaries>> | null = null;
     if (issue && Array.isArray(req.body.blockedByIssueIds)) {
@@ -1709,6 +1900,12 @@ export function issueRoutes(
         ...(commentBody ? { source: "comment" } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
+        ...(blockerEscalationIssue
+          ? {
+              blockerEscalationIssueId: blockerEscalationIssue.id,
+              blockerEscalationIssueIdentifier: blockerEscalationIssue.identifier,
+            }
+          : {}),
         _previous: hasFieldChanges ? previous : undefined,
       },
     });

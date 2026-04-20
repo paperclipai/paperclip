@@ -42,6 +42,12 @@ Session routing fields:
 - sessionKeyStrategy (string, optional): issue (default), fixed, or run
 - sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)
 
+Issue policy fields:
+- issueBlockEscalation (object, optional): explicit opt-in policy for auto-escalating blocked issues
+  - enabled (boolean, required to activate)
+  - targetRole (string, required when enabled): role that should receive the unblocker issue, for example cto
+  - openStatuses (string[], optional): statuses treated as reusable escalation issues; defaults to backlog,todo,in_progress,in_review,blocked
+
 Standard outbound payload additions:
 - paperclip (object): standardized Paperclip context added to every gateway agent request
 - paperclip.workspace (object, optional): resolved execution workspace for this run
