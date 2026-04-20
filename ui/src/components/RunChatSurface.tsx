@@ -13,6 +13,7 @@ interface RunChatSurfaceProps {
   transcript: TranscriptEntry[];
   hasOutput: boolean;
   companyId?: string | null;
+  issueStatus?: string | null;
 }
 
 export function RunChatSurface({
@@ -20,8 +21,9 @@ export function RunChatSurface({
   transcript,
   hasOutput,
   companyId,
+  issueStatus,
 }: RunChatSurfaceProps) {
-  const active = isRunActive(run);
+  const active = isRunActive(run) && issueStatus !== "blocked";
   const liveRuns = active ? [run] : [];
   const linkedRuns = useMemo<IssueChatLinkedRun[]>(
     () =>

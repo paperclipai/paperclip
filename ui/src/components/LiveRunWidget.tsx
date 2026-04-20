@@ -13,6 +13,7 @@ import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 interface LiveRunWidgetProps {
   issueId: string;
   companyId?: string | null;
+  issueStatus?: string | null;
 }
 
 function toIsoString(value: string | Date | null | undefined): string | null {
@@ -24,7 +25,7 @@ function isRunActive(status: string): boolean {
   return status === "queued" || status === "running";
 }
 
-export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
+export function LiveRunWidget({ issueId, companyId, issueStatus }: LiveRunWidgetProps) {
   const queryClient = useQueryClient();
   const [cancellingRunIds, setCancellingRunIds] = useState(new Set<string>());
 
@@ -147,6 +148,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
                   transcript={transcript}
                   hasOutput={hasOutputForRun(run.id)}
                   companyId={companyId}
+                  issueStatus={issueStatus}
                 />
               </div>
             </section>

@@ -149,6 +149,7 @@ function AgentRunCard({
           transcript={transcript}
           hasOutput={hasOutput}
           companyId={companyId}
+          issueStatus={issue?.status ?? null}
         />
       </div>
     </div>
