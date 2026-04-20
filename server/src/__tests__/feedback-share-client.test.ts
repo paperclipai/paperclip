@@ -14,13 +14,31 @@ describe("feedback trace share client", () => {
     vi.restoreAllMocks();
   });
 
-  it("throws when no backend url is configured (no default endpoint)", () => {
-    expect(() =>
-      createFeedbackTraceShareClientFromConfig({
-        feedbackExportBackendUrl: undefined,
-        feedbackExportBackendToken: undefined,
+  it("returns a stub client when no backend url is configured; upload throws only on use", async () => {
+    const client = createFeedbackTraceShareClientFromConfig({
+      feedbackExportBackendUrl: undefined,
+      feedbackExportBackendToken: undefined,
+    });
+    await expect(
+      client.uploadTraceBundle({
+        traceId: "trace-1",
+        exportId: "export-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        issueIdentifier: "ATC-1",
+        adapterType: "codex_local",
+        captureStatus: "full",
+        notes: [],
+        envelope: {},
+        surface: null,
+        aiteamcorpRun: null,
+        rawAdapterTrace: null,
+        normalizedAdapterTrace: null,
+        privacy: null,
+        integrity: {},
+        files: [],
       }),
-    ).toThrow(/feedbackExportBackendUrl/);
+    ).rejects.toThrow(/not configured/);
   });
 
   it("wraps the feedback trace payload as gzip+base64 json before upload", async () => {

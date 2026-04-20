@@ -17,8 +17,15 @@ export function createFeedbackTraceShareClientFromConfig(
   config: Pick<Config, "feedbackExportBackendUrl" | "feedbackExportBackendToken">,
 ): FeedbackTraceShareClient {
   const baseUrl = config.feedbackExportBackendUrl?.trim();
+  // Fork has no default endpoint — if sharing isn't configured, return a
+  // stub that errors only if someone actually tries to upload. This lets
+  // the server start cleanly when the feature is simply unused.
   if (!baseUrl) {
-    throw new Error("Feedback trace share requires feedbackExportBackendUrl to be configured (no default endpoint).");
+    return {
+      async uploadTraceBundle() {
+        throw new Error("Feedback trace share is not configured. Set feedbackExportBackendUrl in your config to enable it.");
+      },
+    };
   }
   const token = config.feedbackExportBackendToken?.trim();
   const endpoint = new URL("/feedback-traces", baseUrl).toString();

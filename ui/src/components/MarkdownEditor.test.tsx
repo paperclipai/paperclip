@@ -467,7 +467,7 @@ describe("MarkdownEditor", () => {
     await act(async () => {
       root.render(
         <MarkdownEditor
-          value="@Pap"
+          value="@Ai"
           onChange={handleChange}
           mentions={[
             {
@@ -492,7 +492,7 @@ describe("MarkdownEditor", () => {
 
     const selection = window.getSelection();
     const range = document.createRange();
-    range.setStart(textNode!, "@Pap".length);
+    range.setStart(textNode!, "@Ai".length);
     range.collapse(true);
     selection?.removeAllRanges();
     selection?.addRange(range);
