@@ -2515,3 +2515,175 @@ class LiveTrader:
             if dd >= KILL_SWITCH_DRAWDOWN_PCT:
                 return True
         return False
+
+
+# ===========================================================================
+# Task 8: Telegram Integration
+# ===========================================================================
+
+async def send_telegram(session: aiohttp.ClientSession, text: str,
+                        reply_to: Optional[int] = None) -> Optional[int]:
+    """Send a Telegram message. Returns message_id on success."""
+    if not BOT_TOKEN or not CHAT_ID:
+        return None
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True,
+    }
+    if reply_to:
+        payload["reply_to_message_id"] = reply_to
+    try:
+        async with session.post(url, json=payload,
+                                timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("result", {}).get("message_id")
+    except Exception:
+        pass
+    return None
+
+
+def exchange_link(exchange: str, symbol: str, instrument: str = "PERP") -> str:
+    """Return a Markdown hyperlink to the exchange's trading page."""
+    base = symbol.replace("USDT", "")
+    pair = symbol
+    if instrument == "SPOT":
+        urls = {
+            "OKX": f"https://www.okx.com/trade-spot/{base.lower()}-usdt",
+            "Bybit": f"https://www.bybit.com/en/trade/spot/{pair}",
+            "MEXC": f"https://www.mexc.com/exchange/{base}_USDT",
+            "BloFin": f"https://blofin.com/spot/{base}-USDT",
+        }
+    else:
+        urls = {
+            "OKX": f"https://www.okx.com/trade-futures/{pair.lower()}",
+            "Bybit": f"https://www.bybit.com/trade/usdt/{pair}",
+            "MEXC": f"https://futures.mexc.com/exchange/{pair}",
+            "BloFin": f"https://blofin.com/futures/{base}-USDT",
+        }
+    url = urls.get(exchange, "")
+    return f"[{exchange}]({url})" if url else exchange
+
+
+def format_live_open_msg(pos: LivePosition, portfolio: Portfolio) -> str:
+    """Format a Telegram notification for an opened position."""
+    short_link = exchange_link(pos.exchange_short, pos.symbol, pos.instrument_short)
+    long_link = exchange_link(pos.exchange_long, pos.symbol, pos.instrument_long)
+    mode = "DRY RUN" if DRY_RUN else "LIVE"
+    lines = [
+        f"*[{mode}] OPEN #{pos.id}* `{pos.symbol}`",
+        f"SHORT {short_link} ({pos.instrument_short}) @ ${pos.entry_price_short:.4f}",
+        f"LONG {long_link} ({pos.instrument_long}) @ ${pos.entry_price_long:.4f}",
+        f"Spread: *{pos.entry_spread_pct:.3f}%*  |  Size: ${pos.size_usd:.2f}",
+        f"Fees: ${pos.entry_fees_usd:.4f}",
+        f"Open: {len(portfolio.open_positions)}/{MAX_CONCURRENT}  |  Equity: ${portfolio.equity:.2f}",
+    ]
+    return "\n".join(lines)
+
+
+def format_live_close_msg(pos: LivePosition, portfolio: Portfolio) -> str:
+    """Format a Telegram notification for a closed position."""
+    hold_min = 0.0
+    if pos.exit_time and pos.entry_time:
+        hold_min = (pos.exit_time - pos.entry_time).total_seconds() / 60
+    pnl_emoji = "+" if pos.net_pnl_usd >= 0 else ""
+    mode = "DRY RUN" if DRY_RUN else "LIVE"
+    wr = (portfolio.total_wins / portfolio.total_trades * 100) if portfolio.total_trades > 0 else 0
+    lines = [
+        f"*[{mode}] CLOSE #{pos.id}* `{pos.symbol}`  ({pos.exit_reason})",
+        f"Entry spread: {pos.entry_spread_pct:.3f}%  ->  Exit: {pos.exit_spread_pct:.3f}%",
+        f"P&L: *{pnl_emoji}${pos.net_pnl_usd:.4f}*  (gross ${pos.gross_pnl_usd:.4f})",
+        f"Fees: ${pos.entry_fees_usd + pos.exit_fees_usd:.4f}  |  Hold: {hold_min:.1f}m",
+        f"Equity: ${portfolio.equity:.2f}  |  Total P&L: ${portfolio.total_pnl_usd:+.2f}",
+        f"Trades: {portfolio.total_trades}  |  WR: {wr:.1f}%  |  DD: {portfolio.max_drawdown_pct:.2f}%",
+    ]
+    return "\n".join(lines)
+
+
+class TelegramCommandListener:
+    """Polls Telegram for bot commands and dispatches them."""
+
+    def __init__(self, trader: LiveTrader):
+        self.trader = trader
+        self.last_update_id = 0
+
+    async def poll_commands(self, session: aiohttp.ClientSession):
+        if not BOT_TOKEN:
+            return
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+        params = {"offset": self.last_update_id + 1, "timeout": 0, "limit": 10}
+        try:
+            async with session.get(url, params=params,
+                                   timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                if resp.status != 200:
+                    return
+                data = await resp.json()
+                for update in data.get("result", []):
+                    self.last_update_id = update["update_id"]
+                    msg = update.get("message", {})
+                    text = msg.get("text", "").strip().lower()
+                    chat_id = str(msg.get("chat", {}).get("id", ""))
+                    if chat_id != CHAT_ID:
+                        continue
+                    await self._handle_command(text, session)
+        except Exception:
+            pass
+
+    async def _handle_command(self, text: str, session: aiohttp.ClientSession):
+        trader = self.trader
+        portfolio = trader.portfolio
+
+        if text == "/status":
+            n_open = len(portfolio.open_positions)
+            equity = portfolio.equity
+            wr = (portfolio.total_wins / portfolio.total_trades * 100) if portfolio.total_trades > 0 else 0
+            pos_lines = []
+            for p in portfolio.open_positions:
+                hold_min = (datetime.now(timezone.utc) - p.entry_time).total_seconds() / 60
+                pos_lines.append(
+                    f"  #{p.id} `{p.symbol}` {p.exchange_short}/{p.exchange_long} "
+                    f"spread={p.current_spread_pct:.3f}% hold={hold_min:.1f}m pnl=${p.net_pnl_usd:+.4f}"
+                )
+            mode = "DRY RUN" if DRY_RUN else "LIVE"
+            msg = (
+                f"*[{mode}] Status*\n"
+                f"Equity: ${equity:.2f}  |  P&L: ${portfolio.total_pnl_usd:+.2f}\n"
+                f"Open: {n_open}/{MAX_CONCURRENT}  |  Trades: {portfolio.total_trades}  |  WR: {wr:.1f}%\n"
+                f"DD: {portfolio.max_drawdown_pct:.2f}%  |  Running: {trader.running}\n"
+            )
+            if pos_lines:
+                msg += "*Positions:*\n" + "\n".join(pos_lines)
+            else:
+                msg += "No open positions"
+            await send_telegram(session, msg)
+
+        elif text == "/stop":
+            trader.running = False
+            await send_telegram(session, "*STOP received* — shutting down after current cycle")
+
+        elif text == "/start":
+            trader.running = True
+            trader.risk_mgr.manual_stop = False
+            await send_telegram(session, "*START received* — trading resumed")
+
+        elif text == "/dryrun":
+            global DRY_RUN
+            DRY_RUN = not DRY_RUN
+            mode = "ON" if DRY_RUN else "OFF"
+            await send_telegram(session, f"*DRY RUN toggled {mode}*")
+
+        elif text == "/balance":
+            lines = ["*Exchange Balances:*"]
+            for ex_name, executor in trader.executors.items():
+                try:
+                    bal = await executor.get_balance()
+                    avail = bal.get("availBal", 0)
+                    frozen = bal.get("frozenBal", 0)
+                    health = "OK" if executor.healthy else "DEGRADED"
+                    lines.append(f"  {ex_name}: ${avail:.2f} avail / ${frozen:.2f} frozen [{health}]")
+                except Exception as e:
+                    lines.append(f"  {ex_name}: ERROR ({e})")
+            await send_telegram(session, "\n".join(lines))
