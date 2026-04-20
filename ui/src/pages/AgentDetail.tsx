@@ -21,6 +21,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { copyAgentId } from "../lib/agent-copy";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
@@ -98,6 +99,7 @@ import {
   arraysEqual,
   isReadOnlyUnmanagedSkillEntry,
 } from "../lib/agent-skills-state";
+import { copyTextToClipboard } from "../lib/clipboard";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -621,6 +623,7 @@ export function AgentDetail() {
     runId?: string;
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { pushToast } = useToastActions();
   const { closePanel } = usePanel();
   const { openNewIssue } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -967,8 +970,8 @@ export function AgentDetail() {
             <PopoverContent className="w-44 p-1" align="end">
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                onClick={() => {
-                  navigator.clipboard.writeText(agent.id);
+                onClick={async () => {
+                  await copyAgentId(agent.id, pushToast);
                   setMoreOpen(false);
                 }}
               >
@@ -3960,7 +3963,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
   const [newKeyName, setNewKeyName] = useState("");
   const [newToken, setNewToken] = useState<string | null>(null);
   const [tokenVisible, setTokenVisible] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "success" | "error">("idle");
 
   const { data: keys, isLoading } = useQuery({
     queryKey: queryKeys.agents.keys(agentId),
@@ -3984,11 +3987,11 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
     },
   });
 
-  function copyToken() {
+  async function copyToken() {
     if (!newToken) return;
-    navigator.clipboard.writeText(newToken);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const copied = await copyTextToClipboard(newToken);
+    setCopyStatus(copied ? "success" : "error");
+    setTimeout(() => setCopyStatus("idle"), 2000);
   }
 
   const activeKeys = (keys ?? []).filter((k: AgentKey) => !k.revokedAt);
@@ -4022,7 +4025,16 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
             >
               <Copy className="h-3.5 w-3.5" />
             </Button>
-            {copied && <span className="text-xs text-green-400">Copied!</span>}
+            {copyStatus !== "idle" && (
+              <span
+                className={cn(
+                  "text-xs",
+                  copyStatus === "success" ? "text-green-400" : "text-red-400",
+                )}
+              >
+                {copyStatus === "success" ? "Copied!" : "Copy failed"}
+              </span>
+            )}
           </div>
           <Button
             variant="ghost"
