@@ -1892,7 +1892,14 @@ function resolveWorkerEntrypoint(
   if (plugin.packagePath && existsSync(plugin.packagePath)) {
     const entrypoint = path.resolve(plugin.packagePath, workerRelPath);
     if (entrypoint.startsWith(path.resolve(plugin.packagePath)) && existsSync(entrypoint)) {
-      return realpathSync(entrypoint);
+      // Resolve symlinks so process.argv[1] in the forked worker matches import.meta.url.
+      // Re-check containment against the resolved real path to prevent a symlinked
+      // entrypoint from escaping the package boundary.
+      const realEntrypoint = realpathSync(entrypoint);
+      const realPackagePath = realpathSync(plugin.packagePath);
+      if (realEntrypoint.startsWith(realPackagePath)) {
+        return realEntrypoint;
+      }
     }
   }
 
@@ -1923,8 +1930,15 @@ function resolveWorkerEntrypoint(
 
     if (existsSync(entrypoint)) {
       // Resolve symlinks so process.argv[1] in the forked worker matches import.meta.url
-      // (Node.js resolves symlinks in import.meta.url but fork() passes the path as-is)
-      return realpathSync(entrypoint);
+      // (Node.js resolves symlinks in import.meta.url but fork() passes the path as-is).
+      // Re-check containment against the resolved real path to prevent a symlinked
+      // entrypoint from escaping the package directory boundary.
+      const realEntrypoint = realpathSync(entrypoint);
+      const realDir = realpathSync(dir);
+      if (!realEntrypoint.startsWith(realDir)) {
+        continue;
+      }
+      return realEntrypoint;
     }
   }
 
