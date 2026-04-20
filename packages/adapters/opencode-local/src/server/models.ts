@@ -21,7 +21,7 @@ function resolveOpenCodeCommand(input: unknown): string {
 
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
-const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
+const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME", "USERPROFILE"]);
 
 function dedupeModels(models: AdapterModel[]): AdapterModel[] {
   const seen = new Set<string>();
@@ -52,14 +52,22 @@ function firstNonEmptyLine(text: string): string {
 
 function parseModelsOutput(stdout: string): AdapterModel[] {
   const parsed: AdapterModel[] = [];
-  for (const raw of stdout.split(/\r?\n/)) {
+  // Strip ANSI escape sequences to prevent corrupted IDs
+  const cleanStdout = stdout.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+  for (const raw of cleanStdout.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
-    const firstToken = line.split(/\s+/)[0]?.trim() ?? "";
-    if (!firstToken.includes("/")) continue;
-    const provider = firstToken.slice(0, firstToken.indexOf("/")).trim();
-    const model = firstToken.slice(firstToken.indexOf("/") + 1).trim();
-    if (!provider || !model) continue;
+
+    // Find the first token that contains a slash to isolate the model string
+    const token = line.split(/\s+/).find((t) => t.includes("/"));
+    if (!token) continue;
+
+    // Safely extract provider and model
+    const match = token.match(/([a-zA-Z0-9_-]+)\/([a-zA-Z0-9_.-]+)/);
+    if (!match) continue;
+
+    const provider = match[1];
+    const model = match[2];
     parsed.push({ id: `${provider}/${model}`, label: `${provider}/${model}` });
   }
   return dedupeModels(parsed);
@@ -120,8 +128,17 @@ export async function discoverOpenCodeModels(input: {
     // /etc/passwd entry (e.g. `docker run --user 1234` with a minimal
     // image). Fall back to process.env.HOME.
   }
+  const homeDir =
+    (resolvedHome && resolvedHome.trim().length > 0 ? resolvedHome : undefined) ??
+    process.env.HOME ??
+    process.env.USERPROFILE;
+  const homeEnv =
+    homeDir && homeDir.trim().length > 0
+      ? { HOME: homeDir, USERPROFILE: homeDir }
+      : {};
+  
   // Prevent OpenCode from writing an opencode.json into the working directory.
-  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}), OPENCODE_DISABLE_PROJECT_CONFIG: "true" }));
+  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...homeEnv, OPENCODE_DISABLE_PROJECT_CONFIG: "true" }));
 
   const result = await runChildProcess(
     `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
