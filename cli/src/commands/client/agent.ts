@@ -21,6 +21,37 @@ interface AgentListOptions extends BaseClientOptions {
   companyId?: string;
 }
 
+interface AgentCreateOptions extends BaseClientOptions {
+  companyId?: string;
+  name: string;
+  role?: string;
+  title?: string;
+  adapterType?: string;
+  reportsTo?: string;
+  adapterConfig?: string;
+  runtimeConfig?: string;
+  budget?: string;
+  capabilities?: string;
+}
+
+interface AgentUpdateOptions extends BaseClientOptions {
+  name?: string;
+  role?: string;
+  status?: string;
+  title?: string;
+  adapterType?: string;
+  reportsTo?: string;
+  adapterConfig?: string;
+  runtimeConfig?: string;
+  budget?: string;
+  capabilities?: string;
+}
+
+interface AgentDeleteOptions extends BaseClientOptions {
+  yes?: boolean;
+  confirm?: string;
+}
+
 interface AgentLocalCliOptions extends BaseClientOptions {
   companyId?: string;
   keyName?: string;
@@ -41,6 +72,27 @@ interface SkillsInstallSummary {
   removed: string[];
   skipped: string[];
   failed: Array<{ name: string; error: string }>;
+}
+
+async function parseJsonOption(value: string): Promise<Record<string, unknown>> {
+  if (value.startsWith("@")) {
+    const filePath = path.resolve(value.slice(1));
+    try {
+      const content = await fs.readFile(filePath, "utf8");
+      return JSON.parse(content) as Record<string, unknown>;
+    } catch (err) {
+      throw new Error(
+        `Failed to read/parse JSON from file '${filePath}': ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  try {
+    return JSON.parse(value) as Record<string, unknown>;
+  } catch (err) {
+    throw new Error(
+      `Failed to parse JSON string: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -311,5 +363,168 @@ export function registerAgentCommands(program: Command): void {
         }
       }),
     { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("create")
+      .description("Create a new agent")
+      .requiredOption("-C, --company-id <id>", "Company ID")
+      .requiredOption("--name <name>", "Agent name")
+      .option("--role <role>", "Agent role")
+      .option("--title <title>", "Agent title")
+      .option("--adapter-type <type>", "Adapter type")
+      .option("--reports-to <agentId>", "ID of agent this agent reports to")
+      .option("--adapter-config <json>", "Adapter config as JSON string or @filepath")
+      .option("--runtime-config <json>", "Runtime config as JSON string or @filepath")
+      .option("--budget <cents>", "Monthly budget in cents")
+      .option("--capabilities <capabilities>", "Agent capabilities")
+      .action(async (opts: AgentCreateOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+
+          const body: Record<string, unknown> = { name: opts.name };
+          if (opts.role !== undefined) body.role = opts.role;
+          if (opts.title !== undefined) body.title = opts.title;
+          if (opts.adapterType !== undefined) body.adapterType = opts.adapterType;
+          if (opts.reportsTo !== undefined) body.reportsTo = opts.reportsTo;
+          if (opts.capabilities !== undefined) body.capabilities = opts.capabilities;
+          if (opts.budget !== undefined) {
+            const parsed = Number(opts.budget);
+            if (!Number.isFinite(parsed) || parsed < 0) {
+              throw new Error(`Invalid budget value '${opts.budget}': must be a non-negative integer (cents).`);
+            }
+            body.budgetMonthlyCents = parsed;
+          }
+          if (opts.adapterConfig !== undefined) body.adapterConfig = await parseJsonOption(opts.adapterConfig);
+          if (opts.runtimeConfig !== undefined) body.runtimeConfig = await parseJsonOption(opts.runtimeConfig);
+
+          const created = await ctx.api.post<Agent>(`/api/companies/${ctx.companyId}/agents`, body);
+          if (!created) {
+            throw new Error("Failed to create agent: server returned no data.");
+          }
+
+          if (ctx.json) {
+            printOutput(created, { json: true });
+            return;
+          }
+
+          console.log(
+            formatInlineRecord({
+              id: created.id,
+              name: created.name,
+              role: created.role,
+              status: created.status,
+            }),
+          );
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("update")
+      .description("Update an existing agent")
+      .argument("<agentId>", "Agent ID")
+      .option("--name <name>", "Agent name")
+      .option("--role <role>", "Agent role")
+      .option("--status <status>", "Agent status")
+      .option("--title <title>", "Agent title")
+      .option("--adapter-type <type>", "Adapter type")
+      .option("--reports-to <agentId>", "ID of agent this agent reports to")
+      .option("--adapter-config <json>", "Adapter config as JSON string or @filepath")
+      .option("--runtime-config <json>", "Runtime config as JSON string or @filepath")
+      .option("--budget <cents>", "Monthly budget in cents")
+      .option("--capabilities <capabilities>", "Agent capabilities")
+      .action(async (agentId: string, opts: AgentUpdateOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+
+          const body: Record<string, unknown> = {};
+          if (opts.name !== undefined) body.name = opts.name;
+          if (opts.role !== undefined) body.role = opts.role;
+          if (opts.status !== undefined) body.status = opts.status;
+          if (opts.title !== undefined) body.title = opts.title;
+          if (opts.adapterType !== undefined) body.adapterType = opts.adapterType;
+          if (opts.reportsTo !== undefined) body.reportsTo = opts.reportsTo;
+          if (opts.capabilities !== undefined) body.capabilities = opts.capabilities;
+          if (opts.budget !== undefined) {
+            const parsed = Number(opts.budget);
+            if (!Number.isFinite(parsed) || parsed < 0) {
+              throw new Error(`Invalid budget value '${opts.budget}': must be a non-negative integer (cents).`);
+            }
+            body.budgetMonthlyCents = parsed;
+          }
+          if (opts.adapterConfig !== undefined) body.adapterConfig = await parseJsonOption(opts.adapterConfig);
+          if (opts.runtimeConfig !== undefined) body.runtimeConfig = await parseJsonOption(opts.runtimeConfig);
+
+          const updated = await ctx.api.patch<Agent>(`/api/agents/${agentId}`, body);
+          if (!updated) {
+            throw new Error("Failed to update agent: server returned no data.");
+          }
+
+          if (ctx.json) {
+            printOutput(updated, { json: true });
+            return;
+          }
+
+          console.log(
+            formatInlineRecord({
+              id: updated.id,
+              name: updated.name,
+              role: updated.role,
+              status: updated.status,
+            }),
+          );
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("delete")
+      .description("Delete an agent (destructive)")
+      .argument("<agentId>", "Agent ID")
+      .option("--yes", "Required safety flag to confirm destructive action", false)
+      .option("--confirm <value>", "Required safety value: must match agent ID")
+      .action(async (agentId: string, opts: AgentDeleteOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+
+          if (!opts.yes) {
+            throw new Error("Deletion requires --yes.");
+          }
+
+          const confirm = opts.confirm?.trim();
+          if (!confirm) {
+            throw new Error("Deletion requires --confirm <value> where value matches the agent ID.");
+          }
+
+          const existing = await ctx.api.get<Agent>(`/api/agents/${agentId}`);
+          if (!existing) {
+            throw new Error(`Agent not found: ${agentId}`);
+          }
+
+          if (confirm !== existing.id) {
+            throw new Error(
+              `Confirmation '${confirm}' does not match agent ID '${existing.id}'.`,
+            );
+          }
+
+          await ctx.api.delete<{ ok: true }>(`/api/agents/${agentId}`);
+
+          printOutput(
+            { ok: true, deleted: { id: existing.id, name: existing.name } },
+            { json: ctx.json },
+          );
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
   );
 }
