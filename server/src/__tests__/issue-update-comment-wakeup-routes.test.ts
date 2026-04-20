@@ -218,7 +218,7 @@ describe("issue update comment wakeups", () => {
       assigneeUserId: null,
     }));
 
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .patch(`/api/issues/${existing.id}`)
       .send({
         status: "todo",
@@ -260,7 +260,7 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getById.mockResolvedValue(existing);
     mockIssueService.update.mockResolvedValue(updated);
 
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .patch(`/api/issues/${existing.id}`)
       .send({ status: "todo" });
 
@@ -288,7 +288,7 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getById.mockResolvedValue(existing);
     mockIssueService.update.mockResolvedValue(updated);
 
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .patch(`/api/issues/${existing.id}`)
       .send({
         status: "todo",
