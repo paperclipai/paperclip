@@ -679,6 +679,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     ({
                       claude_local: "claude",
                       codex_local: "codex",
+                      copilot_local: "copilot",
                       gemini_local: "gemini",
                       pi_local: "pi",
                       cursor: "agent",

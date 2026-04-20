@@ -113,6 +113,15 @@ describe("adapter routes", () => {
       requiresMaterializedRuntimeSkills: false,
     });
 
+    const copilotLocal = res.body.find((a: any) => a.type === "copilot_local");
+    expect(copilotLocal).toBeDefined();
+    expect(copilotLocal.capabilities).toMatchObject({
+      supportsInstructionsBundle: true,
+      supportsSkills: false,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: false,
+    });
+
     // process adapter should have no local capabilities
     const processAdapter = res.body.find((a: any) => a.type === "process");
     expect(processAdapter).toBeDefined();

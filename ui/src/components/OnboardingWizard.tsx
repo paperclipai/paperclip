@@ -219,6 +219,7 @@ export function OnboardingWizard() {
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
     codex_local: "codex",
+    copilot_local: "copilot",
     gemini_local: "gemini",
     pi_local: "pi",
     cursor: "agent",

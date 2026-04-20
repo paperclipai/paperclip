@@ -31,6 +31,12 @@ console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claud
 console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "claude-session-1", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
+  if (process.platform === "win32" && commandPath.endsWith(".cmd")) {
+    const scriptPath = commandPath.replace(/\.cmd$/i, ".cjs");
+    await fs.writeFile(scriptPath, script, "utf8");
+    await fs.writeFile(commandPath, '@echo off\r\nnode "%~dpn0.cjs" %*\r\n', "utf8");
+    return;
+  }
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
 }
@@ -84,6 +90,12 @@ console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claud
 console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-2", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "claude-session-2", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
+  if (process.platform === "win32" && commandPath.endsWith(".cmd")) {
+    const scriptPath = commandPath.replace(/\.cmd$/i, ".cjs");
+    await fs.writeFile(scriptPath, script, "utf8");
+    await fs.writeFile(commandPath, '@echo off\r\nnode "%~dpn0.cjs" %*\r\n', "utf8");
+    return;
+  }
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
 }
@@ -94,7 +106,7 @@ async function setupExecuteEnv(
 ) {
   const workspace = path.join(root, "workspace");
   const binDir = path.join(root, "bin");
-  const commandPath = path.join(binDir, "claude");
+  const commandPath = path.join(binDir, process.platform === "win32" ? "claude.cmd" : "claude");
   const capturePath = path.join(root, "capture.json");
   const statePath = path.join(root, "state.txt");
   await fs.mkdir(workspace, { recursive: true });
@@ -244,6 +256,41 @@ describe("claude execute", () => {
         onMeta: async (meta) => { capturedNotes = (meta.commandNotes as string[]) ?? []; },
       });
       expect(capturedNotes).toHaveLength(0);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes legacy Claude model ids before invoking the CLI", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-model-normalize-"));
+    const { workspace, capturePath, commandPath, restore } = await setupExecuteEnv(root);
+    let capturedNotes: string[] = [];
+    try {
+      await execute({
+        runId: "run-model-normalize",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "anthropic/claude-opus-4.7",
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          capturedNotes = (meta.commandNotes as string[]) ?? [];
+        },
+      });
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8")) as CapturePayload;
+      expect(captured.argv).toContain("--model");
+      expect(captured.argv).toContain("claude-opus-4-7");
+      expect(captured.argv).not.toContain("anthropic/claude-opus-4.7");
+      expect(captured.argv).not.toContain("claude-opus-4.7");
+      expect(capturedNotes).toContain('Normalized Claude model "anthropic/claude-opus-4.7" → "claude-opus-4-7".');
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });

@@ -140,6 +140,17 @@ describe("server adapter registry", () => {
     expect(adapter!.supportsLocalAgentJwt).toBe(true);
   });
 
+  it("built-in copilot_local adapter declares capability flags and static metadata", () => {
+    const adapter = findActiveServerAdapter("copilot_local");
+    expect(adapter).not.toBeNull();
+    expect(adapter!.supportsInstructionsBundle).toBe(true);
+    expect(adapter!.instructionsPathKey).toBe("instructionsFilePath");
+    expect(adapter!.requiresMaterializedRuntimeSkills).toBe(false);
+    expect(adapter!.supportsLocalAgentJwt).toBe(true);
+    expect(adapter!.listSkills).toBeUndefined();
+    expect((adapter!.models ?? []).length).toBeGreaterThan(0);
+  });
+
   it("switches active adapter behavior back to the builtin when an override is paused", async () => {
     const builtIn = findServerAdapter("claude_local");
     expect(builtIn).not.toBeNull();
