@@ -40,7 +40,9 @@ COPY . .
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
+RUN pnpm --filter paperclipai build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+RUN test -f cli/dist/index.js || (echo "ERROR: cli build output missing" && exit 1)
 
 FROM base AS production
 ARG USER_UID=1000
@@ -51,6 +53,8 @@ RUN curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/sta
   && install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl \
   && rm kubectl \
   && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+  && ln -s /app/cli/dist/index.js /usr/local/bin/paperclipai \
+  && chmod +x /app/cli/dist/index.js \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
@@ -72,6 +76,7 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
+  KUBECONFIG=/paperclip/.kube/config \
   OPENCODE_ALLOW_ALL_MODELS=true
 
 VOLUME ["/paperclip"]
