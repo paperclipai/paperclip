@@ -1891,13 +1891,23 @@ function resolveWorkerEntrypoint(
   // For local-path installs we persist the resolved package path; use it first
   if (plugin.packagePath && existsSync(plugin.packagePath)) {
     const entrypoint = path.resolve(plugin.packagePath, workerRelPath);
-    if (entrypoint.startsWith(path.resolve(plugin.packagePath)) && existsSync(entrypoint)) {
+    const resolvedPackagePath = path.resolve(plugin.packagePath);
+    // Use `dir + path.sep` so a string-prefix match cannot escape into a sibling
+    // directory (e.g. `/opt/plugins/foo` must not match `/opt/plugins/foobar/...`).
+    if (
+      (entrypoint === resolvedPackagePath ||
+        entrypoint.startsWith(resolvedPackagePath + path.sep)) &&
+      existsSync(entrypoint)
+    ) {
       // Resolve symlinks so process.argv[1] in the forked worker matches import.meta.url.
       // Re-check containment against the resolved real path to prevent a symlinked
       // entrypoint from escaping the package boundary.
       const realEntrypoint = realpathSync(entrypoint);
       const realPackagePath = realpathSync(plugin.packagePath);
-      if (realEntrypoint.startsWith(realPackagePath)) {
+      if (
+        realEntrypoint === realPackagePath ||
+        realEntrypoint.startsWith(realPackagePath + path.sep)
+      ) {
         return realEntrypoint;
       }
     }
@@ -1922,9 +1932,12 @@ function resolveWorkerEntrypoint(
   // Try in order: node_modules path, direct path
   for (const dir of [packageDir, directDir]) {
     const entrypoint = path.resolve(dir, workerRelPath);
+    const resolvedDir = path.resolve(dir);
 
-    // Security: ensure entrypoint is actually inside the directory (prevent path traversal)
-    if (!entrypoint.startsWith(path.resolve(dir))) {
+    // Security: ensure entrypoint is actually inside the directory (prevent path traversal).
+    // Use `dir + path.sep` so a string-prefix match cannot escape into a sibling directory
+    // (e.g. `/opt/plugins/foo` must not match `/opt/plugins/foobar/...`).
+    if (entrypoint !== resolvedDir && !entrypoint.startsWith(resolvedDir + path.sep)) {
       continue;
     }
 
@@ -1935,7 +1948,7 @@ function resolveWorkerEntrypoint(
       // entrypoint from escaping the package directory boundary.
       const realEntrypoint = realpathSync(entrypoint);
       const realDir = realpathSync(dir);
-      if (!realEntrypoint.startsWith(realDir)) {
+      if (realEntrypoint !== realDir && !realEntrypoint.startsWith(realDir + path.sep)) {
         continue;
       }
       return realEntrypoint;
