@@ -2079,9 +2079,27 @@ export function heartbeatService(db: Db) {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
-    const issueProjectId = issueProjectRef?.projectId ?? null;
+    let issueProjectId = issueProjectRef?.projectId ?? null;
     const preferredProjectWorkspaceId =
       issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
+    // Heal issues created with projectWorkspaceId set but projectId null (the create-time
+    // bug fixed in services/issues.ts). Without this, resolveWorkspaceForRun falls back to
+    // agent_home for legacy rows even after the create-time fix ships.
+    if (!issueProjectId && preferredProjectWorkspaceId) {
+      const workspaceProjectRow = await db
+        .select({ projectId: projectWorkspaces.projectId })
+        .from(projectWorkspaces)
+        .where(
+          and(
+            eq(projectWorkspaces.id, preferredProjectWorkspaceId),
+            eq(projectWorkspaces.companyId, agent.companyId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (workspaceProjectRow?.projectId) {
+        issueProjectId = workspaceProjectRow.projectId;
+      }
+    }
     const resolvedProjectId = issueProjectId ?? contextProjectId;
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
     const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
