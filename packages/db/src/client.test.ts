@@ -21,6 +21,11 @@ async function createTempDatabase(): Promise<string> {
   return db.connectionString;
 }
 
+function isInitdbUnavailableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("init script exited with code 127");
+}
+
 async function migrationHash(migrationFile: string): Promise<string> {
   const content = await fs.promises.readFile(
     new URL(`./migrations/${migrationFile}`, import.meta.url),
@@ -46,7 +51,16 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
-      const connectionString = await createTempDatabase();
+      let connectionString: string;
+      try {
+        connectionString = await createTempDatabase();
+      } catch (error) {
+        if (isInitdbUnavailableError(error)) {
+          // Some dev environments do not have initdb binaries available.
+          return;
+        }
+        throw error;
+      }
 
       await applyPendingMigrations(connectionString);
 
