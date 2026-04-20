@@ -5826,13 +5826,16 @@ export function heartbeatService(db: Db) {
     for (const run of runs) {
       const running = runningProcesses.get(run.id);
       if (running) {
-        running.child.kill("SIGTERM");
-        const graceMs = Math.max(1, running.graceSec) * 1000;
-        setTimeout(() => {
-          if (!running.child.killed) {
-            running.child.kill("SIGKILL");
-          }
-        }, graceMs);
+        await terminateHeartbeatRunProcess({
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs: Math.max(1, running.graceSec) * 1000,
+        });
+      } else if (run.processPid || run.processGroupId) {
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
       }
 
       const cancelled = await setRunStatus(run.id, "cancelled", {

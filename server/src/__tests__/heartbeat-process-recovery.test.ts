@@ -618,6 +618,26 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("cancelled");
   });
 
+  it("terminates runs with persisted process metadata even when no in-memory child handle exists", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+    expect(isPidAlive(child.pid)).toBe(true);
+
+    await seedRunFixture({
+      includeIssue: false,
+      processPid: child.pid ?? null,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const drained = await heartbeat.drainRunningRunsForShutdown("Cancelled due to server shutdown (SIGTERM)");
+    expect(drained).toBe(1);
+
+    const exited = await waitForPidExit(child.pid!, 1_500);
+    expect(exited).toBe(true);
+  });
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,
