@@ -44,9 +44,11 @@ export interface AnonymizeResult {
   warnings: string[];
 }
 
+export type AnonymizeBlockedReason = "dpo_unavailable" | "art_9_data_detected";
+
 export interface AnonymizeBlocked {
   blocked: true;
-  reason: string;
+  reason: AnonymizeBlockedReason;
 }
 
 export type AnonymizeResponse = AnonymizeResult | AnonymizeBlocked;
