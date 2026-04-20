@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Building2, Plus, Trash2, Users, Building as BuildingIcon } from "lucide-react";
 import { organizationsApi } from "../api/organizations";
 import { companiesApi } from "../api/companies";
 import { useToastActions } from "../context/ToastContext";
+import { useOrg } from "../context/OrgContext";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,31 +13,14 @@ import { Link } from "@/lib/router";
 export function Organizations() {
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
+  const { organizations, selectedOrg, setSelectedOrgId, loading: orgsLoading } = useOrg();
 
-  const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [newOrgName, setNewOrgName] = useState("");
   const [addMemberEmail, setAddMemberEmail] = useState("");
   const [attachCompanyId, setAttachCompanyId] = useState("");
 
-  const { data: organizations = [], isLoading: orgsLoading } = useQuery({
-    queryKey: queryKeys.organizations.list,
-    queryFn: () => organizationsApi.list(),
-  });
-
-  useEffect(() => {
-    if (!selectedOrgId && organizations.length > 0) {
-      setSelectedOrgId(organizations[0].id);
-    }
-    if (selectedOrgId && !organizations.some((o) => o.id === selectedOrgId)) {
-      setSelectedOrgId(organizations[0]?.id ?? null);
-    }
-  }, [organizations, selectedOrgId]);
-
-  const selectedOrg = useMemo(
-    () => organizations.find((o) => o.id === selectedOrgId) ?? null,
-    [organizations, selectedOrgId],
-  );
+  const selectedOrgId = selectedOrg?.id ?? null;
 
   const createOrgMutation = useMutation({
     mutationFn: (name: string) => organizationsApi.create({ name }),
@@ -161,7 +145,7 @@ export function Organizations() {
   return (
     <div className="min-h-screen bg-muted/20">
       <header className="border-b border-border bg-background">
-        <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-4">
+        <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-2">
             <Building2 className="size-4 text-muted-foreground" />
             <span className="text-base font-semibold">Organizations</span>
@@ -172,288 +156,248 @@ export function Organizations() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-5xl space-y-6 px-6 py-10">
-
-      <div className="grid grid-cols-1 md:grid-cols-[240px_1fr] gap-6">
-        {/* Sidebar: org list */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              Your organizations
-            </div>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 w-7 p-0"
-              onClick={() => setShowCreate((s) => !s)}
-              title="New organization"
+      <main className="mx-auto w-full max-w-3xl space-y-6 px-6 py-10">
+        <div className="flex items-center gap-3">
+          {organizations.length > 0 ? (
+            <select
+              className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm outline-none"
+              value={selectedOrgId ?? ""}
+              onChange={(e) => setSelectedOrgId(e.target.value)}
             >
-              <Plus className="h-3.5 w-3.5" />
+              {organizations.map((org) => (
+                <option key={org.id} value={org.id}>
+                  {org.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
+              {orgsLoading ? "Loading..." : "No organizations yet."}
+            </div>
+          )}
+          <Button variant="outline" onClick={() => setShowCreate((s) => !s)}>
+            <Plus className="size-4" />
+            New organization
+          </Button>
+        </div>
+
+        {showCreate ? (
+          <div className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-3">
+            <Input
+              autoFocus
+              type="text"
+              value={newOrgName}
+              placeholder="Organization name"
+              onChange={(e) => setNewOrgName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleCreate();
+                if (e.key === "Escape") {
+                  setShowCreate(false);
+                  setNewOrgName("");
+                }
+              }}
+            />
+            <Button
+              onClick={handleCreate}
+              disabled={createOrgMutation.isPending || !newOrgName.trim()}
+            >
+              {createOrgMutation.isPending ? "Creating..." : "Create"}
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setShowCreate(false);
+                setNewOrgName("");
+              }}
+            >
+              Cancel
             </Button>
           </div>
+        ) : null}
 
-          {showCreate && (
-            <div className="space-y-2 rounded-md border border-border bg-muted/30 px-3 py-3">
-              <label className="text-xs text-muted-foreground mb-1 block">Name</label>
-              <Input
-                type="text"
-                value={newOrgName}
-                placeholder="Organization name"
-                onChange={(e) => setNewOrgName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleCreate();
-                }}
-              />
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  onClick={handleCreate}
-                  disabled={createOrgMutation.isPending || !newOrgName.trim()}
-                >
-                  {createOrgMutation.isPending ? "Creating..." : "Create"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setShowCreate(false);
-                    setNewOrgName("");
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
-
-          <div className="rounded-md border border-border overflow-hidden">
-            {orgsLoading ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground">Loading...</div>
-            ) : organizations.length === 0 ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground">
-                No organizations yet.
-              </div>
-            ) : (
-              organizations.map((org) => (
-                <button
-                  key={org.id}
-                  onClick={() => setSelectedOrgId(org.id)}
-                  className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                    org.id === selectedOrgId
-                      ? "bg-accent text-foreground"
-                      : "hover:bg-accent/50 text-muted-foreground"
-                  }`}
-                >
-                  <Building2 className="h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">{org.name}</span>
-                </button>
-              ))
-            )}
+        {!selectedOrg ? (
+          <div className="rounded-lg border border-border bg-background px-6 py-10 text-center text-sm text-muted-foreground">
+            Create an organization to manage members and companies.
           </div>
-        </div>
-
-        {/* Main: selected organization detail */}
-        <div className="space-y-6 min-w-0">
-          {!selectedOrg ? (
-            <div className="rounded-md border border-border px-4 py-6 text-sm text-muted-foreground">
-              Select an organization to manage members and companies, or create a new one.
-            </div>
-          ) : (
-            <>
-              <div className="space-y-1">
-                <h2 className="text-xl font-semibold">{selectedOrg.name}</h2>
-                <p className="text-xs text-muted-foreground">
-                  Created {new Date(selectedOrg.createdAt).toLocaleDateString()}
-                </p>
+        ) : (
+          <>
+            <Section
+              icon={<Users className="size-4 text-muted-foreground" />}
+              title="Members"
+              count={orgMembersQuery.data?.length}
+            >
+              <div className="flex items-center gap-2">
+                <Input
+                  type="email"
+                  placeholder="teammate@example.com"
+                  value={addMemberEmail}
+                  onChange={(e) => setAddMemberEmail(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && addMemberEmail.trim()) {
+                      addMemberMutation.mutate(addMemberEmail.trim());
+                    }
+                  }}
+                />
+                <Button
+                  onClick={() => {
+                    if (addMemberEmail.trim()) {
+                      addMemberMutation.mutate(addMemberEmail.trim());
+                    }
+                  }}
+                  disabled={!addMemberEmail.trim() || addMemberMutation.isPending}
+                >
+                  {addMemberMutation.isPending ? "Adding..." : "Add"}
+                </Button>
               </div>
 
-              {/* Members */}
-              <div className="space-y-3">
-                <div className="flex items-center gap-1.5">
-                  <Users className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    Members
-                  </span>
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                    {orgMembersQuery.data?.length ?? 0}
-                  </span>
-                </div>
-
-                <div className="rounded-md border border-border px-4 py-4 space-y-3">
-                  <div className="flex items-end gap-2 flex-wrap">
-                    <div className="flex-1 min-w-[240px]">
-                      <label className="text-xs text-muted-foreground mb-1 block">
-                        Email
-                      </label>
-                      <Input
-                        type="email"
-                        placeholder="teammate@example.com"
-                        value={addMemberEmail}
-                        onChange={(e) => setAddMemberEmail(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && addMemberEmail.trim()) {
-                            addMemberMutation.mutate(addMemberEmail.trim());
+              {orgMembersQuery.isLoading ? (
+                <p className="text-sm text-muted-foreground">Loading...</p>
+              ) : (orgMembersQuery.data ?? []).length === 0 ? (
+                <p className="text-sm text-muted-foreground">No members yet.</p>
+              ) : (
+                <ul className="divide-y divide-border rounded-md border border-border">
+                  {(orgMembersQuery.data ?? []).map((member) => (
+                    <li
+                      key={member.id}
+                      className="flex items-center justify-between gap-2 px-3 py-2"
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-sm font-medium">
+                          {member.displayName || member.email || member.userId}
+                        </span>
+                        {member.email && member.displayName ? (
+                          <span className="max-w-[240px] shrink-0 truncate text-xs text-muted-foreground">
+                            {member.email}
+                          </span>
+                        ) : null}
+                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                          {member.role}
+                        </span>
+                      </div>
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Remove ${member.displayName || member.email || "this member"} from ${selectedOrg.name}?`,
+                            )
+                          ) {
+                            removeMemberMutation.mutate(member.userId);
                           }
                         }}
-                      />
-                    </div>
-                    <Button
-                      size="sm"
-                      onClick={() => {
-                        if (addMemberEmail.trim()) {
-                          addMemberMutation.mutate(addMemberEmail.trim());
-                        }
-                      }}
-                      disabled={!addMemberEmail.trim() || addMemberMutation.isPending}
-                    >
-                      <Plus className="h-3.5 w-3.5 mr-1" />
-                      {addMemberMutation.isPending ? "Adding..." : "Add member"}
-                    </Button>
-                  </div>
-
-                  {orgMembersQuery.isLoading ? (
-                    <p className="text-xs text-muted-foreground">Loading members...</p>
-                  ) : (orgMembersQuery.data ?? []).length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No members yet.</p>
-                  ) : (
-                    <div className="space-y-1">
-                      {(orgMembersQuery.data ?? []).map((member) => (
-                        <div
-                          key={member.id}
-                          className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2"
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="text-sm font-medium truncate">
-                              {member.displayName || member.email || member.userId}
-                            </span>
-                            {member.email && member.displayName && (
-                              <span className="shrink-0 text-xs text-muted-foreground truncate max-w-[240px]">
-                                {member.email}
-                              </span>
-                            )}
-                            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                              {member.role}
-                            </span>
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="shrink-0 text-destructive hover:text-destructive hover:bg-destructive/10 h-7 text-xs px-2"
-                            onClick={() => {
-                              if (
-                                window.confirm(
-                                  `Remove ${member.displayName || member.email || "this member"} from ${selectedOrg.name}?`,
-                                )
-                              ) {
-                                removeMemberMutation.mutate(member.userId);
-                              }
-                            }}
-                            disabled={removeMemberMutation.isPending}
-                          >
-                            <Trash2 className="h-3 w-3 mr-1" />
-                            Remove
-                          </Button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Companies */}
-              <div className="space-y-3">
-                <div className="flex items-center gap-1.5">
-                  <BuildingIcon className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    Companies
-                  </span>
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                    {orgCompaniesQuery.data?.length ?? 0}
-                  </span>
-                </div>
-
-                <div className="rounded-md border border-border px-4 py-4 space-y-3">
-                  <div className="flex items-end gap-2 flex-wrap">
-                    <div className="flex-1 min-w-[240px]">
-                      <label className="text-xs text-muted-foreground mb-1 block">
-                        Attach company
-                      </label>
-                      <select
-                        className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none"
-                        value={attachCompanyId}
-                        onChange={(e) => setAttachCompanyId(e.target.value)}
+                        disabled={removeMemberMutation.isPending}
+                        aria-label="Remove member"
                       >
-                        <option value="">Select a company...</option>
-                        {attachableCompanies.map((company) => (
-                          <option key={company.id} value={company.id}>
-                            {company.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <Button
-                      size="sm"
-                      onClick={() => {
-                        if (attachCompanyId) {
-                          attachCompanyMutation.mutate(attachCompanyId);
-                        }
-                      }}
-                      disabled={!attachCompanyId || attachCompanyMutation.isPending}
-                    >
-                      <Plus className="h-3.5 w-3.5 mr-1" />
-                      {attachCompanyMutation.isPending ? "Attaching..." : "Attach"}
-                    </Button>
-                  </div>
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Section>
 
-                  {orgCompaniesQuery.isLoading ? (
-                    <p className="text-xs text-muted-foreground">Loading companies...</p>
-                  ) : (orgCompaniesQuery.data ?? []).length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No companies linked.</p>
-                  ) : (
-                    <div className="space-y-1">
-                      {(orgCompaniesQuery.data ?? []).map((company) => (
-                        <div
-                          key={company.id}
-                          className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2"
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <BuildingIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                            <span className="text-sm font-medium truncate">
-                              {company.name}
-                            </span>
-                            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                              {company.status}
-                            </span>
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="shrink-0 text-destructive hover:text-destructive hover:bg-destructive/10 h-7 text-xs px-2"
-                            onClick={() => {
-                              if (
-                                window.confirm(
-                                  `Detach "${company.name}" from ${selectedOrg.name}?`,
-                                )
-                              ) {
-                                detachCompanyMutation.mutate(company.id);
-                              }
-                            }}
-                            disabled={detachCompanyMutation.isPending}
-                          >
-                            <Trash2 className="h-3 w-3 mr-1" />
-                            Detach
-                          </Button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+            <Section
+              icon={<BuildingIcon className="size-4 text-muted-foreground" />}
+              title="Companies"
+              count={orgCompaniesQuery.data?.length}
+            >
+              <div className="flex items-center gap-2">
+                <select
+                  className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm outline-none"
+                  value={attachCompanyId}
+                  onChange={(e) => setAttachCompanyId(e.target.value)}
+                >
+                  <option value="">Attach a company...</option>
+                  {attachableCompanies.map((company) => (
+                    <option key={company.id} value={company.id}>
+                      {company.name}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  onClick={() => {
+                    if (attachCompanyId) {
+                      attachCompanyMutation.mutate(attachCompanyId);
+                    }
+                  }}
+                  disabled={!attachCompanyId || attachCompanyMutation.isPending}
+                >
+                  {attachCompanyMutation.isPending ? "Attaching..." : "Attach"}
+                </Button>
               </div>
-            </>
-          )}
-        </div>
-      </div>
+
+              {orgCompaniesQuery.isLoading ? (
+                <p className="text-sm text-muted-foreground">Loading...</p>
+              ) : (orgCompaniesQuery.data ?? []).length === 0 ? (
+                <p className="text-sm text-muted-foreground">No companies linked.</p>
+              ) : (
+                <ul className="divide-y divide-border rounded-md border border-border">
+                  {(orgCompaniesQuery.data ?? []).map((company) => (
+                    <li
+                      key={company.id}
+                      className="flex items-center justify-between gap-2 px-3 py-2"
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-sm font-medium">{company.name}</span>
+                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                          {company.status}
+                        </span>
+                      </div>
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Detach "${company.name}" from ${selectedOrg.name}?`,
+                            )
+                          ) {
+                            detachCompanyMutation.mutate(company.id);
+                          }
+                        }}
+                        disabled={detachCompanyMutation.isPending}
+                        aria-label="Detach company"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Section>
+          </>
+        )}
       </main>
     </div>
+  );
+}
+
+function Section({
+  icon,
+  title,
+  count,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  count?: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center gap-2">
+        {icon}
+        <h2 className="text-sm font-semibold">{title}</h2>
+        {typeof count === "number" ? (
+          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {count}
+          </span>
+        ) : null}
+      </div>
+      <div className="space-y-3">{children}</div>
+    </section>
   );
 }
