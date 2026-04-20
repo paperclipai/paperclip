@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Apple, Monitor, Terminal } from "lucide-react";
 import {
   Dialog,
@@ -17,31 +18,36 @@ const platforms: { id: Platform; label: string; icon: typeof Apple }[] = [
   { id: "linux", label: "Linux", icon: Terminal },
 ];
 
-const instructions: Record<Platform, { steps: string[]; tip?: string }> = {
+type InstructionKeys = Record<Platform, { stepKeys: { key: string; defaultValue: string }[]; tipKey?: string; tipDefault?: string }>;
+
+const instructionKeys: InstructionKeys = {
   mac: {
-    steps: [
-      "Open Finder and navigate to the folder.",
-      "Right-click (or Control-click) the folder.",
-      "Hold the Option (⌥) key — \"Copy\" changes to \"Copy as Pathname\".",
-      "Click \"Copy as Pathname\", then paste here.",
+    stepKeys: [
+      { key: "pathInstructions.mac.step1", defaultValue: "Open Finder and navigate to the folder." },
+      { key: "pathInstructions.mac.step2", defaultValue: "Right-click (or Control-click) the folder." },
+      { key: "pathInstructions.mac.step3", defaultValue: "Hold the Option (\u2325) key \u2014 \"Copy\" changes to \"Copy as Pathname\"." },
+      { key: "pathInstructions.mac.step4", defaultValue: "Click \"Copy as Pathname\", then paste here." },
     ],
-    tip: "You can also open Terminal, type cd, drag the folder into the terminal window, and press Enter. Then type pwd to see the full path.",
+    tipKey: "pathInstructions.mac.tip",
+    tipDefault: "You can also open Terminal, type cd, drag the folder into the terminal window, and press Enter. Then type pwd to see the full path.",
   },
   windows: {
-    steps: [
-      "Open File Explorer and navigate to the folder.",
-      "Click in the address bar at the top — the full path will appear.",
-      "Copy the path, then paste here.",
+    stepKeys: [
+      { key: "pathInstructions.windows.step1", defaultValue: "Open File Explorer and navigate to the folder." },
+      { key: "pathInstructions.windows.step2", defaultValue: "Click in the address bar at the top \u2014 the full path will appear." },
+      { key: "pathInstructions.windows.step3", defaultValue: "Copy the path, then paste here." },
     ],
-    tip: "Alternatively, hold Shift and right-click the folder, then select \"Copy as path\".",
+    tipKey: "pathInstructions.windows.tip",
+    tipDefault: "Alternatively, hold Shift and right-click the folder, then select \"Copy as path\".",
   },
   linux: {
-    steps: [
-      "Open a terminal and navigate to the directory with cd.",
-      "Run pwd to print the full path.",
-      "Copy the output and paste here.",
+    stepKeys: [
+      { key: "pathInstructions.linux.step1", defaultValue: "Open a terminal and navigate to the directory with cd." },
+      { key: "pathInstructions.linux.step2", defaultValue: "Run pwd to print the full path." },
+      { key: "pathInstructions.linux.step3", defaultValue: "Copy the output and paste here." },
     ],
-    tip: "In most file managers, Ctrl+L reveals the full path in the address bar.",
+    tipKey: "pathInstructions.linux.tip",
+    tipDefault: "In most file managers, Ctrl+L reveals the full path in the address bar.",
   },
 };
 
@@ -61,19 +67,20 @@ export function PathInstructionsModal({
   open,
   onOpenChange,
 }: PathInstructionsModalProps) {
+  const { t } = useTranslation();
   const [platform, setPlatform] = useState<Platform>(detectPlatform);
 
-  const current = instructions[platform];
+  const currentKeys = instructionKeys[platform];
+  const steps = currentKeys.stepKeys.map((s) => t(s.key, { defaultValue: s.defaultValue }));
+  const tip = currentKeys.tipKey ? t(currentKeys.tipKey, { defaultValue: currentKeys.tipDefault }) : undefined;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-base">How to get a full path</DialogTitle>
+          <DialogTitle className="text-base">{t("pathInstructions.title", { defaultValue: "How to get a full path" })}</DialogTitle>
           <DialogDescription>
-            Paste the absolute path (e.g.{" "}
-            <code className="text-xs bg-muted px-1 py-0.5 rounded">/Users/you/project</code>
-            ) into the input field.
+            {t("pathInstructions.description", { defaultValue: "Paste the absolute path (e.g. /Users/you/project) into the input field." })}
           </DialogDescription>
         </DialogHeader>
 
@@ -99,7 +106,7 @@ export function PathInstructionsModal({
 
         {/* Steps */}
         <ol className="space-y-2 text-sm">
-          {current.steps.map((step, i) => (
+          {steps.map((step, i) => (
             <li key={i} className="flex gap-2">
               <span className="text-muted-foreground font-mono text-xs mt-0.5 shrink-0">
                 {i + 1}.
@@ -109,9 +116,9 @@ export function PathInstructionsModal({
           ))}
         </ol>
 
-        {current.tip && (
+        {tip && (
           <p className="text-xs text-muted-foreground border-l-2 border-border pl-3">
-            {current.tip}
+            {tip}
           </p>
         )}
       </DialogContent>
@@ -124,6 +131,7 @@ export function PathInstructionsModal({
  * Drop-in replacement for the old showDirectoryPicker buttons.
  */
 export function ChoosePathButton({ className }: { className?: string }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -135,7 +143,7 @@ export function ChoosePathButton({ className }: { className?: string }) {
         )}
         onClick={() => setOpen(true)}
       >
-        Choose
+        {t("pathInstructions.choose", { defaultValue: "Choose" })}
       </button>
       <PathInstructionsModal open={open} onOpenChange={setOpen} />
     </>

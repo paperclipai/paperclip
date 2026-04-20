@@ -1,0 +1,6 @@
+{
+  "widget.title": "i18n Example Widget",
+  "widget.description": "This widget demonstrates plugin i18n with usePluginTranslation().",
+  "widget.currentLanguage": "Current language: {{lang}}",
+  "widget.companyId": "Company: {{id}}"
+}

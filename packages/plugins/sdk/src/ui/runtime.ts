@@ -1,8 +1,17 @@
+/** i18n bridge interface mirroring the host's PluginI18nBridge. */
+export type PluginI18nBridgeRuntime = {
+  t: (key: string, defaultValueOrOptions?: string | Record<string, unknown>) => string;
+  language: () => string;
+  languages: () => readonly string[];
+  onLanguageChanged: (callback: (lng: string) => void) => () => void;
+};
+
 type PluginBridgeRegistry = {
   react?: {
     createElement?: (type: unknown, props?: Record<string, unknown> | null) => unknown;
   } | null;
   sdkUi?: Record<string, unknown> | null;
+  i18n?: PluginI18nBridgeRuntime | null;
 };
 
 type GlobalBridge = typeof globalThis & {
@@ -26,6 +35,10 @@ export function getSdkUiRuntimeValue<T>(name: string): T {
     throw missingBridgeValueError(name);
   }
   return value as T;
+}
+
+export function getI18nBridge(): PluginI18nBridgeRuntime | null {
+  return getBridgeRegistry()?.i18n ?? null;
 }
 
 export function renderSdkUiComponent<TProps>(

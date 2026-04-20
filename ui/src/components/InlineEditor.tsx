@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
@@ -8,6 +9,7 @@ interface InlineEditorProps {
   onSave: (value: string) => void | Promise<unknown>;
   as?: "h1" | "h2" | "p" | "span";
   className?: string;
+  /** Placeholder text. If not provided, uses i18n default. */
   placeholder?: string;
   multiline?: boolean;
   imageUploadHandler?: (file: File) => Promise<string>;
@@ -44,13 +46,15 @@ export function InlineEditor({
   onSave,
   as: Tag = "span",
   className,
-  placeholder = "Click to edit...",
+  placeholder,
   multiline = false,
   nullable = false,
   imageUploadHandler,
   onDropFile,
   mentions,
 }: InlineEditorProps) {
+  const { t } = useTranslation();
+  const resolvedPlaceholder = placeholder ?? t("inlineEditor.clickToEdit", { defaultValue: "Click to edit..." });
   const [editing, setEditing] = useState(false);
   const [multilineFocused, setMultilineFocused] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -233,7 +237,7 @@ export function InlineEditor({
           ref={markdownRef}
           value={draft}
           onChange={setDraft}
-          placeholder={placeholder}
+          placeholder={resolvedPlaceholder}
           bordered={false}
           className="bg-transparent"
           contentClassName={cn("paperclip-edit-in-place-content", className)}
@@ -253,12 +257,12 @@ export function InlineEditor({
             )}
           >
             {autosaveState === "saving"
-              ? "Autosaving..."
+              ? t("inlineEditor.autosaving", { defaultValue: "Autosaving..." })
               : autosaveState === "saved"
-                ? "Saved"
+                ? t("inlineEditor.saved", { defaultValue: "Saved" })
                 : autosaveState === "error"
-                  ? "Could not save"
-                  : "Idle"}
+                  ? t("inlineEditor.couldNotSave", { defaultValue: "Could not save" })
+                  : t("inlineEditor.idle", { defaultValue: "Idle" })}
           </span>
         </div>
       </div>
@@ -303,7 +307,7 @@ export function InlineEditor({
       )}
       onClick={() => setEditing(true)}
     >
-      {value || placeholder}
+      {value || resolvedPlaceholder}
     </DisplayTag>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -36,6 +37,7 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 }
 
 export function Dashboard() {
+  const { t } = useTranslation("dashboard");
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -51,7 +53,7 @@ export function Dashboard() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Dashboard" }]);
+    setBreadcrumbs([{ label: t("breadcrumb", { defaultValue: "Dashboard" }) }]);
   }, [setBreadcrumbs]);
 
   const { data, isLoading, error } = useQuery({
@@ -183,14 +185,14 @@ export function Dashboard() {
       return (
         <EmptyState
           icon={LayoutDashboard}
-          message="Welcome to Paperclip. Set up your first company and agent to get started."
-          action="Get Started"
+          message={t("empty.welcome", { defaultValue: "Welcome to Paperclip. Set up your first company and agent to get started." })}
+          action={t("empty.get_started", { defaultValue: "Get Started" })}
           onAction={openOnboarding}
         />
       );
     }
     return (
-      <EmptyState icon={LayoutDashboard} message="Create or select a company to view the dashboard." />
+      <EmptyState icon={LayoutDashboard} message={t("empty.select_company", { defaultValue: "Create or select a company to view the dashboard." })} />
     );
   }
 
@@ -209,14 +211,14 @@ export function Dashboard() {
           <div className="flex items-center gap-2.5">
             <Bot className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
             <p className="text-sm text-amber-900 dark:text-amber-100">
-              You have no agents.
+              {t("empty.no_agents", { defaultValue: "You have no agents." })}
             </p>
           </div>
           <button
             onClick={() => openOnboarding({ initialStep: 2, companyId: selectedCompanyId! })}
             className="text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 underline underline-offset-2 shrink-0"
           >
-            Create one here
+            {t("empty.create_agent", { defaultValue: "Create one here" })}
           </button>
         </div>
       )}
@@ -239,7 +241,7 @@ export function Dashboard() {
                 </div>
               </div>
               <Link to="/costs" className="text-sm underline underline-offset-2 text-red-100">
-                Open budgets
+                {t("open_budgets", { defaultValue: "Open budgets" })}
               </Link>
             </div>
           ) : null}
@@ -248,7 +250,7 @@ export function Dashboard() {
             <MetricCard
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
-              label="Agents Enabled"
+              label={t("metrics.agents_enabled", { defaultValue: "Agents Enabled" })}
               to="/agents"
               description={
                 <span>
@@ -261,7 +263,7 @@ export function Dashboard() {
             <MetricCard
               icon={CircleDot}
               value={data.tasks.inProgress}
-              label="Tasks In Progress"
+              label={t("metrics.tasks_in_progress", { defaultValue: "Tasks In Progress" })}
               to="/issues"
               description={
                 <span>
@@ -273,7 +275,7 @@ export function Dashboard() {
             <MetricCard
               icon={DollarSign}
               value={formatCents(data.costs.monthSpendCents)}
-              label="Month Spend"
+              label={t("metrics.month_spend", { defaultValue: "Month Spend" })}
               to="/costs"
               description={
                 <span>
@@ -286,7 +288,7 @@ export function Dashboard() {
             <MetricCard
               icon={ShieldCheck}
               value={data.pendingApprovals + data.budgets.pendingApprovals}
-              label="Pending Approvals"
+              label={t("metrics.pending_approvals", { defaultValue: "Pending Approvals" })}
               to="/approvals"
               description={
                 <span>
@@ -299,16 +301,16 @@ export function Dashboard() {
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <ChartCard title="Run Activity" subtitle="Last 14 days">
+            <ChartCard title={t("charts.run_activity", { defaultValue: "Run Activity" })} subtitle={t("charts.last_14_days", { defaultValue: "Last 14 days" })}>
               <RunActivityChart runs={runs ?? []} />
             </ChartCard>
-            <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+            <ChartCard title={t("charts.issues_by_priority", { defaultValue: "Issues by Priority" })} subtitle={t("charts.last_14_days", { defaultValue: "Last 14 days" })}>
               <PriorityChart issues={issues ?? []} />
             </ChartCard>
-            <ChartCard title="Issues by Status" subtitle="Last 14 days">
+            <ChartCard title={t("charts.issues_by_status", { defaultValue: "Issues by Status" })} subtitle={t("charts.last_14_days", { defaultValue: "Last 14 days" })}>
               <IssueStatusChart issues={issues ?? []} />
             </ChartCard>
-            <ChartCard title="Success Rate" subtitle="Last 14 days">
+            <ChartCard title={t("charts.success_rate", { defaultValue: "Success Rate" })} subtitle={t("charts.last_14_days", { defaultValue: "Last 14 days" })}>
               <SuccessRateChart runs={runs ?? []} />
             </ChartCard>
           </div>
@@ -325,7 +327,7 @@ export function Dashboard() {
             {recentActivity.length > 0 && (
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Recent Activity
+                  {t("sections.recent_activity", { defaultValue: "Recent Activity" })}
                 </h3>
                 <div className="border border-border divide-y divide-border overflow-hidden">
                   {recentActivity.map((event) => (
@@ -346,11 +348,11 @@ export function Dashboard() {
             {/* Recent Tasks */}
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Recent Tasks
+                {t("sections.recent_tasks", { defaultValue: "Recent Tasks" })}
               </h3>
               {recentIssues.length === 0 ? (
                 <div className="border border-border p-4">
-                  <p className="text-sm text-muted-foreground">No tasks yet.</p>
+                  <p className="text-sm text-muted-foreground">{t("empty.no_tasks", { defaultValue: "No tasks yet." })}</p>
                 </div>
               ) : (
                 <div className="border border-border divide-y divide-border overflow-hidden">

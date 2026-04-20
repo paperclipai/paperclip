@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import i18n from "@/i18n";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
   Agent,
@@ -500,7 +502,7 @@ function ExportPreviewPane({
 }) {
   if (!selectedFile || content === null) {
     return (
-      <EmptyState icon={Package} message="Select a file to preview its contents." />
+      <EmptyState icon={Package} message={i18n.t("settings:selectFileToPreview", { defaultValue: "Select a file to preview its contents." })} />
     );
   }
 
@@ -546,7 +548,7 @@ function ExportPreviewPane({
           </pre>
         ) : (
           <div className="rounded-lg border border-border bg-accent/10 px-4 py-3 text-sm text-muted-foreground">
-            Binary asset preview is not available for this file type.
+            {i18n.t("settings:binaryPreviewUnavailable", { defaultValue: "Binary asset preview is not available for this file type." })}
           </div>
         )}
       </div>
@@ -578,6 +580,7 @@ function expandAncestors(filePath: string): string[] {
 }
 
 export function CompanyExport() {
+  const { t } = useTranslation("settings");
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -672,8 +675,8 @@ export function CompanyExport() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Org Chart", href: "/org" },
-      { label: "Export" },
+      { label: t("export.orgChart", { defaultValue: "Org Chart" }), href: "/org" },
+      { label: t("export.breadcrumb", { defaultValue: "Export" }) },
     ]);
   }, [setBreadcrumbs]);
 
@@ -789,7 +792,7 @@ export function CompanyExport() {
 
     // Regenerate README.md based on checked selection
     if (typeof exportData.files["README.md"] === "string") {
-      const companyName = exportData.manifest.company?.name ?? selectedCompany?.name ?? "Company";
+      const companyName = exportData.manifest.company?.name ?? selectedCompany?.name ?? t("export.companyFallback", { defaultValue: "Company" });
       const companyDescription = exportData.manifest.company?.description ?? null;
       filtered["README.md"] = generateReadmeFromSelection(
         exportData.manifest,
@@ -911,7 +914,7 @@ export function CompanyExport() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Package} message="Select a company to export." />;
+    return <EmptyState icon={Package} message={t("export.selectCompany", { defaultValue: "Select a company to export." })} />;
   }
 
   if (exportPreviewMutation.isPending && !exportData) {
@@ -919,7 +922,7 @@ export function CompanyExport() {
   }
 
   if (!exportData) {
-    return <EmptyState icon={Package} message="Loading export data..." />;
+    return <EmptyState icon={Package} message={t("export.loadingData", { defaultValue: "Loading export data..." })} />;
   }
 
   const previewContent = selectedFile
@@ -935,7 +938,7 @@ export function CompanyExport() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-4 text-sm">
             <span className="font-medium">
-              {selectedCompany?.name ?? "Company"} export
+              {t("export.companyExportHeading", { defaultValue: "{{name}} export", name: selectedCompany?.name ?? t("export.companyFallback", { defaultValue: "Company" }) })}
             </span>
             <span className="text-muted-foreground">
               {selectedCount} / {totalFiles} file{totalFiles === 1 ? "" : "s"} selected
@@ -953,8 +956,8 @@ export function CompanyExport() {
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {downloadMutation.isPending
-              ? "Building export..."
-              : `Export ${selectedCount} file${selectedCount === 1 ? "" : "s"}`}
+              ? t("export.buildingExport", { defaultValue: "Building export..." })
+              : t("export.exportFiles", { defaultValue: "Export {{count}} file(s)", count: selectedCount })}
           </Button>
         </div>
       </div>
@@ -972,7 +975,7 @@ export function CompanyExport() {
       <div className="grid h-[calc(100vh-12rem)] gap-0 xl:grid-cols-[19rem_minmax(0,1fr)]">
         <aside className="flex flex-col border-r border-border overflow-hidden">
           <div className="border-b border-border px-4 py-3 shrink-0">
-            <h2 className="text-base font-semibold">Package files</h2>
+            <h2 className="text-base font-semibold">{t("export.packageFiles", { defaultValue: "Package files" })}</h2>
           </div>
           <div className="border-b border-border px-3 py-2 shrink-0">
             <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
@@ -981,7 +984,7 @@ export function CompanyExport() {
                 type="text"
                 value={treeSearch}
                 onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="Search files..."
+                placeholder={t("export.searchFiles", { defaultValue: "Search files..." })}
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 data-page-search-target="true"
               />
