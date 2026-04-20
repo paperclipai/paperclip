@@ -82,7 +82,7 @@ type StagedIssueFile = {
 
 const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local"]);
 const STAGED_FILE_ACCEPT =
-  "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown";
+  "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown,application/zip,application/x-zip-compressed,.zip";
 
 const ISSUE_THINKING_EFFORT_OPTIONS = {
   claude_local: [
