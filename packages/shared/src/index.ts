@@ -705,6 +705,8 @@ export {
   AGENT_ROLE_DEFAULT_PERMISSIONS,
 } from "./role-presets.js";
 
+export { AGENT_PRESETS, type AgentPreset } from "./agent-presets.js";
+
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";

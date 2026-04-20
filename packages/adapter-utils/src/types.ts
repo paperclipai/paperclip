@@ -423,6 +423,4 @@ export interface CreateConfigValues {
   intervalSec: number;
   /** Arbitrary key-value pairs populated by schema-driven config fields. */
   adapterSchemaValues?: Record<string, unknown>;
-  /** Provider credential to inject env into the adapter at run time. */
-  credentialId?: string | null;
 }

@@ -28,6 +28,14 @@ const permissionLabels: Record<PermissionKey, string> = {
   "tasks:assign_scope": "Assign scoped tasks",
   "joins:approve": "Approve join requests",
   "credentials:manage": "Manage provider credentials",
+  "credentials:view": "View provider credentials",
+  "projects:manage": "Manage projects",
+  "goals:manage": "Manage goals",
+  "secrets:manage": "Manage secrets",
+  "company:settings": "Manage company settings",
+  "company:export": "Export company data",
+  "approvals:review": "Review approvals",
+  "issues:manage": "Manage issues",
 };
 
 function formatGrantSummary(member: CompanyMember) {
