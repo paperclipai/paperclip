@@ -2,6 +2,7 @@ import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 
 export const defaultCreateValues: CreateConfigValues = {
   adapterType: "claude_local",
+  credentialId: null,
   cwd: "",
   instructionsFilePath: "",
   promptTemplate: "",

@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex, index, jsonb } from "drizzle-orm/pg-core";
 import { organizations } from "./organizations.js";
 
 export const companies = pgTable(
@@ -25,6 +25,7 @@ export const companies = pgTable(
     feedbackDataSharingConsentByUserId: text("feedback_data_sharing_consent_by_user_id"),
     feedbackDataSharingTermsVersion: text("feedback_data_sharing_terms_version"),
     brandColor: text("brand_color"),
+    settings: jsonb("settings").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

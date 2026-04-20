@@ -22,6 +22,7 @@ import {
   runChildProcess,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
+  sanitizeChildEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
@@ -186,7 +187,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
   try {
     const runtimeEnv = Object.fromEntries(
-      Object.entries(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env })).filter(
+      Object.entries(ensurePathInEnv({ ...sanitizeChildEnv(process.env), ...preparedRuntimeConfig.env })).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );

@@ -1,3 +1,4 @@
+import { existsSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -5,6 +6,14 @@ const DEFAULT_INSTANCE_ID = "default";
 const INSTANCE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const FRIENDLY_PATH_SEGMENT_RE = /[^a-zA-Z0-9._-]+/g;
+
+/**
+ * Host-mounted directory used in containerised deployments to persist
+ * database backups outside the Docker volume. Docker-compose mounts the
+ * host path to this location; the server falls back to the in-instance
+ * path when this directory is not present (e.g. local dev).
+ */
+export const EXTERNAL_BACKUP_DIR = "/paperclip/external-backups";
 
 function expandHomePrefix(value: string): string {
   if (value === "~") return os.homedir();
@@ -52,6 +61,23 @@ export function resolveDefaultStorageDir(): string {
 
 export function resolveDefaultBackupDir(): string {
   return path.resolve(resolvePaperclipInstanceRoot(), "data", "backups");
+}
+
+/**
+ * Returns the preferred default backup directory, preferring the
+ * host-mounted {@link EXTERNAL_BACKUP_DIR} when it exists so backups
+ * survive Docker volume wipes. Falls back to the in-instance path
+ * otherwise (local dev, non-Docker installs).
+ */
+export function resolvePreferredDefaultBackupDir(): string {
+  try {
+    if (existsSync(EXTERNAL_BACKUP_DIR) && statSync(EXTERNAL_BACKUP_DIR).isDirectory()) {
+      return EXTERNAL_BACKUP_DIR;
+    }
+  } catch {
+    // fall through to in-instance default
+  }
+  return resolveDefaultBackupDir();
 }
 
 export function resolveDefaultAgentWorkspaceDir(agentId: string): string {

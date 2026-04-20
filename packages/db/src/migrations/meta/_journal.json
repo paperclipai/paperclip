@@ -442,6 +442,27 @@
       "when": 1777248000000,
       "tag": "0062_project_members_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1777939200000,
+      "tag": "0063_company_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1777939260000,
+      "tag": "0064_telegram_thread_mappings",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1777939320000,
+      "tag": "0065_issue_due_date",
+      "breakpoints": true
     }
   ]
 }

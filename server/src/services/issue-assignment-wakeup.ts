@@ -28,7 +28,9 @@ export function queueIssueAssignmentWakeup(input: {
   requestedByActorId?: string | null;
   rethrowOnError?: boolean;
 }) {
-  if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
+  // Master fork: wake agents even for backlog assignments. If an agent is assigned,
+  // they should be woken regardless of status — backlog items otherwise never get picked up.
+  if (!input.issue.assigneeAgentId) return;
 
   return input.heartbeat
     .wakeup(input.issue.assigneeAgentId, {

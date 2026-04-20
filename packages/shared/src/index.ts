@@ -697,7 +697,13 @@ export {
   type ListPluginState,
 } from "./validators/index.js";
 
-export { PROJECT_ROLE_PRESETS, type ProjectRolePreset } from "./role-presets.js";
+export {
+  PROJECT_ROLE_PRESETS,
+  type ProjectRolePreset,
+  ROLE_PRESETS,
+  type RolePreset,
+  AGENT_ROLE_DEFAULT_PERMISSIONS,
+} from "./role-presets.js";
 
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";

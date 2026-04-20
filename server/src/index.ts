@@ -28,7 +28,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { checkSchemaIntegrity } from "./routes/health.js";
-import { notifyOps } from "./services/telegram.js";
+import { initTelegramNotifications, notifyOps } from "./services/telegram.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
@@ -564,6 +564,10 @@ export async function startServer(): Promise<StartedServer> {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
   });
+
+  // Master fork: Telegram coordinator — subscribes to live events and bridges
+  // mentions/comments. No-op if TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are unset.
+  initTelegramNotifications(db as any);
 
   void reconcilePersistedRuntimeServicesOnStartup(db as any)
     .then((result) => {

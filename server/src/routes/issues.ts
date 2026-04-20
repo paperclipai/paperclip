@@ -1352,6 +1352,14 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+    // Master fork: auto-promote backlog → todo when an assignee is set at creation,
+    // so the agent actually gets woken up (backlog items otherwise never start).
+    if (
+      (req.body.assigneeAgentId || req.body.assigneeUserId) &&
+      (!req.body.status || req.body.status === "backlog")
+    ) {
+      req.body.status = "todo";
+    }
     const issue = await svc.create(companyId, {
       ...req.body,
       executionPolicy,
@@ -1375,15 +1383,27 @@ export function issueRoutes(
       },
     });
 
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
+    // Master fork: skip wakeup if parent issue exists and isn't done yet (sequential work).
+    // The agent won't start working until the parent completes; the done-transition
+    // handler cascades wakeups to waiting children.
+    let parentBlocking = false;
+    if (issue.parentId) {
+      const parent = await svc.getById(issue.parentId);
+      if (parent && parent.status !== "done") parentBlocking = true;
+    }
+    if (!parentBlocking) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    } else {
+      logger.info({ issueId: issue.id, parentId: issue.parentId }, "skipping wakeup — parent not done yet");
+    }
 
     res.status(201).json(issue);
   });
@@ -1807,7 +1827,8 @@ export function issueRoutes(
 
       if (executionStageWakeup) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
-      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      } else if (assigneeChanged && issue.assigneeAgentId) {
+        // Master fork: wake agents even on backlog assignments — otherwise backlog items never start.
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
@@ -1940,6 +1961,33 @@ export function issueRoutes(
               blockerIssueIds: dependent.blockerIssueIds,
             },
           });
+        }
+      }
+
+      // Master fork: when a parent issue becomes done, cascade wakeups down to
+      // child issues whose agents were waiting on parent completion (sequential work).
+      if (becameDone) {
+        try {
+          const children = await svc.list(issue.companyId, { parentId: issue.id });
+          for (const child of children) {
+            if (
+              child.assigneeAgentId &&
+              child.status !== "done" &&
+              child.status !== "cancelled"
+            ) {
+              addWakeup(child.assigneeAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "parent_completed",
+                payload: { issueId: child.id, parentIssueId: issue.id },
+                requestedByActorType: actor.actorType,
+                requestedByActorId: actor.actorId,
+                contextSnapshot: { issueId: child.id, parentIssueId: issue.id, source: "parent.completed" },
+              });
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "failed to cascade wakeups to children");
         }
       }
 

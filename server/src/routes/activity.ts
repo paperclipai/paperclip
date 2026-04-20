@@ -4,7 +4,8 @@ import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { activityService } from "../services/activity.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess } from "./authz.js";
-import { heartbeatService, issueService } from "../services/index.js";
+import { accessService, heartbeatService, issueService } from "../services/index.js";
+import { forbidden } from "../errors.js";
 import { sanitizeRecord } from "../redaction.js";
 
 const createActivitySchema = z.object({
@@ -22,6 +23,7 @@ export function activityRoutes(db: Db) {
   const svc = activityService(db);
   const heartbeat = heartbeatService(db);
   const issueSvc = issueService(db);
+  const access = accessService(db);
 
   async function resolveIssueByRef(rawId: string) {
     if (/^[A-Z]+-\d+$/i.test(rawId)) {
@@ -48,6 +50,10 @@ export function activityRoutes(db: Db) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board" && req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+      const allowed = await access.canUser(companyId, req.actor.userId, "company:settings");
+      if (!allowed) throw forbidden("Missing permission: company:settings");
+    }
     const event = await svc.create({
       companyId,
       ...req.body,

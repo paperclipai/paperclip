@@ -55,3 +55,10 @@ export const authVerifications = pgTable("verification", {
   createdAt: timestamp("created_at", { withTimezone: true }),
   updatedAt: timestamp("updated_at", { withTimezone: true }),
 });
+
+export const authTwoFactors = pgTable("two_factor", {
+  id: text("id").primaryKey(),
+  secret: text("secret").notNull(),
+  backupCodes: text("backup_codes").notNull(),
+  userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
+});

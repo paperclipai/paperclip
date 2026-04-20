@@ -12,6 +12,7 @@ import {
   ensureCommandResolvable,
   ensurePathInEnv,
   runChildProcess,
+  sanitizeChildEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
@@ -103,7 +104,7 @@ export async function testEnvironment(
     });
   }
   try {
-    const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env }));
+    const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...sanitizeChildEnv(process.env), ...preparedRuntimeConfig.env }));
 
     const cwdInvalid = checks.some((check) => check.code === "opencode_cwd_invalid");
     if (cwdInvalid) {

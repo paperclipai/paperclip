@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { GOAL_STATUSES, GOAL_LEVELS } from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { goalsApi } from "../api/goals";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
@@ -36,6 +37,7 @@ const levelLabels: Record<string, string> = {
 export function NewGoalDialog() {
   const { newGoalOpen, newGoalDefaults, closeNewGoal } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -66,12 +68,26 @@ export function NewGoalDialog() {
       reset();
       closeNewGoal();
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to create goal",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const uploadDescriptionImage = useMutation({
     mutationFn: async (file: File) => {
       if (!selectedCompanyId) throw new Error("No company selected");
       return assetsApi.uploadImage(selectedCompanyId, file, "goals/drafts");
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to upload image",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 

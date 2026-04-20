@@ -8,6 +8,7 @@ import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { GoalProperties } from "../components/GoalProperties";
 import { GoalTree } from "../components/GoalTree";
@@ -53,6 +54,7 @@ export function GoalDetail() {
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   const {
     data: goal,
@@ -94,6 +96,13 @@ export function GoalDetail() {
           queryKey: queryKeys.goals.list(resolvedCompanyId)
         });
       }
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update goal",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     }
   });
 
@@ -105,6 +114,13 @@ export function GoalDetail() {
         file,
         `goals/${goalId ?? "draft"}`
       );
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to upload image",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     }
   });
 

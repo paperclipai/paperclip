@@ -3,26 +3,33 @@ import type { Db } from "@paperclipai/db";
 import { AGENT_ICON_NAMES } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { listServerAdapters } from "../adapters/index.js";
-import { agentService } from "../services/agents.js";
-
-function hasCreatePermission(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
-  if (!agent.permissions || typeof agent.permissions !== "object") return false;
-  return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
-}
+import { accessService, agentService } from "../services/index.js";
 
 export function llmRoutes(db: Db) {
   const router = Router();
   const agentsSvc = agentService(db);
+  const access = accessService(db);
 
   async function assertCanRead(req: Request) {
     if (req.actor.type === "board") return;
     if (req.actor.type !== "agent" || !req.actor.agentId) {
       throw forbidden("Board or permitted agent authentication required");
     }
+    const allowed = await access.hasPermission(
+      req.actor.companyId ?? "",
+      "agent",
+      req.actor.agentId,
+      "agents:create",
+    );
+    if (allowed) return;
+    // Fallback: check legacy canCreateAgents permission
     const actorAgent = await agentsSvc.getById(req.actor.agentId);
-    if (!actorAgent || !hasCreatePermission(actorAgent)) {
+    if (!actorAgent) {
       throw forbidden("Missing permission to read agent configuration reflection");
     }
+    const perms = actorAgent.permissions as Record<string, unknown> | null | undefined;
+    if (perms && typeof perms === "object" && Boolean(perms.canCreateAgents)) return;
+    throw forbidden("Missing permission to read agent configuration reflection");
   }
 
   router.get("/llms/agent-configuration.txt", async (req, res) => {
