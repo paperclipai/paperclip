@@ -1890,4 +1890,243 @@ class RiskManager:
         return mismatches
 
 
+# ===========================================================================
+# Trade Execution Engine
+# ===========================================================================
+
+class TradeExecutor:
+    """Handles opening and closing live positions with retry escalation."""
+
+    def __init__(self, executors: Dict[str, ExchangeExecutor],
+                 portfolio: Portfolio, risk_mgr: RiskManager):
+        self.executors = executors
+        self.portfolio = portfolio
+        self.risk_mgr = risk_mgr
+        self.order_audit_log: List[dict] = []
+
+    def _log_order(self, result: OrderResult, action: str, position_id: int):
+        self.order_audit_log.append({
+            "timestamp": result.timestamp,
+            "action": action,
+            "position_id": position_id,
+            "exchange": result.exchange,
+            "symbol": result.symbol,
+            "side": result.side,
+            "size_usd": result.size_usd,
+            "filled_usd": result.filled_usd,
+            "fill_price": result.fill_price,
+            "fees_usd": result.fees_usd,
+            "order_id": result.order_id,
+            "latency_ms": result.latency_ms,
+            "success": result.success,
+            "error": result.error,
+            "dry_run": DRY_RUN,
+        })
+        if len(self.order_audit_log) > 1000:
+            self.order_audit_log = self.order_audit_log[-1000:]
+
+    async def open_position(self, symbol: str, q_high: PriceQuote, q_low: PriceQuote,
+                            spread_pct: float, size_usd: float,
+                            session: aiohttp.ClientSession) -> Optional[LivePosition]:
+        size_usd = min(size_usd, MAX_POSITION_USD)
+        ex_short = self.executors.get(q_high.exchange)
+        ex_long = self.executors.get(q_low.exchange)
+        if not ex_short or not ex_long:
+            return None
+
+        pos_id = self.portfolio.next_id
+        self.portfolio.next_id += 1
+        log.info(f"EXEC ENTRY #{pos_id} {symbol}: SHORT {q_high.exchange} / LONG {q_low.exchange} "
+                 f"spread={spread_pct:.3f}% size=${size_usd:.2f}")
+
+        result_short, result_long = await asyncio.gather(
+            ex_short.place_market_order(symbol, "sell", size_usd),
+            ex_long.place_market_order(symbol, "buy", size_usd),
+        )
+        self._log_order(result_short, "entry_short", pos_id)
+        self._log_order(result_long, "entry_long", pos_id)
+
+        # Both filled
+        if result_short.success and result_long.success:
+            actual_size = min(result_short.filled_usd, result_long.filled_usd)
+            if actual_size < 5:
+                log.warning(f"ENTRY #{pos_id} filled too small: ${actual_size:.2f}")
+                await self._emergency_close_leg(ex_short, symbol, "buy", result_short.filled_usd, pos_id)
+                await self._emergency_close_leg(ex_long, symbol, "sell", result_long.filled_usd, pos_id)
+                return None
+            pos = LivePosition(
+                id=pos_id, symbol=symbol,
+                exchange_short=q_high.exchange, exchange_long=q_low.exchange,
+                instrument_short=q_high.instrument, instrument_long=q_low.instrument,
+                entry_spread_pct=spread_pct,
+                entry_price_short=result_short.fill_price,
+                entry_price_long=result_long.fill_price,
+                size_usd=actual_size,
+                entry_time=datetime.now(timezone.utc),
+                order_id_short=result_short.order_id,
+                order_id_long=result_long.order_id,
+                entry_fees_usd=result_short.fees_usd + result_long.fees_usd,
+            )
+            self.portfolio.positions.append(pos)
+            self.portfolio.total_trades += 1
+            log.info(f"OPEN #{pos_id} {symbol} spread={spread_pct:.3f}% size=${actual_size:.2f} "
+                     f"latency={result_short.latency_ms:.0f}ms/{result_long.latency_ms:.0f}ms")
+            return pos
+
+        # One filled, one failed — emergency close
+        if result_short.success and not result_long.success:
+            log.warning(f"ENTRY #{pos_id} LEG FAILURE: short filled, long failed ({result_long.error})")
+            await self._emergency_close_leg(ex_short, symbol, "buy", result_short.filled_usd, pos_id)
+            return None
+        if result_long.success and not result_short.success:
+            log.warning(f"ENTRY #{pos_id} LEG FAILURE: long filled, short failed ({result_short.error})")
+            await self._emergency_close_leg(ex_long, symbol, "sell", result_long.filled_usd, pos_id)
+            return None
+
+        # Both failed
+        log.warning(f"ENTRY #{pos_id} BOTH FAILED: {result_short.error} / {result_long.error}")
+        return None
+
+    async def _emergency_close_leg(self, executor: ExchangeExecutor, symbol: str,
+                                    side: str, size_usd: float, pos_id: int):
+        for attempt in range(6):
+            delay = [1, 2, 5, 10, 10, 10][attempt]
+            result = await executor.place_market_order(symbol, side, size_usd)
+            self._log_order(result, f"emergency_close_{attempt+1}", pos_id)
+            if result.success:
+                log.info(f"EMERGENCY CLOSE #{pos_id} succeeded on attempt {attempt+1}")
+                return
+            log.warning(f"EMERGENCY CLOSE #{pos_id} attempt {attempt+1} failed: {result.error}")
+            await asyncio.sleep(delay)
+        log.critical(f"EMERGENCY CLOSE #{pos_id} FAILED after 6 attempts")
+
+    async def close_position(self, pos: LivePosition, current_spread: float, reason: str) -> bool:
+        ex_short = self.executors.get(pos.exchange_short)
+        ex_long = self.executors.get(pos.exchange_long)
+        if not ex_short or not ex_long:
+            return False
+
+        pos.status = "CLOSING"
+        log.info(f"EXEC EXIT #{pos.id} {pos.symbol}: reason={reason}")
+
+        result_short, result_long = await asyncio.gather(
+            ex_short.place_market_order(pos.symbol, "buy", pos.size_usd),
+            ex_long.place_market_order(pos.symbol, "sell", pos.size_usd),
+        )
+        self._log_order(result_short, "exit_short", pos.id)
+        self._log_order(result_long, "exit_long", pos.id)
+
+        if result_short.success and result_long.success:
+            self._finalize_close(pos, result_short, result_long, current_spread, reason)
+            return True
+
+        # Handle partial failure — enter degraded state
+        if not result_short.success:
+            pos.status = "DEGRADED"
+            pos.degraded_leg = "short"
+            pos.close_retry_count = 1
+            pos.last_close_attempt = time.time()
+        if not result_long.success:
+            pos.status = "DEGRADED"
+            pos.degraded_leg = "long" if result_short.success else "both"
+            pos.close_retry_count = 1
+            pos.last_close_attempt = time.time()
+
+        if result_short.success:
+            pos.exit_price_short = result_short.fill_price
+            pos.order_id_close_short = result_short.order_id
+        if result_long.success:
+            pos.exit_price_long = result_long.fill_price
+            pos.order_id_close_long = result_long.order_id
+        return False
+
+    async def retry_degraded_positions(self):
+        for pos in self.portfolio.open_positions:
+            if pos.status != "DEGRADED":
+                continue
+            elapsed = time.time() - (pos.last_close_attempt or 0)
+            if pos.close_retry_count <= 3:
+                delay = [1, 2, 5][pos.close_retry_count - 1]
+            elif pos.close_retry_count <= 6:
+                delay = 10
+            else:
+                delay = 30
+            if elapsed < delay:
+                continue
+
+            pos.close_retry_count += 1
+            pos.last_close_attempt = time.time()
+
+            if pos.degraded_leg in ("short", "both"):
+                ex = self.executors.get(pos.exchange_short)
+                if ex:
+                    result = await ex.place_market_order(pos.symbol, "buy", pos.size_usd)
+                    self._log_order(result, f"retry_close_short_{pos.close_retry_count}", pos.id)
+                    if result.success:
+                        pos.exit_price_short = result.fill_price
+                        pos.order_id_close_short = result.order_id
+                        if pos.degraded_leg == "short":
+                            pos.degraded_leg = ""
+                        elif pos.degraded_leg == "both":
+                            pos.degraded_leg = "long"
+                        log.info(f"RECOVERED short leg #{pos.id}")
+
+            if pos.degraded_leg in ("long", "both"):
+                ex = self.executors.get(pos.exchange_long)
+                if ex:
+                    result = await ex.place_market_order(pos.symbol, "sell", pos.size_usd)
+                    self._log_order(result, f"retry_close_long_{pos.close_retry_count}", pos.id)
+                    if result.success:
+                        pos.exit_price_long = result.fill_price
+                        pos.order_id_close_long = result.order_id
+                        if pos.degraded_leg == "long":
+                            pos.degraded_leg = ""
+                        elif pos.degraded_leg == "both":
+                            pos.degraded_leg = "short"
+                        log.info(f"RECOVERED long leg #{pos.id}")
+
+            if not pos.degraded_leg:
+                r_short = OrderResult(True, pos.order_id_close_short, pos.exchange_short,
+                                      pos.symbol, "buy", pos.size_usd, pos.size_usd,
+                                      pos.exit_price_short, 0.0, time.time())
+                r_long = OrderResult(True, pos.order_id_close_long, pos.exchange_long,
+                                     pos.symbol, "sell", pos.size_usd, pos.size_usd,
+                                     pos.exit_price_long, 0.0, time.time())
+                self._finalize_close(pos, r_short, r_long, 0.0, "recovered")
+
+    def _finalize_close(self, pos: LivePosition,
+                        result_short: OrderResult, result_long: OrderResult,
+                        current_spread: float, reason: str):
+        pos.status = "CLOSED"
+        pos.exit_time = datetime.now(timezone.utc)
+        pos.exit_spread_pct = current_spread
+        pos.exit_price_short = result_short.fill_price
+        pos.exit_price_long = result_long.fill_price
+        pos.exit_fees_usd = result_short.fees_usd + result_long.fees_usd
+        pos.exit_reason = reason
+
+        if pos.entry_price_short > 0 and pos.entry_price_long > 0:
+            short_pnl = (pos.entry_price_short - pos.exit_price_short) / pos.entry_price_short
+            long_pnl = (pos.exit_price_long - pos.entry_price_long) / pos.entry_price_long
+            pos.gross_pnl_usd = (short_pnl + long_pnl) * pos.size_usd
+        pos.net_pnl_usd = pos.gross_pnl_usd - pos.entry_fees_usd - pos.exit_fees_usd
+
+        self.portfolio.cash += pos.net_pnl_usd
+        self.portfolio.total_pnl_usd += pos.net_pnl_usd
+        if pos.net_pnl_usd > 0:
+            self.portfolio.total_wins += 1
+        self.portfolio.closed_positions.append(pos)
+        self.portfolio.positions.remove(pos)
+
+        equity = self.portfolio.equity
+        if equity > self.portfolio.peak_equity:
+            self.portfolio.peak_equity = equity
+        dd = (self.portfolio.peak_equity - equity) / self.portfolio.peak_equity * 100
+        if dd > self.portfolio.max_drawdown_pct:
+            self.portfolio.max_drawdown_pct = dd
+
+        log.info(f"CLOSE #{pos.id} {pos.symbol} reason={reason} "
+                 f"pnl=${pos.net_pnl_usd:+.4f} equity=${equity:.2f}")
+
+
 # Classes, functions, and main loop will be added in subsequent tasks.
