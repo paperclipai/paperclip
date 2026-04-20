@@ -100,6 +100,9 @@ describe("cli telemetry", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-cli-telemetry-"));
     process.env.AITEAMCORP_HOME = path.join(root, "home");
     process.env.AITEAMCORP_INSTANCE_ID = "telemetry-test";
+    // Fork disabled default endpoints, so telemetry needs an explicit
+    // endpoint to be treated as enabled (see packages/shared/src/telemetry/config.ts).
+    process.env.AITEAMCORP_TELEMETRY_ENDPOINT = "https://aiteamcorp.example/ingest";
 
     const { initTelemetry, flushTelemetry } = await import("../telemetry.js");
     const client = initTelemetry({ enabled: true });

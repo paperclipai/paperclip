@@ -465,7 +465,7 @@ function buildStandardAiTeamCorpPayload(
   aiteamcorpEnv: Record<string, string>,
   payloadTemplate: Record<string, unknown>,
 ): Record<string, unknown> {
-  const templatePaperclip = parseObject(payloadTemplate.paperclip);
+  const templateAiTeamCorp = parseObject(payloadTemplate.aiteamcorp);
   const workspace = asRecord(ctx.context.aiteamcorpWorkspace);
   const workspaces = Array.isArray(ctx.context.aiteamcorpWorkspaces)
     ? ctx.context.aiteamcorpWorkspaces.filter((entry): entry is Record<string, unknown> => Boolean(asRecord(entry)))
@@ -477,7 +477,7 @@ function buildStandardAiTeamCorpPayload(
       )
     : [];
 
-  const standardPaperclip: Record<string, unknown> = {
+  const standardAiTeamCorp: Record<string, unknown> = {
     runId: ctx.runId,
     companyId: ctx.agent.companyId,
     agentId: ctx.agent.id,
@@ -493,25 +493,25 @@ function buildStandardAiTeamCorpPayload(
   };
   const structuredWake = parseObject(ctx.context.aiteamcorpWake);
   if (Object.keys(structuredWake).length > 0) {
-    standardPaperclip.wake = structuredWake;
+    standardAiTeamCorp.wake = structuredWake;
   }
 
   if (workspace) {
-    standardPaperclip.workspace = workspace;
+    standardAiTeamCorp.workspace = workspace;
   }
   if (workspaces.length > 0) {
-    standardPaperclip.workspaces = workspaces;
+    standardAiTeamCorp.workspaces = workspaces;
   }
   if (runtimeServiceIntents.length > 0 || Object.keys(configuredWorkspaceRuntime).length > 0) {
-    standardPaperclip.workspaceRuntime = {
+    standardAiTeamCorp.workspaceRuntime = {
       ...configuredWorkspaceRuntime,
       ...(runtimeServiceIntents.length > 0 ? { services: runtimeServiceIntents } : {}),
     };
   }
 
   return {
-    ...templatePaperclip,
-    ...standardPaperclip,
+    ...templateAiTeamCorp,
+    ...standardAiTeamCorp,
   };
 }
 
@@ -1132,7 +1132,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  agentParams.paperclip = aiteamcorpPayload;
+  agentParams.aiteamcorp = aiteamcorpPayload;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {

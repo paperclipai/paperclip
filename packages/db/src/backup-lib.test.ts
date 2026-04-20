@@ -80,7 +80,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       const sourceConnectionString = await createTempDatabase();
       const restoreConnectionString = await createSiblingDatabase(
         sourceConnectionString,
-        "paperclip_restore_target",
+        "aiteamcorp_restore_target",
       );
       const backupDir = createTempDir("aiteamcorp-db-backup-output-");
       const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
@@ -129,7 +129,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           filenamePrefix: "aiteamcorp-test",
         });
 
-        expect(result.backupFile).toMatch(/paperclip-test-.*\.sql\.gz$/);
+        expect(result.backupFile).toMatch(/aiteamcorp-test-.*\.sql\.gz$/);
         expect(result.sizeBytes).toBeGreaterThan(0);
         expect(fs.existsSync(result.backupFile)).toBe(true);
 
@@ -193,14 +193,14 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             "-- Created: 2026-04-06T00:00:00.000Z",
             "",
             "BEGIN;",
-            "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
+            "-- aiteamcorp statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
             "CREATE TABLE public.restore_stream_test (id integer primary key, payload text not null);",
-            "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
+            "-- aiteamcorp statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
             "INSERT INTO public.restore_stream_test (id, payload)",
             "VALUES (1, 'hello');",
-            "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
+            "-- aiteamcorp statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
             "COMMIT;",
-            "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
+            "-- aiteamcorp statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900",
           ].join("\n"),
           "utf8",
         );

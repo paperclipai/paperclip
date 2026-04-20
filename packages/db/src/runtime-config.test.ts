@@ -91,7 +91,7 @@ describe("resolveDatabaseTarget", () => {
     writeJson(configPath, {
       database: {
         mode: "embedded-postgres",
-        embeddedPostgresDataDir: "~/paperclip-test-db",
+        embeddedPostgresDataDir: "~/aiteamcorp-test-db",
         embeddedPostgresPort: 55444,
       },
     });
