@@ -7,6 +7,9 @@ function isCI(): boolean {
 }
 
 export function resolveTelemetryConfig(fileConfig?: { enabled?: boolean }): TelemetryConfig {
-  // Telemetry is now disabled by default
+  if (fileConfig?.enabled === true) {
+    const endpoint = process.env.PAPERCLIP_TELEMETRY_ENDPOINT || undefined;
+    return { enabled: true, endpoint };
+  }
   return { enabled: false };
 }
