@@ -33,32 +33,27 @@ export function LanguageSelector() {
   const { i18n } = useTranslation();
   const [languages, setLanguages] = useState<AvailableLanguage[]>([
     { code: "en", source: "core" },
-    { code: "ko", source: "core" },
   ]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/plugins/languages");
+        const res = await fetch("/api/languages");
         if (!res.ok || cancelled) return;
         const data = await res.json() as AvailableLanguage[];
         if (!cancelled && data.length > 0) {
-          // Merge: core languages first, then plugin-provided
-          const coreSet = new Set(["en", "ko"]);
-          const merged: AvailableLanguage[] = [
-            { code: "en", source: "core" },
-            { code: "ko", source: "core" },
-          ];
+          // EN is always first (Core), then plugin-provided languages
+          const merged: AvailableLanguage[] = [{ code: "en", source: "core" }];
           for (const lang of data) {
-            if (!coreSet.has(lang.code)) {
+            if (lang.code !== "en") {
               merged.push(lang);
             }
           }
           setLanguages(merged);
         }
       } catch {
-        // API unavailable — keep default core languages
+        // API unavailable — only EN available
       }
     })();
     return () => { cancelled = true; };

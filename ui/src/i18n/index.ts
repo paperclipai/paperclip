@@ -3,7 +3,7 @@ import { initReactI18next } from "react-i18next";
 // LanguageDetector removed — it overrides lng setting based on navigator.language
 // Language is managed via localStorage("paperclip.language") + LanguageSelector component
 
-// English resources (inlined)
+// English resources (inlined — only EN is bundled in Core)
 import commonEn from "./locales/en/common.json";
 import agentsEn from "./locales/en/agents.json";
 import costsEn from "./locales/en/costs.json";
@@ -20,22 +20,7 @@ import skillsEn from "./locales/en/skills.json";
 import workspacesEn from "./locales/en/workspaces.json";
 import pluginsEn from "./locales/en/plugins.json";
 
-// Korean resources (inlined for instant availability)
-import commonKo from "./locales/ko/common.json";
-import agentsKo from "./locales/ko/agents.json";
-import costsKo from "./locales/ko/costs.json";
-import inboxKo from "./locales/ko/inbox.json";
-import dashboardKo from "./locales/ko/dashboard.json";
-import issuesKo from "./locales/ko/issues.json";
-import projectsKo from "./locales/ko/projects.json";
-import goalsKo from "./locales/ko/goals.json";
-import approvalsKo from "./locales/ko/approvals.json";
-import routinesKo from "./locales/ko/routines.json";
-import settingsKo from "./locales/ko/settings.json";
-import onboardingKo from "./locales/ko/onboarding.json";
-import skillsKo from "./locales/ko/skills.json";
-import workspacesKo from "./locales/ko/workspaces.json";
-import pluginsKo from "./locales/ko/plugins.json";
+// Non-English languages are loaded on demand from plugins via loadLanguage()
 
 const ns = [
   "common", "agents", "costs", "inbox",
@@ -71,23 +56,6 @@ i18n
         workspaces: workspacesEn,
         plugins: pluginsEn,
       },
-      ko: {
-        common: commonKo,
-        agents: agentsKo,
-        costs: costsKo,
-        inbox: inboxKo,
-        dashboard: dashboardKo,
-        issues: issuesKo,
-        projects: projectsKo,
-        goals: goalsKo,
-        approvals: approvalsKo,
-        routines: routinesKo,
-        settings: settingsKo,
-        onboarding: onboardingKo,
-        skills: skillsKo,
-        workspaces: workspacesKo,
-        plugins: pluginsKo,
-      },
     },
     ns,
     defaultNS: "common",
@@ -98,63 +66,32 @@ i18n
   } as Parameters<typeof i18n.init>[0]);
 
 /**
- * Load language bundles on demand.
+ * Load language bundles on demand from plugins.
  *
- * For EN: already inlined and authoritative, no fetch needed.
- * For KO: inlined in Core, but also fetches from server plugin locale API
- * to allow plugins to supplement/override translations.
- * For other languages: fetches from local Vite glob (if available)
- * and from the server plugin locale API.
+ * EN is inlined in Core and never needs loading.
+ * All other languages (ko, ja, es, etc.) are loaded from the server
+ * plugin locale API when the user switches language.
  */
 export async function loadLanguage(lng: string): Promise<void> {
   if (lng === "en") return; // EN is always inlined and authoritative
 
-  // KO is inlined but may be supplemented/overridden by plugins.
-  // For inlined languages, skip local Vite glob but still fetch from server.
-  const isInlined = lng === "ko";
-
-  // Try local Vite glob first (for languages bundled in Core, skip if already inlined)
-  const localLoads: Promise<void>[] = [];
-  if (!isInlined) {
-    const modules = import.meta.glob("./locales/**/*.json") as Record<
-      string,
-      () => Promise<{ default: Record<string, unknown> }>
-    >;
-
-    const prefix = `./locales/${lng}/`;
-    localLoads.push(
-      ...Object.entries(modules)
-        .filter(([p]) => p.startsWith(prefix))
-        .map(async ([p, loader]) => {
-          const nsName = p.match(/\/(\w+)\.json$/)?.[1];
-          if (!nsName) return;
-          const mod = await loader();
-          i18n.addResourceBundle(lng, nsName, mod.default, true, true);
-        }),
-    );
-  }
-
-  // Also try server plugin locale API
-  const serverLoad = (async () => {
-    try {
-      const res = await fetch(`/api/plugins/locales/${encodeURIComponent(lng)}?_t=${Date.now()}`);
-      if (!res.ok) return;
-      const bundle = await res.json() as {
-        core: Record<string, Record<string, string>>;
-        custom: Record<string, Record<string, string>>;
-      };
-      for (const [ns, translations] of Object.entries(bundle.core)) {
-        i18n.addResourceBundle(lng, ns, translations, true, true);
-      }
-      for (const [scopedKey, translations] of Object.entries(bundle.custom)) {
-        i18n.addResourceBundle(lng, scopedKey, translations, true, true);
-      }
-    } catch {
-      // Server unavailable — use local bundles only
+  // Fetch from server plugin locale API
+  try {
+    const res = await fetch(`/api/locales/${encodeURIComponent(lng)}?_t=${Date.now()}`);
+    if (!res.ok) return;
+    const bundle = await res.json() as {
+      core: Record<string, Record<string, string>>;
+      custom: Record<string, Record<string, string>>;
+    };
+    for (const [ns, translations] of Object.entries(bundle.core)) {
+      i18n.addResourceBundle(lng, ns, translations, true, true);
     }
-  })();
-
-  await Promise.all([...localLoads, serverLoad]);
+    for (const [scopedKey, translations] of Object.entries(bundle.custom)) {
+      i18n.addResourceBundle(lng, scopedKey, translations, true, true);
+    }
+  } catch {
+    // Server unavailable — fallback to EN
+  }
 }
 
 /**

@@ -12,7 +12,7 @@
     "ui": "./dist/ui/"
   },
   "scripts": {
-    "prebuild": "node ../../../../scripts/ensure-plugin-build-deps.mjs",
+    "prebuild": "node ../../../scripts/ensure-plugin-build-deps.mjs",
     "build": "tsc && mkdir -p dist/ui/locales/ko && cp locales/core/*.json dist/ui/locales/ko/",
     "clean": "rm -rf dist",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"

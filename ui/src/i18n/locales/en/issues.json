@@ -405,5 +405,9 @@
   "executionParticipant.noParticipants": "No {{label}}",
   "executionParticipant.assignToMe": "Assign to me",
   "executionParticipant.requester": "Requester",
-  "executionParticipant.userFallback": "User"
+  "executionParticipant.userFallback": "User",
+  "filters.hide_routine_runs": "Hide routine runs",
+  "list.createLabel": "Create {{label}}",
+  "list.newLabel": "New {{label}}",
+  "properties.clickToCopy": "Click to copy"
 }

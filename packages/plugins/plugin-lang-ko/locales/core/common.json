@@ -415,5 +415,7 @@
   "companyMenu.signingOut": "로그아웃 중...",
   "companyMenu.signOut": "로그아웃",
   "companyMenu.openCompanyMenuNamed": "{{name}} 메뉴 열기",
-  "companyMenu.openCompanyMenu": "회사 메뉴 열기"
+  "companyMenu.openCompanyMenu": "회사 메뉴 열기",
+  "editor.dropFileToUpload": "파일을 놓아 업로드하세요",
+  "editor.dropImageToUpload": "이미지를 놓아 업로드하세요"
 }

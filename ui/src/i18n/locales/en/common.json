@@ -415,5 +415,7 @@
   "companyMenu.signingOut": "Signing out...",
   "companyMenu.signOut": "Sign out",
   "companyMenu.openCompanyMenuNamed": "Open {{name}} menu",
-  "companyMenu.openCompanyMenu": "Open company menu"
+  "companyMenu.openCompanyMenu": "Open company menu",
+  "editor.dropFileToUpload": "Drop file to upload",
+  "editor.dropImageToUpload": "Drop image to upload"
 }
