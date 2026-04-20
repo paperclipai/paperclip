@@ -5,7 +5,6 @@ import {
   LayoutDashboard,
   DollarSign,
   History,
-  Home,
   Search,
   SquarePen,
   Network,
@@ -18,14 +17,12 @@ import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjects } from "./SidebarProjects";
 import { SidebarAgents } from "./SidebarAgents";
-import { SidebarUserFooter } from "./SidebarUserFooter";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
-import { Link } from "@/lib/router";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 export function Sidebar() {
@@ -51,20 +48,11 @@ export function Sidebar() {
 
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top: Home link + search (company name lives in footer CompanySwitcher) */}
+      {/* Top: current company label + search (Paperclip logo in CompanyRail links to /home) */}
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="text-muted-foreground shrink-0"
-          asChild
-          aria-label="Home"
-        >
-          <Link to="/home">
-            <Home className="h-4 w-4" />
-          </Link>
-        </Button>
-        <div className="min-w-0 flex-1" />
+        <span className="min-w-0 flex-1 truncate text-sm font-bold text-foreground">
+          {selectedCompany?.name ?? "Paperclip"}
+        </span>
         <Button
           variant="ghost"
           size="icon-sm"
@@ -130,7 +118,6 @@ export function Sidebar() {
           missingBehavior="placeholder"
         />
       </nav>
-      <SidebarUserFooter />
     </aside>
   );
 }

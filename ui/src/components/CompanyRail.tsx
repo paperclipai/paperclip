@@ -1,5 +1,5 @@
-import { useCallback, useMemo } from "react";
-import { Paperclip, Plus } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
+import { Check, Paperclip, Plus, Settings } from "lucide-react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   DndContext,
@@ -18,18 +18,34 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
+import { useOrg } from "../context/OrgContext";
+import { useSidebar } from "../context/SidebarContext";
 import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
 import { authApi } from "../api/auth";
 import { useCompanyOrder } from "../hooks/useCompanyOrder";
-import { useLocation, useNavigate } from "@/lib/router";
+import { Link, useLocation, useNavigate } from "@/lib/router";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from "@/components/ui/command";
 import type { Company } from "@paperclipai/shared";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 
@@ -200,10 +216,27 @@ export function CompanyRail() {
 
   return (
     <div className="flex flex-col items-center w-[72px] shrink-0 h-full bg-background border-r border-border">
-      {/* Paperclip icon - aligned with top sections (implied line, no visible border) */}
-      <div className="flex items-center justify-center h-12 w-full shrink-0">
-        <Paperclip className="h-5 w-5 text-foreground" />
+      {/* Paperclip logo → Home page */}
+      <Tooltip delayDuration={300}>
+        <TooltipTrigger asChild>
+          <Link
+            to="/home"
+            className="flex items-center justify-center h-12 w-full shrink-0 text-foreground hover:text-foreground/80"
+            aria-label="Home"
+          >
+            <Paperclip className="h-5 w-5" />
+          </Link>
+        </TooltipTrigger>
+        <TooltipContent side="right" sideOffset={8}>
+          <p>Home</p>
+        </TooltipContent>
+      </Tooltip>
+
+      {/* Organization switcher */}
+      <div className="flex items-center justify-center w-full py-2 shrink-0">
+        <OrgSwitcherChip />
       </div>
+      <div className="w-8 h-px bg-border mx-auto shrink-0" />
 
       {/* Company list */}
       <div className="flex-1 flex flex-col items-center gap-2 py-3 w-full overflow-y-auto overflow-x-hidden scrollbar-none">
@@ -256,5 +289,88 @@ export function CompanyRail() {
         </Tooltip>
       </div>
     </div>
+  );
+}
+
+function orgInitials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return `${parts[0]![0]}${parts[parts.length - 1]![0]}`.toUpperCase();
+}
+
+function OrgSwitcherChip() {
+  const [open, setOpen] = useState(false);
+  const navigate = useNavigate();
+  const { organizations, selectedOrg, setSelectedOrgId, loading } = useOrg();
+  const { isMobile, setSidebarOpen } = useSidebar();
+
+  const label = selectedOrg?.name ?? (loading ? "…" : "Org");
+  const initials = orgInitials(label);
+
+  function handleSelect(orgId: string) {
+    setSelectedOrgId(orgId);
+    setOpen(false);
+  }
+
+  function handleManage() {
+    setOpen(false);
+    if (isMobile) setSidebarOpen(false);
+    navigate("/organizations");
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <Tooltip delayDuration={300}>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="flex items-center justify-center w-9 h-9 rounded-lg border border-border bg-muted/30 text-[11px] font-semibold text-foreground hover:bg-muted/60 transition-colors"
+              aria-label={selectedOrg ? `Switch organization (current: ${selectedOrg.name})` : "Select organization"}
+            >
+              {initials}
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="right" sideOffset={8}>
+          <p>{selectedOrg ? `Org: ${selectedOrg.name}` : "Organizations"}</p>
+        </TooltipContent>
+      </Tooltip>
+      <PopoverContent align="start" side="right" sideOffset={8} className="w-64 p-0">
+        <Command>
+          <CommandInput placeholder="Search organizations..." />
+          <CommandList>
+            <CommandEmpty>No organizations found.</CommandEmpty>
+            {organizations.length > 0 ? (
+              <CommandGroup heading="Organizations">
+                {organizations.map((org) => (
+                  <CommandItem
+                    key={org.id}
+                    value={org.name}
+                    onSelect={() => handleSelect(org.id)}
+                  >
+                    <span className="flex h-5 w-5 items-center justify-center rounded bg-muted text-[10px] font-semibold">
+                      {orgInitials(org.name)}
+                    </span>
+                    <span className="truncate">{org.name}</span>
+                    {selectedOrg?.id === org.id ? (
+                      <Check className="ml-auto size-4" />
+                    ) : null}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            ) : null}
+            <CommandSeparator />
+            <CommandGroup>
+              <CommandItem value="__manage" onSelect={handleManage}>
+                <Settings className="size-4 text-muted-foreground" />
+                <span>Manage organizations</span>
+              </CommandItem>
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
