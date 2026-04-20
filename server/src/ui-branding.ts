@@ -1,7 +1,7 @@
-const FAVICON_BLOCK_START = "<!-- PAPERCLIP_FAVICON_START -->";
-const FAVICON_BLOCK_END = "<!-- PAPERCLIP_FAVICON_END -->";
-const RUNTIME_BRANDING_BLOCK_START = "<!-- PAPERCLIP_RUNTIME_BRANDING_START -->";
-const RUNTIME_BRANDING_BLOCK_END = "<!-- PAPERCLIP_RUNTIME_BRANDING_END -->";
+const FAVICON_BLOCK_START = "<!-- AITEAMCORP_FAVICON_START -->";
+const FAVICON_BLOCK_END = "<!-- AITEAMCORP_FAVICON_END -->";
+const RUNTIME_BRANDING_BLOCK_START = "<!-- AITEAMCORP_RUNTIME_BRANDING_START -->";
+const RUNTIME_BRANDING_BLOCK_END = "<!-- AITEAMCORP_RUNTIME_BRANDING_END -->";
 
 const DEFAULT_FAVICON_LINKS = [
   '<link rel="icon" href="/favicon.ico" sizes="48x48" />',
@@ -141,7 +141,7 @@ function createFaviconDataUrl(background: string, foreground: string): string {
 }
 
 export function isWorktreeUiBrandingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return isTruthyEnvValue(env.PAPERCLIP_IN_WORKTREE);
+  return isTruthyEnvValue(env.AITEAMCORP_IN_WORKTREE);
 }
 
 export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): WorktreeUiBranding {
@@ -155,8 +155,8 @@ export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): Wor
     };
   }
 
-  const name = nonEmpty(env.PAPERCLIP_WORKTREE_NAME) ?? nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? "worktree";
-  const color = normalizeHexColor(env.PAPERCLIP_WORKTREE_COLOR) ?? deriveColorFromSeed(name);
+  const name = nonEmpty(env.AITEAMCORP_WORKTREE_NAME) ?? nonEmpty(env.AITEAMCORP_INSTANCE_ID) ?? "worktree";
+  const color = normalizeHexColor(env.AITEAMCORP_WORKTREE_COLOR) ?? deriveColorFromSeed(name);
   const textColor = pickReadableTextColor(color);
 
   return {

@@ -76,8 +76,8 @@ OPENCLAW_DISABLE_DEVICE_AUTH="${OPENCLAW_DISABLE_DEVICE_AUTH:-1}"
 OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openai/gpt-5.2}"
 OPENCLAW_MODEL_FALLBACK="${OPENCLAW_MODEL_FALLBACK:-openai/gpt-5.2-chat-latest}"
 OPENCLAW_RESET_STATE="${OPENCLAW_RESET_STATE:-1}"
-PAPERCLIP_HOST_PORT="${PAPERCLIP_HOST_PORT:-3100}"
-PAPERCLIP_HOST_FROM_CONTAINER="${PAPERCLIP_HOST_FROM_CONTAINER:-host.docker.internal}"
+AITEAMCORP_HOST_PORT="${AITEAMCORP_HOST_PORT:-3100}"
+AITEAMCORP_HOST_FROM_CONTAINER="${AITEAMCORP_HOST_FROM_CONTAINER:-host.docker.internal}"
 
 case "$OPENCLAW_DISABLE_DEVICE_AUTH" in
   1|true|TRUE|True|yes|YES|Yes)
@@ -212,11 +212,11 @@ compose() {
 detect_paperclip_base_url() {
   local bridge_gateway candidate health_url
   bridge_gateway="$(docker network inspect openclaw-docker_default --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
-  for candidate in "$PAPERCLIP_HOST_FROM_CONTAINER" "$bridge_gateway"; do
+  for candidate in "$AITEAMCORP_HOST_FROM_CONTAINER" "$bridge_gateway"; do
     [[ -n "$candidate" ]] || continue
-    health_url="http://${candidate}:${PAPERCLIP_HOST_PORT}/api/health"
+    health_url="http://${candidate}:${AITEAMCORP_HOST_PORT}/api/health"
     if compose exec -T openclaw-gateway node -e "fetch('${health_url}').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
-      echo "http://${candidate}:${PAPERCLIP_HOST_PORT}"
+      echo "http://${candidate}:${AITEAMCORP_HOST_PORT}"
       return 0
     fi
   done
@@ -275,8 +275,8 @@ EOF
 EOF
   else
     cat <<EOF
-  Auto-detect failed. Try: http://host.docker.internal:${PAPERCLIP_HOST_PORT}
-  (Do not use http://127.0.0.1:${PAPERCLIP_HOST_PORT} inside the container.)
+  Auto-detect failed. Try: http://host.docker.internal:${AITEAMCORP_HOST_PORT}
+  (Do not use http://127.0.0.1:${AITEAMCORP_HOST_PORT} inside the container.)
   If Paperclip rejects the host, run on host machine:
     pnpm aiteamcorp allowed-hostname host.docker.internal
   Then restart Paperclip and re-run this script.
@@ -308,8 +308,8 @@ EOF
 EOF
   else
     cat <<EOF
-  Auto-detect failed. Try: http://host.docker.internal:${PAPERCLIP_HOST_PORT}
-  (Do not use http://127.0.0.1:${PAPERCLIP_HOST_PORT} inside the container.)
+  Auto-detect failed. Try: http://host.docker.internal:${AITEAMCORP_HOST_PORT}
+  (Do not use http://127.0.0.1:${AITEAMCORP_HOST_PORT} inside the container.)
   If Paperclip rejects the host, run on host machine:
     pnpm aiteamcorp allowed-hostname host.docker.internal
   Then restart Paperclip and re-run this script.

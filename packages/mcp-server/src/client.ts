@@ -62,7 +62,7 @@ export class PaperclipApiClient {
   resolveCompanyId(companyId?: string | null): string {
     const resolved = companyId?.trim() || this.config.companyId;
     if (!resolved) {
-      throw new Error("companyId is required because PAPERCLIP_COMPANY_ID is not set");
+      throw new Error("companyId is required because AITEAMCORP_COMPANY_ID is not set");
     }
     return resolved;
   }
@@ -70,7 +70,7 @@ export class PaperclipApiClient {
   resolveAgentId(agentId?: string | null): string {
     const resolved = agentId?.trim() || this.config.agentId;
     if (!resolved) {
-      throw new Error("agentId is required because PAPERCLIP_AGENT_ID is not set");
+      throw new Error("agentId is required because AITEAMCORP_AGENT_ID is not set");
     }
     return resolved;
   }

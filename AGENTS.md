@@ -176,7 +176,7 @@ A change is done when all are true:
 
 ## 11. Fork-Specific: HenkDz/paperclip
 
-This is a fork of `aiteamcorporated-collab/ai-team-coprorated` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
+This is a fork of `aiteamcorporated-collab/ai-team-coprorated` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/aiteamcorp/tree/feat/externalize-hermes-adapter)).
 
 ### Branch Strategy
 
@@ -187,7 +187,7 @@ This is a fork of `aiteamcorporated-collab/ai-team-coprorated` with QoL patches 
 
 - Register through **Board → Adapter manager** (same as Droid). Type remains `hermes_local` once the package is loaded.
 - UI uses generic **config-schema** + **ui-parser.js** from the package — no Hermes imports in `server/` or `ui/` source.
-- Optional: `file:` entry in `~/.paperclip/adapter-plugins.json` for local dev of the adapter repo.
+- Optional: `file:` entry in `~/.aiteamcorp/adapter-plugins.json` for local dev of the adapter repo.
 
 ### Local Dev
 
@@ -209,7 +209,7 @@ These are local modifications in the fork's UI. If re-copying source, these must
 
 PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See root `AGENTS.md` for full details.
 
-- Adapters can be loaded as external plugins via `~/.paperclip/adapter-plugins.json`
+- Adapters can be loaded as external plugins via `~/.aiteamcorp/adapter-plugins.json`
 - The plugin-loader should have ZERO hardcoded adapter imports — pure dynamic loading
 - `createServerAdapter()` must include ALL optional fields (especially `detectModel`)
 - Built-in UI adapters can shadow external plugin parsers — remove built-in when fully externalizing

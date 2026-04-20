@@ -57,16 +57,16 @@ export function secretsCheck(config: PaperclipConfig, configPath?: string): Chec
     };
   }
 
-  const envMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+  const envMasterKey = process.env.AITEAMCORP_SECRETS_MASTER_KEY;
   if (envMasterKey && envMasterKey.trim().length > 0) {
     if (!decodeMasterKey(envMasterKey)) {
       return {
         name: "Secrets adapter",
         status: "fail",
         message:
-          "PAPERCLIP_SECRETS_MASTER_KEY is invalid (expected 32-byte base64, 64-char hex, or raw 32-char string)",
+          "AITEAMCORP_SECRETS_MASTER_KEY is invalid (expected 32-byte base64, 64-char hex, or raw 32-char string)",
         canRepair: false,
-        repairHint: "Set PAPERCLIP_SECRETS_MASTER_KEY to a valid key or unset it to use a key file",
+        repairHint: "Set AITEAMCORP_SECRETS_MASTER_KEY to a valid key or unset it to use a key file",
       };
     }
 
@@ -74,13 +74,13 @@ export function secretsCheck(config: PaperclipConfig, configPath?: string): Chec
       {
         name: "Secrets adapter",
         status: "pass",
-        message: "Local encrypted provider configured via PAPERCLIP_SECRETS_MASTER_KEY",
+        message: "Local encrypted provider configured via AITEAMCORP_SECRETS_MASTER_KEY",
       },
       config,
     );
   }
 
-  const keyFileOverride = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+  const keyFileOverride = process.env.AITEAMCORP_SECRETS_MASTER_KEY_FILE;
   const configuredPath =
     keyFileOverride && keyFileOverride.trim().length > 0
       ? keyFileOverride.trim()
@@ -121,7 +121,7 @@ export function secretsCheck(config: PaperclipConfig, configPath?: string): Chec
       status: "fail",
       message: `Could not read secrets key file: ${err instanceof Error ? err.message : String(err)}`,
       canRepair: false,
-      repairHint: "Check file permissions or set PAPERCLIP_SECRETS_MASTER_KEY",
+      repairHint: "Check file permissions or set AITEAMCORP_SECRETS_MASTER_KEY",
     };
   }
 

@@ -89,7 +89,7 @@ Show resolved environment configuration:
 pnpm aiteamcorp env
 ```
 
-This now includes bind-oriented deployment settings such as `PAPERCLIP_BIND` and `PAPERCLIP_BIND_HOST` when configured.
+This now includes bind-oriented deployment settings such as `AITEAMCORP_BIND` and `AITEAMCORP_BIND_HOST` when configured.
 
 ## `aiteamcorp allowed-hostname`
 
@@ -103,16 +103,16 @@ pnpm aiteamcorp allowed-hostname my-tailscale-host
 
 | Data | Default Path |
 |------|-------------|
-| Config | `~/.paperclip/instances/default/config.json` |
-| Database | `~/.paperclip/instances/default/db` |
-| Logs | `~/.paperclip/instances/default/logs` |
-| Storage | `~/.paperclip/instances/default/data/storage` |
-| Secrets key | `~/.paperclip/instances/default/secrets/master.key` |
+| Config | `~/.aiteamcorp/instances/default/config.json` |
+| Database | `~/.aiteamcorp/instances/default/db` |
+| Logs | `~/.aiteamcorp/instances/default/logs` |
+| Storage | `~/.aiteamcorp/instances/default/data/storage` |
+| Secrets key | `~/.aiteamcorp/instances/default/secrets/master.key` |
 
 Override with:
 
 ```sh
-PAPERCLIP_HOME=/custom/home PAPERCLIP_INSTANCE_ID=dev pnpm aiteamcorp run
+AITEAMCORP_HOME=/custom/home AITEAMCORP_INSTANCE_ID=dev pnpm aiteamcorp run
 ```
 
 Or pass `--data-dir` directly on any command:

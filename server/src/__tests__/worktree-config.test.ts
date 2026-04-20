@@ -89,7 +89,7 @@ describe("worktree config repair", () => {
     const configPath = path.join(aiteamcorpDir, "config.json");
     const envPath = path.join(aiteamcorpDir, ".env");
     const sharedRoot = path.join(tempRoot, ".paperclip", "instances", "default");
-    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const isolatedHome = path.join(tempRoot, ".aiteamcorp-worktrees");
 
     await fs.mkdir(aiteamcorpDir, { recursive: true });
     await fs.writeFile(configPath, JSON.stringify(buildLegacyConfig(sharedRoot), null, 2) + "\n", "utf8");
@@ -97,22 +97,22 @@ describe("worktree config repair", () => {
       envPath,
       [
         "# Paperclip environment variables",
-        "PAPERCLIP_IN_WORKTREE=true",
-        "PAPERCLIP_WORKTREE_NAME=PAP-884-ai-commits-component",
-        "PAPERCLIP_AGENT_JWT_SECRET=shared-secret",
+        "AITEAMCORP_IN_WORKTREE=true",
+        "AITEAMCORP_WORKTREE_NAME=PAP-884-ai-commits-component",
+        "AITEAMCORP_AGENT_JWT_SECRET=shared-secret",
         "",
       ].join("\n"),
       "utf8",
     );
 
     process.chdir(worktreeRoot);
-    process.env.PAPERCLIP_IN_WORKTREE = "true";
-    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
-    process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
-    delete process.env.PAPERCLIP_HOME;
-    delete process.env.PAPERCLIP_INSTANCE_ID;
-    delete process.env.PAPERCLIP_CONFIG;
-    delete process.env.PAPERCLIP_CONTEXT;
+    process.env.AITEAMCORP_IN_WORKTREE = "true";
+    process.env.AITEAMCORP_WORKTREE_NAME = "PAP-884-ai-commits-component";
+    process.env.AITEAMCORP_WORKTREES_DIR = isolatedHome;
+    delete process.env.AITEAMCORP_HOME;
+    delete process.env.AITEAMCORP_INSTANCE_ID;
+    delete process.env.AITEAMCORP_CONFIG;
+    delete process.env.AITEAMCORP_CONTEXT;
 
     const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
 
@@ -130,13 +130,13 @@ describe("worktree config repair", () => {
     expect(repairedConfig.logging.logDir).toBe(path.join(instanceRoot, "logs"));
     expect(repairedConfig.storage.localDisk.baseDir).toBe(path.join(instanceRoot, "data", "storage"));
     expect(repairedConfig.secrets.localEncrypted.keyFilePath).toBe(path.join(instanceRoot, "secrets", "master.key"));
-    expect(repairedEnv).toContain(`PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`);
-    expect(repairedEnv).toContain('PAPERCLIP_INSTANCE_ID="pap-884-ai-commits-component"');
-    expect(repairedEnv).toContain(`PAPERCLIP_CONFIG=${JSON.stringify(await fs.realpath(configPath))}`);
-    expect(repairedEnv).toContain(`PAPERCLIP_CONTEXT=${JSON.stringify(path.join(isolatedHome, "context.json"))}`);
-    expect(repairedEnv).toContain('PAPERCLIP_AGENT_JWT_SECRET="shared-secret"');
-    expect(process.env.PAPERCLIP_HOME).toBe(isolatedHome);
-    expect(process.env.PAPERCLIP_INSTANCE_ID).toBe("pap-884-ai-commits-component");
+    expect(repairedEnv).toContain(`AITEAMCORP_HOME=${JSON.stringify(isolatedHome)}`);
+    expect(repairedEnv).toContain('AITEAMCORP_INSTANCE_ID="pap-884-ai-commits-component"');
+    expect(repairedEnv).toContain(`AITEAMCORP_CONFIG=${JSON.stringify(await fs.realpath(configPath))}`);
+    expect(repairedEnv).toContain(`AITEAMCORP_CONTEXT=${JSON.stringify(path.join(isolatedHome, "context.json"))}`);
+    expect(repairedEnv).toContain('AITEAMCORP_AGENT_JWT_SECRET="shared-secret"');
+    expect(process.env.AITEAMCORP_HOME).toBe(isolatedHome);
+    expect(process.env.AITEAMCORP_INSTANCE_ID).toBe("pap-884-ai-commits-component");
   });
 
   it("avoids sibling worktree ports when repairing legacy configs", async () => {
@@ -146,7 +146,7 @@ describe("worktree config repair", () => {
     const configPath = path.join(aiteamcorpDir, "config.json");
     const envPath = path.join(aiteamcorpDir, ".env");
     const sharedRoot = path.join(tempRoot, ".paperclip", "instances", "default");
-    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const isolatedHome = path.join(tempRoot, ".aiteamcorp-worktrees");
     const siblingInstanceRoot = path.join(isolatedHome, "instances", "pap-878-create-a-mine-tab-in-inbox");
 
     await fs.mkdir(aiteamcorpDir, { recursive: true });
@@ -156,8 +156,8 @@ describe("worktree config repair", () => {
       envPath,
       [
         "# Paperclip environment variables",
-        "PAPERCLIP_IN_WORKTREE=true",
-        "PAPERCLIP_WORKTREE_NAME=PAP-880-thumbs-capture-for-evals-feature",
+        "AITEAMCORP_IN_WORKTREE=true",
+        "AITEAMCORP_WORKTREE_NAME=PAP-880-thumbs-capture-for-evals-feature",
         "",
       ].join("\n"),
       "utf8",
@@ -194,9 +194,9 @@ describe("worktree config repair", () => {
     );
 
     process.chdir(worktreeRoot);
-    process.env.PAPERCLIP_IN_WORKTREE = "true";
-    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-880-thumbs-capture-for-evals-feature";
-    process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    process.env.AITEAMCORP_IN_WORKTREE = "true";
+    process.env.AITEAMCORP_WORKTREE_NAME = "PAP-880-thumbs-capture-for-evals-feature";
+    process.env.AITEAMCORP_WORKTREES_DIR = isolatedHome;
 
     const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
     const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
@@ -208,7 +208,7 @@ describe("worktree config repair", () => {
 
   it("does not persist transient runtime home overrides over repo-local worktree env", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-worktree-runtime-override-"));
-    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const isolatedHome = path.join(tempRoot, ".aiteamcorp-worktrees");
     const transientHome = path.join(tempRoot, "tests", "e2e", ".tmp", "multiuser-authenticated");
     const worktreeRoot = path.join(tempRoot, "PAP-989-multi-user-implementation-using-plan-from-pap-958");
     const aiteamcorpDir = path.join(worktreeRoot, ".paperclip");
@@ -275,23 +275,23 @@ describe("worktree config repair", () => {
       envPath,
       [
         "# Paperclip environment variables",
-        `PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`,
-        `PAPERCLIP_INSTANCE_ID=${JSON.stringify(instanceId)}`,
-        `PAPERCLIP_CONFIG=${JSON.stringify(configPath)}`,
-        `PAPERCLIP_CONTEXT=${JSON.stringify(path.join(isolatedHome, "context.json"))}`,
-        'PAPERCLIP_IN_WORKTREE="true"',
-        'PAPERCLIP_WORKTREE_NAME="PAP-989-multi-user-implementation-using-plan-from-pap-958"',
+        `AITEAMCORP_HOME=${JSON.stringify(isolatedHome)}`,
+        `AITEAMCORP_INSTANCE_ID=${JSON.stringify(instanceId)}`,
+        `AITEAMCORP_CONFIG=${JSON.stringify(configPath)}`,
+        `AITEAMCORP_CONTEXT=${JSON.stringify(path.join(isolatedHome, "context.json"))}`,
+        'AITEAMCORP_IN_WORKTREE="true"',
+        'AITEAMCORP_WORKTREE_NAME="PAP-989-multi-user-implementation-using-plan-from-pap-958"',
         "",
       ].join("\n"),
       "utf8",
     );
 
     process.chdir(worktreeRoot);
-    process.env.PAPERCLIP_IN_WORKTREE = "true";
-    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-989-multi-user-implementation-using-plan-from-pap-958";
-    process.env.PAPERCLIP_HOME = transientHome;
-    process.env.PAPERCLIP_INSTANCE_ID = instanceId;
-    process.env.PAPERCLIP_CONFIG = configPath;
+    process.env.AITEAMCORP_IN_WORKTREE = "true";
+    process.env.AITEAMCORP_WORKTREE_NAME = "PAP-989-multi-user-implementation-using-plan-from-pap-958";
+    process.env.AITEAMCORP_HOME = transientHome;
+    process.env.AITEAMCORP_INSTANCE_ID = instanceId;
+    process.env.AITEAMCORP_CONFIG = configPath;
 
     const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
     const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
@@ -308,14 +308,14 @@ describe("worktree config repair", () => {
     expect(repairedConfig.secrets.localEncrypted.keyFilePath).toBe(
       path.join(stableInstanceRoot, "secrets", "master.key"),
     );
-    expect(repairedEnv).toContain(`PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`);
-    expect(repairedEnv).not.toContain(`PAPERCLIP_HOME=${JSON.stringify(transientHome)}`);
-    expect(process.env.PAPERCLIP_HOME).toBe(isolatedHome);
+    expect(repairedEnv).toContain(`AITEAMCORP_HOME=${JSON.stringify(isolatedHome)}`);
+    expect(repairedEnv).not.toContain(`AITEAMCORP_HOME=${JSON.stringify(transientHome)}`);
+    expect(process.env.AITEAMCORP_HOME).toBe(isolatedHome);
   });
 
   it("rebalances duplicate ports for already isolated worktree configs", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-worktree-rebalance-"));
-    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const isolatedHome = path.join(tempRoot, ".aiteamcorp-worktrees");
     const repoWorktreesRoot = path.join(tempRoot, "repo", ".paperclip", "worktrees");
     const siblingWorktreeRoot = path.join(repoWorktreesRoot, "PAP-878-create-a-mine-tab-in-inbox");
     const siblingInstanceRoot = path.join(isolatedHome, "instances", "pap-878-create-a-mine-tab-in-inbox");
@@ -385,8 +385,8 @@ describe("worktree config repair", () => {
       envPath,
       [
         "# Paperclip environment variables",
-        "PAPERCLIP_IN_WORKTREE=true",
-        "PAPERCLIP_WORKTREE_NAME=PAP-884-ai-commits-component",
+        "AITEAMCORP_IN_WORKTREE=true",
+        "AITEAMCORP_WORKTREE_NAME=PAP-884-ai-commits-component",
         "",
       ].join("\n"),
       "utf8",
@@ -423,9 +423,9 @@ describe("worktree config repair", () => {
     );
 
     process.chdir(currentWorktreeRoot);
-    process.env.PAPERCLIP_IN_WORKTREE = "true";
-    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
-    process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    process.env.AITEAMCORP_IN_WORKTREE = "true";
+    process.env.AITEAMCORP_WORKTREE_NAME = "PAP-884-ai-commits-component";
+    process.env.AITEAMCORP_WORKTREES_DIR = isolatedHome;
 
     const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
     const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
@@ -440,7 +440,7 @@ describe("worktree config repair", () => {
     const worktreeRoot = path.join(tempRoot, "PAP-878-create-a-mine-tab-in-inbox");
     const aiteamcorpDir = path.join(worktreeRoot, ".paperclip");
     const configPath = path.join(aiteamcorpDir, "config.json");
-    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const isolatedHome = path.join(tempRoot, ".aiteamcorp-worktrees");
     const instanceRoot = path.join(isolatedHome, "instances", "pap-878-create-a-mine-tab-in-inbox");
 
     await fs.mkdir(aiteamcorpDir, { recursive: true });
@@ -499,11 +499,11 @@ describe("worktree config repair", () => {
     );
 
     process.chdir(worktreeRoot);
-    process.env.PAPERCLIP_IN_WORKTREE = "true";
-    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-878-create-a-mine-tab-in-inbox";
-    process.env.PAPERCLIP_HOME = isolatedHome;
-    process.env.PAPERCLIP_INSTANCE_ID = "pap-878-create-a-mine-tab-in-inbox";
-    process.env.PAPERCLIP_CONFIG = configPath;
+    process.env.AITEAMCORP_IN_WORKTREE = "true";
+    process.env.AITEAMCORP_WORKTREE_NAME = "PAP-878-create-a-mine-tab-in-inbox";
+    process.env.AITEAMCORP_HOME = isolatedHome;
+    process.env.AITEAMCORP_INSTANCE_ID = "pap-878-create-a-mine-tab-in-inbox";
+    process.env.AITEAMCORP_CONFIG = configPath;
 
     maybePersistWorktreeRuntimePorts({
       serverPort: 3103,

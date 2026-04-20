@@ -99,16 +99,16 @@ done < <(ps aux | grep -E 'agent-browser/browsers/chrome-.*/Google Chrome for Te
 
 candidate_pidfiles=()
 candidate_pidfiles+=(
-  "$HOME"/.paperclip/instances/*/db/postmaster.pid
-  "$REPO_ROOT"/.paperclip/instances/*/db/postmaster.pid
-  "$REPO_ROOT"/.paperclip/runtime-services/instances/*/db/postmaster.pid
+  "$HOME"/.aiteamcorp/instances/*/db/postmaster.pid
+  "$REPO_ROOT"/.aiteamcorp/instances/*/db/postmaster.pid
+  "$REPO_ROOT"/.aiteamcorp/runtime-services/instances/*/db/postmaster.pid
 )
 
 for sibling_root in "$REPO_PARENT"/paperclip*; do
   [[ -d "$sibling_root" ]] || continue
   candidate_pidfiles+=(
-    "$sibling_root"/.paperclip/instances/*/db/postmaster.pid
-    "$sibling_root"/.paperclip/runtime-services/instances/*/db/postmaster.pid
+    "$sibling_root"/.aiteamcorp/instances/*/db/postmaster.pid
+    "$sibling_root"/.aiteamcorp/runtime-services/instances/*/db/postmaster.pid
   )
 done
 

@@ -94,7 +94,7 @@ Route registration lives in `server/src/app.ts` via `companyRoutes(db, storage)`
 
 | File | Relevance |
 |---|---|
-| `skills/paperclip/references/company-skills.md` | Reference doc for company skill library workflow — install, inspect, update, assign. Skill packages are a subset of the agent companies spec. |
+| `skills/aiteamcorp/references/company-skills.md` | Reference doc for company skill library workflow — install, inspect, update, assign. Skill packages are a subset of the agent companies spec. |
 | `server/src/services/company-skills.ts` | Company skill management service — handles SKILL.md-based imports and company-level skill library. |
 | `server/src/services/agent-instructions.ts` | Agent instructions service — resolves AGENTS.md paths for agent instruction loading. |
 

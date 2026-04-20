@@ -95,7 +95,7 @@ The first plugin system must not:
 1. Allow arbitrary plugins to override core routes or core invariants.
 2. Allow arbitrary plugins to mutate approval, auth, issue checkout, or budget enforcement logic.
 3. Allow arbitrary third-party plugins to run free-form DB migrations.
-4. Depend on project-local plugin folders such as `.paperclip/plugins`.
+4. Depend on project-local plugin folders such as `.aiteamcorp/plugins`.
 5. Depend on automatic install-and-execute behavior at server startup from arbitrary config files.
 
 ## 5. Terminology
@@ -228,10 +228,10 @@ Plugins live under the Paperclip instance directory.
 
 Suggested layout:
 
-- `~/.paperclip/instances/default/plugins/package.json`
-- `~/.paperclip/instances/default/plugins/node_modules/`
-- `~/.paperclip/instances/default/plugins/.cache/`
-- `~/.paperclip/instances/default/data/plugins/<plugin-id>/`
+- `~/.aiteamcorp/instances/default/plugins/package.json`
+- `~/.aiteamcorp/instances/default/plugins/node_modules/`
+- `~/.aiteamcorp/instances/default/plugins/.cache/`
+- `~/.aiteamcorp/instances/default/data/plugins/<plugin-id>/`
 
 The package install directory and the plugin data directory are separate.
 

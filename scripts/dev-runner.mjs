@@ -48,7 +48,7 @@ const ignoredDirectoryNames = new Set([
 ]);
 
 const ignoredRelativePaths = new Set([
-  ".paperclip/dev-server-status.json",
+  ".aiteamcorp/dev-server-status.json",
 ]);
 
 const tailscaleAuthFlagNames = new Set([
@@ -76,22 +76,22 @@ if (process.env.npm_config_authenticated_private === "true") {
 
 const env = {
   ...process.env,
-  PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
+  AITEAMCORP_UI_DEV_MIDDLEWARE: "true",
 };
 
 if (mode === "dev") {
-  env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
+  env.AITEAMCORP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
 }
 
 if (mode === "watch") {
-  env.PAPERCLIP_MIGRATION_PROMPT ??= "never";
-  env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
+  env.AITEAMCORP_MIGRATION_PROMPT ??= "never";
+  env.AITEAMCORP_MIGRATION_AUTO_APPLY ??= "true";
 }
 
 if (tailscaleAuth) {
-  env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
-  env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
-  env.PAPERCLIP_AUTH_BASE_URL_MODE = "auto";
+  env.AITEAMCORP_DEPLOYMENT_MODE = "authenticated";
+  env.AITEAMCORP_DEPLOYMENT_EXPOSURE = "private";
+  env.AITEAMCORP_AUTH_BASE_URL_MODE = "auto";
   env.HOST = "0.0.0.0";
   console.log("[aiteamcorp] dev mode: authenticated/private (tailscale-friendly) on 0.0.0.0");
 } else {
@@ -321,7 +321,7 @@ async function refreshPendingMigrations() {
 
 async function maybePreflightMigrations(options = {}) {
   const interactive = options.interactive ?? mode === "watch";
-  const autoApply = options.autoApply ?? env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true";
+  const autoApply = options.autoApply ?? env.AITEAMCORP_MIGRATION_AUTO_APPLY === "true";
   const exitOnDecline = options.exitOnDecline ?? mode === "watch";
 
   const payload = await refreshPendingMigrations();

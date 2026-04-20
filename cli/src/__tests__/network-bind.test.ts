@@ -35,7 +35,7 @@ describe("network bind helpers", () => {
   });
 
   it("stores the detected tailscale address for tailnet presets", () => {
-    process.env.PAPERCLIP_TAILNET_BIND_HOST = "100.64.0.8";
+    process.env.AITEAMCORP_TAILNET_BIND_HOST = "100.64.0.8";
 
     const preset = buildPresetServerConfig("tailnet", {
       port: 3100,
@@ -45,11 +45,11 @@ describe("network bind helpers", () => {
 
     expect(preset.server.host).toBe("100.64.0.8");
 
-    delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    delete process.env.AITEAMCORP_TAILNET_BIND_HOST;
   });
 
   it("falls back to loopback when no tailscale address is available for tailnet presets", () => {
-    delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    delete process.env.AITEAMCORP_TAILNET_BIND_HOST;
 
     const preset = buildPresetServerConfig("tailnet", {
       port: 3100,

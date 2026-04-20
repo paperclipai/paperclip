@@ -85,9 +85,9 @@ async function startTempDatabase() {
   await instance.initialise();
   await instance.start();
 
-  const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+  const adminConnectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${port}/postgres`;
   await ensurePostgresDatabase(adminConnectionString, "paperclip");
-  const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+  const connectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${port}/paperclip`;
   await applyPendingMigrations(connectionString);
   return { connectionString, dataDir, instance };
 }
@@ -943,7 +943,7 @@ describe("feedbackService.saveIssueVote", () => {
       JSON.stringify([{ content: "Verify exported traces" }]),
       "utf8",
     );
-    vi.stubEnv("PAPERCLIP_OPENCODE_STORAGE_DIR", opencodeRoot);
+    vi.stubEnv("AITEAMCORP_OPENCODE_STORAGE_DIR", opencodeRoot);
     const uploadTraceBundle = vi.fn().mockResolvedValue({ objectKey: "feedback-traces/test.json" });
     const flushingSvc = feedbackService(db, {
       shareClient: {

@@ -5,7 +5,7 @@ Run this checklist on every heartbeat. This covers both your local planning/memo
 ## 1. Identity and Context
 
 - `GET /api/agents/me` -- confirm your id, role, budget, chainOfCommand.
-- Check wake context: `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`.
+- Check wake context: `AITEAMCORP_TASK_ID`, `AITEAMCORP_WAKE_REASON`, `AITEAMCORP_WAKE_COMMENT_ID`.
 
 ## 2. Local Planning Check
 
@@ -17,7 +17,7 @@ Run this checklist on every heartbeat. This covers both your local planning/memo
 
 ## 3. Approval Follow-Up
 
-If `PAPERCLIP_APPROVAL_ID` is set:
+If `AITEAMCORP_APPROVAL_ID` is set:
 
 - Review the approval and its linked issues.
 - Close resolved issues or comment on what remains open.
@@ -27,7 +27,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - `GET /api/companies/{companyId}/issues?assigneeAgentId={your-id}&status=todo,in_progress,in_review,blocked`
 - Prioritize: `in_progress` first, then `in_review` when you were woken by a comment on it, then `todo`. Skip `blocked` unless you can unblock it.
 - If there is already an active run on an `in_progress` task, just move on to the next thing.
-- If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize that task.
+- If `AITEAMCORP_TASK_ID` is set and assigned to you, prioritize that task.
 
 ## 5. Checkout and Work
 

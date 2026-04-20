@@ -4,7 +4,7 @@ Description=PostgreSQL for Paperclip
 [Container]
 Image=docker.io/library/postgres:17-alpine
 ContainerName=paperclip-db
-Pod=paperclip.pod
+Pod=aiteamcorp.pod
 Volume=paperclip-pgdata:/var/lib/postgresql/data
 EnvironmentFile=%h/.config/containers/systemd/paperclip.env
 HealthCmd=pg_isready -U $POSTGRES_USER -d $POSTGRES_DB -h localhost || exit 1

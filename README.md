@@ -266,7 +266,7 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 ## Telemetry
 
 Telemetry is **disabled by default** in this fork. No data is sent anywhere unless you explicitly
-configure an endpoint via `PAPERCLIP_TELEMETRY_ENDPOINT` and enable telemetry in your config file.
+configure an endpoint via `AITEAMCORP_TELEMETRY_ENDPOINT` and enable telemetry in your config file.
 
 ## License
 

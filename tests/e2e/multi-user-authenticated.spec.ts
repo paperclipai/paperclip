@@ -3,9 +3,9 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { test, expect, type Browser, type Page } from "@playwright/test";
 
-const BASE = process.env.PAPERCLIP_E2E_BASE_URL ?? "http://127.0.0.1:3105";
-const DATA_DIR = process.env.PAPERCLIP_E2E_DATA_DIR ?? process.env.PAPERCLIP_HOME;
-const CONFIG_PATH = process.env.PAPERCLIP_E2E_CONFIG_PATH ?? path.resolve(process.cwd(), ".paperclip/config.json");
+const BASE = process.env.AITEAMCORP_E2E_BASE_URL ?? "http://127.0.0.1:3105";
+const DATA_DIR = process.env.AITEAMCORP_E2E_DATA_DIR ?? process.env.AITEAMCORP_HOME;
+const CONFIG_PATH = process.env.AITEAMCORP_E2E_CONFIG_PATH ?? path.resolve(process.cwd(), ".aiteamcorp/config.json");
 const BOOTSTRAP_SCRIPT_PATH = path.resolve(process.cwd(), "packages/db/scripts/create-auth-bootstrap-invite.ts");
 const OWNER_PASSWORD = "paperclip-owner-password";
 const INVITED_PASSWORD = "paperclip-invited-password";
@@ -51,7 +51,7 @@ const invitedUser: HumanUser = {
 
 function createBootstrapInvite() {
   if (!DATA_DIR) {
-    throw new Error("PAPERCLIP_E2E_DATA_DIR or PAPERCLIP_HOME is required for authenticated bootstrap tests");
+    throw new Error("AITEAMCORP_E2E_DATA_DIR or AITEAMCORP_HOME is required for authenticated bootstrap tests");
   }
   if (!existsSync(CONFIG_PATH)) {
     throw new Error(`Authenticated bootstrap config not found at ${CONFIG_PATH}`);
@@ -80,7 +80,7 @@ function createBootstrapInvite() {
         ...process.env,
         FORCE_COLOR: "0",
         NO_COLOR: "1",
-        PAPERCLIP_HOME: DATA_DIR,
+        AITEAMCORP_HOME: DATA_DIR,
       },
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],

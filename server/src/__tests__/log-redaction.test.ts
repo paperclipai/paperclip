@@ -47,7 +47,7 @@ describe("log redaction", () => {
     const maskedUserName = maskUserNameForLogs(userName);
     const result = redactCurrentUserValue({
       cwd: `/Users/${userName}/paperclip`,
-      prompt: `open /Users/${userName}/paperclip/ui`,
+      prompt: `open /Users/${userName}/aiteamcorp/ui`,
       nested: {
         author: userName,
       },
@@ -59,7 +59,7 @@ describe("log redaction", () => {
 
     expect(result).toEqual({
       cwd: `/Users/${maskedUserName}/paperclip`,
-      prompt: `open /Users/${maskedUserName}/paperclip/ui`,
+      prompt: `open /Users/${maskedUserName}/aiteamcorp/ui`,
       nested: {
         author: maskedUserName,
       },

@@ -3,7 +3,7 @@ import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import { expandHomePrefix } from "../config/home.js";
 
-export const DEFAULT_WORKTREE_HOME = "~/.paperclip-worktrees";
+export const DEFAULT_WORKTREE_HOME = "~/.aiteamcorp-worktrees";
 export const WORKTREE_SEED_MODES = ["minimal", "full"] as const;
 
 export type WorktreeSeedMode = (typeof WORKTREE_SEED_MODES)[number];
@@ -257,13 +257,13 @@ export function buildWorktreeEnvEntries(
   branding?: WorktreeUiBranding,
 ): Record<string, string> {
   return {
-    PAPERCLIP_HOME: paths.homeDir,
-    PAPERCLIP_INSTANCE_ID: paths.instanceId,
-    PAPERCLIP_CONFIG: paths.configPath,
-    PAPERCLIP_CONTEXT: paths.contextPath,
-    PAPERCLIP_IN_WORKTREE: "true",
-    ...(branding?.name ? { PAPERCLIP_WORKTREE_NAME: branding.name } : {}),
-    ...(branding?.color ? { PAPERCLIP_WORKTREE_COLOR: branding.color } : {}),
+    AITEAMCORP_HOME: paths.homeDir,
+    AITEAMCORP_INSTANCE_ID: paths.instanceId,
+    AITEAMCORP_CONFIG: paths.configPath,
+    AITEAMCORP_CONTEXT: paths.contextPath,
+    AITEAMCORP_IN_WORKTREE: "true",
+    ...(branding?.name ? { AITEAMCORP_WORKTREE_NAME: branding.name } : {}),
+    ...(branding?.color ? { AITEAMCORP_WORKTREE_COLOR: branding.color } : {}),
   };
 }
 

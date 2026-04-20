@@ -15,9 +15,9 @@ describe("home path resolution", () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it("defaults to ~/.paperclip and default instance", () => {
-    delete process.env.PAPERCLIP_HOME;
-    delete process.env.PAPERCLIP_INSTANCE_ID;
+  it("defaults to ~/.aiteamcorp and default instance", () => {
+    delete process.env.AITEAMCORP_HOME;
+    delete process.env.AITEAMCORP_INSTANCE_ID;
 
     const paths = describeLocalInstancePaths();
     expect(paths.homeDir).toBe(path.resolve(os.homedir(), ".paperclip"));
@@ -25,8 +25,8 @@ describe("home path resolution", () => {
     expect(paths.configPath).toBe(path.resolve(os.homedir(), ".paperclip", "instances", "default", "config.json"));
   });
 
-  it("supports PAPERCLIP_HOME and explicit instance ids", () => {
-    process.env.PAPERCLIP_HOME = "~/paperclip-home";
+  it("supports AITEAMCORP_HOME and explicit instance ids", () => {
+    process.env.AITEAMCORP_HOME = "~/paperclip-home";
 
     const home = resolvePaperclipHomeDir();
     expect(home).toBe(path.resolve(os.homedir(), "paperclip-home"));

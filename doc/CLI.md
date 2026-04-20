@@ -34,7 +34,7 @@ Current CLI behavior:
 - `aiteamcorp onboard` and `aiteamcorp configure --section server` set deployment mode in config
 - server onboarding/configure ask for reachability intent and write `server.bind`
 - `aiteamcorp run --bind <loopback|lan|tailnet>` passes a quickstart bind preset into first-run onboarding when config is missing
-- runtime can override mode with `PAPERCLIP_DEPLOYMENT_MODE`
+- runtime can override mode with `AITEAMCORP_DEPLOYMENT_MODE`
 - `aiteamcorp run` and `aiteamcorp doctor` still do not expose a direct low-level `--mode` flag
 
 Canonical behavior is documented in `doc/DEPLOYMENT-MODES.md`.
@@ -56,7 +56,7 @@ All client commands support:
 
 Company-scoped commands also support `--company-id <id>`.
 
-Use `--data-dir` on any CLI command to isolate all default local state (config/context/db/logs/storage/secrets) away from `~/.paperclip`:
+Use `--data-dir` on any CLI command to isolate all default local state (config/context/db/logs/storage/secrets) away from `~/.aiteamcorp`:
 
 ```sh
 pnpm aiteamcorp run --data-dir ./tmp/paperclip-dev
@@ -65,7 +65,7 @@ pnpm aiteamcorp issue list --data-dir ./tmp/paperclip-dev
 
 ## Context Profiles
 
-Store local defaults in `~/.paperclip/context.json`:
+Store local defaults in `~/.aiteamcorp/context.json`:
 
 ```sh
 pnpm aiteamcorp context set --api-base http://localhost:3100 --company-id <company-id>
@@ -77,8 +77,8 @@ pnpm aiteamcorp context use default
 To avoid storing secrets in context, set `apiKeyEnvVarName` and keep the key in env:
 
 ```sh
-pnpm aiteamcorp context set --api-key-env-var-name PAPERCLIP_API_KEY
-export PAPERCLIP_API_KEY=...
+pnpm aiteamcorp context set --api-key-env-var-name AITEAMCORP_API_KEY
+export AITEAMCORP_API_KEY=...
 ```
 
 ## Company Commands
@@ -98,8 +98,8 @@ pnpm aiteamcorp company delete 5cbe79ee-acb3-4597-896e-7662742593cd --yes --conf
 
 Notes:
 
-- Deletion is server-gated by `PAPERCLIP_ENABLE_COMPANY_DELETION`.
-- With agent authentication, company deletion is company-scoped. Use the current company ID/prefix (for example via `--company-id` or `PAPERCLIP_COMPANY_ID`), not another company.
+- Deletion is server-gated by `AITEAMCORP_ENABLE_COMPANY_DELETION`.
+- With agent authentication, company deletion is company-scoped. Use the current company ID/prefix (for example via `--company-id` or `AITEAMCORP_COMPANY_ID`), not another company.
 
 ## Issue Commands
 
@@ -125,7 +125,7 @@ pnpm aiteamcorp agent local-cli <agent-id-or-shortname> --company-id <company-id
 
 - creates a new long-lived agent API key
 - installs missing Paperclip skills into `~/.codex/skills` and `~/.claude/skills`
-- prints `export ...` lines for `PAPERCLIP_API_URL`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_API_KEY`
+- prints `export ...` lines for `AITEAMCORP_API_URL`, `AITEAMCORP_COMPANY_ID`, `AITEAMCORP_AGENT_ID`, and `AITEAMCORP_API_KEY`
 
 Example for shortname-based local setup:
 
@@ -169,18 +169,18 @@ pnpm aiteamcorp heartbeat run --agent-id <agent-id> [--api-base http://localhost
 
 ## Local Storage Defaults
 
-Default local instance root is `~/.paperclip/instances/default`:
+Default local instance root is `~/.aiteamcorp/instances/default`:
 
-- config: `~/.paperclip/instances/default/config.json`
-- embedded db: `~/.paperclip/instances/default/db`
-- logs: `~/.paperclip/instances/default/logs`
-- storage: `~/.paperclip/instances/default/data/storage`
-- secrets key: `~/.paperclip/instances/default/secrets/master.key`
+- config: `~/.aiteamcorp/instances/default/config.json`
+- embedded db: `~/.aiteamcorp/instances/default/db`
+- logs: `~/.aiteamcorp/instances/default/logs`
+- storage: `~/.aiteamcorp/instances/default/data/storage`
+- secrets key: `~/.aiteamcorp/instances/default/secrets/master.key`
 
 Override base home or instance with env vars:
 
 ```sh
-PAPERCLIP_HOME=/custom/home PAPERCLIP_INSTANCE_ID=dev pnpm aiteamcorp run
+AITEAMCORP_HOME=/custom/home AITEAMCORP_INSTANCE_ID=dev pnpm aiteamcorp run
 ```
 
 ## Storage Configuration

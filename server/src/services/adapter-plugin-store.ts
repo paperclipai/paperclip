@@ -2,7 +2,7 @@
  * JSON-file-backed store for external adapter registrations.
  *
  * Stores metadata about externally installed adapter packages at
- * ~/.paperclip/adapter-plugins.json. This is the source of truth for which
+ * ~/.aiteamcorp/adapter-plugins.json. This is the source of truth for which
  * external adapters should be loaded at startup.
  *
  * Both the plugin store and the settings store are cached in memory after
@@ -43,10 +43,10 @@ interface AdapterSettings {
 // Paths
 // ---------------------------------------------------------------------------
 
-const PAPERCLIP_DIR = path.join(os.homedir(), ".paperclip");
-const ADAPTER_PLUGINS_DIR = path.join(PAPERCLIP_DIR, "adapter-plugins");
-const ADAPTER_PLUGINS_STORE_PATH = path.join(PAPERCLIP_DIR, "adapter-plugins.json");
-const ADAPTER_SETTINGS_PATH = path.join(PAPERCLIP_DIR, "adapter-settings.json");
+const AITEAMCORP_DIR = path.join(os.homedir(), ".paperclip");
+const ADAPTER_PLUGINS_DIR = path.join(AITEAMCORP_DIR, "adapter-plugins");
+const ADAPTER_PLUGINS_STORE_PATH = path.join(AITEAMCORP_DIR, "adapter-plugins.json");
+const ADAPTER_SETTINGS_PATH = path.join(AITEAMCORP_DIR, "adapter-settings.json");
 
 // ---------------------------------------------------------------------------
 // In-memory caches (invalidated on write)

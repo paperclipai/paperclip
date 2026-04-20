@@ -219,7 +219,7 @@ function buildConnectionErrorMessage(input: {
     "Try:",
     "- Start Paperclip with `pnpm dev` or `pnpm aiteamcorp run`.",
     `- Verify the server is reachable with \`curl ${healthUrl}\`.`,
-    `- If Paperclip is running elsewhere, pass \`--api-base ${input.apiBase.replace(/\/+$/, "")}\` or set \`PAPERCLIP_API_URL\`.`,
+    `- If Paperclip is running elsewhere, pass \`--api-base ${input.apiBase.replace(/\/+$/, "")}\` or set \`AITEAMCORP_API_URL\`.`,
   );
   return lines.join("\n");
 }

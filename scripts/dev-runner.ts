@@ -67,7 +67,7 @@ const ignoredDirectoryNames = new Set([
 ]);
 
 const ignoredRelativePaths = new Set([
-  ".paperclip/dev-server-status.json",
+  ".aiteamcorp/dev-server-status.json",
 ]);
 
 const tailscaleAuthFlagNames = new Set([
@@ -128,17 +128,17 @@ if (bindMode === "custom" && !bindHost) {
 
 const env: NodeJS.ProcessEnv = {
   ...process.env,
-  PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
+  AITEAMCORP_UI_DEV_MIDDLEWARE: "true",
 };
 
 if (mode === "dev") {
-  env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
-  env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
+  env.AITEAMCORP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
+  env.AITEAMCORP_MIGRATION_AUTO_APPLY ??= "true";
 }
 
 if (mode === "watch") {
-  env.PAPERCLIP_MIGRATION_PROMPT ??= "never";
-  env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
+  env.AITEAMCORP_MIGRATION_PROMPT ??= "never";
+  env.AITEAMCORP_MIGRATION_AUTO_APPLY ??= "true";
 }
 
 if (tailscaleAuth || bindMode) {
@@ -146,31 +146,31 @@ if (tailscaleAuth || bindMode) {
   if (tailscaleAuth) {
     console.log("[aiteamcorp] note: --tailscale-auth/--authenticated-private are legacy aliases for --bind lan");
   }
-  env.PAPERCLIP_BIND = effectiveBind;
+  env.AITEAMCORP_BIND = effectiveBind;
   if (bindHost) {
-    env.PAPERCLIP_BIND_HOST = bindHost;
+    env.AITEAMCORP_BIND_HOST = bindHost;
   } else {
-    delete env.PAPERCLIP_BIND_HOST;
+    delete env.AITEAMCORP_BIND_HOST;
   }
   if (effectiveBind === "loopback" && !tailscaleAuth) {
-    delete env.PAPERCLIP_DEPLOYMENT_MODE;
-    delete env.PAPERCLIP_DEPLOYMENT_EXPOSURE;
-    delete env.PAPERCLIP_AUTH_BASE_URL_MODE;
+    delete env.AITEAMCORP_DEPLOYMENT_MODE;
+    delete env.AITEAMCORP_DEPLOYMENT_EXPOSURE;
+    delete env.AITEAMCORP_AUTH_BASE_URL_MODE;
     console.log("[aiteamcorp] dev mode: local_trusted (bind=loopback)");
   } else {
-    env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
-    env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
-    env.PAPERCLIP_AUTH_BASE_URL_MODE = "auto";
+    env.AITEAMCORP_DEPLOYMENT_MODE = "authenticated";
+    env.AITEAMCORP_DEPLOYMENT_EXPOSURE = "private";
+    env.AITEAMCORP_AUTH_BASE_URL_MODE = "auto";
     console.log(
       `[aiteamcorp] dev mode: authenticated/private (bind=${effectiveBind}${bindHost ? `:${bindHost}` : ""})`,
     );
   }
 } else {
-  delete env.PAPERCLIP_BIND;
-  delete env.PAPERCLIP_BIND_HOST;
-  delete env.PAPERCLIP_DEPLOYMENT_MODE;
-  delete env.PAPERCLIP_DEPLOYMENT_EXPOSURE;
-  delete env.PAPERCLIP_AUTH_BASE_URL_MODE;
+  delete env.AITEAMCORP_BIND;
+  delete env.AITEAMCORP_BIND_HOST;
+  delete env.AITEAMCORP_DEPLOYMENT_MODE;
+  delete env.AITEAMCORP_DEPLOYMENT_EXPOSURE;
+  delete env.AITEAMCORP_AUTH_BASE_URL_MODE;
   console.log("[aiteamcorp] dev mode: local_trusted (default)");
 }
 
@@ -452,7 +452,7 @@ async function refreshPendingMigrations() {
 
 async function maybePreflightMigrations(options: { interactive?: boolean; autoApply?: boolean; exitOnDecline?: boolean } = {}) {
   const interactive = options.interactive ?? mode === "watch";
-  const autoApply = options.autoApply ?? env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true";
+  const autoApply = options.autoApply ?? env.AITEAMCORP_MIGRATION_AUTO_APPLY === "true";
   const exitOnDecline = options.exitOnDecline ?? mode === "watch";
 
   const payload = await refreshPendingMigrations();

@@ -28,7 +28,7 @@ For a plugin that lives outside the Paperclip repo:
 pnpm --filter @aiteamcorp/create-aiteamcorp-plugin build
 node packages/plugins/create-aiteamcorp-plugin/dist/index.js @yourscope/plugin-name \
   --output /absolute/path/to/plugin-repos \
-  --sdk-path /absolute/path/to/paperclip/packages/plugins/sdk
+  --sdk-path /absolute/path/to/aiteamcorp/packages/plugins/sdk
 ```
 
 That creates a package with:
@@ -42,7 +42,7 @@ That creates a package with:
 
 Inside this monorepo, the scaffold uses `workspace:*` for `@aiteamcorp/plugin-sdk`.
 
-Outside this monorepo, the scaffold snapshots `@aiteamcorp/plugin-sdk` from the local Paperclip checkout into a `.paperclip-sdk/` tarball so you can build and test a plugin without publishing anything to npm first.
+Outside this monorepo, the scaffold snapshots `@aiteamcorp/plugin-sdk` from the local Paperclip checkout into a `.aiteamcorp-sdk/` tarball so you can build and test a plugin without publishing anything to npm first.
 
 ## Recommended local workflow
 

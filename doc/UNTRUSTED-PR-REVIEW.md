@@ -110,7 +110,7 @@ Notes:
 
 - `pnpm install` can run untrusted lifecycle scripts from the PR. That is why this happens inside the isolated container instead of on your host.
 - If you only want static inspection, do not run install/dev commands.
-- Paperclip's embedded PostgreSQL and local storage stay inside the container home volume via `PAPERCLIP_HOME=/home/reviewer/.paperclip-review`.
+- Paperclip's embedded PostgreSQL and local storage stay inside the container home volume via `AITEAMCORP_HOME=/home/reviewer/.paperclip-review`.
 
 ## Reset state
 

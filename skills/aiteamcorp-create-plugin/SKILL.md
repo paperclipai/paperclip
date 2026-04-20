@@ -37,13 +37,13 @@ pnpm --filter @aiteamcorp/create-aiteamcorp-plugin build
 node packages/plugins/create-aiteamcorp-plugin/dist/index.js <npm-package-name> --output <target-dir>
 ```
 
-For a plugin that lives outside the Paperclip repo, pass `--sdk-path` and let the scaffold snapshot the local SDK/shared packages into `.paperclip-sdk/`:
+For a plugin that lives outside the Paperclip repo, pass `--sdk-path` and let the scaffold snapshot the local SDK/shared packages into `.aiteamcorp-sdk/`:
 
 ```bash
 pnpm --filter @aiteamcorp/create-aiteamcorp-plugin build
 node packages/plugins/create-aiteamcorp-plugin/dist/index.js @acme/plugin-name \
   --output /absolute/path/to/plugin-repos \
-  --sdk-path /absolute/path/to/paperclip/packages/plugins/sdk
+  --sdk-path /absolute/path/to/aiteamcorp/packages/plugins/sdk
 ```
 
 Recommended target inside this repo:

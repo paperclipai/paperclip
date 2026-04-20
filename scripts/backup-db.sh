@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Backup the configured Paperclip database to the configured backup directory
-# (default: ~/.paperclip/instances/<instance-id>/data/backups)
+# (default: ~/.aiteamcorp/instances/<instance-id>/data/backups)
 #
 # Usage:
 #   ./scripts/backup-db.sh

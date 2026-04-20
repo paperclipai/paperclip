@@ -84,5 +84,5 @@ pnpm aiteamcorp configure --section server
 Runtime override via environment variable:
 
 ```sh
-PAPERCLIP_DEPLOYMENT_MODE=authenticated PAPERCLIP_BIND=lan pnpm aiteamcorp run
+AITEAMCORP_DEPLOYMENT_MODE=authenticated AITEAMCORP_BIND=lan pnpm aiteamcorp run
 ```

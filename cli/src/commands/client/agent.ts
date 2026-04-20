@@ -149,10 +149,10 @@ function buildAgentEnvExports(input: {
 }): string {
   const escaped = (value: string) => value.replace(/'/g, "'\"'\"'");
   return [
-    `export PAPERCLIP_API_URL='${escaped(input.apiBase)}'`,
-    `export PAPERCLIP_COMPANY_ID='${escaped(input.companyId)}'`,
-    `export PAPERCLIP_AGENT_ID='${escaped(input.agentId)}'`,
-    `export PAPERCLIP_API_KEY='${escaped(input.apiKey)}'`,
+    `export AITEAMCORP_API_URL='${escaped(input.apiBase)}'`,
+    `export AITEAMCORP_COMPANY_ID='${escaped(input.companyId)}'`,
+    `export AITEAMCORP_AGENT_ID='${escaped(input.agentId)}'`,
+    `export AITEAMCORP_API_KEY='${escaped(input.apiKey)}'`,
   ].join("\n");
 }
 

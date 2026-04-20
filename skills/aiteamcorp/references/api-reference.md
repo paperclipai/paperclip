@@ -99,7 +99,7 @@ POST /api/companies/company-1/exports
   "selectedFiles": [
     "COMPANY.md",
     "agents/ceo/AGENTS.md",
-    "skills/paperclip/SKILL.md",
+    "skills/aiteamcorp/SKILL.md",
     "tasks/pap-42/TASK.md"
   ]
 }
@@ -638,9 +638,9 @@ GET /api/companies/{companyId}/approvals?status=pending
 ### Approval follow-up (requesting agent)
 
 When board resolves your approval, you may be woken with:
-- `PAPERCLIP_APPROVAL_ID`
-- `PAPERCLIP_APPROVAL_STATUS`
-- `PAPERCLIP_LINKED_ISSUE_IDS`
+- `AITEAMCORP_APPROVAL_ID`
+- `AITEAMCORP_APPROVAL_STATUS`
+- `AITEAMCORP_LINKED_ISSUE_IDS`
 
 Use:
 

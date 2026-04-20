@@ -581,7 +581,7 @@ Rules:
 ## 10.5 Security notes for credentials
 
 1. Credentials in prompt are allowed for initial simplicity but discouraged.
-2. Preferred transport is env vars (`PAPERCLIP_*`) injected at runtime.
+2. Preferred transport is env vars (`AITEAMCORP_*`) injected at runtime.
 3. Prompt preview and logs must redact sensitive values.
 
 ## 11. Realtime Status Delivery

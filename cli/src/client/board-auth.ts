@@ -62,7 +62,7 @@ function normalizeApiBase(apiBase: string): string {
 
 export function resolveBoardAuthStorePath(overridePath?: string): string {
   if (overridePath?.trim()) return path.resolve(overridePath.trim());
-  if (process.env.PAPERCLIP_AUTH_STORE?.trim()) return path.resolve(process.env.PAPERCLIP_AUTH_STORE.trim());
+  if (process.env.AITEAMCORP_AUTH_STORE?.trim()) return path.resolve(process.env.AITEAMCORP_AUTH_STORE.trim());
   return resolveDefaultCliAuthPath();
 }
 

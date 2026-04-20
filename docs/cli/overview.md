@@ -17,7 +17,7 @@ All commands support:
 
 | Flag | Description |
 |------|-------------|
-| `--data-dir <path>` | Local Paperclip data root (isolates from `~/.paperclip`) |
+| `--data-dir <path>` | Local Paperclip data root (isolates from `~/.aiteamcorp`) |
 | `--api-base <url>` | API base URL |
 | `--api-key <token>` | API authentication token |
 | `--context <path>` | Context file path |
@@ -53,11 +53,11 @@ pnpm aiteamcorp context use default
 To avoid storing secrets in context, use an env var:
 
 ```sh
-pnpm aiteamcorp context set --api-key-env-var-name PAPERCLIP_API_KEY
-export PAPERCLIP_API_KEY=...
+pnpm aiteamcorp context set --api-key-env-var-name AITEAMCORP_API_KEY
+export AITEAMCORP_API_KEY=...
 ```
 
-Context is stored at `~/.paperclip/context.json`.
+Context is stored at `~/.aiteamcorp/context.json`.
 
 ## Command Categories
 

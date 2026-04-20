@@ -139,7 +139,7 @@ describe("cursor ui stdout parser", () => {
 
   it("compacts shellToolCall and shell tool result for run log", () => {
     const ts = "2026-03-05T00:00:00.000Z";
-    const longCommand = "curl -s -X POST \"$PAPERCLIP_API_URL/api/issues/abc/checkout\" -H \"Authorization: Bearer $PAPERCLIP_API_KEY\"";
+    const longCommand = "curl -s -X POST \"$AITEAMCORP_API_URL/api/issues/abc/checkout\" -H \"Authorization: Bearer $AITEAMCORP_API_KEY\"";
 
     expect(
       parseCursorStdoutLine(

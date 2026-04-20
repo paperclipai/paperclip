@@ -10,7 +10,7 @@ Paperclip encrypts secrets at rest using a local master key. Agent environment v
 Secrets are encrypted with a local master key stored at:
 
 ```
-~/.paperclip/instances/default/secrets/master.key
+~/.aiteamcorp/instances/default/secrets/master.key
 ```
 
 This key is auto-created during onboarding. The key never leaves your machine.
@@ -41,16 +41,16 @@ pnpm aiteamcorp doctor
 
 | Variable | Description |
 |----------|-------------|
-| `PAPERCLIP_SECRETS_MASTER_KEY` | 32-byte key as base64, hex, or raw string |
-| `PAPERCLIP_SECRETS_MASTER_KEY_FILE` | Custom key file path |
-| `PAPERCLIP_SECRETS_STRICT_MODE` | Set to `true` to enforce secret refs |
+| `AITEAMCORP_SECRETS_MASTER_KEY` | 32-byte key as base64, hex, or raw string |
+| `AITEAMCORP_SECRETS_MASTER_KEY_FILE` | Custom key file path |
+| `AITEAMCORP_SECRETS_STRICT_MODE` | Set to `true` to enforce secret refs |
 
 ## Strict Mode
 
 When strict mode is enabled, sensitive env keys (matching `*_API_KEY`, `*_TOKEN`, `*_SECRET`) must use secret references instead of inline plain values.
 
 ```sh
-PAPERCLIP_SECRETS_STRICT_MODE=true
+AITEAMCORP_SECRETS_STRICT_MODE=true
 ```
 
 Recommended for any deployment beyond local trusted.

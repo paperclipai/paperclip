@@ -6,7 +6,7 @@ import { createHash, type Hash } from "node:crypto";
 import type { AdapterExecutionContext } from "@aiteamcorp/adapter-utils";
 import { ensurePaperclipSkillSymlink, type PaperclipSkillEntry } from "@aiteamcorp/adapter-utils/server-utils";
 
-const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
+const DEFAULT_AITEAMCORP_INSTANCE_ID = "default";
 
 type SkillEntry = PaperclipSkillEntry;
 
@@ -25,8 +25,8 @@ function resolveManagedClaudePromptCacheRoot(
   env: NodeJS.ProcessEnv,
   companyId: string,
 ): string {
-  const aiteamcorpHome = nonEmpty(env.PAPERCLIP_HOME) ?? path.resolve(os.homedir(), ".paperclip");
-  const instanceId = nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? DEFAULT_PAPERCLIP_INSTANCE_ID;
+  const aiteamcorpHome = nonEmpty(env.AITEAMCORP_HOME) ?? path.resolve(os.homedir(), ".paperclip");
+  const instanceId = nonEmpty(env.AITEAMCORP_INSTANCE_ID) ?? DEFAULT_AITEAMCORP_INSTANCE_ID;
   return path.resolve(
     aiteamcorpHome,
     "instances",

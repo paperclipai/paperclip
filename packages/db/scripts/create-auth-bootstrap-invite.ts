@@ -37,7 +37,7 @@ async function main() {
   const dbUrl =
     config.database?.mode === "postgres"
       ? config.database.connectionString
-      : `postgres://paperclip:paperclip@127.0.0.1:${config.database?.embeddedPostgresPort ?? 54329}/paperclip`;
+      : `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${config.database?.embeddedPostgresPort ?? 54329}/paperclip`;
   if (!dbUrl) {
     throw new Error(`Could not resolve database connection from ${configPath}`);
   }

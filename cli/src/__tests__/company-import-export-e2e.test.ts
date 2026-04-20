@@ -107,7 +107,7 @@ function writeTestConfig(configPath: string, tempRoot: string, port: number, con
 function createServerEnv(configPath: string, port: number, connectionString: string) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("PAPERCLIP_")) {
+    if (key.startsWith("AITEAMCORP_")) {
       delete env[key];
     }
   }
@@ -117,15 +117,15 @@ function createServerEnv(configPath: string, port: number, connectionString: str
   delete env.SERVE_UI;
   delete env.HEARTBEAT_SCHEDULER_ENABLED;
 
-  env.PAPERCLIP_CONFIG = configPath;
+  env.AITEAMCORP_CONFIG = configPath;
   env.DATABASE_URL = connectionString;
   env.HOST = "127.0.0.1";
   env.PORT = String(port);
   env.SERVE_UI = "false";
-  env.PAPERCLIP_DB_BACKUP_ENABLED = "false";
+  env.AITEAMCORP_DB_BACKUP_ENABLED = "false";
   env.HEARTBEAT_SCHEDULER_ENABLED = "false";
-  env.PAPERCLIP_MIGRATION_AUTO_APPLY = "true";
-  env.PAPERCLIP_UI_DEV_MIDDLEWARE = "false";
+  env.AITEAMCORP_MIGRATION_AUTO_APPLY = "true";
+  env.AITEAMCORP_UI_DEV_MIDDLEWARE = "false";
 
   return env;
 }
@@ -133,7 +133,7 @@ function createServerEnv(configPath: string, port: number, connectionString: str
 function createCliEnv() {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("PAPERCLIP_")) {
+    if (key.startsWith("AITEAMCORP_")) {
       delete env[key];
     }
   }
@@ -141,10 +141,10 @@ function createCliEnv() {
   delete env.PORT;
   delete env.HOST;
   delete env.SERVE_UI;
-  delete env.PAPERCLIP_DB_BACKUP_ENABLED;
+  delete env.AITEAMCORP_DB_BACKUP_ENABLED;
   delete env.HEARTBEAT_SCHEDULER_ENABLED;
-  delete env.PAPERCLIP_MIGRATION_AUTO_APPLY;
-  delete env.PAPERCLIP_UI_DEV_MIDDLEWARE;
+  delete env.AITEAMCORP_MIGRATION_AUTO_APPLY;
+  delete env.AITEAMCORP_UI_DEV_MIDDLEWARE;
   return env;
 }
 

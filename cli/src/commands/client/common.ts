@@ -28,7 +28,7 @@ export interface ResolvedClientContext {
 export function addCommonClientOptions(command: Command, opts?: { includeCompany?: boolean }): Command {
   command
     .option("-c, --config <path>", "Path to Paperclip config file")
-    .option("-d, --data-dir <path>", "Paperclip data directory root (isolates state from ~/.paperclip)")
+    .option("-d, --data-dir <path>", "Paperclip data directory root (isolates state from ~/.aiteamcorp)")
     .option("--context <path>", "Path to CLI context file")
     .option("--profile <name>", "CLI context profile name")
     .option("--api-base <url>", "Base URL for the Paperclip API")
@@ -51,25 +51,25 @@ export function resolveCommandContext(
 
   const apiBase =
     options.apiBase?.trim() ||
-    process.env.PAPERCLIP_API_URL?.trim() ||
+    process.env.AITEAMCORP_API_URL?.trim() ||
     profile.apiBase ||
     inferApiBaseFromConfig(options.config);
 
   const explicitApiKey =
     options.apiKey?.trim() ||
-    process.env.PAPERCLIP_API_KEY?.trim() ||
+    process.env.AITEAMCORP_API_KEY?.trim() ||
     readKeyFromProfileEnv(profile);
   const storedBoardCredential = explicitApiKey ? null : getStoredBoardCredential(apiBase);
   const apiKey = explicitApiKey || storedBoardCredential?.token;
 
   const companyId =
     options.companyId?.trim() ||
-    process.env.PAPERCLIP_COMPANY_ID?.trim() ||
+    process.env.AITEAMCORP_COMPANY_ID?.trim() ||
     profile.companyId;
 
   if (opts?.requireCompany && !companyId) {
     throw new Error(
-      "Company ID is required. Pass --company-id, set PAPERCLIP_COMPANY_ID, or set context profile companyId via `aiteamcorp context set`.",
+      "Company ID is required. Pass --company-id, set AITEAMCORP_COMPANY_ID, or set context profile companyId via `aiteamcorp context set`.",
     );
   }
 
@@ -184,8 +184,8 @@ function renderValue(value: unknown): string {
 }
 
 function inferApiBaseFromConfig(configPath?: string): string {
-  const envHost = process.env.PAPERCLIP_SERVER_HOST?.trim() || "localhost";
-  let port = Number(process.env.PAPERCLIP_SERVER_PORT || "");
+  const envHost = process.env.AITEAMCORP_SERVER_HOST?.trim() || "localhost";
+  let port = Number(process.env.AITEAMCORP_SERVER_PORT || "");
 
   if (!Number.isFinite(port) || port <= 0) {
     try {

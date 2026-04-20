@@ -309,7 +309,7 @@ The comparable unit is:
 
 - instance-installed plugin package
 
-Paperclip should not auto-load arbitrary code from a workspace repo like `.paperclip/plugins` or project directories.
+Paperclip should not auto-load arbitrary code from a workspace repo like `.aiteamcorp/plugins` or project directories.
 
 ## 3. Arbitrary mutation hooks on core business decisions
 

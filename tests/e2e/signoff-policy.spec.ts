@@ -21,7 +21,7 @@ import { test, expect, request as pwRequest, type APIRequestContext } from "@pla
  *     the in_review state the signoff policy requires).
  */
 
-const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
+const PORT = Number(process.env.AITEAMCORP_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const COMPANY_NAME = `E2E-Signoff-${Date.now()}`;
 
@@ -147,7 +147,7 @@ async function setupCompany(boardRequest: APIRequestContext): Promise<TestContex
     throw new Error(
       `Signoff e2e tests require local_trusted deployment mode, ` +
         `but server is in "${health.deploymentMode}" mode. ` +
-        `Set PAPERCLIP_DEPLOYMENT_MODE=local_trusted or use the webServer config.`,
+        `Set AITEAMCORP_DEPLOYMENT_MODE=local_trusted or use the webServer config.`,
     );
   }
 

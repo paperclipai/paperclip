@@ -31,12 +31,12 @@ The scaffold intentionally uses plain React elements rather than host-provided U
 
 Inside this repo, the generated package uses `@aiteamcorp/plugin-sdk` via `workspace:*`.
 
-Outside this repo, the scaffold snapshots `@aiteamcorp/plugin-sdk` from your local Paperclip checkout into a `.paperclip-sdk/` tarball and points the generated package at that local file by default. You can override the SDK source explicitly:
+Outside this repo, the scaffold snapshots `@aiteamcorp/plugin-sdk` from your local Paperclip checkout into a `.aiteamcorp-sdk/` tarball and points the generated package at that local file by default. You can override the SDK source explicitly:
 
 ```bash
 node packages/plugins/create-aiteamcorp-plugin/dist/index.js @acme/my-plugin \
   --output /absolute/path/to/plugins \
-  --sdk-path /absolute/path/to/paperclip/packages/plugins/sdk
+  --sdk-path /absolute/path/to/aiteamcorp/packages/plugins/sdk
 ```
 
 That gives you an outside-repo local development path before the SDK is published to npm.

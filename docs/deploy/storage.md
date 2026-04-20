@@ -10,7 +10,7 @@ Paperclip stores uploaded files (issue attachments, images) using a configurable
 Files are stored at:
 
 ```
-~/.paperclip/instances/default/data/storage
+~/.aiteamcorp/instances/default/data/storage
 ```
 
 No configuration required. Suitable for local development and single-machine deployments.
@@ -35,5 +35,5 @@ pnpm aiteamcorp configure --section storage
 Storage configuration is stored in the instance config file:
 
 ```
-~/.paperclip/instances/default/config.json
+~/.aiteamcorp/instances/default/config.json
 ```

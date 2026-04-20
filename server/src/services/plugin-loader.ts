@@ -4,7 +4,7 @@
  * This service is the entry point for the plugin system's I/O boundary:
  *
  * 1. **Discovery** — Scans the local plugin directory
- *    (`~/.paperclip/plugins/`) and `node_modules` for packages matching
+ *    (`~/.aiteamcorp/plugins/`) and `node_modules` for packages matching
  *    the `paperclip-plugin-*` naming convention. Aggregates results with
  *    path-based deduplication.
  *
@@ -104,7 +104,7 @@ export interface DiscoveredPlugin {
  * @see PLUGIN_SPEC.md §8.1 — On-Disk Layout
  */
 export type PluginSource =
-  | "local-filesystem"  // ~/.paperclip/plugins/ local directory
+  | "local-filesystem"  // ~/.aiteamcorp/plugins/ local directory
   | "npm"               // npm packages matching paperclip-plugin-* convention
   | "registry";         // future: remote plugin registry URL
 
@@ -143,7 +143,7 @@ function getDeclaredPageRoutePaths(manifest: PaperclipPluginManifestV1): string[
 export interface PluginLoaderOptions {
   /**
    * Path to the local plugin directory to scan.
-   * Defaults to ~/.paperclip/plugins/
+   * Defaults to ~/.aiteamcorp/plugins/
    */
   localPluginDir?: string;
 

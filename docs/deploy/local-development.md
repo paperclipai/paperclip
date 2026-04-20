@@ -84,7 +84,7 @@ curl http://localhost:3100/api/companies
 To wipe local data and start fresh:
 
 ```sh
-rm -rf ~/.paperclip/instances/default/db
+rm -rf ~/.aiteamcorp/instances/default/db
 pnpm dev
 ```
 
@@ -92,14 +92,14 @@ pnpm dev
 
 | Data | Path |
 |------|------|
-| Config | `~/.paperclip/instances/default/config.json` |
-| Database | `~/.paperclip/instances/default/db` |
-| Storage | `~/.paperclip/instances/default/data/storage` |
-| Secrets key | `~/.paperclip/instances/default/secrets/master.key` |
-| Logs | `~/.paperclip/instances/default/logs` |
+| Config | `~/.aiteamcorp/instances/default/config.json` |
+| Database | `~/.aiteamcorp/instances/default/db` |
+| Storage | `~/.aiteamcorp/instances/default/data/storage` |
+| Secrets key | `~/.aiteamcorp/instances/default/secrets/master.key` |
+| Logs | `~/.aiteamcorp/instances/default/logs` |
 
 Override with environment variables:
 
 ```sh
-PAPERCLIP_HOME=/custom/path PAPERCLIP_INSTANCE_ID=dev pnpm aiteamcorp run
+AITEAMCORP_HOME=/custom/path AITEAMCORP_INSTANCE_ID=dev pnpm aiteamcorp run
 ```
