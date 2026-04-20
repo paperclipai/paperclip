@@ -153,6 +153,30 @@ export const createChildIssueSchema = createIssueSchema
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
+export const createBlockedByIssueDraftSchema = z.object({
+  projectId: z.string().uuid().optional().nullable(),
+  projectWorkspaceId: z.string().uuid().optional().nullable(),
+  goalId: z.string().uuid().optional().nullable(),
+  parentId: z.string().uuid().optional().nullable(),
+  inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
+  title: z.string().min(1),
+  description: z.string().optional().nullable(),
+  status: z.enum(ISSUE_STATUSES).optional(),
+  priority: z.enum(ISSUE_PRIORITIES).optional(),
+  assigneeAgentId: z.string().trim().min(1).optional().nullable(),
+  assigneeUserId: z.string().optional().nullable(),
+  requestDepth: z.number().int().nonnegative().optional(),
+  billingCode: z.string().optional().nullable(),
+  assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
+  executionPolicy: issueExecutionPolicySchema.optional().nullable(),
+  executionWorkspaceId: z.string().uuid().optional().nullable(),
+  executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
+  executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  labelIds: z.array(z.string().uuid()).optional(),
+});
+
+export type CreateBlockedByIssueDraft = z.infer<typeof createBlockedByIssueDraftSchema>;
+
 export const createIssueLabelSchema = z.object({
   name: z.string().trim().min(1).max(48),
   color: z.string().regex(/^#(?:[0-9a-fA-F]{6})$/, "Color must be a 6-digit hex value"),
@@ -162,6 +186,7 @@ export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
 export const updateIssueSchema = createIssueSchema.partial().extend({
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
+  createBlockedByIssues: z.array(createBlockedByIssueDraftSchema).optional(),
   comment: z.string().min(1).optional(),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),

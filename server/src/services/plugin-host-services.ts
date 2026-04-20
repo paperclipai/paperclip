@@ -1015,8 +1015,8 @@ export function buildHostServices(
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        assertReadableOriginFilter(params.originKind);
-        return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
+        // issueService.list already applies limit/offset; re-slicing here drops all pages after the first.
+        return (await issues.list(companyId, params as any)) as Issue[];
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);

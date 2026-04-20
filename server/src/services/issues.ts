@@ -1747,6 +1747,7 @@ export function issueService(db: Db) {
     create: async (
       companyId: string,
       data: IssueCreateInput,
+      dbOrTx: any = db,
     ) => {
       const {
         labelIds: inputLabelIds,
@@ -1772,7 +1773,8 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+
+      const runCreate = async (tx: any) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -1802,7 +1804,7 @@ export function issueService(db: Db) {
               })
               .from(executionWorkspaces)
               .where(eq(executionWorkspaces.id, workspaceSource.executionWorkspaceId))
-              .then((rows) => rows[0] ?? null);
+              .then((rows: Array<{ id: string; mode: string }>) => rows[0] ?? null);
             if (sourceWorkspace) {
               executionWorkspaceId = sourceWorkspace.id;
               executionWorkspacePreference = "reuse_existing";
@@ -1822,7 +1824,9 @@ export function issueService(db: Db) {
             .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
             .from(projects)
             .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
+            .then((rows: Array<{ executionWorkspacePolicy: typeof projects.$inferSelect.executionWorkspacePolicy }>) =>
+              rows[0] ?? null,
+            );
           executionWorkspaceSettings =
             defaultIssueExecutionWorkspaceSettingsForProject(
               gateProjectExecutionWorkspacePolicy(
@@ -1838,7 +1842,9 @@ export function issueService(db: Db) {
             })
             .from(projects)
             .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
+            .then((rows: Array<{ executionWorkspacePolicy: typeof projects.$inferSelect.executionWorkspacePolicy }>) =>
+              rows[0] ?? null,
+            );
           const projectPolicy = parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy);
           projectWorkspaceId = projectPolicy?.defaultProjectWorkspaceId ?? null;
           if (!projectWorkspaceId) {
@@ -1847,7 +1853,7 @@ export function issueService(db: Db) {
               .from(projectWorkspaces)
               .where(and(eq(projectWorkspaces.projectId, issueData.projectId), eq(projectWorkspaces.companyId, companyId)))
               .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
-              .then((rows) => rows[0]?.id ?? null);
+              .then((rows: Array<{ id: string }>) => rows[0]?.id ?? null);
           }
         }
         if (projectWorkspaceId) {
@@ -1920,7 +1926,9 @@ export function issueService(db: Db) {
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
-      });
+      };
+
+      return dbOrTx === db ? db.transaction(runCreate) : runCreate(dbOrTx);
     },
 
     update: async (
