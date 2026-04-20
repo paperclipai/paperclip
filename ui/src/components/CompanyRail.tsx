@@ -322,14 +322,20 @@ function OrgSwitcherChip() {
       setSelectedOrgId(orgId);
       setSelectedCompanyId(nextCompany.id, { source: "manual" });
       const target = `/${nextCompany.issuePrefix}/dashboard`;
-      console.log("[rail-org-switch] navigate to", target);
-      navigate(target);
+      console.log("[rail-org-switch] navigate to", target, "typeof navigate:", typeof navigate);
+      const result = navigate(target);
+      console.log("[rail-org-switch] navigate returned", result);
       setTimeout(() => {
         console.log("[rail-org-switch] post-navigate +50ms", { pathname: window.location.pathname });
-      }, 50);
-      setTimeout(() => {
-        console.log("[rail-org-switch] post-navigate +500ms", { pathname: window.location.pathname });
-      }, 500);
+        if (window.location.pathname !== target) {
+          console.log("[rail-org-switch] URL didn't change — trying window.history.pushState");
+          window.history.pushState({}, "", target);
+          window.dispatchEvent(new PopStateEvent("popstate"));
+          setTimeout(() => {
+            console.log("[rail-org-switch] post-pushState", { pathname: window.location.pathname });
+          }, 50);
+        }
+      }, 100);
     } else {
       console.log("[rail-org-switch] no company, navigate /home");
       setSelectedOrgId(orgId);
