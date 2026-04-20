@@ -2822,6 +2822,9 @@ export function issueRoutes(
     if (responseContentType === SVG_CONTENT_TYPE) {
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
     }
+    if (responseContentType === "text/html") {
+      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'; script-src 'none';");
+    }
     const filename = attachment.originalFilename ?? "attachment";
     const disposition = isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
     res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);

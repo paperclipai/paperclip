@@ -3333,8 +3333,9 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; detachedGracePeriodMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const detachedGracePeriodMs = opts?.detachedGracePeriodMs ?? 0;
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -3363,7 +3364,37 @@ export function heartbeatService(db: Db) {
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
-        if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
+        const isDetached = run.errorCode === DETACHED_PROCESS_ERROR_CODE;
+        if (isDetached && detachedGracePeriodMs > 0) {
+          const detachedSince = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+          if (now.getTime() - detachedSince >= detachedGracePeriodMs) {
+            const handleLostMessage = `Lost in-memory process handle after grace period; child pid ${run.processPid} still alive`;
+            let finalizedRun = await setRunStatus(run.id, "failed", {
+              error: handleLostMessage,
+              errorCode: "process_handle_lost",
+              finishedAt: now,
+            });
+            await setWakeupStatus(run.wakeupRequestId, "failed", {
+              finishedAt: now,
+              error: handleLostMessage,
+            });
+            if (finalizedRun) {
+              await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "error",
+                message: handleLostMessage,
+                payload: {
+                  processPid: run.processPid,
+                  gracePeriodMs: detachedGracePeriodMs,
+                },
+              });
+              await releaseIssueExecutionAndPromote(finalizedRun);
+            }
+            continue;
+          }
+        }
+        if (!isDetached) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
             error: detachedMessage,
@@ -4006,12 +4037,18 @@ export function heartbeatService(db: Db) {
     const isTimerWake = context.source === "scheduler" && context.reason === "interval_elapsed";
     const hasNoWork = !paperclipWakePayload && !issueId;
     if (isTimerWake && hasNoWork) {
-      // Double-check: query for any assigned issues the agent might have
+      // Double-check: query for any assigned issues the agent might have.
+      // IMPORTANT: If there are ANY assigned issues (even in_progress), the agent
+      // needs to run to pick them up. The agent fetches its inbox and picks work.
       const assignedIssues = await issuesSvc.list(agent.companyId, {
         assigneeAgentId: agent.id,
-        status: "todo,in_progress,in_review,blocked",
+        status: "todo,in_progress,in_review",
       });
-      if (assignedIssues.length === 0) {
+      const hasAssignedIssues = assignedIssues.length > 0;
+      const hasPendingWakeComments = Object.keys(parseObject(context.executionStage)).length > 0;
+      
+      // Only skip if: no assigned issues AND no pending wake comments
+      if (!hasAssignedIssues && !hasPendingWakeComments) {
         const skipNote = "Timer heartbeat skipped: no assigned issues or pending work";
         logger.info({ runId, agentId: agent.id }, skipNote);
         await setRunStatus(runId, "succeeded", {

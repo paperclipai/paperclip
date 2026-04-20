@@ -697,8 +697,9 @@ export async function startServer(): Promise<StartedServer> {
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
+      // Also fail detached process handles after 5-min grace period.
       void heartbeat
-        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, detachedGracePeriodMs: 5 * 60 * 1000 })
         .then(() => heartbeat.resumeQueuedRuns())
         .then(async () => {
           const reconciled = await heartbeat.reconcileStrandedAssignedIssues();

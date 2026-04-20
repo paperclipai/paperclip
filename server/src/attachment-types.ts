@@ -38,6 +38,7 @@ export const INLINE_ATTACHMENT_TYPES: readonly string[] = [
   "text/markdown",
   "application/json",
   "text/csv",
+  "text/html",
 ];
 
 /**

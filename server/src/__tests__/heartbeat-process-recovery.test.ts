@@ -275,6 +275,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    runUpdatedAt?: Date;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -331,7 +332,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
       startedAt: now,
-      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: input?.runUpdatedAt ?? new Date("2026-03-19T00:00:00.000Z"),
     });
 
     if (input?.includeIssue !== false) {
@@ -589,6 +590,60 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.errorCode).toBeNull();
     expect(run?.error).toBeNull();
+  });
+
+  it("fails a detached run after grace period expires", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId, issueId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: true,
+      runErrorCode: "process_detached",
+      runError: "Lost in-memory process handle, but child pid 123 is still alive",
+      runUpdatedAt: new Date(Date.now() - 10 * 60 * 1000),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ detachedGracePeriodMs: 5 * 60 * 1000 });
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toContain(runId);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_handle_lost");
+    expect(run?.error).toContain("still alive");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("keeps a detached run running during grace period", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: false,
+      runErrorCode: "process_detached",
+      runError: "Lost in-memory process handle, but child pid 123 is still alive",
+      runUpdatedAt: new Date(),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ detachedGracePeriodMs: 5 * 60 * 1000 });
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_detached");
   });
 
   it("tracks the first heartbeat with the agent role instead of adapter type", async () => {

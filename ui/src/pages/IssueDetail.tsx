@@ -92,6 +92,7 @@ import {
   Check,
   ChevronRight,
   Copy,
+  ExternalLink,
   EyeOff,
   Hexagon,
   MessageSquare,
@@ -2014,9 +2015,11 @@ export function IssueDetail() {
   }, [detailTab, pendingCommentComposerFocusKey]);
 
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
+  const isHtmlAttachment = (attachment: IssueAttachment) => attachment.contentType === "text/html";
   const attachmentList = attachments ?? [];
   const imageAttachments = attachmentList.filter(isImageAttachment);
-  const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
+  const htmlAttachments = attachmentList.filter(isHtmlAttachment);
+  const otherAttachments = attachmentList.filter((a) => !isImageAttachment(a) && !isHtmlAttachment(a));
 
   const handleChatImageClick = useCallback(
     (src: string) => {
@@ -2615,9 +2618,49 @@ export function IssueDetail() {
           </div>
         )}
 
-        {nonImageAttachments.length > 0 && (
+        {htmlAttachments.length > 0 && (
           <div className="space-y-2">
-            {nonImageAttachments.map((attachment) => (
+            {htmlAttachments.map((attachment) => (
+              <div key={attachment.id} className="border border-border rounded-md overflow-hidden">
+                <div className="flex items-center justify-between gap-2 bg-muted/30 px-2 py-1">
+                  <span className="text-xs truncate" title={attachment.originalFilename ?? attachment.id}>
+                    {attachment.originalFilename ?? attachment.id}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <a
+                      href={attachment.contentPath}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                      title="Open in new tab"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-destructive"
+                      onClick={() => deleteAttachment.mutate(attachment.id)}
+                      disabled={deleteAttachment.isPending}
+                      title="Delete attachment"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <iframe
+                  src={attachment.contentPath}
+                  className="w-full h-64 border-0"
+                  sandbox="allow-same-origin"
+                  title={attachment.originalFilename ?? "HTML attachment"}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {otherAttachments.length > 0 && (
+          <div className="space-y-2">
+            {otherAttachments.map((attachment) => (
               <div key={attachment.id} className="border border-border rounded-md p-2">
                 <div className="flex items-center justify-between gap-2">
                   <a
