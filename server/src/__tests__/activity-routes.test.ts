@@ -58,6 +58,16 @@ describe("activity routes", () => {
     vi.clearAllMocks();
   });
 
+  it("rejects cross-company activity listing before hitting the service", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const res = await request(createApp()).get("/api/companies/company-2/activity");
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("User does not have access to this company");
+    expect(mockActivityService.list).not.toHaveBeenCalled();
+  });
+
   it("resolves issue identifiers before loading runs", async () => {
     mockIssueService.getByIdentifier.mockResolvedValue({
       id: "issue-uuid-1",
@@ -115,5 +125,18 @@ describe("activity routes", () => {
     expect(res.status).toBe(401);
     expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
     expect(mockActivityService.issuesForRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects issue run lookup when the resolved issue belongs to another company", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValue({
+      id: "issue-uuid-2",
+      companyId: "company-2",
+    });
+
+    const res = await request(createApp()).get("/api/issues/PAP-999/runs");
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("User does not have access to this company");
+    expect(mockActivityService.runsForIssue).not.toHaveBeenCalled();
   });
 });
