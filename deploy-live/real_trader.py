@@ -390,8 +390,8 @@ class OKXExecutor(ExchangeExecutor):
         return base64.b64encode(mac.digest()).decode("utf-8")
 
     def _headers(self, method: str, path: str, body: str = "") -> dict:
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + \
-             f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
+        now = datetime.now(timezone.utc)
+        ts = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
         sign = self._sign(ts, method, path, body)
         return {
             "OK-ACCESS-KEY": self.api_key,
@@ -496,14 +496,36 @@ class OKXExecutor(ExchangeExecutor):
                     if d.get("ccy") == "USDT":
                         self._mark_success()
                         return {
-                            "availBal": float(d.get("availBal", 0)),
-                            "frozenBal": float(d.get("frozenBal", 0)),
+                            "available": float(d.get("availBal", 0)),
+                            "locked": float(d.get("frozenBal", 0)),
                         }
             self._mark_error("No USDT balance data")
-            return {"availBal": 0.0, "frozenBal": 0.0}
+            return {"available": 0.0, "locked": 0.0}
         except Exception as e:
             self._mark_error(str(e))
-            return {"availBal": 0.0, "frozenBal": 0.0}
+            return {"available": 0.0, "locked": 0.0}
+
+    async def cancel_order(self, order_id: str, symbol: str) -> bool:
+        base = symbol.replace("USDT", "")
+        inst_id = f"{base}-USDT-SWAP"
+        path = "/api/v5/trade/cancel-order"
+        payload = {"instId": inst_id, "ordId": order_id}
+        body = json.dumps(payload)
+        headers = self._headers("POST", path, body)
+        try:
+            async with self.session.post(
+                self.BASE_URL + path, headers=headers, data=body,
+                timeout=aiohttp.ClientTimeout(total=ORDER_TIMEOUT_SEC),
+            ) as resp:
+                data = await resp.json()
+            if data.get("code") == "0":
+                self._mark_success()
+                return True
+            self._mark_error(data.get("msg", str(data)))
+            return False
+        except Exception as e:
+            self._mark_error(str(e))
+            return False
 
     async def get_open_positions(self) -> List[dict]:
         path = "/api/v5/account/positions?instType=SWAP"
@@ -645,14 +667,35 @@ class BybitExecutor(ExchangeExecutor):
                     if c.get("coin") == "USDT":
                         self._mark_success()
                         return {
-                            "availBal": float(c.get("availableToWithdraw", 0)),
-                            "frozenBal": float(c.get("locked", 0)),
+                            "available": float(c.get("availableToWithdraw", 0)),
+                            "locked": float(c.get("locked", 0)),
                         }
             self._mark_error("No USDT balance data")
-            return {"availBal": 0.0, "frozenBal": 0.0}
+            return {"available": 0.0, "locked": 0.0}
         except Exception as e:
             self._mark_error(str(e))
-            return {"availBal": 0.0, "frozenBal": 0.0}
+            return {"available": 0.0, "locked": 0.0}
+
+    async def cancel_order(self, order_id: str, symbol: str) -> bool:
+        path = "/v5/order/cancel"
+        payload = {"category": "linear", "symbol": symbol, "orderId": order_id}
+        body = json.dumps(payload)
+        ts = str(int(time.time() * 1000))
+        headers = self._headers(ts, body)
+        try:
+            async with self.session.post(
+                self.BASE_URL + path, headers=headers, data=body,
+                timeout=aiohttp.ClientTimeout(total=ORDER_TIMEOUT_SEC),
+            ) as resp:
+                data = await resp.json()
+            if data.get("retCode") == 0:
+                self._mark_success()
+                return True
+            self._mark_error(data.get("retMsg", str(data)))
+            return False
+        except Exception as e:
+            self._mark_error(str(e))
+            return False
 
     async def get_open_positions(self) -> List[dict]:
         path = "/v5/position/list?category=linear&settleCoin=USDT"
@@ -798,20 +841,42 @@ class MEXCExecutor(ExchangeExecutor):
                     a = assets[0]
                     self._mark_success()
                     return {
-                        "availBal": float(a.get("availableBalance", 0)),
-                        "frozenBal": float(a.get("frozenBalance", 0)),
+                        "available": float(a.get("availableBalance", 0)),
+                        "locked": float(a.get("frozenBalance", 0)),
                     }
                 elif isinstance(assets, dict):
                     self._mark_success()
                     return {
-                        "availBal": float(assets.get("availableBalance", 0)),
-                        "frozenBal": float(assets.get("frozenBalance", 0)),
+                        "available": float(assets.get("availableBalance", 0)),
+                        "locked": float(assets.get("frozenBalance", 0)),
                     }
             self._mark_error("No USDT balance data")
-            return {"availBal": 0.0, "frozenBal": 0.0}
+            return {"available": 0.0, "locked": 0.0}
         except Exception as e:
             self._mark_error(str(e))
-            return {"availBal": 0.0, "frozenBal": 0.0}
+            return {"available": 0.0, "locked": 0.0}
+
+    async def cancel_order(self, order_id: str, symbol: str) -> bool:
+        base = symbol.replace("USDT", "")
+        mexc_symbol = f"{base}_USDT"
+        path = "/api/v1/private/order/cancel"
+        params = {"symbol": mexc_symbol, "orderId": order_id}
+        headers = self._headers(params.copy())
+        body = json.dumps(params)
+        try:
+            async with self.session.post(
+                self.BASE_URL + path, headers=headers, data=body,
+                timeout=aiohttp.ClientTimeout(total=ORDER_TIMEOUT_SEC),
+            ) as resp:
+                data = await resp.json()
+            if data.get("success"):
+                self._mark_success()
+                return True
+            self._mark_error(data.get("message", str(data)))
+            return False
+        except Exception as e:
+            self._mark_error(str(e))
+            return False
 
     async def get_open_positions(self) -> List[dict]:
         path = "/api/v1/private/position/open_positions"
@@ -851,8 +916,8 @@ class BloFinExecutor(ExchangeExecutor):
         return base64.b64encode(mac.digest()).decode("utf-8")
 
     def _headers(self, method: str, path: str, body: str = "") -> dict:
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + \
-             f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
+        now = datetime.now(timezone.utc)
+        ts = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
         sign = self._sign(ts, method, path, body)
         return {
             "ACCESS-KEY": self.api_key,
@@ -960,20 +1025,42 @@ class BloFinExecutor(ExchangeExecutor):
                         if d.get("ccy") == "USDT":
                             self._mark_success()
                             return {
-                                "availBal": float(d.get("availBal", 0)),
-                                "frozenBal": float(d.get("frozenBal", 0)),
+                                "available": float(d.get("availBal", 0)),
+                                "locked": float(d.get("frozenBal", 0)),
                             }
                 elif isinstance(bal_data, dict):
                     self._mark_success()
                     return {
-                        "availBal": float(bal_data.get("availBal", 0)),
-                        "frozenBal": float(bal_data.get("frozenBal", 0)),
+                        "available": float(bal_data.get("availBal", 0)),
+                        "locked": float(bal_data.get("frozenBal", 0)),
                     }
             self._mark_error("No balance data")
-            return {"availBal": 0.0, "frozenBal": 0.0}
+            return {"available": 0.0, "locked": 0.0}
         except Exception as e:
             self._mark_error(str(e))
-            return {"availBal": 0.0, "frozenBal": 0.0}
+            return {"available": 0.0, "locked": 0.0}
+
+    async def cancel_order(self, order_id: str, symbol: str) -> bool:
+        base = symbol.replace("USDT", "")
+        inst_id = f"{base}-USDT"
+        path = "/api/v1/trade/cancel-order"
+        payload = {"instId": inst_id, "orderId": order_id}
+        body = json.dumps(payload)
+        headers = self._headers("POST", path, body)
+        try:
+            async with self.session.post(
+                self.BASE_URL + path, headers=headers, data=body,
+                timeout=aiohttp.ClientTimeout(total=ORDER_TIMEOUT_SEC),
+            ) as resp:
+                data = await resp.json()
+            if data.get("code") == "0":
+                self._mark_success()
+                return True
+            self._mark_error(data.get("msg", str(data)))
+            return False
+        except Exception as e:
+            self._mark_error(str(e))
+            return False
 
     async def get_open_positions(self) -> List[dict]:
         path = "/api/v1/account/positions"
@@ -993,8 +1080,54 @@ class BloFinExecutor(ExchangeExecutor):
             return []
 
 
+class DryRunExecutor(ExchangeExecutor):
+    """Stub executor used in DRY_RUN mode when no real API keys are available.
+
+    All trading calls are no-ops that log their intent.  Balance queries return
+    a fixed simulated equity so the rest of the bot logic can exercise normally.
+    """
+
+    def __init__(self, name: str, session: aiohttp.ClientSession):
+        super().__init__(name, api_key="dry", api_secret="dry", session=session)
+
+    async def place_market_order(self, symbol: str, side: str, size_usd: float) -> "OrderResult":
+        log.info(f"[DRY_RUN:{self.name}] place_market_order {side} {symbol} ${size_usd:.2f}")
+        self._mark_success()
+        return OrderResult(
+            success=True,
+            order_id=f"dryrun-{self.name}-{int(time.time() * 1000)}",
+            exchange=self.name,
+            symbol=symbol,
+            side=side,
+            size_usd=size_usd,
+            filled_usd=size_usd,
+            fill_price=0.0,
+            fees_usd=size_usd * 0.001,
+            timestamp=time.time(),
+            latency_ms=0.0,
+        )
+
+    async def get_order_status(self, order_id: str, symbol: str) -> dict:
+        return {"status": "filled", "filled_qty": 0.0, "fill_price": 0.0}
+
+    async def cancel_order(self, order_id: str, symbol: str) -> bool:
+        return True
+
+    async def get_balance(self) -> Dict[str, float]:
+        self._mark_success()
+        return {"available": STARTING_CAPITAL / len(EXCHANGES), "locked": 0.0}
+
+    async def get_open_positions(self) -> List[dict]:
+        return []
+
+
 def create_executors(session: aiohttp.ClientSession) -> Dict[str, ExchangeExecutor]:
-    """Factory: create exchange executors for all configured exchanges."""
+    """Factory: create exchange executors for all configured exchanges.
+
+    In DRY_RUN mode with no API keys, falls back to DryRunExecutor stubs for
+    all four exchanges so the bot can exercise the full startup / main-loop
+    path without real credentials.
+    """
     executors: Dict[str, ExchangeExecutor] = {}
     if OKX_API_KEY and OKX_API_SECRET:
         executors["OKX"] = OKXExecutor(OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE, session)
@@ -1004,6 +1137,14 @@ def create_executors(session: aiohttp.ClientSession) -> Dict[str, ExchangeExecut
         executors["MEXC"] = MEXCExecutor("MEXC", MEXC_API_KEY, MEXC_API_SECRET, session)
     if BLOFIN_API_KEY and BLOFIN_API_SECRET:
         executors["BloFin"] = BloFinExecutor(BLOFIN_API_KEY, BLOFIN_API_SECRET, BLOFIN_PASSPHRASE, session)
+
+    # In DRY_RUN mode with no real keys, create stub executors so the full
+    # startup path (symbol discovery, main loop, state saving) can be verified.
+    if not executors and DRY_RUN:
+        log.warning("DRY_RUN mode: no API keys found — using DryRunExecutor stubs")
+        for name in EXCHANGES:
+            executors[name] = DryRunExecutor(name, session)
+
     return executors
 
 
@@ -2454,6 +2595,10 @@ class LiveTrader:
             "open_positions": [self._pos_to_dict(pos) for pos in p.positions],
             "closed_positions": [self._pos_to_dict(pos) for pos in p.closed_positions[-200:]],
             "symbol_blacklist": {s: t for s, t in self.symbol_blacklist.items() if t > time.time()},
+            "balance_cache": self.risk_mgr.balance_cache,
+            "order_audit_log": self.trade_executor.order_audit_log[-200:],
+            "dry_run": DRY_RUN,
+            "kill_switch": self.risk_mgr.kill_switch_active,
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
@@ -2685,8 +2830,8 @@ class TelegramCommandListener:
             for ex_name, executor in trader.executors.items():
                 try:
                     bal = await executor.get_balance()
-                    avail = bal.get("availBal", 0)
-                    frozen = bal.get("frozenBal", 0)
+                    avail = bal.get("available", 0)
+                    frozen = bal.get("locked", 0)
                     health = "OK" if executor.healthy else "DEGRADED"
                     lines.append(f"  {ex_name}: ${avail:.2f} avail / ${frozen:.2f} frozen [{health}]")
                 except Exception as e:
@@ -2737,7 +2882,7 @@ async def main():
         for ex_name, executor in executors.items():
             try:
                 bal = await executor.get_balance()
-                avail = bal.get("availBal", 0)
+                avail = bal.get("available", 0)
                 log.info(f"AUTH OK {ex_name}: ${avail:.2f} available")
             except Exception as e:
                 log.warning(f"AUTH FAILED {ex_name}: {e}")
@@ -2946,6 +3091,9 @@ async def main():
                     log.critical("KILL SWITCH — drawdown limit exceeded")
                     await trader.risk_mgr.trigger_kill_switch("drawdown_exceeded")
                     await send_telegram(session, "*KILL SWITCH ACTIVATED* — drawdown limit exceeded")
+                    # Close all open positions immediately
+                    for pos in list(trader.portfolio.open_positions):
+                        await trader.trade_executor.close_position(pos, 0.0, "kill_switch")
 
                 # ---- SCAN FOR ENTRY CANDIDATES ----
                 can_trade, trade_reason = trader.risk_mgr.can_trade()

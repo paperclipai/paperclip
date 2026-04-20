@@ -290,7 +290,7 @@ function esc(s) {
 
 // ---- Open equity ----
 function openEq(s) {
-  return (s.open_positions || []).reduce((a, p) => a + (p.unrealized_pnl || 0), 0);
+  return (s.open_positions || []).reduce((a, p) => a + (p.net_pnl_usd || 0), 0);
 }
 
 // ---- Render functions ----
@@ -376,19 +376,19 @@ function renderOpen(s) {
   }
   let html = '';
   rows.forEach(p => {
-    const pnl = p.unrealized_pnl || 0;
-    const st  = p.degraded
+    const pnl = p.net_pnl_usd || 0;
+    const st  = p.degraded_leg
       ? '<span class="y">DEGRADED</span>'
       : '<span class="g">OPEN</span>';
-    const oids = [p.short_order_id, p.long_order_id].filter(Boolean).join(' / ') || '\u2014';
+    const oids = [p.order_id_short, p.order_id_long].filter(Boolean).join(' / ') || '\u2014';
     html += '<tr>';
     html += '<td class="a">' + esc(p.symbol) + '</td>';
-    html += '<td>' + esc(p.short_exchange || (p.exchanges && p.exchanges[0]) || '\u2014') + '</td>';
-    html += '<td>' + esc(p.long_exchange  || (p.exchanges && p.exchanges[1]) || '\u2014') + '</td>';
-    html += '<td>' + f2(p.entry_spread) + '</td>';
-    html += '<td>' + f2(p.current_spread) + '</td>';
+    html += '<td>' + esc(p.exchange_short || '\u2014') + '</td>';
+    html += '<td>' + esc(p.exchange_long  || '\u2014') + '</td>';
+    html += '<td>' + f2(p.entry_spread_pct) + '</td>';
+    html += '<td>' + f2(p.current_spread_pct) + '</td>';
     html += '<td class="' + pc(pnl) + '">' + fusd(pnl) + '</td>';
-    html += '<td>' + tAgo(p.opened_at) + '</td>';
+    html += '<td>' + tAgo(p.entry_time) + '</td>';
     html += '<td>' + st + '</td>';
     html += '<td class="m" style="font-size:10px">' + esc(oids) + '</td>';
     html += '</tr>';
@@ -405,17 +405,18 @@ function renderClosed(s) {
   }
   let html = '';
   rows.forEach(p => {
-    const pnl = p.pnl || p.realized_pnl || 0;
+    const pnl = p.net_pnl_usd || 0;
+    const fees = (p.entry_fees_usd || 0) + (p.exit_fees_usd || 0);
     html += '<tr>';
     html += '<td class="a">' + esc(p.symbol) + '</td>';
-    html += '<td>' + esc(p.short_exchange || (p.exchanges && p.exchanges[0]) || '\u2014') + '</td>';
-    html += '<td>' + esc(p.long_exchange  || (p.exchanges && p.exchanges[1]) || '\u2014') + '</td>';
-    html += '<td>' + f2(p.entry_spread) + '</td>';
-    html += '<td>' + f2(p.exit_spread)  + '</td>';
+    html += '<td>' + esc(p.exchange_short || '\u2014') + '</td>';
+    html += '<td>' + esc(p.exchange_long  || '\u2014') + '</td>';
+    html += '<td>' + f2(p.entry_spread_pct) + '</td>';
+    html += '<td>' + f2(p.exit_spread_pct)  + '</td>';
     html += '<td class="' + pc(pnl) + '">' + fusd(pnl) + '</td>';
-    html += '<td>' + fusd(p.fees) + '</td>';
-    html += '<td>' + tAgo(p.opened_at) + '</td>';
-    html += '<td class="m">' + esc(p.close_reason || p.reason || '\u2014') + '</td>';
+    html += '<td>' + fusd(fees) + '</td>';
+    html += '<td>' + tAgo(p.entry_time) + '</td>';
+    html += '<td class="m">' + esc(p.exit_reason || '\u2014') + '</td>';
     html += '</tr>';
   });
   tb.innerHTML = html;
