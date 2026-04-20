@@ -753,8 +753,9 @@ function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string): 
 
     const relativePath = match.groups.relative;
     const repoManagedPath = path.join(repoRoot, relativePath.slice(2));
-    // Lexical path traversal guard
-    if (!repoManagedPath.startsWith(repoRoot + path.sep)) return null;
+    // Lexical path traversal guard — use realRepoRoot so symlinks in repoRoot itself
+    // do not create a false match (e.g. /tmp/x → /private/tmp/x on macOS).
+    if (!repoManagedPath.startsWith(realRepoRoot + path.sep)) return null;
     // Symlink escape guard — realpathSync resolves symlinks and throws if the path
     // does not exist, collapsing the TOCTOU window from a separate existsSync call.
     let realPath: string;
@@ -2220,14 +2221,8 @@ async function stopRuntimeService(serviceId: string) {
   const record = runtimeServicesById.get(serviceId);
   if (!record) return;
   clearIdleTimer(record);
-  record.status = "stopped";
-  record.healthStatus = "unknown";
-  record.lastUsedAt = new Date().toISOString();
-  record.stoppedAt = new Date().toISOString();
-  runtimeServicesById.delete(serviceId);
-  if (record.reuseKey && runtimeServicesByReuseKey.get(record.reuseKey) === record.id) {
-    runtimeServicesByReuseKey.delete(record.reuseKey);
-  }
+  // Terminate the child process BEFORE removing from the in-memory map.
+  // If termination throws, the record stays in the map so the reconciler can retry.
   if (record.child && record.child.pid) {
     await terminateLocalService({
       pid: record.child.pid,
@@ -2241,6 +2236,14 @@ async function stopRuntimeService(serviceId: string) {
         processGroupId: record.processGroupId,
       });
     }
+  }
+  record.status = "stopped";
+  record.healthStatus = "unknown";
+  record.lastUsedAt = new Date().toISOString();
+  record.stoppedAt = new Date().toISOString();
+  runtimeServicesById.delete(serviceId);
+  if (record.reuseKey && runtimeServicesByReuseKey.get(record.reuseKey) === record.id) {
+    runtimeServicesByReuseKey.delete(record.reuseKey);
   }
   await removeLocalServiceRegistryRecord(record.serviceKey);
   await persistRuntimeServiceRecord(record.db, record);
@@ -2568,7 +2571,12 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
     })
     .map((record) => record.id);
 
-  await Promise.allSettled(matchingServiceIds.map((serviceId) => stopRuntimeService(serviceId)));
+  const stopResults = await Promise.allSettled(matchingServiceIds.map((serviceId) => stopRuntimeService(serviceId)));
+  stopResults.forEach((result, i) => {
+    if (result.status === "rejected") {
+      console.error("[workspace-runtime] Failed to stop execution workspace runtime service", { serviceId: matchingServiceIds[i], error: result.reason });
+    }
+  });
 
   if (input.db) {
     if (input.runtimeServiceId) {
@@ -2612,7 +2620,12 @@ export async function stopRuntimeServicesForProjectWorkspace(input: {
     })
     .map((record) => record.id);
 
-  await Promise.allSettled(matchingServiceIds.map((serviceId) => stopRuntimeService(serviceId)));
+  const stopResultsProject = await Promise.allSettled(matchingServiceIds.map((serviceId) => stopRuntimeService(serviceId)));
+  stopResultsProject.forEach((result, i) => {
+    if (result.status === "rejected") {
+      console.error("[workspace-runtime] Failed to stop project workspace runtime service", { serviceId: matchingServiceIds[i], error: result.reason });
+    }
+  });
 
   if (input.db) {
     const now = new Date();
