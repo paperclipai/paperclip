@@ -515,6 +515,38 @@ describe("openclaw gateway adapter execute", () => {
     expect(result.errorCode).toBe("openclaw_gateway_url_missing");
   });
 
+  it("does not attach a 'paperclip' root property to agent params (regression guard for #3923)", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            payloadTemplate: { message: "wake now" },
+            waitTimeoutMs: 2000,
+          },
+          {
+            context: {
+              taskId: "task-123",
+              issueId: "issue-123",
+              wakeReason: "issue_assigned",
+              issueIds: ["issue-123"],
+              paperclipWake: { reason: "issue_assigned" },
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const payload = gateway.getAgentPayload();
+      expect(payload).toBeTruthy();
+      expect(payload).not.toHaveProperty("paperclip");
+    } finally {
+      await gateway.close();
+    }
+  });
+
   it("returns adapter-managed runtime services from gateway result meta", async () => {
     const gateway = await createMockGatewayServer({
       waitPayload: {
