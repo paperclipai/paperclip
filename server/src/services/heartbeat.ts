@@ -121,6 +121,7 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const AGENT_SESSION_TASK_KEY_PREFIX = "__agent_session__:";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1093,6 +1094,7 @@ function parseIssueAssigneeAdapterOverrides(
  * simpler `agentRuntimeState.sessionId` fallback.
  */
 const HEARTBEAT_TASK_KEY = "__heartbeat__";
+type SessionResumeScope = "task" | "agent";
 
 function deriveTaskKey(
   contextSnapshot: Record<string, unknown> | null | undefined,
@@ -1131,10 +1133,37 @@ export function deriveTaskKeyWithHeartbeatFallback(
   return null;
 }
 
+function deriveAgentSessionTaskKey(agentId: string): string {
+  return `${AGENT_SESSION_TASK_KEY_PREFIX}${agentId}`;
+}
+
+function resolveSessionResumeScope(agent: typeof agents.$inferSelect): SessionResumeScope {
+  const runtimeConfig = parseObject(agent.runtimeConfig);
+  const heartbeat = parseObject(runtimeConfig.heartbeat);
+  const configuredScope = readNonEmptyString(heartbeat.sessionScope);
+  if (configuredScope === "agent" || configuredScope === "task") return configuredScope;
+  return agent.adapterType === "codex_local" ? "agent" : "task";
+}
+
+export function resolveTaskKeyForWake(
+  agent: typeof agents.$inferSelect,
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  payload: Record<string, unknown> | null | undefined,
+) {
+  const explicitTaskKey = deriveTaskKey(contextSnapshot, payload);
+  if (explicitTaskKey) return explicitTaskKey;
+  if (resolveSessionResumeScope(agent) === "agent") {
+    return deriveAgentSessionTaskKey(agent.id);
+  }
+  return deriveTaskKeyWithHeartbeatFallback(contextSnapshot, payload);
+}
+
 export function shouldResetTaskSessionForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
+  opts: { preserveAcrossWakes?: boolean } = {},
 ) {
   if (contextSnapshot?.forceFreshSession === true) return true;
+  if (opts.preserveAcrossWakes) return false;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (
@@ -3847,7 +3876,7 @@ export function heartbeatService(db: Db) {
 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
-    const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
+    const taskKey = resolveTaskKeyForWake(agent, context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
@@ -3899,7 +3928,10 @@ export function heartbeatService(db: Db) {
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
-    const resetTaskSession = shouldResetTaskSessionForWake(context);
+    const sessionResumeScope = resolveSessionResumeScope(agent);
+    const resetTaskSession = shouldResetTaskSessionForWake(context, {
+      preserveAcrossWakes: sessionResumeScope === "agent",
+    });
     const sessionResetReason = describeSessionResetReason(context);
     const taskSessionForRun = resetTaskSession ? null : taskSession;
     const explicitResumeSessionParams = normalizeSessionParams(
@@ -5087,7 +5119,7 @@ export function heartbeatService(db: Db) {
     const {
       contextSnapshot: enrichedContextSnapshot,
       issueIdFromPayload,
-      taskKey,
+      taskKey: derivedTaskKey,
       wakeCommentId,
     } = enrichWakeContextSnapshot({
       contextSnapshot,
@@ -5100,7 +5132,7 @@ export function heartbeatService(db: Db) {
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
-    const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
+    const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, derivedTaskKey);
     if (explicitResumeSession) {
       enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;
       enrichedContextSnapshot.resumeSessionDisplayId = explicitResumeSession.sessionDisplayId;
@@ -5116,7 +5148,11 @@ export function heartbeatService(db: Db) {
       }
       issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
     }
-    const effectiveTaskKey = readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
+    const effectiveTaskKey =
+      resolveTaskKeyForWake(agent, enrichedContextSnapshot, payload) ?? derivedTaskKey;
+    if (effectiveTaskKey) {
+      enrichedContextSnapshot.taskKey = effectiveTaskKey;
+    }
     const sessionBefore =
       explicitResumeSession?.sessionDisplayId ??
       await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
@@ -5466,10 +5502,12 @@ export function heartbeatService(db: Db) {
       .orderBy(desc(heartbeatRuns.createdAt));
 
     const sameScopeQueuedRun = activeRuns.find(
-      (candidate) => candidate.status === "queued" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) =>
+        candidate.status === "queued" && isSameTaskScope(runTaskKey(candidate), effectiveTaskKey),
     );
     const sameScopeRunningRun = activeRuns.find(
-      (candidate) => candidate.status === "running" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) =>
+        candidate.status === "running" && isSameTaskScope(runTaskKey(candidate), effectiveTaskKey),
     );
     const shouldQueueFollowupForRunningWake =
       Boolean(sameScopeRunningRun) &&
