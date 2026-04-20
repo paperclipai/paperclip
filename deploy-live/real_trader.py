@@ -1763,4 +1763,131 @@ async def discover_symbols(session) -> List[str]:
     return symbols
 
 
+# ===========================================================================
+# Risk Manager
+# ===========================================================================
+
+class RiskManager:
+    """Enforces all risk limits before and during trading."""
+
+    def __init__(self, portfolio: Portfolio, executors: Dict[str, ExchangeExecutor]):
+        self.portfolio = portfolio
+        self.executors = executors
+        self.kill_switch_active = False
+        self.kill_switch_time: Optional[float] = None
+        self.manual_stop = False
+        self.balance_cache: Dict[str, Dict[str, float]] = {}
+        self.last_balance_refresh = 0.0
+        self.last_reconcile_time = 0.0
+
+    async def refresh_balances(self):
+        if time.time() - self.last_balance_refresh < BALANCE_REFRESH_SEC:
+            return
+        results = await asyncio.gather(
+            *[ex.get_balance() for ex in self.executors.values()],
+            return_exceptions=True
+        )
+        for ex_name, result in zip(self.executors.keys(), results):
+            if isinstance(result, Exception):
+                log.warning(f"Balance refresh failed for {ex_name}: {result}")
+                continue
+            self.balance_cache[ex_name] = result
+        self.last_balance_refresh = time.time()
+
+    def get_available_balance(self, exchange: str) -> float:
+        return self.balance_cache.get(exchange, {}).get("available", 0.0)
+
+    def can_trade(self) -> Tuple[bool, str]:
+        if self.manual_stop:
+            return False, "manual_stop"
+        if self.kill_switch_active:
+            elapsed = time.time() - (self.kill_switch_time or 0)
+            if elapsed < COOLDOWN_AFTER_KILL_SEC:
+                return False, f"kill_switch_cooldown ({COOLDOWN_AFTER_KILL_SEC - elapsed:.0f}s remaining)"
+            if self.portfolio.equity >= self.portfolio.starting_capital * 0.90:
+                self.kill_switch_active = False
+                log.info("Kill switch reset — equity recovered")
+            else:
+                return False, "kill_switch_equity_below_threshold"
+        equity = self.portfolio.equity
+        if equity < self.portfolio.starting_capital * (1 - KILL_SWITCH_DRAWDOWN_PCT / 100):
+            return False, "drawdown_exceeded"
+        return True, ""
+
+    def can_open_position(self, exchange_short: str, exchange_long: str, size_usd: float) -> Tuple[bool, str]:
+        can, reason = self.can_trade()
+        if not can:
+            return False, reason
+        n_open = len(self.portfolio.open_positions)
+        if n_open >= MAX_CONCURRENT:
+            return False, f"max_positions ({n_open}/{MAX_CONCURRENT})"
+        if size_usd > MAX_POSITION_USD:
+            size_usd = MAX_POSITION_USD
+        bal_short = self.get_available_balance(exchange_short)
+        bal_long = self.get_available_balance(exchange_long)
+        if bal_short < size_usd:
+            return False, f"insufficient_balance_{exchange_short} (${bal_short:.2f})"
+        if bal_long < size_usd:
+            return False, f"insufficient_balance_{exchange_long} (${bal_long:.2f})"
+        ex_short = self.executors.get(exchange_short)
+        ex_long = self.executors.get(exchange_long)
+        if ex_short and not ex_short.healthy:
+            return False, f"exchange_unhealthy_{exchange_short}"
+        if ex_long and not ex_long.healthy:
+            return False, f"exchange_unhealthy_{exchange_long}"
+        degraded_usd = sum(p.size_usd for p in self.portfolio.open_positions if p.status == "DEGRADED")
+        if degraded_usd > self.portfolio.equity * 0.50:
+            return False, "degraded_exposure_too_high"
+        # Concentration check
+        exposure_short = sum(p.size_usd for p in self.portfolio.open_positions
+                            if p.exchange_short == exchange_short or p.exchange_long == exchange_short)
+        max_conc = bal_short * MAX_PER_EXCHANGE_PCT
+        if exposure_short + size_usd > max_conc:
+            return False, f"concentration_{exchange_short}"
+        exposure_long = sum(p.size_usd for p in self.portfolio.open_positions
+                           if p.exchange_short == exchange_long or p.exchange_long == exchange_long)
+        max_conc = bal_long * MAX_PER_EXCHANGE_PCT
+        if exposure_long + size_usd > max_conc:
+            return False, f"concentration_{exchange_long}"
+        # Aged positions
+        now = datetime.now(timezone.utc)
+        aged = sum(p.size_usd for p in self.portfolio.open_positions
+                   if (now - p.entry_time).total_seconds() / 60 > AGED_POSITION_THRESHOLD_MIN)
+        if aged >= self.portfolio.equity * AGED_POSITION_MAX_ALLOC_PCT:
+            return False, "aged_position_budget_full"
+        return True, ""
+
+    async def trigger_kill_switch(self, reason: str):
+        self.kill_switch_active = True
+        self.kill_switch_time = time.time()
+        log.critical(f"KILL SWITCH ACTIVATED: {reason}")
+
+    async def reconcile_positions(self, session: aiohttp.ClientSession):
+        if time.time() - self.last_reconcile_time < RECONCILE_INTERVAL_SEC:
+            return []
+        self.last_reconcile_time = time.time()
+        mismatches = []
+        for ex_name, executor in self.executors.items():
+            try:
+                actual = await executor.get_open_positions()
+                actual_symbols = {p["symbol"] for p in actual}
+                bot_symbols = set()
+                for p in self.portfolio.open_positions:
+                    if p.exchange_short == ex_name:
+                        bot_symbols.add(p.symbol)
+                    if p.exchange_long == ex_name:
+                        bot_symbols.add(p.symbol)
+                orphaned = actual_symbols - bot_symbols
+                missing = bot_symbols - actual_symbols
+                if orphaned:
+                    mismatches.append(f"{ex_name}: orphaned {orphaned}")
+                if missing:
+                    mismatches.append(f"{ex_name}: missing {missing}")
+            except Exception as e:
+                log.warning(f"Reconciliation failed for {ex_name}: {e}")
+        if mismatches:
+            log.warning(f"RECONCILIATION MISMATCH: {mismatches}")
+        return mismatches
+
+
 # Classes, functions, and main loop will be added in subsequent tasks.
