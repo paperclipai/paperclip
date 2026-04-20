@@ -3845,7 +3845,14 @@ export function heartbeatService(db: Db) {
 
     runningProcesses.delete(run.id);
     await finalizeAgentStatus(run.agentId, "cancelled");
-    await startNextQueuedRunForAgent(run.agentId);
+    // Fire-and-forget: cancelRunInternal can be called from inside
+    // withAgentStartLock (via claimQueuedRun auto-cancel). Awaiting a nested
+    // startNextQueuedRunForAgent here would re-enter the same per-agent lock
+    // and deadlock, permanently stalling the agent's queue until a server
+    // restart clears the in-memory startLocksByAgent marker.
+    void startNextQueuedRunForAgent(run.agentId).catch((err) =>
+      logger.error({ err, agentId: run.agentId }, "startNextQueuedRunForAgent after cancel failed"),
+    );
     return cancelled;
   }
 
