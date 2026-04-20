@@ -395,6 +395,7 @@ describe("MarkdownEditor", () => {
     await flush();
     const link = container.querySelector<HTMLAnchorElement>(`a[href="${href}"]`);
     expect(link).not.toBeNull();
+    link?.addEventListener("click", (event) => event.preventDefault());
 
     act(() => {
       link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
