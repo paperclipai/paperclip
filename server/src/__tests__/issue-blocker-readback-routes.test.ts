@@ -198,4 +198,22 @@ describeEmbeddedPostgres("issue blocker readback routes", () => {
     expect(blockerBReadback.status).toBe(200);
     expect(blockerBReadback.body.blocks).toEqual([]);
   });
+
+  it("returns empty blocker fields on create when blockedByIssueIds is omitted", async () => {
+    const app = createApp();
+    const { companyId } = await seedCompanyAndBlockers();
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Standalone issue",
+        status: "todo",
+        priority: "medium",
+      });
+
+    expect(createRes.status).toBe(201);
+    expect(createRes.body.blockedByIssueIds).toEqual([]);
+    expect(createRes.body.blockedBy).toEqual([]);
+    expect(createRes.body.blocks).toEqual([]);
+  });
 });

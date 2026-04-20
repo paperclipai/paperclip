@@ -146,6 +146,11 @@ Use it for:
 - explicit waiting relationships
 - automatic wakeups when all blockers resolve
 
+Readback contract:
+
+- issue read routes return `blockedByIssueIds` as the stored blocker id set
+- issue read routes also return `blockedBy` and `blocks` relation summaries so callers can render the dependency graph without extra joins
+
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.
 
 ## 7. Consistent Execution Path Rules

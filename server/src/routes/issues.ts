@@ -300,6 +300,7 @@ function withBlockedByRelations<T extends object, TBlockedBy extends { id: strin
     blocks: relations.blocks,
   };
 }
+
 export function issueRoutes(
   db: Db,
   storage: StorageService,
@@ -1386,13 +1387,8 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
-    if (Array.isArray(req.body.blockedByIssueIds)) {
-      const relations = await svc.getRelationSummaries(issue.id);
-      res.status(201).json(withBlockedByRelations(issue, relations));
-      return;
-    }
-
-    res.status(201).json(issue);
+    const relations = await svc.getRelationSummaries(issue.id);
+    res.status(201).json(withBlockedByRelations(issue, relations));
   });
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
