@@ -22,7 +22,7 @@ import {
   joinPromptSections,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
+import { detectCodexLoginRequired, parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
@@ -212,6 +212,114 @@ export async function ensureCodexSkillsInjected(
     skillsEntries.map((entry) => entry.runtimeName),
     onLog,
   );
+}
+
+interface CodexExecutionInput {
+  runId: string;
+  agent: AdapterExecutionContext["agent"];
+  config: Record<string, unknown>;
+  context: Record<string, unknown>;
+  authToken?: string;
+  onLog: AdapterExecutionContext["onLog"];
+}
+
+interface CodexRuntimeConfig {
+  command: string;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec: number;
+  graceSec: number;
+}
+
+async function buildCodexRuntimeConfig(input: CodexExecutionInput): Promise<CodexRuntimeConfig> {
+  const { runId, agent, config, context, authToken, onLog } = input;
+  const command = asString(config.command, "codex");
+  const workspaceContext = parseObject(context.paperclipWorkspace);
+  const workspaceCwd = asString(workspaceContext.cwd, "");
+  const workspaceSource = asString(workspaceContext.source, "");
+  const configuredCwd = asString(config.cwd, "");
+  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
+  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
+  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const envConfig = parseObject(config.env);
+  const configuredCodexHome =
+    typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
+      ? path.resolve(envConfig.CODEX_HOME.trim())
+      : null;
+
+  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+
+  const preparedManagedCodexHome =
+    configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
+  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
+  const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
+  await fs.mkdir(effectiveCodexHome, { recursive: true });
+
+  const hasExplicitApiKey =
+    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  env.CODEX_HOME = effectiveCodexHome;
+  env.PAPERCLIP_RUN_ID = runId;
+
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value === "string") env[key] = value;
+  }
+
+  if (!hasExplicitApiKey && authToken) {
+    env.PAPERCLIP_API_KEY = authToken;
+  }
+
+  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  await ensureCommandResolvable(command, cwd, runtimeEnv);
+
+  return {
+    command,
+    cwd,
+    env,
+    timeoutSec: asNumber(config.timeoutSec, 0),
+    graceSec: asNumber(config.graceSec, 20),
+  };
+}
+
+export async function runCodexLogin(input: {
+  runId: string;
+  agent: AdapterExecutionContext["agent"];
+  config: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  authToken?: string;
+  onLog?: AdapterExecutionContext["onLog"];
+}) {
+  const onLog = input.onLog ?? (async () => {});
+  const runtime = await buildCodexRuntimeConfig({
+    runId: input.runId,
+    agent: input.agent,
+    config: input.config,
+    context: input.context ?? {},
+    authToken: input.authToken,
+    onLog,
+  });
+
+  const proc = await runChildProcess(input.runId, runtime.command, ["login"], {
+    cwd: runtime.cwd,
+    env: runtime.env,
+    timeoutSec: runtime.timeoutSec,
+    graceSec: runtime.graceSec,
+    onLog,
+  });
+
+  const loginMeta = detectCodexLoginRequired({
+    stdout: proc.stdout,
+    stderr: proc.stderr,
+  });
+
+  return {
+    exitCode: proc.exitCode,
+    signal: proc.signal,
+    timedOut: proc.timedOut,
+    stdout: proc.stdout,
+    stderr: proc.stderr,
+    loginUrl: loginMeta.loginUrl,
+  };
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -541,6 +649,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
     clearSessionOnMissingSession = false,
   ): AdapterExecutionResult => {
+    const loginMeta = detectCodexLoginRequired({
+      stdout: attempt.proc.stdout,
+      stderr: attempt.rawStderr,
+      errorMessage: attempt.parsed.errorMessage,
+    });
+
     if (attempt.proc.timedOut) {
       return {
         exitCode: attempt.proc.exitCode,
@@ -576,6 +690,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (attempt.proc.exitCode ?? 0) === 0
           ? null
           : fallbackErrorMessage,
+      errorCode:
+        (attempt.proc.exitCode ?? 0) !== 0 && loginMeta.requiresLogin ? "codex_auth_required" : null,
+      errorMeta: loginMeta.loginUrl != null ? { loginUrl: loginMeta.loginUrl } : undefined,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,

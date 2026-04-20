@@ -12,7 +12,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import path from "node:path";
-import { parseCodexJsonl } from "./parse.js";
+import { detectCodexLoginRequired, parseCodexJsonl } from "./parse.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 
@@ -47,9 +47,6 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
   const max = 240;
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
-
-const CODEX_AUTH_REQUIRED_RE =
-  /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
 
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
@@ -121,8 +118,8 @@ export async function testEnvironment(
       checks.push({
         code: "codex_openai_api_key_missing",
         level: "warn",
-        message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
-        hint: "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.",
+        message: "OPENAI_API_KEY is not set. Codex will rely on local CLI authentication.",
+        hint: "Run `codex login` to authenticate locally if this agent is not already signed in.",
       });
     }
   }
@@ -165,7 +162,11 @@ export async function testEnvironment(
       );
       const parsed = parseCodexJsonl(probe.stdout);
       const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
-      const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
+      const loginMeta = detectCodexLoginRequired({
+        stdout: probe.stdout,
+        stderr: probe.stderr,
+        errorMessage: parsed.errorMessage,
+      });
 
       if (probe.timedOut) {
         checks.push({
@@ -190,13 +191,15 @@ export async function testEnvironment(
                 hint: "Try the probe manually (`codex exec --json -` then prompt: Respond with hello) to inspect full output.",
               }),
         });
-      } else if (CODEX_AUTH_REQUIRED_RE.test(authEvidence)) {
+      } else if (loginMeta.requiresLogin) {
         checks.push({
           code: "codex_hello_probe_auth_required",
           level: "warn",
           message: "Codex CLI is installed, but authentication is not ready.",
           ...(detail ? { detail } : {}),
-          hint: "Configure OPENAI_API_KEY in adapter env/shell or run `codex login`, then retry the probe.",
+          hint: loginMeta.loginUrl
+            ? `Run \`codex login\` and complete sign-in at ${loginMeta.loginUrl}, then retry the probe.`
+            : "Run `codex login`, then retry the probe.",
         });
       } else {
         checks.push({

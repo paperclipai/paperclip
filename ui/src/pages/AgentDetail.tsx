@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
   type AgentKey,
-  type ClaudeLoginResult,
+  type AdapterCliLoginResult,
   type AgentPermissionUpdate,
 } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
@@ -2977,10 +2977,10 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   const run = hydratedRun ?? initialRun;
   const metrics = runMetrics(run);
   const [sessionOpen, setSessionOpen] = useState(false);
-  const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
+  const [cliLoginResult, setCliLoginResult] = useState<AdapterCliLoginResult | null>(null);
 
   useEffect(() => {
-    setClaudeLoginResult(null);
+    setCliLoginResult(null);
   }, [run.id]);
 
   const cancelRun = useMutation({
@@ -3081,8 +3081,21 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 
   const runClaudeLogin = useMutation({
     mutationFn: () => agentsApi.loginWithClaude(run.agentId, run.companyId),
+    onMutate: () => {
+      setCliLoginResult(null);
+    },
     onSuccess: (data) => {
-      setClaudeLoginResult(data);
+      setCliLoginResult(data);
+    },
+  });
+
+  const runCodexLogin = useMutation({
+    mutationFn: () => agentsApi.loginWithCodex(run.agentId, run.companyId),
+    onMutate: () => {
+      setCliLoginResult(null);
+    },
+    onSuccess: (data) => {
+      setCliLoginResult(data);
     },
   });
 
@@ -3233,29 +3246,76 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                       : "Failed to run Claude login"}
                   </p>
                 )}
-                {claudeLoginResult?.loginUrl && (
+                {cliLoginResult?.loginUrl && (
                   <p className="text-xs">
                     Login URL:
                     <a
-                      href={claudeLoginResult.loginUrl}
+                      href={cliLoginResult.loginUrl}
                       className="text-blue-600 underline underline-offset-2 ml-1 break-all dark:text-blue-400"
                       target="_blank"
                       rel="noreferrer"
                     >
-                      {claudeLoginResult.loginUrl}
+                      {cliLoginResult.loginUrl}
                     </a>
                   </p>
                 )}
-                {claudeLoginResult && (
+                {cliLoginResult && (
                   <>
-                    {!!claudeLoginResult.stdout && (
+                    {!!cliLoginResult.stdout && (
                       <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
-                        {claudeLoginResult.stdout}
+                        {cliLoginResult.stdout}
                       </pre>
                     )}
-                    {!!claudeLoginResult.stderr && (
+                    {!!cliLoginResult.stderr && (
                       <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
-                        {claudeLoginResult.stderr}
+                        {cliLoginResult.stderr}
+                      </pre>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+            {run.errorCode === "codex_auth_required" && adapterType === "codex_local" && (
+              <div className="space-y-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => runCodexLogin.mutate()}
+                  disabled={runCodexLogin.isPending}
+                >
+                  {runCodexLogin.isPending ? "Running codex login..." : "Login to Codex"}
+                </Button>
+                {runCodexLogin.isError && (
+                  <p className="text-xs text-destructive">
+                    {runCodexLogin.error instanceof Error
+                      ? runCodexLogin.error.message
+                      : "Failed to run Codex login"}
+                  </p>
+                )}
+                {cliLoginResult?.loginUrl && (
+                  <p className="text-xs">
+                    Login URL:
+                    <a
+                      href={cliLoginResult.loginUrl}
+                      className="text-blue-600 underline underline-offset-2 ml-1 break-all dark:text-blue-400"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {cliLoginResult.loginUrl}
+                    </a>
+                  </p>
+                )}
+                {cliLoginResult && (
+                  <>
+                    {!!cliLoginResult.stdout && (
+                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
+                        {cliLoginResult.stdout}
+                      </pre>
+                    )}
+                    {!!cliLoginResult.stderr && (
+                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
+                        {cliLoginResult.stderr}
                       </pre>
                     )}
                   </>

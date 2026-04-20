@@ -1,5 +1,9 @@
 import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
 
+const CODEX_AUTH_REQUIRED_RE =
+  /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
+const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
+
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
@@ -58,6 +62,40 @@ export function parseCodexJsonl(stdout: string) {
     summary: finalMessage?.trim() ?? "",
     usage,
     errorMessage,
+  };
+}
+
+export function extractCodexLoginUrl(text: string): string | null {
+  const match = text.match(URL_RE);
+  if (!match || match.length === 0) return null;
+  for (const rawUrl of match) {
+    const cleaned = rawUrl.replace(/[\])}.!,?;:'\"]+$/g, "");
+    if (
+      cleaned.includes("openai") ||
+      cleaned.includes("chatgpt") ||
+      cleaned.includes("codex") ||
+      cleaned.includes("auth")
+    ) {
+      return cleaned;
+    }
+  }
+  return match[0]?.replace(/[\])}.!,?;:'\"]+$/g, "") ?? null;
+}
+
+export function detectCodexLoginRequired(input: {
+  stdout: string;
+  stderr: string;
+  errorMessage?: string | null;
+}): { requiresLogin: boolean; loginUrl: string | null } {
+  const messages = [input.errorMessage ?? "", input.stdout, input.stderr]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return {
+    requiresLogin: messages.some((line) => CODEX_AUTH_REQUIRED_RE.test(line)),
+    loginUrl: extractCodexLoginUrl([input.stdout, input.stderr].join("\n")),
   };
 }
 
