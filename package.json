@@ -53,7 +53,7 @@
   "packageManager": "pnpm@9.15.4",
   "pnpm": {
     "patchedDependencies": {
-      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
+      "embedded-postgres@18.1.0-beta.15": "patches/embedded-postgres@18.1.0-beta.15.patch"
     },
     "overrides": {
       "rollup": ">=4.59.0"
