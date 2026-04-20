@@ -41,9 +41,11 @@ export function dashboardService(db: Db) {
         error: 0,
       };
       for (const row of agentRows) {
-        const count = Number(row.count);
+        // Defensive: skip undefined rows from corrupted connection pool
+        if (!row) continue;
+        const count = Number(row.count ?? 0);
         // "idle" agents are operational — count them as active
-        const bucket = row.status === "idle" ? "active" : row.status;
+        const bucket = row.status === "idle" ? "active" : row.status ?? "error";
         agentCounts[bucket] = (agentCounts[bucket] ?? 0) + count;
       }
 
@@ -54,11 +56,14 @@ export function dashboardService(db: Db) {
         done: 0,
       };
       for (const row of taskRows) {
-        const count = Number(row.count);
-        if (row.status === "in_progress") taskCounts.inProgress += count;
-        if (row.status === "blocked") taskCounts.blocked += count;
-        if (row.status === "done") taskCounts.done += count;
-        if (row.status !== "done" && row.status !== "cancelled") taskCounts.open += count;
+        // Defensive: skip undefined rows from corrupted connection pool
+        if (!row) continue;
+        const count = Number(row.count ?? 0);
+        const status = row.status ?? "unknown";
+        if (status === "in_progress") taskCounts.inProgress += count;
+        if (status === "blocked") taskCounts.blocked += count;
+        if (status === "done") taskCounts.done += count;
+        if (status !== "done" && status !== "cancelled") taskCounts.open += count;
       }
 
       const now = new Date();
