@@ -235,7 +235,36 @@ describe("issue goal context routes", () => {
     );
 
     expect(res.status).toBe(200);
+    expect(res.body.issue.blockedByIssueIds).toEqual(["55555555-5555-4555-8555-555555555555"]);
     expect(res.body.issue.blockedBy).toEqual([
+      expect.objectContaining({
+        id: "55555555-5555-4555-8555-555555555555",
+        identifier: "PAP-580",
+      }),
+    ]);
+  });
+
+  it("surfaces blockedByIssueIds on GET /issues/:id", async () => {
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [
+        {
+          id: "55555555-5555-4555-8555-555555555555",
+          identifier: "PAP-580",
+          title: "Finish wakeup plumbing",
+          status: "done",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      ],
+      blocks: [],
+    });
+
+    const res = await request(await createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
+
+    expect(res.status).toBe(200);
+    expect(res.body.blockedByIssueIds).toEqual(["55555555-5555-4555-8555-555555555555"]);
+    expect(res.body.blockedBy).toEqual([
       expect.objectContaining({
         id: "55555555-5555-4555-8555-555555555555",
         identifier: "PAP-580",

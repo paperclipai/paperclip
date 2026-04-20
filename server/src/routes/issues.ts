@@ -282,6 +282,25 @@ function buildExecutionStageWakeup(input: {
   return null;
 }
 
+function withBlockedByRelations<T extends object, TBlockedBy extends { id: string }, TBlocks extends { id: string }>(
+  issue: T,
+  relations: {
+    blockedBy: TBlockedBy[];
+    blocks: TBlocks[];
+  },
+): T & {
+  blockedByIssueIds: string[];
+  blockedBy: TBlockedBy[];
+  blocks: TBlocks[];
+} {
+  return {
+    ...issue,
+    blockedByIssueIds: relations.blockedBy.map((relation) => relation.id),
+    blockedBy: relations.blockedBy,
+    blocks: relations.blocks,
+  };
+}
+
 export function issueRoutes(
   db: Db,
   storage: StorageService,
@@ -741,11 +760,9 @@ export function issueRoutes(
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json({
-      ...issue,
+      ...withBlockedByRelations(issue, relations),
       goalId: goal?.id ?? issue.goalId,
       ancestors,
-      blockedBy: relations.blockedBy,
-      blocks: relations.blocks,
       ...documentPayload,
       project: project ?? null,
       goal: goal ?? null,
@@ -790,6 +807,7 @@ export function issueRoutes(
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
+        blockedByIssueIds: relations.blockedBy.map((relation) => relation.id),
         blockedBy: relations.blockedBy,
         blocks: relations.blocks,
         assigneeAgentId: issue.assigneeAgentId,
@@ -1369,7 +1387,8 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
-    res.status(201).json(issue);
+    const relations = await svc.getRelationSummaries(issue.id);
+    res.status(201).json(withBlockedByRelations(issue, relations));
   });
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
@@ -1582,15 +1601,11 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    let issueResponse: typeof issue & { blockedBy?: unknown; blocks?: unknown } = issue;
+    let issueResponse: typeof issue & { blockedBy?: unknown; blocks?: unknown; blockedByIssueIds?: string[] } = issue;
     let updatedRelations: Awaited<ReturnType<typeof svc.getRelationSummaries>> | null = null;
     if (issue && Array.isArray(req.body.blockedByIssueIds)) {
       updatedRelations = await svc.getRelationSummaries(issue.id);
-      issueResponse = {
-        ...issue,
-        blockedBy: updatedRelations.blockedBy,
-        blocks: updatedRelations.blocks,
-      };
+      issueResponse = withBlockedByRelations(issue, updatedRelations);
     }
     await routinesSvc.syncRunStatusForIssue(issue.id);
 
