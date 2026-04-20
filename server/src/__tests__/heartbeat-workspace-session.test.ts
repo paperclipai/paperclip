@@ -13,6 +13,7 @@ import {
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
+  shouldDeferFollowupWakeForSameIssue,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -305,6 +306,52 @@ describe("shouldResetTaskSessionForWake", () => {
   });
 });
 
+describe("shouldDeferFollowupWakeForSameIssue", () => {
+  it("defers a same-agent follow-up for mention-style comment wakes while a run is active", () => {
+    expect(
+      shouldDeferFollowupWakeForSameIssue({
+        activeRunStatus: "running",
+        isSameExecutionAgent: true,
+        wakeCommentId: "comment-1",
+        forceFreshSession: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("defers a same-agent follow-up when a fresh session is explicitly requested", () => {
+    expect(
+      shouldDeferFollowupWakeForSameIssue({
+        activeRunStatus: "running",
+        isSameExecutionAgent: true,
+        wakeCommentId: null,
+        forceFreshSession: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not defer when the existing run is only queued", () => {
+    expect(
+      shouldDeferFollowupWakeForSameIssue({
+        activeRunStatus: "queued",
+        isSameExecutionAgent: true,
+        wakeCommentId: null,
+        forceFreshSession: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not defer normal same-agent wakes without a comment or fresh-session request", () => {
+    expect(
+      shouldDeferFollowupWakeForSameIssue({
+        activeRunStatus: "running",
+        isSameExecutionAgent: true,
+        wakeCommentId: null,
+        forceFreshSession: false,
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("deriveTaskKeyWithHeartbeatFallback", () => {
   it("returns explicit taskKey when present", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({ taskKey: "issue-123" }, null)).toBe("issue-123");
@@ -356,6 +403,21 @@ describe("comment wake batching", () => {
     expect(merged.commentId).toBe("comment-2");
     expect(merged.wakeCommentId).toBe("comment-2");
     expect(merged.paperclipWake).toBeUndefined();
+  });
+
+  it("keeps forceFreshSession sticky once any coalesced wake requests it", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        forceFreshSession: true,
+      },
+      {
+        issueId: "issue-1",
+        forceFreshSession: false,
+      },
+    );
+
+    expect(merged.forceFreshSession).toBe(true);
   });
 });
 
