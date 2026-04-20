@@ -23,6 +23,7 @@ interface ServerAdapterModule {
   execute: typeof execute;
   testEnvironment: typeof testEnvironment;
   agentConfigurationDoc?: string;
+  supportsLocalAgentJwt?: boolean;
   listModels?: () => Promise<Array<{ id: string; label: string }>>;
   getConfigSchema?: () => Promise<AdapterConfigSchema>;
 }
@@ -33,6 +34,7 @@ export function createServerAdapter(): ServerAdapterModule {
     execute,
     testEnvironment,
     agentConfigurationDoc,
+    supportsLocalAgentJwt: true,
     async listModels() {
       const models = await fetchModels("http://localhost:1234");
       return models.map((id) => ({ id, label: id }));
@@ -82,6 +84,12 @@ export function createServerAdapter(): ServerAdapterModule {
             type: "number" as const,
             default: 25,
             hint: "Maximale Anzahl Tool-Aufrufe pro Heartbeat (Sicherheitslimit)",
+          },
+          {
+            key: "instructionsFilePath",
+            label: "Instructions File (AGENTS.md)",
+            type: "text" as const,
+            hint: "Optionaler absoluter Pfad zu einer Markdown-Datei, die als Agent-Persona an den System-Prompt angehängt wird",
           },
         ],
       };

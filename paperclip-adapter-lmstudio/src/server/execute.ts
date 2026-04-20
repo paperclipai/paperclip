@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { callChatCompletion, streamChatCompletion, ChatMessage } from "./llm-client.js";
 import { dispatchTool } from "./tool-executor.js";
 import { PAPERCLIP_TOOLS } from "./tools.js";
@@ -84,7 +85,31 @@ function buildSystemPrompt(agent: ExecutionContext["agent"], context: Record<str
     parts.push("", "## Agent Instructions", instructions);
   }
 
+  const fileInstructions = asString(context.agentInstructionsFromFile, "");
+  if (fileInstructions) {
+    parts.push("", "## Agent Persona", fileInstructions);
+  }
+
   return parts.join("\n");
+}
+
+async function loadInstructionsFromFile(
+  config: Record<string, unknown>,
+  onLog: ExecutionContext["onLog"],
+): Promise<string> {
+  const path = asString(config.instructionsFilePath, "");
+  if (!path) return "";
+
+  try {
+    return await readFile(path, "utf8");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await onLog(
+      "stderr",
+      `[lmstudio-adapter] Could not read instructionsFilePath=${path}: ${msg}\n`,
+    );
+    return "";
+  }
 }
 
 function buildUserPrompt(context: Record<string, unknown>): string {
@@ -209,8 +234,13 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
     companyId: ctx.agent.companyId,
   };
 
+  const fileInstructions = await loadInstructionsFromFile(config, ctx.onLog);
+  const systemPromptContext = fileInstructions
+    ? { ...ctx.context, agentInstructionsFromFile: fileInstructions }
+    : ctx.context;
+
   const messages: ChatMessage[] = [
-    { role: "system", content: buildSystemPrompt(ctx.agent, ctx.context) },
+    { role: "system", content: buildSystemPrompt(ctx.agent, systemPromptContext) },
     { role: "user", content: buildUserPrompt(ctx.context) },
   ];
 
