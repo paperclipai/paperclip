@@ -2171,6 +2171,25 @@ export function issueService(db: Db) {
         }
       }
 
+      // Race fallback: the issue may have transitioned out of in_progress
+      // between our SELECT and the adoption UPDATE (e.g., a concurrent tx
+      // closed it). Re-read; if it's no longer in_progress, ownership is
+      // moot — allow the caller through instead of throwing 409.
+      const fresh = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+
+      if (fresh && fresh.status !== "in_progress") {
+        return { ...fresh, adoptedFromRunId: null as string | null };
+      }
+
       throw conflict("Issue run ownership conflict", {
         issueId: current.id,
         status: current.status,
