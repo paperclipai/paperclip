@@ -940,7 +940,7 @@ describe("issue QA gate routes", () => {
       ),
     ]);
 
-    const res = await request(createApp()).get("/api/companies/company-1/issues");
+    const res = await request(createApp()).get("/api/companies/company-1/issues?includeReviewSignals=true");
 
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);

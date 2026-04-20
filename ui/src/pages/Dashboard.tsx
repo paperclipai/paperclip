@@ -7,7 +7,7 @@ import { activityApi } from "../api/activity";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
-import { heartbeatsApi } from "../api/heartbeats";
+import { companiesApi } from "../api/companies";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -277,8 +277,16 @@ export function Dashboard() {
   });
 
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: queryKeys.issues.filtered(selectedCompanyId!, {
+      sort: "updated_desc",
+      limit: 10,
+      includeReviewSignals: false,
+    }),
+    queryFn: () => issuesApi.list(selectedCompanyId!, {
+      sort: "updated_desc",
+      limit: 10,
+      includeReviewSignals: false,
+    }),
     enabled: !!selectedCompanyId,
   });
 
@@ -288,9 +296,9 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: runs } = useQuery({
-    queryKey: queryKeys.heartbeats(selectedCompanyId!),
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!),
+  const { data: runActivity } = useQuery({
+    queryKey: queryKeys.runActivity(selectedCompanyId!, 14),
+    queryFn: () => companiesApi.runActivity(selectedCompanyId!, 14),
     enabled: !!selectedCompanyId,
   });
 
@@ -756,7 +764,7 @@ export function Dashboard() {
 
             <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <ChartCard title="Run Activity" subtitle="Last 14 days">
-                <RunActivityChart runs={runs ?? []} />
+                <RunActivityChart activity={runActivity?.days ?? []} />
               </ChartCard>
               <ChartCard title="Issues by Priority" subtitle="Last 14 days">
                 <PriorityChart issues={issues ?? []} />
@@ -765,7 +773,7 @@ export function Dashboard() {
                 <IssueStatusChart issues={issues ?? []} />
               </ChartCard>
               <ChartCard title="Success Rate" subtitle="Last 14 days">
-                <SuccessRateChart runs={runs ?? []} />
+                <SuccessRateChart activity={runActivity?.days ?? []} />
               </ChartCard>
             </div>
 

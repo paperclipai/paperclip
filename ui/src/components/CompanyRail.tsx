@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus } from "lucide-react";
-import { useQueries } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   DndContext,
   closestCenter,
@@ -20,8 +20,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
-import { sidebarBadgesApi } from "../api/sidebarBadges";
-import { heartbeatsApi } from "../api/heartbeats";
+import { companiesApi } from "../api/companies";
 import { useLocation, useNavigate } from "@/lib/router";
 import {
   Tooltip,
@@ -165,36 +164,18 @@ export function CompanyRail() {
     () => companies.filter((company) => company.status !== "archived"),
     [companies],
   );
-  const companyIds = useMemo(() => sidebarCompanies.map((company) => company.id), [sidebarCompanies]);
-
-  const liveRunsQueries = useQueries({
-    queries: companyIds.map((companyId) => ({
-      queryKey: queryKeys.liveRuns(companyId),
-      queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
-      refetchInterval: 10_000,
-    })),
-  });
-  const sidebarBadgeQueries = useQueries({
-    queries: companyIds.map((companyId) => ({
-      queryKey: queryKeys.sidebarBadges(companyId),
-      queryFn: () => sidebarBadgesApi.get(companyId),
-      refetchInterval: 15_000,
-    })),
+  const { data: railState = [] } = useQuery({
+    queryKey: queryKeys.railState,
+    queryFn: () => companiesApi.railState(),
+    refetchInterval: 15_000,
+    enabled: sidebarCompanies.length > 0,
   });
   const hasLiveAgentsByCompanyId = useMemo(() => {
-    const result = new Map<string, boolean>();
-    companyIds.forEach((companyId, index) => {
-      result.set(companyId, (liveRunsQueries[index]?.data?.length ?? 0) > 0);
-    });
-    return result;
-  }, [companyIds, liveRunsQueries]);
+    return new Map(railState.map((entry) => [entry.companyId, entry.hasLiveRuns]));
+  }, [railState]);
   const hasUnreadInboxByCompanyId = useMemo(() => {
-    const result = new Map<string, boolean>();
-    companyIds.forEach((companyId, index) => {
-      result.set(companyId, (sidebarBadgeQueries[index]?.data?.inbox ?? 0) > 0);
-    });
-    return result;
-  }, [companyIds, sidebarBadgeQueries]);
+    return new Map(railState.map((entry) => [entry.companyId, entry.inboxCount > 0]));
+  }, [railState]);
 
   // Maintain sorted order in local state, synced from companies + localStorage
   const [orderedIds, setOrderedIds] = useState<string[]>(() =>

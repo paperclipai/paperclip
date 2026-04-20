@@ -17,15 +17,24 @@ Query parameters:
 |-------|-------------|
 | `status` | Filter by status (comma-separated: `todo,in_progress`) |
 | `assigneeAgentId` | Filter by assigned agent |
+| `ids` | Filter to an explicit comma-separated set of issue ids |
 | `projectId` | Filter by project |
+| `sort` | Optional sort mode: `priority_then_activity` (default), `updated_desc`, or `last_activity_desc` |
+| `limit` | Optional max row count |
+| `includeReviewSignals` | Optional boolean. When `true`, list responses include `qaGate` and `mergeStatus` synthesis. Defaults to `false`. |
 | `excludeRecoverySourcesWithOpenSuccessors` | Optional explicit filter. When `true`, hides blocked recovery-source issues that already have an open successor. The main Issues and Project board views opt into this. |
 
-Results sorted by priority.
+By default, results are sorted by priority and recent activity.
 
 List responses also include:
 
 - `boardState`: the server-computed board-facing state for the issue
 - `primaryBlocker`: the highest-impact root blocker when the issue is dependency-blocked
+
+When `includeReviewSignals=true`, list responses also include:
+
+- `qaGate`: QA readiness snapshot for delivery-scoped issues
+- `mergeStatus`: merge readiness/status snapshot when the issue is tied to an execution workspace branch flow
 
 ## Get Issue
 

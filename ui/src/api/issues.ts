@@ -4,6 +4,7 @@ import type {
   FeedbackTargetType,
   FeedbackTrace,
   FeedbackVote,
+  IssueListSort,
   Issue,
   IssueAttachment,
   IssueComment,
@@ -32,6 +33,8 @@ export const issuesApi = {
     companyId: string,
     filters?: {
       status?: string;
+      ids?: string[];
+      sort?: IssueListSort;
       projectId?: string;
       assigneeAgentId?: string;
       participantAgentId?: string;
@@ -46,6 +49,7 @@ export const issuesApi = {
       includeRoutineExecutions?: boolean;
       includeClosed?: boolean;
       includeRelations?: boolean;
+      includeReviewSignals?: boolean;
       excludeRecoverySourcesWithOpenSuccessors?: boolean;
       q?: string;
       limit?: number;
@@ -53,6 +57,8 @@ export const issuesApi = {
   ) => {
     const params = new URLSearchParams();
     if (filters?.status) params.set("status", filters.status);
+    if (filters?.ids && filters.ids.length > 0) params.set("ids", filters.ids.join(","));
+    if (filters?.sort) params.set("sort", filters.sort);
     if (filters?.projectId) params.set("projectId", filters.projectId);
     if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
     if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
@@ -67,6 +73,7 @@ export const issuesApi = {
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.includeClosed) params.set("includeClosed", "true");
     if (filters?.includeRelations) params.set("includeRelations", "true");
+    if (filters?.includeReviewSignals) params.set("includeReviewSignals", "true");
     if (filters?.excludeRecoverySourcesWithOpenSuccessors) {
       params.set("excludeRecoverySourcesWithOpenSuccessors", "true");
     }

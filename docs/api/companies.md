@@ -13,6 +13,18 @@ GET /api/companies
 
 Returns all companies the current user/agent has access to.
 
+## Rail State
+
+```
+GET /api/companies/rail-state
+```
+
+Board-only summary endpoint for shell navigation. Returns one row per visible non-archived company:
+
+- `companyId`
+- `inboxCount`
+- `hasLiveRuns`
+
 ## Get Company
 
 ```
@@ -20,6 +32,48 @@ GET /api/companies/{companyId}
 ```
 
 Returns company details including name, description, budget, and status.
+
+## Inbox Summary
+
+```
+GET /api/companies/{companyId}/inbox-summary
+```
+
+Returns lightweight inbox counters for a single company:
+
+- `inbox`
+- `approvals`
+- `failedRuns`
+- `joinRequests`
+- `mineIssues`
+- `alerts`
+- `failedRunSummaries`
+
+`failedRunSummaries` is intentionally bounded. It contains the latest actionable failed or timed-out run per agent with the minimal fields the Inbox needs before detail hydration:
+
+- `id`
+- `agentId`
+- `status`
+- `createdAt`
+- `retryState`
+- `error`
+- `issueId`
+
+## Run Activity
+
+```
+GET /api/companies/{companyId}/run-activity?days=14
+```
+
+Returns per-day run buckets for recent dashboard charts:
+
+- `date`
+- `succeeded`
+- `failed`
+- `other`
+- `total`
+
+`days` defaults to `14` and is capped server-side.
 
 ## Create Company
 
@@ -89,6 +143,19 @@ POST /api/companies/{companyId}/resume
 
 Resumes the company at the company scope. Agent-level pause states are unchanged and queued work can start again.
 On resume, Orchestrero also ensures a COO coordinator exists and triggers a COO heartbeat kickoff (best-effort).
+
+## Heartbeat Run History
+
+```
+GET /api/companies/{companyId}/heartbeat-runs
+```
+
+Optional query parameters:
+
+- `agentId`
+- `limit`
+
+This route remains available for history/detail views. Shell pages should prefer `rail-state`, `inbox-summary`, `run-activity`, and `live-runs` instead of fetching unbounded company-wide run history.
 
 ## Roadmap Epic Pause State
 

@@ -65,6 +65,10 @@ const mockDashboardApi = vi.hoisted(() => ({
   summary: vi.fn(),
 }));
 
+const mockCompaniesApi = vi.hoisted(() => ({
+  inboxSummary: vi.fn(),
+}));
+
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
   archiveFromInbox: vi.fn(),
@@ -127,6 +131,10 @@ vi.mock("../api/access", () => ({
 
 vi.mock("../api/dashboard", () => ({
   dashboardApi: mockDashboardApi,
+}));
+
+vi.mock("../api/companies", () => ({
+  companiesApi: mockCompaniesApi,
 }));
 
 vi.mock("../api/issues", () => ({
@@ -228,6 +236,7 @@ describe("Inbox retry behavior", () => {
     mockApprovalsApi.list.mockReset();
     mockAccessApi.listJoinRequests.mockReset();
     mockDashboardApi.summary.mockReset();
+    mockCompaniesApi.inboxSummary.mockReset();
     mockIssuesApi.list.mockReset();
     mockHeartbeatsApi.list.mockReset();
     mockHeartbeatsApi.get.mockReset();
@@ -239,6 +248,25 @@ describe("Inbox retry behavior", () => {
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockApprovalsApi.list.mockResolvedValue([]);
     mockAccessApi.listJoinRequests.mockResolvedValue([]);
+    mockCompaniesApi.inboxSummary.mockResolvedValue({
+      inbox: 1,
+      approvals: 0,
+      failedRuns: 1,
+      joinRequests: 0,
+      mineIssues: 0,
+      alerts: 0,
+      failedRunSummaries: [
+        {
+          id: "run-1",
+          agentId: "agent-1",
+          status: "failed",
+          createdAt: new Date("2026-04-15T12:00:00.000Z"),
+          retryState: "none",
+          error: "Adapter failed",
+          issueId: null,
+        },
+      ],
+    });
     mockDashboardApi.summary.mockResolvedValue({
       companyId: "company-1",
       agents: { active: 1, running: 0, paused: 0, error: 0 },
@@ -497,6 +525,27 @@ describe("Inbox retry behavior", () => {
 
     expect(container.textContent).not.toContain("Retry");
     expect(container.textContent).not.toContain("QA and Release Engineer");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses inbox-summary and scoped issue queries instead of full company issues and heartbeat history", async () => {
+    const { root } = renderInbox(container);
+
+    await waitForAssertion(() => {
+      expect(mockCompaniesApi.inboxSummary).toHaveBeenCalledWith("company-1");
+    });
+    expect(mockHeartbeatsApi.list).not.toHaveBeenCalled();
+    expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
+      touchedByUserId: "me",
+      status: "backlog,todo,in_progress,in_review,blocked,done",
+      sort: "last_activity_desc",
+      limit: 100,
+      includeReviewSignals: false,
+    });
+    expect(mockIssuesApi.list).not.toHaveBeenCalledWith("company-1");
 
     act(() => {
       root.unmount();

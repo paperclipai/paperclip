@@ -7,8 +7,9 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issueExecutionDecisions } from "@paperclipai/db";
-import type { IssueExecutionDecisionOutcome, IssueQaGateReasonCode, IssueStatus } from "@paperclipai/shared";
+import type { IssueExecutionDecisionOutcome, IssueListSort, IssueQaGateReasonCode, IssueStatus } from "@paperclipai/shared";
 import {
+  ISSUE_LIST_SORTS,
   addIssueCommentSchema,
   applyIssueWorkflowTemplateSchema,
   buildAgentMentionHref,
@@ -1642,9 +1643,18 @@ export function issueRoutes(
     const projectId = parseOptionalQueryString(req.query.projectId);
     const executionWorkspaceId = parseOptionalQueryString(req.query.executionWorkspaceId);
     const parentId = parseOptionalQueryString(req.query.parentId);
+    const ids = parseOptionalQueryString(req.query.ids)
+      ?.split(",")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
     const labelId = parseOptionalQueryString(req.query.labelId);
     const originKind = parseOptionalQueryString(req.query.originKind);
     const originId = parseOptionalQueryString(req.query.originId);
+    const sortRaw = parseOptionalQueryString(req.query.sort);
+    const sort = sortRaw && ISSUE_LIST_SORTS.includes(sortRaw as IssueListSort)
+      ? sortRaw as IssueListSort
+      : undefined;
+    const includeReviewSignals = parseBooleanQuery(req.query.includeReviewSignals);
     const assigneeUserFilterRaw = parseOptionalQueryString(req.query.assigneeUserId);
     const touchedByUserFilterRaw = parseOptionalQueryString(req.query.touchedByUserId);
     const inboxArchivedByUserFilterRaw = parseOptionalQueryString(req.query.inboxArchivedByUserId);
@@ -1689,9 +1699,15 @@ export function issueRoutes(
       res.status(400).json({ error: "limit must be a positive integer" });
       return;
     }
+    if (sortRaw && !sort) {
+      res.status(400).json({ error: `sort must be one of: ${ISSUE_LIST_SORTS.join(", ")}` });
+      return;
+    }
 
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
+      ids,
+      sort,
       includeClosed,
       includeRelations,
       excludeRecoverySourcesWithOpenSuccessors,
@@ -1712,6 +1728,10 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
       limit,
     });
+    if (!includeReviewSignals) {
+      res.json(await decorateIssueListWithBoardState(companyId, result));
+      return;
+    }
     const withQaGate = await Promise.all(
       result.map(async (issue) => {
         const qaGate =

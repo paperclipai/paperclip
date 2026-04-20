@@ -48,6 +48,10 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockCompaniesApi = vi.hoisted(() => ({
+  runActivity: vi.fn(),
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => companyState,
 }));
@@ -86,6 +90,10 @@ vi.mock("../api/projects", () => ({
 
 vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
+}));
+
+vi.mock("../api/companies", () => ({
+  companiesApi: mockCompaniesApi,
 }));
 
 vi.mock("../components/ActiveAgentsPanel", () => ({
@@ -189,6 +197,7 @@ describe("Dashboard executive brief", () => {
     mockAgentsApi.list.mockReset();
     mockProjectsApi.list.mockReset();
     mockHeartbeatsApi.list.mockReset();
+    mockCompaniesApi.runActivity.mockReset();
 
     mockDashboardApi.summary.mockResolvedValue({
       companyId: "company-1",
@@ -256,7 +265,7 @@ describe("Dashboard executive brief", () => {
     mockIssuesApi.list.mockResolvedValue([]);
     mockAgentsApi.list.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
-    mockHeartbeatsApi.list.mockResolvedValue([]);
+    mockCompaniesApi.runActivity.mockResolvedValue({ days: [] });
   });
 
   afterEach(() => {
@@ -360,6 +369,24 @@ describe("Dashboard executive brief", () => {
       expect(row).not.toBeNull();
       expect(row?.textContent).toContain("High");
       expect(row?.textContent).not.toContain("Blocked");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses run-activity and a bounded recent-issues query instead of full heartbeat history", async () => {
+    const { root } = renderDashboard(container);
+
+    await waitForAssertion(() => {
+      expect(mockCompaniesApi.runActivity).toHaveBeenCalledWith("company-1", 14);
+    });
+    expect(mockHeartbeatsApi.list).not.toHaveBeenCalled();
+    expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
+      sort: "updated_desc",
+      limit: 10,
+      includeReviewSignals: false,
     });
 
     act(() => {

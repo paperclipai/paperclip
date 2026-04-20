@@ -1,5 +1,7 @@
 import type {
+  CompanyRailState,
   Company,
+  InboxSummary,
   CompanyPortabilityExportRequest,
   CompanyPortabilityExportPreviewResult,
   CompanyPortabilityExportResult,
@@ -7,6 +9,7 @@ import type {
   CompanyPortabilityImportResult,
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewResult,
+  RunActivitySummary,
   UpdateCompanyBranding,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -20,6 +23,10 @@ export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
   stats: () => api.get<CompanyStats>("/companies/stats"),
+  railState: () => api.get<CompanyRailState[]>("/companies/rail-state"),
+  inboxSummary: (companyId: string) => api.get<InboxSummary>(`/companies/${companyId}/inbox-summary`),
+  runActivity: (companyId: string, days: number = 14) =>
+    api.get<RunActivitySummary>(`/companies/${companyId}/run-activity?days=${encodeURIComponent(String(days))}`),
   create: (data: {
     name: string;
     description?: string | null;

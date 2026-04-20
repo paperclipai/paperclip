@@ -10,7 +10,8 @@ import { dashboardApi } from "../api/dashboard";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
-import { heartbeatsApi } from "../api/heartbeats";
+import { companiesApi } from "../api/companies";
+import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
@@ -79,7 +80,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
-import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import type { Approval, FailedRunSummary, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   DEFAULT_INBOX_ISSUE_COLUMNS,
@@ -87,7 +88,6 @@ import {
   getApprovalsForTab,
   getInboxWorkItems,
   getInboxKeyboardSelectionIndex,
-  getLatestFailedRunsByAgent,
   getNeedsActionWorkItems,
   getRecentTouchedIssues,
   loadInboxIssueColumns,
@@ -156,7 +156,13 @@ function approvalStatusLabel(status: Approval["status"]): string {
   return status.replaceAll("_", " ");
 }
 
-function readIssueIdFromRun(run: HeartbeatRun): string | null {
+function readIssueIdFromRun(run: Pick<HeartbeatRun, "contextSnapshot"> | LiveRunForIssue): string | null {
+  if ("issueId" in run && typeof run.issueId === "string" && run.issueId.length > 0) {
+    return run.issueId;
+  }
+
+  if (!("contextSnapshot" in run)) return null;
+
   const context = run.contextSnapshot;
   if (!context) return null;
 
@@ -167,6 +173,53 @@ function readIssueIdFromRun(run: HeartbeatRun): string | null {
   if (typeof taskId === "string" && taskId.length > 0) return taskId;
 
   return null;
+}
+
+function toSyntheticFailedRun(companyId: string, summary: FailedRunSummary): HeartbeatRun {
+  return {
+    id: summary.id,
+    companyId,
+    agentId: summary.agentId,
+    invocationSource: "on_demand",
+    triggerDetail: null,
+    status: summary.status,
+    startedAt: null,
+    finishedAt: null,
+    error: summary.error,
+    wakeupRequestId: null,
+    exitCode: null,
+    signal: null,
+    usageJson: null,
+    resultJson: null,
+    sessionIdBefore: null,
+    sessionIdAfter: null,
+    logStore: null,
+    logRef: null,
+    logBytes: null,
+    logSha256: null,
+    logCompressed: false,
+    stdoutExcerpt: null,
+    stderrExcerpt: null,
+    errorCode: null,
+    externalRunId: null,
+    processPid: null,
+    processStartedAt: null,
+    retryOfRunId: null,
+    retryGroupId: null,
+    retryAttempt: 0,
+    retryState: summary.retryState,
+    retryClass: null,
+    retryScheduledFor: null,
+    retryExhaustedAt: null,
+    retryBlockedReason: null,
+    retryLastDecision: null,
+    retryPolicyJson: null,
+    processLossRetryCount: 0,
+    contextSnapshot: summary.issueId ? { issueId: summary.issueId } : null,
+    lastActivityAt: null,
+    createdAt: summary.createdAt,
+    updatedAt: summary.createdAt,
+  };
 }
 
 
@@ -941,11 +994,6 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: issues, isLoading: isIssuesLoading } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
   const {
     data: touchedIssuesRaw = [],
     isLoading: isTouchedIssuesLoading,
@@ -955,17 +1003,53 @@ export function Inbox() {
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        sort: "last_activity_desc",
+        limit: 100,
+        includeReviewSignals: false,
       }),
     enabled: !!selectedCompanyId,
   });
 
-  const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
-    queryKey: queryKeys.heartbeats(selectedCompanyId!),
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!),
+  const { data: inboxSummary, isLoading: isRunsLoading } = useQuery({
+    queryKey: queryKeys.inboxSummary(selectedCompanyId!),
+    queryFn: () => companiesApi.inboxSummary(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const { data: liveRuns = [] } = useQuery({
+    queryKey: queryKeys.liveRuns(selectedCompanyId!),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
   const actionQueue = dashboard?.brief.needsAttention ?? [];
+  const failedRuns = useMemo(
+    () => (selectedCompanyId && inboxSummary
+      ? inboxSummary.failedRunSummaries.map((summary) => toSyntheticFailedRun(selectedCompanyId, summary))
+      : []).filter((run) => !dismissed.has(`run:${run.id}`)),
+    [dismissed, inboxSummary, selectedCompanyId],
+  );
+  const relatedIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of actionQueue) {
+      if (item.kind === "issue" && item.entityId) ids.add(item.entityId);
+    }
+    for (const run of failedRuns) {
+      const issueId = readIssueIdFromRun(run);
+      if (issueId) ids.add(issueId);
+    }
+    return Array.from(ids);
+  }, [actionQueue, failedRuns]);
+  const { data: relatedIssues = [], isLoading: isIssuesLoading } = useQuery({
+    queryKey: queryKeys.issues.filtered(selectedCompanyId!, {
+      ids: relatedIssueIds,
+      includeReviewSignals: false,
+    }),
+    queryFn: () => issuesApi.list(selectedCompanyId!, {
+      ids: relatedIssueIds,
+      includeReviewSignals: false,
+    }),
+    enabled: !!selectedCompanyId && relatedIssueIds.length > 0,
+  });
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
   const unreadTouchedIssues = useMemo(
     () => touchedIssues.filter((issue) => issue.isUnreadForMe),
@@ -987,9 +1071,10 @@ export function Inbox() {
 
   const issueById = useMemo(() => {
     const map = new Map<string, Issue>();
-    for (const issue of issues ?? []) map.set(issue.id, issue);
+    for (const issue of touchedIssuesRaw) map.set(issue.id, issue);
+    for (const issue of relatedIssues) map.set(issue.id, issue);
     return map;
-  }, [issues]);
+  }, [relatedIssues, touchedIssuesRaw]);
   const projectById = useMemo(() => {
     const map = new Map<string, { name: string; color: string | null }>();
     for (const project of projects ?? []) {
@@ -1044,23 +1129,18 @@ export function Inbox() {
   );
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
 
-  const failedRuns = useMemo(
-    () => getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((r) => !dismissed.has(`run:${r.id}`)),
-    [heartbeatRuns, dismissed],
-  );
   const visibleActionQueue = useMemo(
     () => actionQueue.filter((item) => item.kind === "issue" || !dismissed.has(item.key)),
     [actionQueue, dismissed],
   );
   const liveIssueIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const run of heartbeatRuns ?? []) {
-      if (run.status !== "running" && run.status !== "queued") continue;
+    for (const run of liveRuns) {
       const issueId = readIssueIdFromRun(run);
       if (issueId) ids.add(issueId);
     }
     return ids;
-  }, [heartbeatRuns]);
+  }, [liveRuns]);
 
   const approvalsToRender = useMemo(() => {
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter);
@@ -1111,12 +1191,12 @@ export function Inbox() {
     () =>
       getNeedsActionWorkItems({
         actionQueue: visibleActionQueue,
-        issues: issues ?? [],
+        issues: relatedIssues,
         approvals: approvals ?? [],
         failedRuns,
         joinRequests,
       }),
-    [visibleActionQueue, issues, approvals, failedRuns, joinRequests],
+    [visibleActionQueue, relatedIssues, approvals, failedRuns, joinRequests],
   );
 
   const workItemsToRender = useMemo(
@@ -1238,7 +1318,8 @@ export function Inbox() {
     onSuccess: () => {
       setActionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.inboxSummary(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.railState });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     },
@@ -1253,7 +1334,8 @@ export function Inbox() {
     onSuccess: () => {
       setActionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.inboxSummary(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.railState });
     },
     onError: (err) => {
       setActionError(err instanceof Error ? err.message : "Failed to reject join request");
@@ -1293,9 +1375,9 @@ export function Inbox() {
     onSuccess: ({ newRun, originalRun }) => {
       clearRetryFeedbackRun(originalRun.id);
       setActionError(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId, originalRun.agentId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(originalRun.companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(originalRun.companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.inboxSummary(originalRun.companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.railState });
       queryClient.invalidateQueries({ queryKey: queryKeys.runDetail(originalRun.id) });
       queryClient.setQueryData(queryKeys.runDetail(newRun.id), newRun);
     },
@@ -1332,7 +1414,8 @@ export function Inbox() {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.inboxSummary(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.railState });
   };
 
   useEffect(() => {

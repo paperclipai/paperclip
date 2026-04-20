@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  INBOX_MINE_ISSUE_STATUS_FILTER,
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
@@ -20,11 +21,13 @@ import {
   agentHeartbeatModelService,
   agentService,
   budgetService,
+  companyShellStateService,
   companyPortabilityService,
   companyService,
   executiveSummaryService,
   feedbackService,
   heartbeatService,
+  issueService,
   logActivity,
   normalizeRoadmapEpicId,
   roadmapEpicService,
@@ -44,6 +47,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const feedback = feedbackService(db);
   const executiveSummary = executiveSummaryService(db);
   const roadmapEpics = roadmapEpicService(db);
+
+  function getIssueContext() {
+    return issueService(db);
+  }
+
+  function getShellState() {
+    return companyShellStateService(db);
+  }
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -99,6 +110,31 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
   }
 
+  async function resolveInboxSummaryExtra(req: Request, companyId: string) {
+    let canApproveJoins = false;
+    if (req.actor.type === "board") {
+      canApproveJoins =
+        req.actor.source === "local_implicit"
+        || Boolean(req.actor.isInstanceAdmin)
+        || await access.canUser(companyId, req.actor.userId, "joins:approve");
+    } else if (req.actor.type === "agent" && req.actor.agentId) {
+      canApproveJoins = await access.hasPermission(companyId, "agent", req.actor.agentId, "joins:approve");
+    }
+
+    const unreadTouchedIssues = req.actor.type === "board" && req.actor.userId
+      ? await getIssueContext().countUnreadTouchedByUser(
+        companyId,
+        req.actor.userId,
+        INBOX_MINE_ISSUE_STATUS_FILTER,
+      )
+      : 0;
+
+    return {
+      canApproveJoins,
+      unreadTouchedIssues,
+    };
+  }
+
   router.get("/", async (req, res) => {
     assertBoard(req);
     const result = await svc.list();
@@ -124,6 +160,24 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.json(filtered);
   });
 
+  router.get("/rail-state", async (req, res) => {
+    assertBoard(req);
+    const companies = await svc.list();
+    const allowed = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin
+      ? null
+      : new Set(req.actor.companyIds ?? []);
+    const visibleCompanies = companies.filter((company) =>
+      company.status !== "archived" && (!allowed || allowed.has(company.id))
+    );
+    const inputs = await Promise.all(
+      visibleCompanies.map(async (company) => ({
+        companyId: company.id,
+        ...(await resolveInboxSummaryExtra(req, company.id)),
+      })),
+    );
+    res.json(await getShellState().listRailState(inputs));
+  });
+
   // Common malformed path when companyId is empty in "/api/companies/{companyId}/issues".
   router.get("/issues", (_req, res) => {
     res.status(400).json({
@@ -144,6 +198,26 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     res.json(company);
+  });
+
+  router.get("/:companyId/inbox-summary", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const extra = await resolveInboxSummaryExtra(req, companyId);
+    res.json(await getShellState().getInboxSummary(companyId, extra));
+  });
+
+  router.get("/:companyId/run-activity", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const rawDays = typeof req.query.days === "string" ? Number.parseInt(req.query.days, 10) : 14;
+    if (!Number.isInteger(rawDays) || rawDays <= 0) {
+      res.status(400).json({ error: "days must be a positive integer" });
+      return;
+    }
+
+    res.json(await getShellState().getRunActivity(companyId, Math.min(rawDays, 90)));
   });
 
   router.get("/:companyId/roadmap-epics", async (req, res) => {

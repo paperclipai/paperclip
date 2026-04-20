@@ -40,6 +40,7 @@ export { dashboardService } from "./dashboard.js";
 export { roadmapEpicService, normalizeRoadmapEpicId, extractRoadmapEpicIdsFromText } from "./roadmap-epics.js";
 export { executiveSummaryService } from "./executive-summary.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
+export { companyShellStateService } from "./company-shell-state.js";
 export { accessService } from "./access.js";
 export { boardAuthService } from "./board-auth.js";
 export { instanceSettingsService } from "./instance-settings.js";

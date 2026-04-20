@@ -1,5 +1,12 @@
 export type { Company } from "./company.js";
 export type {
+  FailedRunSummary,
+  InboxSummary,
+  CompanyRailState,
+  RunActivityDay,
+  RunActivitySummary,
+} from "./company-shell-state.js";
+export type {
   BoardBrief,
   BoardBriefTotals,
   BoardBriefHealth,
