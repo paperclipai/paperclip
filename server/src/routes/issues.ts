@@ -27,7 +27,7 @@ import {
   isClosedIsolatedExecutionWorkspace,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
-import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
+import { trackAgentTaskCompleted, trackWakeEmissionFailure } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
@@ -1952,7 +1952,14 @@ export function issueRoutes(
         try {
           mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
         } catch (err) {
-          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+          logger.error({ err, issueId: id }, "failed to resolve @-mentions");
+          const tc = getTelemetryClient();
+          if (tc) {
+            trackWakeEmissionFailure(tc, {
+              reason: "mention_resolution_error",
+              source: "issue.update",
+            });
+          }
         }
 
         for (const mentionedId of mentionedIds) {
@@ -2038,7 +2045,16 @@ export function issueRoutes(
       for (const { agentId, wakeup } of wakeups.values()) {
         heartbeat
           .wakeup(agentId, wakeup)
-          .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
+          .catch((err) => {
+            logger.error({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update");
+            const tc = getTelemetryClient();
+            if (tc) {
+              trackWakeEmissionFailure(tc, {
+                reason: "heartbeat_wakeup_error",
+                source: "issue.update",
+              });
+            }
+          });
       }
     })();
 
@@ -2572,7 +2588,14 @@ export function issueRoutes(
       try {
         mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
       } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+        logger.error({ err, issueId: id }, "failed to resolve @-mentions");
+        const tc = getTelemetryClient();
+        if (tc) {
+          trackWakeEmissionFailure(tc, {
+            reason: "mention_resolution_error",
+            source: "issue.comment",
+          });
+        }
       }
 
       for (const mentionedId of mentionedIds) {
@@ -2599,7 +2622,16 @@ export function issueRoutes(
       for (const [agentId, wakeup] of wakeups.entries()) {
         heartbeat
           .wakeup(agentId, wakeup)
-          .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
+          .catch((err) => {
+            logger.error({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment");
+            const tc = getTelemetryClient();
+            if (tc) {
+              trackWakeEmissionFailure(tc, {
+                reason: "heartbeat_wakeup_error",
+                source: "issue.comment",
+              });
+            }
+          });
       }
     })();
 

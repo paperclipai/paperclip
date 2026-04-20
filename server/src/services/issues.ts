@@ -23,8 +23,15 @@ import {
   projects,
 } from "@paperclipai/db";
 import type { IssueRelationIssueSummary } from "@paperclipai/shared";
-import { extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
+import {
+  deriveAgentUrlKey,
+  extractAgentMentionIds,
+  extractProjectMentionIds,
+  isUuidLike,
+  normalizeAgentUrlKey,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
@@ -455,6 +462,29 @@ export function normalizeAgentMentionToken(raw: string): string {
     return decoded !== undefined ? decoded : full;
   });
   return s.trim();
+}
+
+/**
+ * Replaces Markdown fenced code blocks and inline code spans with equal-length
+ * whitespace so that `@slug` / `agent://` references inside documentation code
+ * do not trigger wake-emission. Offsets are preserved in case a caller runs
+ * position-dependent logic on the result.
+ */
+export function stripMarkdownCodeSegments(body: string): string {
+  if (!body) return body;
+  // Fenced blocks first: a run of 3+ backticks opens and the same run closes.
+  // Matches across lines (non-greedy). Stripped before inline spans so a fence
+  // is not re-matched as three adjacent single-tick spans.
+  const withoutFences = body.replace(
+    /(`{3,})[\s\S]*?\1/g,
+    (match) => match.replace(/[^\n]/g, " "),
+  );
+  // Inline spans: run of N backticks closed by a run of exactly N backticks
+  // (CommonMark semantics). Requires a backreference + negative lookahead.
+  return withoutFences.replace(
+    /(`+)(?:(?!\1)[\s\S])*?\1/g,
+    (match) => match.replace(/[^\n]/g, " "),
+  );
 }
 
 export function deriveIssueUserContext(
@@ -2562,24 +2592,74 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
+      // Documentation comments often illustrate mention syntax inside Markdown
+      // code spans / fences (e.g. `` `@cto` ``). Strip those segments first so
+      // literal mentions in code do not trigger live wake-emission.
+      const scannable = stripMarkdownCodeSegments(body);
+
       const re = /\B@([^\s@,!?.]+)/g;
       const tokens = new Set<string>();
       let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) {
+      while ((m = re.exec(scannable)) !== null) {
         const normalized = normalizeAgentMentionToken(m[1]);
-        if (normalized) tokens.add(normalized.toLowerCase());
+        if (!normalized) continue;
+        tokens.add(normalized.toLowerCase());
+        const slugified = normalizeAgentUrlKey(normalized);
+        if (slugified) tokens.add(slugified);
       }
 
-      const explicitAgentMentionIds = extractAgentMentionIds(body);
-      if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
+      const hrefAgentRefs = extractAgentMentionIds(scannable);
+      if (tokens.size === 0 && hrefAgentRefs.length === 0) return [];
+
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      const resolved = new Set<string>(explicitAgentMentionIds);
+
+      const nameToId = new Map<string, string>();
+      const slugToId = new Map<string, string>();
+      const validAgentIds = new Set<string>();
       for (const agent of rows) {
-        if (tokens.has(agent.name.toLowerCase())) {
-          resolved.add(agent.id);
+        validAgentIds.add(agent.id);
+        nameToId.set(agent.name.toLowerCase(), agent.id);
+        const slug = deriveAgentUrlKey(agent.name, agent.id);
+        if (slug) slugToId.set(slug, agent.id);
+      }
+
+      const resolved = new Set<string>();
+
+      for (const token of tokens) {
+        const byName = nameToId.get(token);
+        if (byName) {
+          resolved.add(byName);
+          continue;
+        }
+        const bySlug = slugToId.get(token);
+        if (bySlug) resolved.add(bySlug);
+      }
+
+      for (const ref of hrefAgentRefs) {
+        if (isUuidLike(ref)) {
+          if (validAgentIds.has(ref)) {
+            resolved.add(ref);
+          } else {
+            logger.error(
+              { companyId, agentRef: ref },
+              "agent mention href references an unknown agent UUID",
+            );
+          }
+          continue;
+        }
+        const slug = normalizeAgentUrlKey(ref);
+        const bySlug = slug ? slugToId.get(slug) : undefined;
+        if (bySlug) {
+          resolved.add(bySlug);
+        } else {
+          logger.error(
+            { companyId, agentRef: ref },
+            "agent mention href does not resolve to a known agent (no UUID match and no slug match)",
+          );
         }
       }
+
       return [...resolved];
     },
 

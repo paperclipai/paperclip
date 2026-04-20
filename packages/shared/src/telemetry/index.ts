@@ -14,6 +14,7 @@ export {
   trackAgentFirstHeartbeat,
   trackAgentTaskCompleted,
   trackErrorHandlerCrash,
+  trackWakeEmissionFailure,
 } from "./events.js";
 export type {
   TelemetryConfig,
