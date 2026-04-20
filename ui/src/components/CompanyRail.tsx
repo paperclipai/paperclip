@@ -301,23 +301,25 @@ function OrgSwitcherChip() {
   const initials = orgInitials(label);
 
   function handleSelect(orgId: string) {
+    console.log("[rail-org-switch] click", { orgId, currentOrgId: selectedOrg?.id, totalCompanies: companies.length });
     setOpen(false);
-    if (selectedOrg?.id === orgId) return;
+    if (selectedOrg?.id === orgId) {
+      console.log("[rail-org-switch] same org, bail");
+      return;
+    }
 
     const nextCompany = companies.find(
       (c) => c.organizationId === orgId && c.status !== "archived",
     );
+    console.log("[rail-org-switch] nextCompany", nextCompany ? { id: nextCompany.id, prefix: nextCompany.issuePrefix, orgId: nextCompany.organizationId } : null);
 
     if (nextCompany) {
-      // Navigate to a company in the target org; Layout syncs selectedOrgId
-      // from matchedCompany.organizationId after the route settles. We don't
-      // call setSelectedOrgId here because it races against Layout's sync
-      // effect while the URL is still pointing at the previous company.
+      setSelectedOrgId(orgId);
       setSelectedCompanyId(nextCompany.id, { source: "manual" });
+      console.log("[rail-org-switch] navigate to", `/${nextCompany.issuePrefix}/dashboard`);
       navigate(`/${nextCompany.issuePrefix}/dashboard`);
     } else {
-      // No company in the target org — Layout can't infer orgId from the URL,
-      // so set it explicitly and send the user to /home.
+      console.log("[rail-org-switch] no company, navigate /home");
       setSelectedOrgId(orgId);
       navigate("/home");
     }
