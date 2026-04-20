@@ -34,6 +34,7 @@ import crypto from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { logger } from "../middleware/logger.js";
+import { resolveDefaultLocalPluginDir } from "../home-paths.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -97,7 +98,7 @@ const MIME_TYPES: Record<string, string> = {
  * Resolve a plugin's UI directory from its package location.
  *
  * The plugin's `packageName` is stored in the DB. We resolve the package path
- * from the local plugin directory (DEFAULT_LOCAL_PLUGIN_DIR) by looking in
+ * from the resolved local plugin directory by looking in
  * `node_modules`. If the plugin was installed from a local path, the manifest
  * `entrypoints.ui` path is resolved relative to the package directory.
  *
@@ -187,9 +188,10 @@ export interface PluginUiStaticRouteOptions {
   /**
    * The local plugin installation directory.
    * This is where plugins are installed via `npm install --prefix`.
-   * Defaults to the standard `~/.paperclip/plugins/` location.
+   * Defaults to `$PAPERCLIP_HOME/plugins/` when configured, otherwise
+   * `~/.paperclip/plugins/`.
    */
-  localPluginDir: string;
+  localPluginDir?: string;
 }
 
 /**
@@ -205,10 +207,11 @@ export interface PluginUiStaticRouteOptions {
  * @param options - Configuration options
  * @returns Express router
  */
-export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions) {
+export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions = {}) {
   const router = Router();
   const registry = pluginRegistryService(db);
   const log = logger.child({ service: "plugin-ui-static" });
+  const localPluginDir = options.localPluginDir ?? resolveDefaultLocalPluginDir();
 
   /**
    * GET /_plugins/:pluginId/ui/*
@@ -392,7 +395,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
 
     // Step 3: Resolve the plugin's UI directory
     const uiDir = resolvePluginUiDir(
-      options.localPluginDir,
+      localPluginDir,
       plugin.packageName,
       manifest.entrypoints.ui,
       plugin.packagePath,
