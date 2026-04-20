@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companySkills } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -2298,22 +2298,12 @@ export function companySkillService(db: Db) {
   async function upsertImportedSkills(companyId: string, imported: ImportedSkill[]): Promise<CompanySkill[]> {
     const out: CompanySkill[] = [];
     for (const skill of imported) {
-      const existing = await getByKey(companyId, skill.key);
-      const existingMeta = existing ? getSkillMeta(existing) : {};
       const incomingMeta = skill.metadata && isPlainRecord(skill.metadata) ? skill.metadata : {};
       const incomingOwner = asString(incomingMeta.owner);
       const incomingRepo = asString(incomingMeta.repo);
       const incomingKind = asString(incomingMeta.sourceKind);
-      if (
-        existing
-        && existingMeta.sourceKind === "paperclip_bundled"
-        && incomingKind === "github"
-        && incomingOwner === "paperclipai"
-        && incomingRepo === "paperclip"
-      ) {
-        out.push(existing);
-        continue;
-      }
+      const skipBundledOverwrite =
+        incomingKind === "github" && incomingOwner === "paperclipai" && incomingRepo === "paperclip";
 
       const metadata = {
         ...(skill.metadata ?? {}),
@@ -2335,20 +2325,35 @@ export function companySkillService(db: Db) {
         metadata,
         updatedAt: new Date(),
       };
-      const row = existing
-        ? await db
-          .update(companySkills)
-          .set(values)
-          .where(eq(companySkills.id, existing.id))
-          .returning()
-          .then((rows) => rows[0] ?? null)
-        : await db
-          .insert(companySkills)
-          .values(values)
-          .returning()
-          .then((rows) => rows[0] ?? null);
-      if (!row) throw notFound("Failed to persist company skill");
-      out.push(toCompanySkill(row));
+
+      const setOnConflict: Partial<typeof values> = { ...values };
+      delete (setOnConflict as Record<string, unknown>).companyId;
+      delete (setOnConflict as Record<string, unknown>).key;
+
+      const upsertWhere = skipBundledOverwrite
+        ? sql`coalesce(${companySkills.metadata} ->> 'sourceKind', '') <> 'paperclip_bundled'`
+        : undefined;
+
+      const row = await db
+        .insert(companySkills)
+        .values(values)
+        .onConflictDoUpdate({
+          target: [companySkills.companyId, companySkills.key],
+          set: setOnConflict,
+          setWhere: upsertWhere,
+        })
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (row) {
+        out.push(toCompanySkill(row));
+        continue;
+      }
+
+      // setWhere blocked the update — re-fetch the existing row to return.
+      const existing = await getByKey(companyId, skill.key);
+      if (!existing) throw notFound("Failed to persist company skill");
+      out.push(existing);
     }
     return out;
   }
