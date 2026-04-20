@@ -35,6 +35,7 @@ import {
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
+import { reconcileStuckRunsOnStartup } from "./services/startup-reconcile.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -563,6 +564,13 @@ export async function startServer(): Promise<StartedServer> {
     resolveSessionFromHeaders,
   });
 
+  // Reconcile stuck heartbeat_runs and agents from any previous server process
+  // that was killed before it could clean up. Runs synchronously so the state
+  // is clean before the heartbeat scheduler resumes queued work.
+  await reconcileStuckRunsOnStartup(db as any).catch((err) => {
+    logger.error({ err }, "startup stuck-run reconciliation failed");
+  });
+
   void reconcilePersistedRuntimeServicesOnStartup(db as any)
     .then((result) => {
       if (result.reconciled > 0) {
@@ -642,6 +650,11 @@ export async function startServer(): Promise<StartedServer> {
     }, config.heartbeatSchedulerIntervalMs);
   }
   
+  if (config.worktreeGcEnabled) {
+    const { startWorktreeGc } = await import("./services/worktree-gc.js");
+    startWorktreeGc(db as any);
+  }
+
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
     const settingsSvc = instanceSettingsService(db);

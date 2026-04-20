@@ -28,6 +28,7 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
+import { costCents as computeCostCents } from "@paperclipai/shared/pricing/anthropic";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
@@ -3135,7 +3136,21 @@ export function heartbeatService(db: Db) {
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    // normalizeBilledCostCents returns 0 for subscription_included billing even
+    // when Claude reports a non-zero total_cost_usd, because subscription runs
+    // are not billed per-API-call.  To populate meaningful cost telemetry we
+    // fall back to computing cost from token counts using published Anthropic
+    // pricing when the adapter-reported cost is absent or suppressed.
+    const reportedCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    const tokenDerivedCostCents =
+      reportedCostCents === 0
+        ? computeCostCents(result.model ?? "", {
+            inputTokens,
+            outputTokens,
+            cachedInputTokens,
+          })
+        : 0;
+    const additionalCostCents = reportedCostCents > 0 ? reportedCostCents : tokenDerivedCostCents;
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);

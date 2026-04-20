@@ -15,6 +15,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./telemetry": "./src/telemetry/index.ts",
+    "./pricing/anthropic": "./src/pricing/anthropic.ts",
     "./*": "./src/*.ts"
   },
   "publishConfig": {
@@ -27,6 +28,10 @@
       "./telemetry": {
         "types": "./dist/telemetry/index.d.ts",
         "import": "./dist/telemetry/index.js"
+      },
+      "./pricing/anthropic": {
+        "types": "./dist/pricing/anthropic.d.ts",
+        "import": "./dist/pricing/anthropic.js"
       },
       "./*": {
         "types": "./dist/*.d.ts",
