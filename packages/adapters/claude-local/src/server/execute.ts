@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -350,6 +351,14 @@ interface WorktreeProvisionResult {
   secondary: ProvisionedWorktree | null;
   sessionCwd: string;
   envAdditions: Record<string, string>;
+  // WORKTREE_PATCH_V2: stable key used to derive the branch name for this
+  // (agent, task) pair. Persisted into sessionParams.worktreeKey so future
+  // wakes reuse the same worktree. `isEphemeral` = no taskId and no prior
+  // key; cleanup is per-session for those.
+  stableKey: string;
+  isEphemeral: boolean;
+  taskId: string | null;
+  lockPath: string;
 }
 
 function parseWorktreeConfig(config: Record<string, unknown>): WorktreeConfig | null {
@@ -400,12 +409,117 @@ function parseGitHubOwnerRepo(remoteUrl: string): { owner: string; repo: string 
   return null;
 }
 
+// WORKTREE_PATCH_V2: ensure-or-reuse a worktree for (agent, task).
+//
+// Returns `{ reused }` so caller can log migration cases. Throws with a
+// loud error when the worktree is in an un-resolvable state (on the wrong
+// branch, has uncommitted changes from a prior wake). Does NOT stash —
+// the CEO policy is "fail loud, don't silently mutate agent state".
+function ensureWorktree(
+  repo: string,
+  branch: string,
+  worktreePath: string,
+  primaryBase: string,
+): { reused: boolean; warnings: string[] } {
+  const warnings: string[] = [];
+
+  // 1. Is there an existing worktree registered at this path?
+  //    On macOS, `git worktree list` may canonicalize paths through /private,
+  //    so compare using fs.realpath when available.
+  const list = runGit(repo, ["worktree", "list", "--porcelain"], true);
+  let registered = false;
+  if (list.ok) {
+    let canonicalTarget = worktreePath;
+    try {
+      canonicalTarget = fsSync.realpathSync(worktreePath);
+    } catch {
+      canonicalTarget = worktreePath;
+    }
+    const lines = list.stdout.split("\n");
+    registered = lines.some((l) => {
+      if (!l.startsWith("worktree ")) return false;
+      const p = l.slice("worktree ".length).trim();
+      if (p === worktreePath || p === canonicalTarget) return true;
+      try {
+        return fsSync.realpathSync(p) === canonicalTarget;
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  if (registered) {
+    // Verify current branch matches expected.
+    const cur = runGit(worktreePath, ["branch", "--show-current"], true);
+    if (!cur.ok) {
+      throw new Error(`Worktree at ${worktreePath} is registered but 'git branch --show-current' failed: ${cur.stderr}`);
+    }
+    const curBranch = cur.stdout;
+    if (curBranch !== branch) {
+      throw new Error(`Worktree at ${worktreePath} is on branch "${curBranch}", expected "${branch}". Manual intervention required.`);
+    }
+    // Clean-enough check — fail loud on uncommitted dirt.
+    const status = runGit(worktreePath, ["status", "--porcelain"], true);
+    if (status.ok && status.stdout.length > 0) {
+      throw new Error(
+        `Worktree at ${worktreePath} has uncommitted changes from prior wake:\n${status.stdout}\n` +
+        `Resolve manually (commit, discard, or escalate) before next wake.`,
+      );
+    }
+    // Fetch base + pull the branch ff-only. Both optional (the branch may
+    // not have a remote tracking ref yet on first-use-after-reuse).
+    const fetch = runGit(repo, ["fetch", "origin", primaryBase], true);
+    if (!fetch.ok) {
+      warnings.push(`fetch origin ${primaryBase} failed (non-fatal): ${fetch.stderr}`);
+    }
+    const pull = runGit(worktreePath, ["pull", "--ff-only", "origin", branch], true);
+    if (!pull.ok) {
+      // Expected when the branch isn't on origin yet — benign.
+      warnings.push(`pull --ff-only origin ${branch} skipped: ${pull.stderr || "no remote ref"}`);
+    }
+    return { reused: true, warnings };
+  }
+
+  // 2. No registered worktree at this path. If the branch already exists
+  // locally (from a prior aborted add), remove it first.
+  const branchExists = runGit(repo, ["rev-parse", "--verify", `refs/heads/${branch}`], true).ok;
+  if (branchExists) {
+    // Some other orphan state — safe to delete the branch since by definition
+    // no worktree is registered to it.
+    runGit(repo, ["branch", "-D", branch], true);
+  }
+
+  // Fetch base so the new worktree starts from a fresh tip.
+  runGit(repo, ["fetch", "origin", primaryBase], true);
+
+  const add = runGit(repo, ["worktree", "add", "-b", branch, worktreePath, `origin/${primaryBase}`], true);
+  if (!add.ok) {
+    throw new Error(`Failed to create worktree at ${worktreePath} on origin/${primaryBase}: ${add.stderr}`);
+  }
+  return { reused: false, warnings };
+}
+
 async function provisionWorktrees(
   wkCfg: WorktreeConfig,
   taskId: string | null,
+  runtimeSessionParams: Record<string, unknown>,
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
 ): Promise<WorktreeProvisionResult | null> {
-  const rawBranch = `${wkCfg.agentSlug}-${taskId && taskId.trim().length > 0 ? taskId.trim() : Date.now()}`;
+  // Stable worktree key per (agent, task). Prefer taskId; fall back to the
+  // runtime-session-persisted worktreeKey from a prior wake; last resort
+  // is an ephemeral-<ms> stamp that's persisted into the next wake's
+  // sessionParams so reuse works within the same runtime session.
+  const priorKey =
+    typeof runtimeSessionParams.worktreeKey === "string" &&
+    runtimeSessionParams.worktreeKey.trim().length > 0
+      ? runtimeSessionParams.worktreeKey.trim()
+      : "";
+  const isEphemeral = !(taskId && taskId.trim().length > 0) && !priorKey;
+  const stableKey =
+    (taskId && taskId.trim().length > 0 ? taskId.trim() : "") ||
+    priorKey ||
+    `ephemeral-${Date.now()}`;
+  const rawBranch = `${wkCfg.agentSlug}-${stableKey}`;
   const branch = sanitizeBranchName(rawBranch);
   if (!branch) {
     await onLog("stderr", `[paperclip-worktree] Could not derive a branch name from slug="${wkCfg.agentSlug}" taskId="${taskId}"; aborting worktree provisioning.\n`);
@@ -419,41 +533,80 @@ async function provisionWorktrees(
   const secondaryBranch = wkCfg.secondaryRepo ? `${branch}-ios` : null;
   const secondaryPath = wkCfg.secondaryRepo ? path.join(worktreesRoot, `${branch}-ios`) : null;
 
-  // Pre-clean any stale worktree/branch from a prior aborted run (idempotent).
-  const cleanupStale = (repo: string, wkt: string, br: string) => {
-    runGit(repo, ["worktree", "remove", wkt, "--force"], true);
-    runGit(repo, ["branch", "-D", br], true);
-  };
-  cleanupStale(wkCfg.primaryRepo, primaryPath, branch);
-  if (wkCfg.secondaryRepo && secondaryPath && secondaryBranch) {
-    cleanupStale(wkCfg.secondaryRepo, secondaryPath, secondaryBranch);
+  // Ensure primary worktree (reuse if present, create otherwise).
+  let primaryEnsured: { reused: boolean; warnings: string[] };
+  try {
+    primaryEnsured = ensureWorktree(wkCfg.primaryRepo, branch, primaryPath, wkCfg.primaryBase);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await onLog("stderr", `[paperclip-worktree] ${msg}\n`);
+    return null;
   }
-
-  // Fetch latest so origin/<base> is fresh. Non-fatal on failure.
-  runGit(wkCfg.primaryRepo, ["fetch", "origin", wkCfg.primaryBase], true);
-  if (wkCfg.secondaryRepo && wkCfg.secondaryBase) {
-    runGit(wkCfg.secondaryRepo, ["fetch", "origin", wkCfg.secondaryBase], true);
+  for (const w of primaryEnsured.warnings) {
+    await onLog("stdout", `[paperclip-worktree] ${w}\n`);
   }
+  await onLog(
+    "stdout",
+    primaryEnsured.reused
+      ? `[paperclip-worktree] Reusing worktree ${primaryPath} on branch ${branch}\n`
+      : `[paperclip-worktree] Provisioned NEW worktree ${primaryPath} on branch ${branch}\n`,
+  );
 
-  // Create primary worktree from origin/<base>.
-  const primaryAdd = runGit(wkCfg.primaryRepo, [
-    "worktree", "add", "-b", branch, primaryPath, `origin/${wkCfg.primaryBase}`,
-  ], true);
-  if (!primaryAdd.ok) {
-    await onLog("stderr", `[paperclip-worktree] Failed to create primary worktree at ${primaryPath} on origin/${wkCfg.primaryBase}: ${primaryAdd.stderr}\n`);
+  // Concurrent-wake lock. Best-effort: one lockfile per worktree; exclusive
+  // create; PID+timestamp inside so a dead lock can be cleaned on inspection.
+  const lockPath = path.join(primaryPath, ".paperclip-wake.lock");
+  try {
+    // Check-and-clear a stale lock whose PID is no longer alive.
+    try {
+      const existing = await fs.readFile(lockPath, "utf-8");
+      const match = existing.match(/pid=(\d+)/);
+      const pid = match ? parseInt(match[1], 10) : NaN;
+      let alive = false;
+      if (Number.isFinite(pid) && pid > 0) {
+        try {
+          process.kill(pid, 0);
+          alive = true;
+        } catch {
+          alive = false;
+        }
+      }
+      if (alive) {
+        await onLog(
+          "stderr",
+          `[paperclip-worktree] Another wake is in progress (lock: ${existing.trim()}); refusing to spawn.\n`,
+        );
+        return null;
+      }
+      // Stale — remove.
+      await fs.rm(lockPath, { force: true });
+    } catch {
+      // No prior lock — good.
+    }
+    await fs.writeFile(
+      lockPath,
+      `pid=${process.pid}\nstarted=${new Date().toISOString()}\nbranch=${branch}\n`,
+      { flag: "wx" },
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await onLog("stderr", `[paperclip-worktree] Lock write failed for ${lockPath}: ${msg}\n`);
     return null;
   }
 
   let secondary: ProvisionedWorktree | null = null;
   if (wkCfg.secondaryRepo && secondaryPath && secondaryBranch) {
     const base = wkCfg.secondaryBase || "main";
-    const secAdd = runGit(wkCfg.secondaryRepo, [
-      "worktree", "add", "-b", secondaryBranch, secondaryPath, `origin/${base}`,
-    ], true);
-    if (!secAdd.ok) {
-      await onLog("stderr", `[paperclip-worktree] Failed to create secondary worktree at ${secondaryPath} on origin/${base}: ${secAdd.stderr}. Proceeding without secondary.\n`);
-      // Don't fail the spawn — continue with primary only.
-    } else {
+    try {
+      const secEnsured = ensureWorktree(wkCfg.secondaryRepo, secondaryBranch, secondaryPath, base);
+      for (const w of secEnsured.warnings) {
+        await onLog("stdout", `[paperclip-worktree] (secondary) ${w}\n`);
+      }
+      await onLog(
+        "stdout",
+        secEnsured.reused
+          ? `[paperclip-worktree] Reusing secondary worktree ${secondaryPath} on branch ${secondaryBranch}\n`
+          : `[paperclip-worktree] Provisioned NEW secondary worktree ${secondaryPath} on branch ${secondaryBranch}\n`,
+      );
       secondary = {
         repoRoot: wkCfg.secondaryRepo,
         worktreePath: secondaryPath,
@@ -461,6 +614,9 @@ async function provisionWorktrees(
         base,
         isPrimary: false,
       };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await onLog("stderr", `[paperclip-worktree] Secondary worktree ensure failed: ${msg}. Proceeding without secondary.\n`);
     }
   }
 
@@ -506,12 +662,58 @@ async function provisionWorktrees(
     secondary,
     sessionCwd,
     envAdditions,
+    stableKey,
+    isEphemeral,
+    taskId,
+    lockPath,
   };
+}
+
+// WORKTREE_PATCH_V2: cleanup-on-task-close
+//
+// Queries the Paperclip API for the current status of `taskId` to decide
+// whether the task has reached a terminal state (done / cancelled). Returns
+// null on error so the caller can fall back to "keep worktree" (safe
+// default — orphans are handled by the gc script).
+async function fetchTaskStatus(
+  taskId: string,
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
+): Promise<string | null> {
+  const apiUrl = (process.env.PAPERCLIP_API_URL || "").trim();
+  const apiKey = (process.env.PAPERCLIP_API_KEY || "").trim();
+  if (!apiUrl || !apiKey) {
+    await onLog("stdout", `[paperclip-worktree] Skipping task-status fetch: PAPERCLIP_API_URL/KEY not set in adapter env.\n`);
+    return null;
+  }
+  const res = spawnSync(
+    "curl",
+    [
+      "-sS",
+      "--max-time", "10",
+      "-H", `Authorization: Bearer ${apiKey}`,
+      `${apiUrl}/api/issues/${encodeURIComponent(taskId)}`,
+    ],
+    { encoding: "utf-8" },
+  );
+  if (res.status !== 0 || !res.stdout) {
+    await onLog("stderr", `[paperclip-worktree] task-status fetch failed (exit ${res.status}): ${(res.stderr || "").trim()}\n`);
+    return null;
+  }
+  try {
+    // API responses can contain unescaped control chars; scrub before parse.
+    const scrubbed = res.stdout.replace(/[\x00-\x1f]/g, " ");
+    const parsed = JSON.parse(scrubbed) as { status?: unknown };
+    if (typeof parsed.status === "string") return parsed.status;
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 async function finalizeWorktree(
   wkt: ProvisionedWorktree,
   wkCfg: WorktreeConfig,
+  opts: { cleanup: boolean; removeClaudeSessionDir: boolean },
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
 ): Promise<void> {
   try {
@@ -617,12 +819,35 @@ async function finalizeWorktree(
     const msg = err instanceof Error ? err.message : String(err);
     await onLog("stderr", `[paperclip-worktree] finalize error for ${wkt.branch}: ${msg}\n`);
   } finally {
-    // 4. Cleanup — always.
-    const rm = runGit(wkt.repoRoot, ["worktree", "remove", wkt.worktreePath, "--force"], true);
-    if (!rm.ok) {
-      await onLog("stderr", `[paperclip-worktree] worktree remove warning for ${wkt.worktreePath}: ${rm.stderr}\n`);
+    // WORKTREE_PATCH_V2: conditional cleanup. Worktree is removed only when
+    // the caller determined the task reached a terminal state (or this is
+    // an ephemeral no-task wake). Otherwise we leave it in place so the
+    // next wake on the same (agent, task) can resume the Claude Code
+    // session against the same cwd.
+    if (opts.cleanup) {
+      const rm = runGit(wkt.repoRoot, ["worktree", "remove", wkt.worktreePath, "--force"], true);
+      if (!rm.ok) {
+        await onLog("stderr", `[paperclip-worktree] worktree remove warning for ${wkt.worktreePath}: ${rm.stderr}\n`);
+      }
+      runGit(wkt.repoRoot, ["branch", "-D", wkt.branch], true);
+      if (opts.removeClaudeSessionDir) {
+        // Claude Code stores session JSONLs at ~/.claude/projects/<cwd-slug>/
+        // where cwd-slug is the worktree path with non-alphanum replaced by `-`
+        // (and a leading `-` for the absolute path). Remove it so dead sessions
+        // don't accumulate.
+        const slug = "-" + wkt.worktreePath.replace(/[^A-Za-z0-9]/g, "-");
+        const projectDir = path.join(os.homedir(), ".claude", "projects", slug);
+        try {
+          await fs.rm(projectDir, { recursive: true, force: true });
+          await onLog("stdout", `[paperclip-worktree] Removed Claude Code session dir ${projectDir}\n`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          await onLog("stderr", `[paperclip-worktree] Claude session dir cleanup warning for ${projectDir}: ${msg}\n`);
+        }
+      }
+    } else {
+      await onLog("stdout", `[paperclip-worktree] Keeping worktree ${wkt.worktreePath} for subsequent wake (task not terminal).\n`);
     }
-    runGit(wkt.repoRoot, ["branch", "-D", wkt.branch], true);
   }
 }
 
@@ -677,7 +902,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (typeof context.taskId === "string" && context.taskId.trim()) ||
         (typeof context.issueId === "string" && context.issueId.trim()) ||
         null;
-      worktreeResult = await provisionWorktrees(wkCfg, taskId, onLog);
+      // Pass runtime.sessionParams through so provisionWorktrees can pick
+      // up a persisted worktreeKey from a prior wake (ephemeral fallback).
+      const rtSessionParamsForProvision = parseObject(runtime.sessionParams);
+      worktreeResult = await provisionWorktrees(wkCfg, taskId, rtSessionParamsForProvision, onLog);
       if (worktreeResult) {
         cwd = worktreeResult.sessionCwd;
         for (const [k, v] of Object.entries(worktreeResult.envAdditions)) {
@@ -928,6 +1156,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+        // WORKTREE_PATCH_V2: persist the worktree key so the next wake on
+        // this runtime session reuses the same worktree path. This is
+        // specifically the load-bearing bit for ephemeral-<ms> fallbacks
+        // (no taskId). With a taskId, reuse is already deterministic from
+        // the task binding.
+        ...(worktreeResult ? { worktreeKey: worktreeResult.stableKey } : {}),
       } as Record<string, unknown>)
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
@@ -978,18 +1212,52 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } finally {
     fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
 
-    // --- Post-completion: worktree push + PR + cleanup (Layer 5) -----------
+    // --- Post-completion: worktree push + PR + conditional cleanup (Layer 5)
     // Always runs (regardless of exit code). Never throws — each finalize has
     // its own try/catch/finally so cleanup still happens on push/PR failure.
+    //
+    // WORKTREE_PATCH_V2: cleanup is conditional.
+    //   - Ephemeral wake (no taskId, ephemeral-<ms> fallback): always cleanup.
+    //   - Task wake: query Paperclip for issue.status; cleanup iff done/cancelled.
+    //     Unknown/error → keep (safe default; orphans are handled by the gc script).
+    //
+    // The lockfile is always removed on exit.
     if (worktreeResult) {
+      let cleanup = worktreeResult.isEphemeral;
+      if (!worktreeResult.isEphemeral && worktreeResult.taskId) {
+        const status = await fetchTaskStatus(worktreeResult.taskId, onLog);
+        if (status === "done" || status === "cancelled") {
+          cleanup = true;
+          await onLog("stdout", `[paperclip-worktree] Task ${worktreeResult.taskId} is ${status}; cleaning up worktree + branch + Claude session dir.\n`);
+        } else {
+          await onLog("stdout", `[paperclip-worktree] Task ${worktreeResult.taskId} status=${status ?? "unknown"}; preserving worktree for next wake.\n`);
+        }
+      }
       try {
-        await finalizeWorktree(worktreeResult.primary, worktreeResult.config, onLog);
+        await finalizeWorktree(
+          worktreeResult.primary,
+          worktreeResult.config,
+          { cleanup, removeClaudeSessionDir: cleanup },
+          onLog,
+        );
         if (worktreeResult.secondary) {
-          await finalizeWorktree(worktreeResult.secondary, worktreeResult.config, onLog);
+          await finalizeWorktree(
+            worktreeResult.secondary,
+            worktreeResult.config,
+            { cleanup, removeClaudeSessionDir: false }, // secondary has no Claude session
+            onLog,
+          );
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         await onLog("stderr", `[paperclip-worktree] Post-completion error (non-fatal): ${msg}\n`);
+      }
+      // Always release the wake lock. (If the worktree was cleaned up, the
+      // lockfile went with it and this is a no-op.)
+      try {
+        await fs.rm(worktreeResult.lockPath, { force: true });
+      } catch {
+        // ignore
       }
     }
   }
