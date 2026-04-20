@@ -298,5 +298,10 @@
   "stop": "중지",
   "stopping": "중지 중…",
   "agentPausedByBudget": "예산으로 에이전트 일시 중지됨",
-  "searchIcons": "아이콘 검색..."
+  "searchIcons": "아이콘 검색...",
+  "stderrExcerpt": "stderr 발췌",
+  "stdoutExcerpt": "stdout 발췌",
+  "stderr": "stderr",
+  "stdout": "stdout",
+  "adapterResultJson": "어댑터 결과 JSON"
 }

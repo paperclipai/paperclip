@@ -298,5 +298,10 @@
   "stop": "Stop",
   "stopping": "Stopping…",
   "agentPausedByBudget": "Agent paused by budget",
-  "searchIcons": "Search icons..."
+  "searchIcons": "Search icons...",
+  "stderrExcerpt": "stderr excerpt",
+  "stdoutExcerpt": "stdout excerpt",
+  "stderr": "stderr",
+  "stdout": "stdout",
+  "adapterResultJson": "adapter result JSON"
 }

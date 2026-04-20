@@ -258,5 +258,10 @@
   "project.workspaceJobCompleted": "Workspace job completed.",
   "project.workspaceServiceStopped": "Workspace service stopped.",
   "project.workspaceServiceRestarted": "Workspace service restarted.",
-  "project.workspaceServiceStarted": "Workspace service started."
+  "project.workspaceServiceStarted": "Workspace service started.",
+  "detail.servicesAndJobs": "Services and jobs",
+  "detail.source": "Source:",
+  "detail.sourceExecutionOverride": "execution workspace override",
+  "detail.sourceProjectDefault": "project workspace default",
+  "detail.sourceNone": "none"
 }

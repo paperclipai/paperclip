@@ -409,5 +409,9 @@
   "filters.hide_routine_runs": "Hide routine runs",
   "list.createLabel": "Create {{label}}",
   "list.newLabel": "New {{label}}",
-  "properties.clickToCopy": "Click to copy"
+  "properties.clickToCopy": "Click to copy",
+  "event.updatedThisTask": "updated this task",
+  "event.status": "Status",
+  "event.assignee": "Assignee",
+  "event.run": "run"
 }

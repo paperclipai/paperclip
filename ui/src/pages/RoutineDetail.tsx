@@ -832,7 +832,7 @@ export function RoutineDetail() {
               );
             }}
           />
-          <span>in</span>
+          <span>{t("detail.in", { defaultValue: "in" })}</span>
           <InlineEntitySelector
             ref={projectSelectorRef}
             value={editDraft.projectId}
