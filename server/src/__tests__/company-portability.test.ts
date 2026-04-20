@@ -14,6 +14,7 @@ const companySvc = {
 
 const agentSvc = {
   list: vi.fn(),
+  getById: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
 };
@@ -27,6 +28,7 @@ const accessSvc = {
 
 const projectSvc = {
   list: vi.fn(),
+  getById: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   createWorkspace: vi.fn(),
@@ -62,6 +64,26 @@ const assetSvc = {
 const secretSvc = {
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
   resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => ({ config, secretKeys: new Set<string>() })),
+  normalizeEnvBindingsForPersistence: vi.fn(async (_companyId: string, env: unknown) => env as Record<string, unknown>),
+  getById: vi.fn(async (id: string) => {
+    if (id === "secret-1") return { id: "secret-1", name: "anthropic-api-key", provider: "local_encrypted" };
+    if (id === "secret-2") return { id: "secret-2", name: "gh-token", provider: "local_encrypted" };
+    return null;
+  }),
+  resolveSecretValue: vi.fn(async (_companyId: string, secretId: string, _version: "latest") => {
+    if (secretId === "secret-1") return "sk-ant-secret-xxx";
+    if (secretId === "secret-2") return "ghp_secretxxx";
+    throw new Error("Secret not found");
+  }),
+  create: vi.fn(async (companyId: string, input: { name: string; provider: string; value: string; description?: string | null }) => ({
+    id: `new-secret-${input.name}`,
+    companyId,
+    name: input.name,
+    provider: input.provider,
+    description: input.description ?? null,
+    latestVersion: 1,
+  })),
+  getByName: vi.fn(async (_companyId: string, name: string) => null),
 };
 
 const agentInstructionsSvc = {
@@ -448,7 +470,6 @@ describe("company portability", () => {
     expect(extension).not.toContain("instructionsFilePath");
     expect(extension).not.toContain("command:");
     expect(extension).not.toContain("secretId");
-    expect(extension).not.toContain('type: "secret_ref"');
     expect(extension).toContain("inputs:");
     expect(extension).toContain("ANTHROPIC_API_KEY:");
     expect(extension).toContain('requirement: "optional"');
@@ -1173,6 +1194,9 @@ describe("company portability", () => {
         requirement: "optional",
         defaultValue: "",
         portability: "portable",
+        secretName: "anthropic-api-key",
+        secretProvider: "local_encrypted",
+        type: "secret_ref",
       },
       {
         key: "GH_TOKEN",
@@ -1183,6 +1207,9 @@ describe("company portability", () => {
         requirement: "optional",
         defaultValue: "",
         portability: "portable",
+        secretName: "gh-token",
+        secretProvider: "local_encrypted",
+        type: "secret_ref",
       },
     ]);
   });
@@ -1306,6 +1333,9 @@ describe("company portability", () => {
       requirement: "optional",
       defaultValue: "",
       portability: "portable",
+      secretName: null,
+      secretProvider: null,
+      type: "plain",
     });
   });
 
@@ -2618,6 +2648,191 @@ describe("company portability", () => {
         normalized: "updated",
       },
     }));
+  });
+
+  describe("secret env vars", () => {
+    beforeEach(() => {
+      // Reset create/getByName to ensure clean state per test
+      secretSvc.create.mockReset();
+      secretSvc.getByName.mockReset();
+      secretSvc.getById.mockImplementation(async (id: string) => {
+        if (id === "secret-1") return { id: "secret-1", name: "anthropic-api-key", provider: "local_encrypted" };
+        if (id === "secret-2") return { id: "secret-2", name: "gh-token", provider: "local_encrypted" };
+        return null;
+      });
+      secretSvc.resolveSecretValue.mockImplementation(async (_companyId: string, secretId: string) => {
+        if (secretId === "secret-1") return "sk-ant-secret-xxx";
+        if (secretId === "secret-2") return "ghp_secretxxx";
+        throw new Error("Secret not found");
+      });
+      secretSvc.create.mockImplementation(async (companyId: string, input: { name: string; provider: string; value: string; description?: string | null }) => ({
+        id: `new-secret-${input.name}`,
+        companyId,
+        name: input.name,
+        provider: input.provider,
+        description: input.description ?? null,
+        latestVersion: 1,
+      }));
+      secretSvc.getByName.mockResolvedValue(null);
+    });
+
+    it("exports secret env var metadata with secretName and secretProvider", async () => {
+      const portability = companyPortabilityService({} as any);
+      const exported = await portability.exportBundle("company-1", {
+        include: { agents: true, company: false, projects: false, issues: false, skills: false },
+        agents: ["claudecoder"],
+      });
+      const secretInput = exported.manifest.envInputs.find(
+        (e: any) => e.key === "ANTHROPIC_API_KEY" && e.kind === "secret",
+      );
+      expect(secretInput).toBeDefined();
+      expect(secretInput.secretName).toBe("anthropic-api-key");
+      expect(secretInput.secretProvider).toBe("local_encrypted");
+    });
+
+    it("exports secret values to manifest when includeSecrets is true", async () => {
+      const portability = companyPortabilityService({} as any);
+      const exported = await portability.exportBundle("company-1", {
+        include: { agents: true, company: false, projects: false, issues: false, skills: false },
+        agents: ["claudecoder"],
+        includeSecrets: true,
+      });
+      expect(exported.manifest.secrets).toBeDefined();
+      expect(exported.manifest.secrets).toContainEqual(expect.objectContaining({
+        name: "anthropic-api-key",
+        provider: "local_encrypted",
+        currentValue: "sk-ant-secret-xxx",
+      }));
+    });
+
+    it("omits secrets section when includeSecrets is false", async () => {
+      const portability = companyPortabilityService({} as any);
+      const exported = await portability.exportBundle("company-1", {
+        include: { agents: true, company: false, projects: false, issues: false, skills: false },
+        agents: ["claudecoder"],
+        includeSecrets: false,
+      });
+      expect(exported.manifest.secrets).toBeUndefined();
+    });
+
+    it("writes placeholder when resolveSecretValue throws (cross-instance decryption failure)", async () => {
+      secretSvc.resolveSecretValue.mockImplementation(async () => {
+        throw new Error("Decryption failed: missing master key");
+      });
+      const portability = companyPortabilityService({} as any);
+      const exported = await portability.exportBundle("company-1", {
+        include: { agents: true, company: false, projects: false, issues: false, skills: false },
+        agents: ["claudecoder"],
+        includeSecrets: true,
+      });
+      const secretEntry = exported.manifest.secrets?.find((s: any) => s.name === "anthropic-api-key");
+      expect(secretEntry?.currentValue).toBe("<decryption-key-missing:anthropic-api-key>");
+      expect(exported.warnings).toContainEqual(expect.stringContaining("could not be decrypted during export"));
+    });
+
+    it("imports secrets and remaps secret_ref bindings to new secret IDs", async () => {
+      const portability = companyPortabilityService({} as any);
+      agentSvc.create.mockImplementation(async (companyId: string, patch: Record<string, unknown>) => ({
+        id: "new-agent-1",
+        companyId,
+        ...patch,
+      }));
+      agentSvc.update.mockImplementation(async (id: string, patch: Record<string, unknown>) => patch as any);
+      agentSvc.getById.mockImplementation(async (id: string) => {
+        if (id === "new-agent-1") {
+          return { id: "new-agent-1", adapterConfig: { env: { ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "placeholder-secret" } } } };
+        }
+        return null;
+      });
+      const exported = await portability.exportBundle("company-1", {
+        include: { agents: true, company: false, projects: false, issues: false, skills: false },
+        agents: ["claudecoder"],
+        includeSecrets: true,
+      });
+      const imported = await portability.importBundle({
+        source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+        include: { agents: true, company: false, projects: false, issues: false, skills: false },
+        target: { mode: "existing_company", companyId: "company-imported" },
+        agents: ["claudecoder"],
+        collisionStrategy: "rename",
+      }, "user-1");
+      expect(secretSvc.create).toHaveBeenCalled();
+      expect(agentSvc.update).toHaveBeenCalledWith(
+        "new-agent-1",
+        expect.any(Object),
+      );
+    });
+
+    it("reuses existing secret on conflict during import", async () => {
+      secretSvc.getByName.mockImplementation(async (_companyId: string, name: string) => {
+        if (name === "anthropic-api-key") return { id: "existing-secret-1", name, provider: "local_encrypted" };
+        return null;
+      });
+      const portability = companyPortabilityService({} as any);
+      agentSvc.create.mockImplementation(async (companyId: string, patch: Record<string, unknown>) => ({
+        id: "new-agent-1",
+        companyId,
+        ...patch,
+      }));
+      agentSvc.update.mockImplementation(async (id: string, patch: Record<string, unknown>) => patch as any);
+      agentSvc.getById.mockImplementation(async (id: string) => {
+        if (id === "new-agent-1") {
+          return { id: "new-agent-1", adapterConfig: { env: { ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "placeholder-secret" } } } };
+        }
+        return null;
+      });
+      const exported = await portability.exportBundle("company-1", {
+        include: { agents: true, company: false, projects: false, issues: false, skills: false },
+        agents: ["claudecoder"],
+        includeSecrets: true,
+      });
+      await portability.importBundle({
+        source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+        include: { agents: true, company: false, projects: false, issues: false, skills: false },
+        target: { mode: "existing_company", companyId: "company-imported" },
+        agents: ["claudecoder"],
+        collisionStrategy: "rename",
+      }, "user-1");
+      expect(agentSvc.update).toHaveBeenCalled();
+    });
+
+    it("exports plain env vars faithfully", async () => {
+      agentSvc.list.mockResolvedValue([{
+        id: "agent-1",
+        name: "TestAgent",
+        status: "idle",
+        role: "agent",
+        title: null,
+        icon: null,
+        reportsTo: null,
+        capabilities: null,
+        adapterType: "process",
+        adapterConfig: {
+          env: {
+            PLAIN_VAR: { type: "plain", value: "plain-value" },
+            ANOTHER_VAR: { type: "plain", value: "another-value" },
+          },
+        },
+        runtimeConfig: {},
+        permissions: {},
+        budgetMonthlyCents: 0,
+        metadata: null,
+      }]);
+      const portability = companyPortabilityService({} as any);
+      const exported = await portability.exportBundle("company-1", {
+        include: { agents: true, company: false, projects: false, issues: false, skills: false },
+        agents: ["testagent"],
+      });
+      const plainInputs = exported.manifest.envInputs.filter((e: any) => e.kind === "plain");
+      expect(plainInputs).toContainEqual(expect.objectContaining({
+        key: "PLAIN_VAR",
+        defaultValue: "plain-value",
+      }));
+      expect(plainInputs).toContainEqual(expect.objectContaining({
+        key: "ANOTHER_VAR",
+        defaultValue: "another-value",
+      }));
+    });
   });
 
   it("nameOverrides applied after collision detection do not re-validate uniqueness", async () => {

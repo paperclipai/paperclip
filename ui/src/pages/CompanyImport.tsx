@@ -866,6 +866,13 @@ export function CompanyImport() {
         title: "Import complete",
         body: `${result.company.name}: ${result.agents.length} agent${result.agents.length === 1 ? "" : "s"} processed.`,
       });
+      if (result.warnings.some((w) => w.includes("could not be decrypted") || w.toLowerCase().includes("failed to create secret"))) {
+        pushToast({
+          tone: "warn",
+          title: "Secrets import warning",
+          body: "Some secrets could not be decrypted. Review warnings and recreate manually.",
+        });
+      }
       // Force a fresh dashboard load so newly imported agents are immediately visible.
       window.location.assign(`/${importedCompany.issuePrefix}/dashboard`);
     },
@@ -1305,6 +1312,18 @@ export function CompanyImport() {
             <div className="mx-5 mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
               {importPreview.warnings.map((w) => (
                 <div key={w} className="text-xs text-amber-500">{w}</div>
+              ))}
+            </div>
+          )}
+
+          {/* Secrets info */}
+          {importPreview.manifest.secrets && importPreview.manifest.secrets.length > 0 && (
+            <div className="mx-5 mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+              <div className="text-xs font-medium text-amber-500 mb-1">Secrets to import</div>
+              {importPreview.manifest.secrets.map((s) => (
+                <div key={s.name} className="text-xs text-amber-500">
+                  {s.name}{s.provider !== "local_encrypted" ? ` (${s.provider})` : ""}
+                </div>
               ))}
             </div>
           )}

@@ -26,9 +26,11 @@ import type {
   CompanyPortabilityIssueManifestEntry,
   CompanyPortabilitySidebarOrder,
   CompanyPortabilitySkillManifestEntry,
+  CompanyPortabilitySecretEntry,
   CompanySkill,
   AgentEnvConfig,
   RoutineVariable,
+  SecretProvider,
 } from "@paperclipai/shared";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -50,7 +52,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
-import { forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
@@ -399,7 +401,7 @@ function normalizePortableProjectEnv(value: unknown): AgentEnvConfig | null {
   return parsed.success ? parsed.data : null;
 }
 
-function extractPortableScopedEnvInputs(
+async function extractPortableScopedEnvInputs(
   scope: {
     label: string;
     warningPrefix: string;
@@ -408,7 +410,11 @@ function extractPortableScopedEnvInputs(
   },
   envValue: unknown,
   warnings: string[],
-): CompanyPortabilityEnvInput[] {
+  secrets: { getById: (id: string) => Promise<{ name: string; provider: string; description: string | null; latestVersion: number } | null>; resolveSecretValue: (companyId: string, secretId: string, version: "latest") => Promise<string> },
+  secretEntries: CompanyPortabilitySecretEntry[],
+  includeSecrets: boolean,
+  companyId: string,
+): Promise<CompanyPortabilityEnvInput[]> {
   if (!isPlainRecord(envValue)) return [];
   const env = envValue as Record<string, unknown>;
   const inputs: CompanyPortabilityEnvInput[] = [];
@@ -420,6 +426,7 @@ function extractPortableScopedEnvInputs(
     }
 
     if (isPlainRecord(binding) && binding.type === "secret_ref") {
+      const secret = await secrets.getById(String(binding.secretId));
       inputs.push({
         key,
         description: `Provide ${key} for ${scope.label}`,
@@ -429,7 +436,33 @@ function extractPortableScopedEnvInputs(
         requirement: "optional",
         defaultValue: "",
         portability: "portable",
+        secretName: secret?.name ?? null,
+        secretProvider: secret?.provider ?? null,
       });
+      if (includeSecrets && secret && binding.secretId) {
+        const alreadyExported = secretEntries.some((e) => e.name === secret.name);
+        if (!alreadyExported) {
+          try {
+            const resolvedValue = await secrets.resolveSecretValue(companyId, String(binding.secretId), "latest");
+            secretEntries.push({
+              name: secret.name,
+              provider: secret.provider as SecretProvider,
+              description: secret.description,
+              latestVersion: secret.latestVersion,
+              currentValue: resolvedValue,
+            });
+          } catch {
+            secretEntries.push({
+              name: secret.name,
+              provider: secret.provider as SecretProvider,
+              description: secret.description,
+              latestVersion: secret.latestVersion,
+              currentValue: `<decryption-key-missing:${secret.name}>`,
+            });
+            warnings.push(`Secret "${secret.name}" could not be decrypted during export. Placeholder written.`);
+          }
+        }
+      }
       continue;
     }
 
@@ -567,11 +600,14 @@ type AgentLike = {
 };
 
 type EnvInputRecord = {
+  type?: "secret_ref" | "plain";
   kind: "secret" | "plain";
   requirement: "required" | "optional";
   default?: string | null;
   description?: string | null;
   portability?: "portable" | "system_dependent";
+  secretName?: string | null;
+  secretProvider?: string | null;
 };
 
 const COMPANY_LOGO_CONTENT_TYPE_EXTENSIONS: Record<string, string> = {
@@ -1623,11 +1659,15 @@ function isAbsoluteCommand(value: string) {
   return path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value);
 }
 
-function extractPortableEnvInputs(
+async function extractPortableEnvInputs(
   agentSlug: string,
   envValue: unknown,
   warnings: string[],
-): CompanyPortabilityEnvInput[] {
+  secrets: { getById: (id: string) => Promise<{ name: string; provider: string; description: string | null; latestVersion: number } | null>; resolveSecretValue: (companyId: string, secretId: string, version: "latest") => Promise<string> },
+  secretEntries: CompanyPortabilitySecretEntry[],
+  includeSecrets: boolean,
+  companyId: string,
+): Promise<CompanyPortabilityEnvInput[]> {
   return extractPortableScopedEnvInputs(
     {
       label: `agent ${agentSlug}`,
@@ -1637,14 +1677,22 @@ function extractPortableEnvInputs(
     },
     envValue,
     warnings,
+    secrets,
+    secretEntries,
+    includeSecrets,
+    companyId,
   );
 }
 
-function extractPortableProjectEnvInputs(
+async function extractPortableProjectEnvInputs(
   projectSlug: string,
   envValue: unknown,
   warnings: string[],
-): CompanyPortabilityEnvInput[] {
+  secrets: { getById: (id: string) => Promise<{ name: string; provider: string; description: string | null; latestVersion: number } | null>; resolveSecretValue: (companyId: string, secretId: string, version: "latest") => Promise<string> },
+  secretEntries: CompanyPortabilitySecretEntry[],
+  includeSecrets: boolean,
+  companyId: string,
+): Promise<CompanyPortabilityEnvInput[]> {
   return extractPortableScopedEnvInputs(
     {
       label: `project ${projectSlug}`,
@@ -1654,6 +1702,10 @@ function extractPortableProjectEnvInputs(
     },
     envValue,
     warnings,
+    secrets,
+    secretEntries,
+    includeSecrets,
+    companyId,
   );
 }
 
@@ -2258,6 +2310,13 @@ function buildEnvInputMap(inputs: CompanyPortabilityEnvInput[]) {
     if (input.defaultValue !== null) entry.default = input.defaultValue;
     if (input.description) entry.description = input.description;
     if (input.portability === "system_dependent") entry.portability = "system_dependent";
+    if (input.secretName) {
+      entry.secretName = input.secretName;
+      entry.type = "secret_ref";
+    } else {
+      entry.type = "plain";
+    }
+    if (input.secretProvider) entry.secretProvider = input.secretProvider;
     env[input.key] = entry;
   }
   return env;
@@ -2302,6 +2361,9 @@ function readAgentEnvInputs(
       requirement: record.requirement === "required" ? "required" : "optional",
       defaultValue: typeof record.default === "string" ? record.default : null,
       portability: record.portability === "system_dependent" ? "system_dependent" : "portable",
+      secretName: record.secretName ?? null,
+      secretProvider: record.secretProvider ?? null,
+      type: record.type,
     }];
   });
 }
@@ -2326,6 +2388,9 @@ function readProjectEnvInputs(
       requirement: record.requirement === "required" ? "required" : "optional",
       defaultValue: typeof record.default === "string" ? record.default : null,
       portability: record.portability === "system_dependent" ? "system_dependent" : "portable",
+      secretName: record.secretName ?? null,
+      secretProvider: record.secretProvider ?? null,
+      type: record.type,
     }];
   });
 }
@@ -2372,6 +2437,7 @@ function buildManifestFromPackageFiles(
   const paperclipProjects = isPlainRecord(paperclipExtension.projects) ? paperclipExtension.projects : {};
   const paperclipTasks = isPlainRecord(paperclipExtension.tasks) ? paperclipExtension.tasks : {};
   const paperclipRoutines = isPlainRecord(paperclipExtension.routines) ? paperclipExtension.routines : {};
+  const paperclipSecrets = Array.isArray(paperclipExtension.secrets) ? paperclipExtension.secrets : [];
   const companyName =
     asString(companyFrontmatter.name)
     ?? opts?.sourceLabel?.companyName
@@ -2451,6 +2517,7 @@ function buildManifestFromPackageFiles(
     projects: [],
     issues: [],
     envInputs: [],
+    secrets: paperclipSecrets.length > 0 ? paperclipSecrets : undefined,
   };
 
   const warnings: string[] = [];
@@ -2965,7 +3032,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const files: Record<string, CompanyPortabilityFileEntry> = {};
     const warnings: string[] = [];
     const envInputs: CompanyPortabilityManifest["envInputs"] = [];
+    const secretEntries: CompanyPortabilitySecretEntry[] = [];
     const requestedSidebarOrder = normalizePortableSidebarOrder(input.sidebarOrder);
+    const includeSecrets = input.includeSecrets === true;
     const rootPath = normalizeAgentUrlKey(company.name) ?? "company-package";
     let companyLogoPath: string | null = null;
 
@@ -3245,10 +3314,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         warnings.push(...exportedInstructions.warnings);
 
         const envInputsStart = envInputs.length;
-        const exportedEnvInputs = extractPortableEnvInputs(
+        const exportedEnvInputs = await extractPortableEnvInputs(
           slug,
           (agent.adapterConfig as Record<string, unknown>).env,
           warnings,
+          secrets,
+          secretEntries,
+          includeSecrets,
+          companyId,
         );
         envInputs.push(...exportedEnvInputs);
         const adapterDefaultRules = ADAPTER_DEFAULT_RULES_BY_TYPE[agent.adapterType] ?? [];
@@ -3325,7 +3398,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const slug = projectSlugById.get(project.id)!;
       const projectPath = `projects/${slug}/PROJECT.md`;
       const envInputsStart = envInputs.length;
-      const exportedEnvInputs = extractPortableProjectEnvInputs(slug, project.env, warnings);
+      const exportedEnvInputs = await extractPortableProjectEnvInputs(slug, project.env, warnings, secrets, secretEntries, includeSecrets, companyId);
       envInputs.push(...exportedEnvInputs);
       const projectEnvInputs = dedupeEnvInputs(
         envInputs
@@ -3529,7 +3602,19 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       skills: resolved.manifest.skills.length > 0,
     };
     resolved.manifest.envInputs = dedupeEnvInputs(envInputs);
+    if (includeSecrets) {
+      resolved.manifest.secrets = secretEntries.length > 0 ? secretEntries : undefined;
+    }
     resolved.warnings.unshift(...warnings);
+
+    // Rebuild the YAML file to include secrets so files stay in sync with manifest
+    // Only include secrets - other fields should come from the original YAML structure
+    if (includeSecrets && resolved.manifest.secrets) {
+      // Parse existing YAML and add secrets to it
+      const existingYaml = parseYamlFile(readPortableTextFile(finalFiles, paperclipExtensionPath) ?? "") ?? {};
+      existingYaml.secrets = resolved.manifest.secrets;
+      finalFiles[paperclipExtensionPath] = buildYamlFile(existingYaml, { preserveEmptyStrings: true });
+    }
 
     return {
       rootPath,
@@ -4083,6 +4168,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const resultAgents: CompanyPortabilityImportResult["agents"] = [];
     const resultProjects: CompanyPortabilityImportResult["projects"] = [];
     const importedSlugToAgentId = new Map<string, string>();
+    const secretNameToId = new Map<string, string>();
     const existingSlugToAgentId = new Map<string, string>();
     const agentStatusById = new Map<string, string | null | undefined>();
     const existingAgents = await agents.list(targetCompany.id);
@@ -4111,6 +4197,33 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         warnings.push(`Skipped skill ${importedSkill.originalSlug}; existing skill ${importedSkill.skill.slug} was kept.`);
       } else if (importedSkill.originalKey !== importedSkill.skill.key) {
         warnings.push(`Imported skill ${importedSkill.originalSlug} as ${importedSkill.skill.slug} to avoid overwriting an existing skill.`);
+      }
+    }
+
+    // Create secrets in target company and build name->id map
+    for (const secretEntry of sourceManifest.secrets ?? []) {
+      if (secretEntry.currentValue.startsWith("<decryption-key-missing:")) {
+        warnings.push(`Secret "${secretEntry.name}" could not be decrypted in source instance. ` +
+          `Placeholder written for key. Create a secret with this name and update manually.`);
+        continue;
+      }
+      try {
+        const created = await secrets.create(targetCompany.id, {
+          name: secretEntry.name,
+          provider: secretEntry.provider,
+          value: secretEntry.currentValue,
+          description: secretEntry.description,
+        });
+        secretNameToId.set(secretEntry.name, created.id);
+      } catch (err) {
+        if (err instanceof HttpError && err.status === 409) {
+          const existing = await secrets.getByName(targetCompany.id, secretEntry.name);
+          if (existing) {
+            secretNameToId.set(secretEntry.name, existing.id);
+          }
+        } else {
+          warnings.push(`Failed to create secret "${secretEntry.name}": ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
 
@@ -4170,6 +4283,30 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           desiredSkills,
           mode,
         );
+
+        // Reconstruct adapterConfig.env from manifest.envInputs for this agent
+        const agentEnvInputs = (sourceManifest.envInputs ?? []).filter((e) => e.agentSlug === manifestAgent.slug);
+        if (agentEnvInputs.length > 0) {
+          const env: Record<string, unknown> = {};
+          for (const ei of agentEnvInputs) {
+            if (ei.kind === "secret" && ei.secretName) {
+              const newSecretId = secretNameToId.get(ei.secretName);
+              if (newSecretId) {
+                env[ei.key] = { type: "secret_ref", secretId: newSecretId };
+              } else {
+                warnings.push(`Env key "${ei.key}" for agent ${manifestAgent.slug} references secret "${ei.secretName}" which was not included in this package. Re-add manually.`);
+              }
+            } else if (ei.kind === "secret" && !ei.secretName) {
+              warnings.push(`Env key "${ei.key}" for agent ${manifestAgent.slug} could not be reconstructed (sensitive binding without secret reference). Re-add manually.`);
+            } else if (ei.kind === "plain" && ei.defaultValue !== null) {
+              env[ei.key] = { type: "plain", value: ei.defaultValue };
+            }
+          }
+          if (Object.keys(env).length > 0) {
+            normalizedAdapter.adapterConfig.env = await secrets.normalizeEnvBindingsForPersistence(targetCompany.id, env as any, { strictMode: strictSecretsMode });
+          }
+        }
+
         const patch = {
           name: planAgent.plannedName,
           role: manifestAgent.role,
@@ -4220,10 +4357,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           continue;
         }
 
-        const createdStatus = "idle";
         let created = await agents.create(targetCompany.id, {
           ...patch,
-          status: createdStatus,
+          status: "idle",
         });
         await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
         await access.setPrincipalPermission(
@@ -4243,7 +4379,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         } catch (err) {
           warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
         }
-        agentStatusById.set(created.id, created.status ?? createdStatus);
+        agentStatusById.set(created.id, created.status ?? "idle");
         importedSlugToAgentId.set(planAgent.slug, created.id);
         existingSlugToAgentId.set(normalizeAgentUrlKey(created.name) ?? created.id, created.id);
         resultAgents.push({
@@ -4292,6 +4428,26 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             ?? null
           : null;
         const projectWorkspaceIdByKey = new Map<string, string>();
+        // Build project env from manifest.envInputs filtered by this project
+        const projectEnvInputs = (sourceManifest.envInputs ?? []).filter((e) => e.projectSlug === planProject.slug);
+        const reconstructedProjectEnv: Record<string, unknown> = {};
+        for (const ei of projectEnvInputs) {
+          if (ei.kind === "secret" && ei.secretName) {
+            const newSecretId = secretNameToId.get(ei.secretName);
+            if (newSecretId) {
+              reconstructedProjectEnv[ei.key] = { type: "secret_ref", secretId: newSecretId };
+            } else {
+              warnings.push(`Env key "${ei.key}" for project ${planProject.slug} references secret "${ei.secretName}" which was not included in this package. Re-add manually.`);
+            }
+          } else if (ei.kind === "secret" && !ei.secretName) {
+            warnings.push(`Env key "${ei.key}" for project ${planProject.slug} could not be reconstructed (sensitive binding without secret reference). Re-add manually.`);
+          } else if (ei.kind === "plain" && ei.defaultValue !== null) {
+            reconstructedProjectEnv[ei.key] = { type: "plain", value: ei.defaultValue };
+          }
+        }
+        const projectEnvConfig = Object.keys(reconstructedProjectEnv).length > 0
+          ? await secrets.normalizeEnvBindingsForPersistence(targetCompany.id, reconstructedProjectEnv as any, { strictMode: strictSecretsMode })
+          : null;
         const projectPatch = {
           name: planProject.plannedName,
           description: manifestProject.description,
@@ -4301,7 +4457,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           status: manifestProject.status && PROJECT_STATUSES.includes(manifestProject.status as any)
             ? manifestProject.status as typeof PROJECT_STATUSES[number]
             : "backlog",
-          env: manifestProject.env,
+          env: projectEnvConfig ?? undefined,
           executionWorkspacePolicy: stripPortableProjectExecutionWorkspaceRefs(manifestProject.executionWorkspacePolicy),
         };
 
@@ -4377,6 +4533,91 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             executionWorkspacePolicy: hydratedProjectExecutionWorkspacePolicy,
           });
         }
+      }
+    }
+
+    // Remap secret_ref bindings in imported agent/project records to target company secret IDs
+    for (const envInput of sourceManifest.envInputs ?? []) {
+      if (envInput.kind !== "secret" || !envInput.secretName) continue;
+      const newSecretId = secretNameToId.get(envInput.secretName);
+      if (!newSecretId) {
+        // secret wasn't created (decryption failure or error) — it's already a placeholder in the env
+        continue;
+      }
+      if (envInput.agentSlug) {
+        const agentId = importedSlugToAgentId.get(envInput.agentSlug);
+        if (agentId) {
+          const agent = await agents.getById(agentId);
+          if (agent) {
+            const adapterConfig = agent.adapterConfig as Record<string, unknown>;
+            const env = adapterConfig.env as Record<string, unknown> | undefined;
+            let mutated = false;
+            if (env && typeof env[envInput.key] === "object" && env[envInput.key] !== null) {
+              const binding = env[envInput.key] as Record<string, unknown>;
+              if (binding.type === "secret_ref" && binding.secretId !== newSecretId) {
+                binding.secretId = newSecretId;
+                mutated = true;
+              }
+            }
+            if (mutated) await agents.update(agentId, { adapterConfig });
+          }
+        }
+      } else if (envInput.projectSlug) {
+        const projectId = importedSlugToProjectId.get(envInput.projectSlug);
+        if (projectId) {
+          const project = await projects.getById(projectId);
+          if (project && project.env && typeof project.env === "object") {
+            const env = project.env as Record<string, unknown>;
+            let mutated = false;
+            if (typeof env[envInput.key] === "object" && env[envInput.key] !== null) {
+              const binding = env[envInput.key] as Record<string, unknown>;
+              if (binding.type === "secret_ref" && binding.secretId !== newSecretId) {
+                binding.secretId = newSecretId;
+                mutated = true;
+              }
+            }
+            if (mutated) await projects.update(projectId, { env: env as import("@paperclipai/shared").AgentEnvConfig });
+          }
+        }
+      }
+    }
+
+    // Note: the legacy secret remapping below is kept as a safety net for
+    // agents/projects that were created/updated before this code existed.
+    // It can be removed once the inline reconstruction above is stable.
+    // Reconstruct plain env bindings and fill in missing env keys on imported agents/projects
+    for (const envInput of sourceManifest.envInputs ?? []) {
+      if (envInput.kind !== "plain" && !(envInput.kind === "secret" && !envInput.secretName)) continue;
+      if (!envInput.defaultValue && envInput.kind === "plain") continue;
+
+      if (envInput.agentSlug) {
+        const agentId = importedSlugToAgentId.get(envInput.agentSlug);
+        if (!agentId) continue;
+        const agent = await agents.getById(agentId);
+        if (!agent) continue;
+        const adapterConfig = agent.adapterConfig as Record<string, unknown>;
+        const env = (adapterConfig.env as Record<string, unknown>) ?? {};
+        let mutated = false;
+        if (!env[envInput.key] && envInput.kind === "plain") {
+          env[envInput.key] = { type: "plain", value: envInput.defaultValue ?? "" };
+          mutated = true;
+        }
+        if (mutated) {
+          adapterConfig.env = env;
+          await agents.update(agentId, { adapterConfig });
+        }
+      } else if (envInput.projectSlug) {
+        const projectId = importedSlugToProjectId.get(envInput.projectSlug);
+        if (!projectId) continue;
+        const project = await projects.getById(projectId);
+        if (!project) continue;
+        const env = (project.env as Record<string, unknown>) ?? {};
+        let mutated = false;
+        if (!env[envInput.key] && envInput.kind === "plain") {
+          env[envInput.key] = { type: "plain", value: envInput.defaultValue ?? "" };
+          mutated = true;
+        }
+        if (mutated) await projects.update(projectId, { env: env as import("@paperclipai/shared").AgentEnvConfig });
       }
     }
 
