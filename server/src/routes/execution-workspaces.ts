@@ -322,7 +322,6 @@ export function executionWorkspaceRoutes(db: Db) {
           await stopRuntimeServicesForExecutionWorkspace({
             db,
             executionWorkspaceId: existing.id,
-            workspaceCwd,
             runtimeServiceId: selectedRuntimeServiceId,
           });
         }
@@ -527,7 +526,6 @@ export function executionWorkspaceRoutes(db: Db) {
         await stopRuntimeServicesForExecutionWorkspace({
           db,
           executionWorkspaceId: existing.id,
-          workspaceCwd: existing.cwd,
         });
         const projectWorkspace = existing.projectWorkspaceId
           ? await db
