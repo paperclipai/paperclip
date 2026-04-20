@@ -36,6 +36,24 @@ describe("resolveProjectNameForUniqueShortname", () => {
     expect(resolved).toBe("Growth Team");
   });
 
+  it("ignores completed and cancelled projects when deduplicating", () => {
+    const resolved = resolveProjectNameForUniqueShortname("Growth Team", [
+      { id: "p1", name: "growth-team", status: "completed" },
+      { id: "p2", name: "growth-team-2", status: "cancelled" },
+    ]);
+    expect(resolved).toBe("Growth Team");
+  });
+
+  it("reuses suffixes occupied only by terminal projects while respecting active ones", () => {
+    const resolved = resolveProjectNameForUniqueShortname("Growth Team", [
+      { id: "p1", name: "growth-team", status: "in_progress" },
+      { id: "p2", name: "growth-team-2", status: "cancelled" },
+    ]);
+    // The active project still blocks "Growth Team", but the cancelled
+    // project should no longer reserve the "Growth Team 2" suffix.
+    expect(resolved).toBe("Growth Team 2");
+  });
+
   it("keeps non-normalizable names unchanged", () => {
     const resolved = resolveProjectNameForUniqueShortname("!!!", [
       { id: "p1", name: "growth" },
