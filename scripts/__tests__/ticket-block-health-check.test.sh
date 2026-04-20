@@ -111,8 +111,18 @@ if method == "GET" and path.endswith("/issues"):
 elif method == "GET" and "/comments" in path:
     issue_id = path.split("/api/issues/", 1)[1].split("/comments", 1)[0]
     limit = int(query.get("limit", ["5"])[0])
-    issue_comments = comments.get(issue_id, [])
-    body = list(reversed(issue_comments))[:limit]
+    order = query.get("order", ["desc"])[0]
+    after = query.get("after", [None])[0]
+    issue_comments = list(comments.get(issue_id, []))
+    if order == "desc":
+        issue_comments.reverse()
+    if after:
+        after_index = next((index for index, comment in enumerate(issue_comments) if comment.get("id") == after), None)
+        if after_index is None:
+            issue_comments = []
+        else:
+            issue_comments = issue_comments[after_index + 1 :]
+    body = issue_comments[:limit]
 elif method == "GET" and "/api/issues/" in path:
     issue_id = path.rsplit("/", 1)[-1]
     issue = issues[issue_id]
@@ -249,6 +259,41 @@ test_external_block_stays_blocked() {
   assert_eq "blocked" "$(jq -r '.issues["issue-ext"].status' "$state")" "external block should remain blocked"
 }
 
+test_external_block_older_than_first_page_stays_blocked() {
+  local state="$TMP_DIR/external-paginated.json"
+  write_state "$state" '{
+    "issues": {
+      "issue-ext-paginated": {
+        "id": "issue-ext-paginated",
+        "identifier": "SNAAA-3006",
+        "title": "Older external blocker marker",
+        "status": "blocked",
+        "assigneeAgentId": "agent-1",
+        "updatedAt": "2026-04-20T07:00:00.000Z",
+        "blockedBy": []
+      }
+    },
+    "comments": {
+      "issue-ext-paginated": [
+        { "id": "comment-1", "body": "EXTERNAL BLOCK: waiting on board decision" },
+        { "id": "comment-2", "body": "follow-up 1" },
+        { "id": "comment-3", "body": "follow-up 2" },
+        { "id": "comment-4", "body": "follow-up 3" },
+        { "id": "comment-5", "body": "follow-up 4" },
+        { "id": "comment-6", "body": "follow-up 5" },
+        { "id": "comment-7", "body": "follow-up 6" }
+      ]
+    },
+    "patches": []
+  }'
+
+  local output
+  output="$(run_script "$state")"
+  assert_eq "clean" "$output" "older external block markers must remain durable across comment pages"
+  assert_eq "0" "$(jq -r '.patches | length' "$state")" "paginated external block should not be patched"
+  assert_eq "blocked" "$(jq -r '.issues["issue-ext-paginated"].status' "$state")" "paginated external block should remain blocked"
+}
+
 test_stale_blocker_auto_unblocks() {
   local state="$TMP_DIR/stale.json"
   write_state "$state" '{
@@ -358,6 +403,7 @@ test_dry_run_skips_patch() {
 
 test_ghost_block_auto_unblocks
 test_external_block_stays_blocked
+test_external_block_older_than_first_page_stays_blocked
 test_stale_blocker_auto_unblocks
 test_partial_blocker_is_untouched
 test_repeated_run_is_not_spammy

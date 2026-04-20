@@ -119,8 +119,33 @@ get_all_blocked_tickets() {
 
 issue_has_external_block_comment() {
   local issue_id="$1"
-  paperclip_api_read "/api/issues/${issue_id}/comments?limit=${COMMENT_SCAN_LIMIT}"
-  "$JQ_BIN" -e 'any(.[]?; (.body // "") | contains("EXTERNAL BLOCK:"))' <<<"$API_RESPONSE_BODY" >/dev/null
+  local after=""
+
+  while true; do
+    local path="/api/issues/${issue_id}/comments?limit=${COMMENT_SCAN_LIMIT}&order=asc"
+    if [[ -n "$after" ]]; then
+      path="${path}&after=${after}"
+    fi
+
+    paperclip_api_read "$path"
+
+    if "$JQ_BIN" -e 'any(.[]?; (.body // "") | contains("EXTERNAL BLOCK:"))' <<<"$API_RESPONSE_BODY" >/dev/null; then
+      return 0
+    fi
+
+    local page_count last_comment_id
+    page_count="$("$JQ_BIN" 'length' <<<"$API_RESPONSE_BODY")"
+    if [[ "$page_count" -eq 0 || "$page_count" -lt "$COMMENT_SCAN_LIMIT" ]]; then
+      return 1
+    fi
+
+    last_comment_id="$("$JQ_BIN" -r '.[-1].id // empty' <<<"$API_RESPONSE_BODY")"
+    if [[ -z "$last_comment_id" ]]; then
+      return 1
+    fi
+
+    after="$last_comment_id"
+  done
 }
 
 issue_is_stale_partial_block() {
