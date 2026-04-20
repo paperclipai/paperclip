@@ -753,9 +753,9 @@ function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string): 
     if (!match?.groups) continue;
 
     const relativePath = match.groups.relative;
-    const repoManagedPath = path.join(repoRoot, relativePath.slice(2));
-    // Lexical path traversal guard — use realRepoRoot so symlinks in repoRoot itself
-    // do not create a false match (e.g. /tmp/x → /private/tmp/x on macOS).
+    // Build the managed path using realRepoRoot (already resolved above) so that the
+    // lexical containment check holds on macOS where /tmp → /private/tmp.
+    const repoManagedPath = path.join(realRepoRoot, relativePath.slice(2));
     if (!repoManagedPath.startsWith(realRepoRoot + path.sep)) return null;
     // Symlink escape guard — realpathSync resolves symlinks and throws if the path
     // does not exist, collapsing the TOCTOU window from a separate existsSync call.

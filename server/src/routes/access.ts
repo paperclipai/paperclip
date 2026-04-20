@@ -1885,8 +1885,11 @@ function mergeInviteDefaults(
 function requestIp(req: Request) {
   const forwarded = req.header("x-forwarded-for");
   if (forwarded) {
-    const first = forwarded.split(",")[0]?.trim();
-    if (first) return first;
+    // Nginx appends the real remote IP to XFF via proxy_add_x_forwarded_for.
+    // Use the last entry (nginx's contribution) to prevent client-spoofed first entries.
+    const entries = forwarded.split(",");
+    const last = entries[entries.length - 1]?.trim();
+    if (last) return last;
   }
   return req.ip || "unknown";
 }

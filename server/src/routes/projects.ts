@@ -356,7 +356,7 @@ export function projectRoutes(db: Db) {
     if (
       selectedServiceIndex !== undefined
       && selectedServiceIndex !== null
-      && (selectedServiceIndex < 0 || selectedServiceIndex >= configuredServices.length)
+      && (!Number.isInteger(selectedServiceIndex) || selectedServiceIndex < 0 || selectedServiceIndex >= configuredServices.length)
     ) {
       res.status(422).json({ error: "Selected runtime service is not defined in this project workspace runtime config" });
       return;
