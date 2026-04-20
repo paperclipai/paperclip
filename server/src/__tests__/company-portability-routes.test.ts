@@ -77,6 +77,32 @@ async function createApp(actor: Record<string, unknown>) {
   return app;
 }
 
+const companyId = "11111111-1111-4111-8111-111111111111";
+
+const exportRequest = {
+  include: { company: true, agents: true, projects: true },
+};
+
+function createExportResult() {
+  return {
+    rootPath: "paperclip",
+    manifest: {
+      agents: [],
+      skills: [],
+      projects: [],
+      issues: [],
+      envInputs: [],
+      includes: { company: true, agents: true, projects: true, issues: false, skills: false },
+      company: null,
+      schemaVersion: 1,
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      source: null,
+    },
+    files: {},
+    warnings: [],
+  };
+}
+
 describe("company portability routes", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -90,30 +116,53 @@ describe("company portability routes", () => {
   it("rejects non-CEO agents from CEO-safe export preview routes", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
-      companyId: "11111111-1111-4111-8111-111111111111",
+      companyId,
       role: "engineer",
     });
     const app = await createApp({
       type: "agent",
       agentId: "agent-1",
-      companyId: "11111111-1111-4111-8111-111111111111",
+      companyId,
       source: "agent_key",
       runId: "run-1",
     });
 
     const res = await request(app)
-      .post("/api/companies/11111111-1111-4111-8111-111111111111/exports/preview")
-      .send({ include: { company: true, agents: true, projects: true } });
+      .post(`/api/companies/${companyId}/exports/preview`)
+      .send(exportRequest);
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Only CEO agents");
     expect(mockCompanyPortabilityService.previewExport).not.toHaveBeenCalled();
   });
 
+  it("rejects non-CEO agents from legacy and CEO-safe export bundle routes", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId,
+      role: "engineer",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    for (const path of [`/api/companies/${companyId}/export`, `/api/companies/${companyId}/exports`]) {
+      const res = await request(app).post(path).send(exportRequest);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("Only CEO agents");
+    }
+    expect(mockCompanyPortabilityService.exportBundle).not.toHaveBeenCalled();
+  });
+
   it("allows CEO agents to use company-scoped export preview routes", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
-      companyId: "11111111-1111-4111-8111-111111111111",
+      companyId,
       role: "ceo",
     });
     mockCompanyPortabilityService.previewExport.mockResolvedValue({
@@ -128,17 +177,62 @@ describe("company portability routes", () => {
     const app = await createApp({
       type: "agent",
       agentId: "agent-1",
-      companyId: "11111111-1111-4111-8111-111111111111",
+      companyId,
       source: "agent_key",
       runId: "run-1",
     });
 
     const res = await request(app)
-      .post("/api/companies/11111111-1111-4111-8111-111111111111/exports/preview")
-      .send({ include: { company: true, agents: true, projects: true } });
+      .post(`/api/companies/${companyId}/exports/preview`)
+      .send(exportRequest);
 
     expect(res.status).toBe(200);
     expect(res.body.rootPath).toBe("paperclip");
+  });
+
+  it("allows CEO agents to export through legacy and CEO-safe bundle routes", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId,
+      role: "ceo",
+    });
+    mockCompanyPortabilityService.exportBundle.mockResolvedValue(createExportResult());
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    for (const path of [`/api/companies/${companyId}/export`, `/api/companies/${companyId}/exports`]) {
+      const res = await request(app).post(path).send(exportRequest);
+
+      expect(res.status).toBe(200);
+      expect(res.body.rootPath).toBe("paperclip");
+    }
+    expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledTimes(2);
+    expect(mockCompanyPortabilityService.exportBundle).toHaveBeenNthCalledWith(1, companyId, exportRequest);
+    expect(mockCompanyPortabilityService.exportBundle).toHaveBeenNthCalledWith(2, companyId, exportRequest);
+  });
+
+  it("allows board users to export through legacy and CEO-safe bundle routes", async () => {
+    mockCompanyPortabilityService.exportBundle.mockResolvedValue(createExportResult());
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: [companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    for (const path of [`/api/companies/${companyId}/export`, `/api/companies/${companyId}/exports`]) {
+      const res = await request(app).post(path).send(exportRequest);
+
+      expect(res.status).toBe(200);
+      expect(res.body.rootPath).toBe("paperclip");
+    }
+    expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledTimes(2);
   });
 
   it("rejects replace collision strategy on CEO-safe import routes", async () => {

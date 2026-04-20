@@ -147,6 +147,13 @@ beforeEach(() => {
     budgetMonthlyCents: 100,
     spentMonthlyCents: 0,
   });
+  mockAgentService.getById.mockResolvedValue({
+    id: "agent-1",
+    companyId: "company-1",
+    name: "Budget Agent",
+    budgetMonthlyCents: 100,
+    spentMonthlyCents: 0,
+  });
   mockAgentService.update.mockResolvedValue({
     id: "agent-1",
     companyId: "company-1",
@@ -216,13 +223,6 @@ describe("cost routes", () => {
   });
 
   it("rejects agent budget updates for board users outside the agent company", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      id: "agent-1",
-      companyId: "company-1",
-      name: "Budget Agent",
-      budgetMonthlyCents: 100,
-      spentMonthlyCents: 0,
-    });
     const app = await createAppWithActor({
       type: "board",
       userId: "board-user",
@@ -237,6 +237,92 @@ describe("cost routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent budget updates from the target agent without changing the budget policy", async () => {
+    const app = await createAppWithActor({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch("/api/agents/agent-1/budgets")
+      .send({ budgetMonthlyCents: 2500 });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Board access required" });
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent budget updates from another same-company agent without changing the budget policy", async () => {
+    const app = await createAppWithActor({
+      type: "agent",
+      agentId: "agent-2",
+      companyId: "company-1",
+      runId: "run-2",
+    });
+
+    const res = await request(app)
+      .patch("/api/agents/agent-1/budgets")
+      .send({ budgetMonthlyCents: 2500 });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Board access required" });
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("allows authorized board users to update an agent budget and budget policy", async () => {
+    mockAgentService.update.mockResolvedValueOnce({
+      id: "agent-1",
+      companyId: "company-1",
+      name: "Budget Agent",
+      budgetMonthlyCents: 2500,
+      spentMonthlyCents: 0,
+    });
+    const app = await createAppWithActor({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "admin" }],
+    });
+
+    const res = await request(app)
+      .patch("/api/agents/agent-1/budgets")
+      .send({ budgetMonthlyCents: 2500 });
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith("agent-1", { budgetMonthlyCents: 2500 });
+    expect(mockBudgetService.upsertPolicy).toHaveBeenCalledWith(
+      "company-1",
+      {
+        scopeType: "agent",
+        scopeId: "agent-1",
+        amount: 2500,
+        windowKind: "calendar_month_utc",
+      },
+      "board-user",
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        actorType: "user",
+        actorId: "board-user",
+        agentId: null,
+        action: "agent.budget_updated",
+        entityType: "agent",
+        entityId: "agent-1",
+        details: { budgetMonthlyCents: 2500 },
+      }),
+    );
   });
 });
 

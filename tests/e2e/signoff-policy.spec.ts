@@ -163,9 +163,9 @@ async function setupCompany(boardRequest: APIRequestContext): Promise<TestContex
   const companyId = company.id;
   const companyPrefix = company.issuePrefix ?? company.prefix ?? company.urlKey ?? "E2E";
 
-  // Helper: create agent + API key + request context
+  // Helper: hire/approve agent + API key + request context
   async function createAgent(name: string, role: string, title: string): Promise<AgentAuth> {
-    const agentRes = await boardRequest.post(`${BASE_URL}/api/companies/${companyId}/agents`, {
+    const agentRes = await boardRequest.post(`${BASE_URL}/api/companies/${companyId}/agent-hires`, {
       data: {
         name,
         role,
@@ -178,7 +178,14 @@ async function setupCompany(boardRequest: APIRequestContext): Promise<TestContex
       },
     });
     expect(agentRes.ok()).toBe(true);
-    const agent = await agentRes.json();
+    const hire = await agentRes.json();
+    const agent = hire.agent;
+    if (hire.approval) {
+      const approvalRes = await boardRequest.post(`${BASE_URL}/api/approvals/${hire.approval.id}/approve`, {
+        data: { decisionNote: "Approved for signoff e2e setup." },
+      });
+      expect(approvalRes.ok()).toBe(true);
+    }
 
     const keyRes = await boardRequest.post(`${BASE_URL}/api/agents/${agent.id}/keys`, {
       data: { name: `e2e-${name.toLowerCase()}` },
