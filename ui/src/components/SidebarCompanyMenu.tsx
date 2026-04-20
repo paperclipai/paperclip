@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, LogOut, Settings, UserPlus } from "lucide-react";
+import { Building2, ChevronDown, LogOut, Settings, UserPlus } from "lucide-react";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { Button } from "@/components/ui/button";
@@ -81,6 +81,13 @@ export function SidebarCompanyMenu() {
           <Link to="/company/settings" onClick={closeNavigationChrome}>
             <Settings className="size-4" />
             <span>Company settings</span>
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <Link to="/organizations" onClick={closeNavigationChrome}>
+            <Building2 className="size-4" />
+            <span>Organizations</span>
           </Link>
         </DropdownMenuItem>
         {session?.session ? (
