@@ -234,6 +234,23 @@ DATA_DIR: Path = Path(os.environ.get("DATA_DIR", "/tmp/real_trader_data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
+# Rotating file log handler (module-level so early errors are captured)
+# ---------------------------------------------------------------------------
+try:
+    from logging.handlers import RotatingFileHandler as _RFH
+    _file_handler = _RFH(
+        os.path.join(str(DATA_DIR), "real_trader.log"),
+        maxBytes=10 * 1024 * 1024,  # 10 MB
+        backupCount=5,
+    )
+    _file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"
+    ))
+    log.addHandler(_file_handler)
+except Exception:
+    pass  # File logging best-effort; console logging still works
+
+# ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
 @dataclass
@@ -1182,6 +1199,14 @@ class ExchangeWSManager:
         self._running = False
         self._connected: Dict[str, bool] = {}
         self._vol_cache: Dict[str, Dict[str, float]] = {}
+        self._tracked_symbols: List[str] = []
+
+    def set_tracked_symbols(self, symbols: List[str]):
+        """Set the list of symbols to subscribe to on WS feeds."""
+        self._tracked_symbols = list(symbols)
+
+    def _get_tracked_symbols(self) -> List[str]:
+        return self._tracked_symbols
 
     async def start(self, session: aiohttp.ClientSession):
         self._session = session
@@ -1265,8 +1290,13 @@ class ExchangeWSManager:
                 async with self._session.ws_connect(url, heartbeat=20, timeout=30) as ws:
                     self._connected[key] = True
                     delay = 1
-                    await ws.send_json({"op": "subscribe", "args": ["tickers.BTCUSDT"]})
-                    log.info(f"{key} WS connected")
+                    # Subscribe to all tracked symbols (not just BTCUSDT)
+                    syms = [s for s in self._get_tracked_symbols() if s.endswith("USDT")]
+                    if not syms:
+                        syms = ["BTCUSDT"]
+                    args = [f"tickers.{s}" for s in syms]
+                    await ws.send_json({"op": "subscribe", "args": args})
+                    log.info(f"{key} WS connected — subscribed to {len(args)} symbols")
                     async for msg in ws:
                         if not self._running:
                             break
@@ -1303,7 +1333,15 @@ class ExchangeWSManager:
                 async with self._session.ws_connect(url, heartbeat=20, timeout=30) as ws:
                     self._connected[key] = True
                     delay = 1
-                    log.info(f"{key} WS connected")
+                    # Subscribe to tickers for all tracked symbols
+                    syms = [s for s in self._get_tracked_symbols() if s.endswith("USDT")]
+                    if syms:
+                        args = []
+                        for s in syms:
+                            base = s.replace("USDT", "")
+                            args.append({"channel": "tickers", "instId": f"{base}-USDT-SWAP"})
+                        await ws.send_json({"op": "subscribe", "args": args})
+                    log.info(f"{key} WS connected — subscribed to {len(syms)} symbols")
                     async for msg in ws:
                         if not self._running:
                             break
@@ -1924,6 +1962,7 @@ class RiskManager:
         self.kill_switch_active = False
         self.kill_switch_time: Optional[float] = None
         self.manual_stop = False
+        self.reconciliation_paused = False
         self.balance_cache: Dict[str, Dict[str, float]] = {}
         self.last_balance_refresh = 0.0
         self.last_reconcile_time = 0.0
@@ -1948,6 +1987,8 @@ class RiskManager:
     def can_trade(self) -> Tuple[bool, str]:
         if self.manual_stop:
             return False, "manual_stop"
+        if self.reconciliation_paused:
+            return False, "reconciliation_mismatch — paused until resolved"
         if self.kill_switch_active:
             elapsed = time.time() - (self.kill_switch_time or 0)
             if elapsed < COOLDOWN_AFTER_KILL_SEC:
@@ -2035,6 +2076,12 @@ class RiskManager:
                 log.warning(f"Reconciliation failed for {ex_name}: {e}")
         if mismatches:
             log.warning(f"RECONCILIATION MISMATCH: {mismatches}")
+            self.reconciliation_paused = True
+            log.warning("Trading PAUSED due to reconciliation mismatch — resolve manually")
+        else:
+            if self.reconciliation_paused:
+                log.info("Reconciliation clear — resuming trading")
+            self.reconciliation_paused = False
         return mismatches
 
 
@@ -2146,7 +2193,24 @@ class TradeExecutor:
                 return
             log.warning(f"EMERGENCY CLOSE #{pos_id} attempt {attempt+1} failed: {result.error}")
             await asyncio.sleep(delay)
-        log.critical(f"EMERGENCY CLOSE #{pos_id} FAILED after 6 attempts")
+        # After 6 fast retries failed, create a DEGRADED position so
+        # retry_degraded_positions picks it up indefinitely (every 30s).
+        log.critical(f"EMERGENCY CLOSE #{pos_id} FAILED after 6 attempts — creating DEGRADED position for retry")
+        degraded_leg = "short" if side == "buy" else "long"
+        fallback_pos = LivePosition(
+            id=pos_id, symbol=symbol,
+            exchange_short=executor.name if side == "buy" else "",
+            exchange_long=executor.name if side == "sell" else "",
+            instrument_short="PERP", instrument_long="PERP",
+            entry_spread_pct=0.0, entry_price_short=0.0, entry_price_long=0.0,
+            size_usd=size_usd,
+            entry_time=datetime.now(timezone.utc),
+            status="DEGRADED",
+            degraded_leg=degraded_leg,
+            close_retry_count=6,
+            last_close_attempt=time.time(),
+        )
+        self.portfolio.positions.append(fallback_pos)
 
     async def close_position(self, pos: LivePosition, current_spread: float, reason: str) -> bool:
         ex_short = self.executors.get(pos.exchange_short)
@@ -2189,6 +2253,8 @@ class TradeExecutor:
         return False
 
     async def retry_degraded_positions(self):
+        # TODO: Add limit order fallback when executors support it. For v1,
+        # market order retry is sufficient with $25 position sizes.
         for pos in self.portfolio.open_positions:
             if pos.status != "DEGRADED":
                 continue
@@ -2845,20 +2911,7 @@ class TelegramCommandListener:
 
 async def main():
     """Main entry point — full trading loop with entry/exit scanning."""
-    from logging.handlers import RotatingFileHandler
-
-    # -- Logging setup --
     log_dir = str(DATA_DIR)
-    file_handler = RotatingFileHandler(
-        os.path.join(log_dir, "real_trader.log"),
-        maxBytes=10 * 1024 * 1024,  # 10 MB
-        backupCount=5,
-    )
-    file_handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"
-    ))
-    log.addHandler(file_handler)
-    log.setLevel(logging.INFO)
 
     mode = "DRY RUN" if DRY_RUN else "LIVE"
     log.info(f"=== Real Trader starting [{mode}] ===")
@@ -2905,6 +2958,7 @@ async def main():
         await trader.risk_mgr.refresh_balances()
 
         # -- Start WS feeds --
+        _exchange_ws.set_tracked_symbols(symbols)
         await _exchange_ws.start(session)
         await _ob_ws.start(session)
         _ob_ws.update_active_symbols(trader.symbols_set)
@@ -2941,6 +2995,7 @@ async def main():
         last_tg_status = time.time()
         last_funding_refresh = time.time()
         last_symbol_refresh = time.time()
+        last_equity_append = 0.0
         heartbeat_path = os.path.join(log_dir, "heartbeat")
 
         # ============================
@@ -2979,6 +3034,7 @@ async def main():
                     if new_symbols:
                         trader.symbols_set = set(new_symbols)
                         _ob_ws.update_active_symbols(trader.symbols_set)
+                        _exchange_ws.set_tracked_symbols(new_symbols)
                         log.info(f"Symbol refresh: {len(new_symbols)} symbols")
                     last_symbol_refresh = time.time()
 
@@ -3263,14 +3319,16 @@ async def main():
                     await send_telegram(session, status_msg)
                     last_tg_status = time.time()
 
-                # ---- EQUITY HISTORY ----
-                now = datetime.now(timezone.utc)
-                trader.equity_history.append({
-                    "t": now.isoformat(),
-                    "v": round(trader.portfolio.equity, 2),
-                })
-                if len(trader.equity_history) > 10000:
-                    trader.equity_history = trader.equity_history[-10000:]
+                # ---- EQUITY HISTORY (throttled to every 30s) ----
+                if time.time() - last_equity_append >= 30:
+                    now = datetime.now(timezone.utc)
+                    trader.equity_history.append({
+                        "t": now.isoformat(),
+                        "v": round(trader.portfolio.equity, 2),
+                    })
+                    if len(trader.equity_history) > 10000:
+                        trader.equity_history = trader.equity_history[-10000:]
+                    last_equity_append = time.time()
 
                 # Update peak equity
                 equity = trader.portfolio.equity
