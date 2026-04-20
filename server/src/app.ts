@@ -258,6 +258,11 @@ export async function createApp(
       },
     },
   );
+  // Back-fill the runtime-capable loader onto the lifecycle manager that
+  // was constructed before the loader existed. Without this, lifecycle
+  // calls that need runtime activation (enable/disable/upgrade/unload) fall
+  // back to a no-op loader and can't drive the plugin worker.
+  lifecycle.setLoader(loader);
   api.use(
     pluginRoutes(
       db,
@@ -266,6 +271,7 @@ export async function createApp(
       { workerManager },
       { toolDispatcher },
       { workerManager },
+      { lifecycle },
     ),
   );
   api.use(adapterRoutes());
