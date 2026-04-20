@@ -2595,6 +2595,7 @@ export function heartbeatService(db: Db) {
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      cooldownSec: Math.max(0, asNumber(heartbeat.cooldownSec, 0)),
     };
   }
 
@@ -2868,6 +2869,7 @@ export function heartbeatService(db: Db) {
         error: heartbeatRuns.error,
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
+        finishedAt: heartbeatRuns.finishedAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -3039,6 +3041,17 @@ export function heartbeatService(db: Db) {
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       const latestContext = parseObject(latestRun?.contextSnapshot);
       const latestRetryReason = readNonEmptyString(latestContext.retryReason);
+
+      // If the agent recently completed a run and is within its cooldown window,
+      // don't treat the issue as stranded — the agent is cooling down, not stuck.
+      const policy = parseHeartbeatPolicy(agent);
+      if (policy.cooldownSec > 0 && latestRun?.finishedAt) {
+        const cooldownEndMs = new Date(latestRun.finishedAt).getTime() + policy.cooldownSec * 1000;
+        if (Date.now() < cooldownEndMs) {
+          result.skipped += 1;
+          continue;
+        }
+      }
 
       if (issue.status === "todo") {
         if (!latestRun || latestRun.status === "succeeded") {
