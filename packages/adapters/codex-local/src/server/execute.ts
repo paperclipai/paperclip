@@ -7,11 +7,11 @@ import {
   asNumber,
   parseObject,
   buildPaperclipEnv,
+  buildChildProcessEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
-  ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
   resolvePaperclipDesiredSkillNames,
@@ -262,26 +262,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  const preparedManagedCodexHome =
-    configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
-  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
-  const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
-  await fs.mkdir(effectiveCodexHome, { recursive: true });
-  // Inject skills into the same CODEX_HOME that Codex will actually run with
-  // (managed home in the default case, or an explicit override from adapter config).
-  const codexSkillsDir = resolveCodexSkillsDir(effectiveCodexHome);
-  await ensureCodexSkillsInjected(
-    onLog,
-    {
-      skillsHome: codexSkillsDir,
-      skillsEntries: codexSkillEntries,
-      desiredSkillNames,
-    },
-  );
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
-  env.CODEX_HOME = effectiveCodexHome;
   env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -373,13 +356,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  const preparedCodexBaseEnv = buildChildProcessEnv(env);
+  const preparedManagedCodexHome =
+    configuredCodexHome ? null : await prepareManagedCodexHome(preparedCodexBaseEnv, onLog, agent.companyId);
+  const defaultCodexHome = resolveManagedCodexHomeDir(preparedCodexBaseEnv, agent.companyId);
+  const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
+  await fs.mkdir(effectiveCodexHome, { recursive: true });
+  // Inject skills into the same CODEX_HOME that Codex will actually run with
+  // (managed home in the default case, or an explicit override from adapter config).
+  const codexSkillsDir = resolveCodexSkillsDir(effectiveCodexHome);
+  await ensureCodexSkillsInjected(
+    onLog,
+    {
+      skillsHome: codexSkillsDir,
+      skillsEntries: codexSkillEntries,
+      desiredSkillNames,
+    },
+  );
+  env.CODEX_HOME = effectiveCodexHome;
   const effectiveEnv = Object.fromEntries(
-    Object.entries({ ...process.env, ...env }).filter(
+    Object.entries(buildChildProcessEnv(env)).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
   const billingType = resolveCodexBillingType(effectiveEnv);
-  const runtimeEnv = ensurePathInEnv(effectiveEnv);
+  const runtimeEnv = effectiveEnv;
   await ensureCommandResolvable(command, cwd, runtimeEnv);
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {

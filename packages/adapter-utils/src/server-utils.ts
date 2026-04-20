@@ -800,6 +800,73 @@ export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...env, PATH: defaultPathForPlatform() };
 }
 
+const TRUTHY_ENV_VALUE_RE = /^(1|true|yes|on)$/i;
+const PAPERCLIP_ALWAYS_STRIPPED_HINT_KEYS = [
+  "PAPERCLIP_CONTEXT",
+  "PAPERCLIP_WORKTREE_NAME",
+] as const;
+const PAPERCLIP_WORKTREE_SCOPED_KEYS = [
+  "PAPERCLIP_IN_WORKTREE",
+  "PAPERCLIP_HOME",
+  "PAPERCLIP_CONFIG",
+  "PAPERCLIP_INSTANCE_ID",
+] as const;
+
+function hasOwnEnvValue(
+  env: Record<string, string> | NodeJS.ProcessEnv,
+  key: string,
+): boolean {
+  return Object.prototype.hasOwnProperty.call(env, key);
+}
+
+function isTruthyEnvValue(value: string | undefined): boolean {
+  return TRUTHY_ENV_VALUE_RE.test(value ?? "");
+}
+
+function isExplicitWorktreeExecution(
+  explicitEnv: Record<string, string> | NodeJS.ProcessEnv,
+): boolean {
+  return (
+    isTruthyEnvValue(explicitEnv.PAPERCLIP_IN_WORKTREE) ||
+    explicitEnv.PAPERCLIP_WORKSPACE_STRATEGY === "git_worktree" ||
+    (typeof explicitEnv.PAPERCLIP_WORKSPACE_WORKTREE_PATH === "string" &&
+      explicitEnv.PAPERCLIP_WORKSPACE_WORKTREE_PATH.trim().length > 0)
+  );
+}
+
+export function sanitizeInheritedPaperclipEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  explicitEnv: Record<string, string> | NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  const sanitized: NodeJS.ProcessEnv = { ...baseEnv };
+
+  for (const key of PAPERCLIP_ALWAYS_STRIPPED_HINT_KEYS) {
+    if (!hasOwnEnvValue(explicitEnv, key)) {
+      delete sanitized[key];
+    }
+  }
+
+  if (!isExplicitWorktreeExecution(explicitEnv) && isTruthyEnvValue(baseEnv.PAPERCLIP_IN_WORKTREE)) {
+    for (const key of PAPERCLIP_WORKTREE_SCOPED_KEYS) {
+      if (!hasOwnEnvValue(explicitEnv, key)) {
+        delete sanitized[key];
+      }
+    }
+  }
+
+  return sanitized;
+}
+
+export function buildChildProcessEnv(
+  explicitEnv: Record<string, string>,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return ensurePathInEnv({
+    ...sanitizeInheritedPaperclipEnv(baseEnv, explicitEnv),
+    ...explicitEnv,
+  });
+}
+
 export async function ensureAbsoluteDirectory(
   cwd: string,
   opts: { createIfMissing?: boolean } = {},
@@ -1227,7 +1294,7 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const rawMerged: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
+    const rawMerged = buildChildProcessEnv(opts.env);
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".

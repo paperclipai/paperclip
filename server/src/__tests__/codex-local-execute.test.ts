@@ -13,6 +13,12 @@ const payload = {
   argv: process.argv.slice(2),
   prompt: fs.readFileSync(0, "utf8"),
   codexHome: process.env.CODEX_HOME || null,
+  paperclipHome: process.env.PAPERCLIP_HOME || null,
+  paperclipConfig: process.env.PAPERCLIP_CONFIG || null,
+  paperclipInstanceId: process.env.PAPERCLIP_INSTANCE_ID || null,
+  paperclipContext: process.env.PAPERCLIP_CONTEXT || null,
+  paperclipInWorktree: process.env.PAPERCLIP_IN_WORKTREE || null,
+  paperclipWorktreeName: process.env.PAPERCLIP_WORKTREE_NAME || null,
   paperclipWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
   paperclipEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
@@ -33,6 +39,12 @@ type CapturePayload = {
   argv: string[];
   prompt: string;
   codexHome: string | null;
+  paperclipHome: string | null;
+  paperclipConfig: string | null;
+  paperclipInstanceId: string | null;
+  paperclipContext: string | null;
+  paperclipInWorktree: string | null;
+  paperclipWorktreeName: string | null;
   paperclipWakePayloadJson: string | null;
   paperclipEnvKeys: string[];
 };
@@ -135,6 +147,143 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
       if (previousPaperclipInWorktree === undefined) delete process.env.PAPERCLIP_IN_WORKTREE;
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("strips inherited worktree env from agent_home runs and keeps Codex in managed-home mode", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-agent-home-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const inheritedWorktreePaperclipHome = path.join(root, "worktree-paperclip-home");
+    const expectedManagedCodexHome = path.join(
+      root,
+      ".paperclip",
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    const inheritedConfigPath = path.join(inheritedWorktreePaperclipHome, "config.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.mkdir(inheritedWorktreePaperclipHome, { recursive: true });
+    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");
+    await fs.writeFile(path.join(sharedCodexHome, "config.toml"), 'model = "codex-mini-latest"\n', "utf8");
+    await fs.writeFile(inheritedConfigPath, '{"instance":"worktree"}\n', "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+    const previousPaperclipContext = process.env.PAPERCLIP_CONTEXT;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const previousPaperclipInWorktree = process.env.PAPERCLIP_IN_WORKTREE;
+    const previousPaperclipWorktreeName = process.env.PAPERCLIP_WORKTREE_NAME;
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = inheritedWorktreePaperclipHome;
+    process.env.PAPERCLIP_CONFIG = inheritedConfigPath;
+    process.env.PAPERCLIP_CONTEXT = path.join(inheritedWorktreePaperclipHome, "context.json");
+    process.env.PAPERCLIP_INSTANCE_ID = "pap-884-ai-commits-component";
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
+    process.env.CODEX_HOME = sharedCodexHome;
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-agent-home",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspace,
+            source: "agent_home",
+            strategy: "project_primary",
+            agentHome: root,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.codexHome).toBe(expectedManagedCodexHome);
+      expect(capture.paperclipHome).toBeNull();
+      expect(capture.paperclipConfig).toBeNull();
+      expect(capture.paperclipInstanceId).toBeNull();
+      expect(capture.paperclipContext).toBeNull();
+      expect(capture.paperclipInWorktree).toBeNull();
+      expect(capture.paperclipWorktreeName).toBeNull();
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_IN_WORKTREE");
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_WORKTREE_NAME");
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_HOME");
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_CONFIG");
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_INSTANCE_ID");
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_CONTEXT");
+      await expect(
+        fs.lstat(
+          path.join(
+            inheritedWorktreePaperclipHome,
+            "instances",
+            "pap-884-ai-commits-component",
+            "companies",
+            "company-1",
+            "codex-home",
+          ),
+        ),
+      ).rejects.toThrow();
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("Using Paperclip-managed Codex home"),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipConfig === undefined) delete process.env.PAPERCLIP_CONFIG;
+      else process.env.PAPERCLIP_CONFIG = previousPaperclipConfig;
+      if (previousPaperclipContext === undefined) delete process.env.PAPERCLIP_CONTEXT;
+      else process.env.PAPERCLIP_CONTEXT = previousPaperclipContext;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      if (previousPaperclipInWorktree === undefined) delete process.env.PAPERCLIP_IN_WORKTREE;
+      else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
+      if (previousPaperclipWorktreeName === undefined) delete process.env.PAPERCLIP_WORKTREE_NAME;
+      else process.env.PAPERCLIP_WORKTREE_NAME = previousPaperclipWorktreeName;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
       await fs.rm(root, { recursive: true, force: true });
@@ -736,6 +885,7 @@ describe("codex execute", () => {
     const capturePath = path.join(root, "capture.json");
     const sharedCodexHome = path.join(root, "shared-codex-home");
     const paperclipHome = path.join(root, "paperclip-home");
+    const paperclipConfigPath = path.join(paperclipHome, "config.json");
     const isolatedCodexHome = path.join(
       paperclipHome,
       "instances",
@@ -753,11 +903,13 @@ describe("codex execute", () => {
 
     const previousHome = process.env.HOME;
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipConfig = process.env.PAPERCLIP_CONFIG;
     const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
     const previousPaperclipInWorktree = process.env.PAPERCLIP_IN_WORKTREE;
     const previousCodexHome = process.env.CODEX_HOME;
     process.env.HOME = root;
     process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_CONFIG = paperclipConfigPath;
     process.env.PAPERCLIP_INSTANCE_ID = "worktree-1";
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.CODEX_HOME = sharedCodexHome;
@@ -787,7 +939,15 @@ describe("codex execute", () => {
           },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
-        context: {},
+        context: {
+          paperclipWorkspace: {
+            cwd: workspace,
+            source: "task_session",
+            strategy: "git_worktree",
+            worktreePath: workspace,
+            branchName: "SUP-137-sanitize-worktree-env",
+          },
+        },
         authToken: "run-jwt-token",
         onLog: async (stream, chunk) => {
           logs.push({ stream, chunk });
@@ -799,17 +959,24 @@ describe("codex execute", () => {
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.codexHome).toBe(isolatedCodexHome);
+      expect(capture.paperclipHome).toBe(paperclipHome);
+      expect(capture.paperclipConfig).toBe(paperclipConfigPath);
+      expect(capture.paperclipInstanceId).toBe("worktree-1");
+      expect(capture.paperclipContext).toBeNull();
+      expect(capture.paperclipInWorktree).toBe("true");
+      expect(capture.paperclipWorktreeName).toBeNull();
       expect(capture.argv).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
       expect(capture.prompt).toContain("Follow the paperclip heartbeat.");
-      expect(capture.paperclipEnvKeys).toEqual(
-        expect.arrayContaining([
-          "PAPERCLIP_AGENT_ID",
-          "PAPERCLIP_API_KEY",
-          "PAPERCLIP_API_URL",
-          "PAPERCLIP_COMPANY_ID",
-          "PAPERCLIP_RUN_ID",
-        ]),
-      );
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_AGENT_ID");
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_API_KEY");
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_API_URL");
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_COMPANY_ID");
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_HOME");
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_IN_WORKTREE");
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_INSTANCE_ID");
+      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_RUN_ID");
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_CONTEXT");
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_WORKTREE_NAME");
 
       const isolatedAuth = path.join(isolatedCodexHome, "auth.json");
       const isolatedConfig = path.join(isolatedCodexHome, "config.toml");
@@ -836,6 +1003,8 @@ describe("codex execute", () => {
       else process.env.HOME = previousHome;
       if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipConfig === undefined) delete process.env.PAPERCLIP_CONFIG;
+      else process.env.PAPERCLIP_CONFIG = previousPaperclipConfig;
       if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
       else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
       if (previousPaperclipInWorktree === undefined) delete process.env.PAPERCLIP_IN_WORKTREE;
@@ -895,7 +1064,15 @@ describe("codex execute", () => {
           },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
-        context: {},
+        context: {
+          paperclipWorkspace: {
+            cwd: workspace,
+            source: "task_session",
+            strategy: "git_worktree",
+            worktreePath: workspace,
+            branchName: "SUP-137-sanitize-worktree-env",
+          },
+        },
         authToken: "run-jwt-token",
         onLog: async () => {},
       });
