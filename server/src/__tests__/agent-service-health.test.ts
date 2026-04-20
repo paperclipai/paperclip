@@ -192,6 +192,63 @@ describeEmbeddedPostgres("agent service health", () => {
     expect(health.counts.stuckQueuedRunCount).toBe(1);
   });
 
+  it("does not report queued_runs_stuck when an old queued run is waiting behind a same-agent running run", async () => {
+    const { companyId, agentId } = await insertCompanyAgent(db);
+    await insertRun(db, {
+      companyId,
+      agentId,
+      status: "queued",
+      createdAt: new Date(NOW.getTime() - 6 * 60 * 1000),
+      finishedAt: null,
+    });
+    await insertRun(db, {
+      companyId,
+      agentId,
+      status: "running",
+      createdAt: NOW,
+      finishedAt: null,
+    });
+
+    const health = await agentServiceHealthService(db).get({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30_000,
+      now: NOW,
+    });
+
+    expect(health.status).toBe("healthy");
+    expect(health.reason).toBeNull();
+    expect(health.counts.liveRunCount).toBe(2);
+    expect(health.counts.stuckQueuedRunCount).toBe(0);
+  });
+
+  it("reports queued_runs_stuck when only a different agent is running", async () => {
+    const queued = await insertCompanyAgent(db, { agentName: "CTO" });
+    const running = await insertCompanyAgent(db, { agentName: "CEO" });
+    await insertRun(db, {
+      ...queued,
+      status: "queued",
+      createdAt: new Date(NOW.getTime() - 6 * 60 * 1000),
+      finishedAt: null,
+    });
+    await insertRun(db, {
+      ...running,
+      status: "running",
+      createdAt: NOW,
+      finishedAt: null,
+    });
+
+    const health = await agentServiceHealthService(db).get({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30_000,
+      now: NOW,
+    });
+
+    expect(health.status).toBe("down");
+    expect(health.reason).toBe("queued_runs_stuck");
+    expect(health.counts.liveRunCount).toBe(2);
+    expect(health.counts.stuckQueuedRunCount).toBe(1);
+  });
+
   it("reports recent_runtime_failures when scheduled agents cannot start", async () => {
     const first = await insertCompanyAgent(db, { companyName: "AI Second Brain", agentName: "CEO" });
     const second = await insertCompanyAgent(db, { companyName: "CodeSM MaaS", agentName: "CTO" });
@@ -232,6 +289,35 @@ describeEmbeddedPostgres("agent service health", () => {
     await insertRun(db, {
       ...healthy,
       status: "succeeded",
+    });
+
+    const health = await agentServiceHealthService(db).get({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30_000,
+      now: NOW,
+    });
+
+    expect(health.status).toBe("healthy");
+    expect(health.reason).toBeNull();
+    expect(health.counts.recentRuntimeFailureAgentCount).toBe(1);
+    expect(health.counts.recentHealthyRunCount).toBe(1);
+  });
+
+  it("does not report down for cutover-style process loss when the same scheduled agent is running again", async () => {
+    const agent = await insertCompanyAgent(db, { agentName: "CEO" });
+    await insertRun(db, {
+      ...agent,
+      status: "failed",
+      error: "Process lost -- server may have restarted",
+      errorCode: "process_lost",
+      createdAt: new Date(NOW.getTime() - 2 * 60 * 1000),
+      finishedAt: new Date(NOW.getTime() - 60 * 1000),
+    });
+    await insertRun(db, {
+      ...agent,
+      status: "running",
+      createdAt: NOW,
+      finishedAt: null,
     });
 
     const health = await agentServiceHealthService(db).get({

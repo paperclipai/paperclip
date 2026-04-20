@@ -85,6 +85,9 @@ const claudeLocalAdapter: ServerAdapterModule = {
   models: claudeModels,
   listModels: listClaudeModels,
   supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getQuotaWindows: claudeGetQuotaWindows,
 };
@@ -100,6 +103,9 @@ const codexLocalAdapter: ServerAdapterModule = {
   models: codexModels,
   listModels: listCodexModels,
   supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: codexAgentConfigurationDoc,
   getQuotaWindows: codexGetQuotaWindows,
 };
@@ -115,6 +121,9 @@ const cursorLocalAdapter: ServerAdapterModule = {
   models: cursorModels,
   listModels: listCursorModels,
   supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
   agentConfigurationDoc: cursorAgentConfigurationDoc,
 };
 
@@ -128,6 +137,9 @@ const geminiLocalAdapter: ServerAdapterModule = {
   sessionManagement: getAdapterSessionManagement("gemini_local") ?? undefined,
   models: geminiModels,
   supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
   agentConfigurationDoc: geminiAgentConfigurationDoc,
 };
 
@@ -137,6 +149,8 @@ const openclawGatewayAdapter: ServerAdapterModule = {
   testEnvironment: openclawGatewayTestEnvironment,
   models: openclawGatewayModels,
   supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: openclawGatewayAgentConfigurationDoc,
 };
 
@@ -151,6 +165,9 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   sessionManagement: getAdapterSessionManagement("opencode_local") ?? undefined,
   listModels: listOpenCodeModels,
   supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
 };
 
@@ -165,6 +182,9 @@ const piLocalAdapter: ServerAdapterModule = {
   models: [],
   listModels: listPiModels,
   supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
@@ -271,6 +291,7 @@ export function unregisterServerAdapter(type: string): void {
     if (fallback) {
       adaptersByType.set(type, fallback);
     }
+    builtinFallbacks.delete(type);
     return;
   }
   if (BUILTIN_ADAPTER_TYPES.has(type)) {

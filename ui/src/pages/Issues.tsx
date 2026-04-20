@@ -13,6 +13,20 @@ import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { AlertTriangle, CircleDot } from "lucide-react";
 
+export function buildIssuesSearchUrl(currentHref: string, search: string): string | null {
+  const url = new URL(currentHref);
+  const currentSearch = url.searchParams.get("q") ?? "";
+  if (currentSearch === search) return null;
+
+  if (search.length > 0) {
+    url.searchParams.set("q", search);
+  } else {
+    url.searchParams.delete("q");
+  }
+
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 export function Issues() {
   return <IssuesView mode="issues" />;
 }
@@ -35,18 +49,8 @@ function IssuesView({ mode }: { mode: "issues" | "blockers" }) {
   const initialSearch = searchParams.get("q") ?? "";
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const handleSearchChange = useCallback((search: string) => {
-    const trimmedSearch = search.trim();
-    const currentSearch = new URLSearchParams(window.location.search).get("q") ?? "";
-    if (currentSearch === trimmedSearch) return;
-
-    const url = new URL(window.location.href);
-    if (trimmedSearch) {
-      url.searchParams.set("q", trimmedSearch);
-    } else {
-      url.searchParams.delete("q");
-    }
-
-    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    const nextUrl = buildIssuesSearchUrl(window.location.href, search);
+    if (!nextUrl) return;
     window.history.replaceState(window.history.state, "", nextUrl);
   }, []);
 

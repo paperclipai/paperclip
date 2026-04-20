@@ -24,6 +24,7 @@ import {
 } from "../lib/model-utils";
 import { getUIAdapter } from "../adapters";
 import { useAdaptersSync } from "../adapters/use-disabled-adapters";
+import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import {
   listLocalAgentAdapterOptions,
@@ -203,8 +204,9 @@ export function OnboardingWizard() {
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
   });
-  const NONLOCAL_TYPES = new Set(["process", "http", "openclaw_gateway"]);
-  const isLocalAdapter = !NONLOCAL_TYPES.has(adapterType);
+  const getCapabilities = useAdapterCapabilities();
+  const adapterCaps = getCapabilities(adapterType);
+  const isLocalAdapter = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
 
   // Build adapter grids dynamically from server registry metadata.
   // External/plugin adapters appear when this instance has loaded them.

@@ -8,6 +8,13 @@ import {
 import type { UIAdapterModule } from "./types";
 import type { AdapterInfo } from "../api/adapters";
 
+const capabilities = {
+  supportsInstructionsBundle: true,
+  supportsSkills: true,
+  supportsLocalAgentJwt: true,
+  requiresMaterializedRuntimeSkills: false,
+};
+
 const externalAdapter: UIAdapterModule = {
   type: "external_test",
   label: "External Test",
@@ -46,6 +53,7 @@ describe("adapter metadata", () => {
         modelsCount: 0,
         loaded: true,
         disabled: false,
+        capabilities,
         supportsLocalAgentJwt: true,
       },
       {
@@ -55,6 +63,7 @@ describe("adapter metadata", () => {
         modelsCount: 0,
         loaded: true,
         disabled: false,
+        capabilities: { ...capabilities, supportsLocalAgentJwt: false },
         supportsLocalAgentJwt: false,
       },
       {
@@ -64,6 +73,7 @@ describe("adapter metadata", () => {
         modelsCount: 0,
         loaded: true,
         disabled: false,
+        capabilities: { ...capabilities, supportsLocalAgentJwt: false },
         supportsLocalAgentJwt: false,
       },
       {
@@ -73,6 +83,7 @@ describe("adapter metadata", () => {
         modelsCount: 0,
         loaded: true,
         disabled: false,
+        capabilities,
         supportsLocalAgentJwt: true,
       },
       {
@@ -82,6 +93,7 @@ describe("adapter metadata", () => {
         modelsCount: 0,
         loaded: true,
         disabled: true,
+        capabilities,
         supportsLocalAgentJwt: true,
       },
     ];

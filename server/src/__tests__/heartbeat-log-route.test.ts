@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(),
+  getRunLogAccess: vi.fn(),
   readLog: vi.fn(),
 }));
 
@@ -53,9 +54,12 @@ describe("heartbeat log route", () => {
   });
 
   it("returns pending log state for runs that exist before log initialization", async () => {
-    mockHeartbeatService.getRun.mockResolvedValue({
+    mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
+      status: "running",
+      logStore: null,
+      logRef: null,
     });
     mockHeartbeatService.readLog.mockResolvedValue({
       runId: "run-1",
@@ -79,7 +83,7 @@ describe("heartbeat log route", () => {
   });
 
   it("returns 404 when the heartbeat run does not exist", async () => {
-    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockHeartbeatService.getRunLogAccess.mockResolvedValue(null);
 
     const { app } = await createApp();
     const res = await request(app).get("/api/heartbeat-runs/run-missing/log");
@@ -90,9 +94,12 @@ describe("heartbeat log route", () => {
 
   it("keeps persisted log read failures noisy", async () => {
     const { app, notFound } = await createApp();
-    mockHeartbeatService.getRun.mockResolvedValue({
+    mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
+      status: "done",
+      logStore: "local_file",
+      logRef: "run-1.log",
     });
     mockHeartbeatService.readLog.mockRejectedValue(notFound("Run log not found"));
 

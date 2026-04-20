@@ -7,22 +7,27 @@ const mockHeartbeatService = vi.hoisted(() => ({
   readLog: vi.fn(),
 }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => ({}),
-  agentInstructionsService: () => ({}),
-  agentService: () => ({ getChainOfCommand: vi.fn(async () => []), getById: vi.fn(async () => null) }),
-  approvalService: () => ({}),
-  budgetService: () => ({}),
-  companySkillService: () => ({}),
-  heartbeatService: () => mockHeartbeatService,
-  instanceSettingsService: () => ({ getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })) }),
-  issueApprovalService: () => ({}),
-  issueService: () => ({}),
-  logActivity: vi.fn(async () => undefined),
-  secretService: () => ({}),
-  syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
-  workspaceOperationService: () => ({}),
-}));
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => ({}),
+    agentInstructionsService: () => ({}),
+    agentService: () => ({ getChainOfCommand: vi.fn(async () => []), getById: vi.fn(async () => null) }),
+    approvalService: () => ({}),
+    budgetService: () => ({}),
+    companySkillService: () => ({}),
+    heartbeatService: () => mockHeartbeatService,
+    instanceSettingsService: () => ({ getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })) }),
+    issueApprovalService: () => ({}),
+    issueService: () => ({}),
+    logActivity: vi.fn(async () => undefined),
+    secretService: () => ({}),
+    syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
+    workspaceOperationService: () => ({}),
+  }));
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  );
+}
 
 function createLiveRunsDbStub(rows: unknown[]) {
   const orderBy = vi.fn().mockResolvedValue(rows);
@@ -34,6 +39,12 @@ function createLiveRunsDbStub(rows: unknown[]) {
 }
 
 async function createApp(actor: Record<string, unknown>, rows: unknown[] = []) {
+  vi.resetModules();
+  vi.doUnmock("../routes/agents.js");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../services/index.js");
+  registerModuleMocks();
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/agents.js"),
     import("../middleware/index.js"),
@@ -51,7 +62,6 @@ async function createApp(actor: Record<string, unknown>, rows: unknown[] = []) {
 
 describe("live runs route", () => {
   beforeEach(() => {
-    vi.resetModules();
     vi.resetAllMocks();
   });
 

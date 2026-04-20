@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle } from "lucide-react";
+import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, Play } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { pluginsApi } from "@/api/plugins";
+import { secretsApi } from "@/api/secrets";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +25,7 @@ import {
   validateJsonSchemaForm,
   getDefaultValues,
   type JsonSchemaNode,
+  type JsonSchemaSecretOption,
 } from "@/components/JsonSchemaForm";
 
 /**
@@ -61,6 +63,7 @@ export function PluginSettings() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<"configuration" | "status">("configuration");
 
   const { data: plugin, isLoading: pluginLoading } = useQuery({
@@ -98,6 +101,35 @@ export function PluginSettings() {
     queryKey: queryKeys.plugins.config(pluginId!),
     queryFn: () => pluginsApi.getConfig(pluginId!),
     enabled: !!pluginId && !!hasConfigSchema,
+  });
+
+  const { data: companySecrets = [] } = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "__none__"],
+    queryFn: () => secretsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && !!hasConfigSchema,
+  });
+
+  const secretOptions: JsonSchemaSecretOption[] = companySecrets.map((secret) => ({
+    id: secret.id,
+    name: secret.name,
+    description: secret.description,
+    provider: secret.provider,
+    latestVersion: secret.latestVersion,
+  }));
+
+  const { data: pluginJobs = [] } = useQuery({
+    queryKey: queryKeys.plugins.jobs(pluginId!),
+    queryFn: () => pluginsApi.listJobs(pluginId!),
+    enabled: !!pluginId && plugin?.status === "ready",
+    refetchInterval: 30000,
+  });
+
+  const triggerJobMutation = useMutation({
+    mutationFn: (jobId: string) => pluginsApi.triggerJob(pluginId!, jobId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.dashboard(pluginId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.jobs(pluginId!) });
+    },
   });
 
   const { slots } = usePluginSlots({
@@ -142,6 +174,7 @@ export function PluginSettings() {
         : "secondary";
   const pluginDescription = plugin.manifestJson.description || "No description provided.";
   const pluginCapabilities = plugin.manifestJson.capabilities ?? [];
+  const activePluginJobs = pluginJobs.filter((job) => job.status === "active");
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -234,6 +267,7 @@ export function PluginSettings() {
                   isLoading={configLoading}
                   pluginStatus={plugin.status}
                   supportsConfigTest={(plugin as unknown as { supportsConfigTest?: boolean }).supportsConfigTest === true}
+                  secretOptions={secretOptions}
                 />
               ) : (
                 <p className="text-sm text-muted-foreground">
@@ -308,6 +342,52 @@ export function PluginSettings() {
                         ) : (
                           <p className="text-sm text-muted-foreground italic">No worker process registered.</p>
                         )}
+                      </div>
+
+                      <Separator />
+
+                      <div>
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <h3 className="text-sm font-medium flex items-center gap-1.5">
+                            <CalendarClock className="h-3.5 w-3.5 text-muted-foreground" />
+                            Scheduled Jobs
+                          </h3>
+                        </div>
+                        {activePluginJobs.length > 0 ? (
+                          <div className="space-y-2">
+                            {activePluginJobs.map((job) => {
+                              const isTriggering = triggerJobMutation.isPending && triggerJobMutation.variables === job.id;
+                              return (
+                                <div
+                                  key={job.id}
+                                  className="flex items-center justify-between gap-2 rounded-md bg-muted/50 px-2 py-1.5 text-sm"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="truncate font-mono text-xs" title={job.jobKey}>{job.jobKey}</div>
+                                    <div className="mt-0.5 text-xs text-muted-foreground">
+                                      {job.nextRunAt ? `next ${new Date(job.nextRunAt).toLocaleString()}` : "manual or pending schedule"}
+                                    </div>
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 shrink-0 gap-1.5 px-2 text-xs"
+                                    disabled={triggerJobMutation.isPending}
+                                    onClick={() => triggerJobMutation.mutate(job.id)}
+                                  >
+                                    {isTriggering ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                                    Run now
+                                  </Button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-muted-foreground italic">No active scheduled jobs.</p>
+                        )}
+                        {triggerJobMutation.error ? (
+                          <p className="mt-2 text-xs text-destructive">{triggerJobMutation.error.message}</p>
+                        ) : null}
                       </div>
 
                       <Separator />
@@ -553,6 +633,8 @@ interface PluginConfigFormProps {
   pluginStatus?: string;
   /** Whether the plugin worker implements `validateConfig`. */
   supportsConfigTest?: boolean;
+  /** Company secrets available to secret-ref fields. */
+  secretOptions?: JsonSchemaSecretOption[];
 }
 
 /**
@@ -562,7 +644,7 @@ interface PluginConfigFormProps {
  * Separated from PluginSettings to isolate re-render scope — only the form
  * re-renders on field changes, not the entire page.
  */
-function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
+function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest, secretOptions }: PluginConfigFormProps) {
   const queryClient = useQueryClient();
 
   // Form values: start with saved values, fall back to schema defaults
@@ -674,6 +756,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
         onChange={handleChange}
         errors={errors}
         disabled={saveMutation.isPending}
+        secretOptions={secretOptions}
       />
 
       {/* Status messages */}

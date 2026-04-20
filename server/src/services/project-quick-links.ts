@@ -177,7 +177,13 @@ export function projectQuickLinkService(db: Db, options: ProjectQuickLinkService
       const row = await db
         .update(projectQuickLinks)
         .set(patch)
-        .where(eq(projectQuickLinks.id, linkId))
+        .where(
+          and(
+            eq(projectQuickLinks.companyId, companyId),
+            eq(projectQuickLinks.projectId, projectId),
+            eq(projectQuickLinks.id, linkId),
+          ),
+        )
         .returning()
         .then((rows) => rows[0]!);
       return toProjectQuickLink(row);
@@ -186,7 +192,15 @@ export function projectQuickLinkService(db: Db, options: ProjectQuickLinkService
     remove: async (companyId: string, projectId: string, linkId: string): Promise<ProjectQuickLink | null> => {
       const existing = await getLink(companyId, projectId, linkId);
       if (!existing) return null;
-      await db.delete(projectQuickLinks).where(eq(projectQuickLinks.id, linkId));
+      await db
+        .delete(projectQuickLinks)
+        .where(
+          and(
+            eq(projectQuickLinks.companyId, companyId),
+            eq(projectQuickLinks.projectId, projectId),
+            eq(projectQuickLinks.id, linkId),
+          ),
+        );
       return toProjectQuickLink(existing);
     },
   };

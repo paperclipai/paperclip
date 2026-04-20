@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../api/client";
 import { useLiveRunTranscripts } from "./useLiveRunTranscripts";
 
 const { useQueryMock, logMock } = vi.hoisted(() => {

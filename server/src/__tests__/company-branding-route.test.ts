@@ -83,6 +83,17 @@ function createCompany() {
 
 async function createApp(actor: Record<string, unknown>) {
   vi.resetModules();
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../routes/companies.js");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+  );
   registerModuleMocks();
   const [{ companyRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/companies.js"),
@@ -102,6 +113,11 @@ async function createApp(actor: Record<string, unknown>) {
 describe("PATCH /api/companies/:companyId/branding", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/companies.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/validate.js");
     vi.resetAllMocks();
   });
 

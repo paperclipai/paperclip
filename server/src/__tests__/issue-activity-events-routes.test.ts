@@ -143,7 +143,11 @@ function makeIssue() {
 
 describe("issue activity event routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.resetAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
@@ -194,30 +198,32 @@ describe("issue activity event routes", () => {
       .send({ blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] });
 
     expect(res.status).toBe(200);
-    expect(mockLogActivity).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        action: "issue.blockers_updated",
-        details: expect.objectContaining({
-          addedBlockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
-          removedBlockedByIssueIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
-          addedBlockedByIssues: [
-            {
-              id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-              identifier: "PAP-11",
-              title: "New blocker",
-            },
-          ],
-          removedBlockedByIssues: [
-            {
-              id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-              identifier: "PAP-10",
-              title: "Old blocker",
-            },
-          ],
+    await vi.waitFor(() => {
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.blockers_updated",
+          details: expect.objectContaining({
+            addedBlockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+            removedBlockedByIssueIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+            addedBlockedByIssues: [
+              {
+                id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                identifier: "PAP-11",
+                title: "New blocker",
+              },
+            ],
+            removedBlockedByIssues: [
+              {
+                id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                identifier: "PAP-10",
+                title: "Old blocker",
+              },
+            ],
+          }),
         }),
-      }),
-    );
+      );
+    });
   }, 15_000);
 
   it("logs explicit reviewer and approver activity when execution policy participants change", async () => {
@@ -266,27 +272,29 @@ describe("issue activity event routes", () => {
       .send({ executionPolicy: nextPolicy });
 
     expect(res.status).toBe(200);
-    expect(mockLogActivity).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        action: "issue.reviewers_updated",
-        details: expect.objectContaining({
-          participants: [{ type: "agent", agentId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", userId: null }],
-          addedParticipants: [{ type: "agent", agentId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", userId: null }],
-          removedParticipants: [{ type: "agent", agentId: "11111111-2222-4333-8444-555555555555", userId: null }],
+    await vi.waitFor(() => {
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.reviewers_updated",
+          details: expect.objectContaining({
+            participants: [{ type: "agent", agentId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", userId: null }],
+            addedParticipants: [{ type: "agent", agentId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", userId: null }],
+            removedParticipants: [{ type: "agent", agentId: "11111111-2222-4333-8444-555555555555", userId: null }],
+          }),
         }),
-      }),
-    );
-    expect(mockLogActivity).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        action: "issue.approvers_updated",
-        details: expect.objectContaining({
-          participants: [{ type: "user", agentId: null, userId: "local-board" }],
-          addedParticipants: [{ type: "user", agentId: null, userId: "local-board" }],
-          removedParticipants: [{ type: "agent", agentId: "66666666-7777-4888-8999-aaaaaaaaaaaa", userId: null }],
+      );
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.approvers_updated",
+          details: expect.objectContaining({
+            participants: [{ type: "user", agentId: null, userId: "local-board" }],
+            addedParticipants: [{ type: "user", agentId: null, userId: "local-board" }],
+            removedParticipants: [{ type: "agent", agentId: "66666666-7777-4888-8999-aaaaaaaaaaaa", userId: null }],
+          }),
         }),
-      }),
-    );
+      );
+    });
   });
 });

@@ -8,6 +8,9 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import type { ProjectQuickLinkPreviewFetcherOptions } from "../services/project-quick-link-preview.ts";
+import { projectQuickLinkRoutes } from "../routes/project-quick-links.js";
+import { errorHandler } from "../middleware/index.js";
+import { createProjectQuickLinkPreviewFetcher } from "../services/project-quick-link-preview.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -55,17 +58,6 @@ describeEmbeddedPostgres("project quick link routes", () => {
     actorMode: ActorMode = "local",
     previewFetcherOptions?: ProjectQuickLinkPreviewFetcherOptions,
   ) {
-    vi.resetModules();
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("../middleware/validate.js");
-    vi.doUnmock("../routes/project-quick-links.ts");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../services/project-quick-link-preview.ts");
-    const [{ projectQuickLinkRoutes }, { errorHandler }, { createProjectQuickLinkPreviewFetcher }] = await Promise.all([
-      import("../routes/project-quick-links.ts"),
-      import("../middleware/index.js"),
-      import("../services/project-quick-link-preview.ts"),
-    ]);
     const previewFetcher = previewFetcherOptions
       ? createProjectQuickLinkPreviewFetcher(previewFetcherOptions)
       : undefined;

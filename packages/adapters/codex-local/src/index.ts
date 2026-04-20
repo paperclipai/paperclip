@@ -3,6 +3,14 @@ export const label = "Codex (local)";
 export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.4";
 export const DEFAULT_CODEX_LOCAL_MODEL_REASONING_EFFORT = "xhigh";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
+export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.4"] as const;
+
+export function isCodexLocalFastModeSupported(model: string | null | undefined): boolean {
+  const normalizedModel = typeof model === "string" ? model.trim() : "";
+  return CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.includes(
+    normalizedModel as (typeof CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS)[number],
+  );
+}
 
 export const models = [
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
@@ -28,6 +36,7 @@ Core fields:
 - modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...; newly created Codex agents default to xhigh unless overridden
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
+- fastMode (boolean, optional): enable Codex Fast mode; currently supported on GPT-5.4 only and consumes credits faster
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
@@ -50,5 +59,6 @@ Notes:
 - Paperclip defaults Codex heartbeats to the deeper "gpt-5.4" + "xhigh" lane. Faster model variants such as "gpt-5.3-codex-spark" remain selectable, but only as manual overrides.
 - Paperclip can tune Codex model + reasoning effort, but the current codex exec heartbeat path does not expose true Codex collaboration Plan Mode. Session metadata may still report collaboration_mode_kind="default"; planning behavior comes from Paperclip wake/instruction rules instead.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
+- Fast mode is currently supported on GPT-5.4 only. When enabled, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 `;

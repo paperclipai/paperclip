@@ -6,6 +6,7 @@ const companyId = "22222222-2222-4222-8222-222222222222";
 const inviteId = "33333333-3333-4333-8333-333333333333";
 const joinRequestId = "44444444-4444-4444-8444-444444444444";
 const agentId = "55555555-5555-4555-8555-555555555555";
+const missingAdapterType = "invite_missing_adapter_validation_test";
 
 const mockAccessService = vi.hoisted(() => ({
   isInstanceAdmin: vi.fn(),
@@ -33,6 +34,33 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   notifyHireApproved: mockNotifyHireApproved,
 }));
+
+function registerModuleMocks() {
+  vi.doMock("../adapters/index.js", async () => {
+    const actual = await vi.importActual<typeof import("../adapters/index.js")>(
+      "../adapters/index.js",
+    );
+    return {
+      ...actual,
+      findServerAdapter: (type: string) =>
+        type === missingAdapterType ? null : actual.findServerAdapter(type),
+    };
+  });
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+  );
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    boardAuthService: () => ({}),
+    deduplicateAgentName: (candidate: string) => candidate,
+    logActivity: mockLogActivity,
+    notifyHireApproved: mockNotifyHireApproved,
+  }));
+}
 
 type Row = Record<string, unknown>;
 
@@ -126,10 +154,9 @@ function baseJoinRequest(overrides: Row = {}) {
 }
 
 async function createApp(db: unknown) {
-  vi.resetModules();
   const [{ accessRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/access.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -155,6 +182,14 @@ async function createApp(db: unknown) {
 
 describe("invite adapter validation routes", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../adapters/index.js");
+    vi.doUnmock("../routes/access.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/validate.js");
+    vi.doUnmock("../services/index.js");
+    registerModuleMocks();
     vi.clearAllMocks();
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalGrants.mockResolvedValue(undefined);
@@ -198,11 +233,11 @@ describe("invite adapter validation routes", () => {
       .send({
         requestType: "agent",
         agentName: "Joiner",
-        adapterType: "missing_adapter",
+        adapterType: missingAdapterType,
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(400);
-    expect(String(res.body.error ?? "")).toContain("Unknown adapter type: missing_adapter");
+    expect(String(res.body.error ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
     expect(db.transaction).not.toHaveBeenCalled();
   });
 
@@ -257,7 +292,7 @@ describe("invite adapter validation routes", () => {
 
   it("rejects approval for a join request with an unknown adapter", async () => {
     const db = createDbStub({
-      selectRows: [[baseJoinRequest({ adapterType: "missing_adapter" })], [baseInvite()]],
+      selectRows: [[baseJoinRequest({ adapterType: missingAdapterType })], [baseInvite()]],
     });
 
     const res = await request(await createApp(db))
@@ -265,7 +300,9 @@ describe("invite adapter validation routes", () => {
       .send({});
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
-    expect(String(res.body.error ?? "")).toContain("Join request has unknown adapter type: missing_adapter");
+    expect(String(res.body.error ?? "")).toContain(
+      `Join request has unknown adapter type: ${missingAdapterType}`,
+    );
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 });

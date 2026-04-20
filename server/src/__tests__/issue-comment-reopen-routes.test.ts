@@ -28,6 +28,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  resolveByReference: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -57,31 +58,39 @@ const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
 
-vi.mock("@paperclipai/shared/telemetry", () => ({
-  trackAgentTaskCompleted: vi.fn(),
-  trackErrorHandlerCrash: vi.fn(),
-}));
+function registerModuleMocks() {
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackAgentTaskCompleted: vi.fn(),
+    trackErrorHandlerCrash: vi.fn(),
+  }));
 
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
-}));
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  documentService: () => ({}),
-  executionWorkspaceService: () => ({}),
-  feedbackService: () => mockFeedbackService,
-  goalService: () => ({}),
-  heartbeatService: () => mockHeartbeatService,
-  instanceSettingsService: () => mockInstanceSettingsService,
-  issueApprovalService: () => ({}),
-  issueService: () => mockIssueService,
-  logActivity: mockLogActivity,
-  projectService: () => ({}),
-  routineService: () => mockRoutineService,
-  workProductService: () => ({}),
-}));
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    documentService: () => ({}),
+    executionWorkspaceService: () => ({}),
+    feedbackService: () => mockFeedbackService,
+    goalService: () => ({}),
+    heartbeatService: () => mockHeartbeatService,
+    instanceSettingsService: () => mockInstanceSettingsService,
+    issueApprovalService: () => ({}),
+    issueService: () => mockIssueService,
+    logActivity: mockLogActivity,
+    projectService: () => ({}),
+    routineService: () => mockRoutineService,
+    workProductService: () => ({}),
+  }));
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+  );
+}
 
 function createApp() {
   const app = express();
@@ -90,6 +99,15 @@ function createApp() {
 }
 
 async function installActor(app: express.Express, actor?: Record<string, unknown>) {
+  vi.resetModules();
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  registerModuleMocks();
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
@@ -120,7 +138,7 @@ async function normalizePolicy(input: {
   return normalizeIssueExecutionPolicy(input);
 }
 
-function makeIssue(status: "todo" | "done") {
+function makeIssue(status: "todo" | "done" | "blocked") {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
@@ -136,6 +154,14 @@ function makeIssue(status: "todo" | "done") {
 describe("issue comment reopen routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/validate.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    registerModuleMocks();
     vi.resetAllMocks();
     mockIssueService.getById.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
@@ -153,6 +179,7 @@ describe("issue comment reopen routes", () => {
     mockHeartbeatService.getActiveRunForAgent.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
     mockAgentService.getById.mockReset();
+    mockAgentService.resolveByReference.mockReset();
     mockLogActivity.mockReset();
     mockFeedbackService.listIssueVotesForUser.mockReset();
     mockFeedbackService.saveIssueVote.mockReset();
@@ -207,20 +234,35 @@ describe("issue comment reopen routes", () => {
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAgentService.getById.mockResolvedValue(null);
+    mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, reference: string) => ({
+      ambiguous: false,
+      agent: {
+        id: reference,
+      },
+    }));
   });
 
   it("treats reopen=true as a no-op when the issue is already open", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+    const updatedIssue = {
       ...makeIssue("todo"),
-      ...patch,
-    }));
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+    };
+    mockIssueService.update.mockResolvedValue(updatedIssue);
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "hello", reopen: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
 
     expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
     expect(res.body.assigneeAgentId).toBe("33333333-3333-4333-8333-333333333333");
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -231,6 +273,95 @@ describe("issue comment reopen routes", () => {
     );
   });
 
+  it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "hello", assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        status: "todo",
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          reopened: true,
+          reopenedFrom: "done",
+          status: "todo",
+        }),
+      }),
+    );
+  });
+
+  it("resolves assignee shortnames before updating an issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("todo"),
+      ...patch,
+    }));
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: { id: "33333333-3333-4333-8333-333333333333" },
+    });
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "hello", assigneeAgentId: "codexcoder" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      }),
+    );
+  });
+
+  it("rejects ambiguous assignee shortnames", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: true,
+      agent: null,
+    });
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ assigneeAgentId: "codexcoder" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("ambiguous");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing assignee shortnames", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: null,
+    });
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ assigneeAgentId: "codexcoder" });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Agent not found");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
   it("reopens closed issues via the PATCH comment path", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({

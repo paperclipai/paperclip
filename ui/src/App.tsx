@@ -176,6 +176,7 @@ function boardRoutes() {
       <Route path="routines/:routineId" element={<RoutineDetail />} />
       <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />
+      <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/issues" element={<ExecutionWorkspaceDetail />} />
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
@@ -377,6 +378,7 @@ export function App() {
           <Route path="projects/:projectId/budget" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/configuration" element={<UnprefixedBoardRedirect />} />
+          <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/issues" element={<UnprefixedBoardRedirect />} />
           <Route path="tests/ux/chat" element={<UnprefixedBoardRedirect />} />
           <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />

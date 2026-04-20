@@ -159,6 +159,39 @@ describe("UpdateStatusBanner", () => {
     expect(link?.getAttribute("href")).toBe("/instance/settings/updates");
   });
 
+  it("renders a review banner when backup is valid but local edits remain", async () => {
+    instanceUpdatesApiMock.getStatus.mockResolvedValue(status({
+      install: {
+        currentVersion: "0.3.1",
+        gitRepositoryRoot: "/tmp/paperclip",
+        gitBranch: "feature",
+        gitSha: "abc1234",
+        gitDirty: true,
+      },
+      backup: {
+        required: true,
+        valid: true,
+        reason: "none",
+        targetVersion: "0.3.2",
+        expiresAt: "2026-04-20T12:00:00.000Z",
+        latest: null,
+        externalStorageRequiresAcknowledgement: false,
+      },
+      banner: {
+        shouldShow: true,
+        tone: "warn",
+        reasons: ["local_core_edits"],
+      },
+    }));
+
+    await renderBanner();
+
+    expect(container?.textContent).toContain("Paperclip Update Needs Review");
+    expect(container?.textContent).toContain("pre-update backup ready");
+    expect(container?.textContent).toContain("Local core edits were detected");
+    expect(container?.textContent).not.toContain("Paperclip Update Needs Backup");
+  });
+
   it("dismisses the detected version from the banner", async () => {
     instanceUpdatesApiMock.getStatus.mockResolvedValue(status());
     instanceUpdatesApiMock.dismiss.mockResolvedValue(status({

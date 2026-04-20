@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { issueRoutes } from "../routes/issues.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -16,57 +14,71 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => ({
-    canUser: vi.fn(async () => true),
-    hasPermission: vi.fn(async () => true),
-  }),
-  agentService: () => ({
-    getById: vi.fn(async () => null),
-  }),
-  documentService: () => ({}),
-  executionWorkspaceService: () => ({
-    getById: vi.fn(async () => null),
-  }),
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
-  goalService: () => ({}),
-  heartbeatService: () => ({
-    wakeup: vi.fn(async () => undefined),
-    reportRunActivity: vi.fn(async () => undefined),
-    getRun: vi.fn(async () => null),
-    getActiveRunForAgent: vi.fn(async () => null),
-    cancelRun: vi.fn(async () => null),
-  }),
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
-  issueApprovalService: () => ({}),
-  issueService: () => mockIssueService,
-  logActivity: mockLogActivity,
-  projectService: () => ({}),
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({}),
-}));
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => ({
+      canUser: vi.fn(async () => true),
+      hasPermission: vi.fn(async () => true),
+    }),
+    agentService: () => ({
+      getById: vi.fn(async () => null),
+    }),
+    documentService: () => ({}),
+    executionWorkspaceService: () => ({
+      getById: vi.fn(async () => null),
+    }),
+    feedbackService: () => ({
+      listIssueVotesForUser: vi.fn(async () => []),
+      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+    }),
+    goalService: () => ({}),
+    heartbeatService: () => ({
+      wakeup: vi.fn(async () => undefined),
+      reportRunActivity: vi.fn(async () => undefined),
+      getRun: vi.fn(async () => null),
+      getActiveRunForAgent: vi.fn(async () => null),
+      cancelRun: vi.fn(async () => null),
+    }),
+    instanceSettingsService: () => ({
+      get: vi.fn(async () => ({
+        id: "instance-settings-1",
+        general: {
+          censorUsernameInLogs: false,
+          feedbackDataSharingPreference: "prompt",
+        },
+      })),
+      listCompanyIds: vi.fn(async () => ["company-1"]),
+    }),
+    issueApprovalService: () => ({}),
+    issueService: () => mockIssueService,
+    logActivity: mockLogActivity,
+    projectService: () => ({}),
+    routineService: () => ({
+      syncRunStatusForIssue: vi.fn(async () => undefined),
+    }),
+    workProductService: () => ({}),
+  }));
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+  );
+}
 
-function createApp(actor: Record<string, unknown> = {
+async function createApp(actor: Record<string, unknown> = {
   type: "board",
   userId: "local-board",
   companyIds: ["company-1"],
   source: "local_implicit",
   isInstanceAdmin: false,
 }) {
+  vi.resetModules();
+  registerModuleMocks();
+  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/issues.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -130,7 +142,9 @@ describe("issue checklist routes", () => {
   });
 
   it("lists checklist items for an accessible issue", async () => {
-    const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111/checklist-items");
+    const res = await request(await createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/checklist-items",
+    );
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual([
@@ -142,7 +156,7 @@ describe("issue checklist routes", () => {
   });
 
   it("rejects cross-company agent access", async () => {
-    const res = await request(createApp({
+    const res = await request(await createApp({
       type: "agent",
       agentId: "agent-2",
       companyId: "company-2",
@@ -152,7 +166,7 @@ describe("issue checklist routes", () => {
   });
 
   it("creates checklist items and logs activity", async () => {
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .post("/api/issues/11111111-1111-4111-8111-111111111111/checklist-items")
       .send({ title: "Write UI tests" });
 
@@ -176,7 +190,7 @@ describe("issue checklist routes", () => {
       status: "in_progress",
       assigneeAgentId: "agent-1",
     }));
-    const res = await request(createApp({
+    const res = await request(await createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
@@ -200,7 +214,7 @@ describe("issue checklist routes", () => {
   });
 
   it("deletes checklist items and logs activity", async () => {
-    const res = await request(createApp())
+    const res = await request(await createApp())
       .delete("/api/issue-checklist-items/22222222-2222-4222-8222-222222222222");
 
     expect(res.status).toBe(200);

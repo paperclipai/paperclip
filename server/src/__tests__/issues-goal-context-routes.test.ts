@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { issueRoutes } from "../routes/issues.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -27,52 +25,59 @@ const mockGoalService = vi.hoisted(() => ({
   getDefaultCompanyGoal: vi.fn(),
 }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => ({
-    canUser: vi.fn(),
-    hasPermission: vi.fn(),
-  }),
-  agentService: () => ({
-    getById: vi.fn(),
-  }),
-  documentService: () => ({
-    getIssueDocumentPayload: vi.fn(async () => ({})),
-  }),
-  executionWorkspaceService: () => ({
-    getById: vi.fn(),
-  }),
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
-  goalService: () => mockGoalService,
-  heartbeatService: () => ({
-    wakeup: vi.fn(async () => undefined),
-    reportRunActivity: vi.fn(async () => undefined),
-  }),
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
-  issueApprovalService: () => ({}),
-  issueService: () => mockIssueService,
-  logActivity: vi.fn(async () => undefined),
-  projectService: () => mockProjectService,
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({
-    listForIssue: vi.fn(async () => []),
-  }),
-}));
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => ({
+      canUser: vi.fn(),
+      hasPermission: vi.fn(),
+    }),
+    agentService: () => ({
+      getById: vi.fn(),
+    }),
+    documentService: () => ({
+      getIssueDocumentPayload: vi.fn(async () => ({})),
+    }),
+    executionWorkspaceService: () => ({
+      getById: vi.fn(),
+    }),
+    feedbackService: () => ({
+      listIssueVotesForUser: vi.fn(async () => []),
+      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+    }),
+    goalService: () => mockGoalService,
+    heartbeatService: () => ({
+      wakeup: vi.fn(async () => undefined),
+      reportRunActivity: vi.fn(async () => undefined),
+    }),
+    instanceSettingsService: () => ({
+      get: vi.fn(async () => ({
+        id: "instance-settings-1",
+        general: {
+          censorUsernameInLogs: false,
+          feedbackDataSharingPreference: "prompt",
+        },
+      })),
+      listCompanyIds: vi.fn(async () => ["company-1"]),
+    }),
+    issueApprovalService: () => ({}),
+    issueService: () => mockIssueService,
+    logActivity: vi.fn(async () => undefined),
+    projectService: () => mockProjectService,
+    routineService: () => ({
+      syncRunStatusForIssue: vi.fn(async () => undefined),
+    }),
+    workProductService: () => ({
+      listForIssue: vi.fn(async () => []),
+    }),
+  }));
+}
 
-function createApp() {
+async function createApp() {
+  registerModuleMocks();
+  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/issues.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -137,7 +142,12 @@ const companyGoal = {
 
 describe("issue goal context routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../services/index.js");
+    vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
@@ -193,7 +203,7 @@ describe("issue goal context routes", () => {
   });
 
   it("surfaces project goals and the company goal from GET /issues/:id", async () => {
-    const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
+    const res = await request(await createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
 
     expect(res.status).toBe(200);
     expect(res.body.goalId).toBe(projectGoal.id);
@@ -221,7 +231,7 @@ describe("issue goal context routes", () => {
   });
 
   it("surfaces project goals and company goal from GET /issues/:id/heartbeat-context", async () => {
-    const res = await request(createApp()).get(
+    const res = await request(await createApp()).get(
       "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
     );
 
@@ -267,7 +277,7 @@ describe("issue goal context routes", () => {
       blocks: [],
     });
 
-    const res = await request(createApp()).get(
+    const res = await request(await createApp()).get(
       "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
     );
 

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyRuntimePortSelectionToConfig,
   maybePersistWorktreeRuntimePorts,
@@ -10,6 +10,22 @@ import {
 
 const ORIGINAL_ENV = { ...process.env };
 const ORIGINAL_CWD = process.cwd();
+const WORKTREE_ENV_KEYS = [
+  "PAPERCLIP_CONFIG",
+  "PAPERCLIP_CONTEXT",
+  "PAPERCLIP_HOME",
+  "PAPERCLIP_INSTANCE_ID",
+  "PAPERCLIP_IN_WORKTREE",
+  "PAPERCLIP_WORKTREE_NAME",
+  "PAPERCLIP_WORKTREES_DIR",
+];
+
+beforeEach(() => {
+  process.chdir(ORIGINAL_CWD);
+  for (const key of WORKTREE_ENV_KEYS) {
+    delete process.env[key];
+  }
+});
 
 afterEach(() => {
   process.chdir(ORIGINAL_CWD);
@@ -21,6 +37,9 @@ afterEach(() => {
   }
   for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
     process.env[key] = value;
+  }
+  for (const key of WORKTREE_ENV_KEYS) {
+    delete process.env[key];
   }
 });
 

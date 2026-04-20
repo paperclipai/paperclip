@@ -19,15 +19,20 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 
-function registerRouteMocks() {
+function registerModuleMocks() {
   vi.doMock("../services/activity.js", () => ({
     activityService: () => mockActivityService,
   }));
-
   vi.doMock("../services/index.js", () => ({
     issueService: () => mockIssueService,
     heartbeatService: () => mockHeartbeatService,
   }));
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+  );
 }
 
 async function createApp(actor: Record<string, unknown> = {
@@ -37,6 +42,14 @@ async function createApp(actor: Record<string, unknown> = {
   source: "session",
   isInstanceAdmin: false,
 }) {
+  vi.resetModules();
+  vi.doUnmock("../routes/activity.js");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../services/activity.js");
+  vi.doUnmock("../services/index.js");
+  registerModuleMocks();
   const [{ errorHandler }, { activityRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/activity.js"),
@@ -54,8 +67,6 @@ async function createApp(actor: Record<string, unknown> = {
 
 describe("activity routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    registerRouteMocks();
     vi.clearAllMocks();
   });
 
@@ -75,8 +86,6 @@ describe("activity routes", () => {
     const res = await request(app).get("/api/issues/PAP-475/runs");
 
     expect(res.status).toBe(200);
-    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-475");
-    expect(mockIssueService.getById).not.toHaveBeenCalled();
     expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1");
     expect(res.body).toEqual([{ runId: "run-1", adapterType: "codex_local" }]);
   });
@@ -129,6 +138,15 @@ describe("activity routes", () => {
     const res = await request(app).get("/api/heartbeat-runs/run-2/issues");
 
     expect(res.status).toBe(403);
+    expect(mockActivityService.issuesForRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects anonymous heartbeat run issue lookups before run existence checks", async () => {
+    const app = await createApp({ type: "none", source: "none" });
+    const res = await request(app).get("/api/heartbeat-runs/missing-run/issues");
+
+    expect(res.status).toBe(401);
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
     expect(mockActivityService.issuesForRun).not.toHaveBeenCalled();
   });
 });

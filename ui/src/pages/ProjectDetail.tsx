@@ -12,12 +12,11 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
-import { CopyText } from "../components/CopyText";
 import { InlineEditor } from "../components/InlineEditor";
 import { ProjectLabelPills } from "../components/ProjectLabelPills";
 import { ProjectContextContent } from "../components/ProjectContextContent";
@@ -28,6 +27,9 @@ import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceC
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
+import { ProjectWorkspaceSummaryCard } from "../components/ProjectWorkspaceSummaryCard";
+import { CopyText } from "../components/CopyText";
+import { IssuesQuicklook } from "../components/IssuesQuicklook";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
@@ -36,7 +38,6 @@ import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { Copy, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
-import { IssuesQuicklook } from "../components/IssuesQuicklook";
 
 /* ── Top-level tab types ── */
 
@@ -444,7 +445,17 @@ function ProjectWorkspacesContent({
     <>
       <div className="space-y-4">
         <div className="overflow-hidden rounded-xl border border-border bg-card">
-          {activeSummaries.map(renderSummaryRow)}
+          {activeSummaries.map((summary) => (
+            <ProjectWorkspaceSummaryCard
+              key={summary.key}
+              projectRef={projectRef}
+              summary={summary}
+              runtimeActionKey={runtimeActionKey}
+              runtimeActionPending={controlWorkspaceRuntime.isPending}
+              onRuntimeAction={(input) => controlWorkspaceRuntime.mutate(input)}
+              onCloseWorkspace={(input) => setClosingWorkspace(input)}
+            />
+          ))}
         </div>
         {cleanupFailedSummaries.length > 0 ? (
           <div className="space-y-2">
@@ -452,7 +463,17 @@ function ProjectWorkspacesContent({
               Cleanup attention needed
             </div>
             <div className="overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/5">
-              {cleanupFailedSummaries.map(renderSummaryRow)}
+              {cleanupFailedSummaries.map((summary) => (
+                <ProjectWorkspaceSummaryCard
+                  key={summary.key}
+                  projectRef={projectRef}
+                  summary={summary}
+                  runtimeActionKey={runtimeActionKey}
+                  runtimeActionPending={controlWorkspaceRuntime.isPending}
+                  onRuntimeAction={(input) => controlWorkspaceRuntime.mutate(input)}
+                  onCloseWorkspace={(input) => setClosingWorkspace(input)}
+                />
+              ))}
             </div>
           </div>
         ) : null}
@@ -489,7 +510,7 @@ export function ProjectDetail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();

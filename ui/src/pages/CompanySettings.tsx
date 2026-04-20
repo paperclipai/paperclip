@@ -44,7 +44,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useTheme, type ThemePreference } from "../context/ThemeContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatCents } from "../lib/utils";
 
@@ -194,7 +194,7 @@ export function CompanySettings() {
   const activeSection = normalizeSection(section);
   const activeSectionMeta = SETTINGS_SECTIONS.find((item) => item.id === activeSection) ?? SETTINGS_SECTIONS[0]!;
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const { effectiveTheme, themePreference, setThemePreference } = useTheme();
 

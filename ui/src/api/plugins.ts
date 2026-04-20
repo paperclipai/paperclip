@@ -17,6 +17,8 @@ import type {
   PluginRecord,
   PluginConfig,
   PluginStatus,
+  PluginJobRecord,
+  PluginJobRunRecord,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -262,6 +264,26 @@ export const pluginsApi = {
       `/plugins/${pluginId}/logs${qs ? `?${qs}` : ""}`,
     );
   },
+
+  /**
+   * List scheduled jobs declared by a plugin.
+   */
+  listJobs: (pluginId: string, status?: PluginJobRecord["status"]) =>
+    api.get<PluginJobRecord[]>(`/plugins/${pluginId}/jobs${status ? `?status=${status}` : ""}`),
+
+  /**
+   * List execution history for a plugin job.
+   */
+  listJobRuns: (pluginId: string, jobId: string, limit?: number) =>
+    api.get<PluginJobRunRecord[]>(
+      `/plugins/${pluginId}/jobs/${jobId}/runs${limit ? `?limit=${limit}` : ""}`,
+    ),
+
+  /**
+   * Trigger a scheduled plugin job immediately.
+   */
+  triggerJob: (pluginId: string, jobId: string) =>
+    api.post<{ runId: string; jobId: string }>(`/plugins/${pluginId}/jobs/${jobId}/trigger`, {}),
 
   /**
    * Upgrade a plugin to a newer version.

@@ -921,6 +921,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           kind: trigger.kind as RoutineListItem["triggers"][number]["kind"],
           label: trigger.label,
           enabled: trigger.enabled,
+          cronExpression: trigger.cronExpression,
+          timezone: trigger.timezone,
           nextRunAt: trigger.nextRunAt,
           lastFiredAt: trigger.lastFiredAt,
           lastResult: trigger.lastResult,

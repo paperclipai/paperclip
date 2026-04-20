@@ -43,7 +43,8 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 
 ## 6. Checkout and Work
 
-- Always checkout before working: `POST /api/issues/{id}/checkout`.
+- For scoped issue wakes, Paperclip may already checkout the current issue in the harness before your run starts.
+- Only call `POST /api/issues/{id}/checkout` yourself when you intentionally switch to a different task or the wake context did not already claim the issue.
 - Never retry a 409 -- that task belongs to someone else.
 - Prefer `GET /api/issues/{issueId}/heartbeat-context` before replaying the full issue thread.
 - Use `GET /api/issues/{issueId}/checklist-items` and the checklist item endpoints for lightweight click-off subtasks that should stay inside the current task.

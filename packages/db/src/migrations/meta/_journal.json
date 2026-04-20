@@ -470,6 +470,13 @@
       "when": 1776597034815,
       "tag": "0066_agent_work_value",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1776084034244,
+      "tag": "0067_spooky_ultragirl",
+      "breakpoints": true
     }
   ]
 }

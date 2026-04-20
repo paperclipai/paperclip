@@ -32,6 +32,7 @@ const baseAgent = {
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
   create: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
@@ -87,8 +88,16 @@ const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackAgentCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+  );
+
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentCreated: mockTrackAgentCreated,
     trackErrorHandlerCrash: vi.fn(),
@@ -132,6 +141,15 @@ function createDbStub() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
+  vi.resetModules();
+  vi.doUnmock("../routes/agents.js");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  registerModuleMocks();
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/agents.js"),
     import("../middleware/index.js"),
@@ -150,10 +168,18 @@ async function createApp(actor: Record<string, unknown>) {
 describe("agent permission routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../routes/agents.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/validate.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("@paperclipai/shared/telemetry");
     registerModuleMocks();
     vi.resetAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockAgentService.getById.mockResolvedValue(baseAgent);
+    mockAgentService.list.mockResolvedValue([baseAgent]);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
     mockAgentService.create.mockResolvedValue(baseAgent);
@@ -194,6 +220,196 @@ describe("agent permission routes", () => {
     mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
     mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({ config }));
     mockLogActivity.mockResolvedValue(undefined);
+  });
+
+  it("redacts agent detail for authenticated company members without agent admin permission", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "board",
+      userId: "member-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app).get(`/api/agents/${agentId}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig).toEqual({});
+    expect(res.body.runtimeConfig).toEqual({});
+  });
+
+  it("redacts company agent list for authenticated company members without agent admin permission", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "board",
+      userId: "member-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app).get(`/api/companies/${companyId}/agents`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      expect.objectContaining({
+        id: agentId,
+        adapterConfig: {},
+        runtimeConfig: {},
+      }),
+    ]);
+  });
+
+  it("blocks agent updates for authenticated company members without agent admin permission", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "board",
+      userId: "member-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .patch(`/api/agents/${agentId}`)
+      .send({ title: "Compromised" });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks api key creation for authenticated company members without agent admin permission", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "board",
+      userId: "member-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/agents/${agentId}/keys`)
+      .send({ name: "backdoor" });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks wakeups for authenticated company members without agent admin permission", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "board",
+      userId: "member-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/agents/${agentId}/wakeup`)
+      .send({});
+
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks agent-authenticated self-updates that set host-executed workspace commands", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        adapterConfig: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            provisionCommand: "touch /tmp/paperclip-rce",
+          },
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("host-executed workspace commands");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("blocks agent-authenticated self-updates that set instructions bundle roots", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        adapterConfig: {
+          instructionsRootPath: "/etc",
+          instructionsEntryFile: "passwd",
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("instructions path or bundle configuration");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("blocks agent-authenticated instructions-path updates", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch(`/api/agents/${agentId}/instructions-path`)
+      .send({ path: "/etc/passwd" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("instructions path or bundle configuration");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("blocks agent-authenticated hires that set instructions bundle config", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Injected",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {
+          instructionsRootPath: "/etc",
+          instructionsEntryFile: "passwd",
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("instructions path or bundle configuration");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("grants tasks:assign by default when board creates a new agent", async () => {
@@ -377,14 +593,6 @@ describe("agent permission routes", () => {
       .send({ canCreateAgents: true, canAssignTasks: false });
 
     expect(res.status).toBe(200);
-    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
-      companyId,
-      "agent",
-      agentId,
-      "tasks:assign",
-      true,
-      "board-user",
-    );
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
   });

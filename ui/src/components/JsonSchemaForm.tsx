@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -89,8 +89,18 @@ export interface JsonSchemaFormProps {
   errors?: Record<string, string>;
   /** If true, all fields are disabled. */
   disabled?: boolean;
+  /** Company secrets available for fields declared with `format: "secret-ref"`. */
+  secretOptions?: JsonSchemaSecretOption[];
   /** Additional CSS class for the root container. */
   className?: string;
+}
+
+export interface JsonSchemaSecretOption {
+  id: string;
+  name: string;
+  description?: string | null;
+  provider?: string;
+  latestVersion?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +373,7 @@ interface FormFieldProps {
   isRequired?: boolean;
   errors: Record<string, string>; // needed for recursion
   path: string; // needed for recursion error filtering
+  secretOptions?: JsonSchemaSecretOption[];
 }
 
 /**
@@ -466,8 +477,10 @@ const EnumField = React.memo(({
 
 EnumField.displayName = "EnumField";
 
+const CUSTOM_SECRET_REF_VALUE = "__paperclip_custom_secret_ref__";
+
 /**
- * Specialized field for secret-ref values, providing a toggleable password input.
+ * Specialized field for secret-ref values, using company secret options when available.
  */
 const SecretField = React.memo(({
   value,
@@ -478,6 +491,7 @@ const SecretField = React.memo(({
   description,
   error,
   defaultValue,
+  secretOptions,
 }: {
   value: unknown;
   onChange: (val: unknown) => void;
@@ -487,46 +501,95 @@ const SecretField = React.memo(({
   description?: string;
   error?: string;
   defaultValue?: unknown;
+  secretOptions?: JsonSchemaSecretOption[];
 }) => {
   const [isVisible, setIsVisible] = useState(false);
+  const [isCustomMode, setIsCustomMode] = useState(false);
+  const currentValue = String(value ?? "");
+  const hasSecretOptions = !!secretOptions?.length;
+  const matchedSecret = secretOptions?.find((secret) => secret.id === currentValue) ?? null;
+  const hasUnknownSecretValue = hasSecretOptions && currentValue.length > 0 && !matchedSecret;
+  const showManualInput = !hasSecretOptions || isCustomMode || hasUnknownSecretValue;
+  const selectValue = matchedSecret && !isCustomMode
+    ? matchedSecret.id
+    : showManualInput && hasSecretOptions
+      ? CUSTOM_SECRET_REF_VALUE
+      : undefined;
+
+  useEffect(() => {
+    if (matchedSecret) setIsCustomMode(false);
+  }, [matchedSecret]);
+
   return (
     <FieldWrapper
       label={label}
       description={
         description ||
-        "This secret is stored securely via the Paperclip secret provider."
+        "Choose a Paperclip company secret. The plugin receives only the secret reference."
       }
       required={isRequired}
       error={error}
       disabled={disabled}
     >
-      <div className="relative">
-        <Input
-          type={isVisible ? "text" : "password"}
-          value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={String(defaultValue ?? "")}
-          disabled={disabled}
-          className="pr-10"
-          aria-invalid={!!error}
-        />
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
-          onClick={() => setIsVisible(!isVisible)}
-          disabled={disabled}
-        >
-          {isVisible ? (
-            <EyeOff className="h-4 w-4 text-muted-foreground" />
-          ) : (
-            <Eye className="h-4 w-4 text-muted-foreground" />
-          )}
-          <span className="sr-only">
-            {isVisible ? "Hide secret" : "Show secret"}
-          </span>
-        </Button>
+      <div className="space-y-2">
+        {secretOptions && secretOptions.length > 0 ? (
+          <Select
+            value={selectValue}
+            onValueChange={(next) => {
+              if (next === CUSTOM_SECRET_REF_VALUE) {
+                setIsCustomMode(true);
+                if (matchedSecret) onChange("");
+                return;
+              }
+              setIsCustomMode(false);
+              onChange(next);
+            }}
+            disabled={disabled}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Select a company secret" />
+            </SelectTrigger>
+            <SelectContent>
+              {secretOptions.map((secret) => (
+                <SelectItem key={secret.id} value={secret.id}>
+                  {secret.name}
+                  {secret.latestVersion ? ` v${secret.latestVersion}` : ""}
+                </SelectItem>
+              ))}
+              <SelectItem value={CUSTOM_SECRET_REF_VALUE}>Custom secret ID</SelectItem>
+            </SelectContent>
+          </Select>
+        ) : null}
+        {showManualInput ? (
+          <div className="relative">
+            <Input
+              type={isVisible ? "text" : "password"}
+              value={currentValue}
+              onChange={(e) => onChange(e.target.value)}
+              placeholder={String(defaultValue ?? "Secret UUID")}
+              disabled={disabled}
+              className="pr-10 font-mono text-xs"
+              aria-invalid={!!error}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
+              onClick={() => setIsVisible(!isVisible)}
+              disabled={disabled}
+            >
+              {isVisible ? (
+                <EyeOff className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <Eye className="h-4 w-4 text-muted-foreground" />
+              )}
+              <span className="sr-only">
+                {isVisible ? "Hide secret ID" : "Show secret ID"}
+              </span>
+            </Button>
+          </div>
+        ) : null}
       </div>
     </FieldWrapper>
   );
@@ -654,6 +717,7 @@ const ArrayField = React.memo(({
   label,
   errors,
   path,
+  secretOptions,
 }: {
   propSchema: JsonSchemaNode;
   value: unknown;
@@ -663,6 +727,7 @@ const ArrayField = React.memo(({
   label: string;
   errors: Record<string, string>;
   path: string;
+  secretOptions?: JsonSchemaSecretOption[];
 }) => {
   const items = Array.isArray(value) ? value : [];
   const itemSchema = propSchema.items as JsonSchemaNode;
@@ -720,6 +785,7 @@ const ArrayField = React.memo(({
                 }}
                 disabled={disabled}
                 errors={errors}
+                secretOptions={secretOptions}
               />
             </div>
             <Button
@@ -769,6 +835,7 @@ const ObjectField = React.memo(({
   label,
   errors,
   path,
+  secretOptions,
 }: {
   propSchema: JsonSchemaNode;
   value: unknown;
@@ -777,6 +844,7 @@ const ObjectField = React.memo(({
   label: string;
   errors: Record<string, string>;
   path: string;
+  secretOptions?: JsonSchemaSecretOption[];
 }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const handleObjectChange = (newVal: Record<string, unknown>) => {
@@ -819,6 +887,7 @@ const ObjectField = React.memo(({
                 .filter(([errPath]) => errPath.startsWith(`${path}/`))
                 .map(([errPath, err]) => [errPath.replace(path, ""), err]),
             )}
+            secretOptions={secretOptions}
           />
         </div>
       )}
@@ -841,6 +910,7 @@ const FormField = React.memo(({
   isRequired,
   errors,
   path,
+  secretOptions,
 }: FormFieldProps) => {
   const type = resolveType(propSchema);
   const isReadOnly = disabled || propSchema.readOnly === true;
@@ -885,6 +955,7 @@ const FormField = React.memo(({
           description={propSchema.description}
           error={error}
           defaultValue={propSchema.default}
+          secretOptions={secretOptions}
         />
       );
 
@@ -915,6 +986,7 @@ const FormField = React.memo(({
           label={label}
           errors={errors}
           path={path}
+          secretOptions={secretOptions}
         />
       );
 
@@ -928,6 +1000,7 @@ const FormField = React.memo(({
           label={label}
           errors={errors}
           path={path}
+          secretOptions={secretOptions}
         />
       );
 
@@ -966,6 +1039,7 @@ export function JsonSchemaForm({
   onChange,
   errors = {},
   disabled,
+  secretOptions,
   className,
 }: JsonSchemaFormProps) {
   const type = resolveType(schema);
@@ -987,6 +1061,7 @@ export function JsonSchemaForm({
           onChange={handleRootScalarChange}
           disabled={disabled}
           errors={errors}
+          secretOptions={secretOptions}
         />
       </div>
     );
@@ -1040,6 +1115,7 @@ export function JsonSchemaForm({
             isRequired={isRequired}
             errors={errors}
             path={path}
+            secretOptions={secretOptions}
           />
         );
       })}

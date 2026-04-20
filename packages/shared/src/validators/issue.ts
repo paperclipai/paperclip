@@ -169,6 +169,7 @@ export const createIssueLabelSchema = z.object({
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
 export const updateIssueSchema = createIssueSchema.partial().extend({
+  assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: z.string().min(1).optional(),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),

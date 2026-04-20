@@ -54,8 +54,8 @@ describe("RunTranscriptView", () => {
     );
 
     expect(html).toContain("<strong>world</strong>");
-    expect(html).toContain("<li>first</li>");
-    expect(html).toContain("<li>second</li>");
+    expect(html).toMatch(/<li[^>]*>first<\/li>/);
+    expect(html).toMatch(/<li[^>]*>second<\/li>/);
   });
 
   it("hides saved-session resume skip stderr from nice mode normalization", () => {
@@ -106,8 +106,8 @@ describe("RunTranscriptView", () => {
     );
 
     expect(html).toContain("<h2>Summary</h2>");
-    expect(html).toContain("<li>fixed deploy config</li>");
-    expect(html).toContain("<li>posted issue update</li>");
+    expect(html).toMatch(/<li[^>]*>fixed deploy config<\/li>/);
+    expect(html).toMatch(/<li[^>]*>posted issue update<\/li>/);
     expect(html).not.toContain("result");
   });
 });

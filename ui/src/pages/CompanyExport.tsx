@@ -11,7 +11,7 @@ import type {
 import { useNavigate, useLocation } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
@@ -580,7 +580,7 @@ function expandAncestors(filePath: string): string[] {
 export function CompanyExport() {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const navigate = useNavigate();
   const location = useLocation();
   const { data: session, isFetched: isSessionFetched } = useQuery({

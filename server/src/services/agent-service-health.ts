@@ -200,6 +200,8 @@ export function agentServiceHealthService(db: Db) {
       const liveRunRows = await db
         .select({
           id: heartbeatRuns.id,
+          companyId: heartbeatRuns.companyId,
+          agentId: heartbeatRuns.agentId,
           status: heartbeatRuns.status,
           createdAt: heartbeatRuns.createdAt,
         })
@@ -212,8 +214,12 @@ export function agentServiceHealthService(db: Db) {
           ),
         );
 
-      const stuckQueuedRunRows = await db
-        .select({ id: heartbeatRuns.id })
+      const oldQueuedRunRows = await db
+        .select({
+          id: heartbeatRuns.id,
+          companyId: heartbeatRuns.companyId,
+          agentId: heartbeatRuns.agentId,
+        })
         .from(heartbeatRuns)
         .innerJoin(companies, eq(heartbeatRuns.companyId, companies.id))
         .where(
@@ -223,6 +229,14 @@ export function agentServiceHealthService(db: Db) {
             lt(heartbeatRuns.createdAt, stuckQueuedBefore),
           ),
         );
+      const runningAgentKeys = new Set(
+        liveRunRows
+          .filter((row) => row.status === "running")
+          .map((row) => `${row.companyId}:${row.agentId}`),
+      );
+      const stuckQueuedRunRows = oldQueuedRunRows.filter(
+        (row) => !runningAgentKeys.has(`${row.companyId}:${row.agentId}`),
+      );
 
       let recentHealthyRunCount = 0;
       let recentRuntimeFailureAgentCount = 0;

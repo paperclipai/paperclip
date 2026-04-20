@@ -81,6 +81,19 @@ function registerRouteMocks() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
+  vi.resetModules();
+  vi.doUnmock("../services/company-rollouts.js");
+  vi.doUnmock("../routes/company-rollouts.js");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+  );
+  registerRouteMocks();
   const [{ errorHandler }, { companyRolloutRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/company-rollouts.js"),
@@ -99,6 +112,11 @@ async function createApp(actor: Record<string, unknown>) {
 describe("company rollout routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/company-rollouts.js");
+    vi.doUnmock("../routes/company-rollouts.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/validate.js");
     registerRouteMocks();
     vi.clearAllMocks();
     mockRolloutService.createRelease.mockResolvedValue(release);

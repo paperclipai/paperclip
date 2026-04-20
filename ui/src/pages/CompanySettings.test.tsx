@@ -137,6 +137,7 @@ vi.mock("../context/BreadcrumbContext", () => ({
 
 vi.mock("../context/ToastContext", () => ({
   useToast: () => toastState,
+  useToastActions: () => toastState,
 }));
 
 vi.mock("../context/ThemeContext", () => ({

@@ -37,6 +37,51 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
+vi.mock("@paperclipai/shared/telemetry", () => ({
+  trackAgentTaskCompleted: vi.fn(),
+  trackErrorHandlerCrash: vi.fn(),
+}));
+
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+}));
+
+vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
+  agentService: () => ({
+    getById: vi.fn(async () => null),
+  }),
+  documentService: () => ({}),
+  executionWorkspaceService: () => mockExecutionWorkspaceService,
+  feedbackService: () => ({
+    listIssueVotesForUser: vi.fn(async () => []),
+    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+  }),
+  goalService: () => ({
+    getDefaultCompanyGoal: vi.fn(async () => null),
+    getById: vi.fn(async () => null),
+  }),
+  heartbeatService: () => mockHeartbeatService,
+  instanceSettingsService: () => ({
+    get: vi.fn(async () => ({
+      id: "instance-settings-1",
+      general: {
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      },
+    })),
+    listCompanyIds: vi.fn(async () => ["company-1"]),
+  }),
+  issueApprovalService: () => ({}),
+  issueService: () => mockIssueService,
+  logActivity: mockLogActivity,
+  projectService: () => mockProjectService,
+  routineService: () => ({
+    syncRunStatusForIssue: vi.fn(async () => undefined),
+  }),
+  workProductService: () => ({}),
+}));
+
 function registerServiceMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
@@ -85,6 +130,21 @@ function registerServiceMocks() {
 }
 
 async function createApp() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+  );
+  registerServiceMocks();
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
@@ -137,8 +197,15 @@ function makeClosedWorkspace() {
 describe("closed isolated workspace issue routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/validate.js");
     registerServiceMocks();
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
   });

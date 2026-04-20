@@ -140,12 +140,14 @@ describe("Costs", () => {
   it("shows the developer value estimate for the selected period", async () => {
     const root = await renderCosts(container);
 
-    expect(container.textContent).toContain("Dev value estimate");
-    expect(container.textContent).toContain("$375.00");
-    expect(container.textContent).toContain("2.5h estimated dev time");
-    expect(container.textContent).toContain("250.0k tokens");
-    expect(container.textContent).toContain("$370.50");
-    expect(container.textContent).toContain("83x");
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Dev value estimate");
+      expect(container.textContent).toContain("$375.00");
+      expect(container.textContent).toContain("2.5h estimated dev time");
+      expect(container.textContent).toContain("250.0k tokens");
+      expect(container.textContent).toContain("$370.50");
+      expect(container.textContent).toContain("83x");
+    });
 
     act(() => root.unmount());
   });

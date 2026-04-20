@@ -30,6 +30,8 @@ const mockSecretService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
+const mockFindServerAdapter = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -43,12 +45,12 @@ vi.mock("../services/index.js", () => ({
   issueService: () => ({}),
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
-  syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
+  syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
   workspaceOperationService: () => ({}),
 }));
 
 vi.mock("../adapters/index.js", () => ({
-  findServerAdapter: vi.fn((_type: string) => ({ type: _type })),
+  findServerAdapter: mockFindServerAdapter,
   listAdapterModels: vi.fn(),
 }));
 
@@ -118,7 +120,14 @@ function makeAgent() {
 
 describe("agent instructions bundle routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doUnmock("../routes/agents.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.resetAllMocks();
+    mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
+    mockFindServerAdapter.mockImplementation((_type: string) => ({ type: _type }));
     mockAgentService.getById.mockResolvedValue(makeAgent());
     mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeAgent(),

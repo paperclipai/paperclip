@@ -81,6 +81,7 @@ export interface IssueFilters {
   originKind?: string;
   originId?: string;
   includeRoutineExecutions?: boolean;
+  excludeRoutineExecutions?: boolean;
   q?: string;
   limit?: number;
   dueDate?: string;
@@ -159,6 +160,7 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ESCAPED_MARKDOWN_SIGNAL_RE =
   /\\n\\n|\\r\\n\\r\\n|\\n[-*]\s|\\n\d+\.\s|\\n#{1,6}(?:\s|$)|\\n>\s/;
 
@@ -605,6 +607,53 @@ async function activeRunMapForIssues(
   }
   return map;
 }
+
+const issueListSelect = {
+  id: issues.id,
+  companyId: issues.companyId,
+  projectId: issues.projectId,
+  projectWorkspaceId: issues.projectWorkspaceId,
+  goalId: issues.goalId,
+  parentId: issues.parentId,
+  title: issues.title,
+  description: sql<string | null>`
+    CASE
+      WHEN ${issues.description} IS NULL THEN NULL
+      ELSE substring(${issues.description} FROM 1 FOR ${ISSUE_LIST_DESCRIPTION_MAX_CHARS})
+    END
+  `,
+  status: issues.status,
+  priority: issues.priority,
+  dueDate: issues.dueDate,
+  boardPosition: issues.boardPosition,
+  assigneeAgentId: issues.assigneeAgentId,
+  assigneeUserId: issues.assigneeUserId,
+  checkoutRunId: issues.checkoutRunId,
+  executionRunId: issues.executionRunId,
+  executionAgentNameKey: issues.executionAgentNameKey,
+  executionLockedAt: issues.executionLockedAt,
+  createdByAgentId: issues.createdByAgentId,
+  createdByUserId: issues.createdByUserId,
+  issueNumber: issues.issueNumber,
+  identifier: issues.identifier,
+  originKind: issues.originKind,
+  originId: issues.originId,
+  originRunId: issues.originRunId,
+  requestDepth: issues.requestDepth,
+  billingCode: issues.billingCode,
+  assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+  executionPolicy: sql<null>`null`,
+  executionState: sql<null>`null`,
+  executionWorkspaceId: issues.executionWorkspaceId,
+  executionWorkspacePreference: issues.executionWorkspacePreference,
+  executionWorkspaceSettings: sql<null>`null`,
+  startedAt: issues.startedAt,
+  completedAt: issues.completedAt,
+  cancelledAt: issues.cancelledAt,
+  hiddenAt: issues.hiddenAt,
+  createdAt: issues.createdAt,
+  updatedAt: issues.updatedAt,
+};
 
 function withActiveRuns(
   issueRows: IssueWithLabels[],
@@ -1068,7 +1117,7 @@ export function issueService(db: Db) {
           )!,
         );
       }
-      if (!filters?.includeRoutineExecutions && !filters?.originKind && !filters?.originId) {
+      if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
       conditions.push(isNull(issues.hiddenAt));
@@ -1080,14 +1129,14 @@ export function issueService(db: Db) {
           WHEN ${titleContainsMatch} THEN 1
           WHEN ${identifierStartsWithMatch} THEN 2
           WHEN ${identifierContainsMatch} THEN 3
-          WHEN ${descriptionContainsMatch} THEN 4
-          WHEN ${commentContainsMatch} THEN 5
+          WHEN ${commentContainsMatch} THEN 4
+          WHEN ${descriptionContainsMatch} THEN 5
           ELSE 6
         END
       `;
       const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
       const baseQuery = db
-        .select()
+        .select(issueListSelect)
         .from(issues)
         .where(and(...conditions))
         .orderBy(
@@ -1245,7 +1294,6 @@ export function issueService(db: Db) {
         eq(issues.companyId, companyId),
         isNull(issues.hiddenAt),
         unreadForUserCondition(companyId, userId),
-        ne(issues.originKind, "routine_execution"),
       ];
       if (status) {
         const statuses = status.split(",").map((s) => s.trim()).filter(Boolean);
@@ -2554,6 +2602,28 @@ export function issueService(db: Db) {
           return comment ? redactIssueComment(comment, censorUsernameInLogs) : null;
         })),
 
+    removeComment: async (commentId: string) => {
+      const currentUserRedactionOptions = {
+        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+      };
+
+      return db.transaction(async (tx) => {
+        const [comment] = await tx
+          .delete(issueComments)
+          .where(eq(issueComments.id, commentId))
+          .returning();
+
+        if (!comment) return null;
+
+        await tx
+          .update(issues)
+          .set({ updatedAt: new Date() })
+          .where(eq(issues.id, comment.issueId));
+
+        return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+      });
+    },
+
     addComment: async (
       issueId: string,
       body: string,
@@ -2881,7 +2951,10 @@ export function issueService(db: Db) {
       return [...resolved];
     },
 
-    findMentionedProjectIds: async (issueId: string) => {
+    findMentionedProjectIds: async (
+      issueId: string,
+      opts?: { includeCommentBodies?: boolean },
+    ) => {
       const issue = await db
         .select({
           companyId: issues.companyId,
@@ -2893,21 +2966,26 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!issue) return [];
 
-      const comments = await db
-        .select({ body: issueComments.body })
-        .from(issueComments)
-        .where(eq(issueComments.issueId, issueId));
-
       const mentionedIds = new Set<string>();
-      for (const source of [
-        issue.title,
-        issue.description ?? "",
-        ...comments.map((comment) => comment.body),
-      ]) {
+      for (const source of [issue.title, issue.description ?? ""]) {
         for (const projectId of extractProjectMentionIds(source)) {
           mentionedIds.add(projectId);
         }
       }
+
+      if (opts?.includeCommentBodies !== false) {
+        const comments = await db
+          .select({ body: issueComments.body })
+          .from(issueComments)
+          .where(eq(issueComments.issueId, issueId));
+
+        for (const comment of comments) {
+          for (const projectId of extractProjectMentionIds(comment.body)) {
+            mentionedIds.add(projectId);
+          }
+        }
+      }
+
       if (mentionedIds.size === 0) return [];
 
       const rows = await db

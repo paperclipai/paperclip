@@ -42,6 +42,37 @@ vi.mock("../services/adapter-plugin-store.js", () => ({
   listAdapterPlugins: mockListAdapterPlugins,
 }));
 
+function registerModuleMocks() {
+  vi.doMock("@paperclipai/db", () => ({
+    runDatabaseBackup: mockRunDatabaseBackup,
+    plugins: {
+      id: "id",
+      pluginKey: "pluginKey",
+      packageName: "packageName",
+      version: "version",
+      status: "status",
+      packagePath: "packagePath",
+      updatedAt: "updatedAt",
+    },
+  }));
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+  }));
+  vi.doMock("../services/index.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+    logActivity: mockLogActivity,
+  }));
+  vi.doMock("../services/adapter-plugin-store.js", () => ({
+    listAdapterPlugins: mockListAdapterPlugins,
+  }));
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+  );
+}
+
 function createTempRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-update-safety-"));
 }
@@ -222,6 +253,8 @@ describe("instance update safety routes", () => {
   });
 
   async function createRouteApp(actor: Record<string, unknown>, service: Record<string, unknown>) {
+    vi.resetModules();
+    registerModuleMocks();
     const [{ instanceUpdateSafetyRoutes }, { errorHandler }] = await Promise.all([
       import("../routes/instance-update-safety.js"),
       import("../middleware/index.js"),

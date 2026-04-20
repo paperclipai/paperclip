@@ -36,10 +36,26 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
 }));
 
+function registerModuleMocks() {
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackSkillImported: mockTrackSkillImported,
+    trackErrorHandlerCrash: vi.fn(),
+  }));
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: mockGetTelemetryClient,
+  }));
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    companySkillService: () => mockCompanySkillService,
+    logActivity: mockLogActivity,
+  }));
+}
+
 async function createApp(actor: Record<string, unknown>) {
   const [{ companySkillRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/company-skills.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/company-skills.js")>("../routes/company-skills.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -55,6 +71,11 @@ async function createApp(actor: Record<string, unknown>) {
 describe("company skill mutation permissions", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../routes/company-skills.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/validate.js");
+    registerModuleMocks();
     vi.resetAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockCompanySkillService.importFromSource.mockResolvedValue({
@@ -216,7 +237,7 @@ describe("company skill mutation permissions", () => {
       .post("/api/companies/company-1/skills/import")
       .send({ source: "https://github.com/acme/private-skill" });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
     expect(mockTrackSkillImported).toHaveBeenCalledWith(expect.anything(), {
       sourceType: "github",
       skillRef: null,

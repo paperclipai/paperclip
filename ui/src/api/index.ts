@@ -18,6 +18,7 @@ export { heartbeatsApi } from "./heartbeats";
 export { agentServiceHealthApi } from "./agentServiceHealth";
 export { instanceSettingsApi } from "./instanceSettings";
 export { sidebarBadgesApi } from "./sidebarBadges";
+export { sidebarPreferencesApi } from "./sidebarPreferences";
 export { inboxDismissalsApi } from "./inboxDismissals";
 export { companySkillsApi } from "./companySkills";
 export { companyRolloutsApi } from "./companyRollouts";

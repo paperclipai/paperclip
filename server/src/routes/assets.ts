@@ -156,6 +156,10 @@ export function assetRoutes(db: Db, storage: StorageService) {
       res.status(422).json({ error: "Image is empty" });
       return;
     }
+    if (fileBody.length > MAX_ATTACHMENT_BYTES) {
+      res.status(422).json({ error: `File exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
+      return;
+    }
 
     const actor = getActorInfo(req);
     const stored = await storage.putFile({
@@ -252,6 +256,10 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     if (fileBody.length <= 0) {
       res.status(422).json({ error: "Image is empty" });
+      return;
+    }
+    if (fileBody.length > MAX_ATTACHMENT_BYTES) {
+      res.status(422).json({ error: `Image exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
       return;
     }
 

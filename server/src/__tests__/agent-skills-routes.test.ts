@@ -51,6 +51,7 @@ const mockSecretService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackAgentCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
 
 const mockAdapter = vi.hoisted(() => ({
   listSkills: vi.fn(),
@@ -79,7 +80,7 @@ function registerModuleMocks() {
     issueService: () => ({}),
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
-    syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
+    syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => mockWorkspaceOperationService,
   }));
 
@@ -107,6 +108,16 @@ function createDb(requireBoardApprovalForNewAgents = false) {
 }
 
 async function createApp(db: Record<string, unknown> = createDb()) {
+  vi.resetModules();
+  vi.doUnmock("../routes/agents.js");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../adapters/index.js");
+  registerModuleMocks();
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/agents.js"),
     import("../middleware/index.js"),
@@ -149,8 +160,17 @@ function makeAgent(adapterType: string) {
 describe("agent skill routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../routes/agents.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/validate.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../adapters/index.js");
     registerModuleMocks();
     vi.resetAllMocks();
+    mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockAgentService.resolveByReference.mockResolvedValue({
       ambiguous: false,
@@ -326,19 +346,20 @@ describe("agent skill routes", () => {
       });
 
     expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
-    expect(mockAgentService.create).toHaveBeenCalledWith(
-      "company-1",
+    expect(res.body.adapterConfig).toEqual(
       expect.objectContaining({
-        adapterConfig: expect.objectContaining({
-          paperclipSkillSync: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
-          }),
+        paperclipSkillSync: expect.objectContaining({
+          desiredSkills: ["paperclipai/paperclip/paperclip"],
         }),
       }),
     );
-    expect(mockTrackAgentCreated).toHaveBeenCalledWith(expect.anything(), {
-      agentRole: "engineer",
-    });
+    expect(mockTrackAgentCreated).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        agentId: "11111111-1111-4111-8111-111111111111",
+        agentRole: "engineer",
+      }),
+    );
   });
 
   it("materializes a managed AGENTS.md for directly created local agents", async () => {

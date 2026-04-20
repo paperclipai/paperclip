@@ -4,6 +4,13 @@
 
 import { api } from "./client";
 
+export interface AdapterCapabilities {
+  supportsInstructionsBundle: boolean;
+  supportsSkills: boolean;
+  supportsLocalAgentJwt: boolean;
+  requiresMaterializedRuntimeSkills: boolean;
+}
+
 export interface AdapterInfo {
   type: string;
   label: string;
@@ -11,6 +18,7 @@ export interface AdapterInfo {
   modelsCount: number;
   loaded: boolean;
   disabled: boolean;
+  capabilities: AdapterCapabilities;
   /** True when the adapter can run as a local agent with injected Paperclip runtime auth. */
   supportsLocalAgentJwt: boolean;
   /** Installed version (for external npm adapters) */

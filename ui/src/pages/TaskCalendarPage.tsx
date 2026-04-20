@@ -502,8 +502,9 @@ export function TaskCalendarPage() {
     onMutate: async ({ id, priority }) => {
       await queryClient.cancelQueries({ queryKey: calendarQueryKey });
       const previous = queryClient.getQueryData<Issue[]>(calendarQueryKey);
+      const nextPriority = priority as Issue["priority"];
       queryClient.setQueryData<Issue[]>(calendarQueryKey, (current) =>
-        (current ?? []).map((issue) => (issue.id === id ? { ...issue, priority } : issue)),
+        (current ?? []).map((issue) => (issue.id === id ? { ...issue, priority: nextPriority } : issue)),
       );
       return { previous };
     },

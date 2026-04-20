@@ -39,7 +39,13 @@ const mockFeedbackService = vi.hoisted(() => ({
   saveIssueVote: vi.fn(),
 }));
 
-function registerServiceMocks() {
+function registerModuleMocks() {
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+  );
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
@@ -52,8 +58,17 @@ function registerServiceMocks() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const { companyRoutes } = await import("../routes/companies.js");
-  const { errorHandler } = await import("../middleware/index.js");
+  vi.resetModules();
+  vi.doUnmock("../routes/companies.js");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../services/index.js");
+  registerModuleMocks();
+  const [{ companyRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/companies.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -68,7 +83,12 @@ async function createApp(actor: Record<string, unknown>) {
 describe("company portability routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerServiceMocks();
+    vi.doUnmock("../routes/companies.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/validate.js");
+    vi.doUnmock("../services/index.js");
+    registerModuleMocks();
     vi.resetAllMocks();
   });
 
@@ -197,6 +217,90 @@ describe("company portability routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Instance admin");
     expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+  });
+
+  it("rejects replace collision strategy on CEO-safe import apply routes", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      role: "ceo",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/11111111-1111-4111-8111-111111111111/imports/apply")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: true, agents: true, projects: false, issues: false },
+        target: { mode: "existing_company", companyId: "11111111-1111-4111-8111-111111111111" },
+        collisionStrategy: "replace",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("does not allow replace");
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-CEO agents from CEO-safe import preview routes", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      role: "engineer",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/11111111-1111-4111-8111-111111111111/imports/preview")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: true, agents: true, projects: false, issues: false },
+        target: { mode: "existing_company", companyId: "11111111-1111-4111-8111-111111111111" },
+        collisionStrategy: "rename",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only CEO agents");
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-CEO agents from CEO-safe import apply routes", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      role: "engineer",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/11111111-1111-4111-8111-111111111111/imports/apply")
+      .send({
+        source: { type: "inline", files: { "COMPANY.md": "---\nname: Test\n---\n" } },
+        include: { company: true, agents: true, projects: false, issues: false },
+        target: { mode: "existing_company", companyId: "11111111-1111-4111-8111-111111111111" },
+        collisionStrategy: "rename",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only CEO agents");
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
   });
 
   it("requires instance admin for new-company import apply", async () => {

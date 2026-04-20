@@ -44,7 +44,11 @@ export function UpdateStatusBanner() {
 
   const status = statusQuery.data;
   const needsAttention = status.banner.tone === "warn";
-  const title = needsAttention ? "Paperclip Update Needs Backup" : "Paperclip Update Available";
+  const title = needsAttention
+    ? status.backup.valid
+      ? "Paperclip Update Needs Review"
+      : "Paperclip Update Needs Backup"
+    : "Paperclip Update Available";
   const backupText = status.backup.valid
     ? "pre-update backup ready"
     : describeBackupReason(status.backup.reason);
@@ -69,7 +73,7 @@ export function UpdateStatusBanner() {
             <span>{title}</span>
           </div>
           <p className="mt-1 text-sm">
-            v{status.latestVersion} is available. {backupText}
+            v{status.latestVersion} is available. {backupText}.
             {status.install.gitDirty ? " Local core edits were detected." : ""}
           </p>
         </div>
