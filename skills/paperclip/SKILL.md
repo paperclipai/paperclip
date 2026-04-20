@@ -128,7 +128,9 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
-For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string. That is how comments get "smooshed" together. Use the helper below or an equivalent `jq --arg` pattern so literal newlines survive JSON encoding:
+For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string. That is how comments get "smooshed" together. Use the helper below or an equivalent `jq --arg` pattern so literal newlines survive JSON encoding.
+
+Do **not** pipe a heredoc into `jq` while also using command substitution to read that same stream, for example `cat <<'MD' | jq -n --arg comment "$(cat)" ... | curl -d @-`. That pattern can leave `curl` blocked forever waiting for stdin and keep the whole heartbeat process group alive after the agent has already produced a final result. If you cannot use the helper, read the heredoc into a shell variable first, then pass that variable to `jq -n --arg`.
 
 ```bash
 scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
@@ -355,6 +357,24 @@ MD
 ```
 
 If you cannot use the helper, use `jq -n --arg comment "$comment"` with `comment` read from a heredoc or file. Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
+
+Avoid this hanging anti-pattern:
+
+```bash
+cat <<'MD' | jq -n --arg comment "$(cat)" '{"comment": $comment}' | curl -d @- ...
+MD
+```
+
+That command has multiple readers and writers on the same pipeline and can leave `curl` waiting on stdin with no network request in flight. Safer direct fallback:
+
+```bash
+comment="$(cat <<'MD'
+Investigating comment formatting
+MD
+)"
+jq -n --arg comment "$comment" '{"comment": $comment}' |
+  curl --fail --show-error --connect-timeout 10 --max-time 60 -d @- ...
+```
 
 Example:
 

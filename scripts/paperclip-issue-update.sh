@@ -80,6 +80,11 @@ elif [[ ! -t 0 ]]; then
   comment="$(cat)"
 fi
 
+if [[ -z "$status" && -z "$comment" ]]; then
+  printf 'Nothing to update: pass --status and/or --comment (or pipe a comment on stdin).\n' >&2
+  exit 1
+fi
+
 require_command jq
 
 payload="$(
@@ -104,6 +109,9 @@ fi
 
 curl -sS -X PATCH \
   "$PAPERCLIP_API_URL/api/issues/$issue_id" \
+  --fail-with-body \
+  --connect-timeout "${PAPERCLIP_API_CONNECT_TIMEOUT_SECONDS:-10}" \
+  --max-time "${PAPERCLIP_API_MAX_TIME_SECONDS:-60}" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -H 'Content-Type: application/json' \
