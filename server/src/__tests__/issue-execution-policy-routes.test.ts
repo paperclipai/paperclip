@@ -22,15 +22,21 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(async () => null),
 }));
 
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(async () => null),
+  resolveByReference: vi.fn(async (_companyId: string, ref: string) => ({
+    ambiguous: false,
+    agent: { id: ref },
+  })),
+}));
+
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => ({
       canUser: vi.fn(async () => false),
       hasPermission: vi.fn(async () => false),
     }),
-    agentService: () => ({
-      getById: vi.fn(async () => null),
-    }),
+    agentService: () => mockAgentService,
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
@@ -60,7 +66,25 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+type TestActor =
+  | {
+      type: "board";
+      userId: string;
+      companyIds: string[];
+      source: string;
+      isInstanceAdmin: boolean;
+    }
+  | {
+      type: "agent";
+      agentId: string;
+      companyId: string;
+      companyIds: string[];
+      runId?: string | null;
+      runStatus?: string | null;
+      source: string;
+    };
+
+async function createApp(actor?: TestActor) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/issues.js"),
@@ -68,7 +92,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
+    (req as any).actor = actor ?? {
       type: "board",
       userId: "local-board",
       companyIds: ["company-1"],
@@ -95,6 +119,11 @@ describe("issue execution policy routes", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockAgentService.getById.mockResolvedValue(null);
+    mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, ref: string) => ({
+      ambiguous: false,
+      agent: { id: ref },
+    }));
   });
 
   it("does not auto-start execution review when reviewers are added to an already in_review issue", async () => {
@@ -144,6 +173,116 @@ describe("issue execution policy routes", () => {
     expect(updatePatch.assigneeAgentId).toBeUndefined();
     expect(updatePatch.assigneeUserId).toBeUndefined();
     expect(updatePatch.executionState).toBeUndefined();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects status-only workflow handoff from a user-owned issue to an agent reviewer", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      createdByUserId: "local-board",
+      identifier: "PAP-1000",
+      title: "Human-owned execution",
+      executionPolicy: policy,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("explicit assignee change");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("allows explicit board assignment from a user-owned issue to an agent", async () => {
+    const agentId = "33333333-3333-4333-8333-333333333333";
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title: "Manual handoff",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ assigneeAgentId: agentId });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        reason: "issue_assigned",
+      }),
+    );
+  });
+
+  it("rejects agent-originated handoff from a user-owned issue to an agent", async () => {
+    const agentId = "33333333-3333-4333-8333-333333333333";
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Agent handoff attempt",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId,
+      companyId: "company-1",
+      companyIds: ["company-1"],
+      source: "agent_api_key",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ assigneeAgentId: agentId });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Agents cannot move");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });

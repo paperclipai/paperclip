@@ -1023,6 +1023,7 @@ export function issueService(db: Db) {
           eq(issues.id, input.issueId),
           eq(issues.status, "in_progress"),
           eq(issues.assigneeAgentId, input.actorAgentId),
+          isNull(issues.assigneeUserId),
           eq(issues.checkoutRunId, input.expectedCheckoutRunId),
         ),
       )
@@ -2087,6 +2088,7 @@ export function issueService(db: Db) {
           and(
             eq(issues.id, id),
             inArray(issues.status, expectedStatuses),
+            isNull(issues.assigneeUserId),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
           ),
@@ -2104,6 +2106,7 @@ export function issueService(db: Db) {
           id: issues.id,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
         })
@@ -2115,6 +2118,7 @@ export function issueService(db: Db) {
 
       if (
         current.assigneeAgentId === agentId &&
+        !current.assigneeUserId &&
         current.status === "in_progress" &&
         current.checkoutRunId == null &&
         (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
@@ -2132,6 +2136,7 @@ export function issueService(db: Db) {
               eq(issues.id, id),
               eq(issues.status, "in_progress"),
               eq(issues.assigneeAgentId, agentId),
+              isNull(issues.assigneeUserId),
               isNull(issues.checkoutRunId),
               or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
             ),
@@ -2144,6 +2149,7 @@ export function issueService(db: Db) {
       if (
         checkoutRunId &&
         current.assigneeAgentId === agentId &&
+        !current.assigneeUserId &&
         current.status === "in_progress" &&
         current.checkoutRunId &&
         current.checkoutRunId !== checkoutRunId
@@ -2165,6 +2171,7 @@ export function issueService(db: Db) {
       // If this run already owns it and it's in_progress, return it (no self-409)
       if (
         current.assigneeAgentId === agentId &&
+        !current.assigneeUserId &&
         current.status === "in_progress" &&
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
@@ -2178,6 +2185,7 @@ export function issueService(db: Db) {
         issueId: current.id,
         status: current.status,
         assigneeAgentId: current.assigneeAgentId,
+        assigneeUserId: current.assigneeUserId,
         checkoutRunId: current.checkoutRunId,
         executionRunId: current.executionRunId,
       });

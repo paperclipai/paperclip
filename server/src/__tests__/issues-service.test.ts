@@ -1734,6 +1734,66 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(created.assigneeAgentId).toBeNull();
     expect(created.assigneeUserId).toBeNull();
   });
+
+  it("does not checkout work assigned to a user", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const userId = "local-board";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Human-owned task",
+      status: "todo",
+      priority: "medium",
+      assigneeUserId: userId,
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["todo"], null)).rejects.toMatchObject({
+      status: 409,
+      details: expect.objectContaining({
+        assigneeAgentId: null,
+        assigneeUserId: userId,
+      }),
+    });
+
+    const current = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        checkoutRunId: issues.checkoutRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+
+    expect(current).toEqual({
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: userId,
+      checkoutRunId: null,
+    });
+  });
 });
 
 describeEmbeddedPostgres("issueService comment normalization", () => {

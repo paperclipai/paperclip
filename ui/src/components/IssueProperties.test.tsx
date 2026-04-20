@@ -451,6 +451,31 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("hides status-only review handoff for user-owned tasks with agent reviewers", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        assigneeUserId: "user-1",
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "review-stage",
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+            },
+          ],
+        }),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("Run review now");
+
+    act(() => root.unmount());
+  });
+
   it("shows a run approval action when approval is the next runnable stage", async () => {
     const root = renderProperties(container, {
       issue: createIssue({

@@ -54,7 +54,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -183,6 +183,23 @@ function shouldImplicitlyReopenCommentForAgent(input: {
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   if (input.actorType === "agent" && input.actorId === input.assigneeAgentId) return false;
   return true;
+}
+
+function assertUserOwnedAgentHandoffAllowed(input: {
+  existingAssigneeUserId: string | null;
+  nextAssigneeAgentId: string | null;
+  actorType: "board" | "agent";
+  explicitAgentAssigneeRequested: boolean;
+}) {
+  if (!input.existingAssigneeUserId || !input.nextAssigneeAgentId) return;
+
+  if (input.actorType !== "board") {
+    throw forbidden("Agents cannot move a user-assigned issue to an agent");
+  }
+
+  if (!input.explicitAgentAssigneeRequested) {
+    throw unprocessable("User-assigned issues can only be moved to an agent through an explicit assignee change");
+  }
 }
 
 function diffExecutionParticipants(
@@ -1934,6 +1951,7 @@ export function issueRoutes(
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
+    const explicitAgentAssigneeRequested = normalizedAssigneeAgentId !== undefined && normalizedAssigneeAgentId !== null;
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
@@ -1962,6 +1980,15 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    if (
+      req.actor.type === "board" &&
+      existing.assigneeUserId &&
+      explicitAgentAssigneeRequested &&
+      req.body.assigneeUserId === undefined &&
+      updateFields.assigneeUserId === undefined
+    ) {
+      updateFields.assigneeUserId = null;
+    }
 
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
@@ -1977,6 +2004,13 @@ export function issueRoutes(
       typeof nextAssigneeUserId === "string" &&
       !!existing.createdByUserId &&
       nextAssigneeUserId === existing.createdByUserId;
+
+    assertUserOwnedAgentHandoffAllowed({
+      existingAssigneeUserId: existing.assigneeUserId,
+      nextAssigneeAgentId,
+      actorType: req.actor.type === "agent" ? "agent" : "board",
+      explicitAgentAssigneeRequested,
+    });
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {

@@ -343,13 +343,19 @@ export function IssueProperties({
   const approverTrigger = approverValues.length > 0
     ? <span className="text-sm break-words min-w-0">{approverValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
     : <span className="text-sm text-muted-foreground">None</span>;
+  const humanOwnedIssue = Boolean(issue.assigneeUserId);
+  const stageWouldHandoffToAgent = (stageType: "review" | "approval") => {
+    const values = stageType === "review" ? reviewerValues : approverValues;
+    return values.some((value) => value.startsWith("agent:"));
+  };
   const nextRunnableExecutionStage = (() => {
     if (issue.executionState?.status === "changes_requested" && issue.executionState.currentStageType) {
+      if (humanOwnedIssue && stageWouldHandoffToAgent(issue.executionState.currentStageType)) return null;
       return issue.executionState.currentStageType;
     }
     if (issue.executionState) return null;
-    if (reviewerValues.length > 0) return "review";
-    if (approverValues.length > 0) return "approval";
+    if (reviewerValues.length > 0) return humanOwnedIssue && stageWouldHandoffToAgent("review") ? null : "review";
+    if (approverValues.length > 0) return humanOwnedIssue && stageWouldHandoffToAgent("approval") ? null : "approval";
     return null;
   })();
   const runExecutionButton = (stageType: "review" | "approval") => (
