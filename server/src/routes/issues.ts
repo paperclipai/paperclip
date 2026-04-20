@@ -647,8 +647,17 @@ export function issueRoutes(
       return;
     }
 
+    // Normalize ?status=X&status=Y (array form) and ?status=X,Y (comma form) to a single
+    // comma-joined string — the service expects string and calls .split(",") internally.
+    const rawStatus = req.query.status;
+    const status = Array.isArray(rawStatus)
+      ? rawStatus.filter((v): v is string => typeof v === "string").join(",")
+      : typeof rawStatus === "string"
+        ? rawStatus
+        : undefined;
+
     const result = await svc.list(companyId, {
-      status: req.query.status as string | undefined,
+      status,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
