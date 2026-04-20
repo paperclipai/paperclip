@@ -1072,7 +1072,7 @@ export function issueService(db: Db) {
           desc(issues.updatedAt),
         );
       const rows = limit === undefined ? await baseQuery : await baseQuery.limit(limit);
-      const withLabels = await withIssueLabels(db, rows);
+      const withLabels = await withIssueLabels(db, rows as unknown as IssueRow[]);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
       if (withRuns.length === 0) {
