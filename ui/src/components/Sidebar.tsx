@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   DollarSign,
   History,
+  Home,
   Search,
   SquarePen,
   Network,
@@ -17,14 +18,15 @@ import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjects } from "./SidebarProjects";
 import { SidebarAgents } from "./SidebarAgents";
+import { SidebarUserFooter } from "./SidebarUserFooter";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
+import { Link } from "@/lib/router";
 import { PluginSlotOutlet } from "@/plugins/slots";
-import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 
 export function Sidebar() {
   const { openNewIssue } = useDialog();
@@ -49,14 +51,28 @@ export function Sidebar() {
 
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top: dual Org/Company switcher + Search */}
-      <div className="flex items-start gap-1 px-3 pt-2 pb-1 shrink-0">
-        <SidebarCompanyMenu />
+      {/* Top: Home link + current company label + search */}
+      <div className="flex items-center gap-1 px-3 h-12 shrink-0">
         <Button
           variant="ghost"
           size="icon-sm"
-          className="text-muted-foreground shrink-0 mt-0.5"
+          className="text-muted-foreground shrink-0"
+          asChild
+          aria-label="Home"
+        >
+          <Link to="/home">
+            <Home className="h-4 w-4" />
+          </Link>
+        </Button>
+        <span className="min-w-0 flex-1 truncate text-sm font-bold text-foreground">
+          {selectedCompany?.name ?? "Paperclip"}
+        </span>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="text-muted-foreground shrink-0"
           onClick={openSearch}
+          aria-label="Search"
         >
           <Search className="h-4 w-4" />
         </Button>
@@ -116,6 +132,7 @@ export function Sidebar() {
           missingBehavior="placeholder"
         />
       </nav>
+      <SidebarUserFooter />
     </aside>
   );
 }
