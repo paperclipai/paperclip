@@ -4282,6 +4282,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               const newSecretId = secretNameToId.get(ei.secretName);
               if (newSecretId) {
                 env[ei.key] = { type: "secret_ref", secretId: newSecretId };
+              } else {
+                warnings.push(`Env key "${ei.key}" for agent ${manifestAgent.slug} references secret "${ei.secretName}" which was not included in this package. Re-add manually.`);
               }
             } else if (ei.kind === "secret" && !ei.secretName) {
               warnings.push(`Env key "${ei.key}" for agent ${manifestAgent.slug} could not be reconstructed (sensitive binding without secret reference). Re-add manually.`);
@@ -4423,6 +4425,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             const newSecretId = secretNameToId.get(ei.secretName);
             if (newSecretId) {
               reconstructedProjectEnv[ei.key] = { type: "secret_ref", secretId: newSecretId };
+            } else {
+              warnings.push(`Env key "${ei.key}" for project ${planProject.slug} references secret "${ei.secretName}" which was not included in this package. Re-add manually.`);
             }
           } else if (ei.kind === "secret" && !ei.secretName) {
             warnings.push(`Env key "${ei.key}" for project ${planProject.slug} could not be reconstructed (sensitive binding without secret reference). Re-add manually.`);
