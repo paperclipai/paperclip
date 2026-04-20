@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { cn } from "../lib/utils";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
+import { ISSUE_STATUSES } from "@paperclipai/shared";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 
-const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
+const allStatuses: readonly string[] = ISSUE_STATUSES;
 
 function statusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());

@@ -21,16 +21,9 @@ import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import type { Issue } from "@paperclipai/shared";
+import { ISSUE_STATUSES } from "@paperclipai/shared";
 
-const boardStatuses = [
-  "backlog",
-  "todo",
-  "in_progress",
-  "in_review",
-  "blocked",
-  "done",
-  "cancelled",
-];
+const boardStatuses: readonly string[] = ISSUE_STATUSES;
 
 function statusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
