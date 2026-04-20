@@ -9,6 +9,10 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  labels,
+  projectLabels,
+  projectWorkspaces,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -58,6 +62,10 @@ describeEmbeddedPostgres("dashboardService.summary", () => {
     await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(projectLabels);
+    await db.delete(labels);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -276,5 +284,199 @@ describeEmbeddedPostgres("dashboardService.summary", () => {
       }),
     ]);
     expect(summary.staleIssues?.some((issue) => issue.id === activeIssueId)).toBe(false);
+  });
+
+  it("builds a 7-day Codex project estimate from current labeled project activity", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const codexLabelId = randomUUID();
+    const activeProjectId = randomUUID();
+    const syncedProjectId = randomUUID();
+    const completedProjectId = randomUUID();
+    const otherProjectId = randomUUID();
+    const fixedNow = new Date("2026-04-15T12:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      budgetMonthlyCents: 1_000,
+      devValueHourlyRateCents: 20_000,
+      devValueTokensPerHour: 100,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Codex Engineer",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(projects).values([
+      {
+        id: activeProjectId,
+        companyId,
+        name: "Codex Projects Dashboard",
+        status: "in_progress",
+        createdAt: new Date("2026-04-12T12:00:00.000Z"),
+      },
+      {
+        id: syncedProjectId,
+        companyId,
+        name: "AI Master Dashboard",
+        status: "backlog",
+        createdAt: new Date("2026-04-14T12:00:00.000Z"),
+      },
+      {
+        id: completedProjectId,
+        companyId,
+        name: "Completed Codex Project",
+        status: "completed",
+        createdAt: new Date("2026-04-10T12:00:00.000Z"),
+      },
+      {
+        id: otherProjectId,
+        companyId,
+        name: "Non Codex Project",
+        status: "in_progress",
+        createdAt: new Date("2026-04-09T12:00:00.000Z"),
+      },
+    ]);
+
+    await db.insert(projectWorkspaces).values({
+      id: randomUUID(),
+      companyId,
+      projectId: syncedProjectId,
+      name: "Codex workspace",
+      sourceType: "local_path",
+      cwd: "/Users/robertdawson/AI/Codex/Codex/Project AI Master Dashboard",
+      metadata: {
+        source: "codex_project_sync",
+      },
+      isPrimary: true,
+    });
+
+    await db.insert(labels).values({
+      id: codexLabelId,
+      companyId,
+      name: "Codex",
+      color: "#3b82f6",
+    });
+
+    await db.insert(projectLabels).values([
+      {
+        companyId,
+        projectId: activeProjectId,
+        labelId: codexLabelId,
+      },
+      {
+        companyId,
+        projectId: completedProjectId,
+        labelId: codexLabelId,
+      },
+    ]);
+
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        projectId: activeProjectId,
+        provider: "openai",
+        biller: "chatgpt",
+        billingType: "subscription_included",
+        model: "gpt-5.4",
+        inputTokens: 100,
+        cachedInputTokens: 25,
+        outputTokens: 50,
+        costCents: 0,
+        occurredAt: new Date("2026-04-14T12:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        projectId: syncedProjectId,
+        provider: "openai",
+        biller: "chatgpt",
+        billingType: "subscription_included",
+        model: "gpt-5.4",
+        inputTokens: 200,
+        cachedInputTokens: 25,
+        outputTokens: 0,
+        costCents: 0,
+        occurredAt: new Date("2026-04-14T12:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        projectId: completedProjectId,
+        provider: "openai",
+        biller: "chatgpt",
+        billingType: "subscription_included",
+        model: "gpt-5.4",
+        inputTokens: 1_000,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        costCents: 0,
+        occurredAt: new Date("2026-04-14T12:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        projectId: activeProjectId,
+        provider: "openai",
+        biller: "chatgpt",
+        billingType: "subscription_included",
+        model: "gpt-5.4",
+        inputTokens: 9_000,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        costCents: 0,
+        occurredAt: new Date("2026-04-07T12:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        projectId: otherProjectId,
+        provider: "openai",
+        biller: "chatgpt",
+        billingType: "subscription_included",
+        model: "gpt-5.4",
+        inputTokens: 2_000,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        costCents: 0,
+        occurredAt: new Date("2026-04-14T12:00:00.000Z"),
+      },
+    ]);
+
+    const summary = await svc.summary(companyId, fixedNow);
+
+    expect(summary.costs.codexProjectsEstimate).toEqual(expect.objectContaining({
+      labelName: "Codex",
+      windowDays: 7,
+      projectCount: 2,
+      activeProjectDays: 4,
+      projectWeekEquivalent: 0.57,
+      totalTokens: 400,
+      inputTokens: 300,
+      cachedInputTokens: 50,
+      outputTokens: 50,
+      estimatedDevHours: 0.57,
+      estimatedDevValueCents: 11_429,
+      trackedTokenDevHours: 4,
+      devValueHourlyRateCents: 20_000,
+      devValueTokensPerHour: 100,
+      devHoursPerProjectWeek: 1,
+    }));
+    expect(summary.costs.codexProjectsEstimate.windowStart.toISOString()).toBe("2026-04-08T12:00:00.000Z");
+    expect(summary.costs.codexProjectsEstimate.windowEnd.toISOString()).toBe("2026-04-15T12:00:00.000Z");
+    expect(summary.costs.codexProjectsEstimate.assumption).toContain("not billed spend");
+    expect(summary.costs.codexProjectsEstimate.assumption).toContain("active project-weeks");
   });
 });

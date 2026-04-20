@@ -6,11 +6,13 @@ interface CopyTextProps {
   /** What to display. Defaults to `text`. */
   children?: React.ReactNode;
   className?: string;
+  /** Accessible name for icon-only copy controls. */
+  ariaLabel?: string;
   /** Tooltip message shown after copying. Default: "Copied!" */
   copiedLabel?: string;
 }
 
-export function CopyText({ text, children, className, copiedLabel = "Copied!" }: CopyTextProps) {
+export function CopyText({ text, children, className, ariaLabel, copiedLabel = "Copied!" }: CopyTextProps) {
   const [visible, setVisible] = useState(false);
   const [label, setLabel] = useState(copiedLabel);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -54,6 +56,7 @@ export function CopyText({ text, children, className, copiedLabel = "Copied!" }:
           className,
         )}
         onClick={handleClick}
+        aria-label={ariaLabel}
       >
         {children ?? text}
       </button>

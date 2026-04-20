@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CompanySkillListItem, ContextSource, ContextSourceStatus } from "@paperclipai/shared";
+import type { CompanySkillListItem, ContextSource, ContextSourceStatus, ProjectContextOverview } from "@paperclipai/shared";
 import { AlertCircle, Database, FileText, FolderOpen, Link2, Loader2, Plus, Puzzle, RefreshCw, Save, Search, Target, Trash2, Upload } from "lucide-react";
 import { companySkillsApi } from "../api/companySkills";
 import { projectContextApi } from "../api/projectContext";
@@ -37,6 +37,114 @@ function bySkillName(a: CompanySkillListItem, b: CompanySkillListItem) {
   return a.name.localeCompare(b.name);
 }
 
+const LEGACY_CODESM_IMPORT_KEY = "codesm-client-import";
+const LEGACY_CODESM_IMPORT_RE = /<!--\s*codesm-client-import:start\s*-->([\s\S]*?)<!--\s*codesm-client-import:end\s*-->/i;
+
+export function extractLegacyCodesmClientImport(markdown: string) {
+  const match = markdown.match(LEGACY_CODESM_IMPORT_RE);
+  if (!match || match.index === undefined) return null;
+
+  const bodyText = (match[1] ?? "").trim();
+  if (!bodyText) return null;
+
+  const remainingInstructionsMarkdown = [
+    markdown.slice(0, match.index).trimEnd(),
+    markdown.slice(match.index + match[0].length).trimStart(),
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+
+  return { bodyText, remainingInstructionsMarkdown };
+}
+
+function hasMigratedCodesmSource(sources: ContextSource[]) {
+  return sources.some((source) => {
+    const metadata = source.metadata;
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
+    return (
+      metadata.migratedFrom === "project_instructions"
+      && metadata.migrationKey === LEGACY_CODESM_IMPORT_KEY
+    );
+  });
+}
+
+function useLegacyCodesmImportMigration({
+  companyId,
+  projectId,
+  contextKey,
+  overview,
+}: {
+  companyId: string;
+  projectId: string;
+  contextKey: readonly unknown[];
+  overview?: ProjectContextOverview;
+}) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+  const attemptedMigrations = useRef(new Set<string>());
+
+  const { mutate: migrateLegacyImport, isPending } = useMutation({
+    mutationFn: async ({
+      instructionsMarkdown,
+      sources,
+    }: {
+      instructionsMarkdown: string;
+      sources: ContextSource[];
+    }) => {
+      const extracted = extractLegacyCodesmClientImport(instructionsMarkdown);
+      if (!extracted) return false;
+
+      if (!hasMigratedCodesmSource(sources)) {
+        await projectContextApi.createSource(companyId, projectId, {
+          sourceType: "manual",
+          title: "Imported client source",
+          bodyText: extracted.bodyText,
+          metadata: {
+            migratedFrom: "project_instructions",
+            migrationKey: LEGACY_CODESM_IMPORT_KEY,
+          },
+        });
+      }
+
+      await projectContextApi.updateProfile(companyId, projectId, {
+        instructionsMarkdown: extracted.remainingInstructionsMarkdown,
+      });
+      return true;
+    },
+    onSuccess: async (didMigrate) => {
+      if (!didMigrate) return;
+      await queryClient.invalidateQueries({ queryKey: contextKey });
+      pushToast({ title: "Imported client source moved to Source", tone: "success" });
+    },
+    onError: (error) => {
+      pushToast({
+        title: error instanceof Error ? error.message : "Failed to move imported source",
+        tone: "error",
+      });
+    },
+  });
+
+  useEffect(() => {
+    if (!overview || isPending) return;
+    if (!extractLegacyCodesmClientImport(overview.profile.instructionsMarkdown)) return;
+
+    const attemptKey = [
+      overview.profile.id,
+      String(overview.profile.updatedAt),
+      overview.profile.instructionsMarkdown,
+      hasMigratedCodesmSource(overview.sources) ? "source-exists" : "source-missing",
+    ].join(":");
+    if (attemptedMigrations.current.has(attemptKey)) return;
+    attemptedMigrations.current.add(attemptKey);
+
+    migrateLegacyImport({
+      instructionsMarkdown: overview.profile.instructionsMarkdown,
+      sources: overview.sources,
+    });
+  }, [isPending, migrateLegacyImport, overview]);
+}
+
 export function ProjectContextContent({
   companyId,
   projectId,
@@ -46,32 +154,25 @@ export function ProjectContextContent({
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const contextKey = queryKeys.projects.context(companyId, projectId);
   const [goalDraft, setGoalDraft] = useState("");
   const [instructionsDraft, setInstructionsDraft] = useState("");
-  const [manualTitle, setManualTitle] = useState("");
-  const [manualBody, setManualBody] = useState("");
-  const [driveUri, setDriveUri] = useState("");
-  const [driveTitle, setDriveTitle] = useState("");
   const [skillFilter, setSkillFilter] = useState("");
-  const [searchDraft, setSearchDraft] = useState("");
-  const [submittedSearch, setSubmittedSearch] = useState("");
 
   const overviewQuery = useQuery({
     queryKey: contextKey,
     queryFn: () => projectContextApi.overview(companyId, projectId),
   });
+  useLegacyCodesmImportMigration({
+    companyId,
+    projectId,
+    contextKey,
+    overview: overviewQuery.data,
+  });
 
   const skillsQuery = useQuery({
     queryKey: queryKeys.companySkills.list(companyId),
     queryFn: () => companySkillsApi.list(companyId),
-  });
-
-  const searchQuery = useQuery({
-    queryKey: queryKeys.projects.contextSearch(companyId, projectId, submittedSearch),
-    queryFn: () => projectContextApi.search(companyId, projectId, submittedSearch, 8),
-    enabled: submittedSearch.trim().length > 0,
   });
 
   useEffect(() => {
@@ -88,11 +189,6 @@ export function ProjectContextContent({
 
   const invalidateContext = async () => {
     await queryClient.invalidateQueries({ queryKey: contextKey });
-    if (submittedSearch.trim()) {
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.projects.contextSearch(companyId, projectId, submittedSearch),
-      });
-    }
   };
 
   const updateProfile = useMutation({
@@ -103,52 +199,6 @@ export function ProjectContextContent({
     },
     onError: (error) => {
       pushToast({ title: error instanceof Error ? error.message : "Failed to save context", tone: "error" });
-    },
-  });
-
-  const createSource = useMutation({
-    mutationFn: projectContextApi.createSource.bind(null, companyId, projectId),
-    onSuccess: () => {
-      setManualTitle("");
-      setManualBody("");
-      setDriveUri("");
-      setDriveTitle("");
-      invalidateContext();
-      pushToast({ title: "Source added", tone: "success" });
-    },
-    onError: (error) => {
-      pushToast({ title: error instanceof Error ? error.message : "Failed to add source", tone: "error" });
-    },
-  });
-
-  const uploadSource = useMutation({
-    mutationFn: (file: File) => projectContextApi.uploadSourceFile(companyId, projectId, file),
-    onSuccess: () => {
-      invalidateContext();
-      pushToast({ title: "File uploaded", tone: "success" });
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    },
-    onError: (error) => {
-      pushToast({ title: error instanceof Error ? error.message : "Failed to upload file", tone: "error" });
-    },
-  });
-
-  const syncSource = useMutation({
-    mutationFn: (sourceId: string) => projectContextApi.syncSource(companyId, sourceId),
-    onSuccess: () => invalidateContext(),
-    onError: (error) => {
-      pushToast({ title: error instanceof Error ? error.message : "Sync failed", tone: "error" });
-    },
-  });
-
-  const deleteSource = useMutation({
-    mutationFn: (sourceId: string) => projectContextApi.deleteSource(companyId, sourceId),
-    onSuccess: () => {
-      invalidateContext();
-      pushToast({ title: "Source removed", tone: "success" });
-    },
-    onError: (error) => {
-      pushToast({ title: error instanceof Error ? error.message : "Failed to remove source", tone: "error" });
     },
   });
 
@@ -201,29 +251,6 @@ export function ProjectContextContent({
     updateProfile.mutate({ defaultSkillKeys: [...next] });
   };
 
-  const addManualSource = () => {
-    const title = manualTitle.trim() || "Manual source";
-    const bodyText = manualBody.trim();
-    if (!bodyText) return;
-    createSource.mutate({ sourceType: "manual", title, bodyText });
-  };
-
-  const addDriveSource = () => {
-    const uri = driveUri.trim();
-    if (!uri) return;
-    createSource.mutate({
-      sourceType: "google_drive",
-      provider: "google_drive",
-      title: driveTitle.trim() || "Google Drive folder",
-      uri,
-      externalId: uri,
-    });
-  };
-
-  const submitSearch = () => {
-    setSubmittedSearch(searchDraft.trim());
-  };
-
   return (
     <div className="max-w-6xl space-y-5">
       <section className="rounded-xl border border-border bg-card p-4">
@@ -253,29 +280,19 @@ export function ProjectContextContent({
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(340px,0.9fr)]">
         <section className="rounded-xl border border-border bg-card p-4">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2">
-              <FileText className="h-4 w-4 text-muted-foreground" />
-              <h3 className="text-sm font-semibold">Instructions</h3>
-            </div>
-            <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-              Source retrieval
-              <ToggleSwitch
-                checked={profile.retrievalEnabled}
-                onCheckedChange={(checked) => updateProfile.mutate({ retrievalEnabled: checked })}
-                disabled={updateProfile.isPending}
-              />
-            </div>
+          <div className="mb-3 flex min-w-0 items-center gap-2">
+            <FileText className="h-4 w-4 text-muted-foreground" />
+            <h3 className="text-sm font-semibold">Custom instructions</h3>
           </div>
           <Textarea
             value={instructionsDraft}
             onChange={(event) => setInstructionsDraft(event.target.value)}
-            placeholder="Project operating instructions..."
+            placeholder="Custom instructions..."
             className="min-h-[220px] resize-y font-mono text-sm leading-6"
           />
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
             <div className="text-xs text-muted-foreground">
-              {profile.maxChunks} snippets, {profile.maxBundleChars.toLocaleString()} chars
+              {instructionsDraft.length.toLocaleString()} / 100,000 chars
             </div>
             <Button
               size="sm"
@@ -333,14 +350,163 @@ export function ProjectContextContent({
           </div>
         </section>
       </div>
+    </div>
+  );
+}
 
+export function ProjectSourceContent({
+  companyId,
+  projectId,
+}: {
+  companyId: string;
+  projectId: string;
+}) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const contextKey = queryKeys.projects.context(companyId, projectId);
+  const [manualTitle, setManualTitle] = useState("");
+  const [manualBody, setManualBody] = useState("");
+  const [driveUri, setDriveUri] = useState("");
+  const [driveTitle, setDriveTitle] = useState("");
+  const [searchDraft, setSearchDraft] = useState("");
+  const [submittedSearch, setSubmittedSearch] = useState("");
+
+  const overviewQuery = useQuery({
+    queryKey: contextKey,
+    queryFn: () => projectContextApi.overview(companyId, projectId),
+  });
+  useLegacyCodesmImportMigration({
+    companyId,
+    projectId,
+    contextKey,
+    overview: overviewQuery.data,
+  });
+
+  const searchQuery = useQuery({
+    queryKey: queryKeys.projects.contextSearch(companyId, projectId, submittedSearch),
+    queryFn: () => projectContextApi.search(companyId, projectId, submittedSearch, 8),
+    enabled: submittedSearch.trim().length > 0,
+  });
+
+  const invalidateContext = async () => {
+    await queryClient.invalidateQueries({ queryKey: contextKey });
+    if (submittedSearch.trim()) {
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.contextSearch(companyId, projectId, submittedSearch),
+      });
+    }
+  };
+
+  const updateProfile = useMutation({
+    mutationFn: projectContextApi.updateProfile.bind(null, companyId, projectId),
+    onSuccess: () => {
+      invalidateContext();
+      pushToast({ title: "Source settings saved", tone: "success" });
+    },
+    onError: (error) => {
+      pushToast({ title: error instanceof Error ? error.message : "Failed to save source settings", tone: "error" });
+    },
+  });
+
+  const createSource = useMutation({
+    mutationFn: projectContextApi.createSource.bind(null, companyId, projectId),
+    onSuccess: () => {
+      setManualTitle("");
+      setManualBody("");
+      setDriveUri("");
+      setDriveTitle("");
+      invalidateContext();
+      pushToast({ title: "Source added", tone: "success" });
+    },
+    onError: (error) => {
+      pushToast({ title: error instanceof Error ? error.message : "Failed to add source", tone: "error" });
+    },
+  });
+
+  const uploadSource = useMutation({
+    mutationFn: (file: File) => projectContextApi.uploadSourceFile(companyId, projectId, file),
+    onSuccess: () => {
+      invalidateContext();
+      pushToast({ title: "File uploaded", tone: "success" });
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    },
+    onError: (error) => {
+      pushToast({ title: error instanceof Error ? error.message : "Failed to upload file", tone: "error" });
+    },
+  });
+
+  const syncSource = useMutation({
+    mutationFn: (sourceId: string) => projectContextApi.syncSource(companyId, sourceId),
+    onSuccess: () => invalidateContext(),
+    onError: (error) => {
+      pushToast({ title: error instanceof Error ? error.message : "Sync failed", tone: "error" });
+    },
+  });
+
+  const deleteSource = useMutation({
+    mutationFn: (sourceId: string) => projectContextApi.deleteSource(companyId, sourceId),
+    onSuccess: () => {
+      invalidateContext();
+      pushToast({ title: "Source removed", tone: "success" });
+    },
+    onError: (error) => {
+      pushToast({ title: error instanceof Error ? error.message : "Failed to remove source", tone: "error" });
+    },
+  });
+
+  if (overviewQuery.isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading sources...</p>;
+  }
+
+  if (overviewQuery.error) {
+    return <p className="text-sm text-destructive">{overviewQuery.error.message}</p>;
+  }
+
+  const profile = overviewQuery.data?.profile;
+  if (!profile) return null;
+
+  const addManualSource = () => {
+    const title = manualTitle.trim() || "Manual source";
+    const bodyText = manualBody.trim();
+    if (!bodyText) return;
+    createSource.mutate({ sourceType: "manual", title, bodyText });
+  };
+
+  const addDriveSource = () => {
+    const uri = driveUri.trim();
+    if (!uri) return;
+    createSource.mutate({
+      sourceType: "google_drive",
+      provider: "google_drive",
+      title: driveTitle.trim() || "Google Drive folder",
+      uri,
+      externalId: uri,
+    });
+  };
+
+  const submitSearch = () => {
+    setSubmittedSearch(searchDraft.trim());
+  };
+
+  return (
+    <div className="max-w-6xl space-y-5">
       <section className="rounded-xl border border-border bg-card p-4">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <Database className="h-4 w-4 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Sources</h3>
+            <h3 className="text-sm font-semibold">Source</h3>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+              <span>{profile.maxChunks} snippets, {profile.maxBundleChars.toLocaleString()} chars</span>
+              <span>Source retrieval</span>
+              <ToggleSwitch
+                checked={profile.retrievalEnabled}
+                onCheckedChange={(checked) => updateProfile.mutate({ retrievalEnabled: checked })}
+                disabled={updateProfile.isPending}
+              />
+            </div>
             <input
               ref={fileInputRef}
               type="file"

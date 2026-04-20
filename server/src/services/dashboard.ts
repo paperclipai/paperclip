@@ -1,6 +1,20 @@
 import { and, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, approvals, companies, costEvents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import {
+  activityLog,
+  agents,
+  approvals,
+  companies,
+  costEvents,
+  heartbeatRuns,
+  issueComments,
+  issues,
+  labels,
+  projectLabels,
+  projectWorkspaces,
+  projects,
+} from "@paperclipai/db";
+import type { CostByProject, DashboardCodexProjectsEstimate } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import { costService } from "./costs.js";
@@ -9,6 +23,13 @@ const DASHBOARD_ACTIVITY_LIMIT = 10;
 const DASHBOARD_LIVE_RUN_LIMIT = 10;
 const DASHBOARD_STALE_ISSUE_LIMIT = 10;
 const DASHBOARD_STALE_ISSUE_WINDOW_MS = 45 * 60 * 1000;
+const DASHBOARD_CODEX_PROJECT_ESTIMATE_WINDOW_DAYS = 7;
+const DASHBOARD_CODEX_PROJECT_DEV_HOURS_PER_PROJECT_WEEK = 1;
+const CODEX_PROJECT_LABEL_NAME = "Codex";
+const CODEX_PROJECT_SYNC_SOURCE = "codex_project_sync";
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const CODEX_PROJECT_ESTIMATE_ASSUMPTION =
+  "Estimated from active project-weeks for current Codex-labeled or Codex-synced projects over the last 7 days. One active project-week is treated as 1 developer hour at the company's developer value rate; tracked tokens are shown as supporting evidence only. This is not billed spend.";
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"] as const;
 const STALE_ISSUE_PRIORITY_RANK: Record<string, number> = {
@@ -41,12 +62,90 @@ function priorityRank(priority: string | null | undefined) {
   return STALE_ISSUE_PRIORITY_RANK[priority] ?? Number.MAX_SAFE_INTEGER;
 }
 
+function roundTo(value: number, digits = 2) {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function currentProjectWindowDays(input: {
+  createdAt: Date | string | number | null | undefined;
+  windowStart: Date;
+  windowEnd: Date;
+}) {
+  const createdAt = asDate(input.createdAt) ?? input.windowStart;
+  const startMs = Math.max(createdAt.getTime(), input.windowStart.getTime());
+  const endMs = input.windowEnd.getTime();
+  if (startMs >= endMs) return 0;
+  return (endMs - startMs) / MS_PER_DAY;
+}
+
 export function currentUtcMonthWindow(now = new Date()) {
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth();
   return {
     start: new Date(Date.UTC(year, month, 1, 0, 0, 0, 0)),
     end: new Date(Date.UTC(year, month + 1, 1, 0, 0, 0, 0)),
+  };
+}
+
+function currentCodexEstimateWindow(now: Date) {
+  return {
+    start: new Date(now.getTime() - DASHBOARD_CODEX_PROJECT_ESTIMATE_WINDOW_DAYS * MS_PER_DAY),
+    end: now,
+  };
+}
+
+function buildCodexProjectsEstimate(input: {
+  projects: Array<{ id: string; status: string; createdAt: Date }>;
+  projectCosts: CostByProject[];
+  windowStart: Date;
+  windowEnd: Date;
+  devValueHourlyRateCents: number;
+  devValueTokensPerHour: number;
+}): DashboardCodexProjectsEstimate {
+  const currentProjects = input.projects.filter((project) =>
+    project.status !== "completed" && project.status !== "cancelled",
+  );
+  const projectIds = new Set(currentProjects.map((project) => project.id));
+  const relevantCosts = input.projectCosts.filter((row) => row.projectId && projectIds.has(row.projectId));
+
+  const inputTokens = relevantCosts.reduce((sum, row) => sum + row.inputTokens, 0);
+  const cachedInputTokens = relevantCosts.reduce((sum, row) => sum + row.cachedInputTokens, 0);
+  const outputTokens = relevantCosts.reduce((sum, row) => sum + row.outputTokens, 0);
+  const totalTokens = inputTokens + cachedInputTokens + outputTokens;
+  const devValueTokensPerHour = Math.max(1, input.devValueTokensPerHour);
+  const devValueHourlyRateCents = Math.max(0, input.devValueHourlyRateCents);
+  const trackedTokenDevHours = totalTokens / devValueTokensPerHour;
+  const activeProjectDays = currentProjects.reduce(
+    (sum, project) => sum + currentProjectWindowDays({
+      createdAt: project.createdAt,
+      windowStart: input.windowStart,
+      windowEnd: input.windowEnd,
+    }),
+    0,
+  );
+  const projectWeekEquivalent = activeProjectDays / DASHBOARD_CODEX_PROJECT_ESTIMATE_WINDOW_DAYS;
+  const estimatedDevHours = projectWeekEquivalent * DASHBOARD_CODEX_PROJECT_DEV_HOURS_PER_PROJECT_WEEK;
+
+  return {
+    labelName: CODEX_PROJECT_LABEL_NAME,
+    windowDays: DASHBOARD_CODEX_PROJECT_ESTIMATE_WINDOW_DAYS,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    projectCount: currentProjects.length,
+    activeProjectDays: roundTo(activeProjectDays, 2),
+    projectWeekEquivalent: roundTo(projectWeekEquivalent, 2),
+    totalTokens,
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    estimatedDevHours: roundTo(estimatedDevHours, 2),
+    estimatedDevValueCents: Math.round(estimatedDevHours * devValueHourlyRateCents),
+    trackedTokenDevHours: roundTo(trackedTokenDevHours, 2),
+    devValueHourlyRateCents,
+    devValueTokensPerHour,
+    devHoursPerProjectWeek: DASHBOARD_CODEX_PROJECT_DEV_HOURS_PER_PROJECT_WEEK,
+    assumption: CODEX_PROJECT_ESTIMATE_ASSUMPTION,
   };
 }
 
@@ -98,6 +197,7 @@ export function dashboardService(db: Db) {
       };
 
       const { start: monthStart, end: monthEnd } = currentUtcMonthWindow(now);
+      const { start: codexEstimateStart, end: codexEstimateEnd } = currentCodexEstimateWindow(now);
       const [
         agentRows,
         taskRows,
@@ -108,6 +208,8 @@ export function dashboardService(db: Db) {
         staleIssueCandidates,
         budgetOverview,
         workValue,
+        codexProjectRows,
+        codexProjectCostRows,
       ] = await Promise.all([
         db
           .select({ status: agents.status, count: sql<number>`count(*)` })
@@ -225,7 +327,55 @@ export function dashboardService(db: Db) {
           ),
         budgets.overview(companyId),
         costs.workValue(companyId, { from: monthStart, to: monthEnd }),
+        db
+          .selectDistinctOn([projects.id], {
+            id: projects.id,
+            status: projects.status,
+            createdAt: projects.createdAt,
+          })
+          .from(projects)
+          .leftJoin(
+            projectLabels,
+            and(
+              eq(projectLabels.projectId, projects.id),
+              eq(projectLabels.companyId, companyId),
+            ),
+          )
+          .leftJoin(
+            labels,
+            and(
+              eq(labels.id, projectLabels.labelId),
+              eq(labels.companyId, companyId),
+            ),
+          )
+          .leftJoin(
+            projectWorkspaces,
+            and(
+              eq(projectWorkspaces.projectId, projects.id),
+              eq(projectWorkspaces.companyId, companyId),
+            ),
+          )
+          .where(
+            and(
+              eq(projects.companyId, companyId),
+              isNull(projects.archivedAt),
+              or(
+                sql`lower(${labels.name}) = ${CODEX_PROJECT_LABEL_NAME.toLowerCase()}`,
+                sql`${projectWorkspaces.metadata} ->> 'source' = ${CODEX_PROJECT_SYNC_SOURCE}`,
+              ),
+            ),
+          )
+          .orderBy(projects.id),
+        costs.byProject(companyId, { from: codexEstimateStart, to: codexEstimateEnd }),
       ]);
+      const codexProjectsEstimate = buildCodexProjectsEstimate({
+        projects: codexProjectRows,
+        projectCosts: codexProjectCostRows,
+        windowStart: codexEstimateStart,
+        windowEnd: codexEstimateEnd,
+        devValueHourlyRateCents: workValue.devValueHourlyRateCents,
+        devValueTokensPerHour: workValue.devValueTokensPerHour,
+      });
 
       for (const row of agentRows) {
         const count = Number(row.count);
@@ -310,6 +460,7 @@ export function dashboardService(db: Db) {
           monthBudgetCents: company.budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
           workValue,
+          codexProjectsEstimate,
         },
         pendingApprovals,
         budgets: {

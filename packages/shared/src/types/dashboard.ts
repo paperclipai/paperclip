@@ -1,5 +1,26 @@
 import type { CostWorkValueSummary } from "./cost.js";
 
+export interface DashboardCodexProjectsEstimate {
+  labelName: string;
+  windowDays: number;
+  windowStart: Date;
+  windowEnd: Date;
+  projectCount: number;
+  activeProjectDays: number;
+  projectWeekEquivalent: number;
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  estimatedDevHours: number;
+  estimatedDevValueCents: number;
+  trackedTokenDevHours: number;
+  devValueHourlyRateCents: number;
+  devValueTokensPerHour: number;
+  devHoursPerProjectWeek: number;
+  assumption: string;
+}
+
 export interface DashboardStaleIssueSummary {
   id: string;
   identifier: string | null;
@@ -65,6 +86,7 @@ export interface DashboardSummary {
     monthBudgetCents: number;
     monthUtilizationPercent: number;
     workValue: CostWorkValueSummary;
+    codexProjectsEstimate: DashboardCodexProjectsEstimate;
   };
   pendingApprovals: number;
   budgets: {

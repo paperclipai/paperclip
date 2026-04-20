@@ -238,6 +238,24 @@ beforeEach(() => {
         devValueHourlyRateCents: 15000,
         devValueTokensPerHour: 100000,
       },
+      codexProjectsEstimate: {
+        labelName: "Codex",
+        windowDays: 7,
+        windowStart: "2026-04-08T12:00:00.000Z",
+        windowEnd: "2026-04-15T12:00:00.000Z",
+        projectCount: 4,
+        activeProjectDays: 22.75,
+        projectWeekEquivalent: 3.25,
+        totalTokens: 420000,
+        inputTokens: 310000,
+        cachedInputTokens: 80000,
+        outputTokens: 30000,
+        estimatedDevHours: 4.2,
+        estimatedDevValueCents: 63000,
+        devValueHourlyRateCents: 15000,
+        devValueTokensPerHour: 100000,
+        assumption: "Estimated from tokens attributed to current Codex-labeled projects over the last 7 days. This is not billed spend.",
+      },
     },
     pendingApprovals: 0,
     budgets: { activeIncidents: 0, pendingApprovals: 0, pausedAgents: 0, pausedProjects: 0 },
@@ -273,6 +291,20 @@ describe("Dashboard codex limits card", () => {
     expect(container?.textContent).toContain("1.3h est. dev time");
     expect(container?.textContent).toContain("125.0k tokens");
     expect(container?.textContent).toContain("$186.25 saved");
+  });
+
+  it("renders the Codex project estimate as a non-spend estimate with its model basis", async () => {
+    await renderDashboard();
+
+    expect(container?.textContent).toContain("Codex Project Estimate");
+    expect(container?.textContent).toContain("$630.00");
+    expect(container?.textContent).toContain("4 Codex projects");
+    expect(container?.textContent).toContain("4.2h estimated project work");
+    expect(container?.textContent).toContain("3.25 wk");
+    expect(container?.textContent).toContain("420.0k");
+    expect(container?.textContent).toContain("not billed spend");
+    expect(container?.textContent).toContain("$150.00/hr");
+    expect(container?.textContent).toContain("100.0k tokens of work");
   });
 
   it("renders OpenRouter month-to-date spend when biller usage exists", async () => {

@@ -339,6 +339,7 @@ export type {
   AgentServiceHealthReason,
   AgentServiceHealthFailureExample,
   LiveEvent,
+  DashboardCodexProjectsEstimate,
   DashboardSummary,
   ActivityEvent,
   SidebarBadges,

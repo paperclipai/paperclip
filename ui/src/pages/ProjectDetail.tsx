@@ -19,7 +19,7 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
 import { ProjectLabelPills } from "../components/ProjectLabelPills";
-import { ProjectContextContent } from "../components/ProjectContextContent";
+import { ProjectContextContent, ProjectSourceContent } from "../components/ProjectContextContent";
 import { ProjectTasksRail } from "../components/ProjectTasksRail";
 import { StatusBadge } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -31,37 +31,16 @@ import { ProjectWorkspaceSummaryCard } from "../components/ProjectWorkspaceSumma
 import { CopyText } from "../components/CopyText";
 import { IssuesQuicklook } from "../components/IssuesQuicklook";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
+import { buildProjectPermanentUrl } from "../lib/project-permanent-link";
+import { isProjectPluginTab, resolveProjectTab, type ProjectPluginTab, type ProjectTab } from "../lib/project-tabs";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { Copy, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
-
-/* ── Top-level tab types ── */
-
-type ProjectBaseTab = "overview" | "list" | "workspaces" | "context" | "configuration" | "budget";
-type ProjectPluginTab = `plugin:${string}`;
-type ProjectTab = ProjectBaseTab | ProjectPluginTab;
-
-function isProjectPluginTab(value: string | null): value is ProjectPluginTab {
-  return typeof value === "string" && value.startsWith("plugin:");
-}
-
-function resolveProjectTab(pathname: string, projectId: string): ProjectTab | null {
-  const segments = pathname.split("/").filter(Boolean);
-  const projectsIdx = segments.indexOf("projects");
-  if (projectsIdx === -1 || segments[projectsIdx + 1] !== projectId) return null;
-  const tab = segments[projectsIdx + 2];
-  if (tab === "overview") return "overview";
-  if (tab === "configuration") return "configuration";
-  if (tab === "budget") return "budget";
-  if (tab === "context") return "context";
-  if (tab === "issues") return "list";
-  if (tab === "workspaces") return "workspaces";
-  return null;
-}
 
 /* ── Overview tab content ── */
 
@@ -537,6 +516,16 @@ export function ProjectDetail() {
     queryFn: () => projectsApi.get(routeProjectRef, lookupCompanyId),
     enabled: canFetchProject,
   });
+  const permanentProjectUrl = useMemo(() => {
+    if (!project?.id) return "";
+    return buildProjectPermanentUrl({
+      origin: typeof window === "undefined" ? "" : window.location.origin,
+      pathname: location.pathname,
+      search: location.search,
+      hash: location.hash,
+      projectId: project.id,
+    });
+  }, [location.hash, location.pathname, location.search, project?.id]);
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
@@ -686,6 +675,10 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/context`, { replace: true });
       return;
     }
+    if (activeTab === "source") {
+      navigate(`/projects/${canonicalProjectRef}/source`, { replace: true });
+      return;
+    }
     if (activeTab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`, { replace: true });
       return;
@@ -822,6 +815,9 @@ export function ProjectDetail() {
     if (cachedTab === "context") {
       return <Navigate to={`/projects/${canonicalProjectRef}/context`} replace />;
     }
+    if (cachedTab === "source") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/source`} replace />;
+    }
     if (cachedTab === "workspaces" && workspaceTabDecisionLoaded && showWorkspacesTab) {
       return <Navigate to={`/projects/${canonicalProjectRef}/workspaces`} replace />;
     }
@@ -853,6 +849,8 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "context") {
       navigate(`/projects/${canonicalProjectRef}/context`);
+    } else if (tab === "source") {
+      navigate(`/projects/${canonicalProjectRef}/source`);
     } else if (tab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`);
     } else if (tab === "configuration") {
@@ -880,6 +878,21 @@ export function ProjectDetail() {
               className="text-xl font-bold"
             />
             <ProjectLabelPills labels={project.labels} />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <CopyText
+                    text={permanentProjectUrl}
+                    ariaLabel="Copy permanent project link"
+                    copiedLabel="Permanent link copied"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  >
+                    <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                  </CopyText>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top">Copy permanent project link</TooltipContent>
+            </Tooltip>
           </div>
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
@@ -928,6 +941,7 @@ export function ProjectDetail() {
             { value: "overview", label: "Overview" },
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "context", label: "Context" },
+            { value: "source", label: "Source" },
             { value: "configuration", label: "Configuration" },
             { value: "budget", label: "Budget" },
             ...pluginTabItems.map((item) => ({
@@ -988,6 +1002,10 @@ export function ProjectDetail() {
 
       {activeTab === "context" && resolvedCompanyId ? (
         <ProjectContextContent companyId={resolvedCompanyId} projectId={project.id} />
+      ) : null}
+
+      {activeTab === "source" && resolvedCompanyId ? (
+        <ProjectSourceContent companyId={resolvedCompanyId} projectId={project.id} />
       ) : null}
 
       {activeTab === "configuration" && (

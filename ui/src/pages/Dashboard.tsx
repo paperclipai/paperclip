@@ -16,6 +16,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
 import { StatusIcon } from "../components/StatusIcon";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
@@ -25,7 +26,14 @@ import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { DashboardCodexLimitsCard } from "../components/DashboardCodexLimitsCard";
-import type { Agent, CostByBiller, CostByProviderModel, Issue, ProviderQuotaResult } from "@paperclipai/shared";
+import type {
+  Agent,
+  CostByBiller,
+  CostByProviderModel,
+  DashboardCodexProjectsEstimate,
+  Issue,
+  ProviderQuotaResult,
+} from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import {
   findCodexCreditsQuotaWindow,
@@ -130,6 +138,69 @@ function formatRoiMultiple(roi: number | null): string {
   if (roi === null) return "no billed spend";
   if (!Number.isFinite(roi)) return "0x ROI";
   return `${roi.toFixed(roi >= 10 ? 0 : 1)}x ROI`;
+}
+
+function CodexProjectEstimatePanel({ estimate }: { estimate: DashboardCodexProjectsEstimate }) {
+  const projectLabel = estimate.projectCount === 1 ? "project" : "projects";
+
+  return (
+    <Card className="border-border/70">
+      <CardHeader className="px-5 pt-5 pb-0 gap-1">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <CardTitle className="text-base">Codex Project Estimate</CardTitle>
+            <CardDescription>
+              7-day replacement-value estimate for current Codex-labeled projects, not billed spend.
+            </CardDescription>
+          </div>
+          <Link to="/projects" className="shrink-0 text-xs font-medium text-muted-foreground no-underline hover:text-foreground">
+            Open projects
+          </Link>
+        </div>
+      </CardHeader>
+      <CardContent className="px-5 pb-5 pt-4">
+        <div className="grid gap-4 md:grid-cols-[minmax(0,1.2fr)_minmax(0,2fr)]">
+          <div className="min-w-0 border border-border bg-muted/20 px-4 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              Estimated Value
+            </div>
+            <div className="mt-2 text-3xl font-semibold tabular-nums text-foreground">
+              {formatCents(estimate.estimatedDevValueCents)}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {formatDevHours(estimate.estimatedDevHours)} estimated project work
+            </div>
+          </div>
+
+          <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="border border-border px-3 py-3">
+              <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Coverage</div>
+              <div className="mt-1 font-medium tabular-nums">{estimate.projectCount} {projectLabel}</div>
+            </div>
+            <div className="border border-border px-3 py-3">
+              <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Project Time</div>
+              <div className="mt-1 font-medium tabular-nums">{estimate.projectWeekEquivalent.toFixed(2)} wk</div>
+            </div>
+            <div className="border border-border px-3 py-3">
+              <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Tokens</div>
+              <div className="mt-1 font-medium tabular-nums">{formatTokens(estimate.totalTokens)}</div>
+            </div>
+            <div className="border border-border px-3 py-3">
+              <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Model</div>
+              <div className="mt-1 font-medium tabular-nums">
+                {formatCents(estimate.devValueHourlyRateCents)}/hr
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <p className="mt-3 text-xs text-muted-foreground">
+          Model: {estimate.assumption} Current basis is {formatCents(estimate.devValueHourlyRateCents)} per{" "}
+          {formatTokens(estimate.devValueTokensPerHour)} tokens of work.
+        </p>
+      </CardContent>
+    </Card>
+  );
 }
 
 export function Dashboard() {
@@ -364,8 +435,8 @@ export function Dashboard() {
 
   const hasNoAgents = agents !== undefined && agents.length === 0;
   const metricGridClassName = openRouterSpendMetric
-    ? "grid grid-cols-2 gap-1 sm:gap-2 md:grid-cols-3 xl:grid-cols-6 2xl:grid-cols-7"
-    : "grid grid-cols-2 gap-1 sm:gap-2 md:grid-cols-3 xl:grid-cols-6";
+    ? "grid grid-cols-2 gap-1 sm:gap-2 md:grid-cols-3 xl:grid-cols-7 2xl:grid-cols-8"
+    : "grid grid-cols-2 gap-1 sm:gap-2 md:grid-cols-3 xl:grid-cols-7";
 
   return (
     <div className="space-y-6">
@@ -465,6 +536,19 @@ export function Dashboard() {
               }
             />
             <MetricCard
+              icon={TrendingUp}
+              value={formatCents(data.costs.codexProjectsEstimate.estimatedDevValueCents)}
+              label="Codex Project Estimate"
+              to="/projects"
+              description={
+                <span>
+                  {data.costs.codexProjectsEstimate.projectCount} Codex projects{", "}
+                  {formatDevHours(data.costs.codexProjectsEstimate.estimatedDevHours)} estimated{", "}
+                  not billed spend
+                </span>
+              }
+            />
+            <MetricCard
               icon={ShieldCheck}
               value={data.pendingApprovals + data.budgets.pendingApprovals}
               label="Pending Approvals"
@@ -494,6 +578,8 @@ export function Dashboard() {
               />
             ) : null}
           </div>
+
+          <CodexProjectEstimatePanel estimate={data.costs.codexProjectsEstimate} />
 
           {shouldShowCodexLimitsCard ? (
             <DashboardCodexLimitsCard
