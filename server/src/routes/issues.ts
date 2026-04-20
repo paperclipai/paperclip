@@ -657,7 +657,7 @@ export function issueRoutes(
       unreadForUserId,
       projectId: req.query.projectId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
-      parentId: req.query.parentId as string | undefined,
+      parentId: (req.query.parentId ?? req.query.parentIssueId) as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originId: req.query.originId as string | undefined,
