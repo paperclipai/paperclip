@@ -495,7 +495,8 @@ export function buildSchemaAdapterConfig(
 
   if (values.extraArgs) {
     ac.extraArgs = values.extraArgs
-      .split(/\s+/)
+      .split(",")
+      .map((s) => s.trim())
       .filter(Boolean);
   }
 
