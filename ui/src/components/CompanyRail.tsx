@@ -302,7 +302,6 @@ function orgInitials(name: string) {
 function OrgSwitcherChip() {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
-  const location = useLocation();
   const { organizations, selectedOrg, setSelectedOrgId, loading } = useOrg();
   const { companies, setSelectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
@@ -311,23 +310,24 @@ function OrgSwitcherChip() {
   const initials = orgInitials(label);
 
   function handleSelect(orgId: string) {
-    setSelectedOrgId(orgId);
     setOpen(false);
-
-    const firstSegment = location.pathname.split("/").filter(Boolean)[0] ?? "";
-    const currentPrefixCompany = companies.find(
-      (c) => c.issuePrefix === firstSegment,
-    );
-    if (!currentPrefixCompany) return;
-    if (currentPrefixCompany.organizationId === orgId) return;
+    if (selectedOrg?.id === orgId) return;
 
     const nextCompany = companies.find(
       (c) => c.organizationId === orgId && c.status !== "archived",
     );
+
     if (nextCompany) {
+      // Navigate to a company in the target org; Layout syncs selectedOrgId
+      // from matchedCompany.organizationId after the route settles. We don't
+      // call setSelectedOrgId here because it races against Layout's sync
+      // effect while the URL is still pointing at the previous company.
       setSelectedCompanyId(nextCompany.id, { source: "manual" });
       navigate(`/${nextCompany.issuePrefix}/dashboard`);
     } else {
+      // No company in the target org — Layout can't infer orgId from the URL,
+      // so set it explicitly and send the user to /home.
+      setSelectedOrgId(orgId);
       navigate("/home");
     }
   }
