@@ -343,7 +343,7 @@ function OrgSwitcherChip() {
           {initials}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" side="right" sideOffset={8} className="w-64 p-1">
+      <PopoverContent align="start" side="right" sideOffset={8} className="w-64 p-1" disablePortal>
         <div className="flex flex-col">
           {organizations.length > 0 ? (
             <>
@@ -354,7 +354,19 @@ function OrgSwitcherChip() {
                 <button
                   key={org.id}
                   type="button"
-                  onClick={() => handleSelect(org.id)}
+                  onPointerDown={(e) => {
+                    console.log("[rail-org-switch] onPointerDown", org.id);
+                    e.stopPropagation();
+                  }}
+                  onMouseDown={(e) => {
+                    console.log("[rail-org-switch] onMouseDown", org.id);
+                    e.stopPropagation();
+                  }}
+                  onClick={(e) => {
+                    console.log("[rail-org-switch] onClick", org.id);
+                    e.stopPropagation();
+                    handleSelect(org.id);
+                  }}
                   className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-left hover:bg-accent hover:text-accent-foreground"
                 >
                   <span className="flex h-5 w-5 items-center justify-center rounded bg-muted text-[10px] font-semibold">
