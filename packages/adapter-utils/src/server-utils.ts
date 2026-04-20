@@ -708,6 +708,20 @@ export async function resolvePaperclipSkillsDir(
   return null;
 }
 
+async function readSkillRequired(skillDir: string): Promise<boolean> {
+  try {
+    const content = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8");
+    const normalized = content.replace(/\r\n/g, "\n");
+    if (!normalized.startsWith("---\n")) return true;
+    const closing = normalized.indexOf("\n---\n", 4);
+    if (closing < 0) return true;
+    const frontmatter = normalized.slice(4, closing);
+    return !/^\s*required\s*:\s*false\s*$/m.test(frontmatter);
+  } catch {
+    return true;
+  }
+}
+
 export async function listPaperclipSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
@@ -717,15 +731,20 @@ export async function listPaperclipSkillEntries(
 
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
+    const dirs = entries.filter((entry) => entry.isDirectory());
+    return Promise.all(dirs.map(async (entry) => {
+      const skillDir = path.join(root, entry.name);
+      const required = await readSkillRequired(skillDir);
+      return {
         key: `paperclipai/paperclip/${entry.name}`,
         runtimeName: entry.name,
-        source: path.join(root, entry.name),
-        required: true,
-        requiredReason: "Bundled Paperclip skills are always available for local adapters.",
-      }));
+        source: skillDir,
+        required,
+        requiredReason: required
+          ? "Bundled Paperclip skills are always available for local adapters."
+          : null,
+      };
+    }));
   } catch {
     return [];
   }
