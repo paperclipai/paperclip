@@ -461,13 +461,11 @@ function joinWakePayloadSections(structuredWakePrompt: string, structuredWakeJso
   return sections.join("\n");
 }
 
-function buildStandardPaperclipPayload(
+function buildSupplementalPaperclipContext(
   ctx: AdapterExecutionContext,
-  wakePayload: WakePayload,
-  paperclipEnv: Record<string, string>,
   payloadTemplate: Record<string, unknown>,
 ): Record<string, unknown> {
-  const templatePaperclip = parseObject(payloadTemplate.paperclip);
+  const supplemental = parseObject(payloadTemplate.paperclip);
   const workspace = asRecord(ctx.context.paperclipWorkspace);
   const workspaces = Array.isArray(ctx.context.paperclipWorkspaces)
     ? ctx.context.paperclipWorkspaces.filter((entry): entry is Record<string, unknown> => Boolean(asRecord(entry)))
@@ -479,42 +477,32 @@ function buildStandardPaperclipPayload(
       )
     : [];
 
-  const standardPaperclip: Record<string, unknown> = {
-    runId: ctx.runId,
-    companyId: ctx.agent.companyId,
-    agentId: ctx.agent.id,
-    agentName: ctx.agent.name,
-    taskId: wakePayload.taskId,
-    issueId: wakePayload.issueId,
-    issueIds: wakePayload.issueIds,
-    wakeReason: wakePayload.wakeReason,
-    wakeCommentId: wakePayload.wakeCommentId,
-    approvalId: wakePayload.approvalId,
-    approvalStatus: wakePayload.approvalStatus,
-    apiUrl: paperclipEnv.PAPERCLIP_API_URL ?? null,
-  };
-  const structuredWake = parseObject(ctx.context.paperclipWake);
-  if (Object.keys(structuredWake).length > 0) {
-    standardPaperclip.wake = structuredWake;
-  }
-
   if (workspace) {
-    standardPaperclip.workspace = workspace;
+    supplemental.workspace = workspace;
   }
   if (workspaces.length > 0) {
-    standardPaperclip.workspaces = workspaces;
+    supplemental.workspaces = workspaces;
   }
   if (runtimeServiceIntents.length > 0 || Object.keys(configuredWorkspaceRuntime).length > 0) {
-    standardPaperclip.workspaceRuntime = {
+    supplemental.workspaceRuntime = {
       ...configuredWorkspaceRuntime,
       ...(runtimeServiceIntents.length > 0 ? { services: runtimeServiceIntents } : {}),
     };
   }
 
-  return {
-    ...templatePaperclip,
-    ...standardPaperclip,
-  };
+  return supplemental;
+}
+
+function appendSupplementalPaperclipContext(baseText: string, context: Record<string, unknown>): string {
+  if (Object.keys(context).length === 0) return baseText;
+
+  return [
+    baseText.trim(),
+    "Additional Paperclip context JSON:",
+    "```json",
+    JSON.stringify(context, null, 2),
+    "```",
+  ].join("\n");
 }
 
 function normalizeUrl(input: string): URL | null {
@@ -1124,17 +1112,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
-  const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
-  const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
+  const supplementalPaperclipContext = buildSupplementalPaperclipContext(ctx, payloadTemplate);
+  const enrichedWakeText = appendSupplementalPaperclipContext(wakeText, supplementalPaperclipContext);
+  const message = templateMessage ? appendWakeText(templateMessage, enrichedWakeText) : enrichedWakeText;
+  const { text: _ignoredText, paperclip: _ignoredPaperclip, ...payloadTemplateWithoutPaperclip } = payloadTemplate;
 
   const agentParams: Record<string, unknown> = {
-    ...payloadTemplate,
+    ...payloadTemplateWithoutPaperclip,
     message,
     sessionKey,
     idempotencyKey: ctx.runId,
   };
-  delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
