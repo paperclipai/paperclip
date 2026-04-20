@@ -90,7 +90,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-e2e-");
+    tempDb = await startEmbeddedPostgresTestDatabase("aiteamcorp-routines-e2e-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -367,7 +367,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       .from(issues)
       .where(eq(issues.id, runRes.body.linkedIssueId));
 
-    expect(issue?.description).toBe("Review paperclip for high bugs");
+    expect(issue?.description).toBe("Review aiteamcorp for high bugs");
   });
 
   it("allows drafting a routine without defaults and running it with one-off overrides", async () => {

@@ -510,8 +510,8 @@ function buildStandardAiTeamCorpPayload(
   }
 
   return {
-    ...templateAiTeamCorp,
-    ...standardAiTeamCorp,
+    ...templatePaperclip,
+    ...standardPaperclip,
   };
 }
 

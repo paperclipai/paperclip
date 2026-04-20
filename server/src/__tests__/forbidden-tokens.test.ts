@@ -37,7 +37,7 @@ describe("forbidden token check", () => {
     const path = await import("node:path");
 
     const tokensFile = path.join(os.tmpdir(), `forbidden-tokens-${Date.now()}.txt`);
-    fs.writeFileSync(tokensFile, "# comment\npaperclip\ncustom-token\n");
+    fs.writeFileSync(tokensFile, "# comment\naiteamcorp\ncustom-token\n");
 
     try {
       const tokens = resolveForbiddenTokens(tokensFile, { USER: "aiteamcorp" }, {

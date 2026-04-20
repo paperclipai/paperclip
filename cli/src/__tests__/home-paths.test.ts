@@ -26,7 +26,7 @@ describe("home path resolution", () => {
   });
 
   it("supports AITEAMCORP_HOME and explicit instance ids", () => {
-    process.env.AITEAMCORP_HOME = "~/paperclip-home";
+    process.env.AITEAMCORP_HOME = "~/aiteamcorp-home";
 
     const home = resolveAiTeamCorpHomeDir();
     expect(home).toBe(path.resolve(os.homedir(), "aiteamcorp-home"));

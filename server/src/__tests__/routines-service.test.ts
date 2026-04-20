@@ -40,7 +40,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-service-");
+    tempDb = await startEmbeddedPostgresTestDatabase("aiteamcorp-routines-service-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -389,8 +389,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(routineRuns.id, run.id))
       .then((rows) => rows[0] ?? null);
 
-    expect(storedIssue?.title).toBe("repo triage for paperclip");
-    expect(storedIssue?.description).toBe("Review paperclip for high bugs");
+    expect(storedIssue?.title).toBe("repo triage for aiteamcorp");
+    expect(storedIssue?.description).toBe("Review aiteamcorp for high bugs");
     expect(storedRun?.triggerPayload).toEqual({
       variables: {
         repo: "aiteamcorp",
