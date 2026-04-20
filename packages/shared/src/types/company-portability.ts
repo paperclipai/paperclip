@@ -93,6 +93,13 @@ export interface CompanyPortabilityIssueRoutineManifestEntry {
   triggers: CompanyPortabilityIssueRoutineTriggerManifestEntry[];
 }
 
+export interface CompanyPortabilityLabelManifestEntry {
+  slug: string;
+  name: string;
+  color: string;
+  sourceId: string | null;
+}
+
 export interface CompanyPortabilityIssueManifestEntry {
   slug: string;
   identifier: string | null;
@@ -107,6 +114,11 @@ export interface CompanyPortabilityIssueManifestEntry {
   legacyRecurrence: Record<string, unknown> | null;
   status: string | null;
   priority: string | null;
+  labelSlugs: string[];
+  /**
+   * @deprecated Raw label ids are source-company scoped and are only retained
+   * for backwards compatibility with packages exported before labelSlugs.
+   */
   labelIds: string[];
   billingCode: string | null;
   executionWorkspaceSettings: Record<string, unknown> | null;
@@ -163,6 +175,7 @@ export interface CompanyPortabilityManifest {
   agents: CompanyPortabilityAgentManifestEntry[];
   skills: CompanyPortabilitySkillManifestEntry[];
   projects: CompanyPortabilityProjectManifestEntry[];
+  labels: CompanyPortabilityLabelManifestEntry[];
   issues: CompanyPortabilityIssueManifestEntry[];
   envInputs: CompanyPortabilityEnvInput[];
 }

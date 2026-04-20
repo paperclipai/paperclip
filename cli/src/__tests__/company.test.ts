@@ -224,6 +224,7 @@ describe("renderCompanyImportPreview", () => {
             metadata: null,
           },
         ],
+        labels: [],
         issues: [
           {
             slug: "kickoff",
@@ -239,6 +240,7 @@ describe("renderCompanyImportPreview", () => {
             legacyRecurrence: null,
             status: null,
             priority: null,
+            labelSlugs: [],
             labelIds: [],
             billingCode: null,
             executionWorkspaceSettings: null,
@@ -439,6 +441,7 @@ describe("import selection catalog", () => {
             metadata: null,
           },
         ],
+        labels: [],
         issues: [
           {
             slug: "kickoff",
@@ -454,6 +457,7 @@ describe("import selection catalog", () => {
             legacyRecurrence: null,
             status: null,
             priority: null,
+            labelSlugs: [],
             labelIds: [],
             billingCode: null,
             executionWorkspaceSettings: null,
@@ -581,6 +585,7 @@ describe("default adapter overrides", () => {
         ],
         skills: [],
         projects: [],
+        labels: [],
         issues: [],
         envInputs: [],
       },

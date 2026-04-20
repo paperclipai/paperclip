@@ -24,6 +24,7 @@ import type {
   CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueRoutineTriggerManifestEntry,
   CompanyPortabilityIssueManifestEntry,
+  CompanyPortabilityLabelManifestEntry,
   CompanyPortabilitySidebarOrder,
   CompanyPortabilitySkillManifestEntry,
   CompanySkill,
@@ -121,6 +122,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 };
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
+const DEFAULT_LABEL_COLOR = "#64748b";
 const IMPORT_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
 const execFileAsync = promisify(execFile);
 let bundledSkillsCommitPromise: Promise<string | null> | null = null;
@@ -496,6 +498,7 @@ type PaperclipExtensionDoc = {
   company?: Record<string, unknown> | null;
   agents?: Record<string, Record<string, unknown>> | null;
   projects?: Record<string, Record<string, unknown>> | null;
+  labels?: Record<string, Record<string, unknown>> | null;
   tasks?: Record<string, Record<string, unknown>> | null;
   routines?: Record<string, Record<string, unknown>> | null;
 };
@@ -1470,6 +1473,64 @@ function normalizePortableSlugList(value: unknown) {
   return normalized;
 }
 
+function normalizePortableLabelExtension(
+  slug: string,
+  value: unknown,
+): CompanyPortabilityLabelManifestEntry | null {
+  const safeSlug = normalizeAgentUrlKey(slug) ?? slug.trim();
+  if (!safeSlug) return null;
+  const extension = isPlainRecord(value) ? value : {};
+  const name = asString(extension.name) ?? slug;
+  return {
+    slug: safeSlug,
+    name,
+    color: asString(extension.color) ?? DEFAULT_LABEL_COLOR,
+    sourceId: asString(extension.sourceId),
+  };
+}
+
+function resolvePortableIssueLabelIds(
+  issue: Pick<CompanyPortabilityIssueManifestEntry, "slug" | "labelSlugs" | "labelIds">,
+  importedLabelIdBySlug: Map<string, string>,
+  importedLabelIdBySourceId: Map<string, string>,
+  warnings: string[],
+) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const missing: string[] = [];
+  const addLabelId = (labelId: string | undefined) => {
+    if (!labelId || seen.has(labelId)) return;
+    seen.add(labelId);
+    out.push(labelId);
+  };
+
+  for (const labelSlug of issue.labelSlugs ?? []) {
+    const labelId = importedLabelIdBySlug.get(labelSlug);
+    if (labelId) {
+      addLabelId(labelId);
+    } else {
+      missing.push(labelSlug);
+    }
+  }
+
+  for (const sourceLabelId of issue.labelIds ?? []) {
+    const labelId = importedLabelIdBySourceId.get(sourceLabelId);
+    if (labelId) {
+      addLabelId(labelId);
+    } else if ((issue.labelSlugs ?? []).length === 0) {
+      missing.push(sourceLabelId);
+    }
+  }
+
+  if (missing.length > 0) {
+    const preview = missing.slice(0, 4).join(", ");
+    const remainder = missing.length > 4 ? ` and ${missing.length - 4} more` : "";
+    warnings.push(`Task ${issue.slug} references labels ${preview}${remainder}, but they were not available in the target company and were skipped.`);
+  }
+
+  return out;
+}
+
 function normalizePortableSidebarOrder(value: unknown): CompanyPortabilitySidebarOrder | null {
   if (!isPlainRecord(value)) return null;
   const sidebar = {
@@ -2370,6 +2431,7 @@ function buildManifestFromPackageFiles(
   const paperclipSidebar = normalizePortableSidebarOrder(paperclipExtension.sidebar);
   const paperclipAgents = isPlainRecord(paperclipExtension.agents) ? paperclipExtension.agents : {};
   const paperclipProjects = isPlainRecord(paperclipExtension.projects) ? paperclipExtension.projects : {};
+  const paperclipLabels = isPlainRecord(paperclipExtension.labels) ? paperclipExtension.labels : {};
   const paperclipTasks = isPlainRecord(paperclipExtension.tasks) ? paperclipExtension.tasks : {};
   const paperclipRoutines = isPlainRecord(paperclipExtension.routines) ? paperclipExtension.routines : {};
   const companyName =
@@ -2412,7 +2474,7 @@ function buildManifestFromPackageFiles(
   const skillPaths = Array.from(new Set([...referencedSkillPaths, ...discoveredSkillPaths])).sort();
 
   const manifest: CompanyPortabilityManifest = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     generatedAt: new Date().toISOString(),
     source: opts?.sourceLabel ?? null,
     includes: {
@@ -2449,11 +2511,19 @@ function buildManifestFromPackageFiles(
     agents: [],
     skills: [],
     projects: [],
+    labels: [],
     issues: [],
     envInputs: [],
   };
 
   const warnings: string[] = [];
+  const usedLabelSlugs = new Set<string>();
+  for (const [rawSlug, rawExtension] of Object.entries(paperclipLabels).sort(([left], [right]) => left.localeCompare(right))) {
+    const label = normalizePortableLabelExtension(rawSlug, rawExtension);
+    if (!label) continue;
+    label.slug = uniqueSlug(label.slug, usedLabelSlugs);
+    manifest.labels.push(label);
+  }
   if (manifest.company?.logoPath && !normalizedFiles[manifest.company.logoPath]) {
     warnings.push(`Referenced company logo file is missing from package: ${manifest.company.logoPath}`);
   }
@@ -2671,6 +2741,8 @@ function buildManifestFromPackageFiles(
       legacyRecurrence,
       status: asString(extension.status) ?? asString(routineExtensionRaw.status),
       priority: asString(extension.priority) ?? asString(routineExtensionRaw.priority),
+      labelSlugs: normalizePortableSlugList(extension.labelSlugs)
+        .map((entry) => normalizeAgentUrlKey(entry) ?? entry),
       labelIds: Array.isArray(extension.labelIds)
         ? extension.labelIds.filter((entry): entry is string => typeof entry === "string")
         : [],
@@ -3190,8 +3262,36 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const paperclipAgentsOut: Record<string, Record<string, unknown>> = {};
     const paperclipProjectsOut: Record<string, Record<string, unknown>> = {};
     const paperclipTasksOut: Record<string, Record<string, unknown>> = {};
+    const paperclipLabelsOut: Record<string, Record<string, unknown>> = {};
     const unportableTaskWorkspaceRefs = new Map<string, { workspaceId: string; taskSlugs: string[] }>();
     const paperclipRoutinesOut: Record<string, Record<string, unknown>> = {};
+
+    const labelSlugById = new Map<string, string>();
+    if (include.issues) {
+      const referencedLabelIds = new Set(
+        selectedIssueRows.flatMap((issue) => issue.labelIds ?? []),
+      );
+      if (referencedLabelIds.size > 0) {
+        const labelRows = await issuesSvc.listLabels(companyId);
+        const usedLabelSlugs = new Set<string>();
+        for (const label of labelRows
+          .filter((entry) => referencedLabelIds.has(entry.id))
+          .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))) {
+          const slug = uniqueSlug(toSafeSlug(label.name, "label"), usedLabelSlugs);
+          labelSlugById.set(label.id, slug);
+          paperclipLabelsOut[slug] = {
+            name: label.name,
+            color: label.color,
+            sourceId: label.id,
+          };
+        }
+        for (const labelId of referencedLabelIds) {
+          if (!labelSlugById.has(labelId)) {
+            warnings.push(`Issue label ${labelId} was omitted from export because the label record was not found.`);
+          }
+        }
+      }
+    }
 
     const skillByReference = new Map<string, typeof companySkillRows[number]>();
     for (const skill of companySkillRows) {
@@ -3396,7 +3496,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         identifier: issue.identifier,
         status: issue.status,
         priority: issue.priority,
-        labelIds: issue.labelIds ?? undefined,
+        labelSlugs: (issue.labelIds ?? [])
+          .map((labelId) => labelSlugById.get(labelId))
+          .filter((labelSlug): labelSlug is string => Boolean(labelSlug)),
         billingCode: issue.billingCode ?? null,
         projectWorkspaceKey: projectWorkspaceKey ?? undefined,
         executionWorkspaceSettings: issue.executionWorkspaceSettings ?? undefined,
@@ -3474,6 +3576,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         sidebar: stripEmptyValues(sidebarOrder),
         agents: Object.keys(paperclipAgents).length > 0 ? paperclipAgents : undefined,
         projects: Object.keys(paperclipProjects).length > 0 ? paperclipProjects : undefined,
+        labels: Object.keys(paperclipLabelsOut).length > 0 ? paperclipLabelsOut : undefined,
         tasks: Object.keys(paperclipTasks).length > 0 ? paperclipTasks : undefined,
         routines: Object.keys(paperclipRoutines).length > 0 ? paperclipRoutines : undefined,
       },
@@ -4097,6 +4200,31 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     for (const existing of existingProjects) {
       existingProjectSlugToId.set(existing.urlKey, existing.id);
     }
+    const importedLabelIdBySlug = new Map<string, string>();
+    const importedLabelIdBySourceId = new Map<string, string>();
+    const sourceLabelDefinitions = sourceManifest.labels ?? [];
+    const legacyIssueLabelIds = new Set(sourceManifest.issues.flatMap((issue) => issue.labelIds ?? []));
+    if (include.issues && (sourceLabelDefinitions.length > 0 || legacyIssueLabelIds.size > 0)) {
+      const existingLabels = await issues.listLabels(targetCompany.id);
+      for (const existingLabel of existingLabels) {
+        importedLabelIdBySourceId.set(existingLabel.id, existingLabel.id);
+      }
+      const labelByName = new Map(existingLabels.map((label) => [label.name, label]));
+      for (const manifestLabel of sourceLabelDefinitions) {
+        let targetLabel = labelByName.get(manifestLabel.name);
+        if (!targetLabel) {
+          targetLabel = await issues.createLabel(targetCompany.id, {
+            name: manifestLabel.name,
+            color: manifestLabel.color || DEFAULT_LABEL_COLOR,
+          });
+          labelByName.set(targetLabel.name, targetLabel);
+        }
+        importedLabelIdBySlug.set(manifestLabel.slug, targetLabel.id);
+        if (manifestLabel.sourceId) {
+          importedLabelIdBySourceId.set(manifestLabel.sourceId, targetLabel.id);
+        }
+      }
+    }
 
     const importedSkills = include.skills || include.agents
       ? await companySkills.importPackageFiles(targetCompany.id, pickTextFiles(plan.source.files), {
@@ -4494,6 +4622,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           warnings.push(`Task ${manifestIssue.slug} was downgraded to todo because its assignee could not be imported as assignable work.`);
           issueStatus = "todo";
         }
+        const labelIds = resolvePortableIssueLabelIds(
+          manifestIssue,
+          importedLabelIdBySlug,
+          importedLabelIdBySourceId,
+          warnings,
+        );
         await issues.create(targetCompany.id, {
           projectId,
           projectWorkspaceId,
@@ -4507,7 +4641,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           billingCode: manifestIssue.billingCode,
           assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides,
           executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings,
-          labelIds: manifestIssue.labelIds ?? [],
+          labelIds,
         });
       }
     }

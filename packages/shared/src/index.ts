@@ -373,6 +373,7 @@ export type {
   CompanyPortabilityIssueRoutineTriggerManifestEntry,
   CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueManifestEntry,
+  CompanyPortabilityLabelManifestEntry,
   CompanyPortabilityManifest,
   CompanyPortabilityExportResult,
   CompanyPortabilityExportPreviewFile,

@@ -129,6 +129,13 @@ export const portabilityIssueRoutineManifestEntrySchema = z.object({
   triggers: z.array(portabilityIssueRoutineTriggerManifestEntrySchema).default([]),
 });
 
+export const portabilityLabelManifestEntrySchema = z.object({
+  slug: z.string().min(1),
+  name: z.string().min(1),
+  color: z.string().min(1),
+  sourceId: z.string().min(1).nullable().default(null),
+});
+
 export const portabilityIssueManifestEntrySchema = z.object({
   slug: z.string().min(1),
   identifier: z.string().min(1).nullable(),
@@ -143,6 +150,7 @@ export const portabilityIssueManifestEntrySchema = z.object({
   legacyRecurrence: z.record(z.unknown()).nullable(),
   status: z.string().nullable(),
   priority: z.string().nullable(),
+  labelSlugs: z.array(z.string().min(1)).default([]),
   labelIds: z.array(z.string().min(1)).default([]),
   billingCode: z.string().nullable(),
   executionWorkspaceSettings: z.record(z.unknown()).nullable(),
@@ -171,6 +179,7 @@ export const portabilityManifestSchema = z.object({
   agents: z.array(portabilityAgentManifestEntrySchema),
   skills: z.array(portabilitySkillManifestEntrySchema).default([]),
   projects: z.array(portabilityProjectManifestEntrySchema).default([]),
+  labels: z.array(portabilityLabelManifestEntrySchema).default([]),
   issues: z.array(portabilityIssueManifestEntrySchema).default([]),
   envInputs: z.array(portabilityEnvInputSchema).default([]),
 });

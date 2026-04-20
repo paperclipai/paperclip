@@ -37,6 +37,8 @@ const issueSvc = {
   list: vi.fn(),
   getById: vi.fn(),
   getByIdentifier: vi.fn(),
+  listLabels: vi.fn(),
+  createLabel: vi.fn(),
   create: vi.fn(),
 };
 
@@ -225,6 +227,15 @@ describe("company portability", () => {
     issueSvc.list.mockResolvedValue([]);
     issueSvc.getById.mockResolvedValue(null);
     issueSvc.getByIdentifier.mockResolvedValue(null);
+    issueSvc.listLabels.mockResolvedValue([]);
+    issueSvc.createLabel.mockImplementation(async (companyId: string, data: { name: string; color: string }) => ({
+      id: `imported-${data.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      companyId,
+      name: data.name,
+      color: data.color,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }));
     routineSvc.list.mockResolvedValue([]);
     routineSvc.getDetail.mockImplementation(async (id: string) => {
       const rows = await routineSvc.list();
@@ -2307,8 +2318,26 @@ describe("company portability", () => {
     expect(materializedFiles["AGENTS.md"]).not.toContain('name: "ClaudeCoder"');
   });
 
-  it("preserves issue labelIds through export and import round-trip", async () => {
+  it("preserves issue labels through portable slugs during export and import", async () => {
     const portability = companyPortabilityService({} as any);
+    const sourceLabels = [
+      {
+        id: "label-a",
+        companyId: "company-1",
+        name: "Customer",
+        color: "#ef4444",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: "label-b",
+        companyId: "company-1",
+        name: "Launch",
+        color: "#22c55e",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
 
     projectSvc.list.mockResolvedValue([
       {
@@ -2340,15 +2369,24 @@ describe("company portability", () => {
         assigneeAdapterOverrides: null,
       },
     ]);
+    issueSvc.listLabels.mockImplementation(async (companyId: string) => (
+      companyId === "company-1" ? sourceLabels : []
+    ));
 
     const exported = await portability.exportBundle("company-1", {
       include: { company: true, agents: false, projects: true, issues: true },
     });
 
     const extension = asTextFile(exported.files[".paperclip.yaml"]);
-    expect(extension).toContain("labelIds:");
-    expect(extension).toContain("label-a");
-    expect(extension).toContain("label-b");
+    expect(extension).toContain("labels:");
+    expect(extension).toContain("labelSlugs:");
+    expect(extension).toContain("customer");
+    expect(extension).toContain("launch");
+    expect(extension).not.toContain("labelIds:");
+    expect(exported.manifest.labels).toEqual([
+      expect.objectContaining({ slug: "customer", name: "Customer", color: "#ef4444", sourceId: "label-a" }),
+      expect.objectContaining({ slug: "launch", name: "Launch", color: "#22c55e", sourceId: "label-b" }),
+    ]);
 
     companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported" });
     accessSvc.ensureMembership.mockResolvedValue(undefined);
@@ -2368,8 +2406,69 @@ describe("company portability", () => {
     expect(issueSvc.create).toHaveBeenCalledWith(
       "company-imported",
       expect.objectContaining({
-        labelIds: ["label-a", "label-b"],
+        labelIds: ["imported-customer", "imported-launch"],
       }),
+    );
+    expect(issueSvc.createLabel).toHaveBeenCalledWith("company-imported", {
+      name: "Customer",
+      color: "#ef4444",
+    });
+    expect(issueSvc.createLabel).toHaveBeenCalledWith("company-imported", {
+      name: "Launch",
+      color: "#22c55e",
+    });
+  });
+
+  it("skips legacy raw labelIds when no portable label definitions exist", async () => {
+    const portability = companyPortabilityService({} as any);
+    companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported" });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    projectSvc.list.mockResolvedValue([]);
+    issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Labelled task" });
+
+    const result = await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: "paperclip",
+        files: {
+          "COMPANY.md": [
+            "---",
+            'name: "Paperclip"',
+            'schema: "agentcompanies/v1"',
+            "---",
+            "",
+          ].join("\n"),
+          "tasks/labelled-task/TASK.md": [
+            "---",
+            'name: "Labelled task"',
+            "---",
+            "",
+            "Has labels",
+          ].join("\n"),
+          ".paperclip.yaml": [
+            'schema: "paperclip/v1"',
+            "tasks:",
+            "  labelled-task:",
+            "    labelIds:",
+            '      - "source-label-a"',
+          ].join("\n"),
+        },
+      },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Imported" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(issueSvc.create).toHaveBeenCalledWith(
+      "company-imported",
+      expect.objectContaining({
+        labelIds: [],
+      }),
+    );
+    expect(result.warnings).toContain(
+      "Task labelled-task references labels source-label-a, but they were not available in the target company and were skipped.",
     );
   });
 
