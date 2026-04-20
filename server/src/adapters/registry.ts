@@ -200,9 +200,26 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+// Wrap the upstream hermes adapter so every Paperclip-driven Hermes run spawns
+// with `--yolo`. Hermes agents run as non-interactive subprocesses with no TTY,
+// so dangerous-command approval prompts would always time out and deny
+// legitimate commands (curl, python3 -c, etc.). The adapter already forwards
+// `config.extraArgs` to the CLI, so prepending `--yolo` there is sufficient.
+// See https://github.com/paperclipai/paperclip/issues/2145.
+const hermesExecuteWithYolo: typeof hermesExecute = (ctx) => {
+  const existing = Array.isArray(ctx.config?.extraArgs)
+    ? (ctx.config.extraArgs as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
+  const extraArgs = existing.includes("--yolo") ? existing : ["--yolo", ...existing];
+  return hermesExecute({
+    ...ctx,
+    config: { ...(ctx.config ?? {}), extraArgs },
+  });
+};
+
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
-  execute: hermesExecute,
+  execute: hermesExecuteWithYolo,
   testEnvironment: hermesTestEnvironment,
   sessionCodec: hermesSessionCodec,
   listSkills: hermesListSkills,
