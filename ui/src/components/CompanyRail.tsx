@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Paperclip, Plus, Settings } from "lucide-react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
@@ -293,15 +293,20 @@ function orgInitials(name: string) {
 function OrgSwitcherChip() {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
-  const { organizations, selectedOrg, setSelectedOrgId, loading } = useOrg();
-  const { companies, setSelectedCompanyId } = useCompany();
+  const location = useLocation();
+  const { organizations, selectedOrg, selectedOrgId, setSelectedOrgId, loading } = useOrg();
+  const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
+
+  useEffect(() => {
+    console.log("[rail-org-switch] STATE", { pathname: location.pathname, selectedOrgId, selectedCompanyId });
+  }, [location.pathname, selectedOrgId, selectedCompanyId]);
 
   const label = selectedOrg?.name ?? (loading ? "…" : "Org");
   const initials = orgInitials(label);
 
   function handleSelect(orgId: string) {
-    console.log("[rail-org-switch] click", { orgId, currentOrgId: selectedOrg?.id, totalCompanies: companies.length });
+    console.log("[rail-org-switch] click", { orgId, currentOrgId: selectedOrg?.id, totalCompanies: companies.length, pathnameBefore: location.pathname });
     setOpen(false);
     if (selectedOrg?.id === orgId) {
       console.log("[rail-org-switch] same org, bail");
@@ -316,8 +321,15 @@ function OrgSwitcherChip() {
     if (nextCompany) {
       setSelectedOrgId(orgId);
       setSelectedCompanyId(nextCompany.id, { source: "manual" });
-      console.log("[rail-org-switch] navigate to", `/${nextCompany.issuePrefix}/dashboard`);
-      navigate(`/${nextCompany.issuePrefix}/dashboard`);
+      const target = `/${nextCompany.issuePrefix}/dashboard`;
+      console.log("[rail-org-switch] navigate to", target);
+      navigate(target);
+      setTimeout(() => {
+        console.log("[rail-org-switch] post-navigate +50ms", { pathname: window.location.pathname });
+      }, 50);
+      setTimeout(() => {
+        console.log("[rail-org-switch] post-navigate +500ms", { pathname: window.location.pathname });
+      }, 500);
     } else {
       console.log("[rail-org-switch] no company, navigate /home");
       setSelectedOrgId(orgId);
