@@ -78,7 +78,7 @@ describe("PaperclipApiClient", () => {
       /curl http:\/\/localhost:3100\/api\/health/,
     );
     await expect(client.post("/api/companies/import/preview", {})).rejects.toThrow(
-      /pnpm dev|pnpm paperclipai run/,
+      /pnpm dev|pnpm aiteamcorp run/,
     );
   });
 

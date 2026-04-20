@@ -67,7 +67,7 @@ my-adapter/
       test.ts           # Environment diagnostics
     ui-parser.ts        # Self-contained UI transcript parser (for external adapters)
     cli/
-      format-event.ts   # Terminal output for `paperclipai run --watch`
+      format-event.ts   # Terminal output for `aiteamcorp run --watch`
 ```
 
 | Registry | What it does | Source |

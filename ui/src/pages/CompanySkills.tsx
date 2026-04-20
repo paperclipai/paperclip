@@ -10,7 +10,7 @@ import type {
   CompanySkillProjectScanResult,
   CompanySkillSourceBadge,
   CompanySkillUpdateStatus,
-} from "@paperclipai/shared";
+} from "@aiteamcorp/shared";
 import { companySkillsApi } from "../api/companySkills";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";

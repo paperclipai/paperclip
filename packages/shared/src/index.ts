@@ -723,7 +723,7 @@ export {
 } from "./routine-variables.js";
 
 export {
-  paperclipConfigSchema,
+  aiteamcorpConfigSchema,
   configMetaSchema,
   llmConfigSchema,
   databaseBackupConfigSchema,

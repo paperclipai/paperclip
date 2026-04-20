@@ -7,7 +7,7 @@ import type {
   CompanyPortabilityExportResult,
   CompanyPortabilityManifest,
   Project,
-} from "@paperclipai/shared";
+} from "@aiteamcorp/shared";
 import { useNavigate, useLocation } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -473,7 +473,7 @@ function generateReadmeFromSelection(
   lines.push("## Getting Started");
   lines.push("");
   lines.push("```bash");
-  lines.push("pnpm paperclipai company import this-github-url-or-folder");
+  lines.push("pnpm aiteamcorp company import this-github-url-or-folder");
   lines.push("```");
   lines.push("");
   lines.push("---");
@@ -780,7 +780,7 @@ export function CompanyExport() {
     const filtered = { ...exportData.files };
 
     // Filter .paperclip.yaml
-    const yamlPath = exportData.paperclipExtensionPath;
+    const yamlPath = exportData.aiteamcorpExtensionPath;
     if (yamlPath && typeof exportData.files[yamlPath] === "string") {
       filtered[yamlPath] = filterPaperclipYaml(exportData.files[yamlPath], checkedFiles);
     }

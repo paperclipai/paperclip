@@ -1,5 +1,5 @@
 import { gzipSync } from "node:zlib";
-import type { FeedbackTraceBundle } from "@paperclipai/shared";
+import type { FeedbackTraceBundle } from "@aiteamcorp/shared";
 import type { Config } from "../config.js";
 
 function buildFeedbackShareObjectKey(bundle: FeedbackTraceBundle, exportedAt: Date) {

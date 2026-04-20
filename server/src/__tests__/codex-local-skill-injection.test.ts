@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ensureCodexSkillsInjected } from "@paperclipai/adapter-codex-local/server";
+import { ensureCodexSkillsInjected } from "@aiteamcorp/adapter-codex-local/server";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -31,7 +31,7 @@ async function createCustomSkill(root: string, skillName: string) {
 }
 
 describe("codex local adapter skill injection", () => {
-  const paperclipKey = "paperclipai/paperclip/paperclip";
+  const aiteamcorpKey = "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -59,7 +59,7 @@ describe("codex local adapter skill injection", () => {
       {
         skillsHome,
         skillsEntries: [{
-          key: paperclipKey,
+          key: aiteamcorpKey,
           runtimeName: "paperclip",
           source: path.join(currentRepo, "skills", "paperclip"),
         }],
@@ -92,7 +92,7 @@ describe("codex local adapter skill injection", () => {
     await ensureCodexSkillsInjected(async () => {}, {
       skillsHome,
       skillsEntries: [{
-        key: paperclipKey,
+        key: aiteamcorpKey,
         runtimeName: "paperclip",
         source: path.join(currentRepo, "skills", "paperclip"),
       }],
@@ -125,7 +125,7 @@ describe("codex local adapter skill injection", () => {
       {
         skillsHome,
         skillsEntries: [{
-          key: paperclipKey,
+          key: aiteamcorpKey,
           runtimeName: "paperclip",
           source: path.join(currentRepo, "skills", "paperclip"),
         }],
@@ -159,7 +159,7 @@ describe("codex local adapter skill injection", () => {
     await ensureCodexSkillsInjected(async () => {}, {
       skillsHome,
       skillsEntries: [{
-        key: paperclipKey,
+        key: aiteamcorpKey,
         runtimeName: "paperclip",
         source: path.join(currentRepo, "skills", "paperclip"),
       }],

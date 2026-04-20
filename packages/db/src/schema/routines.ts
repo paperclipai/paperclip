@@ -15,7 +15,7 @@ import { companySecrets } from "./company_secrets.js";
 import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
-import type { RoutineVariable } from "@paperclipai/shared";
+import type { RoutineVariable } from "@aiteamcorp/shared";
 
 export const routines = pgTable(
   "routines",

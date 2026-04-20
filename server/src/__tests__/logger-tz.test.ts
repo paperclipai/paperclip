@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 /**
- * Regression test for https://github.com/paperclipai/paperclip/issues/2879
+ * Regression test for https://github.com/aiteamcorporated-collab/ai-team-coprorated/issues/2879
  *
  * pino-pretty's `translateTime: "HH:MM:ss"` formats all timestamps in UTC
  * regardless of the process's TZ env var. The `SYS:` prefix instructs

@@ -36,7 +36,7 @@ describe("paperclip MCP tools", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const tool = getTool("paperclipUpdateIssue");
+    const tool = getTool("aiteamcorpUpdateIssue");
     await tool.execute({
       issueId: "PAP-1135",
       status: "done",
@@ -58,7 +58,7 @@ describe("paperclip MCP tools", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const tool = getTool("paperclipListIssues");
+    const tool = getTool("aiteamcorpListIssues");
     const response = await tool.execute({});
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -75,7 +75,7 @@ describe("paperclip MCP tools", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const tool = getTool("paperclipCheckoutIssue");
+    const tool = getTool("aiteamcorpCheckoutIssue");
     await tool.execute({
       issueId: "PAP-1135",
     });
@@ -93,7 +93,7 @@ describe("paperclip MCP tools", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const tool = getTool("paperclipUpsertIssueDocument");
+    const tool = getTool("aiteamcorpUpsertIssueDocument");
     await tool.execute({
       issueId: "PAP-1135",
       key: "plan",
@@ -113,7 +113,7 @@ describe("paperclip MCP tools", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const tool = getTool("paperclipCreateApproval");
+    const tool = getTool("aiteamcorpCreateApproval");
     await tool.execute({
       type: "hire_agent",
       payload: { branch: "pap-1167" },
@@ -136,7 +136,7 @@ describe("paperclip MCP tools", () => {
   it("rejects invalid generic request paths", async () => {
     vi.stubGlobal("fetch", vi.fn());
 
-    const tool = getTool("paperclipApiRequest");
+    const tool = getTool("aiteamcorpApiRequest");
     const response = await tool.execute({
       method: "GET",
       path: "issues",
@@ -148,7 +148,7 @@ describe("paperclip MCP tools", () => {
   it("rejects generic request paths that escape /api", async () => {
     vi.stubGlobal("fetch", vi.fn());
 
-    const tool = getTool("paperclipApiRequest");
+    const tool = getTool("aiteamcorpApiRequest");
     const response = await tool.execute({
       method: "GET",
       path: "/../../secret",

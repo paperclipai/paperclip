@@ -109,7 +109,7 @@ import {
   type Issue,
   type IssueAttachment,
   type IssueComment,
-} from "@paperclipai/shared";
+} from "@aiteamcorp/shared";
 
 type CommentReassignment = IssueCommentReassignment;
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {

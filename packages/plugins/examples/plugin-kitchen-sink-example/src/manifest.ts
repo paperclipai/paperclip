@@ -1,4 +1,4 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { PaperclipPluginManifestV1 } from "@aiteamcorp/plugin-sdk";
 import {
   DEFAULT_CONFIG,
   EXPORT_NAMES,

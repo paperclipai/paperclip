@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execute } from "@paperclipai/adapter-claude-local/server";
+import { execute } from "@aiteamcorp/adapter-claude-local/server";
 
 async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -117,7 +117,7 @@ async function setupExecuteEnv(
 
 describe("claude execute", () => {
   /**
-   * Regression tests for https://github.com/paperclipai/paperclip/issues/2848
+   * Regression tests for https://github.com/aiteamcorporated-collab/ai-team-coprorated/issues/2848
    *
    * --append-system-prompt-file should only be passed on fresh sessions.
    * On resumed sessions the instructions are already in the session cache;
@@ -391,7 +391,7 @@ describe("claude execute", () => {
     const capturePath1 = path.join(root, "capture-1.json");
     const capturePath2 = path.join(root, "capture-2.json");
     const instructionsPath = path.join(root, "AGENTS.md");
-    const paperclipHome = path.join(root, "paperclip-home");
+    const aiteamcorpHome = path.join(root, "paperclip-home");
     await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(instructionsPath, "You are managed instructions.\n", "utf8");
     await writeFakeClaudeCommand(commandPath);
@@ -399,7 +399,7 @@ describe("claude execute", () => {
     const previousHome = process.env.HOME;
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
     process.env.HOME = root;
-    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_HOME = aiteamcorpHome;
 
     try {
       const first = await execute({
@@ -468,7 +468,7 @@ describe("claude execute", () => {
           taskId: "issue-1",
           wakeReason: "issue_commented",
           wakeCommentId: "comment-2",
-          paperclipWake: {
+          aiteamcorpWake: {
             reason: "issue_commented",
             issue: {
               id: "issue-1",
@@ -508,7 +508,7 @@ describe("claude execute", () => {
       const capture1 = JSON.parse(await fs.readFile(capturePath1, "utf8")) as CapturePayload;
       const capture2 = JSON.parse(await fs.readFile(capturePath2, "utf8")) as CapturePayload;
       const expectedRoot = path.join(
-        paperclipHome,
+        aiteamcorpHome,
         "instances",
         "default",
         "companies",
@@ -545,7 +545,7 @@ describe("claude execute", () => {
     const capturePath1 = path.join(root, "capture-before.json");
     const capturePath2 = path.join(root, "capture-after.json");
     const instructionsPath = path.join(root, "AGENTS.md");
-    const paperclipHome = path.join(root, "paperclip-home");
+    const aiteamcorpHome = path.join(root, "paperclip-home");
     const logs: string[] = [];
     await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(instructionsPath, "Version one instructions.\n", "utf8");
@@ -554,7 +554,7 @@ describe("claude execute", () => {
     const previousHome = process.env.HOME;
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
     process.env.HOME = root;
-    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_HOME = aiteamcorpHome;
 
     try {
       const first = await execute({

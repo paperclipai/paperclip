@@ -2,7 +2,7 @@ import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
   AdapterRuntimeServiceReport,
-} from "@paperclipai/adapter-utils";
+} from "@aiteamcorp/adapter-utils";
 import {
   asNumber,
   asString,
@@ -10,7 +10,7 @@ import {
   parseObject,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@aiteamcorp/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 
@@ -337,30 +337,30 @@ function resolveClaimedApiKeyPath(value: unknown): string {
 }
 
 function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
-  const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
-  const paperclipEnv: Record<string, string> = {
+  const aiteamcorpApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.aiteamcorpApiUrl);
+  const aiteamcorpEnv: Record<string, string> = {
     ...buildPaperclipEnv(ctx.agent),
     PAPERCLIP_RUN_ID: ctx.runId,
   };
 
-  if (paperclipApiUrlOverride) {
-    paperclipEnv.PAPERCLIP_API_URL = paperclipApiUrlOverride;
+  if (aiteamcorpApiUrlOverride) {
+    aiteamcorpEnv.PAPERCLIP_API_URL = aiteamcorpApiUrlOverride;
   }
-  if (wakePayload.taskId) paperclipEnv.PAPERCLIP_TASK_ID = wakePayload.taskId;
-  if (wakePayload.wakeReason) paperclipEnv.PAPERCLIP_WAKE_REASON = wakePayload.wakeReason;
-  if (wakePayload.wakeCommentId) paperclipEnv.PAPERCLIP_WAKE_COMMENT_ID = wakePayload.wakeCommentId;
-  if (wakePayload.approvalId) paperclipEnv.PAPERCLIP_APPROVAL_ID = wakePayload.approvalId;
-  if (wakePayload.approvalStatus) paperclipEnv.PAPERCLIP_APPROVAL_STATUS = wakePayload.approvalStatus;
+  if (wakePayload.taskId) aiteamcorpEnv.PAPERCLIP_TASK_ID = wakePayload.taskId;
+  if (wakePayload.wakeReason) aiteamcorpEnv.PAPERCLIP_WAKE_REASON = wakePayload.wakeReason;
+  if (wakePayload.wakeCommentId) aiteamcorpEnv.PAPERCLIP_WAKE_COMMENT_ID = wakePayload.wakeCommentId;
+  if (wakePayload.approvalId) aiteamcorpEnv.PAPERCLIP_APPROVAL_ID = wakePayload.approvalId;
+  if (wakePayload.approvalStatus) aiteamcorpEnv.PAPERCLIP_APPROVAL_STATUS = wakePayload.approvalStatus;
   if (wakePayload.issueIds.length > 0) {
-    paperclipEnv.PAPERCLIP_LINKED_ISSUE_IDS = wakePayload.issueIds.join(",");
+    aiteamcorpEnv.PAPERCLIP_LINKED_ISSUE_IDS = wakePayload.issueIds.join(",");
   }
 
-  return paperclipEnv;
+  return aiteamcorpEnv;
 }
 
 function buildWakeText(
   payload: WakePayload,
-  paperclipEnv: Record<string, string>,
+  aiteamcorpEnv: Record<string, string>,
   structuredWakePrompt: string,
 ): string {
   const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
@@ -379,13 +379,13 @@ function buildWakeText(
 
   const envLines: string[] = [];
   for (const key of orderedKeys) {
-    const value = paperclipEnv[key];
+    const value = aiteamcorpEnv[key];
     if (!value) continue;
     envLines.push(`${key}=${value}`);
   }
 
   const issueIdHint = payload.taskId ?? payload.issueId ?? "";
-  const apiBaseHint = paperclipEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
+  const apiBaseHint = aiteamcorpEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
 
   const lines = [
     "Paperclip wake event for a cloud adapter.",
@@ -462,17 +462,17 @@ function joinWakePayloadSections(structuredWakePrompt: string, structuredWakeJso
 function buildStandardPaperclipPayload(
   ctx: AdapterExecutionContext,
   wakePayload: WakePayload,
-  paperclipEnv: Record<string, string>,
+  aiteamcorpEnv: Record<string, string>,
   payloadTemplate: Record<string, unknown>,
 ): Record<string, unknown> {
   const templatePaperclip = parseObject(payloadTemplate.paperclip);
-  const workspace = asRecord(ctx.context.paperclipWorkspace);
-  const workspaces = Array.isArray(ctx.context.paperclipWorkspaces)
-    ? ctx.context.paperclipWorkspaces.filter((entry): entry is Record<string, unknown> => Boolean(asRecord(entry)))
+  const workspace = asRecord(ctx.context.aiteamcorpWorkspace);
+  const workspaces = Array.isArray(ctx.context.aiteamcorpWorkspaces)
+    ? ctx.context.aiteamcorpWorkspaces.filter((entry): entry is Record<string, unknown> => Boolean(asRecord(entry)))
     : [];
   const configuredWorkspaceRuntime = parseObject(ctx.config.workspaceRuntime);
-  const runtimeServiceIntents = Array.isArray(ctx.context.paperclipRuntimeServiceIntents)
-    ? ctx.context.paperclipRuntimeServiceIntents.filter(
+  const runtimeServiceIntents = Array.isArray(ctx.context.aiteamcorpRuntimeServiceIntents)
+    ? ctx.context.aiteamcorpRuntimeServiceIntents.filter(
         (entry): entry is Record<string, unknown> => Boolean(asRecord(entry)),
       )
     : [];
@@ -489,9 +489,9 @@ function buildStandardPaperclipPayload(
     wakeCommentId: wakePayload.wakeCommentId,
     approvalId: wakePayload.approvalId,
     approvalStatus: wakePayload.approvalStatus,
-    apiUrl: paperclipEnv.PAPERCLIP_API_URL ?? null,
+    apiUrl: aiteamcorpEnv.PAPERCLIP_API_URL ?? null,
   };
-  const structuredWake = parseObject(ctx.context.paperclipWake);
+  const structuredWake = parseObject(ctx.context.aiteamcorpWake);
   if (Object.keys(structuredWake).length > 0) {
     standardPaperclip.wake = structuredWake;
   }
@@ -1100,12 +1100,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const disableDeviceAuth = parseBoolean(ctx.config.disableDeviceAuth, false);
 
   const wakePayload = buildWakePayload(ctx);
-  const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
-  const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
-  const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
+  const aiteamcorpEnv = buildPaperclipEnvForWake(ctx, wakePayload);
+  const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.aiteamcorpWake);
+  const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.aiteamcorpWake);
   const wakeText = buildWakeText(
     wakePayload,
-    paperclipEnv,
+    aiteamcorpEnv,
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
@@ -1123,7 +1123,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
-  const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
+  const aiteamcorpPayload = buildStandardPaperclipPayload(ctx, wakePayload, aiteamcorpEnv, payloadTemplate);
 
   const agentParams: Record<string, unknown> = {
     ...payloadTemplate,
@@ -1132,7 +1132,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  agentParams.paperclip = aiteamcorpPayload;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {

@@ -8,7 +8,7 @@ import type {
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
   CompanySkillUpdateStatus,
-} from "@paperclipai/shared";
+} from "@aiteamcorp/shared";
 import { api } from "./client";
 
 export const companySkillsApi = {

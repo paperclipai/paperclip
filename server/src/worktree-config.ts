@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { PaperclipConfig } from "@paperclipai/shared";
+import type { PaperclipConfig } from "@aiteamcorp/shared";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 
 function nonEmpty(value: string | null | undefined): string | null {

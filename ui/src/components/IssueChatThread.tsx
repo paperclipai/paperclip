@@ -30,10 +30,10 @@ import type {
   FeedbackDataSharingPreference,
   FeedbackVote,
   FeedbackVoteValue,
-} from "@paperclipai/shared";
+} from "@aiteamcorp/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
-import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
+import { useAiTeamCorpIssueRuntime, type AiTeamCorpIssueRuntimeReassignment } from "../hooks/useAiTeamCorpIssueRuntime";
 import {
   buildIssueChatMessages,
   formatDurationWords,
@@ -430,7 +430,7 @@ function clearDraft(draftKey: string) {
   }
 }
 
-function parseReassignment(target: string): PaperclipIssueRuntimeReassignment | null {
+function parseReassignment(target: string): AiTeamCorpIssueRuntimeReassignment | null {
   if (!target || target === "__none__") {
     return { assigneeAgentId: null, assigneeUserId: null };
   }
@@ -2059,7 +2059,7 @@ export function IssueChatThread({
     return map;
   }, [feedbackVotes]);
 
-  const runtime = usePaperclipIssueRuntime({
+  const runtime = useAiTeamCorpIssueRuntime({
     messages,
     isRunning,
     onSend: ({ body, reopen, reassignment }) => onAdd(body, reopen, reassignment),

@@ -11,7 +11,7 @@ import type {
   CompanyPortabilityInclude,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportResult,
-} from "@paperclipai/shared";
+} from "@aiteamcorp/shared";
 import { getTelemetryClient, trackCompanyImported } from "../../telemetry.js";
 import { ApiRequestError } from "../../client/http.js";
 import { openUrl } from "../../client/board-auth.js";
@@ -73,7 +73,7 @@ interface CompanyImportOptions extends BaseClientOptions {
   agents?: string;
   collision?: CompanyCollisionMode;
   ref?: string;
-  paperclipUrl?: string;
+  aiteamcorpUrl?: string;
   yes?: boolean;
   dryRun?: boolean;
 }
@@ -1247,7 +1247,7 @@ export function registerCompanyCommands(program: Command): void {
               out: path.resolve(opts.out!),
               rootPath: exported.rootPath,
               filesWritten: Object.keys(exported.files).length,
-              paperclipExtensionPath: exported.paperclipExtensionPath,
+              aiteamcorpExtensionPath: exported.aiteamcorpExtensionPath,
               warningCount: exported.warnings.length,
             },
             { json: ctx.json },
@@ -1280,8 +1280,8 @@ export function registerCompanyCommands(program: Command): void {
       .option("--dry-run", "Run preview only without applying", false)
       .action(async (fromPathOrUrl: string, opts: CompanyImportOptions) => {
         try {
-          if (!opts.apiBase?.trim() && opts.paperclipUrl?.trim()) {
-            opts.apiBase = opts.paperclipUrl.trim();
+          if (!opts.apiBase?.trim() && opts.aiteamcorpUrl?.trim()) {
+            opts.apiBase = opts.aiteamcorpUrl.trim();
           }
           const ctx = resolveCommandContext(opts);
           const interactiveView = isInteractiveTerminal() && !ctx.json;

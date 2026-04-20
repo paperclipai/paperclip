@@ -3,7 +3,7 @@ import path from "node:path";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { Command } from "commander";
 import { describe, expect, it } from "vitest";
-import type { FeedbackTrace } from "@paperclipai/shared";
+import type { FeedbackTrace } from "@aiteamcorp/shared";
 import { readZipArchive } from "../commands/client/zip.js";
 import {
   buildFeedbackTraceQuery,

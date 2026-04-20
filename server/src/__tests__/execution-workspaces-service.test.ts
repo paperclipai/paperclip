@@ -12,7 +12,7 @@ import {
   issues,
   projectWorkspaces,
   projects,
-} from "@paperclipai/db";
+} from "@aiteamcorp/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -226,7 +226,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   it("warns about dirty and unmerged git worktrees and reports cleanup actions", async () => {
     const repoRoot = await createTempRepo();
     tempDirs.add(repoRoot);
-    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-worktree-${randomUUID()}`);
+    const worktreePath = path.join(path.dirname(repoRoot), `aiteamcorp-worktree-${randomUUID()}`);
     tempDirs.add(worktreePath);
 
     await runGit(repoRoot, ["branch", "paperclip-close-check"]);

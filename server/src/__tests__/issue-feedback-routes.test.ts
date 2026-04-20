@@ -51,7 +51,7 @@ const mockRoutineService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 function registerModuleMocks() {
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  vi.doMock("@aiteamcorp/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
   }));
@@ -97,7 +97,7 @@ async function createApp(actor: Record<string, unknown>) {
 describe("issue feedback trace routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("@aiteamcorp/shared/telemetry");
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/issues.js");

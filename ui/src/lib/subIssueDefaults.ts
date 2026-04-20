@@ -1,4 +1,4 @@
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@aiteamcorp/shared";
 
 type SubIssueDefaultSource = Pick<
   Issue,

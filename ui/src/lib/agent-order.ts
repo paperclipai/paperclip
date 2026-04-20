@@ -1,4 +1,4 @@
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@aiteamcorp/shared";
 
 export const AGENT_ORDER_UPDATED_EVENT = "paperclip:agent-order-updated";
 const AGENT_ORDER_STORAGE_PREFIX = "paperclip.agentOrder";

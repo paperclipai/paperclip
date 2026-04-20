@@ -30,7 +30,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { Company } from "@paperclipai/shared";
+import type { Company } from "@aiteamcorp/shared";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 
 function SortableCompanyItem({

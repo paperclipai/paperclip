@@ -1,9 +1,9 @@
 import { Command } from "commander";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@aiteamcorp/shared";
 import {
   removeMaintainerOnlySkillSymlinks,
   resolvePaperclipSkillsDir,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@aiteamcorp/adapter-utils/server-utils";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";

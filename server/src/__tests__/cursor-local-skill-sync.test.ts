@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   listCursorSkills,
   syncCursorSkills,
-} from "@paperclipai/adapter-cursor-local/server";
+} from "@aiteamcorp/adapter-cursor-local/server";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -19,7 +19,7 @@ async function createSkillDir(root: string, name: string) {
 }
 
 describe("cursor local skill sync", () => {
-  const paperclipKey = "paperclipai/paperclip/paperclip";
+  const aiteamcorpKey = "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -39,20 +39,20 @@ describe("cursor local skill sync", () => {
         env: {
           HOME: home,
         },
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
+        aiteamcorpSkillSync: {
+          desiredSkills: [aiteamcorpKey],
         },
       },
     } as const;
 
     const before = await listCursorSkills(ctx);
     expect(before.mode).toBe("persistent");
-    expect(before.desiredSkills).toContain(paperclipKey);
-    expect(before.entries.find((entry) => entry.key === paperclipKey)?.required).toBe(true);
-    expect(before.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("missing");
+    expect(before.desiredSkills).toContain(aiteamcorpKey);
+    expect(before.entries.find((entry) => entry.key === aiteamcorpKey)?.required).toBe(true);
+    expect(before.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("missing");
 
-    const after = await syncCursorSkills(ctx, [paperclipKey]);
-    expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
+    const after = await syncCursorSkills(ctx, [aiteamcorpKey]);
+    expect(after.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("installed");
     expect((await fs.lstat(path.join(home, ".cursor", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
   });
 
@@ -62,7 +62,7 @@ describe("cursor local skill sync", () => {
     cleanupDirs.add(home);
     cleanupDirs.add(runtimeSkills);
 
-    const paperclipDir = await createSkillDir(runtimeSkills, "paperclip");
+    const aiteamcorpDir = await createSkillDir(runtimeSkills, "paperclip");
     const asciiHeartDir = await createSkillDir(runtimeSkills, "ascii-heart");
 
     const ctx = {
@@ -73,11 +73,11 @@ describe("cursor local skill sync", () => {
         env: {
           HOME: home,
         },
-        paperclipRuntimeSkills: [
+        aiteamcorpRuntimeSkills: [
           {
             key: "paperclip",
             runtimeName: "paperclip",
-            source: paperclipDir,
+            source: aiteamcorpDir,
             required: true,
             requiredReason: "Bundled Paperclip skills are always available for local adapters.",
           },
@@ -87,7 +87,7 @@ describe("cursor local skill sync", () => {
             source: asciiHeartDir,
           },
         ],
-        paperclipSkillSync: {
+        aiteamcorpSkillSync: {
           desiredSkills: ["ascii-heart"],
         },
       },
@@ -116,13 +116,13 @@ describe("cursor local skill sync", () => {
         env: {
           HOME: home,
         },
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
+        aiteamcorpSkillSync: {
+          desiredSkills: [aiteamcorpKey],
         },
       },
     } as const;
 
-    await syncCursorSkills(configuredCtx, [paperclipKey]);
+    await syncCursorSkills(configuredCtx, [aiteamcorpKey]);
 
     const clearedCtx = {
       ...configuredCtx,
@@ -130,15 +130,15 @@ describe("cursor local skill sync", () => {
         env: {
           HOME: home,
         },
-        paperclipSkillSync: {
+        aiteamcorpSkillSync: {
           desiredSkills: [],
         },
       },
     } as const;
 
     const after = await syncCursorSkills(clearedCtx, []);
-    expect(after.desiredSkills).toContain(paperclipKey);
-    expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
+    expect(after.desiredSkills).toContain(aiteamcorpKey);
+    expect(after.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("installed");
     expect((await fs.lstat(path.join(home, ".cursor", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
   });
 });

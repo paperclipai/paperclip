@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { paperclipConfigSchema, type PaperclipConfig } from "@paperclipai/shared";
+import { aiteamcorpConfigSchema, type PaperclipConfig } from "@aiteamcorp/shared";
 import { resolvePaperclipConfigPath } from "./paths.js";
 
 export function readConfigFile(): PaperclipConfig | null {
@@ -9,7 +9,7 @@ export function readConfigFile(): PaperclipConfig | null {
 
   try {
     const raw = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    return paperclipConfigSchema.parse(raw);
+    return aiteamcorpConfigSchema.parse(raw);
   } catch {
     return null;
   }

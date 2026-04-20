@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { parseAgentMentionHref, parseProjectMentionHref, parseSkillMentionHref, parseUserMentionHref } from "@paperclipai/shared";
+import { parseAgentMentionHref, parseProjectMentionHref, parseSkillMentionHref, parseUserMentionHref } from "@aiteamcorp/shared";
 import { getAgentIcon } from "./agent-icons";
 import { hexToRgb, pickTextColorForPillBg } from "./color-contrast";
 
@@ -88,7 +88,7 @@ export function applyMentionChipDecoration(element: HTMLElement, mention: Parsed
   clearMentionChipDecoration(element);
   element.dataset.mentionKind = mention.kind;
   element.setAttribute("contenteditable", "false");
-  element.classList.add("paperclip-mention-chip", `paperclip-mention-chip--${mention.kind}`);
+  element.classList.add("aiteamcorp-mention-chip", `aiteamcorp-mention-chip--${mention.kind}`);
   if (mention.kind === "project") {
     element.classList.add("paperclip-project-mention-chip");
   }
@@ -109,11 +109,11 @@ export function applyMentionChipDecoration(element: HTMLElement, mention: Parsed
 export function clearMentionChipDecoration(element: HTMLElement) {
   delete element.dataset.mentionKind;
   element.classList.remove(
-    "paperclip-mention-chip",
-    "paperclip-mention-chip--agent",
-    "paperclip-mention-chip--project",
-    "paperclip-mention-chip--user",
-    "paperclip-mention-chip--skill",
+    "aiteamcorp-mention-chip",
+    "aiteamcorp-mention-chip--agent",
+    "aiteamcorp-mention-chip--project",
+    "aiteamcorp-mention-chip--user",
+    "aiteamcorp-mention-chip--skill",
     "paperclip-project-mention-chip",
   );
   element.removeAttribute("contenteditable");

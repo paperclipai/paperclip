@@ -158,7 +158,7 @@ describe("project workspace skill discovery", () => {
         "metadata:",
         "  sources:",
         "    - kind: github-dir",
-        "      repo: paperclipai/paperclip",
+        "      repo: aiteamcorporated-collab/ai-team-coprorated",
         "      path: skills/paperclip",
         "---",
         "",
@@ -179,7 +179,7 @@ describe("project workspace skill discovery", () => {
       sources: [
         {
           kind: "github-dir",
-          repo: "paperclipai/paperclip",
+          repo: "aiteamcorporated-collab/ai-team-coprorated",
           path: "skills/paperclip",
         },
       ],

@@ -50,7 +50,7 @@ When Paperclip is running inside a managed worktree instance (`PAPERCLIP_IN_WORK
 For manual local CLI usage outside heartbeat runs (for example running as `codexcoder` directly), use:
 
 ```sh
-pnpm paperclipai agent local-cli codexcoder --company-id <company-id>
+pnpm aiteamcorp agent local-cli codexcoder --company-id <company-id>
 ```
 
 This installs any missing skills, creates an agent API key, and prints shell exports to run as that agent.

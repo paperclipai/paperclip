@@ -20,7 +20,7 @@ import {
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@aiteamcorp/shared";
 
 const boardStatuses = [
   "backlog",

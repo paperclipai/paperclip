@@ -56,7 +56,7 @@ import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTr
 import { KanbanBoard } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
-import type { Issue, Project } from "@paperclipai/shared";
+import type { Issue, Project } from "@aiteamcorp/shared";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const INITIAL_ISSUE_ROW_RENDER_LIMIT = 150;

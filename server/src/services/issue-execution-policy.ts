@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { IssueExecutionDecision, IssueExecutionPolicy, IssueExecutionStage, IssueExecutionStagePrincipal, IssueExecutionState } from "@paperclipai/shared";
-import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@paperclipai/shared";
+import type { IssueExecutionDecision, IssueExecutionPolicy, IssueExecutionStage, IssueExecutionStagePrincipal, IssueExecutionState } from "@aiteamcorp/shared";
+import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@aiteamcorp/shared";
 import { unprocessable } from "../errors.js";
 
 type AssigneeLike = {

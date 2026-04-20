@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { buildAgentMentionHref, buildProjectMentionHref, buildSkillMentionHref, buildUserMentionHref } from "@paperclipai/shared";
+import { buildAgentMentionHref, buildProjectMentionHref, buildSkillMentionHref, buildUserMentionHref } from "@aiteamcorp/shared";
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
 import { queryKeys } from "../lib/queryKeys";

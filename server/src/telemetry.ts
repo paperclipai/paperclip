@@ -3,7 +3,7 @@ import {
   TelemetryClient,
   resolveTelemetryConfig,
   loadOrCreateState,
-} from "@paperclipai/shared/telemetry";
+} from "@aiteamcorp/shared/telemetry";
 import { resolvePaperclipInstanceRoot } from "./home-paths.js";
 import { serverVersion } from "./version.js";
 

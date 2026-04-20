@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   listClaudeSkills,
   syncClaudeSkills,
-} from "@paperclipai/adapter-claude-local/server";
+} from "@aiteamcorp/adapter-claude-local/server";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -19,8 +19,8 @@ async function createSkillDir(root: string, name: string) {
 }
 
 describe("claude local skill sync", () => {
-  const paperclipKey = "paperclipai/paperclip/paperclip";
-  const createAgentKey = "paperclipai/paperclip/paperclip-create-agent";
+  const aiteamcorpKey = "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp";
+  const createAgentKey = "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp-create-agent";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -38,9 +38,9 @@ describe("claude local skill sync", () => {
 
     expect(snapshot.mode).toBe("ephemeral");
     expect(snapshot.supported).toBe(true);
-    expect(snapshot.desiredSkills).toContain(paperclipKey);
-    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.required).toBe(true);
-    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
+    expect(snapshot.desiredSkills).toContain(aiteamcorpKey);
+    expect(snapshot.entries.find((entry) => entry.key === aiteamcorpKey)?.required).toBe(true);
+    expect(snapshot.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("configured");
   });
 
   it("respects an explicit desired skill list without mutating a persistent home", async () => {
@@ -49,14 +49,14 @@ describe("claude local skill sync", () => {
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
+        aiteamcorpSkillSync: {
+          desiredSkills: [aiteamcorpKey],
         },
       },
-    }, [paperclipKey]);
+    }, [aiteamcorpKey]);
 
-    expect(snapshot.desiredSkills).toContain(paperclipKey);
-    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
+    expect(snapshot.desiredSkills).toContain(aiteamcorpKey);
+    expect(snapshot.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("configured");
     expect(snapshot.entries.find((entry) => entry.key === createAgentKey)?.state).toBe("configured");
   });
 
@@ -66,16 +66,16 @@ describe("claude local skill sync", () => {
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
-        paperclipSkillSync: {
+        aiteamcorpSkillSync: {
           desiredSkills: ["paperclip"],
         },
       },
     });
 
     expect(snapshot.warnings).toEqual([]);
-    expect(snapshot.desiredSkills).toContain(paperclipKey);
+    expect(snapshot.desiredSkills).toContain(aiteamcorpKey);
     expect(snapshot.desiredSkills).not.toContain("paperclip");
-    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
+    expect(snapshot.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("configured");
     expect(snapshot.entries.find((entry) => entry.key === "paperclip")).toBeUndefined();
   });
 

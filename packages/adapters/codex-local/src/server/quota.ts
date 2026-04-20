@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import type { ProviderQuotaResult, QuotaWindow } from "@aiteamcorp/adapter-utils";
 
 const CODEX_USAGE_SOURCE_RPC = "codex-rpc";
 const CODEX_USAGE_SOURCE_WHAM = "codex-wham";

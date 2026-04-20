@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@aiteamcorp/shared";
 import { buildIssuePropertiesPanelKey } from "./issue-properties-panel-key";
 
 function createIssue(overrides: Partial<Issue> = {}) {

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { paperclipConfigSchema, type PaperclipConfig } from "./schema.js";
+import { aiteamcorpConfigSchema, type PaperclipConfig } from "./schema.js";
 import {
   resolveDefaultConfigPath,
   resolvePaperclipInstanceId,
@@ -88,7 +88,7 @@ export function readConfig(configPath?: string): PaperclipConfig | null {
   if (!fs.existsSync(filePath)) return null;
   const raw = parseJson(filePath);
   const migrated = migrateLegacyConfig(raw);
-  const parsed = paperclipConfigSchema.safeParse(migrated);
+  const parsed = aiteamcorpConfigSchema.safeParse(migrated);
   if (!parsed.success) {
     throw new Error(`Invalid config at ${filePath}: ${formatValidationError(parsed.error)}`);
   }

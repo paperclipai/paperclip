@@ -3,8 +3,8 @@ import type {
   PluginDetailTabProps,
   PluginCommentAnnotationProps,
   PluginCommentContextMenuItemProps,
-} from "@paperclipai/plugin-sdk/ui";
-import { usePluginAction, usePluginData } from "@paperclipai/plugin-sdk/ui";
+} from "@aiteamcorp/plugin-sdk/ui";
+import { usePluginAction, usePluginData } from "@aiteamcorp/plugin-sdk/ui";
 import { useMemo, useState, useEffect, useRef, type MouseEvent, type RefObject } from "react";
 import { EditorView } from "@codemirror/view";
 import { basicSetup } from "codemirror";

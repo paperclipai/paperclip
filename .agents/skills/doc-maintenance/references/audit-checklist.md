@@ -16,7 +16,7 @@ against the change summary from git history.
 - [ ] Items reflect current priorities (cross-check with recent PRs)
 
 ### Quickstart
-- [ ] `npx paperclipai onboard` command is correct
+- [ ] `npx aiteamcorp onboard` command is correct
 - [ ] Manual install steps are accurate (clone URL, commands)
 - [ ] Prerequisites (Node version, pnpm version) are current
 - [ ] Server URL and port are correct

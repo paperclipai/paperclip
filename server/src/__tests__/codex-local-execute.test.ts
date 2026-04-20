@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execute } from "@paperclipai/adapter-codex-local/server";
+import { execute } from "@aiteamcorp/adapter-codex-local/server";
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -13,8 +13,8 @@ const payload = {
   argv: process.argv.slice(2),
   prompt: fs.readFileSync(0, "utf8"),
   codexHome: process.env.CODEX_HOME || null,
-  paperclipWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
-  paperclipEnvKeys: Object.keys(process.env)
+  aiteamcorpWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
+  aiteamcorpEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
     .sort(),
 };
@@ -33,8 +33,8 @@ type CapturePayload = {
   argv: string[];
   prompt: string;
   codexHome: string | null;
-  paperclipWakePayloadJson: string | null;
-  paperclipEnvKeys: string[];
+  aiteamcorpWakePayloadJson: string | null;
+  aiteamcorpEnvKeys: string[];
 };
 
 type LogEntry = {
@@ -49,9 +49,9 @@ describe("codex execute", () => {
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
     const sharedCodexHome = path.join(root, "shared-codex-home");
-    const paperclipHome = path.join(root, "paperclip-home");
+    const aiteamcorpHome = path.join(root, "paperclip-home");
     const managedCodexHome = path.join(
-      paperclipHome,
+      aiteamcorpHome,
       "instances",
       "default",
       "companies",
@@ -70,7 +70,7 @@ describe("codex execute", () => {
     const previousPaperclipInWorktree = process.env.PAPERCLIP_IN_WORKTREE;
     const previousCodexHome = process.env.CODEX_HOME;
     process.env.HOME = root;
-    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_HOME = aiteamcorpHome;
     delete process.env.PAPERCLIP_INSTANCE_ID;
     delete process.env.PAPERCLIP_IN_WORKTREE;
     process.env.CODEX_HOME = sharedCodexHome;
@@ -301,7 +301,7 @@ describe("codex execute", () => {
           taskId: "issue-1",
           wakeReason: "issue_commented",
           wakeCommentId: "comment-2",
-          paperclipWake: {
+          aiteamcorpWake: {
             reason: "issue_commented",
             issue: {
               id: "issue-1",
@@ -347,9 +347,9 @@ describe("codex execute", () => {
       expect(result.errorMessage).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
-      expect(capture.paperclipWakePayloadJson).not.toBeNull();
-      expect(JSON.parse(capture.paperclipWakePayloadJson ?? "{}")).toMatchObject({
+      expect(capture.aiteamcorpEnvKeys).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
+      expect(capture.aiteamcorpWakePayloadJson).not.toBeNull();
+      expect(JSON.parse(capture.aiteamcorpWakePayloadJson ?? "{}")).toMatchObject({
         reason: "issue_commented",
         latestCommentId: "comment-2",
         commentIds: ["comment-1", "comment-2"],
@@ -408,7 +408,7 @@ describe("codex execute", () => {
           issueId: "issue-1",
           taskId: "issue-1",
           wakeReason: "execution_review_requested",
-          paperclipWake: {
+          aiteamcorpWake: {
             reason: "execution_review_requested",
             issue: {
               id: "issue-1",
@@ -477,7 +477,7 @@ describe("codex execute", () => {
           issueId: "issue-1",
           taskId: "issue-1",
           wakeReason: "execution_changes_requested",
-          paperclipWake: {
+          aiteamcorpWake: {
             reason: "execution_changes_requested",
             issue: {
               id: "issue-1",
@@ -562,7 +562,7 @@ describe("codex execute", () => {
           issueId: "issue-1",
           taskId: "issue-1",
           wakeReason: "issue_assigned",
-          paperclipWake: {
+          aiteamcorpWake: {
             reason: "issue_assigned",
             issue: {
               id: "issue-1",
@@ -592,9 +592,9 @@ describe("codex execute", () => {
       expect(result.errorMessage).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
-      expect(capture.paperclipWakePayloadJson).not.toBeNull();
-      expect(JSON.parse(capture.paperclipWakePayloadJson ?? "{}")).toMatchObject({
+      expect(capture.aiteamcorpEnvKeys).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
+      expect(capture.aiteamcorpWakePayloadJson).not.toBeNull();
+      expect(JSON.parse(capture.aiteamcorpWakePayloadJson ?? "{}")).toMatchObject({
         reason: "issue_assigned",
         issue: {
           identifier: "PAP-1201",
@@ -668,7 +668,7 @@ describe("codex execute", () => {
           taskId: "issue-1",
           wakeReason: "issue_commented",
           wakeCommentId: "comment-2",
-          paperclipWake: {
+          aiteamcorpWake: {
             reason: "issue_commented",
             issue: {
               id: "issue-1",
@@ -735,9 +735,9 @@ describe("codex execute", () => {
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
     const sharedCodexHome = path.join(root, "shared-codex-home");
-    const paperclipHome = path.join(root, "paperclip-home");
+    const aiteamcorpHome = path.join(root, "paperclip-home");
     const isolatedCodexHome = path.join(
-      paperclipHome,
+      aiteamcorpHome,
       "instances",
       "worktree-1",
       "companies",
@@ -757,7 +757,7 @@ describe("codex execute", () => {
     const previousPaperclipInWorktree = process.env.PAPERCLIP_IN_WORKTREE;
     const previousCodexHome = process.env.CODEX_HOME;
     process.env.HOME = root;
-    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_HOME = aiteamcorpHome;
     process.env.PAPERCLIP_INSTANCE_ID = "worktree-1";
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.CODEX_HOME = sharedCodexHome;
@@ -801,7 +801,7 @@ describe("codex execute", () => {
       expect(capture.codexHome).toBe(isolatedCodexHome);
       expect(capture.argv).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
       expect(capture.prompt).toContain("Follow the paperclip heartbeat.");
-      expect(capture.paperclipEnvKeys).toEqual(
+      expect(capture.aiteamcorpEnvKeys).toEqual(
         expect.arrayContaining([
           "PAPERCLIP_AGENT_ID",
           "PAPERCLIP_API_KEY",
@@ -853,7 +853,7 @@ describe("codex execute", () => {
     const capturePath = path.join(root, "capture.json");
     const sharedCodexHome = path.join(root, "shared-codex-home");
     const explicitCodexHome = path.join(root, "explicit-codex-home");
-    const paperclipHome = path.join(root, "paperclip-home");
+    const aiteamcorpHome = path.join(root, "paperclip-home");
     await fs.mkdir(workspace, { recursive: true });
     await fs.mkdir(sharedCodexHome, { recursive: true });
     await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");
@@ -865,7 +865,7 @@ describe("codex execute", () => {
     const previousPaperclipInWorktree = process.env.PAPERCLIP_IN_WORKTREE;
     const previousCodexHome = process.env.CODEX_HOME;
     process.env.HOME = root;
-    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_HOME = aiteamcorpHome;
     process.env.PAPERCLIP_INSTANCE_ID = "worktree-1";
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.CODEX_HOME = sharedCodexHome;
@@ -906,7 +906,7 @@ describe("codex execute", () => {
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.codexHome).toBe(explicitCodexHome);
       expect((await fs.lstat(path.join(explicitCodexHome, "skills", "paperclip"))).isSymbolicLink()).toBe(true);
-      await expect(fs.lstat(path.join(paperclipHome, "instances", "worktree-1", "codex-home"))).rejects.toThrow();
+      await expect(fs.lstat(path.join(aiteamcorpHome, "instances", "worktree-1", "codex-home"))).rejects.toThrow();
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

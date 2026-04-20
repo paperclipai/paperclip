@@ -111,7 +111,7 @@ export interface FeedbackTraceBundle {
   notes: string[];
   envelope: Record<string, unknown>;
   surface: Record<string, unknown> | null;
-  paperclipRun: Record<string, unknown> | null;
+  aiteamcorpRun: Record<string, unknown> | null;
   rawAdapterTrace: Record<string, unknown> | null;
   normalizedAdapterTrace: Record<string, unknown> | null;
   privacy: Record<string, unknown> | null;

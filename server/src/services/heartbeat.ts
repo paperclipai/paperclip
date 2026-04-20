@@ -3,8 +3,8 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
+import type { Db } from "@aiteamcorp/db";
+import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@aiteamcorp/shared";
 import {
   agents,
   agentRuntimeState,
@@ -17,7 +17,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
-} from "@paperclipai/db";
+} from "@aiteamcorp/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
@@ -27,7 +27,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
-import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
+import { trackAgentFirstHeartbeat } from "@aiteamcorp/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
@@ -70,21 +70,21 @@ import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
-} from "@paperclipai/adapter-utils";
+} from "@aiteamcorp/adapter-utils";
 import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
-} from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds } from "@paperclipai/shared";
+} from "@aiteamcorp/adapter-utils/server-utils";
+import { extractSkillMentionIds } from "@aiteamcorp/shared";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
-const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const DEFERRED_WAKE_CONTEXT_KEY = "_aiteamcorpWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
-const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
-const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
+const PAPERCLIP_WAKE_PAYLOAD_KEY = "aiteamcorpWake";
+const PAPERCLIP_HARNESS_CHECKOUT_KEY = "aiteamcorpHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -1017,7 +1017,7 @@ function shouldRequireIssueCommentForWake(
 export function formatRuntimeWorkspaceWarningLog(warning: string) {
   return {
     stream: "stdout" as const,
-    chunk: `[paperclip] ${warning}\n`,
+    chunk: `[aiteamcorp] ${warning}\n`,
   };
 }
 
@@ -3340,7 +3340,7 @@ export function heartbeatService(db: Db) {
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
         }
       : null;
-    const paperclipWakePayload = await buildPaperclipWakePayload({
+    const aiteamcorpWakePayload = await buildPaperclipWakePayload({
       db,
       companyId: agent.companyId,
       contextSnapshot: context,
@@ -3354,8 +3354,8 @@ export function heartbeatService(db: Db) {
           }
         : null,
     });
-    if (paperclipWakePayload) {
-      context[PAPERCLIP_WAKE_PAYLOAD_KEY] = paperclipWakePayload;
+    if (aiteamcorpWakePayload) {
+      context[PAPERCLIP_WAKE_PAYLOAD_KEY] = aiteamcorpWakePayload;
     } else {
       delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
     }
@@ -3411,7 +3411,7 @@ export function heartbeatService(db: Db) {
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
     const runtimeConfig = {
       ...effectiveResolvedConfig,
-      paperclipRuntimeSkills: runtimeSkillEntries,
+      aiteamcorpRuntimeSkills: runtimeSkillEntries,
     };
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
@@ -3606,7 +3606,7 @@ export function heartbeatService(db: Db) {
           ]
         : []),
     ];
-    context.paperclipWorkspace = {
+    context.aiteamcorpWorkspace = {
       cwd: executionWorkspace.cwd,
       source: executionWorkspace.source,
       mode: effectiveExecutionWorkspaceMode,
@@ -3623,7 +3623,7 @@ export function heartbeatService(db: Db) {
         return home;
       })(),
     };
-    context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
+    context.aiteamcorpWorkspaces = resolvedWorkspace.workspaceHints;
     const runtimeServiceIntents = (() => {
       const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
       return Array.isArray(runtimeConfig.services)
@@ -3633,9 +3633,9 @@ export function heartbeatService(db: Db) {
         : [];
     })();
     if (runtimeServiceIntents.length > 0) {
-      context.paperclipRuntimeServiceIntents = runtimeServiceIntents;
+      context.aiteamcorpRuntimeServiceIntents = runtimeServiceIntents;
     } else {
-      delete context.paperclipRuntimeServiceIntents;
+      delete context.aiteamcorpRuntimeServiceIntents;
     }
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
@@ -3658,9 +3658,9 @@ export function heartbeatService(db: Db) {
       issueId,
     });
     if (sessionCompaction.rotate) {
-      context.paperclipSessionHandoffMarkdown = sessionCompaction.handoffMarkdown;
-      context.paperclipSessionRotationReason = sessionCompaction.reason;
-      context.paperclipPreviousSessionId = previousSessionDisplayId ?? runtimeSessionIdForAdapter;
+      context.aiteamcorpSessionHandoffMarkdown = sessionCompaction.handoffMarkdown;
+      context.aiteamcorpSessionRotationReason = sessionCompaction.reason;
+      context.aiteamcorpPreviousSessionId = previousSessionDisplayId ?? runtimeSessionIdForAdapter;
       runtimeSessionIdForAdapter = null;
       runtimeSessionParamsForAdapter = null;
       previousSessionDisplayId = null;
@@ -3670,9 +3670,9 @@ export function heartbeatService(db: Db) {
         );
       }
     } else {
-      delete context.paperclipSessionHandoffMarkdown;
-      delete context.paperclipSessionRotationReason;
-      delete context.paperclipPreviousSessionId;
+      delete context.aiteamcorpSessionHandoffMarkdown;
+      delete context.aiteamcorpSessionRotationReason;
+      delete context.aiteamcorpPreviousSessionId;
     }
 
     const runtimeForAdapter = {
@@ -3781,7 +3781,7 @@ export function heartbeatService(db: Db) {
       if (runScopedMentionedSkillKeys.length > 0) {
         await onLog(
           "stdout",
-          `[paperclip] Enabled run-scoped skills from issue mentions: ${runScopedMentionedSkillKeys.join(", ")}\n`,
+          `[aiteamcorp] Enabled run-scoped skills from issue mentions: ${runScopedMentionedSkillKeys.join(", ")}\n`,
         );
       }
       for (const warning of runtimeWorkspaceWarnings) {
@@ -3809,8 +3809,8 @@ export function heartbeatService(db: Db) {
         onLog,
       });
       if (runtimeServices.length > 0) {
-        context.paperclipRuntimeServices = runtimeServices;
-        context.paperclipRuntimePrimaryUrl =
+        context.aiteamcorpRuntimeServices = runtimeServices;
+        context.aiteamcorpRuntimePrimaryUrl =
           runtimeServices.find((service) => readNonEmptyString(service.url))?.url ?? null;
         await db
           .update(heartbeatRuns)
@@ -3833,7 +3833,7 @@ export function heartbeatService(db: Db) {
         } catch (err) {
           await onLog(
             "stderr",
-            `[paperclip] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
+            `[aiteamcorp] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
           );
         }
       }
@@ -3907,8 +3907,8 @@ export function heartbeatService(db: Db) {
           ...runtimeServices,
           ...adapterManagedRuntimeServices,
         ];
-        context.paperclipRuntimeServices = combinedRuntimeServices;
-        context.paperclipRuntimePrimaryUrl =
+        context.aiteamcorpRuntimeServices = combinedRuntimeServices;
+        context.aiteamcorpRuntimePrimaryUrl =
           combinedRuntimeServices.find((service) => readNonEmptyString(service.url))?.url ?? null;
         await db
           .update(heartbeatRuns)
@@ -3930,7 +3930,7 @@ export function heartbeatService(db: Db) {
           } catch (err) {
             await onLog(
               "stderr",
-              `[paperclip] Failed to post adapter-managed runtime comment: ${err instanceof Error ? err.message : String(err)}\n`,
+              `[aiteamcorp] Failed to post adapter-managed runtime comment: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
         }
@@ -4066,7 +4066,7 @@ export function heartbeatService(db: Db) {
           } catch (err) {
             await onLog(
               "stderr",
-              `[paperclip] Failed to post run summary comment: ${err instanceof Error ? err.message : String(err)}\n`,
+              `[aiteamcorp] Failed to post run summary comment: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
         }

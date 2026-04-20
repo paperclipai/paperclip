@@ -217,7 +217,7 @@ function buildConnectionErrorMessage(input: {
     "This usually means the Paperclip server is not running, the configured URL is wrong, or the request is being blocked before it reaches Paperclip.",
     "",
     "Try:",
-    "- Start Paperclip with `pnpm dev` or `pnpm paperclipai run`.",
+    "- Start Paperclip with `pnpm dev` or `pnpm aiteamcorp run`.",
     `- Verify the server is reachable with \`curl ${healthUrl}\`.`,
     `- If Paperclip is running elsewhere, pass \`--api-base ${input.apiBase.replace(/\/+$/, "")}\` or set \`PAPERCLIP_API_URL\`.`,
   );

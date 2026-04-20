@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@aiteamcorp/db";
 import {
   createProjectSchema,
   createProjectWorkspaceSchema,
@@ -9,8 +9,8 @@ import {
   updateProjectSchema,
   updateProjectWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
-} from "@paperclipai/shared";
-import { trackProjectCreated } from "@paperclipai/shared/telemetry";
+} from "@aiteamcorp/shared";
+import { trackProjectCreated } from "@aiteamcorp/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
 import { conflict } from "../errors.js";

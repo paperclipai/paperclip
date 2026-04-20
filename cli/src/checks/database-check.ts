@@ -11,12 +11,12 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
         status: "fail",
         message: "PostgreSQL mode selected but no connection string configured",
         canRepair: false,
-        repairHint: "Run `paperclipai configure --section database`",
+        repairHint: "Run `aiteamcorp configure --section database`",
       };
     }
 
     try {
-      const { createDb } = await import("@paperclipai/db");
+      const { createDb } = await import("@aiteamcorp/db");
       const db = createDb(config.database.connectionString);
       await db.execute("SELECT 1");
       return {
@@ -54,6 +54,6 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
     status: "fail",
     message: `Unknown database mode: ${String(config.database.mode)}`,
     canRepair: false,
-    repairHint: "Run `paperclipai configure --section database`",
+    repairHint: "Run `aiteamcorp configure --section database`",
   };
 }

@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
-import { execute, testEnvironment } from "@paperclipai/adapter-openclaw-gateway/server";
+import { execute, testEnvironment } from "@aiteamcorp/adapter-openclaw-gateway/server";
 import {
   buildOpenClawGatewayConfig,
   parseOpenClawGatewayStdoutLine,
-} from "@paperclipai/adapter-openclaw-gateway/ui";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+} from "@aiteamcorp/adapter-openclaw-gateway/ui";
+import type { AdapterExecutionContext } from "@aiteamcorp/adapter-utils";
 
 function buildContext(
   config: Record<string, unknown>,
@@ -422,24 +422,24 @@ describe("openclaw gateway adapter execute", () => {
               issueId: "issue-123",
               wakeReason: "issue_assigned",
               issueIds: ["issue-123"],
-              paperclipWorkspace: {
+              aiteamcorpWorkspace: {
                 cwd: "/tmp/worktrees/pap-123",
                 strategy: "git_worktree",
                 branchName: "pap-123-test",
               },
-              paperclipWorkspaces: [
+              aiteamcorpWorkspaces: [
                 {
                   id: "workspace-1",
                   cwd: "/tmp/project",
                 },
               ],
-              paperclipRuntimeServiceIntents: [
+              aiteamcorpRuntimeServiceIntents: [
                 {
                   name: "preview",
                   lifecycle: "ephemeral",
                 },
               ],
-              paperclipWake: {
+              aiteamcorpWake: {
                 reason: "issue_commented",
                 issue: {
                   id: "issue-123",

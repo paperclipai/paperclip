@@ -38,14 +38,14 @@ This is a repo-local example plugin for development. It should not be assumed to
 From the repo root, build the plugin and install it by local path:
 
 ```bash
-pnpm --filter @paperclipai/plugin-file-browser-example build
-pnpm paperclipai plugin install ./packages/plugins/examples/plugin-file-browser-example
+pnpm --filter @aiteamcorp/plugin-file-browser-example build
+pnpm aiteamcorp plugin install ./packages/plugins/examples/plugin-file-browser-example
 ```
 
 To uninstall:
 
 ```bash
-pnpm paperclipai plugin uninstall paperclip-file-browser-example --force
+pnpm aiteamcorp plugin uninstall paperclip-file-browser-example --force
 ```
 
 **Local development notes:**

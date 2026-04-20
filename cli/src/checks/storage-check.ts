@@ -36,7 +36,7 @@ export function storageCheck(config: PaperclipConfig, configPath?: string): Chec
       status: "fail",
       message: "S3 storage requires non-empty bucket and region",
       canRepair: false,
-      repairHint: "Run `paperclipai configure --section storage`",
+      repairHint: "Run `aiteamcorp configure --section storage`",
     };
   }
 

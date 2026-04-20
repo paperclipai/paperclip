@@ -1,12 +1,12 @@
 import { Router } from "express";
 import { eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { authUsers } from "@paperclipai/db";
+import type { Db } from "@aiteamcorp/db";
+import { authUsers } from "@aiteamcorp/db";
 import {
   authSessionSchema,
   currentUserProfileSchema,
   updateCurrentUserProfileSchema,
-} from "@paperclipai/shared";
+} from "@aiteamcorp/shared";
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 

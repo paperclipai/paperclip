@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace } from "@aiteamcorp/shared";
 import { buildProjectWorkspaceSummaries } from "./project-workspaces-tab";
 
 function createProjectWorkspace(overrides: Partial<ProjectWorkspace>): ProjectWorkspace {

@@ -16,7 +16,7 @@ interface ThemeContextValue {
   toggleTheme: () => void;
 }
 
-const THEME_STORAGE_KEY = "paperclip.theme";
+const THEME_STORAGE_KEY = "aiteamcorp.theme";
 const DARK_THEME_COLOR = "#191919";
 const LIGHT_THEME_COLOR = "#FAFAF7";
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);

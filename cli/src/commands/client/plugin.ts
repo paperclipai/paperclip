@@ -363,7 +363,7 @@ export function registerPluginCommands(program: Command): void {
             console.log(
               `${pc.bold(ex.displayName)}  ${pc.dim(ex.pluginKey)}\n` +
                 `  ${ex.description}\n` +
-                `  ${pc.cyan(`paperclipai plugin install ${ex.localPath}`)}`,
+                `  ${pc.cyan(`aiteamcorp plugin install ${ex.localPath}`)}`,
             );
           }
         } catch (err) {

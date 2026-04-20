@@ -27,7 +27,7 @@ describe("resolvePluginWatchTargets", () => {
       path.join(pluginDir, "package.json"),
       JSON.stringify({
         name: "@acme/example",
-        paperclipPlugin: {
+        aiteamcorpPlugin: {
           manifest: "./dist/manifest.js",
           worker: "./dist/worker.js",
           ui: "./dist/ui",

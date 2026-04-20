@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { and, asc, desc, eq, getTableColumns, gte, lte, ne, or } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@aiteamcorp/db";
 import {
   agents,
   companies,
@@ -17,11 +17,11 @@ import {
   issueComments,
   issueDocuments,
   issues,
-} from "@paperclipai/db";
-import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
-import { claudeConfigDir, parseClaudeStreamJson } from "@paperclipai/adapter-claude-local/server";
-import { codexHomeDir, parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
-import { parseOpenCodeJsonl } from "@paperclipai/adapter-opencode-local/server";
+} from "@aiteamcorp/db";
+import { readPaperclipSkillSyncPreference } from "@aiteamcorp/adapter-utils/server-utils";
+import { claudeConfigDir, parseClaudeStreamJson } from "@aiteamcorp/adapter-claude-local/server";
+import { codexHomeDir, parseCodexJsonl } from "@aiteamcorp/adapter-codex-local/server";
+import { parseOpenCodeJsonl } from "@aiteamcorp/adapter-opencode-local/server";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
@@ -34,7 +34,7 @@ import {
   type FeedbackTraceStatus,
   type FeedbackTraceTargetSummary,
   type FeedbackVoteValue,
-} from "@paperclipai/shared";
+} from "@aiteamcorp/shared";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { agentInstructionsService } from "./agent-instructions.js";
@@ -1430,7 +1430,7 @@ async function buildFeedbackTraceBundleFromRow(
   const files: FeedbackTraceBundleFile[] = [];
   const sourceRunId = resolveSourceRunId(payloadSnapshot);
 
-  let paperclipRun: Record<string, unknown> | null = null;
+  let aiteamcorpRun: Record<string, unknown> | null = null;
   let rawAdapterTrace: Record<string, unknown> | null = null;
   let normalizedAdapterTrace: Record<string, unknown> | null = null;
   let adapterType: string | null = null;
@@ -1487,7 +1487,7 @@ async function buildFeedbackTraceBundleFromRow(
         .map((entry) => entry.chunk)
         .join("");
 
-      paperclipRun = sanitizeFeedbackValue(
+      aiteamcorpRun = sanitizeFeedbackValue(
         {
           id: run.id,
           companyId: run.companyId,
@@ -1517,7 +1517,7 @@ async function buildFeedbackTraceBundleFromRow(
           eventCount: events.length,
         },
         state,
-        "bundle.paperclipRun",
+        "bundle.aiteamcorpRun",
         MAX_TRACE_FILE_CHARS,
       ) as Record<string, unknown>;
 
@@ -1525,13 +1525,13 @@ async function buildFeedbackTraceBundleFromRow(
         path: "paperclip/run.json",
         contentType: "application/json",
         source: "paperclip_run",
-        contents: `${JSON.stringify(paperclipRun, null, 2)}\n`,
+        contents: `${JSON.stringify(aiteamcorpRun, null, 2)}\n`,
       }));
 
       const sanitizedEvents = sanitizeFeedbackValue(
         events,
         state,
-        "bundle.paperclipRun.events",
+        "bundle.aiteamcorpRun.events",
         MAX_TRACE_FILE_CHARS,
       );
       files.push(makeBundleFile({
@@ -1546,7 +1546,7 @@ async function buildFeedbackTraceBundleFromRow(
           path: "paperclip/run-log.ndjson",
           contentType: "application/x-ndjson",
           source: "paperclip_run_log",
-          contents: `${sanitizeFeedbackText(logText, state, "bundle.paperclipRun.log", MAX_TRACE_FILE_CHARS)}\n`,
+          contents: `${sanitizeFeedbackText(logText, state, "bundle.aiteamcorpRun.log", MAX_TRACE_FILE_CHARS)}\n`,
         }));
       } else {
         appendNote(notes, "run_log_missing");
@@ -1647,7 +1647,7 @@ async function buildFeedbackTraceBundleFromRow(
     notes,
     envelope,
     surface,
-    paperclipRun,
+    aiteamcorpRun,
     rawAdapterTrace,
     normalizedAdapterTrace,
     privacy,

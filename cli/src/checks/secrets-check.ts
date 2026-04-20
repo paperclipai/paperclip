@@ -53,7 +53,7 @@ export function secretsCheck(config: PaperclipConfig, configPath?: string): Chec
       status: "fail",
       message: `${provider} is configured, but this build only supports local_encrypted`,
       canRepair: false,
-      repairHint: "Run `paperclipai configure --section secrets` and set provider to local_encrypted",
+      repairHint: "Run `aiteamcorp configure --section secrets` and set provider to local_encrypted",
     };
   }
 

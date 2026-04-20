@@ -43,10 +43,10 @@ run_isolated_worktree_init() {
     return 0
   fi
 
-  if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
+  if command -v pnpm >/dev/null 2>&1 && pnpm aiteamcorp --help >/dev/null 2>&1; then
     (
       cd "$worktree_cwd"
-      pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+      pnpm aiteamcorp worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
     )
     return 0
   fi
@@ -63,7 +63,7 @@ run_isolated_worktree_init() {
 }
 
 paperclipai_command_available() {
-  if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
+  if command -v pnpm >/dev/null 2>&1 && pnpm aiteamcorp --help >/dev/null 2>&1; then
     return 0
   fi
 
@@ -197,14 +197,14 @@ function resolveRuntimeLikePath(value, configPath) {
 
 async function main() {
   const worktreeName = process.env.WORKTREE_NAME;
-  const paperclipDir = process.env.PAPERCLIP_DIR;
+  const aiteamcorpDir = process.env.PAPERCLIP_DIR;
   const sourceConfigPath = process.env.SOURCE_CONFIG_PATH;
   const sourceEnvPath = process.env.SOURCE_ENV_PATH;
   const worktreeHome = path.resolve(expandHomePrefix(nonEmpty(process.env.PAPERCLIP_WORKTREES_DIR) ?? "~/.paperclip-worktrees"));
   const instanceId = sanitizeInstanceId(worktreeName);
   const instanceRoot = path.resolve(worktreeHome, "instances", instanceId);
-  const configPath = path.resolve(paperclipDir, "config.json");
-  const envPath = path.resolve(paperclipDir, ".env");
+  const configPath = path.resolve(aiteamcorpDir, "config.json");
+  const envPath = path.resolve(aiteamcorpDir, ".env");
 
   let sourceConfig = null;
   if (sourceConfigPath && fs.existsSync(sourceConfigPath)) {

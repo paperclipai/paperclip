@@ -5,35 +5,35 @@ summary: Onboard, run, doctor, and configure
 
 Instance setup and diagnostics commands.
 
-## `paperclipai run`
+## `aiteamcorp run`
 
 One-command bootstrap and start:
 
 ```sh
-pnpm paperclipai run
+pnpm aiteamcorp run
 ```
 
 Does:
 
 1. Auto-onboards if config is missing
-2. Runs `paperclipai doctor` with repair enabled
+2. Runs `aiteamcorp doctor` with repair enabled
 3. Starts the server when checks pass
 
 Choose a specific instance:
 
 ```sh
-pnpm paperclipai run --instance dev
+pnpm aiteamcorp run --instance dev
 ```
 
-## `paperclipai onboard`
+## `aiteamcorp onboard`
 
 Interactive first-time setup:
 
 ```sh
-pnpm paperclipai onboard
+pnpm aiteamcorp onboard
 ```
 
-If Paperclip is already configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to change settings on an existing install.
+If Paperclip is already configured, rerunning `onboard` keeps the existing config in place. Use `aiteamcorp configure` to change settings on an existing install.
 
 First prompt:
 
@@ -43,24 +43,24 @@ First prompt:
 Start immediately after onboarding:
 
 ```sh
-pnpm paperclipai onboard --run
+pnpm aiteamcorp onboard --run
 ```
 
 Non-interactive defaults + immediate start (opens browser on server listen):
 
 ```sh
-pnpm paperclipai onboard --yes
+pnpm aiteamcorp onboard --yes
 ```
 
 On an existing install, `--yes` now preserves the current config and just starts Paperclip with that setup.
 
-## `paperclipai doctor`
+## `aiteamcorp doctor`
 
 Health checks with optional auto-repair:
 
 ```sh
-pnpm paperclipai doctor
-pnpm paperclipai doctor --repair
+pnpm aiteamcorp doctor
+pnpm aiteamcorp doctor --repair
 ```
 
 Validates:
@@ -71,32 +71,32 @@ Validates:
 - Storage configuration
 - Missing key files
 
-## `paperclipai configure`
+## `aiteamcorp configure`
 
 Update configuration sections:
 
 ```sh
-pnpm paperclipai configure --section server
-pnpm paperclipai configure --section secrets
-pnpm paperclipai configure --section storage
+pnpm aiteamcorp configure --section server
+pnpm aiteamcorp configure --section secrets
+pnpm aiteamcorp configure --section storage
 ```
 
-## `paperclipai env`
+## `aiteamcorp env`
 
 Show resolved environment configuration:
 
 ```sh
-pnpm paperclipai env
+pnpm aiteamcorp env
 ```
 
 This now includes bind-oriented deployment settings such as `PAPERCLIP_BIND` and `PAPERCLIP_BIND_HOST` when configured.
 
-## `paperclipai allowed-hostname`
+## `aiteamcorp allowed-hostname`
 
 Allow a private hostname for authenticated/private mode:
 
 ```sh
-pnpm paperclipai allowed-hostname my-tailscale-host
+pnpm aiteamcorp allowed-hostname my-tailscale-host
 ```
 
 ## Local Storage Paths
@@ -112,12 +112,12 @@ pnpm paperclipai allowed-hostname my-tailscale-host
 Override with:
 
 ```sh
-PAPERCLIP_HOME=/custom/home PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
+PAPERCLIP_HOME=/custom/home PAPERCLIP_INSTANCE_ID=dev pnpm aiteamcorp run
 ```
 
 Or pass `--data-dir` directly on any command:
 
 ```sh
-pnpm paperclipai run --data-dir ./tmp/paperclip-dev
-pnpm paperclipai doctor --data-dir ./tmp/paperclip-dev
+pnpm aiteamcorp run --data-dir ./tmp/paperclip-dev
+pnpm aiteamcorp doctor --data-dir ./tmp/paperclip-dev
 ```

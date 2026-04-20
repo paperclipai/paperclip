@@ -3,8 +3,8 @@
 // imports (process/, http/, heartbeat.ts) don't need rewriting.
 import type { ChildProcess } from "node:child_process";
 import { logger } from "../middleware/logger.js";
-import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
-export type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
+import * as serverUtils from "@aiteamcorp/adapter-utils/server-utils";
+export type { RunProcessResult } from "@aiteamcorp/adapter-utils/server-utils";
 
 type BuildInvocationEnvForLogsOptions = {
   runtimeEnv?: NodeJS.ProcessEnv | Record<string, string>;
@@ -70,7 +70,7 @@ export function buildInvocationEnvForLogs(
 }
 
 // Re-export runChildProcess with the server's pino logger wired in.
-import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
+import type { RunProcessResult } from "@aiteamcorp/adapter-utils/server-utils";
 const _runChildProcess = serverUtils.runChildProcess;
 
 export async function runChildProcess(

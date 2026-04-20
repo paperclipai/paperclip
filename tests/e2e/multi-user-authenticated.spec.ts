@@ -65,7 +65,7 @@ function createBootstrapInvite() {
     pnpmCommand,
     [
       "--filter",
-      "@paperclipai/db",
+      "@aiteamcorp/db",
       "exec",
       "tsx",
       BOOTSTRAP_SCRIPT_PATH,

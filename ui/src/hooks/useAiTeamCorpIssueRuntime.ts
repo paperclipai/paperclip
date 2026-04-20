@@ -6,7 +6,7 @@ import {
   type ExternalStoreAdapter,
 } from "@assistant-ui/react";
 
-export interface PaperclipIssueRuntimeReassignment {
+export interface AiTeamCorpIssueRuntimeReassignment {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
 }
@@ -14,7 +14,7 @@ export interface PaperclipIssueRuntimeReassignment {
 export interface PaperclipIssueRuntimeSendOptions {
   body: string;
   reopen?: boolean;
-  reassignment?: PaperclipIssueRuntimeReassignment;
+  reassignment?: AiTeamCorpIssueRuntimeReassignment;
 }
 
 interface UsePaperclipIssueRuntimeOptions {
@@ -37,7 +37,7 @@ function readTextContent(message: AppendMessage) {
     .trim();
 }
 
-export function usePaperclipIssueRuntime({
+export function useAiTeamCorpIssueRuntime({
   messages,
   isRunning,
   onSend,

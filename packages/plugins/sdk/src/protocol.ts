@@ -29,8 +29,8 @@ import type {
   IssueDocumentSummary,
   Agent,
   Goal,
-} from "@paperclipai/shared";
-export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
+} from "@aiteamcorp/shared";
+export type { PluginLauncherRenderContextSnapshot } from "@aiteamcorp/shared";
 
 import type {
   PluginEvent,

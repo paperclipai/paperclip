@@ -58,7 +58,7 @@ const mockAdapter = vi.hoisted(() => ({
   syncSkills: vi.fn(),
 }));
 
-vi.mock("@paperclipai/shared/telemetry", () => ({
+vi.mock("@aiteamcorp/shared/telemetry", () => ({
   trackAgentCreated: mockTrackAgentCreated,
   trackErrorHandlerCrash: vi.fn(),
 }));
@@ -91,7 +91,7 @@ vi.mock("../adapters/index.js", () => ({
 }));
 
 function registerModuleMocks() {
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  vi.doMock("@aiteamcorp/shared/telemetry", () => ({
     trackAgentCreated: mockTrackAgentCreated,
     trackErrorHandlerCrash: vi.fn(),
   }));
@@ -196,7 +196,7 @@ describe("agent skill routes", () => {
     mockSecretService.resolveAdapterConfigForRuntime.mockResolvedValue({ config: { env: {} } });
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
       {
-        key: "paperclipai/paperclip/paperclip",
+        key: "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp",
         runtimeName: "paperclip",
         source: "/tmp/paperclip",
         required: true,
@@ -207,7 +207,7 @@ describe("agent skill routes", () => {
       async (_companyId: string, requested: string[]) =>
         requested.map((value) =>
           value === "paperclip"
-            ? "paperclipai/paperclip/paperclip"
+            ? "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp"
             : value,
         ),
     );
@@ -215,7 +215,7 @@ describe("agent skill routes", () => {
       adapterType: "claude_local",
       supported: true,
       mode: "ephemeral",
-      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      desiredSkills: ["aiteamcorporated-collab/ai-team-coprorated/aiteamcorp"],
       entries: [],
       warnings: [],
     });
@@ -223,7 +223,7 @@ describe("agent skill routes", () => {
       adapterType: "claude_local",
       supported: true,
       mode: "ephemeral",
-      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      desiredSkills: ["aiteamcorporated-collab/ai-team-coprorated/aiteamcorp"],
       entries: [],
       warnings: [],
     });
@@ -279,7 +279,7 @@ describe("agent skill routes", () => {
       expect.objectContaining({
         adapterType: "claude_local",
         config: expect.objectContaining({
-          paperclipRuntimeSkills: expect.any(Array),
+          aiteamcorpRuntimeSkills: expect.any(Array),
         }),
       }),
     );
@@ -291,7 +291,7 @@ describe("agent skill routes", () => {
       adapterType: "codex_local",
       supported: true,
       mode: "ephemeral",
-      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      desiredSkills: ["aiteamcorporated-collab/ai-team-coprorated/aiteamcorp"],
       entries: [],
       warnings: [],
     });
@@ -308,7 +308,7 @@ describe("agent skill routes", () => {
       adapterType: "cursor",
       supported: true,
       mode: "persistent",
-      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      desiredSkills: ["aiteamcorporated-collab/ai-team-coprorated/aiteamcorp"],
       entries: [],
       warnings: [],
     });
@@ -324,7 +324,7 @@ describe("agent skill routes", () => {
 
     const res = await request(await createApp())
       .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
-      .send({ desiredSkills: ["paperclipai/paperclip/paperclip"] });
+      .send({ desiredSkills: ["aiteamcorporated-collab/ai-team-coprorated/aiteamcorp"] });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAdapter.syncSkills).toHaveBeenCalled();
@@ -342,8 +342,8 @@ describe("agent skill routes", () => {
       expect.any(String),
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
-          paperclipSkillSync: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
+          aiteamcorpSkillSync: expect.objectContaining({
+            desiredSkills: ["aiteamcorporated-collab/ai-team-coprorated/aiteamcorp"],
           }),
         }),
       }),
@@ -367,8 +367,8 @@ describe("agent skill routes", () => {
       "company-1",
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
-          paperclipSkillSync: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
+          aiteamcorpSkillSync: expect.objectContaining({
+            desiredSkills: ["aiteamcorporated-collab/ai-team-coprorated/aiteamcorp"],
           }),
         }),
       }),
@@ -483,9 +483,9 @@ describe("agent skill routes", () => {
       "company-1",
       expect.objectContaining({
         payload: expect.objectContaining({
-          desiredSkills: ["paperclipai/paperclip/paperclip"],
+          desiredSkills: ["aiteamcorporated-collab/ai-team-coprorated/aiteamcorp"],
           requestedConfigurationSnapshot: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
+            desiredSkills: ["aiteamcorporated-collab/ai-team-coprorated/aiteamcorp"],
           }),
         }),
       }),

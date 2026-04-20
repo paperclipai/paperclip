@@ -11,7 +11,7 @@ import type {
   IssueLabel,
   IssueWorkProduct,
   UpsertIssueDocument,
-} from "@paperclipai/shared";
+} from "@aiteamcorp/shared";
 import { api } from "./client";
 
 export type IssueUpdateResponse = Issue & {

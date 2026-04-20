@@ -292,7 +292,7 @@ describe("worktree merge history planner", () => {
       id: "source-workspace-1",
       projectId: "source-project-1",
       cwd: "/Users/dotta/paperclip-evals",
-      repoUrl: "https://github.com/paperclipai/paperclip-evals.git",
+      repoUrl: "https://github.com/aiteamcorporated-collab/ai-team-coprorated-evals.git",
     });
 
     const plan = buildWorktreeMergePlan({

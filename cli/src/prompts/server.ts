@@ -1,5 +1,5 @@
 import * as p from "@clack/prompts";
-import { isLoopbackHost, type BindMode } from "@paperclipai/shared";
+import { isLoopbackHost, type BindMode } from "@aiteamcorp/shared";
 import type { AuthConfig, ServerConfig } from "../config/schema.js";
 import { parseHostnameCsv } from "../config/hostnames.js";
 import { buildCustomServerConfig, buildPresetServerConfig, inferConfiguredBind } from "../config/server-bind.js";

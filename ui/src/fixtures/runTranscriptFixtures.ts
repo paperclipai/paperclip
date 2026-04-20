@@ -28,7 +28,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
   {
     kind: "stderr",
     ts: "2026-03-11T15:21:05.594Z",
-    text: "[paperclip] Skipping saved session resume for task \"PAP-473\" because wake reason is issue_assigned.",
+    text: "[aiteamcorp] Skipping saved session resume for task \"PAP-473\" because wake reason is issue_assigned.",
   },
   {
     kind: "init",

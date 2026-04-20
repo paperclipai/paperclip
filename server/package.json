@@ -1,14 +1,14 @@
 {
-  "name": "@paperclipai/server",
+  "name": "@aiteamcorp/server",
   "version": "0.3.1",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/aiteamcorporated-collab/ai-team-coprorated",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/aiteamcorporated-collab/ai-team-coprorated/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/aiteamcorporated-collab/ai-team-coprorated",
     "directory": "server"
   },
   "type": "module",
@@ -40,21 +40,21 @@
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+    "typecheck": "pnpm --filter @aiteamcorp/plugin-sdk build && tsc --noEmit"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",
-    "@paperclipai/adapter-claude-local": "workspace:*",
-    "@paperclipai/adapter-codex-local": "workspace:*",
-    "@paperclipai/adapter-cursor-local": "workspace:*",
-    "@paperclipai/adapter-gemini-local": "workspace:*",
-    "@paperclipai/adapter-openclaw-gateway": "workspace:*",
-    "@paperclipai/adapter-opencode-local": "workspace:*",
-    "@paperclipai/adapter-pi-local": "workspace:*",
-    "@paperclipai/adapter-utils": "workspace:*",
-    "@paperclipai/db": "workspace:*",
-    "@paperclipai/plugin-sdk": "workspace:*",
-    "@paperclipai/shared": "workspace:*",
+    "@aiteamcorp/adapter-claude-local": "workspace:*",
+    "@aiteamcorp/adapter-codex-local": "workspace:*",
+    "@aiteamcorp/adapter-cursor-local": "workspace:*",
+    "@aiteamcorp/adapter-gemini-local": "workspace:*",
+    "@aiteamcorp/adapter-openclaw-gateway": "workspace:*",
+    "@aiteamcorp/adapter-opencode-local": "workspace:*",
+    "@aiteamcorp/adapter-pi-local": "workspace:*",
+    "@aiteamcorp/adapter-utils": "workspace:*",
+    "@aiteamcorp/db": "workspace:*",
+    "@aiteamcorp/plugin-sdk": "workspace:*",
+    "@aiteamcorp/shared": "workspace:*",
     "ajv": "^8.18.0",
     "ajv-formats": "^3.0.1",
     "better-auth": "1.4.18",

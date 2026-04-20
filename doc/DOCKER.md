@@ -216,7 +216,7 @@ systemctl --user stop paperclip-pod      # Stop all
 
 Use this when you want to mimic a fresh machine that only has Ubuntu + npm and verify:
 
-- `npx paperclipai onboard --yes` completes
+- `npx aiteamcorp onboard --yes` completes
 - the server binds to `0.0.0.0:3100` so host access works
 - onboard/run banners and startup logs are visible in your terminal
 
@@ -243,7 +243,7 @@ Notes:
 - Smoke script defaults to `authenticated/private` mode so `HOST=0.0.0.0` can be exposed to the host.
 - Smoke script defaults host port to `3131` to avoid conflicts with local Paperclip on `3100`.
 - Smoke script also defaults `PAPERCLIP_PUBLIC_URL` to `http://localhost:<HOST_PORT>` so bootstrap invite URLs and auth callbacks use the reachable host port instead of the container's internal `3100`.
-- In authenticated mode, the smoke script defaults `SMOKE_AUTO_BOOTSTRAP=true` and drives the real bootstrap path automatically: it signs up a real user, runs `paperclipai auth bootstrap-ceo` inside the container to mint a real bootstrap invite, accepts that invite over HTTP, and verifies board session access.
+- In authenticated mode, the smoke script defaults `SMOKE_AUTO_BOOTSTRAP=true` and drives the real bootstrap path automatically: it signs up a real user, runs `aiteamcorp auth bootstrap-ceo` inside the container to mint a real bootstrap invite, accepts that invite over HTTP, and verifies board session access.
 - Run the script in the foreground to watch the onboarding flow; stop with `Ctrl+C` after validation.
 - Set `SMOKE_DETACH=true` to leave the container running for automation and optionally write shell-ready metadata to `SMOKE_METADATA_FILE`.
 - The image definition is in `docker/Dockerfile.onboard-smoke`.

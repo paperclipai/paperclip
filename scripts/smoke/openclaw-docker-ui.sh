@@ -278,7 +278,7 @@ EOF
   Auto-detect failed. Try: http://host.docker.internal:${PAPERCLIP_HOST_PORT}
   (Do not use http://127.0.0.1:${PAPERCLIP_HOST_PORT} inside the container.)
   If Paperclip rejects the host, run on host machine:
-    pnpm paperclipai allowed-hostname host.docker.internal
+    pnpm aiteamcorp allowed-hostname host.docker.internal
   Then restart Paperclip and re-run this script.
 EOF
   fi
@@ -311,7 +311,7 @@ EOF
   Auto-detect failed. Try: http://host.docker.internal:${PAPERCLIP_HOST_PORT}
   (Do not use http://127.0.0.1:${PAPERCLIP_HOST_PORT} inside the container.)
   If Paperclip rejects the host, run on host machine:
-    pnpm paperclipai allowed-hostname host.docker.internal
+    pnpm aiteamcorp allowed-hostname host.docker.internal
   Then restart Paperclip and re-run this script.
 EOF
   fi

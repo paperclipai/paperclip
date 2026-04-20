@@ -176,7 +176,7 @@ A change is done when all are true:
 
 ## 11. Fork-Specific: HenkDz/paperclip
 
-This is a fork of `paperclipai/paperclip` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
+This is a fork of `aiteamcorporated-collab/ai-team-coprorated` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
 
 ### Branch Strategy
 

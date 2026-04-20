@@ -18,15 +18,15 @@ It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec i
 Use the scaffold package:
 
 ```bash
-pnpm --filter @paperclipai/create-paperclip-plugin build
-node packages/plugins/create-paperclip-plugin/dist/index.js @yourscope/plugin-name --output ./packages/plugins/examples
+pnpm --filter @aiteamcorp/create-aiteamcorp-plugin build
+node packages/plugins/create-aiteamcorp-plugin/dist/index.js @yourscope/plugin-name --output ./packages/plugins/examples
 ```
 
 For a plugin that lives outside the Paperclip repo:
 
 ```bash
-pnpm --filter @paperclipai/create-paperclip-plugin build
-node packages/plugins/create-paperclip-plugin/dist/index.js @yourscope/plugin-name \
+pnpm --filter @aiteamcorp/create-aiteamcorp-plugin build
+node packages/plugins/create-aiteamcorp-plugin/dist/index.js @yourscope/plugin-name \
   --output /absolute/path/to/plugin-repos \
   --sdk-path /absolute/path/to/paperclip/packages/plugins/sdk
 ```
@@ -40,9 +40,9 @@ That creates a package with:
 - `esbuild.config.mjs`
 - `rollup.config.mjs`
 
-Inside this monorepo, the scaffold uses `workspace:*` for `@paperclipai/plugin-sdk`.
+Inside this monorepo, the scaffold uses `workspace:*` for `@aiteamcorp/plugin-sdk`.
 
-Outside this monorepo, the scaffold snapshots `@paperclipai/plugin-sdk` from the local Paperclip checkout into a `.paperclip-sdk/` tarball so you can build and test a plugin without publishing anything to npm first.
+Outside this monorepo, the scaffold snapshots `@aiteamcorp/plugin-sdk` from the local Paperclip checkout into a `.paperclip-sdk/` tarball so you can build and test a plugin without publishing anything to npm first.
 
 ## Recommended local workflow
 
@@ -96,7 +96,7 @@ UI:
 - `usePluginStream`
 - `usePluginToast`
 - `useHostContext`
-- typed slot props from `@paperclipai/plugin-sdk/ui`
+- typed slot props from `@aiteamcorp/plugin-sdk/ui`
 
 Mount surfaces currently wired in the host include:
 

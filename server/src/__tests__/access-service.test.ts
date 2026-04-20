@@ -6,7 +6,7 @@ import {
   companyMemberships,
   createDb,
   principalPermissionGrants,
-} from "@paperclipai/db";
+} from "@aiteamcorp/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

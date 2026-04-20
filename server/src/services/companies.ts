@@ -1,5 +1,5 @@
 import { and, count, eq, gte, inArray, lt, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@aiteamcorp/db";
 import {
   companies,
   companyLogos,
@@ -27,7 +27,7 @@ import {
   principalPermissionGrants,
   companyMemberships,
   companySkills,
-} from "@paperclipai/db";
+} from "@aiteamcorp/db";
 import { notFound, unprocessable } from "../errors.js";
 
 export function companyService(db: Db) {

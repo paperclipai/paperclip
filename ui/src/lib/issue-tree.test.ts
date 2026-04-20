@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@aiteamcorp/shared";
 import { buildIssueTree, countDescendants } from "./issue-tree";
 
 function makeIssue(id: string, parentId: string | null = null): Issue {

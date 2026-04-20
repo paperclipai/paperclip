@@ -241,11 +241,11 @@ This on-disk model is the reason the current implementation expects a persistent
 
 Paperclip should add CLI commands:
 
-- `pnpm paperclipai plugin list`
-- `pnpm paperclipai plugin install <package[@version]>`
-- `pnpm paperclipai plugin uninstall <plugin-id>`
-- `pnpm paperclipai plugin upgrade <plugin-id> [version]`
-- `pnpm paperclipai plugin doctor <plugin-id>`
+- `pnpm aiteamcorp plugin list`
+- `pnpm aiteamcorp plugin install <package[@version]>`
+- `pnpm aiteamcorp plugin uninstall <plugin-id>`
+- `pnpm aiteamcorp plugin upgrade <plugin-id> [version]`
+- `pnpm aiteamcorp plugin doctor <plugin-id>`
 
 These commands are instance-level operations.
 
@@ -297,7 +297,7 @@ Suggested `package.json` keys:
 {
   "name": "@paperclip/plugin-linear",
   "version": "0.1.0",
-  "paperclipPlugin": {
+  "aiteamcorpPlugin": {
     "manifest": "./dist/manifest.js",
     "worker": "./dist/worker.js",
     "ui": "./dist/ui/"
@@ -873,7 +873,7 @@ The plugin's UI bundle exports:
 
 ```tsx
 // dist/ui/index.tsx
-import { usePluginData, usePluginAction, MetricCard, StatusBadge } from "@paperclipai/plugin-sdk/ui";
+import { usePluginData, usePluginAction, MetricCard, StatusBadge } from "@aiteamcorp/plugin-sdk/ui";
 
 export function DashboardWidget({ context }: PluginWidgetProps) {
   const { data, loading } = usePluginData("sync-health", { companyId: context.companyId });
@@ -905,7 +905,7 @@ export function DashboardWidget({ context }: PluginWidgetProps) {
 - The host decides **where** plugin components appear (which slots exist and when they mount).
 - The host provides the **bridge** — plugin UI cannot make arbitrary network requests or access host internals directly.
 - The host enforces **capability gates** — if a plugin's worker does not have a capability, the bridge rejects the call even if the UI requests it.
-- The host provides **design tokens and shared components** via `@paperclipai/plugin-sdk/ui` so plugins can match the host's visual language without being forced to.
+- The host provides **design tokens and shared components** via `@aiteamcorp/plugin-sdk/ui` so plugins can match the host's visual language without being forced to.
 
 **What the plugin controls:**
 
@@ -913,7 +913,7 @@ export function DashboardWidget({ context }: PluginWidgetProps) {
 - The plugin decides **what data** to fetch and **what actions** to expose.
 - The plugin can use any React patterns (hooks, context, third-party component libraries) inside its bundle.
 
-### 19.0.1 Plugin UI SDK (`@paperclipai/plugin-sdk/ui`)
+### 19.0.1 Plugin UI SDK (`@aiteamcorp/plugin-sdk/ui`)
 
 The SDK includes a `ui` subpath export that plugin frontends import. This subpath provides:
 
@@ -930,7 +930,7 @@ Plugin UI bundles are loaded as standard ES modules, not iframed. This gives plu
 
 Isolation rules:
 
-- Plugin bundles must not import from host internals. They may only import from `@paperclipai/plugin-sdk/ui` and their own dependencies.
+- Plugin bundles must not import from host internals. They may only import from `@aiteamcorp/plugin-sdk/ui` and their own dependencies.
 - Plugin bundles must not access `window.fetch` or `XMLHttpRequest` directly for host API calls. All host communication goes through the bridge.
 - The host may enforce Content Security Policy rules that restrict plugin network access to the bridge endpoint only.
 - Plugin bundles must be statically analyzable — no dynamic `import()` of URLs outside the plugin's own bundle.
@@ -987,7 +987,7 @@ Plugins may add sidebar links to:
 - global plugin settings
 - company-context plugin pages
 
-## 19.6 Shared Components In `@paperclipai/plugin-sdk/ui`
+## 19.6 Shared Components In `@aiteamcorp/plugin-sdk/ui`
 
 The host SDK ships shared components that plugins can import to quickly build UIs that match the host's look and feel. These are convenience building blocks, not a requirement.
 
@@ -1041,7 +1041,7 @@ Error codes:
 - `TIMEOUT` — the worker did not respond within the configured timeout
 - `UNKNOWN` — unexpected bridge-level failure
 
-The `@paperclipai/plugin-sdk/ui` subpath should also export an `ErrorBoundary` component that plugin authors can use to catch rendering errors without crashing the host page.
+The `@aiteamcorp/plugin-sdk/ui` subpath should also export an `ErrorBoundary` component that plugin authors can use to catch rendering errors without crashing the host page.
 
 ## 19.8 Plugin Settings UI
 
@@ -1318,7 +1318,7 @@ When a plugin is uninstalled, the host must handle plugin-owned data explicitly.
 3. Plugin-owned data (`plugin_state`, `plugin_entities`, `plugin_jobs`, `plugin_job_runs`, `plugin_webhook_deliveries`, `plugin_config`) is retained for a configurable grace period (default: 30 days).
 4. During the grace period, the operator can reinstall the same plugin and recover its state.
 5. After the grace period, the host purges all plugin-owned data for the uninstalled plugin.
-6. The operator may force-purge immediately via CLI: `pnpm paperclipai plugin purge <plugin-id>`.
+6. The operator may force-purge immediately via CLI: `pnpm aiteamcorp plugin purge <plugin-id>`.
 
 ### 25.2 Upgrade Data Considerations
 
@@ -1441,7 +1441,7 @@ These events can be consumed by other plugins (e.g. a notification plugin) or su
 
 ## 27. Plugin Development And Testing
 
-### 27.1 `@paperclipai/plugin-test-harness`
+### 27.1 `@aiteamcorp/plugin-test-harness`
 
 The host should publish a test harness package that plugin authors use for local development and testing.
 
@@ -1458,7 +1458,7 @@ The test harness provides:
 Example usage:
 
 ```ts
-import { createTestHarness } from "@paperclipai/plugin-test-harness";
+import { createTestHarness } from "@aiteamcorp/plugin-test-harness";
 import manifest from "../dist/manifest.js";
 import { register } from "../dist/worker.js";
 
@@ -1481,16 +1481,16 @@ expect(data.syncedCount).toBeGreaterThan(0);
 
 For developing a plugin against a running Paperclip instance:
 
-- The operator installs the plugin from a local path: `pnpm paperclipai plugin install ./path/to/plugin`
+- The operator installs the plugin from a local path: `pnpm aiteamcorp plugin install ./path/to/plugin`
 - The host watches the plugin directory for changes and restarts the worker on rebuild.
 - `devUiUrl` in plugin config can point to a local Vite dev server for UI hot-reload.
 - The plugin settings page shows real-time logs from the worker for debugging.
 
 ### 27.3 Plugin Starter Template
 
-The host should publish a starter template (`create-paperclip-plugin`) that scaffolds:
+The host should publish a starter template (`create-aiteamcorp-plugin`) that scaffolds:
 
-- `package.json` with correct `paperclipPlugin` keys
+- `package.json` with correct `aiteamcorpPlugin` keys
 - manifest with placeholder values
 - worker entry with SDK type imports and example event handler
 - UI entry with example `DashboardWidget` using bridge hooks
@@ -1525,19 +1525,19 @@ This spec directly supports the following plugin types:
 
 The host publishes a single SDK package for plugin authors:
 
-- `@paperclipai/plugin-sdk` — the complete plugin SDK
+- `@aiteamcorp/plugin-sdk` — the complete plugin SDK
 
 The package uses subpath exports to separate worker and UI concerns:
 
-- `@paperclipai/plugin-sdk` — worker-side SDK (context, events, state, tools, logger, `definePlugin`, `z`)
-- `@paperclipai/plugin-sdk/ui` — frontend SDK (bridge hooks, shared components, design tokens)
+- `@aiteamcorp/plugin-sdk` — worker-side SDK (context, events, state, tools, logger, `definePlugin`, `z`)
+- `@aiteamcorp/plugin-sdk/ui` — frontend SDK (bridge hooks, shared components, design tokens)
 
 A single package simplifies dependency management for plugin authors — one dependency, one version, one changelog. The subpath exports keep bundle separation clean: worker code imports from the root, UI code imports from `/ui`. Build tools tree-shake accordingly so the worker bundle does not include React components and the UI bundle does not include worker-only code.
 
 Versioning rules:
 
 1. **Semver**: The SDK follows strict semantic versioning. Major version bumps indicate breaking changes to either the worker or UI surface; minor versions add new features backwards-compatibly; patch versions are bug fixes only.
-2. **Tied to API version**: Each major SDK version corresponds to exactly one plugin `apiVersion`. When `@paperclipai/plugin-sdk@2.x` ships, it targets `apiVersion: 2`. Plugins built with SDK 1.x continue to declare `apiVersion: 1`.
+2. **Tied to API version**: Each major SDK version corresponds to exactly one plugin `apiVersion`. When `@aiteamcorp/plugin-sdk@2.x` ships, it targets `apiVersion: 2`. Plugins built with SDK 1.x continue to declare `apiVersion: 1`.
 3. **Host multi-version support**: The host must support at least the current and one previous `apiVersion` simultaneously. This means plugins built against the previous SDK major version continue to work without modification. The host maintains separate IPC protocol handlers for each supported API version.
 4. **Minimum SDK version in manifest**: Plugins declare `sdkVersion` in the manifest as a semver range (e.g. `">=1.4.0 <2.0.0"`). The host validates this at install time and warns if the plugin's declared range is outside the host's supported SDK versions.
 5. **Deprecation timeline**: When a new `apiVersion` ships, the previous version enters a deprecation period of at least 6 months. During this period:
@@ -1564,7 +1564,7 @@ This matrix is published in the host docs and queryable via `GET /api/plugins/co
 
 When a new SDK version is released:
 
-1. Plugin author updates `@paperclipai/plugin-sdk` dependency.
+1. Plugin author updates `@aiteamcorp/plugin-sdk` dependency.
 2. Plugin author follows the migration guide to update code.
 3. Plugin author updates `apiVersion` and `sdkVersion` in the manifest.
 4. Plugin author publishes a new plugin version.
@@ -1584,7 +1584,7 @@ When a new SDK version is released:
 - jobs
 - webhooks
 - settings page
-- plugin UI bundle loading, host bridge, and `@paperclipai/plugin-sdk/ui`
+- plugin UI bundle loading, host bridge, and `@aiteamcorp/plugin-sdk/ui`
 - extension slot mounting for pages, tabs, widgets, sidebar entries
 - bridge error propagation (`PluginBridgeError`)
 - auto-generated settings form from `instanceConfigSchema`
@@ -1593,8 +1593,8 @@ When a new SDK version is released:
 - event filtering
 - graceful shutdown with configurable deadlines
 - plugin logging and health dashboard
-- `@paperclipai/plugin-test-harness`
-- `create-paperclip-plugin` starter template
+- `@aiteamcorp/plugin-test-harness`
+- `create-aiteamcorp-plugin` starter template
 - uninstall with data retention grace period
 - hot plugin lifecycle (install, uninstall, upgrade, config change without server restart)
 - SDK versioning with multi-version host support and deprecation policy

@@ -83,4 +83,4 @@ env \
   HOST="$PAPERCLIP_HOST" \
   PORT="$PAPERCLIP_PORT" \
   PAPERCLIP_OPEN_ON_LISTEN="$PAPERCLIP_OPEN_ON_LISTEN" \
-  pnpm paperclipai onboard --yes --data-dir "$PC_DATA"
+  pnpm aiteamcorp onboard --yes --data-dir "$PC_DATA"

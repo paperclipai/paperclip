@@ -55,7 +55,7 @@ OPENAI_API_KEY=... ANTHROPIC_API_KEY=... docker compose -f docker/docker-compose
 Inside the container:
 
 ```sh
-review-checkout-pr paperclipai/paperclip 432
+review-checkout-pr aiteamcorporated-collab/ai-team-coprorated 432
 cd /work/checkouts/paperclipai-paperclip/pr-432
 ```
 

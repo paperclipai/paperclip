@@ -3,7 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import { randomUUID } from "node:crypto";
-import { createDb, companies, agents, costEvents, financeEvents, projects } from "@paperclipai/db";
+import { createDb, companies, agents, costEvents, financeEvents, projects } from "@aiteamcorp/db";
 import { costService } from "../services/costs.ts";
 import { financeService } from "../services/finance.ts";
 import {

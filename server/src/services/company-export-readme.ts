@@ -1,7 +1,7 @@
 /**
  * Generates README.md with Mermaid org chart for company exports.
  */
-import type { CompanyPortabilityManifest } from "@paperclipai/shared";
+import type { CompanyPortabilityManifest } from "@aiteamcorp/shared";
 
 const ROLE_LABELS: Record<string, string> = {
   ceo: "CEO",
@@ -157,7 +157,7 @@ export function generateReadme(
   lines.push("## Getting Started");
   lines.push("");
   lines.push("```bash");
-  lines.push("pnpm paperclipai company import this-github-url-or-folder");
+  lines.push("pnpm aiteamcorp company import this-github-url-or-folder");
   lines.push("```");
   lines.push("");
 

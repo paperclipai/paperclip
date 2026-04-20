@@ -40,7 +40,7 @@ describe("feedback trace share client", () => {
       notes: [],
       envelope: { hello: "world" },
       surface: null,
-      paperclipRun: null,
+      aiteamcorpRun: null,
       rawAdapterTrace: null,
       normalizedAdapterTrace: null,
       privacy: null,

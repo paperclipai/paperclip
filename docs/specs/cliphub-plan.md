@@ -113,7 +113,7 @@ interface Listing {
   // Compatibility
   compatibleAdapters: string[];    // ['claude_local', 'codex_local', ...]
   requiredModels: string[];        // ['claude-opus-4-6', 'claude-sonnet-4-6']
-  paperclipVersionMin: string;     // Minimum Paperclip version
+  aiteamcorpVersionMin: string;     // Minimum Paperclip version
 
   // Social proof
   installCount: number;

@@ -5,14 +5,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   listGeminiSkills,
   syncGeminiSkills,
-} from "@paperclipai/adapter-gemini-local/server";
+} from "@aiteamcorp/adapter-gemini-local/server";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
 describe("gemini local skill sync", () => {
-  const paperclipKey = "paperclipai/paperclip/paperclip";
+  const aiteamcorpKey = "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -32,20 +32,20 @@ describe("gemini local skill sync", () => {
         env: {
           HOME: home,
         },
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
+        aiteamcorpSkillSync: {
+          desiredSkills: [aiteamcorpKey],
         },
       },
     } as const;
 
     const before = await listGeminiSkills(ctx);
     expect(before.mode).toBe("persistent");
-    expect(before.desiredSkills).toContain(paperclipKey);
-    expect(before.entries.find((entry) => entry.key === paperclipKey)?.required).toBe(true);
-    expect(before.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("missing");
+    expect(before.desiredSkills).toContain(aiteamcorpKey);
+    expect(before.entries.find((entry) => entry.key === aiteamcorpKey)?.required).toBe(true);
+    expect(before.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("missing");
 
-    const after = await syncGeminiSkills(ctx, [paperclipKey]);
-    expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
+    const after = await syncGeminiSkills(ctx, [aiteamcorpKey]);
+    expect(after.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("installed");
     expect((await fs.lstat(path.join(home, ".gemini", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
   });
 
@@ -61,13 +61,13 @@ describe("gemini local skill sync", () => {
         env: {
           HOME: home,
         },
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
+        aiteamcorpSkillSync: {
+          desiredSkills: [aiteamcorpKey],
         },
       },
     } as const;
 
-    await syncGeminiSkills(configuredCtx, [paperclipKey]);
+    await syncGeminiSkills(configuredCtx, [aiteamcorpKey]);
 
     const clearedCtx = {
       ...configuredCtx,
@@ -75,15 +75,15 @@ describe("gemini local skill sync", () => {
         env: {
           HOME: home,
         },
-        paperclipSkillSync: {
+        aiteamcorpSkillSync: {
           desiredSkills: [],
         },
       },
     } as const;
 
     const after = await syncGeminiSkills(clearedCtx, []);
-    expect(after.desiredSkills).toContain(paperclipKey);
-    expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
+    expect(after.desiredSkills).toContain(aiteamcorpKey);
+    expect(after.entries.find((entry) => entry.key === aiteamcorpKey)?.state).toBe("installed");
     expect((await fs.lstat(path.join(home, ".gemini", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
   });
 });

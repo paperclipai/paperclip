@@ -82,7 +82,7 @@ PAPERCLIP_COOKIE="your_session_cookie=..." pnpm smoke:openclaw-join
 - If Paperclip rejects the container-visible host with a hostname error, allow it from host:
 
 ```bash
-pnpm paperclipai allowed-hostname host.docker.internal
+pnpm aiteamcorp allowed-hostname host.docker.internal
 ```
 
 Then restart Paperclip and rerun the smoke script.
@@ -90,7 +90,7 @@ Then restart Paperclip and rerun the smoke script.
 - Authenticated/private mode: ensure hostnames are in the allowed list when required:
 
 ```bash
-pnpm paperclipai allowed-hostname <host>
+pnpm aiteamcorp allowed-hostname <host>
 ```
 
 ## Prerequisites

@@ -17,7 +17,7 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
-} from "@paperclipai/db";
+} from "@aiteamcorp/db";
 import { heartbeatService } from "../services/heartbeat.ts";
 
 type EmbeddedPostgresInstance = {
@@ -400,7 +400,7 @@ describe("heartbeat comment wake batching", () => {
           )
           .then((rows) => rows[0] ?? null);
 
-      const deferredContext = (deferredWake?.payload as Record<string, unknown> | null)?._paperclipWakeContext as
+      const deferredContext = (deferredWake?.payload as Record<string, unknown> | null)?._aiteamcorpWakeContext as
         | Record<string, unknown>
         | undefined;
       expect(deferredContext?.wakeCommentIds).toEqual([comment2.id, comment3.id]);

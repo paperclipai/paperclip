@@ -1,14 +1,14 @@
 {
-  "name": "@paperclipai/mcp-server",
+  "name": "@aiteamcorp/mcp-server",
   "version": "0.1.0",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/aiteamcorporated-collab/ai-team-coprorated",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/aiteamcorporated-collab/ai-team-coprorated/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/aiteamcorporated-collab/ai-team-coprorated",
     "directory": "packages/mcp-server"
   },
   "type": "module",
@@ -44,7 +44,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@paperclipai/shared": "workspace:*",
+    "@aiteamcorp/shared": "workspace:*",
     "zod": "^3.24.2"
   },
   "devDependencies": {

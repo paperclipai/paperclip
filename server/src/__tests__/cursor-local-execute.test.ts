@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execute } from "@paperclipai/adapter-cursor-local/server";
+import { execute } from "@aiteamcorp/adapter-cursor-local/server";
 
 async function writeFakeCursorCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -12,7 +12,7 @@ const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 const payload = {
   argv: process.argv.slice(2),
   prompt: fs.readFileSync(0, "utf8"),
-  paperclipEnvKeys: Object.keys(process.env)
+  aiteamcorpEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
     .sort(),
 };
@@ -43,7 +43,7 @@ console.log(JSON.stringify({
 type CapturePayload = {
   argv: string[];
   prompt: string;
-  paperclipEnvKeys: string[];
+  aiteamcorpEnvKeys: string[];
 };
 
 async function createSkillDir(root: string, name: string) {
@@ -106,7 +106,7 @@ describe("cursor execute", () => {
       expect(capture.argv).not.toContain("Follow the paperclip heartbeat.");
       expect(capture.argv).not.toContain("--mode");
       expect(capture.argv).not.toContain("ask");
-      expect(capture.paperclipEnvKeys).toEqual(
+      expect(capture.aiteamcorpEnvKeys).toEqual(
         expect.arrayContaining([
           "PAPERCLIP_AGENT_ID",
           "PAPERCLIP_API_KEY",
@@ -195,7 +195,7 @@ describe("cursor execute", () => {
     await fs.mkdir(workspace, { recursive: true });
     await writeFakeCursorCommand(commandPath);
 
-    const paperclipDir = await createSkillDir(runtimeSkillsRoot, "paperclip");
+    const aiteamcorpDir = await createSkillDir(runtimeSkillsRoot, "paperclip");
     const asciiHeartDir = await createSkillDir(runtimeSkillsRoot, "ascii-heart");
 
     const previousHome = process.env.HOME;
@@ -221,10 +221,10 @@ describe("cursor execute", () => {
           command: commandPath,
           cwd: workspace,
           model: "auto",
-          paperclipRuntimeSkills: [
+          aiteamcorpRuntimeSkills: [
             {
               name: "paperclip",
-              source: paperclipDir,
+              source: aiteamcorpDir,
               required: true,
               requiredReason: "Bundled Paperclip skills are always available for local adapters.",
             },
@@ -233,7 +233,7 @@ describe("cursor execute", () => {
               source: asciiHeartDir,
             },
           ],
-          paperclipSkillSync: {
+          aiteamcorpSkillSync: {
             desiredSkills: ["ascii-heart"],
           },
           promptTemplate: "Follow the paperclip heartbeat.",

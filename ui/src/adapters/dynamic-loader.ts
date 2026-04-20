@@ -15,7 +15,7 @@
  * runtime dependencies, and Paperclip's UI loads it on demand.
  */
 
-import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+import type { TranscriptEntry } from "@aiteamcorp/adapter-utils";
 import type { StatefulStdoutParser, StdoutLineParser, StdoutParserFactory } from "./types";
 
 interface DynamicParserModule {

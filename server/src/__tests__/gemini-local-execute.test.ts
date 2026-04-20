@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execute } from "@paperclipai/adapter-gemini-local/server";
+import { execute } from "@aiteamcorp/adapter-gemini-local/server";
 
 async function writeFakeGeminiCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -11,7 +11,7 @@ const fs = require("node:fs");
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 const payload = {
   argv: process.argv.slice(2),
-  paperclipEnvKeys: Object.keys(process.env)
+  aiteamcorpEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
     .sort(),
 };
@@ -41,7 +41,7 @@ console.log(JSON.stringify({
 
 type CapturePayload = {
   argv: string[];
-  paperclipEnvKeys: string[];
+  aiteamcorpEnvKeys: string[];
 };
 
 describe("gemini execute", () => {
@@ -103,7 +103,7 @@ describe("gemini execute", () => {
       const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
       expect(promptArg).toContain("Follow the paperclip heartbeat.");
       expect(promptArg).toContain("Paperclip runtime note:");
-      expect(capture.paperclipEnvKeys).toEqual(
+      expect(capture.aiteamcorpEnvKeys).toEqual(
         expect.arrayContaining([
           "PAPERCLIP_AGENT_ID",
           "PAPERCLIP_API_KEY",
@@ -210,7 +210,7 @@ describe("gemini execute", () => {
           taskId: "issue-1",
           wakeReason: "issue_commented",
           wakeCommentId: "comment-2",
-          paperclipWake: {
+          aiteamcorpWake: {
             reason: "issue_commented",
             issue: {
               id: "issue-1",

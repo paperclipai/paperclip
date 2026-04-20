@@ -3,7 +3,7 @@
 import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue } from "@aiteamcorp/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
 import { ProjectWorkspaceSummaryCard } from "./ProjectWorkspaceSummaryCard";

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execute } from "@paperclipai/adapter-pi-local/server";
+import { execute } from "@aiteamcorp/adapter-pi-local/server";
 
 async function writeFakePiCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node

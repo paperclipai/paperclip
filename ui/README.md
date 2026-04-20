@@ -1,4 +1,4 @@
-# @paperclipai/ui
+# @aiteamcorp/ui
 
 Published static assets for the Paperclip board UI.
 
@@ -8,4 +8,4 @@ The npm package contains the production build under `dist/`. It does not ship th
 
 ## Typical use
 
-Install the package, then serve or copy the built files from `node_modules/@paperclipai/ui/dist`.
+Install the package, then serve or copy the built files from `node_modules/@aiteamcorp/ui/dist`.

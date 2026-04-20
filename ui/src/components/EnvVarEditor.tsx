@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
+import type { CompanySecret, EnvBinding } from "@aiteamcorp/shared";
 import { X } from "lucide-react";
 import { cn } from "../lib/utils";
 

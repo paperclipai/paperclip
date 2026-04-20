@@ -1,4 +1,4 @@
-import type { HeartbeatRun, HeartbeatRunEvent, InstanceSchedulerHeartbeatAgent, WorkspaceOperation } from "@paperclipai/shared";
+import type { HeartbeatRun, HeartbeatRunEvent, InstanceSchedulerHeartbeatAgent, WorkspaceOperation } from "@aiteamcorp/shared";
 import { api } from "./client";
 
 export interface ActiveRunForIssue {

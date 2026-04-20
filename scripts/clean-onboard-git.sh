@@ -7,8 +7,8 @@ mkdir -p "$PC_HOME" "$PC_CACHE" "$PC_DATA"
 echo "PC_TEST_ROOT: $PC_TEST_ROOT"
 echo "PC_HOME: $PC_HOME"
 cd $PC_TEST_ROOT
-git clone https://github.com/paperclipai/paperclip.git repo
+git clone https://github.com/aiteamcorporated-collab/ai-team-coprorated.git repo
 cd repo
 pnpm install
 env HOME="$PC_HOME" npm_config_cache="$PC_CACHE" npm_config_userconfig="$PC_HOME/.npmrc" \
-  pnpm paperclipai onboard --yes --data-dir "$PC_DATA"
+  pnpm aiteamcorp onboard --yes --data-dir "$PC_DATA"

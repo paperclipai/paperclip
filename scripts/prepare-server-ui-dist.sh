@@ -2,14 +2,14 @@
 set -euo pipefail
 
 # prepare-server-ui-dist.sh — Build the UI and copy it into server/ui-dist.
-# This keeps @paperclipai/server publish artifacts self-contained for static UI serving.
+# This keeps @aiteamcorp/server publish artifacts self-contained for static UI serving.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UI_DIST="$REPO_ROOT/ui/dist"
 SERVER_UI_DIST="$REPO_ROOT/server/ui-dist"
 
-echo "  -> Building @paperclipai/ui..."
-pnpm --dir "$REPO_ROOT" --filter @paperclipai/ui build
+echo "  -> Building @aiteamcorp/ui..."
+pnpm --dir "$REPO_ROOT" --filter @aiteamcorp/ui build
 
 if [ ! -f "$UI_DIST/index.html" ]; then
   echo "Error: UI build output missing at $UI_DIST/index.html"

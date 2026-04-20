@@ -7,7 +7,7 @@ import type {
   FeedbackVote,
   FeedbackVoteValue,
   IssueComment,
-} from "@paperclipai/shared";
+} from "@aiteamcorp/shared";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";

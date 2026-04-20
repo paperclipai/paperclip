@@ -39,7 +39,7 @@ This plan is now **gateway-only**. Paperclip supports OpenClaw through `openclaw
 Recommended fields:
 ```json
 {
-  "paperclipApiUrl": "http://host.docker.internal:3100",
+  "aiteamcorpApiUrl": "http://host.docker.internal:3100",
   "waitTimeoutMs": 120000,
   "sessionKeyStrategy": "issue",
   "role": "operator",
@@ -102,8 +102,8 @@ pnpm build
 
 If full suite is too heavy locally, run at least:
 ```bash
-pnpm --filter @paperclipai/server test:run -- openclaw-gateway
-pnpm --filter @paperclipai/server typecheck
-pnpm --filter @paperclipai/ui typecheck
+pnpm --filter @aiteamcorp/server test:run -- openclaw-gateway
+pnpm --filter @aiteamcorp/server typecheck
+pnpm --filter @aiteamcorp/ui typecheck
 pnpm --filter paperclipai typecheck
 ```

@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents } from "@paperclipai/db";
-import type { HireApprovedPayload } from "@paperclipai/adapter-utils";
+import type { Db } from "@aiteamcorp/db";
+import { agents } from "@aiteamcorp/db";
+import type { HireApprovedPayload } from "@aiteamcorp/adapter-utils";
 import { findActiveServerAdapter } from "../adapters/registry.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";

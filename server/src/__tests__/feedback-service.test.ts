@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { writePaperclipSkillSyncPreference } from "@aiteamcorp/adapter-utils/server-utils";
 import {
   agents,
   applyPendingMigrations,
@@ -23,7 +23,7 @@ import {
   issueComments,
   issueDocuments,
   issues,
-} from "@paperclipai/db";
+} from "@aiteamcorp/db";
 import { feedbackService } from "../services/feedback.ts";
 
 type EmbeddedPostgresInstance = {
@@ -217,7 +217,7 @@ describe("feedbackService.saveIssueVote", () => {
       {
         id: randomUUID(),
         companyId,
-        key: "paperclipai/paperclip/paperclip",
+        key: "aiteamcorporated-collab/ai-team-coprorated/aiteamcorp",
         slug: "paperclip",
         name: "Paperclip",
         markdown: "# Paperclip",
@@ -255,7 +255,7 @@ describe("feedbackService.saveIssueVote", () => {
           instructionsEntryFile: "AGENTS.md",
           instructionsFilePath: instructionsPath,
         },
-        ["paperclipai/paperclip/paperclip", "octo/research/public-skill"],
+        ["aiteamcorporated-collab/ai-team-coprorated/aiteamcorp", "octo/research/public-skill"],
       ),
       runtimeConfig: {
         heartbeat: {

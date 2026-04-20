@@ -18,13 +18,13 @@ The server reads its configuration from environment variables:
 ## Usage
 
 ```sh
-npx -y @paperclipai/mcp-server
+npx -y @aiteamcorp/mcp-server
 ```
 
 Or locally in this repo:
 
 ```sh
-pnpm --filter @paperclipai/mcp-server build
+pnpm --filter @aiteamcorp/mcp-server build
 node packages/mcp-server/dist/stdio.js
 ```
 
@@ -32,46 +32,46 @@ node packages/mcp-server/dist/stdio.js
 
 Read tools:
 
-- `paperclipMe`
-- `paperclipInboxLite`
-- `paperclipListAgents`
-- `paperclipGetAgent`
-- `paperclipListIssues`
-- `paperclipGetIssue`
-- `paperclipGetHeartbeatContext`
-- `paperclipListComments`
-- `paperclipGetComment`
-- `paperclipListIssueApprovals`
-- `paperclipListDocuments`
-- `paperclipGetDocument`
-- `paperclipListDocumentRevisions`
-- `paperclipListProjects`
-- `paperclipGetProject`
-- `paperclipListGoals`
-- `paperclipGetGoal`
-- `paperclipListApprovals`
-- `paperclipGetApproval`
-- `paperclipGetApprovalIssues`
-- `paperclipListApprovalComments`
+- `aiteamcorpMe`
+- `aiteamcorpInboxLite`
+- `aiteamcorpListAgents`
+- `aiteamcorpGetAgent`
+- `aiteamcorpListIssues`
+- `aiteamcorpGetIssue`
+- `aiteamcorpGetHeartbeatContext`
+- `aiteamcorpListComments`
+- `aiteamcorpGetComment`
+- `aiteamcorpListIssueApprovals`
+- `aiteamcorpListDocuments`
+- `aiteamcorpGetDocument`
+- `aiteamcorpListDocumentRevisions`
+- `aiteamcorpListProjects`
+- `aiteamcorpGetProject`
+- `aiteamcorpListGoals`
+- `aiteamcorpGetGoal`
+- `aiteamcorpListApprovals`
+- `aiteamcorpGetApproval`
+- `aiteamcorpGetApprovalIssues`
+- `aiteamcorpListApprovalComments`
 
 Write tools:
 
-- `paperclipCreateIssue`
-- `paperclipUpdateIssue`
-- `paperclipCheckoutIssue`
-- `paperclipReleaseIssue`
-- `paperclipAddComment`
-- `paperclipUpsertIssueDocument`
-- `paperclipRestoreIssueDocumentRevision`
-- `paperclipCreateApproval`
-- `paperclipLinkIssueApproval`
-- `paperclipUnlinkIssueApproval`
-- `paperclipApprovalDecision`
-- `paperclipAddApprovalComment`
+- `aiteamcorpCreateIssue`
+- `aiteamcorpUpdateIssue`
+- `aiteamcorpCheckoutIssue`
+- `aiteamcorpReleaseIssue`
+- `aiteamcorpAddComment`
+- `aiteamcorpUpsertIssueDocument`
+- `aiteamcorpRestoreIssueDocumentRevision`
+- `aiteamcorpCreateApproval`
+- `aiteamcorpLinkIssueApproval`
+- `aiteamcorpUnlinkIssueApproval`
+- `aiteamcorpApprovalDecision`
+- `aiteamcorpAddApprovalComment`
 
 Escape hatch:
 
-- `paperclipApiRequest`
+- `aiteamcorpApiRequest`
 
-`paperclipApiRequest` is limited to paths under `/api` and JSON bodies. It is
+`aiteamcorpApiRequest` is limited to paths under `/api` and JSON bodies. It is
 meant for endpoints that do not yet have a dedicated MCP tool.

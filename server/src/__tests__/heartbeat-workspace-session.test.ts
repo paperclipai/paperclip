@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { agents } from "@paperclipai/db";
-import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
+import type { agents } from "@aiteamcorp/db";
+import { sessionCodec as codexSessionCodec } from "@aiteamcorp/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
@@ -341,7 +341,7 @@ describe("comment wake batching", () => {
         wakeReason: "issue_commented",
         wakeCommentId: "comment-1",
         wakeCommentIds: ["comment-1"],
-        paperclipWake: {
+        aiteamcorpWake: {
           latestCommentId: "comment-1",
         },
       },
@@ -355,7 +355,7 @@ describe("comment wake batching", () => {
     expect(extractWakeCommentIds(merged)).toEqual(["comment-1", "comment-2"]);
     expect(merged.commentId).toBe("comment-2");
     expect(merged.wakeCommentId).toBe("comment-2");
-    expect(merged.paperclipWake).toBeUndefined();
+    expect(merged.aiteamcorpWake).toBeUndefined();
   });
 });
 
@@ -414,7 +414,7 @@ describe("formatRuntimeWorkspaceWarningLog", () => {
   it("emits informational workspace warnings on stdout", () => {
     expect(formatRuntimeWorkspaceWarningLog("Using fallback workspace")).toEqual({
       stream: "stdout",
-      chunk: "[paperclip] Using fallback workspace\n",
+      chunk: "[aiteamcorp] Using fallback workspace\n",
     });
   });
 });

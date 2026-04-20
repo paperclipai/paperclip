@@ -84,7 +84,7 @@ const mockTrackRoutineCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  vi.doMock("@aiteamcorp/shared/telemetry", () => ({
     trackRoutineCreated: mockTrackRoutineCreated,
     trackErrorHandlerCrash: vi.fn(),
   }));
@@ -119,7 +119,7 @@ async function createApp(actor: Record<string, unknown>) {
 describe("routine routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("@aiteamcorp/shared/telemetry");
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/routines.js");

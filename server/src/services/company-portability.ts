@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@aiteamcorp/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityCollisionStrategy,
@@ -29,7 +29,7 @@ import type {
   CompanySkill,
   AgentEnvConfig,
   RoutineVariable,
-} from "@paperclipai/shared";
+} from "@aiteamcorp/shared";
 import {
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
@@ -42,12 +42,12 @@ import {
   deriveProjectUrlKey,
   envConfigSchema,
   normalizeAgentUrlKey,
-} from "@paperclipai/shared";
+} from "@aiteamcorp/shared";
 import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
-} from "@paperclipai/adapter-utils/server-utils";
-import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
+} from "@aiteamcorp/adapter-utils/server-utils";
+import { ensureOpenCodeModelConfiguredAndAvailable } from "@aiteamcorp/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
@@ -166,7 +166,7 @@ function readSkillKey(frontmatter: Record<string, unknown>) {
     ?? asString(frontmatter.skillKey)
     ?? asString(metadata?.skillKey)
     ?? asString(metadata?.canonicalKey)
-    ?? asString(metadata?.paperclipSkillKey)
+    ?? asString(metadata?.aiteamcorpSkillKey)
     ?? asString(paperclip?.skillKey)
     ?? asString(paperclip?.key),
   );
@@ -189,7 +189,7 @@ function deriveManifestSkillKey(
     return `${owner}/${repo}/${slug}`;
   }
   if (sourceKind === "paperclip_bundled") {
-    return `paperclipai/paperclip/${slug}`;
+    return `aiteamcorporated-collab/ai-team-coprorated/${slug}`;
   }
   if (sourceType === "url" || sourceKind === "url") {
     try {
@@ -1544,7 +1544,7 @@ function filterPortableExtensionYaml(yaml: string, selectedFiles: Set<string>) {
 function filterExportFiles(
   files: Record<string, CompanyPortabilityFileEntry>,
   selectedFilesInput: string[] | undefined,
-  paperclipExtensionPath: string,
+  aiteamcorpExtensionPath: string,
 ) {
   if (!selectedFilesInput || selectedFilesInput.length === 0) {
     return files;
@@ -1561,9 +1561,9 @@ function filterExportFiles(
     filtered[filePath] = content;
   }
 
-  const extensionEntry = filtered[paperclipExtensionPath];
-  if (selectedFiles.has(paperclipExtensionPath) && typeof extensionEntry === "string") {
-    filtered[paperclipExtensionPath] = filterPortableExtensionYaml(extensionEntry, selectedFiles);
+  const extensionEntry = filtered[aiteamcorpExtensionPath];
+  if (selectedFiles.has(aiteamcorpExtensionPath) && typeof extensionEntry === "string") {
+    filtered[aiteamcorpExtensionPath] = filterPortableExtensionYaml(extensionEntry, selectedFiles);
   }
 
   return filtered;
@@ -1599,7 +1599,7 @@ function normalizePortableConfig(
       key === "instructionsEntryFile" ||
       key === "promptTemplate" ||
       key === "bootstrapPromptTemplate" || // deprecated — kept for backward compat
-      key === "paperclipSkillSync"
+      key === "aiteamcorpSkillSync"
     ) continue;
     if (key === "env") continue;
     next[key] = entry;
@@ -1953,11 +1953,11 @@ async function buildSkillSourceEntry(skill: CompanySkill) {
     const commit = await resolveBundledSkillsCommit();
     return {
       kind: "github-dir",
-      repo: "paperclipai/paperclip",
+      repo: "aiteamcorporated-collab/ai-team-coprorated",
       path: `skills/${skill.slug}`,
       commit,
       trackingRef: "master",
-      url: `https://github.com/paperclipai/paperclip/tree/master/skills/${skill.slug}`,
+      url: `https://github.com/aiteamcorporated-collab/ai-team-coprorated/tree/master/skills/${skill.slug}`,
     };
   }
 
@@ -2022,7 +2022,7 @@ async function withSkillSourceMetadata(skill: CompanySkill, markdown: string) {
     metadata.sources = [...existingSources, sourceEntry];
   }
   metadata.skillKey = skill.key;
-  metadata.paperclipSkillKey = skill.key;
+  metadata.aiteamcorpSkillKey = skill.key;
   metadata.paperclip = {
     ...(isPlainRecord(metadata.paperclip) ? metadata.paperclip : {}),
     skillKey: skill.key,
@@ -2351,16 +2351,16 @@ function buildManifestFromPackageFiles(
   }
   const companyDoc = parseFrontmatterMarkdown(companyMarkdown);
   const companyFrontmatter = companyDoc.frontmatter;
-  const paperclipExtensionPath = findPaperclipExtensionPath(normalizedFiles);
-  const paperclipExtension = paperclipExtensionPath
-    ? parseYamlFile(readPortableTextFile(normalizedFiles, paperclipExtensionPath) ?? "")
+  const aiteamcorpExtensionPath = findPaperclipExtensionPath(normalizedFiles);
+  const aiteamcorpExtension = aiteamcorpExtensionPath
+    ? parseYamlFile(readPortableTextFile(normalizedFiles, aiteamcorpExtensionPath) ?? "")
     : {};
-  const paperclipCompany = isPlainRecord(paperclipExtension.company) ? paperclipExtension.company : {};
-  const paperclipSidebar = normalizePortableSidebarOrder(paperclipExtension.sidebar);
-  const paperclipAgents = isPlainRecord(paperclipExtension.agents) ? paperclipExtension.agents : {};
-  const paperclipProjects = isPlainRecord(paperclipExtension.projects) ? paperclipExtension.projects : {};
-  const paperclipTasks = isPlainRecord(paperclipExtension.tasks) ? paperclipExtension.tasks : {};
-  const paperclipRoutines = isPlainRecord(paperclipExtension.routines) ? paperclipExtension.routines : {};
+  const aiteamcorpCompany = isPlainRecord(aiteamcorpExtension.company) ? aiteamcorpExtension.company : {};
+  const aiteamcorpSidebar = normalizePortableSidebarOrder(aiteamcorpExtension.sidebar);
+  const aiteamcorpAgents = isPlainRecord(aiteamcorpExtension.agents) ? aiteamcorpExtension.agents : {};
+  const aiteamcorpProjects = isPlainRecord(aiteamcorpExtension.projects) ? aiteamcorpExtension.projects : {};
+  const aiteamcorpTasks = isPlainRecord(aiteamcorpExtension.tasks) ? aiteamcorpExtension.tasks : {};
+  const aiteamcorpRoutines = isPlainRecord(aiteamcorpExtension.routines) ? aiteamcorpExtension.routines : {};
   const companyName =
     asString(companyFrontmatter.name)
     ?? opts?.sourceLabel?.companyName
@@ -2415,26 +2415,26 @@ function buildManifestFromPackageFiles(
       path: resolvedCompanyPath,
       name: companyName,
       description: asString(companyFrontmatter.description),
-      brandColor: asString(paperclipCompany.brandColor),
-      logoPath: asString(paperclipCompany.logoPath) ?? asString(paperclipCompany.logo),
+      brandColor: asString(aiteamcorpCompany.brandColor),
+      logoPath: asString(aiteamcorpCompany.logoPath) ?? asString(aiteamcorpCompany.logo),
       requireBoardApprovalForNewAgents:
-        typeof paperclipCompany.requireBoardApprovalForNewAgents === "boolean"
-          ? paperclipCompany.requireBoardApprovalForNewAgents
+        typeof aiteamcorpCompany.requireBoardApprovalForNewAgents === "boolean"
+          ? aiteamcorpCompany.requireBoardApprovalForNewAgents
           : readCompanyApprovalDefault(companyFrontmatter),
       feedbackDataSharingEnabled:
-        typeof paperclipCompany.feedbackDataSharingEnabled === "boolean"
-          ? paperclipCompany.feedbackDataSharingEnabled
+        typeof aiteamcorpCompany.feedbackDataSharingEnabled === "boolean"
+          ? aiteamcorpCompany.feedbackDataSharingEnabled
           : false,
       feedbackDataSharingConsentAt:
-        typeof paperclipCompany.feedbackDataSharingConsentAt === "string"
-          ? paperclipCompany.feedbackDataSharingConsentAt
+        typeof aiteamcorpCompany.feedbackDataSharingConsentAt === "string"
+          ? aiteamcorpCompany.feedbackDataSharingConsentAt
           : null,
       feedbackDataSharingConsentByUserId:
-        asString(paperclipCompany.feedbackDataSharingConsentByUserId),
+        asString(aiteamcorpCompany.feedbackDataSharingConsentByUserId),
       feedbackDataSharingTermsVersion:
-        asString(paperclipCompany.feedbackDataSharingTermsVersion),
+        asString(aiteamcorpCompany.feedbackDataSharingTermsVersion),
     },
-    sidebar: paperclipSidebar,
+    sidebar: aiteamcorpSidebar,
     agents: [],
     skills: [],
     projects: [],
@@ -2456,7 +2456,7 @@ function buildManifestFromPackageFiles(
     const frontmatter = agentDoc.frontmatter;
     const fallbackSlug = normalizeAgentUrlKey(path.posix.basename(path.posix.dirname(agentPath))) ?? "agent";
     const slug = asString(frontmatter.slug) ?? fallbackSlug;
-    const extension = isPlainRecord(paperclipAgents[slug]) ? paperclipAgents[slug] : {};
+    const extension = isPlainRecord(aiteamcorpAgents[slug]) ? aiteamcorpAgents[slug] : {};
     const extensionAdapter = isPlainRecord(extension.adapter) ? extension.adapter : null;
     const extensionRuntime = isPlainRecord(extension.runtime) ? extension.runtime : null;
     const extensionPermissions = isPlainRecord(extension.permissions) ? extension.permissions : null;
@@ -2595,7 +2595,7 @@ function buildManifestFromPackageFiles(
       projectPath,
     );
     const slug = asString(frontmatter.slug) ?? fallbackSlug;
-    const extension = isPlainRecord(paperclipProjects[slug]) ? paperclipProjects[slug] : {};
+    const extension = isPlainRecord(aiteamcorpProjects[slug]) ? aiteamcorpProjects[slug] : {};
     const workspaceExtensions = isPlainRecord(extension.workspaces) ? extension.workspaces : {};
     const workspaces = Object.entries(workspaceExtensions)
       .map(([workspaceKey, entry]) => normalizePortableProjectWorkspaceExtension(workspaceKey, entry))
@@ -2633,9 +2633,9 @@ function buildManifestFromPackageFiles(
     const frontmatter = taskDoc.frontmatter;
     const fallbackSlug = normalizeAgentUrlKey(path.posix.basename(path.posix.dirname(taskPath))) ?? "task";
     const slug = asString(frontmatter.slug) ?? fallbackSlug;
-    const extension = isPlainRecord(paperclipTasks[slug]) ? paperclipTasks[slug] : {};
-    const routineExtension = normalizeRoutineExtension(paperclipRoutines[slug]);
-    const routineExtensionRaw = isPlainRecord(paperclipRoutines[slug]) ? paperclipRoutines[slug] : {};
+    const extension = isPlainRecord(aiteamcorpTasks[slug]) ? aiteamcorpTasks[slug] : {};
+    const routineExtension = normalizeRoutineExtension(aiteamcorpRoutines[slug]);
+    const routineExtensionRaw = isPlainRecord(aiteamcorpRoutines[slug]) ? aiteamcorpRoutines[slug] : {};
     const schedule = isPlainRecord(frontmatter.schedule) ? frontmatter.schedule : null;
     const legacyRecurrence = schedule && isPlainRecord(schedule.recurrence)
       ? schedule.recurrence
@@ -3176,11 +3176,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
     }
 
-    const paperclipAgentsOut: Record<string, Record<string, unknown>> = {};
-    const paperclipProjectsOut: Record<string, Record<string, unknown>> = {};
-    const paperclipTasksOut: Record<string, Record<string, unknown>> = {};
+    const aiteamcorpAgentsOut: Record<string, Record<string, unknown>> = {};
+    const aiteamcorpProjectsOut: Record<string, Record<string, unknown>> = {};
+    const aiteamcorpTasksOut: Record<string, Record<string, unknown>> = {};
     const unportableTaskWorkspaceRefs = new Map<string, { workspaceId: string; taskSlugs: string[] }>();
-    const paperclipRoutinesOut: Record<string, Record<string, unknown>> = {};
+    const aiteamcorpRoutinesOut: Record<string, Record<string, unknown>> = {};
 
     const skillByReference = new Map<string, typeof companySkillRows[number]>();
     for (const skill of companySkillRows) {
@@ -3306,7 +3306,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             env: buildEnvInputMap(agentEnvInputs),
           };
         }
-        paperclipAgentsOut[slug] = isPlainRecord(extension) ? extension : {};
+        aiteamcorpAgentsOut[slug] = isPlainRecord(extension) ? extension : {};
       }
     }
 
@@ -3349,7 +3349,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           env: buildEnvInputMap(projectEnvInputs),
         };
       }
-      paperclipProjectsOut[slug] = isPlainRecord(extension) ? extension : {};
+      aiteamcorpProjectsOut[slug] = isPlainRecord(extension) ? extension : {};
     }
 
     for (const issue of selectedIssueRows) {
@@ -3391,7 +3391,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         executionWorkspaceSettings: issue.executionWorkspaceSettings ?? undefined,
         assigneeAdapterOverrides: issue.assigneeAdapterOverrides ?? undefined,
       });
-      paperclipTasksOut[taskSlug] = isPlainRecord(extension) ? extension : {};
+      aiteamcorpTasksOut[taskSlug] = isPlainRecord(extension) ? extension : {};
     }
 
     for (const { workspaceId, taskSlugs } of unportableTaskWorkspaceRefs.values()) {
@@ -3432,23 +3432,23 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : undefined,
         })),
       });
-      paperclipRoutinesOut[taskSlug] = isPlainRecord(extension) ? extension : {};
+      aiteamcorpRoutinesOut[taskSlug] = isPlainRecord(extension) ? extension : {};
     }
 
-    const paperclipExtensionPath = ".paperclip.yaml";
-    const paperclipAgents = Object.fromEntries(
-      Object.entries(paperclipAgentsOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
+    const aiteamcorpExtensionPath = ".paperclip.yaml";
+    const aiteamcorpAgents = Object.fromEntries(
+      Object.entries(aiteamcorpAgentsOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
     );
-    const paperclipProjects = Object.fromEntries(
-      Object.entries(paperclipProjectsOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
+    const aiteamcorpProjects = Object.fromEntries(
+      Object.entries(aiteamcorpProjectsOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
     );
-    const paperclipTasks = Object.fromEntries(
-      Object.entries(paperclipTasksOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
+    const aiteamcorpTasks = Object.fromEntries(
+      Object.entries(aiteamcorpTasksOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
     );
-    const paperclipRoutines = Object.fromEntries(
-      Object.entries(paperclipRoutinesOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
+    const aiteamcorpRoutines = Object.fromEntries(
+      Object.entries(aiteamcorpRoutinesOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
     );
-    files[paperclipExtensionPath] = buildYamlFile(
+    files[aiteamcorpExtensionPath] = buildYamlFile(
       {
         schema: "paperclip/v1",
         company: stripEmptyValues({
@@ -3461,15 +3461,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           feedbackDataSharingTermsVersion: company.feedbackDataSharingTermsVersion ?? null,
         }),
         sidebar: stripEmptyValues(sidebarOrder),
-        agents: Object.keys(paperclipAgents).length > 0 ? paperclipAgents : undefined,
-        projects: Object.keys(paperclipProjects).length > 0 ? paperclipProjects : undefined,
-        tasks: Object.keys(paperclipTasks).length > 0 ? paperclipTasks : undefined,
-        routines: Object.keys(paperclipRoutines).length > 0 ? paperclipRoutines : undefined,
+        agents: Object.keys(aiteamcorpAgents).length > 0 ? aiteamcorpAgents : undefined,
+        projects: Object.keys(aiteamcorpProjects).length > 0 ? aiteamcorpProjects : undefined,
+        tasks: Object.keys(aiteamcorpTasks).length > 0 ? aiteamcorpTasks : undefined,
+        routines: Object.keys(aiteamcorpRoutines).length > 0 ? aiteamcorpRoutines : undefined,
       },
       { preserveEmptyStrings: true },
     );
 
-    let finalFiles = filterExportFiles(files, input.selectedFiles, paperclipExtensionPath);
+    let finalFiles = filterExportFiles(files, input.selectedFiles, aiteamcorpExtensionPath);
     let resolved = buildManifestFromPackageFiles(finalFiles, {
       sourceLabel: {
         companyId: company.id,
@@ -3525,7 +3525,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       manifest: resolved.manifest,
       files: finalFiles,
       warnings: resolved.warnings,
-      paperclipExtensionPath,
+      aiteamcorpExtensionPath,
     };
   }
 

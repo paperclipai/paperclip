@@ -720,7 +720,7 @@ export async function listPaperclipSkillEntries(
     return entries
       .filter((entry) => entry.isDirectory())
       .map((entry) => ({
-        key: `paperclipai/paperclip/${entry.name}`,
+        key: `aiteamcorporated-collab/ai-team-coprorated/${entry.name}`,
         runtimeName: entry.name,
         source: path.join(root, entry.name),
         required: true,
@@ -872,7 +872,7 @@ export async function readPaperclipRuntimeSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
 ): Promise<PaperclipSkillEntry[]> {
-  const configuredEntries = normalizeConfiguredPaperclipRuntimeSkills(config.paperclipRuntimeSkills);
+  const configuredEntries = normalizeConfiguredPaperclipRuntimeSkills(config.aiteamcorpRuntimeSkills);
   if (configuredEntries.length > 0) return configuredEntries;
   return listPaperclipSkillEntries(moduleDir, additionalCandidates);
 }
@@ -899,7 +899,7 @@ export function readPaperclipSkillSyncPreference(config: Record<string, unknown>
   explicit: boolean;
   desiredSkills: string[];
 } {
-  const raw = config.paperclipSkillSync;
+  const raw = config.aiteamcorpSkillSync;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return { explicit: false, desiredSkills: [] };
   }
@@ -962,7 +962,7 @@ export function writePaperclipSkillSyncPreference(
   desiredSkills: string[],
 ): Record<string, unknown> {
   const next = { ...config };
-  const raw = next.paperclipSkillSync;
+  const raw = next.aiteamcorpSkillSync;
   const current =
     typeof raw === "object" && raw !== null && !Array.isArray(raw)
       ? { ...(raw as Record<string, unknown>) }
@@ -974,7 +974,7 @@ export function writePaperclipSkillSyncPreference(
         .filter(Boolean),
     ),
   );
-  next.paperclipSkillSync = current;
+  next.aiteamcorpSkillSync = current;
   return next;
 }
 
@@ -1083,7 +1083,7 @@ export async function runChildProcess(
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".
     // These vars leak in when the Paperclip server itself is started from
-    // within a Claude Code session (e.g. `npx paperclipai run` in a terminal
+    // within a Claude Code session (e.g. `npx aiteamcorp run` in a terminal
     // owned by Claude Code) or when cron inherits a contaminated shell env.
     const CLAUDE_CODE_NESTING_VARS = [
       "CLAUDECODE",
