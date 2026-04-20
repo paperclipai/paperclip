@@ -120,6 +120,10 @@ OB_EMPTY_CACHE_CYCLES: int = 10          # Cycles before evicting empty OB cache
 BREAKOUT_WINDOW: int = 20               # Candles to look back for breakout check
 BREAKOUT_ATR_MULT: float = 2.0          # ATR multiplier to flag breakout
 BREAKOUT_COOLDOWN_SEC: int = 300        # Seconds to avoid entry after breakout
+BREAKOUT_LOOKBACK: int = 20             # Number of spread readings to track per symbol
+BREAKOUT_WIDEN_RATIO: float = 0.70      # 70% of ticks widening triggers breakout
+BREAKOUT_MIN_DRIFT_REL: float = 0.15    # Minimum drift as fraction of current spread
+BREAKOUT_LOSS_MEMORY_HOURS: int = 6     # Hours to blacklist a symbol after breakout losses
 
 # ---------------------------------------------------------------------------
 # Dynamic exit params
@@ -127,6 +131,7 @@ BREAKOUT_COOLDOWN_SEC: int = 300        # Seconds to avoid entry after breakout
 DYNAMIC_EXIT_ENABLED: bool = True
 DYNAMIC_EXIT_PROFIT_LOCK_PCT: float = 0.50  # Lock in 50% of peak profit on exit
 DYNAMIC_EXIT_TRAIL_PCT: float = 0.10        # Trailing stop as fraction of spread
+BASELINE_SPREAD_WINDOW: int = 60            # Rolling window for baseline spread calc
 
 # ---------------------------------------------------------------------------
 # Relative spread params
@@ -147,6 +152,8 @@ ENTRY_LIMIT_OFFSET_PCT: float = 0.05    # Place limit orders this % inside the s
 # ---------------------------------------------------------------------------
 AGED_POSITION_WARN_MINUTES: int = 20    # Warn via Telegram after this many minutes
 AGED_POSITION_FORCE_EXIT_MINUTES: int = 30  # Force-exit after this many minutes
+AGED_POSITION_THRESHOLD_MIN: float = 10.0   # Position is "aged" after this many minutes
+AGED_POSITION_MAX_ALLOC_PCT: float = 0.30   # Max 30% equity in aged positions
 
 # ---------------------------------------------------------------------------
 # Fee model — taker fees (maker fees assumed 0 for now)
@@ -2129,4 +2136,382 @@ class TradeExecutor:
                  f"pnl=${pos.net_pnl_usd:+.4f} equity=${equity:.2f}")
 
 
-# Classes, functions, and main loop will be added in subsequent tasks.
+# Convenience aliases used throughout strategy and Telegram code
+BOT_TOKEN = TELEGRAM_BOT_TOKEN
+CHAT_ID = TELEGRAM_CHAT_ID
+
+
+# ===========================================================================
+# Task 7: LiveTrader — Strategy Engine
+# ===========================================================================
+
+class LiveTrader:
+    """Core strategy engine for live convergence arbitrage."""
+
+    def __init__(self, executors: Dict[str, ExchangeExecutor]):
+        self.executors = executors
+        self.portfolio = Portfolio(
+            starting_capital=STARTING_CAPITAL,
+            cash=STARTING_CAPITAL,
+            peak_equity=STARTING_CAPITAL,
+        )
+        self.risk_mgr = RiskManager(self.portfolio, executors)
+        self.trade_executor = TradeExecutor(executors, self.portfolio, self.risk_mgr)
+        self.running = True
+        self.symbols_set: set = set()
+        self.price_cache: Dict[str, List[PriceQuote]] = {}
+        # Spread tracking
+        self.confirm_counts: Dict[str, int] = {}
+        self.prev_spreads: Dict[str, float] = {}
+        self.spread_tick_history: Dict[str, List[float]] = {}
+        self.baseline_spreads: Dict[str, List[float]] = {}
+        self.entry_baselines: Dict[str, List[float]] = {}
+        self.last_quote_time: Dict[str, float] = {}
+        self.pair_stats: Dict[str, dict] = {}
+        self.symbol_spread_readings: Dict[str, List[float]] = {}
+        self.symbol_blacklist: Dict[str, float] = {}
+        self.ob_empty_cache: Dict[str, int] = {}
+        self.equity_history: List[dict] = []
+        self.data_dir = str(DATA_DIR)
+        self.state_path = os.path.join(str(DATA_DIR), "real_state.json")
+        self._load_state()
+
+    # -- Canonical pair key --
+    @staticmethod
+    def _pair_key(symbol: str, ex_a: str, inst_a: str, ex_b: str, inst_b: str) -> str:
+        a = f"{ex_a}|{inst_a}"
+        b = f"{ex_b}|{inst_b}"
+        pair = tuple(sorted([a, b]))
+        return f"{symbol}:{pair[0]}:{pair[1]}"
+
+    # -- Fee calculation --
+    @staticmethod
+    def compute_fees(ex_short: str, ex_long: str,
+                     inst_short: str = "PERP", inst_long: str = "PERP") -> float:
+        """Compute total round-trip taker fees for a pair of legs."""
+        fee_map_short = SPOT_FEE if inst_short == "SPOT" else TAKER_FEE
+        fee_map_long = SPOT_FEE if inst_long == "SPOT" else TAKER_FEE
+        fee_short = fee_map_short.get(ex_short, 0.001)
+        fee_long = fee_map_long.get(ex_long, 0.001)
+        return fee_short + fee_long
+
+    # -- Breakout guard --
+    def update_symbol_spread(self, symbol: str, spread_pct: float):
+        """Track the maximum spread seen for a symbol each tick."""
+        readings = self.symbol_spread_readings.setdefault(symbol, [])
+        if readings and len(readings) <= len(self.price_cache):
+            readings[-1] = max(readings[-1], spread_pct)
+        else:
+            readings.append(spread_pct)
+        if len(readings) > BREAKOUT_LOOKBACK:
+            readings.pop(0)
+
+    def is_breakout(self, symbol: str) -> bool:
+        """Detect if a symbol is in a breakout pattern."""
+        # Layer 1: Time-based blacklist
+        bl_until = self.symbol_blacklist.get(symbol, 0)
+        if bl_until > time.time():
+            return True
+
+        readings = self.symbol_spread_readings.get(symbol, [])
+        if len(readings) < 3:
+            return False
+
+        # Layer 2: Gradual widening pattern
+        if len(readings) >= 4:
+            widenings = sum(1 for i in range(1, len(readings)) if readings[i] > readings[i - 1])
+            ratio = widenings / (len(readings) - 1)
+            drift = readings[-1] - readings[0]
+            min_drift = readings[-1] * BREAKOUT_MIN_DRIFT_REL if readings[-1] > 0 else 0.15
+            if ratio >= BREAKOUT_WIDEN_RATIO and drift >= min_drift:
+                return True
+
+        # Layer 3: Rapid spike
+        recent = readings[-3:]
+        if recent[0] > 0:
+            spike_ratio = recent[-1] / recent[0]
+            if spike_ratio >= 1.80 and recent[-1] > 2.0:
+                return True
+
+        return False
+
+    # -- Symbol blacklist --
+    def check_symbol_blacklist(self, symbol: str) -> bool:
+        """Returns True if symbol is currently blacklisted."""
+        bl_until = self.symbol_blacklist.get(symbol, 0)
+        return bl_until > time.time()
+
+    def update_symbol_blacklist(self, symbol: str, pnl_pct: float):
+        """Blacklist a symbol after a loss exceeding threshold."""
+        if pnl_pct < -0.10:  # Lost more than 0.10%
+            self.symbol_blacklist[symbol] = time.time() + BREAKOUT_LOSS_MEMORY_HOURS * 3600
+            log.info(f"BLACKLIST {symbol} for {BREAKOUT_LOSS_MEMORY_HOURS}h (pnl={pnl_pct:.3f}%)")
+
+    # -- Dynamic exit threshold --
+    def get_dynamic_exit_threshold(self, pair_key: str) -> float:
+        """Return dynamic exit threshold based on rolling baseline spread."""
+        if not DYNAMIC_EXIT_ENABLED:
+            return EXIT_SPREAD_PCT
+        bl = self.baseline_spreads.get(pair_key, [])
+        if len(bl) < 10:
+            return EXIT_SPREAD_PCT
+        baseline = sum(bl) / len(bl)
+        # Exit when spread drops below baseline (mean reversion target)
+        return max(EXIT_SPREAD_PCT, baseline * 0.5)
+
+    # -- Rolling spread baseline update --
+    def update_baseline_spreads(self, pair_key: str, spread_pct: float) -> float:
+        """Update rolling baseline spread and return current baseline."""
+        if pair_key not in self.baseline_spreads:
+            self.baseline_spreads[pair_key] = []
+        bl = self.baseline_spreads[pair_key]
+        bl.append(spread_pct)
+        if len(bl) > BASELINE_SPREAD_WINDOW:
+            bl.pop(0)
+        return sum(bl) / len(bl) if bl else EXIT_SPREAD_PCT
+
+    # -- Orderbook depth fetcher --
+    async def fetch_orderbook_levels(self, session: aiohttp.ClientSession,
+                                     exchange: str, symbol: str,
+                                     instrument: str) -> Tuple[list, list]:
+        """Fetch L2 orderbook levels. Checks WS cache first, falls back to REST.
+        Returns (bids, asks) where each is [(price, usd_value), ...]."""
+        # Try WS cache first
+        ws_bids, ws_asks = _ob_ws.get_orderbook(exchange, symbol, instrument)
+        if ws_bids is not None and ws_asks is not None:
+            return ws_bids, ws_asks
+
+        # Check empty cache to avoid repeated calls
+        cache_key = f"{exchange}|{symbol}|{instrument}"
+        if self.ob_empty_cache.get(cache_key, 0) > 0:
+            self.ob_empty_cache[cache_key] -= 1
+            return [], []
+
+        # Fallback to REST
+        try:
+            base = symbol.replace("USDT", "")
+            lim = OB_LEVELS_LIMIT
+
+            if exchange == "OKX":
+                if instrument == "PERP":
+                    inst_id = f"{base}-USDT-SWAP"
+                else:
+                    inst_id = f"{base}-USDT"
+                url = f"https://www.okx.com/api/v5/market/books?instId={inst_id}&sz={lim}"
+            elif exchange == "Bybit":
+                cat = "linear" if instrument == "PERP" else "spot"
+                url = f"https://api.bybit.com/v5/market/orderbook?category={cat}&symbol={symbol}&limit={lim}"
+            elif exchange == "MEXC":
+                if instrument == "PERP":
+                    url = f"https://contract.mexc.com/api/v1/contract/depth/{base}_USDT?limit={lim}"
+                else:
+                    url = f"https://api.mexc.com/api/v3/depth?symbol={symbol}&limit={lim}"
+            elif exchange == "BloFin":
+                if instrument == "PERP":
+                    inst_id = f"{base}-USDT"
+                    url = f"https://openapi.blofin.com/api/v1/market/books?instId={inst_id}&sz={lim}"
+                else:
+                    return [], []
+            else:
+                return [], []
+
+            data = await _get(session, url, timeout=5)
+            if not data:
+                self.ob_empty_cache[cache_key] = OB_EMPTY_CACHE_CYCLES
+                return [], []
+
+            # Parse bids/asks based on exchange format
+            bids_raw = []
+            asks_raw = []
+
+            if exchange == "Bybit":
+                bids_raw = data.get("result", {}).get("b", [])
+                asks_raw = data.get("result", {}).get("a", [])
+            elif exchange == "OKX":
+                book = data.get("data", [{}])[0] if data.get("data") else {}
+                bids_raw = book.get("bids", [])
+                asks_raw = book.get("asks", [])
+            elif exchange == "MEXC" and instrument == "PERP":
+                book = data.get("data", {})
+                bids_raw = book.get("bids", [])
+                asks_raw = book.get("asks", [])
+            elif exchange == "BloFin":
+                book = data.get("data", [{}])[0] if data.get("data") else {}
+                bids_raw = book.get("bids", [])
+                asks_raw = book.get("asks", [])
+            else:
+                bids_raw = data.get("bids", [])
+                asks_raw = data.get("asks", [])
+
+            def parse_levels(raw):
+                levels = []
+                for entry in raw:
+                    try:
+                        if isinstance(entry, dict):
+                            px = float(entry.get('p', entry.get('price', 0)))
+                            qty = float(entry.get('s', entry.get('size', entry.get('qty', 0))))
+                        elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                            px = float(entry[0])
+                            qty = float(entry[1])
+                        else:
+                            continue
+                        if px > 0 and qty > 0:
+                            levels.append((px, px * qty))
+                    except (ValueError, TypeError):
+                        continue
+                return levels
+
+            bids = parse_levels(bids_raw)
+            asks = parse_levels(asks_raw)
+
+            if not bids and not asks:
+                self.ob_empty_cache[cache_key] = OB_EMPTY_CACHE_CYCLES
+
+            return bids, asks
+        except Exception:
+            return [], []
+
+    # -- State persistence --
+    def _pos_to_dict(self, pos: LivePosition) -> dict:
+        """Serialize a LivePosition to a JSON-safe dict."""
+        return {
+            "id": pos.id, "symbol": pos.symbol, "status": pos.status,
+            "exchange_short": pos.exchange_short, "exchange_long": pos.exchange_long,
+            "instrument_short": pos.instrument_short, "instrument_long": pos.instrument_long,
+            "entry_spread_pct": round(pos.entry_spread_pct, 4),
+            "current_spread_pct": round(pos.current_spread_pct, 4),
+            "peak_spread_pct": round(pos.peak_spread_pct, 4),
+            "entry_price_short": pos.entry_price_short,
+            "entry_price_long": pos.entry_price_long,
+            "size_usd": round(pos.size_usd, 2),
+            "entry_fees_usd": round(pos.entry_fees_usd, 4),
+            "exit_fees_usd": round(pos.exit_fees_usd, 4),
+            "gross_pnl_usd": round(pos.gross_pnl_usd, 4),
+            "net_pnl_usd": round(pos.net_pnl_usd, 4),
+            "entry_time": pos.entry_time.isoformat() if pos.entry_time else None,
+            "exit_time": pos.exit_time.isoformat() if pos.exit_time else None,
+            "exit_spread_pct": round(pos.exit_spread_pct, 4),
+            "exit_price_short": pos.exit_price_short,
+            "exit_price_long": pos.exit_price_long,
+            "exit_reason": pos.exit_reason,
+            "order_id_short": pos.order_id_short,
+            "order_id_long": pos.order_id_long,
+            "order_id_close_short": pos.order_id_close_short,
+            "order_id_close_long": pos.order_id_close_long,
+            "degraded_leg": pos.degraded_leg,
+            "close_retry_count": pos.close_retry_count,
+            "telegram_msg_id": pos.telegram_msg_id,
+        }
+
+    def _pos_from_dict(self, d: dict) -> LivePosition:
+        """Deserialize a dict back to a LivePosition."""
+        entry_time = datetime.fromisoformat(d["entry_time"]) if d.get("entry_time") else datetime.now(timezone.utc)
+        exit_time = datetime.fromisoformat(d["exit_time"]) if d.get("exit_time") else None
+        return LivePosition(
+            id=d["id"], symbol=d["symbol"],
+            exchange_short=d["exchange_short"], exchange_long=d["exchange_long"],
+            instrument_short=d.get("instrument_short", "PERP"),
+            instrument_long=d.get("instrument_long", "PERP"),
+            entry_spread_pct=d.get("entry_spread_pct", 0),
+            entry_price_short=d.get("entry_price_short", 0),
+            entry_price_long=d.get("entry_price_long", 0),
+            size_usd=d.get("size_usd", 0),
+            entry_time=entry_time,
+            order_id_short=d.get("order_id_short", ""),
+            order_id_long=d.get("order_id_long", ""),
+            order_id_close_short=d.get("order_id_close_short", ""),
+            order_id_close_long=d.get("order_id_close_long", ""),
+            status=d.get("status", "OPEN"),
+            degraded_leg=d.get("degraded_leg", ""),
+            peak_spread_pct=d.get("peak_spread_pct", 0),
+            current_spread_pct=d.get("current_spread_pct", 0),
+            exit_time=exit_time,
+            exit_spread_pct=d.get("exit_spread_pct", 0),
+            exit_price_short=d.get("exit_price_short", 0),
+            exit_price_long=d.get("exit_price_long", 0),
+            exit_reason=d.get("exit_reason", ""),
+            entry_fees_usd=d.get("entry_fees_usd", 0),
+            exit_fees_usd=d.get("exit_fees_usd", 0),
+            gross_pnl_usd=d.get("gross_pnl_usd", 0),
+            net_pnl_usd=d.get("net_pnl_usd", 0),
+            telegram_msg_id=d.get("telegram_msg_id"),
+            close_retry_count=d.get("close_retry_count", 0),
+        )
+
+    def _save_state(self):
+        """Persist full trader state to JSON."""
+        p = self.portfolio
+        state = {
+            "cash": p.cash,
+            "next_id": p.next_id,
+            "total_trades": p.total_trades,
+            "total_wins": p.total_wins,
+            "total_pnl_usd": p.total_pnl_usd,
+            "peak_equity": p.peak_equity,
+            "max_drawdown_pct": p.max_drawdown_pct,
+            "pair_stats": self.pair_stats,
+            "equity_history": self.equity_history[-10000:],
+            "open_positions": [self._pos_to_dict(pos) for pos in p.positions],
+            "closed_positions": [self._pos_to_dict(pos) for pos in p.closed_positions[-200:]],
+            "symbol_blacklist": {s: t for s, t in self.symbol_blacklist.items() if t > time.time()},
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            tmp = self.state_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(state, f)
+            os.replace(tmp, self.state_path)
+        except Exception as e:
+            log.warning(f"Failed to save state: {e}")
+
+    def _load_state(self):
+        """Load trader state from JSON (survive restarts)."""
+        try:
+            with open(self.state_path, "r") as f:
+                state = json.load(f)
+            p = self.portfolio
+            p.cash = state.get("cash", p.cash)
+            p.next_id = state.get("next_id", p.next_id)
+            p.total_trades = state.get("total_trades", 0)
+            p.total_wins = state.get("total_wins", 0)
+            p.total_pnl_usd = state.get("total_pnl_usd", 0.0)
+            p.peak_equity = state.get("peak_equity", p.peak_equity)
+            p.max_drawdown_pct = state.get("max_drawdown_pct", 0.0)
+            self.pair_stats = state.get("pair_stats", {})
+            self.equity_history = state.get("equity_history", [])
+            self.symbol_blacklist = state.get("symbol_blacklist", {})
+            # Restore open positions
+            for d in state.get("open_positions", []):
+                try:
+                    pos = self._pos_from_dict(d)
+                    if pos.status in ("OPEN", "CLOSING", "DEGRADED"):
+                        p.positions.append(pos)
+                except Exception as e:
+                    log.warning(f"Failed to restore position {d.get('id')}: {e}")
+            # Restore recent closed positions
+            for d in state.get("closed_positions", []):
+                try:
+                    pos = self._pos_from_dict(d)
+                    p.closed_positions.append(pos)
+                except Exception:
+                    pass
+            log.info(f"State loaded: equity=${p.equity:.2f} trades={p.total_trades} "
+                     f"open={len(p.open_positions)} pnl=${p.total_pnl_usd:+.2f}")
+        except FileNotFoundError:
+            log.info("No saved state found — starting fresh")
+        except (json.JSONDecodeError, Exception) as e:
+            log.warning(f"Failed to load state: {e} — starting fresh")
+
+    # -- Helper: positions for symbol --
+    def positions_for_symbol(self, symbol: str) -> int:
+        return sum(1 for p in self.portfolio.open_positions if p.symbol == symbol)
+
+    # -- Helper: check kill switch --
+    def check_kill_switch(self) -> bool:
+        """Returns True if trading should be halted due to drawdown."""
+        p = self.portfolio
+        if p.peak_equity > 0:
+            dd = (p.peak_equity - p.equity) / p.peak_equity * 100
+            if dd >= KILL_SWITCH_DRAWDOWN_PCT:
+                return True
+        return False
