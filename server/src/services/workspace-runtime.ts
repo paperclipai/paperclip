@@ -520,6 +520,11 @@ async function provisionExecutionWorktree(input: {
   created: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }) {
+  await ensureBeadsRedirectForWorktree({
+    repoRoot: input.repoRoot,
+    worktreePath: input.worktreePath,
+  });
+
   const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
   if (!provisionCommand) return;
 
@@ -545,6 +550,25 @@ async function provisionExecutionWorktree(input: {
     },
     successMessage: `Provisioned workspace at ${input.worktreePath}\n`,
   });
+}
+
+async function ensureBeadsRedirectForWorktree(input: {
+  repoRoot: string;
+  worktreePath: string;
+}) {
+  const sourceBeadsDir = path.join(input.repoRoot, ".beads");
+  const worktreeBeadsDir = path.join(input.worktreePath, ".beads");
+  const redirectPath = path.join(worktreeBeadsDir, "redirect");
+
+  if (!(await directoryExists(sourceBeadsDir))) {
+    await fs.rm(redirectPath, { force: true });
+    return;
+  }
+
+  await fs.mkdir(worktreeBeadsDir, { recursive: true });
+
+  const relativeTarget = path.relative(input.worktreePath, sourceBeadsDir) || ".beads";
+  await fs.writeFile(redirectPath, `${relativeTarget}\n`, "utf8");
 }
 
 function buildExecutionWorkspaceCleanupEnv(input: {

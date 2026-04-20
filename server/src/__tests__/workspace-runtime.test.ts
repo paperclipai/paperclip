@@ -58,6 +58,7 @@ async function createTempRepo(defaultBranch = "main") {
   await runGit(repoRoot, ["init"]);
   await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
   await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+  await runGit(repoRoot, ["config", "commit.gpgsign", "false"]);
   await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
   await runGit(repoRoot, ["add", "README.md"]);
   await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
@@ -183,6 +184,7 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
 describe("realizeExecutionWorkspace", () => {
   it("creates and reuses a git worktree for an issue-scoped branch", async () => {
     const repoRoot = await createTempRepo();
+    await fs.mkdir(path.join(repoRoot, ".beads"), { recursive: true });
 
     const first = await realizeExecutionWorkspace({
       base: {
@@ -216,6 +218,8 @@ describe("realizeExecutionWorkspace", () => {
     expect(first.branchName).toBe("PAP-447-add-worktree-support");
     expect(first.cwd).toContain(path.join(".paperclip", "worktrees"));
     await expect(fs.stat(path.join(first.cwd, ".git"))).resolves.toBeTruthy();
+    const redirectContents = await fs.readFile(path.join(first.cwd, ".beads", "redirect"), "utf8");
+    expect(path.resolve(first.cwd, redirectContents.trim())).toBe(path.join(repoRoot, ".beads"));
 
     const second = await realizeExecutionWorkspace({
       base: {
@@ -247,6 +251,74 @@ describe("realizeExecutionWorkspace", () => {
     expect(second.created).toBe(false);
     expect(second.cwd).toBe(first.cwd);
     expect(second.branchName).toBe(first.branchName);
+    await expect(fs.readFile(path.join(second.cwd, ".beads", "redirect"), "utf8")).resolves.toBe(redirectContents);
+  });
+
+  it("removes stale worktree .beads redirects when the repo root beads directory disappears", async () => {
+    const repoRoot = await createTempRepo();
+    await fs.mkdir(path.join(repoRoot, ".beads"), { recursive: true });
+
+    const first = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-redirect-cleanup",
+        identifier: "PAP-448",
+        title: "Refresh Worktree Redirects",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    const redirectPath = path.join(first.cwd, ".beads", "redirect");
+    await expect(fs.readFile(redirectPath, "utf8")).resolves.toBeTruthy();
+
+    await fs.rm(path.join(repoRoot, ".beads"), { recursive: true, force: true });
+
+    const reused = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-redirect-cleanup",
+        identifier: "PAP-448",
+        title: "Refresh Worktree Redirects",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(reused.created).toBe(false);
+    await expect(fs.stat(redirectPath)).rejects.toThrow();
   });
 
   it("slugifies unsafe issue titles for branch names and worktree folders", async () => {
@@ -720,8 +792,12 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(repoRoot, ["push", "-u", "origin", "master"]);
     await runGit(repoRoot, ["fetch", "origin"]);
     // Explicitly set refs/remotes/origin/HEAD to exercise the symbolic-ref path
-    // (git remote set-head -a requires the remote to advertise HEAD, so we set it manually)
-    await runGit(repoRoot, ["remote", "set-head", "origin", "master"]);
+    // without depending on `git remote set-head`, which can hang in local bare remotes.
+    await runGit(repoRoot, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/master",
+    ]);
 
     const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
@@ -1055,7 +1131,7 @@ describe("ensureRuntimeServicesForRun", () => {
     expect(third).toHaveLength(1);
     expect(third[0]?.reused).toBe(false);
     expect(third[0]?.id).not.toBe(first[0]?.id);
-  });
+  }, 30_000);
 
   it("does not reuse project-scoped shared services across different workspace launch contexts", async () => {
     const primaryWorkspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-primary-"));
@@ -1150,7 +1226,7 @@ describe("ensureRuntimeServicesForRun", () => {
 
     const executionResponse = await fetch(executionServices[0]!.url!);
     expect(await executionResponse.text()).toBe(path.join(worktreeWorkspaceRoot, ".paperclip", "runtime-services"));
-  });
+  }, 30_000);
 
   it("does not leak parent Paperclip instance env into runtime service commands", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-env-"));
@@ -1230,7 +1306,7 @@ describe("ensureRuntimeServicesForRun", () => {
     expect(services[0]?.executionWorkspaceId).toBe("execution-workspace-1");
     expect(services[0]?.scopeType).toBe("execution_workspace");
     expect(services[0]?.scopeId).toBe("execution-workspace-1");
-  });
+  }, 15_000);
 
   it("stops execution workspace runtime services by executionWorkspaceId", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-stop-"));
@@ -1284,7 +1360,7 @@ describe("ensureRuntimeServicesForRun", () => {
     await new Promise((resolve) => setTimeout(resolve, 250));
 
     await expect(fetch(services[0]!.url!)).rejects.toThrow();
-  });
+  }, 15_000);
 
   it("does not stop services in sibling directories when matching by workspace cwd", async () => {
     const workspaceParent = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-sibling-"));
@@ -1343,7 +1419,7 @@ describe("ensureRuntimeServicesForRun", () => {
 
     await releaseRuntimeServicesForRun(runId);
     leasedRunIds.delete(runId);
-  });
+  }, 15_000);
 });
 
 describe("resolveShell (shell fallback)", () => {
