@@ -13,10 +13,12 @@ import { companiesApi } from "../api/companies";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import type { CompanySelectionSource } from "../lib/company-selection";
+import { useOrg } from "./OrgContext";
 type CompanySelectionOptions = { source?: CompanySelectionSource };
 
 interface CompanyContextValue {
   companies: Company[];
+  companiesInOrg: Company[];
   selectedCompanyId: string | null;
   selectedCompany: Company | null;
   selectionSource: CompanySelectionSource;
@@ -37,6 +39,7 @@ const CompanyContext = createContext<CompanyContextValue | null>(null);
 
 export function CompanyProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
+  const { selectedOrgId } = useOrg();
   const [selectionSource, setSelectionSource] = useState<CompanySelectionSource>("bootstrap");
   const [selectedCompanyId, setSelectedCompanyIdState] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY));
 
@@ -54,25 +57,38 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     },
     retry: false,
   });
+  const companiesInOrg = useMemo(
+    () =>
+      selectedOrgId
+        ? companies.filter((company) => company.organizationId === selectedOrgId)
+        : companies,
+    [companies, selectedOrgId],
+  );
   const sidebarCompanies = useMemo(
-    () => companies.filter((company) => company.status !== "archived"),
-    [companies],
+    () => companiesInOrg.filter((company) => company.status !== "archived"),
+    [companiesInOrg],
   );
 
-  // Auto-select first company when list loads
+  // Auto-select a company when list loads or when selected org changes.
+  // Prefers: stored id (if still in current org) → current selection (if in org) → first in-org.
   useEffect(() => {
     if (companies.length === 0) return;
 
-    const selectableCompanies = sidebarCompanies.length > 0 ? sidebarCompanies : companies;
+    const selectableCompanies = sidebarCompanies.length > 0 ? sidebarCompanies : companiesInOrg;
+    if (selectableCompanies.length === 0) return;
+
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && selectableCompanies.some((c) => c.id === stored)) return;
+    if (stored && selectableCompanies.some((c) => c.id === stored)) {
+      if (selectedCompanyId !== stored) setSelectedCompanyIdState(stored);
+      return;
+    }
     if (selectedCompanyId && selectableCompanies.some((c) => c.id === selectedCompanyId)) return;
 
     const next = selectableCompanies[0]!.id;
     setSelectedCompanyIdState(next);
     setSelectionSource("bootstrap");
     localStorage.setItem(STORAGE_KEY, next);
-  }, [companies, selectedCompanyId, sidebarCompanies]);
+  }, [companies, companiesInOrg, selectedCompanyId, sidebarCompanies]);
 
   const setSelectedCompanyId = useCallback((companyId: string, options?: CompanySelectionOptions) => {
     setSelectedCompanyIdState(companyId);
@@ -116,6 +132,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       companies,
+      companiesInOrg,
       selectedCompanyId,
       selectedCompany,
       selectionSource,
@@ -127,6 +144,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     }),
     [
       companies,
+      companiesInOrg,
       selectedCompanyId,
       selectedCompany,
       selectionSource,

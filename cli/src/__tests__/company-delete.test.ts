@@ -5,6 +5,7 @@ import { assertDeleteConfirmation, resolveCompanyForDeletion } from "../commands
 function makeCompany(overrides: Partial<Company>): Company {
   return {
     id: "11111111-1111-1111-1111-111111111111",
+    organizationId: null,
     name: "Alpha",
     description: null,
     status: "active",

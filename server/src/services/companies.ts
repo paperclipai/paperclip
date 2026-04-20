@@ -35,6 +35,7 @@ export function companyService(db: Db) {
 
   const companySelection = {
     id: companies.id,
+    organizationId: companies.organizationId,
     name: companies.name,
     description: companies.description,
     status: companies.status,

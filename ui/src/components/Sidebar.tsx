@@ -49,13 +49,13 @@ export function Sidebar() {
 
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
-      <div className="flex items-center gap-1 px-3 h-12 shrink-0">
+      {/* Top: dual Org/Company switcher + Search */}
+      <div className="flex items-start gap-1 px-3 pt-2 pb-1 shrink-0">
         <SidebarCompanyMenu />
         <Button
           variant="ghost"
           size="icon-sm"
-          className="text-muted-foreground shrink-0"
+          className="text-muted-foreground shrink-0 mt-0.5"
           onClick={openSearch}
         >
           <Search className="h-4 w-4" />
