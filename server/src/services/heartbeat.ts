@@ -6019,6 +6019,11 @@ export function heartbeatService(db: Db) {
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
+      let idleSkipped = 0;
+
+      // Statuses that indicate an agent has actionable work.
+      // Declared outside the loop to avoid per-iteration allocation.
+      const actionableStatuses = ["todo", "in_progress", "in_review"];
 
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
@@ -6029,6 +6034,31 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Skip idle agents: if agent has no actionable issues, don't invoke the model.
+        // This prevents burning tokens on timer wakes where the agent would just check
+        // its inbox, find nothing, and exit. Only applies to timer wakes — assignment
+        // and on_demand wakes always proceed.
+        const [actionableCount] = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, agent.companyId),
+              eq(issues.assigneeAgentId, agent.id),
+              inArray(issues.status, actionableStatuses),
+            ),
+          );
+        if ((actionableCount?.count ?? 0) === 0) {
+          // Update lastHeartbeatAt to prevent re-trigger on next tick,
+          // but don't invoke the adapter.
+          await db
+            .update(agents)
+            .set({ lastHeartbeatAt: now })
+            .where(eq(agents.id, agent.id));
+          idleSkipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
@@ -6046,7 +6076,7 @@ export function heartbeatService(db: Db) {
         else skipped += 1;
       }
 
-      return { checked, enqueued, skipped };
+      return { checked, enqueued, skipped, idleSkipped };
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
