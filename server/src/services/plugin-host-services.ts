@@ -48,6 +48,44 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 
 /** Only these protocols are allowed for plugin HTTP requests. */
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
+
+/**
+ * When true, RFC-1918 and IPv6 ULA addresses are allowed for plugin fetch
+ * requests. Intended for self-hosted / homelab deployments where plugin
+ * endpoints (e.g. Honcho) resolve to private addresses.
+ * Set PAPERCLIP_PLUGIN_ALLOW_PRIVATE_IPS=true in the server environment.
+ *
+ * IMPORTANT: loopback (127.x / ::1) and link-local (169.254.x / fe80::)
+ * remain blocked unconditionally — they are always reachable on any host and
+ * include cloud IMDS endpoints (169.254.169.254 on AWS/GCP/Azure).
+ */
+const PLUGIN_ALLOW_PRIVATE_IPS = process.env.PAPERCLIP_PLUGIN_ALLOW_PRIVATE_IPS === "true";
+
+/**
+ * Returns true for addresses that must always be blocked regardless of
+ * PLUGIN_ALLOW_PRIVATE_IPS: loopback and link-local ranges.
+ *
+ * These are unconditionally dangerous because:
+ * - Loopback reaches the server process itself.
+ * - Link-local (169.254.0.0/16, fe80::/10) reaches cloud IMDS endpoints
+ *   (169.254.169.254 on AWS/GCP/Azure) that expose instance credentials.
+ */
+function isAlwaysBlockedIP(ip: string): boolean {
+  const lower = ip.toLowerCase();
+
+  // Unwrap IPv4-mapped IPv6 (::ffff:x.x.x.x) and re-check as IPv4
+  const v4MappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (v4MappedMatch && v4MappedMatch[1]) return isAlwaysBlockedIP(v4MappedMatch[1]);
+
+  if (ip.startsWith("127.")) return true;       // IPv4 loopback
+  if (ip.startsWith("169.254.")) return true;   // IPv4 link-local / IMDS
+  if (ip === "0.0.0.0") return true;
+  if (lower === "::1") return true;             // IPv6 loopback
+  if (lower === "::") return true;
+  if (lower.startsWith("fe80")) return true;    // IPv6 link-local
+
+  return false;
+}
 const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
 /**
@@ -147,7 +185,11 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     // Filter to only non-private IPs instead of rejecting the entire request
     // when some IPs are private. This handles multi-homed hosts that resolve
     // to both private and public addresses.
-    const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
+    // When PLUGIN_ALLOW_PRIVATE_IPS is set (self-hosted deployments), skip
+    // the private-IP filter entirely and use all resolved addresses.
+    const safeResults = PLUGIN_ALLOW_PRIVATE_IPS
+      ? results.filter((entry) => !isAlwaysBlockedIP(entry.address))
+      : results.filter((entry) => !isPrivateIP(entry.address));
     if (safeResults.length === 0) {
       throw new Error(
         `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
