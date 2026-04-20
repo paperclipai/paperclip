@@ -1324,6 +1324,13 @@ function enrichWakeContextSnapshot(input: {
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
+  // Propagate session prompt from payload so adapters can include it in
+  // the agent's stdin.  Without this, plugins that call
+  // agents.sessions.sendMessage({ prompt }) lose the message content.
+  const sessionPrompt = readNonEmptyString(payload?.["prompt"]);
+  if (sessionPrompt && !readNonEmptyString(contextSnapshot["sessionPrompt"])) {
+    contextSnapshot.sessionPrompt = sessionPrompt;
+  }
 
   return {
     contextSnapshot,
