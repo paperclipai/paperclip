@@ -17,7 +17,7 @@ export function Organizations() {
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [newOrgName, setNewOrgName] = useState("");
-  const [addMemberUserId, setAddMemberUserId] = useState("");
+  const [addMemberEmail, setAddMemberEmail] = useState("");
   const [attachCompanyId, setAttachCompanyId] = useState("");
 
   useEffect(() => {
@@ -78,12 +78,12 @@ export function Organizations() {
   });
 
   const addMemberMutation = useMutation({
-    mutationFn: (userId: string) =>
-      organizationsApi.addMember(selectedOrgId!, { userId }),
+    mutationFn: (email: string) =>
+      organizationsApi.addMember(selectedOrgId!, { email }),
     onSuccess: () => {
       if (!selectedOrgId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.organizations.members(selectedOrgId) });
-      setAddMemberUserId("");
+      setAddMemberEmail("");
     },
     onError: (err) => {
       pushToast({
@@ -279,23 +279,28 @@ export function Organizations() {
                   <div className="flex items-end gap-2 flex-wrap">
                     <div className="flex-1 min-w-[240px]">
                       <label className="text-xs text-muted-foreground mb-1 block">
-                        User ID
+                        Email
                       </label>
                       <Input
-                        type="text"
-                        placeholder="Enter a user ID (uuid)"
-                        value={addMemberUserId}
-                        onChange={(e) => setAddMemberUserId(e.target.value)}
+                        type="email"
+                        placeholder="teammate@example.com"
+                        value={addMemberEmail}
+                        onChange={(e) => setAddMemberEmail(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && addMemberEmail.trim()) {
+                            addMemberMutation.mutate(addMemberEmail.trim());
+                          }
+                        }}
                       />
                     </div>
                     <Button
                       size="sm"
                       onClick={() => {
-                        if (addMemberUserId.trim()) {
-                          addMemberMutation.mutate(addMemberUserId.trim());
+                        if (addMemberEmail.trim()) {
+                          addMemberMutation.mutate(addMemberEmail.trim());
                         }
                       }}
-                      disabled={!addMemberUserId.trim() || addMemberMutation.isPending}
+                      disabled={!addMemberEmail.trim() || addMemberMutation.isPending}
                     >
                       <Plus className="h-3.5 w-3.5 mr-1" />
                       {addMemberMutation.isPending ? "Adding..." : "Add member"}

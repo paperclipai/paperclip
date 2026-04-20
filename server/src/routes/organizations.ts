@@ -3,10 +3,10 @@ import { Router } from "express";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { organizations, orgMemberships, companies } from "@paperclipai/db";
+import { organizations, orgMemberships, companies, authUsers } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { assertBoard } from "./authz.js";
-import { forbidden } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 import { logActivity } from "../services/index.js";
 
 // ── Inline validators (shared package lacks these in merge-upstream) ───
@@ -19,10 +19,15 @@ const updateOrganizationSchema = z.object({
   settings: z.record(z.unknown()).optional(),
 });
 
-const addOrgMemberSchema = z.object({
-  userId: z.string().min(1),
-  role: z.enum(["owner", "admin", "member"]).optional().default("member"),
-});
+const addOrgMemberSchema = z
+  .object({
+    userId: z.string().min(1).optional(),
+    email: z.string().email().optional(),
+    role: z.enum(["owner", "admin", "member"]).optional().default("member"),
+  })
+  .refine((data) => !!data.userId || !!data.email, {
+    message: "Provide either userId or email",
+  });
 
 export function organizationRoutes(db: Db) {
   const router = Router();
@@ -206,16 +211,6 @@ export function organizationRoutes(db: Db) {
         ownerUserId: userId,
       });
 
-      await logActivity(db, {
-        companyId: org.id, // use org id as entity context
-        actorType: "user",
-        actorId: userId,
-        action: "organization.created",
-        entityType: "organization",
-        entityId: org.id,
-        details: { name: org.name },
-      });
-
       res.status(201).json(org);
     },
   );
@@ -276,16 +271,6 @@ export function organizationRoutes(db: Db) {
         return;
       }
 
-      await logActivity(db, {
-        companyId: orgId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "organization.updated",
-        entityType: "organization",
-        entityId: orgId,
-        details: { name: updated.name },
-      });
-
       res.json(updated);
     },
   );
@@ -305,17 +290,20 @@ export function organizationRoutes(db: Db) {
 
       await assertOrgOwner(req, orgId);
 
-      const membership = await svc.addMember(orgId, req.body.userId, req.body.role);
+      let resolvedUserId = req.body.userId as string | undefined;
+      if (!resolvedUserId && req.body.email) {
+        const needle = (req.body.email as string).trim().toLowerCase();
+        const [user] = await db
+          .select({ id: authUsers.id })
+          .from(authUsers)
+          .where(eq(authUsers.email, needle))
+          .limit(1);
+        if (!user) throw badRequest(`No user found with email ${req.body.email}`);
+        resolvedUserId = user.id;
+      }
+      if (!resolvedUserId) throw badRequest("Provide either userId or email");
 
-      await logActivity(db, {
-        companyId: orgId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "organization.member_added",
-        entityType: "org_membership",
-        entityId: membership.id,
-        details: { userId: req.body.userId, role: req.body.role },
-      });
+      const membership = await svc.addMember(orgId, resolvedUserId, req.body.role);
 
       res.status(201).json(membership);
     },
@@ -345,16 +333,6 @@ export function organizationRoutes(db: Db) {
       res.status(404).json({ error: "Membership not found" });
       return;
     }
-
-    await logActivity(db, {
-      companyId: orgId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "organization.member_removed",
-      entityType: "org_membership",
-      entityId: removed.id,
-      details: { userId: targetUserId },
-    });
 
     res.json({ ok: true });
   });

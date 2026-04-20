@@ -51,7 +51,7 @@ export function Sidebar() {
 
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top: Home link + current company label + search */}
+      {/* Top: Home link + search (company name lives in footer CompanySwitcher) */}
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
         <Button
           variant="ghost"
@@ -64,9 +64,7 @@ export function Sidebar() {
             <Home className="h-4 w-4" />
           </Link>
         </Button>
-        <span className="min-w-0 flex-1 truncate text-sm font-bold text-foreground">
-          {selectedCompany?.name ?? "Paperclip"}
-        </span>
+        <div className="min-w-0 flex-1" />
         <Button
           variant="ghost"
           size="icon-sm"

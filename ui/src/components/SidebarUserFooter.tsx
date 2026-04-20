@@ -1,17 +1,12 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Building2,
   Check,
   ChevronDown,
-  Home,
-  LogOut,
   Settings,
   UserPlus,
 } from "lucide-react";
 import { Link, useNavigate } from "@/lib/router";
-import { authApi } from "@/api/auth";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -26,22 +21,18 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useCompany } from "@/context/CompanyContext";
 import { useOrg } from "@/context/OrgContext";
 import { useSidebar } from "@/context/SidebarContext";
-import { queryKeys } from "@/lib/queryKeys";
 
 export function SidebarUserFooter() {
   return (
     <div className="flex flex-col gap-0.5 border-t border-border px-3 py-2 shrink-0">
       <OrgSwitcher />
       <CompanySwitcher />
-      <UserChip />
     </div>
   );
 }
@@ -236,98 +227,5 @@ function CompanySwitcher() {
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
-  );
-}
-
-function UserChip() {
-  const [open, setOpen] = useState(false);
-  const queryClient = useQueryClient();
-  const { isMobile, setSidebarOpen } = useSidebar();
-
-  const { data: session } = useQuery({
-    queryKey: queryKeys.auth.session,
-    queryFn: () => authApi.getSession(),
-    retry: false,
-  });
-
-  const signOutMutation = useMutation({
-    mutationFn: () => authApi.signOut(),
-    onSuccess: async () => {
-      setOpen(false);
-      if (isMobile) setSidebarOpen(false);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-    },
-  });
-
-  function closeAndClosePanel() {
-    setOpen(false);
-    if (isMobile) setSidebarOpen(false);
-  }
-
-  const user = session?.user ?? null;
-  const displayName = user?.name ?? user?.email ?? "Guest";
-  const initials =
-    (user?.name ?? user?.email ?? "?")
-      .split(/[\s@._-]+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((s) => s[0]?.toUpperCase() ?? "")
-      .join("") || "?";
-
-  return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          className="h-auto w-full justify-start gap-2 px-2 py-1.5 text-left"
-          aria-label="User menu"
-        >
-          <Avatar className="size-6">
-            {user?.image ? <AvatarImage src={user.image} alt={displayName} /> : null}
-            <AvatarFallback className="text-[10px]">{initials}</AvatarFallback>
-          </Avatar>
-          <span className="min-w-0 flex-1 truncate text-xs text-foreground">
-            {displayName}
-          </span>
-          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" side="top" className="w-60">
-        {user?.email ? (
-          <>
-            <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
-              <span className="block truncate">{user.name ?? "Signed in"}</span>
-              <span className="block truncate text-[11px]">{user.email}</span>
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-          </>
-        ) : null}
-        <DropdownMenuItem asChild>
-          <Link to="/home" onClick={closeAndClosePanel}>
-            <Home className="size-4" />
-            <span>Home</span>
-          </Link>
-        </DropdownMenuItem>
-        <DropdownMenuItem asChild>
-          <Link to="/instance/settings/profile" onClick={closeAndClosePanel}>
-            <Settings className="size-4" />
-            <span>Account settings</span>
-          </Link>
-        </DropdownMenuItem>
-        {session?.session ? (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              variant="destructive"
-              onClick={() => signOutMutation.mutate()}
-              disabled={signOutMutation.isPending}
-            >
-              <LogOut className="size-4" />
-              <span>{signOutMutation.isPending ? "Signing out..." : "Sign out"}</span>
-            </DropdownMenuItem>
-          </>
-        ) : null}
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }

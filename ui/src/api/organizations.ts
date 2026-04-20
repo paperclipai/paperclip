@@ -43,8 +43,10 @@ export const organizationsApi = {
   listMembers: (organizationId: string) =>
     api.get<OrgMember[]>(`/organizations/${organizationId}/members`),
 
-  addMember: (organizationId: string, data: { userId: string; role?: string }) =>
-    api.post<OrgMember>(`/organizations/${organizationId}/members`, data),
+  addMember: (
+    organizationId: string,
+    data: { userId?: string; email?: string; role?: string },
+  ) => api.post<OrgMember>(`/organizations/${organizationId}/members`, data),
 
   removeMember: (organizationId: string, userId: string) =>
     api.delete<OrgMember>(`/organizations/${organizationId}/members/${userId}`),
