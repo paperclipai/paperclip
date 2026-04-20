@@ -61,6 +61,9 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.7",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^25.2.3",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",

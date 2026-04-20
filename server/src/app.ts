@@ -11,6 +11,9 @@ import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
+import { templateRoutes } from "./routes/templates.js";
+import { createTemplateRegistry } from "./services/template-registry.js";
+import { companyPortabilityService } from "./services/company-portability.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
@@ -180,7 +183,16 @@ export async function createApp(
       companyDeletionEnabled: opts.companyDeletionEnabled,
     }),
   );
-  api.use("/companies", companyRoutes(db, opts.storageService));
+  const portabilityService = companyPortabilityService(db, opts.storageService);
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const templateRegistry = createTemplateRegistry(
+    path.resolve(__dirname, "../../docs/templates/registry.json"),
+  );
+  api.use("/companies", companyRoutes(db, opts.storageService, portabilityService));
+  api.use("/templates", templateRoutes({
+    registry: templateRegistry,
+    portability: portabilityService,
+  }));
   api.use(companySkillRoutes(db));
   api.use(agentRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
@@ -285,7 +297,6 @@ export async function createApp(
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
 
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
     // Try published location first (server/ui-dist/), then monorepo dev location (../../ui/dist)
     const candidates = [

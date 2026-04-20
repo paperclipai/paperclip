@@ -26,11 +26,15 @@ import {
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
-export function companyRoutes(db: Db, storage?: StorageService) {
+export function companyRoutes(
+  db: Db,
+  storage?: StorageService,
+  portabilityOverride?: ReturnType<typeof companyPortabilityService>,
+) {
   const router = Router();
   const svc = companyService(db);
   const agents = agentService(db);
-  const portability = companyPortabilityService(db, storage);
+  const portability = portabilityOverride ?? companyPortabilityService(db, storage);
   const access = accessService(db);
   const budgets = budgetService(db);
   const feedback = feedbackService(db);

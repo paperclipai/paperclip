@@ -771,3 +771,5 @@ export {
   type SecretsLocalEncryptedConfig,
   type ConfigMeta,
 } from "./config-schema.js";
+
+export * from "./template-types.js";

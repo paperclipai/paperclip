@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "generated_at": "2026-04-16T14:00:00Z",
+  "source": "https://github.com/paperclipai/companies",
+  "companies": [
+    {
+      "slug": "trail-of-bits-security",
+      "name": "Trail of Bits Security",
+      "description": "Security auditing and pentesting agents modeled on Trail of Bits' practices.",
+      "agents_count": 28,
+      "skills_count": 35,
+      "tags": ["security", "audit", "pentesting"],
+      "url": "https://github.com/paperclipai/companies/tree/main/trail-of-bits-security"
+    },
+    {
+      "slug": "fullstack-forge",
+      "name": "Fullstack Forge",
+      "description": "Software development team covering frontend, backend, infra, and lead roles.",
+      "agents_count": 49,
+      "skills_count": 66,
+      "tags": ["engineering", "fullstack"],
+      "url": "https://github.com/paperclipai/companies/tree/main/fullstack-forge"
+    },
+    {
+      "slug": "kdense-science-lab",
+      "name": "K-Dense Science Lab",
+      "description": "Research-oriented scientific lab — biology, chemistry, biomedical, cheminformatics.",
+      "agents_count": 54,
+      "skills_count": 177,
+      "tags": ["science", "research", "biology"],
+      "url": "https://github.com/paperclipai/companies/tree/main/kdense-science-lab"
+    },
+    {
+      "slug": "agency-agents",
+      "name": "Agency Agents",
+      "description": "Full-service AI agency with 167 specialist agents across domains.",
+      "agents_count": 167,
+      "skills_count": 0,
+      "tags": ["agency", "general"],
+      "url": "https://github.com/paperclipai/companies/tree/main/agency-agents"
+    }
+  ]
+}
