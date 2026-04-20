@@ -13,9 +13,7 @@ import { logger } from "./logger.js";
  * is validated before the handler runs.
  */
 
-const ALLOWED_MCP_TOOLS: ReadonlySet<string> = new Set([
-  "get-application-logs",
-]);
+const ALLOWED_MCP_TOOLS: ReadonlySet<string> = new Set(["get-application-logs"]);
 
 /**
  * Express middleware that reads `req.params.mcpTool` (or a fixed tool
@@ -34,10 +32,7 @@ export function mcpAllowlist(toolName: string): RequestHandler {
   }
 
   return (req, _res, next) => {
-    logger.debug(
-      { tool: toolName, path: req.path, actor: req.actor?.type },
-      "MCP allowlist check passed",
-    );
+    logger.debug({ tool: toolName, path: req.path, actor: req.actor?.type }, "MCP allowlist check passed");
     // Attach the validated tool name for downstream handlers
     (req as unknown as Record<string, unknown>).__mcpTool = toolName;
     next();

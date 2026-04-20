@@ -55,7 +55,12 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
     const eventType = asString(event.type, "");
 
     // RPC protocol messages - skip these (internal implementation detail)
-    if (eventType === "response" || eventType === "extension_ui_request" || eventType === "extension_ui_response" || eventType === "extension_error") {
+    if (
+      eventType === "response" ||
+      eventType === "extension_ui_request" ||
+      eventType === "extension_ui_response" ||
+      eventType === "extension_error"
+    ) {
       continue;
     }
 
@@ -76,6 +81,15 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
       continue;
     }
 
+    if (eventType === "auto_retry_end") {
+      const succeeded = event.success === true;
+      if (!succeeded) {
+        const finalError = asString(event.finalError, "").trim();
+        result.errors.push(finalError || "Pi exhausted automatic retries without producing a response.");
+      }
+      continue;
+    }
+
     // Turn lifecycle
     if (eventType === "turn_start") {
       continue;
@@ -90,14 +104,14 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
           result.finalMessage = text;
           result.messages.push(text);
         }
-        
+
         // Extract usage and cost from assistant message
         const usage = asRecord(message.usage);
         if (usage) {
           result.usage.inputTokens += asNumber(usage.input, 0);
           result.usage.outputTokens += asNumber(usage.output, 0);
           result.usage.cachedInputTokens += asNumber(usage.cacheRead, 0);
-          
+
           // Pi stores cost in usage.cost.total (and broken down in usage.cost.input, etc.)
           const cost = asRecord(usage.cost);
           if (cost) {
@@ -105,7 +119,7 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
           }
         }
       }
-      
+
       // Tool results are in toolResults array
       const toolResults = event.toolResults as Array<Record<string, unknown>> | undefined;
       if (toolResults) {
@@ -113,7 +127,7 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
           const toolCallId = asString(tr.toolCallId, "");
           const content = tr.content;
           const isError = tr.isError === true;
-          
+
           // Find matching tool call by toolCallId
           const existingCall = result.toolCalls.find((tc) => tc.toolCallId === toolCallId);
           if (existingCall) {
@@ -145,6 +159,14 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
       continue;
     }
 
+    if (eventType === "error") {
+      const message = asString(event.message, "").trim();
+      if (message) {
+        result.errors.push(message);
+      }
+      continue;
+    }
+
     // Tool execution
     if (eventType === "tool_execution_start") {
       const toolCallId = asString(event.toolCallId, "");
@@ -166,7 +188,7 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
       const toolName = asString(event.toolName, "");
       const toolResult = event.result;
       const isError = event.isError === true;
-      
+
       // Find the tool call by toolCallId (not toolName, to handle multiple calls to same tool)
       const existingCall = result.toolCalls.find((tc) => tc.toolCallId === toolCallId);
       if (existingCall) {
@@ -185,7 +207,7 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
         result.usage.inputTokens += asNumber(usage.inputTokens ?? usage.input, 0);
         result.usage.outputTokens += asNumber(usage.outputTokens ?? usage.output, 0);
         result.usage.cachedInputTokens += asNumber(usage.cachedInputTokens ?? usage.cacheRead, 0);
-        
+
         // Cost may be in usage.costUsd (direct) or usage.cost.total (Pi format)
         const cost = asRecord(usage.cost);
         if (cost) {

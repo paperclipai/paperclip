@@ -50,7 +50,11 @@ export function workProductService(db: Db) {
       return row ? toIssueWorkProduct(row) : null;
     },
 
-    createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
+    createForIssue: async (
+      issueId: string,
+      companyId: string,
+      data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">,
+    ) => {
       const row = await db.transaction(async (tx) => {
         if (data.isPrimary) {
           await tx

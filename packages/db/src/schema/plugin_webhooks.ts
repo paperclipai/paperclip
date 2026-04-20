@@ -1,12 +1,4 @@
-import {
-  pgTable,
-  uuid,
-  text,
-  integer,
-  timestamp,
-  jsonb,
-  index,
-} from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, jsonb, index } from "drizzle-orm/pg-core";
 import { plugins } from "./plugins.js";
 import type { PluginWebhookDeliveryStatus } from "@paperclipai/shared";
 

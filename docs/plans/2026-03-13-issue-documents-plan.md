@@ -404,12 +404,7 @@ The artifact proposal currently has no explicit `document` kind. It should.
 Recommended future shape:
 
 ```ts
-type ArtifactKind =
-  | "document"
-  | "attachment"
-  | "workspace_file"
-  | "preview"
-  | "report_link";
+type ArtifactKind = "document" | "attachment" | "workspace_file" | "preview" | "report_link";
 ```
 
 ## Implementation Phases

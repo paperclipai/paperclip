@@ -34,9 +34,7 @@ function parseEnvBindings(bindings: unknown): Record<string, unknown> {
       env[key] = {
         type: "secret_ref",
         secretId: rec.secretId,
-        ...(typeof rec.version === "number" || rec.version === "latest"
-          ? { version: rec.version }
-          : {}),
+        ...(typeof rec.version === "number" || rec.version === "latest" ? { version: rec.version } : {}),
       };
     }
   }
@@ -51,11 +49,11 @@ export function buildPiLocalConfig(v: CreateConfigValues): Record<string, unknow
   if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
   if (v.model) ac.model = v.model;
   if (v.thinkingEffort) ac.thinking = v.thinkingEffort;
-  
+
   // Pi sessions can run until the CLI exits naturally; keep timeout disabled (0)
   ac.timeoutSec = 0;
   ac.graceSec = 20;
-  
+
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);
   for (const [key, value] of Object.entries(legacy)) {

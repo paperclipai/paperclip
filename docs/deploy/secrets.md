@@ -39,11 +39,11 @@ pnpm paperclipai doctor
 
 ### Environment Overrides
 
-| Variable | Description |
-|----------|-------------|
-| `PAPERCLIP_SECRETS_MASTER_KEY` | 32-byte key as base64, hex, or raw string |
-| `PAPERCLIP_SECRETS_MASTER_KEY_FILE` | Custom key file path |
-| `PAPERCLIP_SECRETS_STRICT_MODE` | Set to `true` to enforce secret refs |
+| Variable                            | Description                               |
+| ----------------------------------- | ----------------------------------------- |
+| `PAPERCLIP_SECRETS_MASTER_KEY`      | 32-byte key as base64, hex, or raw string |
+| `PAPERCLIP_SECRETS_MASTER_KEY_FILE` | Custom key file path                      |
+| `PAPERCLIP_SECRETS_STRICT_MODE`     | Set to `true` to enforce secret refs      |
 
 ## Strict Mode
 

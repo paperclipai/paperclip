@@ -26,11 +26,7 @@ function errorText(value: unknown): string {
   const rec = asRecord(value);
   if (!rec) return "";
   const data = asRecord(rec.data);
-  const msg =
-    asString(rec.message) ||
-    asString(data?.message) ||
-    asString(rec.name) ||
-    "";
+  const msg = asString(rec.message) || asString(data?.message) || asString(rec.name) || "";
   if (msg) return msg;
   try {
     return JSON.stringify(rec);
@@ -58,10 +54,7 @@ function parseToolUse(parsed: Record<string, unknown>, ts: string): TranscriptEn
   if (status !== "completed" && status !== "error") return [callEntry];
 
   const rawOutput =
-    asString(state?.output) ||
-    asString(state?.error) ||
-    asString(part.title) ||
-    `${toolName} ${status}`;
+    asString(state?.output) || asString(state?.error) || asString(part.title) || `${toolName} ${status}`;
 
   const metadata = asRecord(state?.metadata);
   const headerParts: string[] = [`status: ${status}`];

@@ -1,19 +1,13 @@
-import {
-  pgTable,
-  uuid,
-  text,
-  timestamp,
-  jsonb,
-  index,
-  uniqueIndex,
-} from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
 export const companySkills = pgTable(
   "company_skills",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
     key: text("key").notNull(),
     slug: text("slug").notNull(),
     name: text("name").notNull(),

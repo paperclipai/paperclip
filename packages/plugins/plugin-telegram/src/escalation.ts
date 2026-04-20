@@ -1,11 +1,6 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { sendMessage, editMessage, escapeMarkdownV2, truncateAtWord } from "./telegram-api.js";
-import type {
-  EscalationEvent,
-  StoredEscalation,
-  EscalationResponse,
-  InlineKeyboardRow,
-} from "./types.js";
+import type { EscalationEvent, StoredEscalation, EscalationResponse, InlineKeyboardRow } from "./types.js";
 
 const REASON_LABELS: Record<string, string> = {
   low_confidence: "Low Confidence",
@@ -50,9 +45,7 @@ export class EscalationManager {
 
     const buttons: InlineKeyboardRow[] = [];
     if (event.context.suggestedReply) {
-      buttons.push([
-        { text: "Send Suggested Reply", callback_data: `esc_suggested_${event.escalationId}` },
-      ]);
+      buttons.push([{ text: "Send Suggested Reply", callback_data: `esc_suggested_${event.escalationId}` }]);
     }
     buttons.push([
       { text: "Reply", callback_data: `esc_reply_${event.escalationId}` },
@@ -93,10 +86,7 @@ export class EscalationManager {
       sessionId: event.sessionId,
     };
 
-    await ctx.state.set(
-      { scopeKind: "instance", stateKey: `escalation_${event.escalationId}` },
-      stored,
-    );
+    await ctx.state.set({ scopeKind: "instance", stateKey: `escalation_${event.escalationId}` }, stored);
     await ctx.state.set(
       { scopeKind: "instance", stateKey: `msg_${escalationChatId}_${messageId}` },
       {
@@ -113,10 +103,7 @@ export class EscalationManager {
         stateKey: "escalation_pending_ids",
       })) ?? [];
     (pendingIds as string[]).push(event.escalationId);
-    await ctx.state.set(
-      { scopeKind: "instance", stateKey: "escalation_pending_ids" },
-      pendingIds,
-    );
+    await ctx.state.set({ scopeKind: "instance", stateKey: "escalation_pending_ids" }, pendingIds);
 
     ctx.logger.info("Escalation created", {
       escalationId: event.escalationId,
@@ -204,10 +191,7 @@ export class EscalationManager {
 
   async resolve(ctx: PluginContext, token: string, stored: StoredEscalation, response: EscalationResponse) {
     stored.status = "resolved";
-    await ctx.state.set(
-      { scopeKind: "instance", stateKey: `escalation_${stored.escalationId}` },
-      stored,
-    );
+    await ctx.state.set({ scopeKind: "instance", stateKey: `escalation_${stored.escalationId}` }, stored);
     await this.removePending(ctx, stored.escalationId);
 
     const statusLabel = response.action === "dismiss" ? "Dismissed" : "Resolved";
@@ -286,10 +270,7 @@ export class EscalationManager {
 
       ctx.logger.info("Escalation timed out", { escalationId, defaultAction: stored.defaultAction });
       stored.status = "timed_out";
-      await ctx.state.set(
-        { scopeKind: "instance", stateKey: `escalation_${escalationId}` },
-        stored,
-      );
+      await ctx.state.set({ scopeKind: "instance", stateKey: `escalation_${escalationId}` }, stored);
       await this.removePending(ctx, escalationId);
 
       await editMessage(
@@ -308,11 +289,7 @@ export class EscalationManager {
         suggestedReply: stored.suggestedReply,
       });
 
-      if (
-        stored.defaultAction === "auto_reply" &&
-        stored.suggestedReply &&
-        stored.originChatId
-      ) {
+      if (stored.defaultAction === "auto_reply" && stored.suggestedReply && stored.originChatId) {
         await sendMessage(ctx, token, stored.originChatId, esc(stored.suggestedReply), {
           parseMode: "MarkdownV2",
           messageThreadId: stored.originThreadId ? Number(stored.originThreadId) : undefined,

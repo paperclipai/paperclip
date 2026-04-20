@@ -82,7 +82,10 @@ export function approvalService(db: Db) {
     list: (companyId: string, status?: string) => {
       const conditions = [eq(approvals.companyId, companyId)];
       if (status) conditions.push(eq(approvals.status, status));
-      return db.select().from(approvals).where(and(...conditions));
+      return db
+        .select()
+        .from(approvals)
+        .where(and(...conditions));
     },
 
     getById: (id: string) =>
@@ -100,12 +103,7 @@ export function approvalService(db: Db) {
         .then((rows) => rows[0]),
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
-      const { approval: updated, applied } = await resolveApproval(
-        id,
-        "approved",
-        decidedByUserId,
-        decisionNote,
-      );
+      const { approval: updated, applied } = await resolveApproval(id, "approved", decidedByUserId, decisionNote);
 
       let hireApprovedAgentId: string | null = null;
       const now = new Date();
@@ -127,8 +125,7 @@ export function approvalService(db: Db) {
               typeof payload.adapterConfig === "object" && payload.adapterConfig !== null
                 ? (payload.adapterConfig as Record<string, unknown>)
                 : {},
-            budgetMonthlyCents:
-              typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0,
+            budgetMonthlyCents: typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0,
             metadata:
               typeof payload.metadata === "object" && payload.metadata !== null
                 ? (payload.metadata as Record<string, unknown>)
@@ -141,8 +138,7 @@ export function approvalService(db: Db) {
           hireApprovedAgentId = created?.id ?? null;
         }
         if (hireApprovedAgentId) {
-          const budgetMonthlyCents =
-            typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0;
+          const budgetMonthlyCents = typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0;
           if (budgetMonthlyCents > 0) {
             await budgets.upsertPolicy(
               updated.companyId,
@@ -169,12 +165,7 @@ export function approvalService(db: Db) {
     },
 
     reject: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
-      const { approval: updated, applied } = await resolveApproval(
-        id,
-        "rejected",
-        decidedByUserId,
-        decisionNote,
-      );
+      const { approval: updated, applied } = await resolveApproval(id, "rejected", decidedByUserId, decisionNote);
 
       if (applied && updated.type === "hire_agent") {
         const payload = updated.payload as Record<string, unknown>;
@@ -236,21 +227,12 @@ export function approvalService(db: Db) {
       return db
         .select()
         .from(approvalComments)
-        .where(
-          and(
-            eq(approvalComments.approvalId, approvalId),
-            eq(approvalComments.companyId, existing.companyId),
-          ),
-        )
+        .where(and(eq(approvalComments.approvalId, approvalId), eq(approvalComments.companyId, existing.companyId)))
         .orderBy(asc(approvalComments.createdAt))
         .then((comments) => comments.map((comment) => redactApprovalComment(comment, censorUsernameInLogs)));
     },
 
-    addComment: async (
-      approvalId: string,
-      body: string,
-      actor: { agentId?: string; userId?: string },
-    ) => {
+    addComment: async (approvalId: string, body: string, actor: { agentId?: string; userId?: string }) => {
       const existing = await getExistingApproval(approvalId);
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,

@@ -1,12 +1,5 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import {
-  DEFAULT_CONFIG,
-  EXPORT_NAMES,
-  JOB_KEYS,
-  PLUGIN_ID,
-  PLUGIN_VERSION,
-  SLOT_IDS,
-} from "./constants.js";
+import { DEFAULT_CONFIG, EXPORT_NAMES, JOB_KEYS, PLUGIN_ID, PLUGIN_VERSION, SLOT_IDS } from "./constants.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -42,8 +35,7 @@ const manifest: PaperclipPluginManifestV1 = {
       vaultPath: {
         type: "string",
         title: "Vault Path",
-        description:
-          "Absolute path to the local Obsidian vault directory. Leave empty if using a git remote.",
+        description: "Absolute path to the local Obsidian vault directory. Leave empty if using a git remote.",
         default: DEFAULT_CONFIG.vaultPath,
       },
       gitRemoteUrl: {
@@ -92,8 +84,7 @@ const manifest: PaperclipPluginManifestV1 = {
       maxCommentsPerIssue: {
         type: "number",
         title: "Max Comments per Issue",
-        description:
-          "Maximum number of comments to include per issue note (most recent first).",
+        description: "Maximum number of comments to include per issue note (most recent first).",
         default: DEFAULT_CONFIG.maxCommentsPerIssue,
       },
     },
@@ -103,8 +94,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: JOB_KEYS.sync,
       displayName: "Obsidian Vault Sync",
-      description:
-        "Exports changed Paperclip issues and goals as Markdown notes to the configured Obsidian vault.",
+      description: "Exports changed Paperclip issues and goals as Markdown notes to the configured Obsidian vault.",
       schedule: "*/15 * * * *",
     },
   ],

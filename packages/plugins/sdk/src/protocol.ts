@@ -474,6 +474,12 @@ export interface WorkerToHostMethods {
   // Metrics
   "metrics.write": [params: { name: string; value: number; tags?: Record<string, string> }, result: void];
 
+  // Telemetry
+  "telemetry.track": [
+    params: { eventName: string; dimensions?: Record<string, string | number | boolean> },
+    result: void,
+  ];
+
   // Logger
   log: [
     params: { level: "info" | "warn" | "error" | "debug"; message: string; meta?: Record<string, unknown> },
@@ -527,7 +533,10 @@ export interface WorkerToHostMethods {
     result: Issue,
   ];
   "issues.listComments": [params: { issueId: string; companyId: string }, result: IssueComment[]];
-  "issues.createComment": [params: { issueId: string; body: string; companyId: string }, result: IssueComment];
+  "issues.createComment": [
+    params: { issueId: string; body: string; companyId: string; authorAgentId?: string },
+    result: IssueComment,
+  ];
 
   // Issue Documents
   "issues.documents.list": [params: { issueId: string; companyId: string }, result: IssueDocumentSummary[]];

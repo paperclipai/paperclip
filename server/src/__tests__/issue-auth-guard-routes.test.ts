@@ -4,19 +4,48 @@ import { describe, expect, it, vi } from "vitest";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
 
+const stubIssue = {
+  id: "11111111-1111-4111-8111-111111111111",
+  companyId: "c1",
+  status: "todo",
+  title: "stub",
+  identifier: "PAP-1",
+  assigneeAgentId: null,
+  assigneeUserId: null,
+  executionPolicy: null,
+  executionState: null,
+};
+
+const stubAttachment = {
+  id: "11111111-1111-4111-8111-111111111111",
+  companyId: "c1",
+  issueId: "issue-1",
+  objectKey: "issues/issue-1/file.txt",
+  contentType: "text/plain",
+  byteSize: 0,
+  originalFilename: "file.txt",
+};
+
 vi.mock("../services/index.js", () => ({
   accessService: () => ({}),
   agentService: () => ({}),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
-  goalService: () => ({}),
+  goalService: () => ({ getById: vi.fn(async () => null), getDefaultCompanyGoal: vi.fn(async () => null) }),
   heartbeatService: () => ({ wakeup: vi.fn(), reportRunActivity: vi.fn() }),
   issueApprovalService: () => ({}),
-  issueService: () => ({ getById: vi.fn(), getAttachmentById: vi.fn() }),
+  issueService: () => ({
+    getById: vi.fn(async () => stubIssue),
+    getAttachmentById: vi.fn(async () => stubAttachment),
+  }),
   logActivity: vi.fn(),
   projectService: () => ({}),
   routineService: () => ({ syncRunStatusForIssue: vi.fn() }),
   workProductService: () => ({}),
+  feedbackService: () => ({}),
+  instanceSettingsService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
 }));
 
 function createApp(actorType: "none" | "board") {
@@ -50,7 +79,7 @@ describe("issue-scoped auth guard", () => {
   it("returns 401 for unauthenticated POST /api/issues/:id/checkout", async () => {
     const res = await request(createApp("none"))
       .post(`/api/issues/${issueId}/checkout`)
-      .send({ agentId: "a", expectedStatuses: ["todo"] });
+      .send({ agentId: "22222222-2222-4222-8222-222222222222", expectedStatuses: ["todo"] });
     expect(res.status).toBe(401);
   });
 

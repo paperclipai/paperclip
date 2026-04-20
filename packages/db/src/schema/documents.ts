@@ -6,7 +6,9 @@ export const documents = pgTable(
   "documents",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
     title: text("title"),
     format: text("format").notNull().default("markdown"),
     latestBody: text("latest_body").notNull(),

@@ -8,8 +8,7 @@ import type {
 import { api } from "./client";
 
 export const budgetsApi = {
-  overview: (companyId: string) =>
-    api.get<BudgetOverview>(`/companies/${companyId}/budgets/overview`),
+  overview: (companyId: string) => api.get<BudgetOverview>(`/companies/${companyId}/budgets/overview`),
   upsertPolicy: (companyId: string, data: BudgetPolicyUpsertInput) =>
     api.post<BudgetPolicySummary>(`/companies/${companyId}/budgets/policies`, data),
   resolveIncident: (companyId: string, incidentId: string, data: BudgetIncidentResolutionInput) =>

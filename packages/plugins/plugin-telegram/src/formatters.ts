@@ -21,10 +21,7 @@ export function formatIssueCreated(event: PluginEvent<IssueEventPayload>) {
   const assigneeName = p.assigneeName ? String(p.assigneeName) : null;
   const projectName = p.projectName ? String(p.projectName) : null;
 
-  const lines = [
-    `${esc("\u{1f4cb}")} ${bold("Issue Created")}: ${bold(identifier)}`,
-    bold(title),
-  ];
+  const lines = [`${esc("\u{1f4cb}")} ${bold("Issue Created")}: ${bold(identifier)}`, bold(title)];
   const meta: string[] = [];
   if (status) meta.push(`Status: ${code(status)}`);
   if (priority) meta.push(`Priority: ${code(priority)}`);
@@ -63,10 +60,7 @@ export function formatApprovalCreated(event: PluginEvent<ApprovalEventPayload>) 
   const description = p.description ? String(p.description) : null;
   const agentName = p.agentName ? String(p.agentName) : null;
 
-  const lines = [
-    `${esc("\u{1f514}")} ${bold("Approval Requested")}`,
-    bold(title),
-  ];
+  const lines = [`${esc("\u{1f514}")} ${bold("Approval Requested")}`, bold(title)];
   if (agentName) lines.push(`Agent: ${esc(agentName)} \\| Type: ${code(approvalType)}`);
   if (description) lines.push(`\n${esc(truncateAtWord(description, 300))}`);
 
@@ -75,9 +69,7 @@ export function formatApprovalCreated(event: PluginEvent<ApprovalEventPayload>) 
   if (linkedIssues.length > 0) {
     lines.push(`\n${bold(`Linked Issues (${String(linkedIssues.length)})`)}`);
     for (const issue of linkedIssues.slice(0, 5)) {
-      const issueParts = [
-        `${bold(String(issue.identifier ?? "?"))} ${esc(String(issue.title ?? ""))}`,
-      ];
+      const issueParts = [`${bold(String(issue.identifier ?? "?"))} ${esc(String(issue.title ?? ""))}`];
       const issueMeta: string[] = [];
       if (issue.status) issueMeta.push(String(issue.status));
       if (issue.priority) issueMeta.push(String(issue.priority));

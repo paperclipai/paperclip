@@ -37,11 +37,7 @@
  */
 import { EventEmitter } from "node:events";
 import type { Db } from "@paperclipai/db";
-import type {
-  PluginStatus,
-  PluginRecord,
-  PaperclipPluginManifestV1,
-} from "@paperclipai/shared";
+import type { PluginStatus, PluginRecord, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { pluginLoader, type PluginLoader } from "./plugin-loader.js";
 import type { PluginWorkerManager, WorkerStartOptions } from "./plugin-worker-manager.js";
@@ -235,26 +231,17 @@ export interface PluginLifecycleManager {
   /**
    * Subscribe to lifecycle events.
    */
-  on<K extends LifecycleEventName>(
-    event: K,
-    listener: (payload: LifecycleEventPayload<K>) => void,
-  ): void;
+  on<K extends LifecycleEventName>(event: K, listener: (payload: LifecycleEventPayload<K>) => void): void;
 
   /**
    * Unsubscribe from lifecycle events.
    */
-  off<K extends LifecycleEventName>(
-    event: K,
-    listener: (payload: LifecycleEventPayload<K>) => void,
-  ): void;
+  off<K extends LifecycleEventName>(event: K, listener: (payload: LifecycleEventPayload<K>) => void): void;
 
   /**
    * Subscribe to a lifecycle event once.
    */
-  once<K extends LifecycleEventName>(
-    event: K,
-    listener: (payload: LifecycleEventPayload<K>) => void,
-  ): void;
+  once<K extends LifecycleEventName>(event: K, listener: (payload: LifecycleEventPayload<K>) => void): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -338,9 +325,7 @@ export function pluginLifecycleManager(
 
   function assertTransition(plugin: PluginRecord, to: PluginStatus): void {
     if (!isValidTransition(plugin.status, to)) {
-      throw badRequest(
-        `Invalid lifecycle transition: ${plugin.status} → ${to} for plugin ${plugin.pluginKey}`,
-      );
+      throw badRequest(`Invalid lifecycle transition: ${plugin.status} → ${to} for plugin ${plugin.pluginKey}`);
     }
   }
 
@@ -350,7 +335,7 @@ export function pluginLifecycleManager(
     lastError: string | null = null,
     existingPlugin?: PluginRecord,
   ): Promise<PluginRecord> {
-    const plugin = existingPlugin ?? await requirePlugin(pluginId);
+    const plugin = existingPlugin ?? (await requirePlugin(pluginId));
     assertTransition(plugin, to);
 
     const previousStatus = plugin.status;
@@ -379,10 +364,7 @@ export function pluginLifecycleManager(
     return result;
   }
 
-  function emitDomain(
-    event: LifecycleEventName,
-    payload: PluginLifecycleEvents[LifecycleEventName],
-  ): void {
+  function emitDomain(event: LifecycleEventName, payload: PluginLifecycleEvents[LifecycleEventName]): void {
     emitter.emit(event, payload);
   }
 
@@ -395,10 +377,7 @@ export function pluginLifecycleManager(
    * This is a best-effort operation — if no worker manager is configured
    * or no worker is running, it silently succeeds.
    */
-  async function stopWorkerIfRunning(
-    pluginId: string,
-    pluginKey: string,
-  ): Promise<void> {
+  async function stopWorkerIfRunning(pluginId: string, pluginKey: string): Promise<void> {
     if (!workerManager) return;
     if (!workerManager.isRunning(pluginId) && !workerManager.getWorker(pluginId)) return;
 
@@ -416,28 +395,22 @@ export function pluginLifecycleManager(
 
   async function activateReadyPlugin(pluginId: string): Promise<void> {
     const supportsRuntimeActivation =
-      typeof pluginLoaderInstance.hasRuntimeServices === "function"
-      && typeof pluginLoaderInstance.loadSingle === "function";
+      typeof pluginLoaderInstance.hasRuntimeServices === "function" &&
+      typeof pluginLoaderInstance.loadSingle === "function";
     if (!supportsRuntimeActivation || !pluginLoaderInstance.hasRuntimeServices()) {
       return;
     }
 
     const loadResult = await pluginLoaderInstance.loadSingle(pluginId);
     if (!loadResult.success) {
-      throw new Error(
-        loadResult.error
-        ?? `Failed to activate plugin ${loadResult.plugin.pluginKey}`,
-      );
+      throw new Error(loadResult.error ?? `Failed to activate plugin ${loadResult.plugin.pluginKey}`);
     }
   }
 
-  async function deactivatePluginRuntime(
-    pluginId: string,
-    pluginKey: string,
-  ): Promise<void> {
+  async function deactivatePluginRuntime(pluginId: string, pluginKey: string): Promise<void> {
     const supportsRuntimeDeactivation =
-      typeof pluginLoaderInstance.hasRuntimeServices === "function"
-      && typeof pluginLoaderInstance.unloadSingle === "function";
+      typeof pluginLoaderInstance.hasRuntimeServices === "function" &&
+      typeof pluginLoaderInstance.unloadSingle === "function";
 
     if (supportsRuntimeDeactivation && pluginLoaderInstance.hasRuntimeServices()) {
       await pluginLoaderInstance.unloadSingle(pluginId, pluginKey);
@@ -515,8 +488,7 @@ export function pluginLifecycleManager(
       // Only allow disabling from ready state
       if (plugin.status !== "ready") {
         throw badRequest(
-          `Cannot disable plugin in status '${plugin.status}'. ` +
-            `Plugin must be in 'ready' status to be disabled.`,
+          `Cannot disable plugin in status '${plugin.status}'. ` + `Plugin must be in 'ready' status to be disabled.`,
         );
       }
 
@@ -532,10 +504,7 @@ export function pluginLifecycleManager(
     },
 
     // -- unload -----------------------------------------------------------
-    async unload(
-      pluginId: string,
-      removeData = false,
-    ): Promise<PluginRecord | null> {
+    async unload(pluginId: string, removeData = false): Promise<PluginRecord | null> {
       const plugin = await requirePlugin(pluginId);
 
       // If already uninstalled and removeData, hard-delete
@@ -555,8 +524,7 @@ export function pluginLifecycleManager(
           return deleted as PluginRecord | null;
         }
         throw badRequest(
-          `Plugin ${plugin.pluginKey} is already uninstalled. ` +
-            `Use removeData=true to permanently delete it.`,
+          `Plugin ${plugin.pluginKey} is already uninstalled. ` + `Use removeData=true to permanently delete it.`,
         );
       }
 
@@ -655,8 +623,7 @@ export function pluginLifecycleManager(
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
 
       // 1. Download and validate new package via loader
-      const { oldManifest, newManifest, discovered } =
-        await pluginLoaderInstance.upgradePlugin(pluginId, { version });
+      const { oldManifest, newManifest, discovered } = await pluginLoaderInstance.upgradePlugin(pluginId, { version });
 
       log.info(
         {
@@ -669,9 +636,7 @@ export function pluginLifecycleManager(
       );
 
       // 2. Compare capabilities
-      const addedCaps = newManifest.capabilities.filter(
-        (cap) => !oldManifest.capabilities.includes(cap),
-      );
+      const addedCaps = newManifest.capabilities.filter((cap) => !oldManifest.capabilities.includes(cap));
 
       // 3. Transition state
       if (addedCaps.length > 0) {
@@ -709,10 +674,7 @@ export function pluginLifecycleManager(
     },
 
     // -- startWorker ------------------------------------------------------
-    async startWorker(
-      pluginId: string,
-      options: WorkerStartOptions,
-    ): Promise<void> {
+    async startWorker(pluginId: string, options: WorkerStartOptions): Promise<void> {
       if (!workerManager) {
         throw badRequest(
           "Cannot start worker: no PluginWorkerManager is configured. " +
@@ -723,15 +685,11 @@ export function pluginLifecycleManager(
       const plugin = await requirePlugin(pluginId);
       if (plugin.status !== "ready") {
         throw badRequest(
-          `Cannot start worker for plugin in status '${plugin.status}'. ` +
-            `Plugin must be in 'ready' status.`,
+          `Cannot start worker for plugin in status '${plugin.status}'. ` + `Plugin must be in 'ready' status.`,
         );
       }
 
-      log.info(
-        { pluginId, pluginKey: plugin.pluginKey },
-        "plugin lifecycle: starting worker",
-      );
+      log.info({ pluginId, pluginKey: plugin.pluginKey }, "plugin lifecycle: starting worker");
 
       await workerManager.startWorker(pluginId, options);
       emitDomain("plugin.worker_started", {
@@ -739,10 +697,7 @@ export function pluginLifecycleManager(
         pluginKey: plugin.pluginKey,
       });
 
-      log.info(
-        { pluginId, pluginKey: plugin.pluginKey },
-        "plugin lifecycle: worker started",
-      );
+      log.info({ pluginId, pluginKey: plugin.pluginKey }, "plugin lifecycle: worker started");
     },
 
     // -- stopWorker -------------------------------------------------------
@@ -756,40 +711,29 @@ export function pluginLifecycleManager(
     // -- restartWorker ----------------------------------------------------
     async restartWorker(pluginId: string): Promise<void> {
       if (!workerManager) {
-        throw badRequest(
-          "Cannot restart worker: no PluginWorkerManager is configured.",
-        );
+        throw badRequest("Cannot restart worker: no PluginWorkerManager is configured.");
       }
 
       const plugin = await requirePlugin(pluginId);
       if (plugin.status !== "ready") {
         throw badRequest(
-          `Cannot restart worker for plugin in status '${plugin.status}'. ` +
-            `Plugin must be in 'ready' status.`,
+          `Cannot restart worker for plugin in status '${plugin.status}'. ` + `Plugin must be in 'ready' status.`,
         );
       }
 
       const handle = workerManager.getWorker(pluginId);
       if (!handle) {
-        throw badRequest(
-          `Cannot restart worker for plugin "${plugin.pluginKey}": no worker is running.`,
-        );
+        throw badRequest(`Cannot restart worker for plugin "${plugin.pluginKey}": no worker is running.`);
       }
 
-      log.info(
-        { pluginId, pluginKey: plugin.pluginKey },
-        "plugin lifecycle: restarting worker",
-      );
+      log.info({ pluginId, pluginKey: plugin.pluginKey }, "plugin lifecycle: restarting worker");
 
       await handle.restart();
 
       emitDomain("plugin.worker_stopped", { pluginId, pluginKey: plugin.pluginKey });
       emitDomain("plugin.worker_started", { pluginId, pluginKey: plugin.pluginKey });
 
-      log.info(
-        { pluginId, pluginKey: plugin.pluginKey },
-        "plugin lifecycle: worker restarted",
-      );
+      log.info({ pluginId, pluginKey: plugin.pluginKey }, "plugin lifecycle: worker restarted");
     },
 
     // -- getStatus --------------------------------------------------------

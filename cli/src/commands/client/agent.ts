@@ -1,9 +1,6 @@
-import { Command } from "commander";
+import { type Command } from "commander";
 import type { Agent } from "@paperclipai/shared";
-import {
-  removeMaintainerOnlySkillSymlinks,
-  resolvePaperclipSkillsDir,
-} from "@paperclipai/adapter-utils/server-utils";
+import { removeMaintainerOnlySkillSymlinks, resolvePaperclipSkillsDir } from "@paperclipai/adapter-utils/server-utils";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -141,12 +138,7 @@ async function installSkillsForTarget(
   return summary;
 }
 
-function buildAgentEnvExports(input: {
-  apiBase: string;
-  companyId: string;
-  agentId: string;
-  apiKey: string;
-}): string {
+function buildAgentEnvExports(input: { apiBase: string; companyId: string; agentId: string; apiKey: string }): string {
   const escaped = (value: string) => value.replace(/'/g, "'\"'\"'");
   return [
     `export PAPERCLIP_API_URL='${escaped(input.apiBase)}'`,
@@ -218,23 +210,16 @@ export function registerAgentCommands(program: Command): void {
   addCommonClientOptions(
     agent
       .command("local-cli")
-      .description(
-        "Create an agent API key, install local Paperclip skills for Codex/Claude, and print shell exports",
-      )
+      .description("Create an agent API key, install local Paperclip skills for Codex/Claude, and print shell exports")
       .argument("<agentRef>", "Agent ID or shortname/url-key")
       .requiredOption("-C, --company-id <id>", "Company ID")
       .option("--key-name <name>", "API key label", "local-cli")
-      .option(
-        "--no-install-skills",
-        "Skip installing Paperclip skills into ~/.codex/skills and ~/.claude/skills",
-      )
+      .option("--no-install-skills", "Skip installing Paperclip skills into ~/.codex/skills and ~/.claude/skills")
       .action(async (agentRef: string, opts: AgentLocalCliOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const query = new URLSearchParams({ companyId: ctx.companyId ?? "" });
-          const agentRow = await ctx.api.get<Agent>(
-            `/api/agents/${encodeURIComponent(agentRef)}?${query.toString()}`,
-          );
+          const agentRow = await ctx.api.get<Agent>(`/api/agents/${encodeURIComponent(agentRef)}?${query.toString()}`);
           if (!agentRow) {
             throw new Error(`Agent not found: ${agentRef}`);
           }

@@ -56,8 +56,7 @@ type IssueDetailData = {
 
 const styles = {
   container: {
-    fontFamily:
-      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     color: "#e0e0e0",
     padding: "16px",
   } satisfies CSSProperties,
@@ -115,14 +114,7 @@ const styles = {
           : level === "warning"
             ? "rgba(234,179,8,0.15)"
             : "rgba(100,100,100,0.15)",
-    color:
-      level === "fatal"
-        ? "#fca5a5"
-        : level === "error"
-          ? "#fca5a5"
-          : level === "warning"
-            ? "#fde047"
-            : "#aaa",
+    color: level === "fatal" ? "#fca5a5" : level === "error" ? "#fca5a5" : level === "warning" ? "#fde047" : "#aaa",
   }),
   link: {
     color: "#60a5fa",
@@ -218,10 +210,7 @@ function IssueTable({
             </td>
             <td style={styles.td}>
               {onSelect ? (
-                <span
-                  style={{ ...styles.link, fontWeight: 500 }}
-                  onClick={() => onSelect(issue.id)}
-                >
+                <span style={{ ...styles.link, fontWeight: 500 }} onClick={() => onSelect(issue.id)}>
                   {issue.shortId}
                 </span>
               ) : (
@@ -248,20 +237,10 @@ function IssueTable({
                 {issue.title}
               </div>
             </td>
-            {!compact && (
-              <td style={{ ...styles.td, ...styles.muted }}>{issue.culprit}</td>
-            )}
-            <td style={{ ...styles.td, fontVariantNumeric: "tabular-nums" }}>
-              {issue.count}
-            </td>
-            {!compact && (
-              <td style={{ ...styles.td, fontVariantNumeric: "tabular-nums" }}>
-                {issue.userCount}
-              </td>
-            )}
-            <td style={{ ...styles.td, ...styles.muted }}>
-              {timeAgo(issue.lastSeen)}
-            </td>
+            {!compact && <td style={{ ...styles.td, ...styles.muted }}>{issue.culprit}</td>}
+            <td style={{ ...styles.td, fontVariantNumeric: "tabular-nums" }}>{issue.count}</td>
+            {!compact && <td style={{ ...styles.td, fontVariantNumeric: "tabular-nums" }}>{issue.userCount}</td>}
+            <td style={{ ...styles.td, ...styles.muted }}>{timeAgo(issue.lastSeen)}</td>
           </tr>
         ))}
       </tbody>
@@ -273,17 +252,8 @@ function IssueTable({
 // Issue detail view
 // ---------------------------------------------------------------------------
 
-function IssueDetail({
-  issueId,
-  onBack,
-}: {
-  issueId: string;
-  onBack: () => void;
-}) {
-  const { data, loading, error } = usePluginData<IssueDetailData>(
-    DATA_KEYS.issueDetail,
-    { issueId },
-  );
+function IssueDetail({ issueId, onBack }: { issueId: string; onBack: () => void }) {
+  const { data, loading, error } = usePluginData<IssueDetailData>(DATA_KEYS.issueDetail, { issueId });
 
   return (
     <div>
@@ -298,10 +268,8 @@ function IssueDetail({
         <>
           <div style={styles.card}>
             <h3 style={styles.heading}>
-              <span style={styles.levelBadge(data.issue.level)}>
-                {data.issue.level}
-              </span>{" "}
-              {data.issue.shortId}: {data.issue.title}
+              <span style={styles.levelBadge(data.issue.level)}>{data.issue.level}</span> {data.issue.shortId}:{" "}
+              {data.issue.title}
             </h3>
             <div
               style={{
@@ -338,12 +306,7 @@ function IssueDetail({
             </div>
             {data.issue.permalink && (
               <div style={{ marginTop: "12px" }}>
-                <a
-                  href={data.issue.permalink}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={styles.link}
-                >
+                <a href={data.issue.permalink} target="_blank" rel="noopener noreferrer" style={styles.link}>
                   View in Sentry &rarr;
                 </a>
               </div>
@@ -353,18 +316,14 @@ function IssueDetail({
           {data.stacktrace && (
             <div style={styles.card}>
               <h4 style={styles.subheading}>Stacktrace</h4>
-              <pre style={styles.pre}>
-                {JSON.stringify(data.stacktrace, null, 2)}
-              </pre>
+              <pre style={styles.pre}>{JSON.stringify(data.stacktrace, null, 2)}</pre>
             </div>
           )}
 
           {data.breadcrumbs && (
             <div style={styles.card}>
               <h4 style={styles.subheading}>Breadcrumbs</h4>
-              <pre style={styles.pre}>
-                {JSON.stringify(data.breadcrumbs, null, 2)}
-              </pre>
+              <pre style={styles.pre}>{JSON.stringify(data.breadcrumbs, null, 2)}</pre>
             </div>
           )}
 
@@ -372,17 +331,14 @@ function IssueDetail({
             <div style={styles.card}>
               <h4 style={styles.subheading}>Latest Event</h4>
               <div style={{ fontSize: "13px", marginBottom: "8px" }}>
-                <span style={styles.muted}>Event ID:</span>{" "}
-                {data.latestEvent.eventID}
+                <span style={styles.muted}>Event ID:</span> {data.latestEvent.eventID}
               </div>
               <div style={{ fontSize: "13px", marginBottom: "8px" }}>
-                <span style={styles.muted}>Date:</span>{" "}
-                {data.latestEvent.dateCreated}
+                <span style={styles.muted}>Date:</span> {data.latestEvent.dateCreated}
               </div>
               {data.latestEvent.message && (
                 <div style={{ fontSize: "13px", marginBottom: "8px" }}>
-                  <span style={styles.muted}>Message:</span>{" "}
-                  {data.latestEvent.message}
+                  <span style={styles.muted}>Message:</span> {data.latestEvent.message}
                 </div>
               )}
               {data.latestEvent.tags && data.latestEvent.tags.length > 0 && (
@@ -418,9 +374,7 @@ function IssueDetail({
 
           {data.events.length > 1 && (
             <div style={styles.card}>
-              <h4 style={styles.subheading}>
-                Recent Events ({data.events.length})
-              </h4>
+              <h4 style={styles.subheading}>Recent Events ({data.events.length})</h4>
               <table style={styles.table}>
                 <thead>
                   <tr>
@@ -436,9 +390,7 @@ function IssueDetail({
                         {evt.eventID.slice(0, 12)}...
                       </td>
                       <td style={styles.td}>{evt.title}</td>
-                      <td style={{ ...styles.td, ...styles.muted }}>
-                        {timeAgo(evt.dateCreated)}
-                      </td>
+                      <td style={{ ...styles.td, ...styles.muted }}>{timeAgo(evt.dateCreated)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -457,18 +409,12 @@ function IssueDetail({
 
 export function SentryPage(_props: PluginPageProps) {
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
-  const { data, loading, error } = usePluginData<OverviewData>(
-    DATA_KEYS.overview,
-    {},
-  );
+  const { data, loading, error } = usePluginData<OverviewData>(DATA_KEYS.overview, {});
 
   if (selectedIssueId) {
     return (
       <div style={styles.container}>
-        <IssueDetail
-          issueId={selectedIssueId}
-          onBack={() => setSelectedIssueId(null)}
-        />
+        <IssueDetail issueId={selectedIssueId} onBack={() => setSelectedIssueId(null)} />
       </div>
     );
   }
@@ -481,17 +427,14 @@ export function SentryPage(_props: PluginPageProps) {
       {data && !data.configured && (
         <div style={styles.card}>
           <p style={{ color: "#fde047", margin: 0 }}>
-            Sentry is not configured. Set the auth token and organization slug
-            in plugin settings.
+            Sentry is not configured. Set the auth token and organization slug in plugin settings.
           </p>
         </div>
       )}
       {data?.error && <div style={styles.error}>{data.error}</div>}
       {data?.configured && (
         <div style={styles.card}>
-          <h3 style={styles.subheading}>
-            Unresolved Issues ({data.issues.length})
-          </h3>
+          <h3 style={styles.subheading}>Unresolved Issues ({data.issues.length})</h3>
           <IssueTable issues={data.issues} onSelect={setSelectedIssueId} />
         </div>
       )}
@@ -504,10 +447,7 @@ export function SentryPage(_props: PluginPageProps) {
 // ---------------------------------------------------------------------------
 
 export function SentryDashboardWidget(_props: PluginWidgetProps) {
-  const { data, loading, error } = usePluginData<OverviewData>(
-    DATA_KEYS.overview,
-    {},
-  );
+  const { data, loading, error } = usePluginData<OverviewData>(DATA_KEYS.overview, {});
 
   const issues = data?.issues?.slice(0, 5) ?? [];
 
@@ -515,25 +455,13 @@ export function SentryDashboardWidget(_props: PluginWidgetProps) {
     <div style={styles.container}>
       <h3 style={styles.subheading}>Sentry Errors</h3>
       {loading && <div style={styles.muted}>Loading...</div>}
-      {error && (
-        <div style={{ ...styles.error, fontSize: "12px" }}>
-          {error.message}
-        </div>
-      )}
+      {error && <div style={{ ...styles.error, fontSize: "12px" }}>{error.message}</div>}
       {data && !data.configured && (
-        <div style={{ ...styles.muted, fontSize: "12px" }}>
-          Not configured — set up in plugin settings.
-        </div>
+        <div style={{ ...styles.muted, fontSize: "12px" }}>Not configured — set up in plugin settings.</div>
       )}
-      {data?.error && (
-        <div style={{ ...styles.error, fontSize: "12px" }}>{data.error}</div>
-      )}
-      {data?.configured && issues.length === 0 && (
-        <div style={styles.muted}>No unresolved issues</div>
-      )}
-      {data?.configured && issues.length > 0 && (
-        <IssueTable issues={issues} compact />
-      )}
+      {data?.error && <div style={{ ...styles.error, fontSize: "12px" }}>{data.error}</div>}
+      {data?.configured && issues.length === 0 && <div style={styles.muted}>No unresolved issues</div>}
+      {data?.configured && issues.length > 0 && <IssueTable issues={issues} compact />}
     </div>
   );
 }
@@ -570,9 +498,7 @@ function useSettingsConfig() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    hostFetchJson<{ configJson?: Record<string, unknown> | null } | null>(
-      `/api/plugins/${PLUGIN_ID}/config`,
-    )
+    hostFetchJson<{ configJson?: Record<string, unknown> | null } | null>(`/api/plugins/${PLUGIN_ID}/config`)
       .then((result) => {
         if (cancelled) return;
         setConfigJson({ ...DEFAULT_CONFIG, ...(result?.configJson ?? {}) });
@@ -580,9 +506,7 @@ function useSettingsConfig() {
       })
       .catch((nextError) => {
         if (cancelled) return;
-        setError(
-          nextError instanceof Error ? nextError.message : String(nextError),
-        );
+        setError(nextError instanceof Error ? nextError.message : String(nextError));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -602,9 +526,7 @@ function useSettingsConfig() {
       setConfigJson(nextConfig);
       setError(null);
     } catch (nextError) {
-      setError(
-        nextError instanceof Error ? nextError.message : String(nextError),
-      );
+      setError(nextError instanceof Error ? nextError.message : String(nextError));
       throw nextError;
     } finally {
       setSaving(false);
@@ -647,8 +569,7 @@ const primaryBtnStyle: CSSProperties = {
 // ---------------------------------------------------------------------------
 
 export function SentrySettingsPage(_props: PluginSettingsPageProps) {
-  const { configJson, setConfigJson, loading, saving, error, save } =
-    useSettingsConfig();
+  const { configJson, setConfigJson, loading, saving, error, save } = useSettingsConfig();
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [testStatus, setTestStatus] = useState<string | null>(null);
 
@@ -676,33 +597,21 @@ export function SentrySettingsPage(_props: PluginSettingsPageProps) {
       });
       setTestStatus("Connection successful!");
     } catch (err) {
-      setTestStatus(
-        `Failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      setTestStatus(`Failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     window.setTimeout(() => setTestStatus(null), 4000);
   }
 
   if (loading) {
-    return (
-      <div style={{ fontSize: "12px", opacity: 0.7, padding: "16px" }}>
-        Loading plugin config...
-      </div>
-    );
+    return <div style={{ fontSize: "12px", opacity: 0.7, padding: "16px" }}>Loading plugin config...</div>;
   }
 
   return (
-    <form
-      onSubmit={onSubmit}
-      style={{ display: "grid", gap: "20px", padding: "16px", maxWidth: "600px" }}
-    >
+    <form onSubmit={onSubmit} style={{ display: "grid", gap: "20px", padding: "16px", maxWidth: "600px" }}>
       <div>
-        <h3 style={{ ...styles.subheading, marginBottom: "4px" }}>
-          Sentry Configuration
-        </h3>
+        <h3 style={{ ...styles.subheading, marginBottom: "4px" }}>Sentry Configuration</h3>
         <div style={{ fontSize: "12px", color: "#888" }}>
-          Connect to your Sentry instance to enable error tracking for agents
-          and the board dashboard.
+          Connect to your Sentry instance to enable error tracking for agents and the board dashboard.
         </div>
       </div>
 
@@ -748,9 +657,7 @@ export function SentrySettingsPage(_props: PluginSettingsPageProps) {
         <span>Sentry Base URL</span>
         <input
           style={inputStyle}
-          value={String(
-            configJson.sentryBaseUrl ?? DEFAULT_CONFIG.sentryBaseUrl,
-          )}
+          value={String(configJson.sentryBaseUrl ?? DEFAULT_CONFIG.sentryBaseUrl)}
           onChange={(e) => setField("sentryBaseUrl", e.target.value)}
           placeholder="https://sentry.io"
         />
@@ -772,19 +679,10 @@ export function SentrySettingsPage(_props: PluginSettingsPageProps) {
         <button type="submit" style={primaryBtnStyle} disabled={saving}>
           {saving ? "Saving..." : "Save settings"}
         </button>
-        <button
-          type="button"
-          style={styles.btn}
-          onClick={onTestConnection}
-          disabled={saving}
-        >
+        <button type="button" style={styles.btn} onClick={onTestConnection} disabled={saving}>
           Test connection
         </button>
-        {savedMessage && (
-          <span style={{ fontSize: "12px", color: "#4ade80" }}>
-            {savedMessage}
-          </span>
-        )}
+        {savedMessage && <span style={{ fontSize: "12px", color: "#4ade80" }}>{savedMessage}</span>}
         {testStatus && (
           <span
             style={{
@@ -820,12 +718,8 @@ export function SentrySidebarLink(_props: PluginSidebarProps) {
         padding: "8px 12px",
         fontSize: "13px",
         fontWeight: 500,
-        color: hovered
-          ? "hsl(var(--foreground))"
-          : "hsl(var(--foreground) / 0.8)",
-        backgroundColor: hovered
-          ? "hsl(var(--accent) / 0.5)"
-          : "transparent",
+        color: hovered ? "hsl(var(--foreground))" : "hsl(var(--foreground) / 0.8)",
+        backgroundColor: hovered ? "hsl(var(--accent) / 0.5)" : "transparent",
         textDecoration: "none",
         cursor: "pointer",
         transition: "color 0.15s, background-color 0.15s",
@@ -847,9 +741,7 @@ export function SentrySidebarLink(_props: PluginSidebarProps) {
         <line x1="12" y1="8" x2="12" y2="12" />
         <line x1="12" y1="16" x2="12.01" y2="16" />
       </svg>
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        Sentry Errors
-      </span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Sentry Errors</span>
     </a>
   );
 }

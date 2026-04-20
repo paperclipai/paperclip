@@ -18,10 +18,7 @@ export interface DataDirCommandSupport {
   hasContextOption?: boolean;
 }
 
-export function applyDataDirOverride(
-  options: DataDirOptionLike,
-  support: DataDirCommandSupport = {},
-): string | null {
+export function applyDataDirOverride(options: DataDirOptionLike, support: DataDirCommandSupport = {}): string | null {
   const rawDataDir = options.dataDir?.trim();
   if (!rawDataDir) return null;
 

@@ -1,7 +1,8 @@
 import type { UsageSummary } from "@paperclipai/adapter-utils";
 import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
 
-const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
+const CLAUDE_AUTH_REQUIRED_RE =
+  /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 export function parseClaudeStreamJson(stdout: string) {
@@ -169,9 +170,7 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
 
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
-  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
-    .map((msg) => msg.trim())
-    .filter(Boolean);
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)].map((msg) => msg.trim()).filter(Boolean);
 
   return allMessages.some((msg) =>
     /no conversation found with session id|unknown session|session .* not found/i.test(msg),

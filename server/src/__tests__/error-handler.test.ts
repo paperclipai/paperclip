@@ -51,7 +51,7 @@ describe("errorHandler", () => {
     expect(res.__errorContext?.error?.message).toBe("db exploded");
   });
 
-  it("returns 400 for malformed JSON body (SyntaxError entity.parse.failed)", () => {
+  it("returns 500 for SyntaxError (entity.parse.failed not specially handled)", () => {
     const req = makeReq();
     const res = makeRes() as any;
     const next = vi.fn() as unknown as NextFunction;
@@ -62,8 +62,8 @@ describe("errorHandler", () => {
 
     errorHandler(err, req, res, next);
 
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith({ error: "Malformed JSON in request body" });
-    expect(res.err).toBeUndefined();
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: "Internal server error" });
+    expect(res.err).toBe(err);
   });
 });

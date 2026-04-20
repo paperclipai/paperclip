@@ -5,7 +5,9 @@ export const labels = pgTable(
   "labels",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     color: text("color").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

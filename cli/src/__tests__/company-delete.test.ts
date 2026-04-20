@@ -15,6 +15,10 @@ function makeCompany(overrides: Partial<Company>): Company {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     requireBoardApprovalForNewAgents: false,
+    feedbackDataSharingEnabled: false,
+    feedbackDataSharingConsentAt: null,
+    feedbackDataSharingConsentByUserId: null,
+    feedbackDataSharingTermsVersion: null,
     brandColor: null,
     logoAssetId: null,
     logoUrl: null,
@@ -57,8 +61,9 @@ describe("resolveCompanyForDeletion", () => {
   });
 
   it("respects explicit prefix mode", () => {
-    expect(() => resolveCompanyForDeletion(companies, "22222222-2222-2222-2222-222222222222", "prefix"))
-      .toThrow(/No company found by shortname/);
+    expect(() => resolveCompanyForDeletion(companies, "22222222-2222-2222-2222-222222222222", "prefix")).toThrow(
+      /No company found by shortname/,
+    );
   });
 });
 
@@ -81,11 +86,13 @@ describe("assertDeleteConfirmation", () => {
       assertDeleteConfirmation(company, {
         yes: true,
         confirm: "22222222-2222-2222-2222-222222222222",
-      })).not.toThrow();
+      }),
+    ).not.toThrow();
   });
 
   it("rejects mismatched confirmation", () => {
-    expect(() => assertDeleteConfirmation(company, { yes: true, confirm: "nope" }))
-      .toThrow(/does not match target company/);
+    expect(() => assertDeleteConfirmation(company, { yes: true, confirm: "nope" })).toThrow(
+      /does not match target company/,
+    );
   });
 });

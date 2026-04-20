@@ -14,13 +14,13 @@ Both are discoverable through the **Company Store**.
 
 ## Concepts
 
-| Concept | What it is | Contains code? |
-|---------|-----------|----------------|
-| **Module** | A package that extends Paperclip's API, UI, and data model | Yes |
-| **Company Template** | A data snapshot — agents, projects, goals, org structure | No (JSON only) |
-| **Company Store** | Registry for browsing/installing modules and templates | — |
-| **Hook** | A named event in the core that modules can subscribe to | — |
-| **Slot** | An exclusive category where only one module can be active (e.g., `observability`) | — |
+| Concept              | What it is                                                                        | Contains code? |
+| -------------------- | --------------------------------------------------------------------------------- | -------------- |
+| **Module**           | A package that extends Paperclip's API, UI, and data model                        | Yes            |
+| **Company Template** | A data snapshot — agents, projects, goals, org structure                          | No (JSON only) |
+| **Company Store**    | Registry for browsing/installing modules and templates                            | —              |
+| **Hook**             | A named event in the core that modules can subscribe to                           | —              |
+| **Slot**             | An exclusive category where only one module can be active (e.g., `observability`) | —              |
 
 ---
 
@@ -57,12 +57,7 @@ Modules live in a top-level `modules/` directory. Each module is a pnpm workspac
 
   "slot": "observability",
 
-  "hooks": [
-    "agent:heartbeat",
-    "agent:created",
-    "issue:status_changed",
-    "budget:threshold_crossed"
-  ],
+  "hooks": ["agent:heartbeat", "agent:created", "issue:status_changed", "budget:threshold_crossed"],
 
   "routes": {
     "prefix": "/observability",
@@ -149,10 +144,10 @@ export default function register(api: ModuleAPI) {
 interface ModuleAPI {
   // Identity
   moduleId: string;
-  config: Record<string, unknown>;  // validated against configSchema
+  config: Record<string, unknown>; // validated against configSchema
 
   // Database
-  db: Db;                           // shared Drizzle client
+  db: Db; // shared Drizzle client
 
   // Routes
   registerRoutes(router: Router): void;
@@ -187,21 +182,21 @@ Modules get a scoped logger, access to the shared database, and read access to c
 
 Hooks are the primary integration point. The core emits events at well-defined moments. Modules subscribe in their `register` function.
 
-| Hook | Payload | When |
-|------|---------|------|
-| `server:started` | `{ port }` | After the Express server begins listening |
-| `agent:created` | `{ agent }` | After a new agent is inserted |
-| `agent:updated` | `{ agent, changes }` | After an agent record is modified |
-| `agent:deleted` | `{ agent }` | After an agent is removed |
-| `agent:heartbeat` | `{ agentId, timestamp, meta }` | When an agent checks in. `meta` carries tokens_used, cost, latency, etc. |
-| `agent:status_changed` | `{ agent, from, to }` | When agent status transitions (idle→active, active→error, etc.) |
-| `issue:created` | `{ issue }` | After a new issue is inserted |
-| `issue:status_changed` | `{ issue, from, to }` | When issue moves between statuses |
-| `issue:assigned` | `{ issue, agent }` | When an issue is assigned to an agent |
-| `goal:created` | `{ goal }` | After a new goal is inserted |
-| `goal:completed` | `{ goal }` | When a goal's status becomes complete |
-| `budget:spend_recorded` | `{ agentId, amount, total }` | After spend is incremented |
-| `budget:threshold_crossed` | `{ agentId, budget, spent, percent }` | When an agent crosses 80%, 90%, or 100% of budget |
+| Hook                       | Payload                               | When                                                                     |
+| -------------------------- | ------------------------------------- | ------------------------------------------------------------------------ |
+| `server:started`           | `{ port }`                            | After the Express server begins listening                                |
+| `agent:created`            | `{ agent }`                           | After a new agent is inserted                                            |
+| `agent:updated`            | `{ agent, changes }`                  | After an agent record is modified                                        |
+| `agent:deleted`            | `{ agent }`                           | After an agent is removed                                                |
+| `agent:heartbeat`          | `{ agentId, timestamp, meta }`        | When an agent checks in. `meta` carries tokens_used, cost, latency, etc. |
+| `agent:status_changed`     | `{ agent, from, to }`                 | When agent status transitions (idle→active, active→error, etc.)          |
+| `issue:created`            | `{ issue }`                           | After a new issue is inserted                                            |
+| `issue:status_changed`     | `{ issue, from, to }`                 | When issue moves between statuses                                        |
+| `issue:assigned`           | `{ issue, agent }`                    | When an issue is assigned to an agent                                    |
+| `goal:created`             | `{ goal }`                            | After a new goal is inserted                                             |
+| `goal:completed`           | `{ goal }`                            | When a goal's status becomes complete                                    |
+| `budget:spend_recorded`    | `{ agentId, amount, total }`          | After spend is incremented                                               |
+| `budget:threshold_crossed` | `{ agentId, budget, spent, percent }` | When an agent crosses 80%, 90%, or 100% of budget                        |
 
 ### Hook Execution Model
 
@@ -219,14 +214,13 @@ class HookBus {
   async emit(event: string, payload: unknown) {
     const handlers = this.handlers.get(event) ?? [];
     // Run all handlers concurrently. Failures are logged, never block core.
-    await Promise.allSettled(
-      handlers.map(h => h(payload))
-    );
+    await Promise.allSettled(handlers.map((h) => h(payload)));
   }
 }
 ```
 
 Design rules:
+
 - **Hooks are fire-and-forget.** A failing hook handler never crashes or blocks the core operation.
 - **Hooks are concurrent.** All handlers for an event run in parallel via `Promise.allSettled`.
 - **Hooks are post-commit.** They fire after the database write succeeds, not before. No vetoing.
@@ -340,13 +334,13 @@ Module config lives in the server's environment or a config file:
     "config": {
       "observability": {
         "retentionDays": 90,
-        "enablePrometheus": true
+        "enablePrometheus": true,
       },
       "revenue": {
-        "stripeSecretKey": "$STRIPE_SECRET_KEY"
-      }
-    }
-  }
+        "stripeSecretKey": "$STRIPE_SECRET_KEY",
+      },
+    },
+  },
 }
 ```
 
@@ -355,6 +349,7 @@ Module config lives in the server's environment or a config file:
 ### Disabling a Module
 
 Setting a module's enabled state to false:
+
 1. Stops its background services
 2. Unmounts its routes (returns 404)
 3. Unsubscribes its hook handlers
@@ -367,6 +362,7 @@ Setting a module's enabled state to false:
 ### How Module UI Works
 
 The core UI shell provides:
+
 - A sidebar with slots for module-contributed nav items
 - A dashboard with widget mount points
 - A module settings page
@@ -393,7 +389,9 @@ export const dashboardWidgets = [
     id: "token-burn-rate",
     label: "Token Burn Rate",
     placement: "dashboard",
-    component: lazy(() => import("@paperclipai/mod-observability/ui").then(m => ({ default: m.TokenBurnRateWidget }))),
+    component: lazy(() =>
+      import("@paperclipai/mod-observability/ui").then((m) => ({ default: m.TokenBurnRateWidget })),
+    ),
   },
 ];
 ```
@@ -601,27 +599,27 @@ pnpm paperclipai store export                  # export current company as templ
 
 ### Tier 1 — Build first (core extensions)
 
-| Module | What it does | Key hooks |
-|--------|-------------|-----------|
-| **Observability** | Token usage tracking, cost metrics, agent performance dashboards, Prometheus export | `agent:heartbeat`, `budget:spend_recorded` |
-| **Revenue Tracking** | Connect Stripe/crypto wallets, track income, show P&L against agent costs | `budget:spend_recorded` |
-| **Notifications** | Slack/Discord/email alerts on configurable triggers | All hooks (configurable) |
+| Module               | What it does                                                                        | Key hooks                                  |
+| -------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------ |
+| **Observability**    | Token usage tracking, cost metrics, agent performance dashboards, Prometheus export | `agent:heartbeat`, `budget:spend_recorded` |
+| **Revenue Tracking** | Connect Stripe/crypto wallets, track income, show P&L against agent costs           | `budget:spend_recorded`                    |
+| **Notifications**    | Slack/Discord/email alerts on configurable triggers                                 | All hooks (configurable)                   |
 
 ### Tier 2 — High value
 
-| Module | What it does | Key hooks |
-|--------|-------------|-----------|
-| **Analytics Dashboard** | Burn rate trends, agent utilization over time, goal velocity charts | `agent:heartbeat`, `issue:status_changed`, `goal:completed` |
-| **Workflow Automation** | If/then rules: "when issue is done, create follow-up", "when budget at 90%, pause agent" | `issue:status_changed`, `budget:threshold_crossed` |
-| **Knowledge Base** | Shared document store, vector search, agents read/write organizational knowledge | `agent:heartbeat` (for context injection) |
+| Module                  | What it does                                                                             | Key hooks                                                   |
+| ----------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| **Analytics Dashboard** | Burn rate trends, agent utilization over time, goal velocity charts                      | `agent:heartbeat`, `issue:status_changed`, `goal:completed` |
+| **Workflow Automation** | If/then rules: "when issue is done, create follow-up", "when budget at 90%, pause agent" | `issue:status_changed`, `budget:threshold_crossed`          |
+| **Knowledge Base**      | Shared document store, vector search, agents read/write organizational knowledge         | `agent:heartbeat` (for context injection)                   |
 
 ### Tier 3 — Nice to have
 
-| Module | What it does | Key hooks |
-|--------|-------------|-----------|
-| **Audit & Compliance** | Immutable audit trail, approval workflows, spend authorization | All write hooks |
-| **Agent Logs / Replay** | Full execution traces per agent, token-by-token replay | `agent:heartbeat` |
-| **Multi-tenant** | Separate companies/orgs within one Paperclip instance | `server:started` |
+| Module                  | What it does                                                   | Key hooks         |
+| ----------------------- | -------------------------------------------------------------- | ----------------- |
+| **Audit & Compliance**  | Immutable audit trail, approval workflows, spend authorization | All write hooks   |
+| **Agent Logs / Replay** | Full execution traces per agent, token-by-token replay         | `agent:heartbeat` |
+| **Multi-tenant**        | Separate companies/orgs within one Paperclip instance          | `server:started`  |
 
 ---
 

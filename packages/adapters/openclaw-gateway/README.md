@@ -8,6 +8,7 @@ This adapter always uses WebSocket gateway transport.
 
 - URL must be `ws://` or `wss://`
 - Connect flow follows gateway protocol:
+
 1. receive `connect.challenge`
 2. send `req connect` (protocol/client/auth/device payload)
 3. send `req agent`

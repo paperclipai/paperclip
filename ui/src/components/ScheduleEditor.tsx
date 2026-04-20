@@ -94,7 +94,13 @@ function parseCronToPreset(cron: string): {
   return { preset: "custom", ...defaults };
 }
 
-function buildCron(preset: SchedulePreset, hour: string, minute: string, dayOfWeek: string, dayOfMonth: string): string {
+function buildCron(
+  preset: SchedulePreset,
+  hour: string,
+  minute: string,
+  dayOfWeek: string,
+  dayOfMonth: string,
+): string {
   switch (preset) {
     case "every_minute":
       return "* * * * *";
@@ -146,13 +152,7 @@ function ordinalSuffix(n: number): string {
 
 export { describeSchedule };
 
-export function ScheduleEditor({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (cron: string) => void;
-}) {
+export function ScheduleEditor({ value, onChange }: { value: string; onChange: (cron: string) => void }) {
   const parsed = useMemo(() => parseCronToPreset(value), [value]);
   const [preset, setPreset] = useState<SchedulePreset>(parsed.preset);
   const [hour, setHour] = useState(parsed.hour);
@@ -218,9 +218,7 @@ export function ScheduleEditor({
             placeholder="0 10 * * *"
             className="font-mono text-sm"
           />
-          <p className="text-xs text-muted-foreground">
-            Five fields: minute hour day-of-month month day-of-week
-          </p>
+          <p className="text-xs text-muted-foreground">Five fields: minute hour day-of-month month day-of-week</p>
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2">

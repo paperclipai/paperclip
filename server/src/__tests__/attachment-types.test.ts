@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
-  parseAllowedTypes,
-  matchesContentType,
   DEFAULT_ALLOWED_TYPES,
+  INLINE_ATTACHMENT_TYPES,
+  isInlineAttachmentContentType,
+  matchesContentType,
+  normalizeContentType,
+  parseAllowedTypes,
 } from "../attachment-types.js";
 
 describe("parseAllowedTypes", () => {
@@ -15,17 +18,11 @@ describe("parseAllowedTypes", () => {
   });
 
   it("parses comma-separated types", () => {
-    expect(parseAllowedTypes("image/*,application/pdf")).toEqual([
-      "image/*",
-      "application/pdf",
-    ]);
+    expect(parseAllowedTypes("image/*,application/pdf")).toEqual(["image/*", "application/pdf"]);
   });
 
   it("trims whitespace", () => {
-    expect(parseAllowedTypes(" image/png , application/pdf ")).toEqual([
-      "image/png",
-      "application/pdf",
-    ]);
+    expect(parseAllowedTypes(" image/png , application/pdf ")).toEqual(["image/png", "application/pdf"]);
   });
 
   it("lowercases entries", () => {
@@ -33,10 +30,7 @@ describe("parseAllowedTypes", () => {
   });
 
   it("filters empty segments", () => {
-    expect(parseAllowedTypes("image/png,,application/pdf,")).toEqual([
-      "image/png",
-      "application/pdf",
-    ]);
+    expect(parseAllowedTypes("image/png,,application/pdf,")).toEqual(["image/png", "application/pdf"]);
   });
 });
 
@@ -58,17 +52,11 @@ describe("matchesContentType", () => {
 
   it("matches .* wildcard patterns", () => {
     const patterns = ["application/vnd.openxmlformats-officedocument.*"];
+    expect(matchesContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", patterns)).toBe(
+      true,
+    );
     expect(
-      matchesContentType(
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        patterns,
-      ),
-    ).toBe(true);
-    expect(
-      matchesContentType(
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        patterns,
-      ),
+      matchesContentType("application/vnd.openxmlformats-officedocument.wordprocessingml.document", patterns),
     ).toBe(true);
     expect(matchesContentType("application/pdf", patterns)).toBe(false);
   });
@@ -93,5 +81,30 @@ describe("matchesContentType", () => {
     expect(matchesContentType("application/pdf", patterns)).toBe(true);
     expect(matchesContentType("text/plain", patterns)).toBe(true);
     expect(matchesContentType("application/zip", patterns)).toBe(true);
+  });
+});
+
+describe("normalizeContentType", () => {
+  it("lowercases and trims explicit types", () => {
+    expect(normalizeContentType(" Application/Zip ")).toBe("application/zip");
+  });
+
+  it("falls back to octet-stream when the type is missing", () => {
+    expect(normalizeContentType(undefined)).toBe("application/octet-stream");
+    expect(normalizeContentType("")).toBe("application/octet-stream");
+  });
+});
+
+describe("isInlineAttachmentContentType", () => {
+  it("allows the configured inline-safe types", () => {
+    for (const contentType of ["image/png", "image/svg+xml", "application/pdf", "text/plain"]) {
+      expect(isInlineAttachmentContentType(contentType)).toBe(true);
+    }
+  });
+
+  it("rejects potentially unsafe or binary download types", () => {
+    expect(INLINE_ATTACHMENT_TYPES).not.toContain("text/html");
+    expect(isInlineAttachmentContentType("text/html")).toBe(false);
+    expect(isInlineAttachmentContentType("application/zip")).toBe(false);
   });
 });

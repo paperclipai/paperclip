@@ -17,9 +17,9 @@ describe("openCode models", () => {
   });
 
   it("rejects when model is missing", async () => {
-    await expect(
-      ensureOpenCodeModelConfiguredAndAvailable({ model: "" }),
-    ).rejects.toThrow("OpenCode requires `adapterConfig.model`");
+    await expect(ensureOpenCodeModelConfiguredAndAvailable({ model: "" })).rejects.toThrow(
+      "OpenCode requires `adapterConfig.model`",
+    );
   });
 
   it("rejects when discovery cannot run for configured model", async () => {

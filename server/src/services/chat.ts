@@ -75,7 +75,10 @@ const sessions = new Map<string, ChatSession>();
 const typingState = new Map<string, { who: "user" | "agent"; since: string }>();
 
 /** agentId → recently ended session (for reconnection grace period) */
-const recentlyEndedSessions = new Map<string, { session: ChatSession; endedAt: number; graceTimer: ReturnType<typeof setTimeout> }>();
+const recentlyEndedSessions = new Map<
+  string,
+  { session: ChatSession; endedAt: number; graceTimer: ReturnType<typeof setTimeout> }
+>();
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -96,11 +99,7 @@ export function chatService(db?: Db) {
    * Enforces one active session per agent.
    * Returns the existing session if one is already active.
    */
-  function startSession(opts: {
-    agentId: string;
-    companyId: string;
-    userId: string;
-  }): ChatSession {
+  function startSession(opts: { agentId: string; companyId: string; userId: string }): ChatSession {
     const existing = sessions.get(opts.agentId);
     if (existing) return existing;
 
@@ -331,7 +330,8 @@ export function chatService(db?: Db) {
         .execute()
         .then(() => {
           // Update message count
-          return db.update(chatSessions)
+          return db
+            .update(chatSessions)
             .set({ messageCount: session!.messages.length })
             .where(eq(chatSessions.id, session!.id))
             .execute();
@@ -358,10 +358,7 @@ export function chatService(db?: Db) {
    * Send a response from an agent back to the user.
    * Called by the agent process during a chat-mode run.
    */
-  function sendResponse(opts: {
-    agentId: string;
-    content: string;
-  }): ChatMessage | null {
+  function sendResponse(opts: { agentId: string; content: string }): ChatMessage | null {
     const session = sessions.get(opts.agentId);
     if (!session) return null;
 
@@ -399,7 +396,8 @@ export function chatService(db?: Db) {
         })
         .execute()
         .then(() => {
-          return db.update(chatSessions)
+          return db
+            .update(chatSessions)
             .set({ messageCount: session!.messages.length })
             .where(eq(chatSessions.id, session!.id))
             .execute();
@@ -437,8 +435,8 @@ export function chatService(db?: Db) {
     for (const msg of session.messages) {
       if (messageIds.includes(msg.id) && !msg.readAt) {
         // User reads agent messages, agent reads user messages
-        const isRecipient = (reader === "user" && msg.sender === "agent") ||
-                           (reader === "agent" && msg.sender === "user");
+        const isRecipient =
+          (reader === "user" && msg.sender === "agent") || (reader === "agent" && msg.sender === "user");
         if (isRecipient) {
           msg.readAt = readTimestamp;
           count++;
@@ -452,12 +450,7 @@ export function chatService(db?: Db) {
     if (db) {
       db.update(chatMessages)
         .set({ readAt: new Date(readTimestamp) })
-        .where(
-          and(
-            inArray(chatMessages.id, messageIds),
-            isNull(chatMessages.readAt),
-          ),
-        )
+        .where(and(inArray(chatMessages.id, messageIds), isNull(chatMessages.readAt)))
         .execute()
         .catch((err) => logger.error({ err }, "Failed to persist read receipts"));
     }
@@ -497,7 +490,10 @@ export function chatService(db?: Db) {
   /**
    * Get paginated list of past chat sessions for an agent.
    */
-  async function getHistory(agentId: string, opts?: { limit?: number; before?: string }): Promise<ChatSessionSummary[]> {
+  async function getHistory(
+    agentId: string,
+    opts?: { limit?: number; before?: string },
+  ): Promise<ChatSessionSummary[]> {
     if (!db) return [];
 
     const limit = opts?.limit ?? 20;

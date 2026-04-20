@@ -16,7 +16,11 @@ function normalizeHexColor(value: string | null): string | null {
   if (!value) return null;
   const hex = value.startsWith("#") ? value.slice(1) : value;
   if (/^[0-9a-fA-F]{3}$/.test(hex)) {
-    return `#${hex.split("").map((char) => `${char}${char}`).join("").toLowerCase()}`;
+    return `#${hex
+      .split("")
+      .map((char) => `${char}${char}`)
+      .join("")
+      .toLowerCase()}`;
   }
   if (/^[0-9a-fA-F]{6}$/.test(hex)) {
     return `#${hex.toLowerCase()}`;
@@ -41,9 +45,7 @@ function relativeLuminanceChannel(value: number): number {
 function pickReadableTextColor(background: string): string {
   const { r, g, b } = hexToRgb(background);
   const luminance =
-    (0.2126 * relativeLuminanceChannel(r)) +
-    (0.7152 * relativeLuminanceChannel(g)) +
-    (0.0722 * relativeLuminanceChannel(b));
+    0.2126 * relativeLuminanceChannel(r) + 0.7152 * relativeLuminanceChannel(g) + 0.0722 * relativeLuminanceChannel(b);
   const whiteContrast = 1.05 / (luminance + 0.05);
   const blackContrast = (luminance + 0.05) / 0.05;
   return whiteContrast >= blackContrast ? "#f8fafc" : "#111827";

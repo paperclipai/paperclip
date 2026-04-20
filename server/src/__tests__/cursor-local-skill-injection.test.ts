@@ -43,9 +43,7 @@ describe("cursor local adapter skill injection", () => {
     expect((await fs.lstat(injectedA)).isSymbolicLink()).toBe(true);
     expect((await fs.lstat(injectedB)).isSymbolicLink()).toBe(true);
     expect(await fs.realpath(injectedA)).toBe(await fs.realpath(path.join(skillsDir, "paperclip")));
-    expect(await fs.realpath(injectedB)).toBe(
-      await fs.realpath(path.join(skillsDir, "paperclip-create-agent")),
-    );
+    expect(await fs.realpath(injectedB)).toBe(await fs.realpath(path.join(skillsDir, "paperclip-create-agent")));
     expect(logs.some((line) => line.includes('Injected Cursor skill "paperclip"'))).toBe(true);
     expect(logs.some((line) => line.includes('Injected Cursor skill "paperclip-create-agent"'))).toBe(true);
   });

@@ -23,13 +23,7 @@ export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
   const anyRootGoal = await db
     .select()
     .from(goals)
-    .where(
-      and(
-        eq(goals.companyId, companyId),
-        eq(goals.level, "company"),
-        isNull(goals.parentId),
-      ),
-    )
+    .where(and(eq(goals.companyId, companyId), eq(goals.level, "company"), isNull(goals.parentId)))
     .orderBy(asc(goals.createdAt))
     .then((rows) => rows[0] ?? null);
   if (anyRootGoal) return anyRootGoal;

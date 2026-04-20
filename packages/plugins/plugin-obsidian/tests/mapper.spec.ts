@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  mapGoalToNote,
-  mapIssueToNote,
-  type MapperContext,
-} from "../src/lib/mapper.js";
+import { mapGoalToNote, mapIssueToNote, type MapperContext } from "../src/lib/mapper.js";
 import type { Goal, Issue } from "@paperclipai/shared";
 
 function makeMapperCtx(overrides?: Partial<MapperContext>): MapperContext {
@@ -64,10 +60,7 @@ describe("mapIssueToNote", () => {
   });
 
   it("generates correct path for flat structure", () => {
-    const note = mapIssueToNote(
-      makeIssue(),
-      makeMapperCtx({ folderStructure: "flat" }),
-    );
+    const note = mapIssueToNote(makeIssue(), makeMapperCtx({ folderStructure: "flat" }));
     expect(note.relativePath).toBe("Issues/PAP-42.md");
   });
 
@@ -110,10 +103,7 @@ describe("mapIssueToNote", () => {
   });
 
   it("handles uncategorized projects", () => {
-    const note = mapIssueToNote(
-      makeIssue({ projectId: "unknown_proj" }),
-      makeMapperCtx(),
-    );
+    const note = mapIssueToNote(makeIssue({ projectId: "unknown_proj" }), makeMapperCtx());
     expect(note.relativePath).toContain("Uncategorized");
   });
 });

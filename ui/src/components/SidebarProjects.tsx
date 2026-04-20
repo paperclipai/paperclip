@@ -10,6 +10,7 @@ import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
+import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectRouteRef } from "../lib/utils";
 import { useProjectOrder } from "../hooks/useProjectOrder";
@@ -56,7 +57,12 @@ function SortableProjectItem({
       <div className="flex flex-col gap-0.5">
         <NavLink
           to={`/projects/${routeRef}/issues`}
-          onClick={() => {
+          state={SIDEBAR_SCROLL_RESET_STATE}
+          onClick={(e) => {
+            if (isDragging) {
+              e.preventDefault();
+              return;
+            }
             if (isMobile) setSidebarOpen(false);
           }}
           className={cn(

@@ -2,10 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  listPiSkills,
-  syncPiSkills,
-} from "@paperclipai/adapter-pi-local/server";
+import { listPiSkills, syncPiSkills } from "@paperclipai/adapter-pi-local/server";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));

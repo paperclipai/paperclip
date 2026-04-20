@@ -4,6 +4,7 @@ Status: Proposed implementation plan
 Date: 2026-03-13
 Audience: Product and engineering
 Supersedes for package-format direction:
+
 - `doc/plans/2026-02-16-module-system.md` sections that describe company templates as JSON-only
 - `docs/specs/cliphub-plan.md` assumptions about blueprint bundle shape where they conflict with the markdown-first package model
 
@@ -152,6 +153,7 @@ Resolution model:
 - if the skill is external or referenced, the skill package owns that complexity
 - exporters should prefer shortname-based associations in `AGENTS.md`
 - importers should resolve the shortname against local package skills first, then referenced or installed company skills
+
 ### 5.4 Base Package Vs Paperclip Extension
 
 The repo format should have two layers:

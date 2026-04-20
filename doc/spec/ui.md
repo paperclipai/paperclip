@@ -24,6 +24,7 @@ Design principles:
 - **Accent (interactive):** `hsl(220, 80%, 60%)` (muted blue)
 
 Status colors (consistent across all entities):
+
 - **Backlog:** gray `hsl(220, 10%, 45%)`
 - **Todo:** gray-blue `hsl(220, 20%, 55%)`
 - **In Progress:** yellow `hsl(45, 90%, 55%)`
@@ -33,6 +34,7 @@ Status colors (consistent across all entities):
 - **Blocked:** amber `hsl(25, 90%, 55%)`
 
 Priority indicators:
+
 - **Critical:** red circle, filled
 - **High:** orange circle, half-filled
 - **Medium:** yellow circle, outline
@@ -91,17 +93,20 @@ Top of sidebar. Always visible.
 ```
 
 **Company switcher** is a dropdown button that occupies the full width of the sidebar header. It shows:
+
 - Company icon (first letter avatar with company color, or uploaded icon)
 - Company name (truncated with ellipsis if long)
 - Chevron-down icon
 
 Clicking opens a dropdown with:
+
 - List of all companies (with status dot: green=active, yellow=paused, gray=archived)
 - Search field at top of dropdown (for users with many companies)
 - Divider
 - `+ Create company` action at the bottom
 
 Below the company name, a row of icon buttons:
+
 - **Search** (magnifying glass icon) — opens Cmd+K search modal
 - **New Issue** (pencil/square-pen icon) — opens new issue modal in the current company context
 
@@ -168,19 +173,19 @@ Note: Approvals do not have a top-level sidebar entry. They are surfaced through
 
 Each nav item has a distinctive icon (lucide-react):
 
-| Item | Icon |
-|------|------|
-| Inbox | `Inbox` |
-| My Issues | `CircleUser` |
-| Issues | `CircleDot` |
-| Projects | `Hexagon` |
-| Goals | `Target` |
-| Views | `LayoutList` |
+| Item      | Icon              |
+| --------- | ----------------- |
+| Inbox     | `Inbox`           |
+| My Issues | `CircleUser`      |
+| Issues    | `CircleDot`       |
+| Projects  | `Hexagon`         |
+| Goals     | `Target`          |
+| Views     | `LayoutList`      |
 | Dashboard | `LayoutDashboard` |
-| Org Chart | `GitBranch` |
-| Agents | `Bot` |
-| Costs | `DollarSign` |
-| Activity | `History` |
+| Org Chart | `GitBranch`       |
+| Agents    | `Bot`             |
+| Costs     | `DollarSign`      |
+| Activity  | `History`         |
 
 ---
 
@@ -197,6 +202,7 @@ The breadcrumb bar sits above the main content and properties panel. It serves a
 ```
 
 **Left side:**
+
 - Breadcrumb segments, separated by `›` chevrons.
 - Each segment is clickable to navigate to that level.
 - Current segment is non-clickable, slightly bolder text.
@@ -204,6 +210,7 @@ The breadcrumb bar sits above the main content and properties panel. It serves a
 - Three-dot menu for entity actions (delete, archive, duplicate, copy link, etc.)
 
 **Right side:**
+
 - Notification bell (if in a detail view — subscribe to changes on this entity)
 - Panel toggle (show/hide the right properties panel)
 
@@ -212,11 +219,13 @@ The breadcrumb bar sits above the main content and properties panel. It serves a
 On certain detail pages, the breadcrumb bar also contains a tab row below the breadcrumbs:
 
 **Project detail:**
+
 ```
   Overview    Updates    Issues    Settings
 ```
 
 **Agent detail:**
+
 ```
   Overview    Heartbeats    Issues    Costs
 ```
@@ -234,6 +243,7 @@ Issues are the core work unit. This section details the full issue experience.
 The issue list is the default view when clicking "Issues" in the sidebar.
 
 **Layout:**
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ [All Issues] [Active] [Backlog]  [⚙ Settings]    [≡ Filter]  [Display ▼] │
@@ -254,18 +264,21 @@ The issue list is the default view when clicking "Issues" in the sidebar.
 ```
 
 **Top toolbar:**
+
 - **Status tabs:** `All Issues`, `Active` (todo + in_progress + in_review + blocked), `Backlog`. Each tab shows a status icon and count. Active tab is filled, others outlined.
 - **Settings gear:** Configure issue display defaults, custom fields.
 - **Filter button:** Opens a filter bar below the toolbar.
 - **Display dropdown:** Toggle between grouping modes (by status, by priority, by assignee, by project, none) and layout modes (list, board/kanban).
 
 **Grouping:**
+
 - Issues are grouped by status by default (matching the reference screenshots).
 - Each group header shows: collapse chevron, status icon, status name, count, and a `+` button to create a new issue in that status.
 - Groups are collapsible. Collapsed groups show just the header with count.
 
 **Issue rows:**
 Each row contains, left to right:
+
 1. **Checkbox** — for bulk selection. Hidden by default, appears on hover (left of priority).
 2. **Priority indicator** — icon representing critical/high/medium/low (see Color System above). Always visible.
 3. **Issue key** — e.g., `CLIP-5`. Monospace, muted color. The prefix is derived from the project (or company if no project).
@@ -275,6 +288,7 @@ Each row contains, left to right:
 7. **Date** — creation date or target date, muted text, far right.
 
 **Row interactions:**
+
 - Click row → navigate to issue detail view.
 - Click status circle → opens inline status dropdown (Backlog, Todo, In Progress, In Review, Done, Cancelled) with keyboard numbers as shortcuts (1-6).
 - Click checkbox → selects for bulk actions. When any checkbox is selected, a bulk action bar appears at the bottom of the list.
@@ -283,6 +297,7 @@ Each row contains, left to right:
 
 **Bulk action bar:**
 When one or more issues are selected, a floating bar appears at the bottom:
+
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  3 selected    [Status ▼] [Priority ▼] [Assignee ▼] [Project ▼]  [🗑 Delete]  [✕ Cancel] │
@@ -347,21 +362,25 @@ Clicking an issue opens the detail view. The main content area splits into two z
 #### Middle Pane (Main Content)
 
 **Header area:**
+
 - Issue title, large (18px, semi-bold), editable on click (inline editing).
 - Subtitle: issue key `CLIP-42` in muted text.
 - Below the title: inline properties bar showing key properties as clickable chips (same pattern as reference screenshots): `[○ In Progress] [!!! High] [👤 CTO] [📅 Target date] [📁 Auth] [···]`. Each chip is clickable to change that property inline.
 
 **Description:**
+
 - Markdown-rendered description.
 - Click to edit — opens a markdown editor in-place.
 - Support for headings, lists, code blocks, links, images.
 
 **Subtasks (if any):**
+
 - Listed below description as a collapsible section.
 - Each subtask is a mini issue row (status circle + title + assignee).
 - `+ Add subtask` button at the bottom.
 
 **Comments:**
+
 - Chronological list of comments.
 - Each comment shows: author avatar/icon, author name, timestamp, body (markdown rendered).
 - Comment input at the bottom — a text area with markdown support and a "Comment" button.
@@ -373,25 +392,26 @@ Clicking an issue opens the detail view. The main content area splits into two z
 
 **Property list:** Each property is a row with label on the left and editable value on the right.
 
-| Property | Control |
-|----------|---------|
-| Status | Dropdown with status options + colored dot |
-| Priority | Dropdown with priority options + icon |
-| Assignee | Agent picker dropdown with search |
-| Project | Project picker dropdown |
-| Goal | Goal picker dropdown |
-| Labels | Multi-select tag input |
-| Lead | Agent picker |
-| Members | Multi-select agent picker |
-| Start date | Date picker |
-| Target date | Date picker |
-| Created by | Read-only text |
-| Created | Read-only timestamp |
-| Billing code | Text input |
+| Property     | Control                                    |
+| ------------ | ------------------------------------------ |
+| Status       | Dropdown with status options + colored dot |
+| Priority     | Dropdown with priority options + icon      |
+| Assignee     | Agent picker dropdown with search          |
+| Project      | Project picker dropdown                    |
+| Goal         | Goal picker dropdown                       |
+| Labels       | Multi-select tag input                     |
+| Lead         | Agent picker                               |
+| Members      | Multi-select agent picker                  |
+| Start date   | Date picker                                |
+| Target date  | Date picker                                |
+| Created by   | Read-only text                             |
+| Created      | Read-only timestamp                        |
+| Billing code | Text input                                 |
 
 Below properties, a divider, then:
 
 **Activity section:**
+
 - "Activity" header with "See all" link.
 - Compact timeline of recent events: status changes, assignment changes, comments, etc.
 - Each entry: icon + description + relative timestamp.
@@ -422,26 +442,31 @@ Triggered by the sidebar pencil icon, keyboard shortcut `C`, or the `+` buttons 
 ```
 
 **Top bar:**
+
 - Breadcrumb showing context: project key (or company key) `›` "New issue".
 - "Save as draft" button.
 - Expand icon (open as full page instead of modal).
 - Close `×`.
 
 **Body:**
+
 - Title field: large input, placeholder "Issue title". Auto-focused on open.
 - Description: markdown editor below, placeholder "Add a description...". Expandable.
 
 **Property chips (bottom bar):**
+
 - Compact row of property buttons. Each opens a dropdown to set that property.
 - Default chips shown: Status (defaults to Todo), Priority, Assignee, Project, Labels.
 - `···` more button reveals: Goal, Start date, Target date, Billing code, Parent issue.
 
 **Footer:**
+
 - Attachment button (paperclip icon).
 - "Create more" toggle — when on, creating an issue clears the form and stays open for rapid entry.
 - "Create issue" primary button.
 
 **Behavior:**
+
 - `Cmd+Enter` submits the form.
 - If opened from within a project context, the project is pre-filled.
 - If opened from a specific status group's `+` button, that status is pre-filled.
@@ -454,6 +479,7 @@ Accessible via Display dropdown → Board layout.
 Columns represent statuses: Backlog | Todo | In Progress | In Review | Done
 
 Each card shows:
+
 - Issue key (muted)
 - Title (primary text)
 - Priority icon (bottom-left)
@@ -490,6 +516,7 @@ Uses the same three-pane layout as issue detail.
 **Breadcrumb tabs:** Overview | Updates | Issues | Settings
 
 **Overview tab (middle pane):**
+
 - Project icon + name (editable)
 - Description (markdown, editable)
 - Inline properties bar: `[◌ Backlog] [--- No priority] [👤 Lead] [📅 Target date] [🏢 Team] [···]`
@@ -562,14 +589,13 @@ The dashboard is the company health overview. Shown when clicking "Dashboard" in
 ```
 
 **Top row: Metric cards** (4 across)
+
 1. **Agents** — total, active, running, paused, error counts. Each with colored dots.
 2. **Tasks** — open, in progress, blocked, done counts.
 3. **Costs** — month-to-date spend in dollars, budget utilization percentage with a mini progress bar.
 4. **Approvals** — pending count (clickable to navigate to Inbox, which is the primary approval interaction point).
 
-**Bottom row: Detail panels** (2 across)
-5. **Recent Activity** — last ~10 activity log entries, compact timeline format.
-6. **Stale Tasks** — tasks that have been in progress for too long without updates. Each shows issue key, title, assignee, time since last activity.
+**Bottom row: Detail panels** (2 across) 5. **Recent Activity** — last ~10 activity log entries, compact timeline format. 6. **Stale Tasks** — tasks that have been in progress for too long without updates. Each shows issue key, title, assignee, time since last activity.
 
 All cards and panels are clickable to navigate to their respective full pages.
 
@@ -598,6 +624,7 @@ Interactive visualization of the agent reporting hierarchy.
 ```
 
 Each node shows:
+
 - Agent name
 - Role/title (smaller text)
 - Status dot (colored by agent status)
@@ -639,6 +666,7 @@ Clicking a row navigates to agent detail.
 **Breadcrumb tabs:** Overview | Heartbeats | Issues | Costs
 
 **Overview (middle pane):**
+
 - Agent name + role
 - Capabilities description
 - Adapter type + config summary
@@ -669,6 +697,7 @@ Approvals are governance gates — decisions the board must make (hire an agent,
 **2. Dashboard metric card.** The "Pending Approvals" card shows the count and links to the full approvals list.
 
 **3. Inline on entity pages.** When an entity was created via an approval, the detail page shows a contextual banner:
+
 - Agent detail page: `"Hired via approval — requested by CEO on Feb 15"` with a link to the approval record.
 - An agent in `pending` status (not yet created) could show: `"Pending approval — requested by CEO"` with approve/reject actions inline.
 
@@ -699,6 +728,7 @@ Three-pane layout. Middle pane renders the approval payload nicely based on type
 **`approve_ceo_strategy` type:** Shows the strategy text, proposed goal breakdown, initial task structure.
 
 For pending approvals, prominent action buttons at the top of the middle pane:
+
 ```
 ┌─────────────────────────────────────────────────────────┐
 │ ┌─────────────────────────────────────────────────────┐ │
@@ -816,6 +846,7 @@ The inbox is the board operator's primary action center. It aggregates everythin
 Items are grouped by category, with the most actionable items first:
 
 **Approvals pending** (top priority). Each approval item shows:
+
 - Shield icon + approval type + title
 - Requester + relative timestamp
 - Key payload summary (1 line — agent name/role for hires, plan title for strategies)
@@ -868,20 +899,20 @@ Global search accessible via `Cmd+K` or the sidebar search icon.
 
 ## 16. Keyboard Shortcuts
 
-| Shortcut | Action |
-|----------|--------|
-| `Cmd+K` | Open search |
-| `C` | Create new issue |
-| `Cmd+Enter` | Submit form (in modals) |
-| `Escape` | Close modal / deselect |
-| `[` | Toggle sidebar collapsed |
-| `]` | Toggle properties panel |
-| `J` / `K` | Navigate up/down in lists |
-| `Enter` | Open selected item |
-| `Backspace` | Go back |
-| `S` | Toggle status on selected issue |
-| `X` | Toggle checkbox selection |
-| `Cmd+A` | Select all (in list context) |
+| Shortcut    | Action                          |
+| ----------- | ------------------------------- |
+| `Cmd+K`     | Open search                     |
+| `C`         | Create new issue                |
+| `Cmd+Enter` | Submit form (in modals)         |
+| `Escape`    | Close modal / deselect          |
+| `[`         | Toggle sidebar collapsed        |
+| `]`         | Toggle properties panel         |
+| `J` / `K`   | Navigate up/down in lists       |
+| `Enter`     | Open selected item              |
+| `Backspace` | Go back                         |
+| `S`         | Toggle status on selected issue |
+| `X`         | Toggle checkbox selection       |
+| `Cmd+A`     | Select all (in list context)    |
 
 ---
 
@@ -920,17 +951,17 @@ Empty states should use a muted illustration (simple line art, not cartoons) and
 
 Build on top of shadcn/ui components with these customizations:
 
-| Component | Base | Customization |
-|-----------|------|---------------|
-| StatusBadge | Badge | Colored dot + label, entity-specific palettes |
-| PriorityIcon | custom | SVG circles with fills matching priority |
-| EntityRow | custom | Standardized list row with hover/select states |
-| PropertyEditor | custom | Label + inline-editable value with dropdown |
-| CommentThread | custom | Avatar + author + timestamp + markdown body |
-| BreadcrumbBar | Breadcrumb | Integrated with router, tabs, and entity actions |
-| CommandPalette | Dialog | Cmd+K search with type-ahead and actions |
-| FilterBar | custom | Composable filter chips with add/remove |
-| SidebarNav | custom | Grouped, collapsible, badge-supporting nav |
+| Component      | Base       | Customization                                    |
+| -------------- | ---------- | ------------------------------------------------ |
+| StatusBadge    | Badge      | Colored dot + label, entity-specific palettes    |
+| PriorityIcon   | custom     | SVG circles with fills matching priority         |
+| EntityRow      | custom     | Standardized list row with hover/select states   |
+| PropertyEditor | custom     | Label + inline-editable value with dropdown      |
+| CommentThread  | custom     | Avatar + author + timestamp + markdown body      |
+| BreadcrumbBar  | Breadcrumb | Integrated with router, tabs, and entity actions |
+| CommandPalette | Dialog     | Cmd+K search with type-ahead and actions         |
+| FilterBar      | custom     | Composable filter chips with add/remove          |
+| SidebarNav     | custom     | Grouped, collapsible, badge-supporting nav       |
 
 ---
 
@@ -966,6 +997,7 @@ All routes are company-scoped after company selection (company context stored in
 ## 22. Implementation Priority
 
 ### Phase 1: Shell and Navigation
+
 1. Sidebar redesign (grouped sections, icons, company switcher, badges)
 2. Breadcrumb bar component
 3. Three-pane layout system
@@ -973,6 +1005,7 @@ All routes are company-scoped after company selection (company context stored in
 5. Install `lucide-react`
 
 ### Phase 2: Issue Management (Core)
+
 6. Issue list view with grouping, filtering, status circles
 7. Issue detail view (three-pane with properties panel)
 8. New issue modal
@@ -981,11 +1014,13 @@ All routes are company-scoped after company selection (company context stored in
 11. Kanban board view
 
 ### Phase 3: Entity Detail Views
+
 12. Project list + detail view
 13. Goal hierarchy view
 14. Agent list + detail view
 
 ### Phase 4: Company-Level Views
+
 15. Inbox with inline approval actions (primary approval UX)
 16. Dashboard redesign with metric cards
 17. Org chart interactive visualization
@@ -994,6 +1029,7 @@ All routes are company-scoped after company selection (company context stored in
 20. Approvals list page (accessed via Inbox "See all", not sidebar)
 
 ### Phase 5: Polish
+
 21. Keyboard shortcuts
 22. Responsive behavior
 23. Empty states and loading skeletons

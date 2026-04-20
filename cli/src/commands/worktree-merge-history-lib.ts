@@ -1,14 +1,14 @@
 import {
-  agents,
-  assets,
-  documentRevisions,
-  goals,
-  issueAttachments,
-  issueComments,
-  issueDocuments,
-  issues,
-  projects,
-  projectWorkspaces,
+  type agents,
+  type assets,
+  type documentRevisions,
+  type goals,
+  type issueAttachments,
+  type issueComments,
+  type issueDocuments,
+  type issues,
+  type projects,
+  type projectWorkspaces,
 } from "@paperclipai/db";
 
 type IssueRow = typeof issues.$inferSelect;
@@ -21,6 +21,17 @@ type IssueDocumentLinkRow = typeof issueDocuments.$inferSelect;
 type DocumentRevisionTableRow = typeof documentRevisions.$inferSelect;
 type IssueAttachmentTableRow = typeof issueAttachments.$inferSelect;
 type AssetRow = typeof assets.$inferSelect;
+
+export type {
+  IssueRow,
+  CommentRow,
+  IssueDocumentRow as IssueDocumentLinkRow,
+  ProjectRow,
+  ProjectWorkspaceRow,
+  AgentRow,
+  GoalRow,
+  AssetRow,
+};
 
 export const WORKTREE_MERGE_SCOPES = ["issues", "comments"] as const;
 export type WorktreeMergeScope = (typeof WORKTREE_MERGE_SCOPES)[number];
@@ -227,10 +238,7 @@ function compareIssueCoreFields(source: IssueRow, target: IssueRow): string[] {
   return driftKeys;
 }
 
-function incrementAdjustment(
-  counts: Record<ImportAdjustment, number>,
-  adjustment: ImportAdjustment,
-): void {
+function incrementAdjustment(counts: Record<ImportAdjustment, number>, adjustment: ImportAdjustment): void {
   counts[adjustment] += 1;
 }
 
@@ -324,9 +332,7 @@ export function parseWorktreeMergeScopes(rawValue: string | undefined): Worktree
   const parsed = rawValue
     .split(",")
     .map((value) => value.trim().toLowerCase())
-    .filter((value): value is WorktreeMergeScope =>
-      (WORKTREE_MERGE_SCOPES as readonly string[]).includes(value),
-    );
+    .filter((value): value is WorktreeMergeScope => (WORKTREE_MERGE_SCOPES as readonly string[]).includes(value));
 
   if (parsed.length === 0) {
     throw new Error(
@@ -395,13 +401,8 @@ export function buildWorktreeMergePlan(input: {
     projectImports.push({
       source: sourceProject,
       targetLeadAgentId:
-        sourceProject.leadAgentId && targetAgentIds.has(sourceProject.leadAgentId)
-          ? sourceProject.leadAgentId
-          : null,
-      targetGoalId:
-        sourceProject.goalId && targetGoalIds.has(sourceProject.goalId)
-          ? sourceProject.goalId
-          : null,
+        sourceProject.leadAgentId && targetAgentIds.has(sourceProject.leadAgentId) ? sourceProject.leadAgentId : null,
+      targetGoalId: sourceProject.goalId && targetGoalIds.has(sourceProject.goalId) ? sourceProject.goalId : null,
       workspaces: [...(sourceProjectWorkspacesByProjectId.get(projectId) ?? [])].sort((left, right) => {
         const primaryDelta = Number(right.isPrimary) - Number(left.isPrimary);
         if (primaryDelta !== 0) return primaryDelta;
@@ -440,14 +441,11 @@ export function buildWorktreeMergePlan(input: {
     const targetCreatedByAgentId =
       issue.createdByAgentId && targetAgentIds.has(issue.createdByAgentId) ? issue.createdByAgentId : null;
 
-    let targetProjectId =
-      issue.projectId && targetProjectIds.has(issue.projectId) ? issue.projectId : null;
+    let targetProjectId = issue.projectId && targetProjectIds.has(issue.projectId) ? issue.projectId : null;
     let projectResolution: PlannedIssueInsert["projectResolution"] = targetProjectId ? "preserved" : "cleared";
     let mappedProjectName: string | null = null;
     const overrideProjectId =
-      issue.projectId && input.projectIdOverrides
-        ? input.projectIdOverrides[issue.projectId] ?? null
-        : null;
+      issue.projectId && input.projectIdOverrides ? (input.projectIdOverrides[issue.projectId] ?? null) : null;
     if (!targetProjectId && overrideProjectId && targetProjectIds.has(overrideProjectId)) {
       targetProjectId = overrideProjectId;
       projectResolution = "mapped";
@@ -467,11 +465,11 @@ export function buildWorktreeMergePlan(input: {
     }
 
     const targetProjectWorkspaceId =
-      targetProjectId
-      && targetProjectId === issue.projectId
-      && issue.projectWorkspaceId
-      && (targetProjectWorkspaceIds.has(issue.projectWorkspaceId)
-        || importedProjectWorkspaceIds.has(issue.projectWorkspaceId))
+      targetProjectId &&
+      targetProjectId === issue.projectId &&
+      issue.projectWorkspaceId &&
+      (targetProjectWorkspaceIds.has(issue.projectWorkspaceId) ||
+        importedProjectWorkspaceIds.has(issue.projectWorkspaceId))
         ? issue.projectWorkspaceId
         : null;
     if (issue.projectWorkspaceId && !targetProjectWorkspaceId) {
@@ -479,8 +477,7 @@ export function buildWorktreeMergePlan(input: {
       incrementAdjustment(adjustmentCounts, "clear_project_workspace");
     }
 
-    const targetGoalId =
-      issue.goalId && targetGoalIds.has(issue.goalId) ? issue.goalId : null;
+    const targetGoalId = issue.goalId && targetGoalIds.has(issue.goalId) ? issue.goalId : null;
     if (issue.goalId && !targetGoalId) {
       adjustments.push("clear_goal");
       incrementAdjustment(adjustmentCounts, "clear_goal");
@@ -488,9 +485,9 @@ export function buildWorktreeMergePlan(input: {
 
     let targetStatus = issue.status;
     if (
-      targetStatus === "in_progress"
-      && !targetAssigneeAgentId
-      && !(issue.assigneeUserId && issue.assigneeUserId.trim().length > 0)
+      targetStatus === "in_progress" &&
+      !targetAssigneeAgentId &&
+      !(issue.assigneeUserId && issue.assigneeUserId.trim().length > 0)
     ) {
       targetStatus = "todo";
       adjustments.push("coerce_in_progress_to_todo");
@@ -560,12 +557,16 @@ export function buildWorktreeMergePlan(input: {
   const targetDocumentRevisions = input.targetDocumentRevisions ?? [];
 
   const targetDocumentsById = new Map(targetDocuments.map((document) => [document.documentId, document]));
-  const targetDocumentsByIssueKey = new Map(targetDocuments.map((document) => [`${document.issueId}:${document.key}`, document]));
+  const targetDocumentsByIssueKey = new Map(
+    targetDocuments.map((document) => [`${document.issueId}:${document.key}`, document]),
+  );
   const sourceRevisionsByDocumentId = groupBy(sourceDocumentRevisions, (revision) => revision.documentId);
   const targetRevisionsByDocumentId = groupBy(targetDocumentRevisions, (revision) => revision.documentId);
   const commentIdsAvailableAfterImport = new Set<string>([
     ...input.targetComments.map((comment) => comment.id),
-    ...commentPlans.filter((plan): plan is PlannedCommentInsert => plan.action === "insert").map((plan) => plan.source.id),
+    ...commentPlans
+      .filter((plan): plan is PlannedCommentInsert => plan.action === "insert")
+      .map((plan) => plan.source.id),
   ]);
 
   const documentPlans: Array<PlannedIssueDocumentInsert | PlannedIssueDocumentMerge | PlannedIssueDocumentSkip> = [];
@@ -577,7 +578,11 @@ export function buildWorktreeMergePlan(input: {
 
     const existingDocument = targetDocumentsById.get(document.documentId);
     const conflictingIssueKeyDocument = targetDocumentsByIssueKey.get(`${document.issueId}:${document.key}`);
-    if (!existingDocument && conflictingIssueKeyDocument && conflictingIssueKeyDocument.documentId !== document.documentId) {
+    if (
+      !existingDocument &&
+      conflictingIssueKeyDocument &&
+      conflictingIssueKeyDocument.documentId !== document.documentId
+    ) {
       documentPlans.push({ source: document, action: "skip_conflicting_key" });
       continue;
     }
@@ -588,8 +593,8 @@ export function buildWorktreeMergePlan(input: {
     const targetUpdatedByAgentId =
       document.updatedByAgentId && targetAgentIds.has(document.updatedByAgentId) ? document.updatedByAgentId : null;
     if (
-      (document.createdByAgentId && !targetCreatedByAgentId)
-      || (document.updatedByAgentId && !targetUpdatedByAgentId)
+      (document.createdByAgentId && !targetCreatedByAgentId) ||
+      (document.updatedByAgentId && !targetUpdatedByAgentId)
     ) {
       adjustments.push("clear_document_agent");
       incrementAdjustment(adjustmentCounts, "clear_document_agent");
@@ -599,10 +604,8 @@ export function buildWorktreeMergePlan(input: {
     const targetRevisions = sortDocumentRevisions(targetRevisionsByDocumentId.get(document.documentId) ?? []);
     const existingRevisionIds = new Set(targetRevisions.map((revision) => revision.id));
     const usedRevisionNumbers = new Set(targetRevisions.map((revision) => revision.revisionNumber));
-    let nextRevisionNumber = targetRevisions.reduce(
-      (maxValue, revision) => Math.max(maxValue, revision.revisionNumber),
-      0,
-    ) + 1;
+    let nextRevisionNumber =
+      targetRevisions.reduce((maxValue, revision) => Math.max(maxValue, revision.revisionNumber), 0) + 1;
 
     const targetRevisionNumberById = new Map<string, number>(
       targetRevisions.map((revision) => [revision.id, revision.revisionNumber]),
@@ -640,10 +643,10 @@ export function buildWorktreeMergePlan(input: {
 
     const latestRevisionId = document.latestRevisionId ?? existingDocument?.latestRevisionId ?? null;
     const latestRevisionNumber =
-      (latestRevisionId ? targetRevisionNumberById.get(latestRevisionId) : undefined)
-      ?? document.latestRevisionNumber
-      ?? existingDocument?.latestRevisionNumber
-      ?? 0;
+      (latestRevisionId ? targetRevisionNumberById.get(latestRevisionId) : undefined) ??
+      document.latestRevisionNumber ??
+      existingDocument?.latestRevisionNumber ??
+      0;
 
     if (!existingDocument) {
       documentPlans.push({
@@ -660,17 +663,17 @@ export function buildWorktreeMergePlan(input: {
     }
 
     const documentAlreadyMatches =
-      existingDocument.key === document.key
-      && existingDocument.title === document.title
-      && existingDocument.format === document.format
-      && existingDocument.latestBody === document.latestBody
-      && (existingDocument.latestRevisionId ?? null) === latestRevisionId
-      && existingDocument.latestRevisionNumber === latestRevisionNumber
-      && (existingDocument.updatedByAgentId ?? null) === targetUpdatedByAgentId
-      && (existingDocument.updatedByUserId ?? null) === (document.updatedByUserId ?? null)
-      && sameDate(existingDocument.documentUpdatedAt, document.documentUpdatedAt)
-      && sameDate(existingDocument.linkUpdatedAt, document.linkUpdatedAt)
-      && revisionsToInsert.length === 0;
+      existingDocument.key === document.key &&
+      existingDocument.title === document.title &&
+      existingDocument.format === document.format &&
+      existingDocument.latestBody === document.latestBody &&
+      (existingDocument.latestRevisionId ?? null) === latestRevisionId &&
+      existingDocument.latestRevisionNumber === latestRevisionNumber &&
+      (existingDocument.updatedByAgentId ?? null) === targetUpdatedByAgentId &&
+      (existingDocument.updatedByUserId ?? null) === (document.updatedByUserId ?? null) &&
+      sameDate(existingDocument.documentUpdatedAt, document.documentUpdatedAt) &&
+      sameDate(existingDocument.linkUpdatedAt, document.linkUpdatedAt) &&
+      revisionsToInsert.length === 0;
 
     if (documentAlreadyMatches) {
       documentPlans.push({ source: document, action: "skip_existing" });

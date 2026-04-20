@@ -74,26 +74,10 @@ describe("plugin-obsidian", () => {
     await plugin.definition.setup(harness.ctx);
 
     // Should handle events without errors
-    await harness.emit(
-      "issue.created",
-      { issueId: "iss_1" },
-      { entityId: "iss_1", entityType: "issue" },
-    );
-    await harness.emit(
-      "issue.updated",
-      { issueId: "iss_1" },
-      { entityId: "iss_1", entityType: "issue" },
-    );
-    await harness.emit(
-      "goal.created",
-      { goalId: "goal_1" },
-      { entityId: "goal_1", entityType: "goal" },
-    );
-    await harness.emit(
-      "goal.updated",
-      { goalId: "goal_1" },
-      { entityId: "goal_1", entityType: "goal" },
-    );
+    await harness.emit("issue.created", { issueId: "iss_1" }, { entityId: "iss_1", entityType: "issue" });
+    await harness.emit("issue.updated", { issueId: "iss_1" }, { entityId: "iss_1", entityType: "issue" });
+    await harness.emit("goal.created", { goalId: "goal_1" }, { entityId: "goal_1", entityType: "goal" });
+    await harness.emit("goal.updated", { goalId: "goal_1" }, { entityId: "goal_1", entityType: "goal" });
 
     // Events handled without throwing
     expect(harness.logs.length).toBeGreaterThan(0);

@@ -33,9 +33,6 @@ export const pluginCompanySettings = pgTable(
   (table) => ({
     companyIdx: index("plugin_company_settings_company_idx").on(table.companyId),
     pluginIdx: index("plugin_company_settings_plugin_idx").on(table.pluginId),
-    companyPluginUq: uniqueIndex("plugin_company_settings_company_plugin_uq").on(
-      table.companyId,
-      table.pluginId,
-    ),
+    companyPluginUq: uniqueIndex("plugin_company_settings_company_plugin_uq").on(table.companyId, table.pluginId),
   }),
 );

@@ -23,10 +23,10 @@ The GitHub Actions workflow `.github/workflows/uptime-monitor.yml` runs every 5 
 
 Go to **Settings → Secrets and variables → Actions** in the GitHub repo and add:
 
-| Secret            | Description                                | Example                        |
-| ----------------- | ------------------------------------------ | ------------------------------ |
-| `PRODUCTION_URL`  | Production instance base URL (no trailing `/`) | `https://app.paperclip.ing` |
-| `PREVIEW_URL`     | Preview/staging instance base URL (optional)   | `https://preview.paperclip.ing` |
+| Secret           | Description                                    | Example                         |
+| ---------------- | ---------------------------------------------- | ------------------------------- |
+| `PRODUCTION_URL` | Production instance base URL (no trailing `/`) | `https://app.paperclip.ing`     |
+| `PREVIEW_URL`    | Preview/staging instance base URL (optional)   | `https://preview.paperclip.ing` |
 
 ### 2. Create the `downtime` label
 

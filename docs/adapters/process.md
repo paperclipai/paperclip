@@ -18,12 +18,12 @@ The `process` adapter executes arbitrary shell commands. Use it for simple scrip
 
 ## Configuration
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `command` | string | Yes | Shell command to execute |
-| `cwd` | string | No | Working directory |
-| `env` | object | No | Environment variables |
-| `timeoutSec` | number | No | Process timeout |
+| Field        | Type   | Required | Description              |
+| ------------ | ------ | -------- | ------------------------ |
+| `command`    | string | Yes      | Shell command to execute |
+| `cwd`        | string | No       | Working directory        |
+| `env`        | object | No       | Environment variables    |
+| `timeoutSec` | number | No       | Process timeout          |
 
 ## How It Works
 

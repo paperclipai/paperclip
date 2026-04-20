@@ -5,7 +5,9 @@ export const budgetPolicies = pgTable(
   "budget_policies",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
     scopeType: text("scope_type").notNull(),
     scopeId: uuid("scope_id").notNull(),
     metric: text("metric").notNull().default("billed_cents"),
@@ -27,11 +29,7 @@ export const budgetPolicies = pgTable(
       table.scopeId,
       table.isActive,
     ),
-    companyWindowIdx: index("budget_policies_company_window_idx").on(
-      table.companyId,
-      table.windowKind,
-      table.metric,
-    ),
+    companyWindowIdx: index("budget_policies_company_window_idx").on(table.companyId, table.windowKind, table.metric),
     companyScopeMetricUniqueIdx: uniqueIndex("budget_policies_company_scope_metric_unique_idx").on(
       table.companyId,
       table.scopeType,

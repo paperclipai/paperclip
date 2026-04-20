@@ -13,8 +13,8 @@ GET /api/companies/{companyId}/approvals
 
 Query parameters:
 
-| Param | Description |
-|-------|-------------|
+| Param    | Description                       |
+| -------- | --------------------------------- |
 | `status` | Filter by status (e.g. `pending`) |
 
 ## Get Approval

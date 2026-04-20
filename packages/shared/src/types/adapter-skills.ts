@@ -1,18 +1,8 @@
 export type AgentSkillSyncMode = "unsupported" | "persistent" | "ephemeral";
 
-export type AgentSkillState =
-  | "available"
-  | "configured"
-  | "installed"
-  | "missing"
-  | "stale"
-  | "external";
+export type AgentSkillState = "available" | "configured" | "installed" | "missing" | "stale" | "external";
 
-export type AgentSkillOrigin =
-  | "company_managed"
-  | "paperclip_required"
-  | "user_installed"
-  | "external_unknown";
+export type AgentSkillOrigin = "company_managed" | "paperclip_required" | "user_installed" | "external_unknown";
 
 export interface AgentSkillEntry {
   key: string;

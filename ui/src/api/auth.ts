@@ -37,7 +37,7 @@ async function authPost(path: string, body: Record<string, unknown>) {
       (payload as { error?: { message?: string } | string } | null)?.error &&
       typeof (payload as { error?: { message?: string } | string }).error === "object"
         ? ((payload as { error?: { message?: string } }).error?.message ?? `Request failed: ${res.status}`)
-        : (payload as { error?: string } | null)?.error ?? `Request failed: ${res.status}`;
+        : ((payload as { error?: string } | null)?.error ?? `Request failed: ${res.status}`);
     throw new Error(message);
   }
   return payload;

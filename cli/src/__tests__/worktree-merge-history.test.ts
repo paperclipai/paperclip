@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { buildWorktreeMergePlan, parseWorktreeMergeScopes } from "../commands/worktree-merge-history-lib.js";
+import {
+  buildWorktreeMergePlan,
+  parseWorktreeMergeScopes,
+  type IssueRow,
+  type CommentRow,
+  type IssueDocumentRow,
+  type DocumentRevisionRow,
+  type IssueAttachmentRow,
+  type ProjectRow,
+  type ProjectWorkspaceRow,
+  type AgentRow,
+  type GoalRow,
+  type AssetRow,
+} from "../commands/worktree-merge-history-lib.js";
 
 function makeIssue(overrides: Record<string, unknown> = {}) {
   return {
@@ -36,7 +49,7 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
     createdAt: new Date("2026-03-20T00:00:00.000Z"),
     updatedAt: new Date("2026-03-20T00:00:00.000Z"),
     ...overrides,
-  } as any;
+  } as IssueRow;
 }
 
 function makeComment(overrides: Record<string, unknown> = {}) {
@@ -50,7 +63,7 @@ function makeComment(overrides: Record<string, unknown> = {}) {
     createdAt: new Date("2026-03-20T00:00:00.000Z"),
     updatedAt: new Date("2026-03-20T00:00:00.000Z"),
     ...overrides,
-  } as any;
+  } as CommentRow;
 }
 
 function makeIssueDocument(overrides: Record<string, unknown> = {}) {
@@ -199,7 +212,9 @@ describe("worktree merge history planner", () => {
     });
 
     expect(plan.counts.issuesToInsert).toBe(1);
-    expect(plan.issuePlans.filter((item) => item.action === "insert").map((item) => item.source.id)).toEqual(["issue-c"]);
+    expect(plan.issuePlans.filter((item) => item.action === "insert").map((item) => item.source.id)).toEqual([
+      "issue-c",
+    ]);
     expect(plan.issuePlans.find((item) => item.source.id === "issue-c" && item.action === "insert")).toMatchObject({
       previewIdentifier: "PAP-501",
     });

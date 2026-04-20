@@ -47,7 +47,7 @@ describe("assignee selection helpers", () => {
   });
 
   it("formats current and board user labels consistently", () => {
-    expect(formatAssigneeUserLabel("user-1", "user-1")).toBe("Me");
+    expect(formatAssigneeUserLabel("user-1", "user-1")).toBe("You");
     expect(formatAssigneeUserLabel("local-board", "someone-else")).toBe("Board");
     expect(formatAssigneeUserLabel("user-abcdef", "someone-else")).toBe("user-");
   });
@@ -56,10 +56,7 @@ describe("assignee selection helpers", () => {
     expect(
       suggestedCommentAssigneeValue(
         { assigneeUserId: "board-user" },
-        [
-          { authorUserId: "board-user" },
-          { authorAgentId: "agent-123" },
-        ],
+        [{ authorUserId: "board-user" }, { authorAgentId: "agent-123" }],
         "board-user",
       ),
     ).toBe("agent:agent-123");
@@ -67,11 +64,7 @@ describe("assignee selection helpers", () => {
 
   it("falls back to the actual assignee when there is no better commenter hint", () => {
     expect(
-      suggestedCommentAssigneeValue(
-        { assigneeUserId: "board-user" },
-        [{ authorUserId: "board-user" }],
-        "board-user",
-      ),
+      suggestedCommentAssigneeValue({ assigneeUserId: "board-user" }, [{ authorUserId: "board-user" }], "board-user"),
     ).toBe("user:board-user");
   });
 
@@ -79,11 +72,7 @@ describe("assignee selection helpers", () => {
     expect(
       suggestedCommentAssigneeValue(
         { assigneeUserId: "board-user" },
-        [
-          { authorUserId: "board-user" },
-          { authorAgentId: "agent-self" },
-          { authorAgentId: "agent-123" },
-        ],
+        [{ authorUserId: "board-user" }, { authorAgentId: "agent-self" }, { authorAgentId: "agent-123" }],
         null,
         "agent-self",
       ),

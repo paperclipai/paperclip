@@ -4,9 +4,13 @@ import { Badge } from "@/components/ui/badge";
 import { cn, formatDateTime } from "../lib/utils";
 import { Identity } from "../components/Identity";
 import { StatusBadge } from "../components/StatusBadge";
-import { RunTranscriptView, type TranscriptDensity, type TranscriptMode } from "../components/transcript/RunTranscriptView";
+import {
+  RunTranscriptView,
+  type TranscriptDensity,
+  type TranscriptMode,
+} from "../components/transcript/RunTranscriptView";
 import { runTranscriptFixtureEntries, runTranscriptFixtureMeta } from "../fixtures/runTranscriptFixtures";
-import { ExternalLink, FlaskConical, LayoutPanelLeft, MonitorCog, PanelsTopLeft, RadioTower } from "lucide-react";
+import { ExternalLink, FlaskConical, type LayoutPanelLeft, MonitorCog, PanelsTopLeft, RadioTower } from "lucide-react";
 
 type SurfaceId = "detail" | "live" | "dashboard";
 
@@ -28,14 +32,16 @@ const surfaceOptions: Array<{
     id: "live",
     label: "Issue Widget",
     eyebrow: "Live stream",
-    description: "The issue-detail live run widget, optimized for following an active run without leaving the task page.",
+    description:
+      "The issue-detail live run widget, optimized for following an active run without leaving the task page.",
     icon: RadioTower,
   },
   {
     id: "dashboard",
     label: "Dashboard Card",
     eyebrow: "Dense card",
-    description: "The active-agents dashboard card, tuned for compact scanning while keeping the same transcript language.",
+    description:
+      "The active-agents dashboard card, tuned for compact scanning while keeping the same transcript language.",
     icon: PanelsTopLeft,
   },
 ];
@@ -67,21 +73,12 @@ function RunDetailPreview({
             Run Detail
           </Badge>
           <StatusBadge status={streaming ? "running" : "succeeded"} />
-          <span className="text-xs text-muted-foreground">
-            {formatDateTime(runTranscriptFixtureMeta.startedAt)}
-          </span>
+          <span className="text-xs text-muted-foreground">{formatDateTime(runTranscriptFixtureMeta.startedAt)}</span>
         </div>
-        <div className="mt-2 text-sm font-medium">
-          Transcript ({runTranscriptFixtureEntries.length})
-        </div>
+        <div className="mt-2 text-sm font-medium">Transcript ({runTranscriptFixtureEntries.length})</div>
       </div>
       <div className="max-h-[720px] overflow-y-auto bg-[radial-gradient(circle_at_top_left,rgba(8,145,178,0.08),transparent_36%),radial-gradient(circle_at_bottom_right,rgba(245,158,11,0.10),transparent_28%)] p-5">
-        <RunTranscriptView
-          entries={runTranscriptFixtureEntries}
-          mode={mode}
-          density={density}
-          streaming={streaming}
-        />
+        <RunTranscriptView entries={runTranscriptFixtureEntries} mode={mode} density={density} streaming={streaming} />
       </div>
     </div>
   );
@@ -148,25 +145,25 @@ function DashboardPreview({
 }) {
   return (
     <div className="max-w-md">
-      <div className={cn(
-        "flex h-[320px] flex-col overflow-hidden rounded-xl border shadow-[0_20px_40px_rgba(15,23,42,0.10)]",
-        streaming
-          ? "border-cyan-500/25 bg-cyan-500/[0.04]"
-          : "border-border bg-background/75",
-      )}>
+      <div
+        className={cn(
+          "flex h-[320px] flex-col overflow-hidden rounded-xl border shadow-[0_20px_40px_rgba(15,23,42,0.10)]",
+          streaming ? "border-cyan-500/25 bg-cyan-500/[0.04]" : "border-border bg-background/75",
+        )}
+      >
         <div className="border-b border-border/60 px-4 py-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <span className={cn(
-                  "inline-flex h-2.5 w-2.5 rounded-full",
-                  streaming ? "bg-cyan-500 shadow-[0_0_0_6px_rgba(34,211,238,0.12)]" : "bg-muted-foreground/35",
-                )} />
+                <span
+                  className={cn(
+                    "inline-flex h-2.5 w-2.5 rounded-full",
+                    streaming ? "bg-cyan-500 shadow-[0_0_0_6px_rgba(34,211,238,0.12)]" : "bg-muted-foreground/35",
+                  )}
+                />
                 <Identity name={runTranscriptFixtureMeta.agentName} size="sm" />
               </div>
-              <div className="mt-2 text-[11px] text-muted-foreground">
-                {streaming ? "Live now" : "Finished 2m ago"}
-              </div>
+              <div className="mt-2 text-[11px] text-muted-foreground">{streaming ? "Live now" : "Finished 2m ago"}</div>
             </div>
             <span className="rounded-full border border-border/70 bg-background/70 px-2 py-1 text-[10px] text-muted-foreground">
               <ExternalLink className="h-2.5 w-2.5" />
@@ -210,7 +207,8 @@ export function RunTranscriptUxLab() {
               </div>
               <h1 className="mt-4 text-2xl font-semibold tracking-tight">Run Transcript Fixtures</h1>
               <p className="mt-2 text-sm text-muted-foreground">
-                Built from a real Paperclip development run, then sanitized so no secrets, local paths, or environment details survive into the fixture.
+                Built from a real Paperclip development run, then sanitized so no secrets, local paths, or environment
+                details survive into the fixture.
               </p>
             </div>
 
@@ -238,9 +236,7 @@ export function RunTranscriptUxLab() {
                           {option.eyebrow}
                         </span>
                         <span className="mt-1 block text-sm font-medium">{option.label}</span>
-                        <span className="mt-1 block text-xs text-muted-foreground">
-                          {option.description}
-                        </span>
+                        <span className="mt-1 block text-xs text-muted-foreground">{option.description}</span>
                       </span>
                     </div>
                   </button>
@@ -256,9 +252,7 @@ export function RunTranscriptUxLab() {
                   {selected.eyebrow}
                 </div>
                 <h2 className="mt-1 text-2xl font-semibold">{selected.label}</h2>
-                <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-                  {selected.description}
-                </p>
+                <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{selected.description}</p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -297,7 +291,9 @@ export function RunTranscriptUxLab() {
                     type="button"
                     className={cn(
                       "rounded-full px-3 py-1 text-xs font-medium capitalize transition-colors",
-                      density === nextDensity ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+                      density === nextDensity
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
                     )}
                     onClick={() => setDensity(nextDensity)}
                   >

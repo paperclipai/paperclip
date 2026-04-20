@@ -1,9 +1,4 @@
-const testDirectoryNames = new Set([
-  "__tests__",
-  "_tests",
-  "test",
-  "tests",
-]);
+const testDirectoryNames = new Set(["__tests__", "_tests", "test", "tests"]);
 
 const ignoredTestConfigBasenames = new Set([
   "jest.config.cjs",
@@ -15,7 +10,9 @@ const ignoredTestConfigBasenames = new Set([
 ]);
 
 export function shouldTrackDevServerPath(relativePath) {
-  const normalizedPath = String(relativePath).replaceAll("\\", "/").replace(/^\.\/+/, "");
+  const normalizedPath = String(relativePath)
+    .replaceAll("\\", "/")
+    .replace(/^\.\/+/, "");
   if (normalizedPath.length === 0) return false;
 
   const segments = normalizedPath.split("/");

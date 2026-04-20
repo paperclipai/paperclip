@@ -4,12 +4,7 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
 import type { Db } from "@paperclipai/db";
-import {
-  authAccounts,
-  authSessions,
-  authUsers,
-  authVerifications,
-} from "@paperclipai/db";
+import { authAccounts, authSessions, authUsers, authVerifications } from "@paperclipai/db";
 import type { Config } from "../config.js";
 
 export type BetterAuthSessionUser = {
@@ -67,7 +62,13 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
 
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
-  const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET ?? "paperclip-dev-secret";
+  const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  if (!secret) {
+    throw new Error(
+      "BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET) must be set. " +
+        "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
+    );
+  }
   const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
 
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
@@ -124,9 +125,8 @@ export async function resolveBetterAuthSessionFromHeaders(
     session?: { id?: string; userId?: string } | null;
     user?: { id?: string; email?: string | null; name?: string | null } | null;
   };
-  const session = value.session?.id && value.session.userId
-    ? { id: value.session.id, userId: value.session.userId }
-    : null;
+  const session =
+    value.session?.id && value.session.userId ? { id: value.session.id, userId: value.session.userId } : null;
   const user = value.user?.id
     ? {
         id: value.user.id,

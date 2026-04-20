@@ -6,12 +6,12 @@ Paperclip includes a built-in PostgreSQL backup system that runs automatically i
 
 ## Configuration
 
-| Environment Variable | Default | Description |
-|---|---|---|
-| `PAPERCLIP_DB_BACKUP_ENABLED` | `true` | Enable/disable automatic backups |
-| `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES` | `60` | Interval between backups |
-| `PAPERCLIP_DB_BACKUP_RETENTION_DAYS` | `30` | Days to keep old backups |
-| `PAPERCLIP_DB_BACKUP_DIR` | `~/.paperclip/instances/{id}/data/backups` | Backup storage directory |
+| Environment Variable                   | Default                                    | Description                      |
+| -------------------------------------- | ------------------------------------------ | -------------------------------- |
+| `PAPERCLIP_DB_BACKUP_ENABLED`          | `true`                                     | Enable/disable automatic backups |
+| `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES` | `60`                                       | Interval between backups         |
+| `PAPERCLIP_DB_BACKUP_RETENTION_DAYS`   | `30`                                       | Days to keep old backups         |
+| `PAPERCLIP_DB_BACKUP_DIR`              | `~/.paperclip/instances/{id}/data/backups` | Backup storage directory         |
 
 These are set in `deploy/docker-compose.dokploy.yml` for production.
 
@@ -34,6 +34,7 @@ pnpm paperclipai db:backup --dir /path/to/output
 ```
 
 Options:
+
 - `--dir` — Output directory (default: configured backup dir)
 - `--retention-days` — Override retention policy
 - `--filename-prefix` — Custom prefix (default: `paperclip`)
@@ -117,6 +118,7 @@ docker logs <paperclip-container-id> 2>&1 | grep -i backup
 ```
 
 Look for:
+
 - `Backup completed` — successful backup with file path and size
 - `Backup failed` — error details
 - `Pruned N old backups` — retention cleanup

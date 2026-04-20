@@ -60,7 +60,10 @@ export function registerClientAuthCommands(auth: Command): void {
           const ctx = resolveCommandContext(opts);
           const credential = getStoredBoardCredential(ctx.api.apiBase);
           if (!credential) {
-            printOutput({ ok: true, apiBase: ctx.api.apiBase, revoked: false, removedLocalCredential: false }, { json: ctx.json });
+            printOutput(
+              { ok: true, apiBase: ctx.api.apiBase, revoked: false, removedLocalCredential: false },
+              { json: ctx.json },
+            );
             return;
           }
           let revoked = false;

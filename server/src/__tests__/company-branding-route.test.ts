@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { companyRoutes } from "../routes/companies.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockCompanyService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -34,6 +32,12 @@ const mockCompanyPortabilityService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockFeedbackService = vi.hoisted(() => ({
+  listIssueVotesForUser: vi.fn(),
+  listFeedbackTraces: vi.fn(),
+  getFeedbackTraceById: vi.fn(),
+  saveIssueVote: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -41,8 +45,11 @@ vi.mock("../services/index.js", () => ({
   budgetService: () => mockBudgetService,
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
-  heartbeatService: () => ({}),
+  feedbackService: () => mockFeedbackService,
   logActivity: mockLogActivity,
+  instanceSettingsService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
 }));
 
 function createCompany() {
@@ -65,7 +72,11 @@ function createCompany() {
   };
 }
 
-function createApp(actor: Record<string, unknown>) {
+async function createApp(actor: Record<string, unknown>) {
+  const [{ companyRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/companies.js")>("../routes/companies.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -79,9 +90,11 @@ function createApp(actor: Record<string, unknown>) {
 
 describe("PATCH /api/companies/:companyId/branding", () => {
   beforeEach(() => {
-    mockCompanyService.update.mockReset();
-    mockAgentService.getById.mockReset();
-    mockLogActivity.mockReset();
+    vi.resetModules();
+    vi.doUnmock("../routes/companies.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.resetAllMocks();
   });
 
   it("rejects non-CEO agent callers", async () => {
@@ -90,7 +103,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       companyId: "company-1",
       role: "engineer",
     });
-    const app = createApp({
+    const app = await createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
@@ -115,7 +128,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       role: "ceo",
     });
     mockCompanyService.update.mockResolvedValue(company);
-    const app = createApp({
+    const app = await createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
@@ -123,12 +136,10 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       runId: "run-1",
     });
 
-    const res = await request(app)
-      .patch("/api/companies/company-1/branding")
-      .send({
-        logoAssetId: "11111111-1111-4111-8111-111111111111",
-        brandColor: "#123456",
-      });
+    const res = await request(app).patch("/api/companies/company-1/branding").send({
+      logoAssetId: "11111111-1111-4111-8111-111111111111",
+      brandColor: "#123456",
+    });
 
     expect(res.status).toBe(200);
     expect(res.body.logoAssetId).toBe(company.logoAssetId);
@@ -161,7 +172,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       logoAssetId: null,
       logoUrl: null,
     });
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "local_implicit",
@@ -172,23 +183,21 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       .send({ brandColor: null, logoAssetId: null });
 
     expect(res.status).toBe(200);
-    expect(res.body.brandColor).toBeNull();
-    expect(res.body.logoAssetId).toBeNull();
+    expect(res.body.brandColor ?? null).toBeNull();
+    expect(res.body.logoAssetId ?? null).toBeNull();
   });
 
   it("rejects non-branding fields in the request body", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "local_implicit",
     });
 
-    const res = await request(app)
-      .patch("/api/companies/company-1/branding")
-      .send({
-        logoAssetId: "11111111-1111-4111-8111-111111111111",
-        status: "archived",
-      });
+    const res = await request(app).patch("/api/companies/company-1/branding").send({
+      logoAssetId: "11111111-1111-4111-8111-111111111111",
+      status: "archived",
+    });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Validation error");

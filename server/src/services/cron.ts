@@ -86,9 +86,7 @@ function parseField(token: string, spec: FieldSpec): number[] {
       const stepStr = trimmed.slice(slashIdx + 1);
       const step = parseInt(stepStr, 10);
       if (isNaN(step) || step <= 0) {
-        throw new Error(
-          `Invalid step "${stepStr}" in cron ${spec.name} field`,
-        );
+        throw new Error(`Invalid step "${stepStr}" in cron ${spec.name} field`);
       }
 
       let rangeStart = spec.min;
@@ -100,9 +98,7 @@ function parseField(token: string, spec: FieldSpec): number[] {
         // N-M/S — range with step
         const [a, b] = base.split("-").map((s) => parseInt(s, 10));
         if (isNaN(a!) || isNaN(b!)) {
-          throw new Error(
-            `Invalid range "${base}" in cron ${spec.name} field`,
-          );
+          throw new Error(`Invalid range "${base}" in cron ${spec.name} field`);
         }
         rangeStart = a!;
         rangeEnd = b!;
@@ -110,9 +106,7 @@ function parseField(token: string, spec: FieldSpec): number[] {
         // N/S — start at N, step S
         const start = parseInt(base, 10);
         if (isNaN(start)) {
-          throw new Error(
-            `Invalid start "${base}" in cron ${spec.name} field`,
-          );
+          throw new Error(`Invalid start "${base}" in cron ${spec.name} field`);
         }
         rangeStart = start;
       }
@@ -132,16 +126,12 @@ function parseField(token: string, spec: FieldSpec): number[] {
       const a = parseInt(aStr!, 10);
       const b = parseInt(bStr!, 10);
       if (isNaN(a) || isNaN(b)) {
-        throw new Error(
-          `Invalid range "${trimmed}" in cron ${spec.name} field`,
-        );
+        throw new Error(`Invalid range "${trimmed}" in cron ${spec.name} field`);
       }
       validateBounds(a, spec);
       validateBounds(b, spec);
       if (a > b) {
-        throw new Error(
-          `Invalid range ${a}-${b} in cron ${spec.name} field (start > end)`,
-        );
+        throw new Error(`Invalid range ${a}-${b} in cron ${spec.name} field (start > end)`);
       }
       for (let i = a; i <= b; i++) {
         values.add(i);
@@ -160,9 +150,7 @@ function parseField(token: string, spec: FieldSpec): number[] {
     // Single value
     const val = parseInt(trimmed, 10);
     if (isNaN(val)) {
-      throw new Error(
-        `Invalid value "${trimmed}" in cron ${spec.name} field`,
-      );
+      throw new Error(`Invalid value "${trimmed}" in cron ${spec.name} field`);
     }
     validateBounds(val, spec);
     values.add(val);
@@ -177,9 +165,7 @@ function parseField(token: string, spec: FieldSpec): number[] {
 
 function validateBounds(value: number, spec: FieldSpec): void {
   if (value < spec.min || value > spec.max) {
-    throw new Error(
-      `Value ${value} out of range [${spec.min}–${spec.max}] for cron ${spec.name} field`,
-    );
+    throw new Error(`Value ${value} out of range [${spec.min}–${spec.max}] for cron ${spec.name} field`);
   }
 }
 
@@ -209,9 +195,7 @@ export function parseCron(expression: string): ParsedCron {
 
   const tokens = trimmed.split(/\s+/);
   if (tokens.length !== 5) {
-    throw new Error(
-      `Cron expression must have exactly 5 fields, got ${tokens.length}: "${trimmed}"`,
-    );
+    throw new Error(`Cron expression must have exactly 5 fields, got ${tokens.length}: "${trimmed}"`);
   }
 
   return {
@@ -326,10 +310,7 @@ export function nextCronTick(cron: ParsedCron, after: Date): Date | null {
  * @returns The next matching Date, or `null` if no match within 4 years.
  * @throws {Error} if the cron expression is invalid.
  */
-export function nextCronTickFromExpression(
-  expression: string,
-  after: Date = new Date(),
-): Date | null {
+export function nextCronTickFromExpression(expression: string, after: Date = new Date()): Date | null {
   const cron = parseCron(expression);
   return nextCronTick(cron, after);
 }

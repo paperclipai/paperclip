@@ -54,8 +54,8 @@ describe("RunTranscriptView", () => {
     );
 
     expect(html).toContain("<strong>world</strong>");
-    expect(html).toContain("<li>first</li>");
-    expect(html).toContain("<li>second</li>");
+    expect(html).toMatch(/<li[^>]*>first<\/li>/);
+    expect(html).toMatch(/<li[^>]*>second<\/li>/);
   });
 
   it("hides saved-session resume skip stderr from nice mode normalization", () => {
@@ -63,7 +63,7 @@ describe("RunTranscriptView", () => {
       {
         kind: "stderr",
         ts: "2026-03-12T00:00:00.000Z",
-        text: "[paperclip] Skipping saved session resume for task \"PAP-485\" because wake reason is issue_assigned.",
+        text: '[paperclip] Skipping saved session resume for task "PAP-485" because wake reason is issue_assigned.',
       },
       {
         kind: "assistant",
@@ -80,5 +80,34 @@ describe("RunTranscriptView", () => {
       role: "assistant",
       text: "Working on the task.",
     });
+  });
+
+  it("renders successful result summaries as markdown in nice mode", () => {
+    const html = renderToStaticMarkup(
+      <ThemeProvider>
+        <RunTranscriptView
+          density="compact"
+          entries={[
+            {
+              kind: "result",
+              ts: "2026-03-12T00:00:02.000Z",
+              text: "## Summary\n\n- fixed deploy config\n- posted issue update",
+              inputTokens: 10,
+              outputTokens: 20,
+              cachedTokens: 0,
+              costUsd: 0,
+              subtype: "success",
+              isError: false,
+              errors: [],
+            },
+          ]}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(html).toContain("<h2>Summary</h2>");
+    expect(html).toMatch(/<li[^>]*>fixed deploy config<\/li>/);
+    expect(html).toMatch(/<li[^>]*>posted issue update<\/li>/);
+    expect(html).not.toContain("result");
   });
 });

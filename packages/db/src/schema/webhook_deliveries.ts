@@ -5,7 +5,9 @@ export const webhookDeliveries = pgTable(
   "webhook_deliveries",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    webhookId: uuid("webhook_id").notNull().references(() => webhooks.id, { onDelete: "cascade" }),
+    webhookId: uuid("webhook_id")
+      .notNull()
+      .references(() => webhooks.id, { onDelete: "cascade" }),
     eventId: text("event_id").notNull(),
     eventType: text("event_type").notNull(),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),

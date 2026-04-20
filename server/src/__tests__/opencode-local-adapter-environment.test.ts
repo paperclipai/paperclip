@@ -66,7 +66,7 @@ describe("opencode_local environment diagnostics", () => {
     const script = [
       "#!/bin/sh",
       "echo 'ProviderModelNotFoundError: ProviderModelNotFoundError' 1>&2",
-      "echo 'data: { providerID: \"openai\", modelID: \"gpt-5.3-codex\", suggestions: [] }' 1>&2",
+      'echo \'data: { providerID: "openai", modelID: "gpt-5.3-codex", suggestions: [] }\' 1>&2',
       "exit 1",
       "",
     ].join("\n");

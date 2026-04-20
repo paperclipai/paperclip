@@ -2,10 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  AdapterSkillContext,
-  AdapterSkillSnapshot,
-} from "@paperclipai/adapter-utils";
+import type { AdapterSkillContext, AdapterSkillSnapshot } from "@paperclipai/adapter-utils";
 import {
   buildPersistentSkillSnapshot,
   ensurePaperclipSkillSymlink,
@@ -52,10 +49,7 @@ export async function listPiSkills(ctx: AdapterSkillContext): Promise<AdapterSki
   return buildPiSkillSnapshot(ctx.config);
 }
 
-export async function syncPiSkills(
-  ctx: AdapterSkillContext,
-  desiredSkills: string[],
-): Promise<AdapterSkillSnapshot> {
+export async function syncPiSkills(ctx: AdapterSkillContext, desiredSkills: string[]): Promise<AdapterSkillSnapshot> {
   const availableEntries = await readPaperclipRuntimeSkillEntries(ctx.config, __moduleDir);
   const desiredSet = new Set([
     ...desiredSkills,

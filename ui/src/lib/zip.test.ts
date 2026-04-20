@@ -9,12 +9,7 @@ function readUint16(bytes: Uint8Array, offset: number) {
 }
 
 function readUint32(bytes: Uint8Array, offset: number) {
-  return (
-    bytes[offset]! |
-    (bytes[offset + 1]! << 8) |
-    (bytes[offset + 2]! << 16) |
-    (bytes[offset + 3]! << 24)
-  ) >>> 0;
+  return (bytes[offset]! | (bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16) | (bytes[offset + 3]! << 24)) >>> 0;
 }
 
 function readString(bytes: Uint8Array, offset: number, length: number) {

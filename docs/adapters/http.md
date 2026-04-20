@@ -18,11 +18,11 @@ The `http` adapter sends a webhook request to an external agent service. The age
 
 ## Configuration
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `url` | string | Yes | Webhook URL to POST to |
-| `headers` | object | No | Additional HTTP headers |
-| `timeoutSec` | number | No | Request timeout |
+| Field        | Type   | Required | Description             |
+| ------------ | ------ | -------- | ----------------------- |
+| `url`        | string | Yes      | Webhook URL to POST to  |
+| `headers`    | object | No       | Additional HTTP headers |
+| `timeoutSec` | number | No       | Request timeout         |
 
 ## How It Works
 

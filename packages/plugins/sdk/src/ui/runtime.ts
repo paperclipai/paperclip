@@ -16,7 +16,7 @@ function getBridgeRegistry(): PluginBridgeRegistry | undefined {
 function missingBridgeValueError(name: string): Error {
   return new Error(
     `Paperclip plugin UI runtime is not initialized for "${name}". ` +
-      'Ensure the host loaded the plugin bridge before rendering this UI module.',
+      "Ensure the host loaded the plugin bridge before rendering this UI module.",
   );
 }
 
@@ -28,10 +28,7 @@ export function getSdkUiRuntimeValue<T>(name: string): T {
   return value as T;
 }
 
-export function renderSdkUiComponent<TProps>(
-  name: string,
-  props: TProps,
-): unknown {
+export function renderSdkUiComponent<TProps>(name: string, props: TProps): unknown {
   const registry = getBridgeRegistry();
   const component = registry?.sdkUi?.[name];
   if (component === undefined) {

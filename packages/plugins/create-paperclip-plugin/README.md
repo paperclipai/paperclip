@@ -21,6 +21,7 @@ Supported templates: `default`, `connector`, `workspace`
 Supported categories: `connector`, `workspace`, `automation`, `ui`
 
 Generates:
+
 - typed manifest + worker entrypoint
 - example UI widget using the supported `@paperclipai/plugin-sdk/ui` hooks
 - test file using `@paperclipai/plugin-sdk/testing`

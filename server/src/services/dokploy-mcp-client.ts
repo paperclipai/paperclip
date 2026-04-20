@@ -18,14 +18,9 @@ export interface ApplicationLogs {
   applicationId: string;
 }
 
-async function callTool(
-  toolName: string,
-  args: Record<string, unknown>,
-): Promise<unknown> {
+async function callTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
   if (!DOKPLOY_MCP_URL) {
-    throw new Error(
-      "DOKPLOY_MCP_URL is not configured. Set it to the Dokploy MCP server endpoint.",
-    );
+    throw new Error("DOKPLOY_MCP_URL is not configured. Set it to the Dokploy MCP server endpoint.");
   }
 
   const body = {
@@ -46,10 +41,7 @@ async function callTool(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "(unreadable)");
-    logger.error(
-      { status: res.status, body: text },
-      "Dokploy MCP request failed",
-    );
+    logger.error({ status: res.status, body: text }, "Dokploy MCP request failed");
     throw new Error(`Dokploy MCP returned HTTP ${res.status}`);
   }
 
@@ -66,9 +58,7 @@ async function callTool(
   return json.result;
 }
 
-export async function getApplicationLogs(
-  applicationId: string,
-): Promise<ApplicationLogs> {
+export async function getApplicationLogs(applicationId: string): Promise<ApplicationLogs> {
   const result = (await callTool("get-application-logs", {
     applicationId,
   })) as { content?: Array<{ text?: string }> } | undefined;

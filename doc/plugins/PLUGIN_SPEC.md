@@ -662,7 +662,11 @@ export interface PluginContext {
     register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void;
   };
   tools: {
-    register(name: string, input: PluginToolDeclaration, fn: (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>): void;
+    register(
+      name: string,
+      input: PluginToolDeclaration,
+      fn: (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>,
+    ): void;
   };
   logger: {
     info(message: string, meta?: Record<string, unknown>): void;
@@ -884,7 +888,7 @@ export function DashboardWidget({ context }: PluginWidgetProps) {
   return (
     <div>
       <MetricCard label="Synced Issues" value={data.syncedCount} trend={data.trend} />
-      {data.mappings.map(m => (
+      {data.mappings.map((m) => (
         <StatusBadge key={m.id} label={m.label} status={m.status} />
       ))}
       <button onClick={() => resync({ companyId: context.companyId })}>Resync Now</button>
@@ -991,18 +995,18 @@ Plugins may add sidebar links to:
 
 The host SDK ships shared components that plugins can import to quickly build UIs that match the host's look and feel. These are convenience building blocks, not a requirement.
 
-| Component | What it renders | Typical use |
-|---|---|---|
-| `MetricCard` | Single number with label, optional trend/sparkline | KPIs, counts, rates |
-| `StatusBadge` | Inline status indicator (ok/warning/error/info) | Sync health, connection status |
-| `DataTable` | Rows and columns with optional sorting and pagination | Issue lists, job history, process lists |
-| `TimeseriesChart` | Line or bar chart with timestamped data points | Revenue trends, sync volume, error rates |
-| `MarkdownBlock` | Rendered markdown text | Descriptions, help text, notes |
-| `KeyValueList` | Label/value pairs in a definition-list layout | Entity metadata, config summary |
-| `ActionBar` | Row of buttons wired to `usePluginAction` | Resync, create branch, restart process |
-| `LogView` | Scrollable log output with timestamps | Webhook deliveries, job output, process logs |
-| `JsonTree` | Collapsible JSON tree for debugging | Raw API responses, plugin state inspection |
-| `Spinner` | Loading indicator | Data fetch states |
+| Component         | What it renders                                       | Typical use                                  |
+| ----------------- | ----------------------------------------------------- | -------------------------------------------- |
+| `MetricCard`      | Single number with label, optional trend/sparkline    | KPIs, counts, rates                          |
+| `StatusBadge`     | Inline status indicator (ok/warning/error/info)       | Sync health, connection status               |
+| `DataTable`       | Rows and columns with optional sorting and pagination | Issue lists, job history, process lists      |
+| `TimeseriesChart` | Line or bar chart with timestamped data points        | Revenue trends, sync volume, error rates     |
+| `MarkdownBlock`   | Rendered markdown text                                | Descriptions, help text, notes               |
+| `KeyValueList`    | Label/value pairs in a definition-list layout         | Entity metadata, config summary              |
+| `ActionBar`       | Row of buttons wired to `usePluginAction`             | Resync, create branch, restart process       |
+| `LogView`         | Scrollable log output with timestamps                 | Webhook deliveries, job output, process logs |
+| `JsonTree`        | Collapsible JSON tree for debugging                   | Raw API responses, plugin state inspection   |
+| `Spinner`         | Loading indicator                                     | Data fetch states                            |
 
 Plugins may also use entirely custom components. The shared components exist to reduce boilerplate and keep visual consistency, not to limit what plugins can render.
 
@@ -1469,7 +1473,13 @@ await register(harness.ctx);
 await harness.emit("issue.created", { issueId: "iss-1", projectId: "proj-1" });
 
 // Verify state was written
-const state = await harness.state.get({ pluginId: manifest.id, scopeKind: "issue", scopeId: "iss-1", namespace: "sync", stateKey: "external-id" });
+const state = await harness.state.get({
+  pluginId: manifest.id,
+  scopeKind: "issue",
+  scopeId: "iss-1",
+  namespace: "sync",
+  stateKey: "external-id",
+});
 expect(state).toBeDefined();
 
 // Simulate a UI data request
@@ -1553,10 +1563,10 @@ Versioning rules:
 The host should publish a compatibility matrix:
 
 | Host Version | Supported API Versions | SDK Range |
-|---|---|---|
-| 1.0 | 1 | 1.x |
-| 2.0 | 1, 2 | 1.x, 2.x |
-| 3.0 | 2, 3 | 2.x, 3.x |
+| ------------ | ---------------------- | --------- |
+| 1.0          | 1                      | 1.x       |
+| 2.0          | 1, 2                   | 1.x, 2.x  |
+| 3.0          | 2, 3                   | 2.x, 3.x  |
 
 This matrix is published in the host docs and queryable via `GET /api/plugins/compatibility`.
 

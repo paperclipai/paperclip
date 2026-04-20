@@ -1,15 +1,7 @@
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface PageSkeletonProps {
-  variant?:
-    | "list"
-    | "issues-list"
-    | "detail"
-    | "dashboard"
-    | "approvals"
-    | "costs"
-    | "inbox"
-    | "org-chart";
+  variant?: "list" | "issues-list" | "detail" | "dashboard" | "approvals" | "costs" | "inbox" | "org-chart";
 }
 
 export function PageSkeleton({ variant = "list" }: PageSkeletonProps) {

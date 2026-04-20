@@ -30,9 +30,7 @@ function useSettingsConfig() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    hostFetchJson<{ configJson?: Record<string, unknown> | null } | null>(
-      `/api/plugins/${PLUGIN_ID}/config`,
-    )
+    hostFetchJson<{ configJson?: Record<string, unknown> | null } | null>(`/api/plugins/${PLUGIN_ID}/config`)
       .then((result) => {
         if (cancelled) return;
         setConfigJson({ ...DEFAULT_CONFIG, ...(result?.configJson ?? {}) });
@@ -40,9 +38,7 @@ function useSettingsConfig() {
       })
       .catch((nextError) => {
         if (cancelled) return;
-        setError(
-          nextError instanceof Error ? nextError.message : String(nextError),
-        );
+        setError(nextError instanceof Error ? nextError.message : String(nextError));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -62,9 +58,7 @@ function useSettingsConfig() {
       setConfigJson(nextConfig);
       setError(null);
     } catch (nextError) {
-      setError(
-        nextError instanceof Error ? nextError.message : String(nextError),
-      );
+      setError(nextError instanceof Error ? nextError.message : String(nextError));
       throw nextError;
     } finally {
       setSaving(false);
@@ -103,8 +97,7 @@ const buttonStyle: CSSProperties = {
 };
 
 export function DokployMcpSettingsPage({ context }: PluginSettingsPageProps) {
-  const { configJson, setConfigJson, loading, saving, error, save } =
-    useSettingsConfig();
+  const { configJson, setConfigJson, loading, saving, error, save } = useSettingsConfig();
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
 
   function setField(key: string, value: unknown) {
@@ -119,11 +112,7 @@ export function DokployMcpSettingsPage({ context }: PluginSettingsPageProps) {
   }
 
   if (loading) {
-    return (
-      <div style={{ fontSize: "12px", opacity: 0.7 }}>
-        Loading plugin config…
-      </div>
-    );
+    return <div style={{ fontSize: "12px", opacity: 0.7 }}>Loading plugin config…</div>;
   }
 
   return (
@@ -131,9 +120,8 @@ export function DokployMcpSettingsPage({ context }: PluginSettingsPageProps) {
       <div>
         <strong>Dokploy MCP Connection</strong>
         <div style={{ fontSize: "13px", lineHeight: 1.5, marginTop: "6px" }}>
-          Configure the URL of your Dokploy MCP server. This plugin communicates
-          with the MCP server over HTTP using JSON-RPC 2.0 to provide
-          infrastructure management tools to agents.
+          Configure the URL of your Dokploy MCP server. This plugin communicates with the MCP server over HTTP using
+          JSON-RPC 2.0 to provide infrastructure management tools to agents.
         </div>
       </div>
 
@@ -147,8 +135,7 @@ export function DokployMcpSettingsPage({ context }: PluginSettingsPageProps) {
           style={inputStyle}
         />
         <span style={{ fontSize: "11px", opacity: 0.6 }}>
-          The HTTP endpoint for the Dokploy MCP server (e.g.
-          http://dokploy-mcp:3001/mcp)
+          The HTTP endpoint for the Dokploy MCP server (e.g. http://dokploy-mcp:3001/mcp)
         </span>
       </label>
 
@@ -171,9 +158,7 @@ export function DokployMcpSettingsPage({ context }: PluginSettingsPageProps) {
           {saving ? "Saving…" : "Save"}
         </button>
         {savedMessage && (
-          <span style={{ fontSize: "12px", color: "var(--success-color, #1a7f37)" }}>
-            {savedMessage}
-          </span>
+          <span style={{ fontSize: "12px", color: "var(--success-color, #1a7f37)" }}>{savedMessage}</span>
         )}
       </div>
 

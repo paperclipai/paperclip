@@ -1,9 +1,5 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import {
-  sendMessage,
-  editMessage as editTelegramMessage,
-  escapeMarkdownV2,
-} from "./telegram-api.js";
+import { sendMessage, editMessage as editTelegramMessage, escapeMarkdownV2 } from "./telegram-api.js";
 import type { SendMessageOptions } from "./telegram-api.js";
 import type { InlineKeyboardRow } from "./types.js";
 
@@ -74,14 +70,10 @@ export class TelegramAdapter {
           return rows;
         })()
       : undefined;
-    await editTelegramMessage(
-      this.ctx,
-      this.botToken,
-      ref.chatId,
-      Number(ref.messageId),
-      text,
-      { parseMode: "MarkdownV2", inlineKeyboard: keyboard },
-    );
+    await editTelegramMessage(this.ctx, this.botToken, ref.chatId, Number(ref.messageId), text, {
+      parseMode: "MarkdownV2",
+      inlineKeyboard: keyboard,
+    });
   }
 
   formatAgentLabel(agentName: string) {

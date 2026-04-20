@@ -15,27 +15,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Pencil,
-  Check,
-  X,
-  Plus,
-  MoreHorizontal,
-  Trash2,
-  Users,
-  CircleDot,
-  DollarSign,
-  Calendar,
-} from "lucide-react";
+import { Pencil, Check, X, Plus, MoreHorizontal, Trash2, Users, CircleDot, DollarSign, Calendar } from "lucide-react";
 
 export function Companies() {
-  const {
-    companies,
-    selectedCompanyId,
-    setSelectedCompanyId,
-    loading,
-    error,
-  } = useCompany();
+  const { companies, selectedCompanyId, setSelectedCompanyId, loading, error } = useCompany();
   const { openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -51,8 +34,7 @@ export function Companies() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const editMutation = useMutation({
-    mutationFn: ({ id, newName }: { id: string; newName: string }) =>
-      companiesApi.update(id, { name: newName }),
+    mutationFn: ({ id, newName }: { id: string; newName: string }) => companiesApi.update(id, { name: newName }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       setEditingId(null);
@@ -111,9 +93,7 @@ export function Companies() {
           const issueCount = companyStats?.issueCount ?? 0;
           const budgetPct =
             company.budgetMonthlyCents > 0
-              ? Math.round(
-                  (company.spentMonthlyCents / company.budgetMonthlyCents) * 100,
-                )
+              ? Math.round((company.spentMonthlyCents / company.budgetMonthlyCents) * 100)
               : 0;
 
           return (
@@ -129,19 +109,14 @@ export function Companies() {
                 }
               }}
               className={`group text-left bg-card border rounded-lg p-5 transition-colors cursor-pointer ${
-                selected
-                  ? "border-primary ring-1 ring-primary"
-                  : "border-border hover:border-muted-foreground/30"
+                selected ? "border-primary ring-1 ring-primary" : "border-border hover:border-muted-foreground/30"
               }`}
             >
               {/* Header row: name + menu */}
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
                   {isEditing ? (
-                    <div
-                      className="flex items-center gap-2"
-                      onClick={(e) => e.stopPropagation()}
-                    >
+                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                       <Input
                         value={editName}
                         onChange={(e) => setEditName(e.target.value)}
@@ -152,12 +127,7 @@ export function Companies() {
                           if (e.key === "Escape") cancelEdit();
                         }}
                       />
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        onClick={saveEdit}
-                        disabled={editMutation.isPending}
-                      >
+                      <Button variant="ghost" size="icon-xs" onClick={saveEdit} disabled={editMutation.isPending}>
                         <Check className="h-3.5 w-3.5 text-green-500" />
                       </Button>
                       <Button variant="ghost" size="icon-xs" onClick={cancelEdit}>
@@ -192,9 +162,7 @@ export function Companies() {
                     </div>
                   )}
                   {company.description && !isEditing && (
-                    <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                      {company.description}
-                    </p>
+                    <p className="text-sm text-muted-foreground mt-1 line-clamp-2">{company.description}</p>
                   )}
                 </div>
 
@@ -211,17 +179,12 @@ export function Companies() {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        onClick={() => startEdit(company.id, company.name)}
-                      >
+                      <DropdownMenuItem onClick={() => startEdit(company.id, company.name)}>
                         <Pencil className="h-3.5 w-3.5" />
                         Rename
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        variant="destructive"
-                        onClick={() => setConfirmDeleteId(company.id)}
-                      >
+                      <DropdownMenuItem variant="destructive" onClick={() => setConfirmDeleteId(company.id)}>
                         <Trash2 className="h-3.5 w-3.5" />
                         Delete Company
                       </DropdownMenuItem>
@@ -248,9 +211,14 @@ export function Companies() {
                   <DollarSign className="h-3.5 w-3.5" />
                   <span>
                     {formatCents(company.spentMonthlyCents)}
-                    {company.budgetMonthlyCents > 0
-                      ? <> / {formatCents(company.budgetMonthlyCents)} <span className="text-xs">({budgetPct}%)</span></>
-                      : <span className="text-xs ml-1">Unlimited budget</span>}
+                    {company.budgetMonthlyCents > 0 ? (
+                      <>
+                        {" "}
+                        / {formatCents(company.budgetMonthlyCents)} <span className="text-xs">({budgetPct}%)</span>
+                      </>
+                    ) : (
+                      <span className="text-xs ml-1">Unlimited budget</span>
+                    )}
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 ml-auto">

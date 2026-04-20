@@ -11,7 +11,9 @@ function resolveDefaultAgentBundleUrl(role: DefaultAgentBundleRole, fileName: st
   return new URL(`../onboarding-assets/${role}/${fileName}`, import.meta.url);
 }
 
-export async function loadDefaultAgentInstructionsBundle(role: DefaultAgentBundleRole): Promise<Record<string, string>> {
+export async function loadDefaultAgentInstructionsBundle(
+  role: DefaultAgentBundleRole,
+): Promise<Record<string, string>> {
   const fileNames = DEFAULT_AGENT_BUNDLE_FILES[role];
   const entries = await Promise.all(
     fileNames.map(async (fileName) => {

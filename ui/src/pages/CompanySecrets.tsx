@@ -19,8 +19,7 @@ import {
 import { Field } from "../components/agent-config-primitives";
 import { KeyRound, Plus, RotateCw, Pencil, Trash2, Shield, Copy } from "lucide-react";
 
-const inputClass =
-  "w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none";
+const inputClass = "w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none";
 
 function formatDate(d: Date | string) {
   return new Date(d).toLocaleDateString(undefined, {
@@ -79,9 +78,7 @@ function CreateSecretDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Create Secret</DialogTitle>
-          <DialogDescription>
-            The value will be encrypted and cannot be viewed after creation.
-          </DialogDescription>
+          <DialogDescription>The value will be encrypted and cannot be viewed after creation.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-2">
           <Field label="Name" hint="Unique identifier for this secret.">
@@ -114,11 +111,7 @@ function CreateSecretDialog({
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button
-            size="sm"
-            disabled={!name.trim() || !value || mutation.isPending}
-            onClick={() => mutation.mutate()}
-          >
+          <Button size="sm" disabled={!name.trim() || !value || mutation.isPending} onClick={() => mutation.mutate()}>
             {mutation.isPending ? "Creating..." : "Create"}
           </Button>
         </DialogFooter>
@@ -171,7 +164,9 @@ function EditSecretDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Edit Secret</DialogTitle>
-          <DialogDescription>Update the name or description. The value cannot be changed here — use rotate instead.</DialogDescription>
+          <DialogDescription>
+            Update the name or description. The value cannot be changed here — use rotate instead.
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-2">
           <Field label="Name">
@@ -190,11 +185,7 @@ function EditSecretDialog({
           <Button variant="outline" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            size="sm"
-            disabled={!name.trim() || mutation.isPending}
-            onClick={() => mutation.mutate()}
-          >
+          <Button size="sm" disabled={!name.trim() || mutation.isPending} onClick={() => mutation.mutate()}>
             {mutation.isPending ? "Saving..." : "Save"}
           </Button>
         </DialogFooter>
@@ -241,8 +232,8 @@ function RotateSecretDialog({
         <DialogHeader>
           <DialogTitle>Rotate Secret</DialogTitle>
           <DialogDescription>
-            Set a new value for <strong>{secret?.name}</strong>. This creates version{" "}
-            {(secret?.latestVersion ?? 0) + 1}. The old value will no longer be used.
+            Set a new value for <strong>{secret?.name}</strong>. This creates version {(secret?.latestVersion ?? 0) + 1}
+            . The old value will no longer be used.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-2">
@@ -260,11 +251,7 @@ function RotateSecretDialog({
           <Button variant="outline" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            size="sm"
-            disabled={!value || mutation.isPending}
-            onClick={() => mutation.mutate()}
-          >
+          <Button size="sm" disabled={!value || mutation.isPending} onClick={() => mutation.mutate()}>
             {mutation.isPending ? "Rotating..." : "Rotate"}
           </Button>
         </DialogFooter>
@@ -305,20 +292,15 @@ function DeleteSecretDialog({
         <DialogHeader>
           <DialogTitle>Delete Secret</DialogTitle>
           <DialogDescription>
-            Are you sure you want to delete <strong>{secret?.name}</strong>? This action cannot be
-            undone. Any agent environment variables referencing this secret will break.
+            Are you sure you want to delete <strong>{secret?.name}</strong>? This action cannot be undone. Any agent
+            environment variables referencing this secret will break.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button variant="outline" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            size="sm"
-            variant="destructive"
-            disabled={mutation.isPending}
-            onClick={() => mutation.mutate()}
-          >
+          <Button size="sm" variant="destructive" disabled={mutation.isPending} onClick={() => mutation.mutate()}>
             {mutation.isPending ? "Deleting..." : "Delete"}
           </Button>
         </DialogFooter>
@@ -341,11 +323,7 @@ function buildSecretUsageMap(agents: Agent[]): Map<string, { agent: Agent; envKe
     const env = (agent.adapterConfig as Record<string, unknown>)?.env;
     if (!env || typeof env !== "object") continue;
     for (const [key, binding] of Object.entries(env as Record<string, unknown>)) {
-      if (
-        binding &&
-        typeof binding === "object" &&
-        (binding as { type?: string }).type === "secret_ref"
-      ) {
+      if (binding && typeof binding === "object" && (binding as { type?: string }).type === "secret_ref") {
         const secretId = (binding as { secretId?: string }).secretId;
         if (!secretId) continue;
         const existing = map.get(secretId);
@@ -390,11 +368,13 @@ function SecretRow({
             {providerLabel(secret.provider)}
           </span>
         </div>
-        {secret.description && (
-          <p className="text-xs text-muted-foreground mt-0.5 truncate">{secret.description}</p>
-        )}
+        {secret.description && <p className="text-xs text-muted-foreground mt-0.5 truncate">{secret.description}</p>}
         <div className="flex items-center gap-2 mt-0.5">
-          <CopyText text={secret.id} copiedLabel="Copied ID!" className="text-[11px] text-muted-foreground/60 font-mono hover:text-muted-foreground">
+          <CopyText
+            text={secret.id}
+            copiedLabel="Copied ID!"
+            className="text-[11px] text-muted-foreground/60 font-mono hover:text-muted-foreground"
+          >
             <span className="inline-flex items-center gap-1">
               <Copy className="h-2.5 w-2.5" />
               {secret.id.slice(0, 8)}…
@@ -463,16 +443,10 @@ export function CompanySecrets() {
     enabled: !!selectedCompanyId,
   });
 
-  const secretUsageMap = useMemo(
-    () => (agents ? buildSecretUsageMap(agents) : new Map()),
-    [agents],
-  );
+  const secretUsageMap = useMemo(() => (agents ? buildSecretUsageMap(agents) : new Map()), [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Secrets" },
-    ]);
+    setBreadcrumbs([{ label: selectedCompany?.name ?? "Company", href: "/dashboard" }, { label: "Secrets" }]);
   }, [setBreadcrumbs, selectedCompany?.name]);
 
   if (!selectedCompany || !selectedCompanyId) {
@@ -497,8 +471,8 @@ export function CompanySecrets() {
       </div>
 
       <p className="text-sm text-muted-foreground">
-        Manage encrypted secrets for your company. Secret values are write-only and cannot be viewed
-        after creation. Agents reference secrets in their environment variable configuration.
+        Manage encrypted secrets for your company. Secret values are write-only and cannot be viewed after creation.
+        Agents reference secrets in their environment variable configuration.
       </p>
 
       {isLoading ? (
@@ -526,11 +500,7 @@ export function CompanySecrets() {
         </div>
       )}
 
-      <CreateSecretDialog
-        open={showCreate}
-        onOpenChange={setShowCreate}
-        companyId={selectedCompanyId}
-      />
+      <CreateSecretDialog open={showCreate} onOpenChange={setShowCreate} companyId={selectedCompanyId} />
       <EditSecretDialog secret={editSecret} onClose={() => setEditSecret(null)} companyId={selectedCompanyId} />
       <RotateSecretDialog secret={rotateSecret} onClose={() => setRotateSecret(null)} companyId={selectedCompanyId} />
       <DeleteSecretDialog secret={deleteSecret} onClose={() => setDeleteSecret(null)} companyId={selectedCompanyId} />

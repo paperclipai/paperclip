@@ -5,10 +5,15 @@ import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { serverVersion, serverCommit } from "../version.js";
-import { Sentry, sentryEnabled } from "../sentry.js";
+import { serverVersion } from "../version.js";
 
-const startedAt = Date.now();
+function shouldExposeFullHealthDetails(
+  actorType: "none" | "board" | "agent" | null | undefined,
+  deploymentMode: DeploymentMode,
+) {
+  if (deploymentMode !== "authenticated") return true;
+  return actorType === "board" || actorType === "agent";
+}
 
 export function healthRoutes(
   db?: Db,
@@ -26,35 +31,33 @@ export function healthRoutes(
 ) {
   const router = Router();
 
-  router.get("/", async (_req, res) => {
-    const requestStart = Date.now();
+  router.get("/", async (req, res) => {
+    const actorType = "actor" in req ? req.actor?.type : null;
+    const exposeFullDetails = shouldExposeFullHealthDetails(actorType, opts.deploymentMode);
 
     if (!db) {
-      res.json({
-        status: "ok",
+      res.json(
+        exposeFullDetails
+          ? { status: "ok", version: serverVersion }
+          : { status: "ok", deploymentMode: opts.deploymentMode },
+      );
+      return;
+    }
+
+    try {
+      await db.execute(sql`SELECT 1`);
+    } catch {
+      res.status(503).json({
+        status: "unhealthy",
         version: serverVersion,
-        commit: serverCommit,
-        uptime: Math.floor((Date.now() - startedAt) / 1000),
+        error: "database_unreachable",
       });
       return;
     }
 
-    let dbStatus: "connected" | "disconnected" = "disconnected";
-    let dbLatencyMs: number | null = null;
-    try {
-      const dbStart = Date.now();
-      await db.execute(sql`SELECT 1`);
-      dbLatencyMs = Date.now() - dbStart;
-      dbStatus = "connected";
-    } catch {
-      // dbStatus remains "disconnected"
-    }
-
-    const healthy = dbStatus === "connected";
-
     let bootstrapStatus: "ready" | "bootstrap_pending" = "ready";
     let bootstrapInviteActive = false;
-    if (healthy && opts.deploymentMode === "authenticated") {
+    if (opts.deploymentMode === "authenticated") {
       const roleCount = await db
         .select({ count: count() })
         .from(instanceUserRoles)
@@ -82,7 +85,7 @@ export function healthRoutes(
 
     const persistedDevServerStatus = readPersistedDevServerStatus();
     let devServer: ReturnType<typeof toDevServerHealthStatus> | undefined;
-    if (persistedDevServerStatus) {
+    if (persistedDevServerStatus && typeof (db as { select?: unknown }).select === "function") {
       const instanceSettings = instanceSettingsService(db);
       const experimentalSettings = await instanceSettings.getExperimental();
       const activeRunCount = await db
@@ -97,18 +100,19 @@ export function healthRoutes(
       });
     }
 
-    const responseTimeMs = Date.now() - requestStart;
+    if (!exposeFullDetails) {
+      res.json({
+        status: "ok",
+        deploymentMode: opts.deploymentMode,
+        bootstrapStatus,
+        bootstrapInviteActive,
+      });
+      return;
+    }
 
-    res.status(healthy ? 200 : 503).json({
-      status: healthy ? "ok" : "degraded",
+    res.json({
+      status: "ok",
       version: serverVersion,
-      commit: serverCommit,
-      uptime: Math.floor((Date.now() - startedAt) / 1000),
-      database: {
-        status: dbStatus,
-        latencyMs: dbLatencyMs,
-      },
-      responseTimeMs,
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
@@ -119,19 +123,6 @@ export function healthRoutes(
       },
       ...(devServer ? { devServer } : {}),
     });
-  });
-
-  router.get("/sentry", (_req, res) => {
-    res.json({ sentryEnabled });
-  });
-
-  router.post("/debug-sentry", (_req, res) => {
-    if (!sentryEnabled) {
-      res.status(400).json({ error: "Sentry is not enabled (SENTRY_DSN not set)" });
-      return;
-    }
-    const eventId = Sentry.captureMessage("Paperclip test error — verifying Sentry integration");
-    res.json({ ok: true, eventId });
   });
 
   return router;

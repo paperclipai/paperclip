@@ -3,7 +3,11 @@ export {
   listAdapterModels,
   listServerAdapters,
   findServerAdapter,
+  findActiveServerAdapter,
   detectAdapterModel,
+  registerServerAdapter,
+  unregisterServerAdapter,
+  requireServerAdapter,
 } from "./registry.js";
 export type {
   ServerAdapterModule,

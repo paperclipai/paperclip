@@ -14,9 +14,7 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(record.session);
     if (!sessionId) return null;
     const cwd =
-      readNonEmptyString(record.cwd) ??
-      readNonEmptyString(record.workdir) ??
-      readNonEmptyString(record.folder);
+      readNonEmptyString(record.cwd) ?? readNonEmptyString(record.workdir) ?? readNonEmptyString(record.folder);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
@@ -30,9 +28,7 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(params.session);
     if (!sessionId) return null;
     const cwd =
-      readNonEmptyString(params.cwd) ??
-      readNonEmptyString(params.workdir) ??
-      readNonEmptyString(params.folder);
+      readNonEmptyString(params.cwd) ?? readNonEmptyString(params.workdir) ?? readNonEmptyString(params.folder);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),

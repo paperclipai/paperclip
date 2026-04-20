@@ -57,12 +57,14 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 ```
 
 6. Draft the new hire config:
+
 - role/title/name
 - icon (required in practice; use one from `/llms/agent-icons.txt`)
 - reporting line (`reportsTo`)
 - adapter type
 - optional `desiredSkills` from the company skill library when this role needs installed skills on day one
 - adapter and runtime config aligned to this environment
+- leave timer heartbeats off by default; only set `runtimeConfig.heartbeat.enabled=true` with an `intervalSec` when the role genuinely needs scheduled recurring work or the user explicitly asked for it
 - capabilities
 - run prompt in adapter config (`promptTemplate` where applicable)
 - source issue linkage (`sourceIssueId` or `sourceIssueIds`) when this hire came from an issue
@@ -83,12 +85,13 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
     "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
     "adapterType": "codex_local",
     "adapterConfig": {"cwd": "/abs/path/to/repo", "model": "o4-mini"},
-    "runtimeConfig": {"heartbeat": {"enabled": true, "intervalSec": 300, "wakeOnDemand": true}},
+    "runtimeConfig": {"heartbeat": {"enabled": false, "wakeOnDemand": true}},
     "sourceIssueId": "<issue-id>"
   }'
 ```
 
 8. Handle governance state:
+
 - if response has `approval`, hire is `pending_approval`
 - monitor and discuss on approval thread
 - when the board approves, you will be woken with `PAPERCLIP_APPROVAL_ID`; read linked issues and close/comment follow-up
@@ -123,6 +126,7 @@ curl -sS "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID/issues" \
 ```
 
 For each linked issue, either:
+
 - close it if approval resolved the request, or
 - comment in markdown with links to the approval and next actions.
 
@@ -136,6 +140,7 @@ Before sending a hire request:
 - Avoid secrets in plain text unless required by adapter behavior.
 - Ensure reporting line is correct and in-company.
 - Ensure prompt is role-specific and operationally scoped.
+- Keep timer heartbeats opt-in. Most hires should rely on assignment/on-demand wakeups unless the job explicitly needs a schedule.
 - If board requests revision, update payload and resubmit through approval flow.
 
 For endpoint payload shapes and full examples, read:

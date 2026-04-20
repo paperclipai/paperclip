@@ -13,7 +13,7 @@ import { normalizeAgentUrlKey } from "@paperclipai/shared";
  * Returns `null` for empty or invalid input.
  */
 export function normalizeSkillSlug(value: string | null | undefined): string | null {
-  return value ? normalizeAgentUrlKey(value) ?? null : null;
+  return value ? (normalizeAgentUrlKey(value) ?? null) : null;
 }
 
 /**

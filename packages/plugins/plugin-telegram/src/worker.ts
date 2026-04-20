@@ -5,33 +5,12 @@ import {
   type PluginContext,
   type PluginHealthDiagnostics,
 } from "@paperclipai/plugin-sdk";
-import {
-  PLUGIN_ID,
-  DEFAULT_CONFIG,
-  METRIC_NAMES,
-  ACP_SPAWN_EVENT,
-  ACP_OUTPUT_EVENT,
-} from "./constants.js";
-import {
-  sendMessage,
-  escapeMarkdownV2,
-  setMyCommands,
-  answerCallbackQuery,
-} from "./telegram-api.js";
+import { PLUGIN_ID, DEFAULT_CONFIG, METRIC_NAMES, ACP_SPAWN_EVENT, ACP_OUTPUT_EVENT } from "./constants.js";
+import { sendMessage, escapeMarkdownV2, setMyCommands, answerCallbackQuery } from "./telegram-api.js";
 import type { SendMessageOptions } from "./telegram-api.js";
-import {
-  handleCommand,
-  resolveCompanyId,
-  getTopicForProject,
-  BOT_COMMANDS,
-} from "./commands.js";
+import { handleCommand, resolveCompanyId, getTopicForProject, BOT_COMMANDS } from "./commands.js";
 import { handleCommandsCommand, tryCustomCommand } from "./command-registry.js";
-import {
-  formatIssueCreated,
-  formatIssueDone,
-  formatApprovalCreated,
-  formatAgentError,
-} from "./formatters.js";
+import { formatIssueCreated, formatIssueDone, formatApprovalCreated, formatAgentError } from "./formatters.js";
 import { EscalationManager } from "./escalation.js";
 import { handleMediaMessage } from "./media-pipeline.js";
 import { handleRegisterWatch, checkWatches } from "./watch-registry.js";
@@ -133,11 +112,17 @@ async function processUpdate(
   // Media messages
   if (msg.photo || msg.voice || msg.audio || msg.video_note || msg.document) {
     const companyId = await resolveCompanyId(ctx, chatId);
-    const handled = await handleMediaMessage(ctx, token, msg, {
-      briefAgentId: config.briefAgentId,
-      briefAgentChatIds: config.briefAgentChatIds,
-      transcriptionApiKeyRef: config.transcriptionApiKeyRef,
-    }, companyId);
+    const handled = await handleMediaMessage(
+      ctx,
+      token,
+      msg,
+      {
+        briefAgentId: config.briefAgentId,
+        briefAgentChatIds: config.briefAgentChatIds,
+        transcriptionApiKeyRef: config.transcriptionApiKeyRef,
+      },
+      companyId,
+    );
     if (handled) return;
   }
 
@@ -161,8 +146,7 @@ async function routeInboundMessage(
 
   if (activeSessions.length > 0) {
     const target = activeSessions.sort(
-      (a, b) =>
-        new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
+      (a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
     )[0];
 
     if (target.transport === "native") {
@@ -192,10 +176,10 @@ async function routeInboundMessage(
   // Check if this is a reply to a notification (escalation or issue)
   if (msg.reply_to_message) {
     const replyMsgId = msg.reply_to_message.message_id;
-    const mapping = await ctx.state.get({
+    const mapping = (await ctx.state.get({
       scopeKind: "instance",
       stateKey: `msg_${chatId}_${replyMsgId}`,
-    }) as MessageMapping | null;
+    })) as MessageMapping | null;
 
     if (mapping?.entityType === "escalation") {
       await escalationManager.respond(ctx, token, mapping.entityId, {
@@ -308,15 +292,12 @@ function subscribeToEvents(ctx: PluginContext, token: string, config: TelegramCo
       const { text, options } = formatApprovalCreated(event);
       const msgId = await sendMessage(ctx, token, chatId, text, options);
       if (msgId && event.entityId) {
-        await ctx.state.set(
-          { scopeKind: "instance", stateKey: `msg_${chatId}_${msgId}` },
-          {
-            entityId: event.entityId,
-            entityType: "approval",
-            companyId: event.companyId,
-            eventType: "approval.created",
-          } satisfies MessageMapping,
-        );
+        await ctx.state.set({ scopeKind: "instance", stateKey: `msg_${chatId}_${msgId}` }, {
+          entityId: event.entityId,
+          entityType: "approval",
+          companyId: event.companyId,
+          eventType: "approval.created",
+        } satisfies MessageMapping);
       }
     });
   }

@@ -1,14 +1,9 @@
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_INSTANCE_SETTINGS_PATH,
-  normalizeRememberedInstanceSettingsPath,
-} from "./instance-settings";
+import { DEFAULT_INSTANCE_SETTINGS_PATH, normalizeRememberedInstanceSettingsPath } from "./instance-settings";
 
 describe("normalizeRememberedInstanceSettingsPath", () => {
   it("keeps known instance settings pages", () => {
-    expect(normalizeRememberedInstanceSettingsPath("/instance/settings/general")).toBe(
-      "/instance/settings/general",
-    );
+    expect(normalizeRememberedInstanceSettingsPath("/instance/settings/general")).toBe("/instance/settings/general");
     expect(normalizeRememberedInstanceSettingsPath("/instance/settings/experimental")).toBe(
       "/instance/settings/experimental",
     );
@@ -18,9 +13,7 @@ describe("normalizeRememberedInstanceSettingsPath", () => {
   });
 
   it("falls back to the default page for unknown paths", () => {
-    expect(normalizeRememberedInstanceSettingsPath("/instance/settings/nope")).toBe(
-      DEFAULT_INSTANCE_SETTINGS_PATH,
-    );
+    expect(normalizeRememberedInstanceSettingsPath("/instance/settings/nope")).toBe(DEFAULT_INSTANCE_SETTINGS_PATH);
     expect(normalizeRememberedInstanceSettingsPath(null)).toBe(DEFAULT_INSTANCE_SETTINGS_PATH);
   });
 });

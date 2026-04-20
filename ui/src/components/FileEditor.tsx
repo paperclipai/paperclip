@@ -56,13 +56,7 @@ interface FileEditorProps {
   className?: string;
 }
 
-export function FileEditor({
-  filename,
-  value,
-  onChange,
-  readOnly = false,
-  className,
-}: FileEditorProps) {
+export function FileEditor({ filename, value, onChange, readOnly = false, className }: FileEditorProps) {
   const { theme } = useTheme();
   const ext = getFileExt(filename);
   const [showPreview, setShowPreview] = useState(false);

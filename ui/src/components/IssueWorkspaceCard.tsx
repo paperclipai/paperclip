@@ -8,6 +8,7 @@ import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Check, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
 
 /* -------------------------------------------------------------------------- */
@@ -26,7 +27,12 @@ function issueModeForExistingWorkspace(mode: string | null | undefined) {
   return "shared_workspace";
 }
 
-function shouldPresentExistingWorkspaceSelection(issue: Issue) {
+function shouldPresentExistingWorkspaceSelection(issue: {
+  executionWorkspaceId: string | null;
+  executionWorkspacePreference: string | null;
+  executionWorkspaceSettings: Issue["executionWorkspaceSettings"];
+  currentExecutionWorkspace?: ExecutionWorkspace | null;
+}) {
   const persistedMode =
     issue.currentExecutionWorkspace?.mode ??
     issue.executionWorkspaceSettings?.mode ??
@@ -156,12 +162,45 @@ function statusBadge(status: string) {
   );
 }
 
+function IssueWorkspaceCardSkeleton() {
+  return (
+    <div className="rounded-lg border border-border p-3 space-y-3" data-testid="issue-workspace-card-skeleton">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-4 w-4 rounded-full" />
+          <Skeleton className="h-4 w-36" />
+          <Skeleton className="h-5 w-16 rounded-full" />
+        </div>
+        <Skeleton className="h-6 w-14" />
+      </div>
+      <div className="space-y-2">
+        <Skeleton className="h-3 w-40" />
+        <Skeleton className="h-3 w-full" />
+      </div>
+    </div>
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Main component                                                             */
 /* -------------------------------------------------------------------------- */
 
 interface IssueWorkspaceCardProps {
-  issue: Issue;
+  issue: Omit<
+    Pick<
+      Issue,
+      | "companyId"
+      | "projectId"
+      | "projectWorkspaceId"
+      | "executionWorkspaceId"
+      | "executionWorkspacePreference"
+      | "executionWorkspaceSettings"
+    >,
+    "companyId"
+  > & {
+    companyId: string | null;
+    currentExecutionWorkspace?: ExecutionWorkspace | null;
+  };
   project: {
     id: string;
     executionWorkspacePolicy?: {
@@ -172,20 +211,31 @@ interface IssueWorkspaceCardProps {
     workspaces?: Array<{ id: string; isPrimary: boolean }>;
   } | null;
   onUpdate: (data: Record<string, unknown>) => void;
+  initialEditing?: boolean;
+  livePreview?: boolean;
+  onDraftChange?: (data: Record<string, unknown>, meta: { canSave: boolean }) => void;
 }
 
-export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceCardProps) {
+export function IssueWorkspaceCard({
+  issue,
+  project,
+  onUpdate,
+  initialEditing = false,
+  livePreview = false,
+  onDraftChange,
+}: IssueWorkspaceCardProps) {
   const { selectedCompanyId } = useCompany();
   const companyId = issue.companyId ?? selectedCompanyId;
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(initialEditing);
 
-  const { data: experimentalSettings } = useQuery({
+  const { data: experimentalSettings, isLoading: experimentalSettingsLoading } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
   });
 
-  const policyEnabled =
-    experimentalSettings?.enableIsolatedWorkspaces === true && Boolean(project?.executionWorkspacePolicy?.enabled);
+  const projectWorkspacePolicyEnabled = Boolean(project?.executionWorkspacePolicy?.enabled);
+  const policyEnabled = experimentalSettings?.enableIsolatedWorkspaces === true && projectWorkspacePolicyEnabled;
 
   const workspace = issue.currentExecutionWorkspace as ExecutionWorkspace | null | undefined;
 
@@ -220,11 +270,15 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
   const selectedReusableExecutionWorkspace =
     deduplicatedReusableWorkspaces.find((w) => w.id === issue.executionWorkspaceId) ?? workspace ?? null;
 
-  const currentSelection = shouldPresentExistingWorkspaceSelection(issue)
+  const configuredSelection = shouldPresentExistingWorkspaceSelection(issue)
     ? "reuse_existing"
     : (issue.executionWorkspacePreference ??
       issue.executionWorkspaceSettings?.mode ??
       defaultExecutionWorkspaceModeForProject(project));
+  const currentSelection =
+    configuredSelection === "operator_branch" || configuredSelection === "agent_default"
+      ? "shared_workspace"
+      : configuredSelection;
 
   const [draftSelection, setDraftSelection] = useState(currentSelection);
   const [draftExecutionWorkspaceId, setDraftExecutionWorkspaceId] = useState(issue.executionWorkspaceId ?? "");
@@ -232,7 +286,7 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
   useEffect(() => {
     if (editing) return;
     setDraftSelection(currentSelection); // eslint-disable-line react-hooks/set-state-in-effect
-     
+
     setDraftExecutionWorkspaceId(issue.executionWorkspaceId ?? "");
   }, [currentSelection, editing, issue.executionWorkspaceId]);
 
@@ -255,9 +309,8 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
 
   const canSaveWorkspaceConfig = draftSelection !== "reuse_existing" || draftExecutionWorkspaceId.length > 0;
 
-  const handleSave = useCallback(() => {
-    if (!canSaveWorkspaceConfig) return;
-    onUpdate({
+  const buildWorkspaceDraftUpdate = useCallback(
+    () => ({
       executionWorkspacePreference: draftSelection,
       executionWorkspaceId: draftSelection === "reuse_existing" ? draftExecutionWorkspaceId || null : null,
       executionWorkspaceSettings: {
@@ -266,9 +319,20 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
             ? issueModeForExistingWorkspace(configuredReusableWorkspace?.mode)
             : draftSelection,
       },
-    });
+    }),
+    [configuredReusableWorkspace?.mode, draftExecutionWorkspaceId, draftSelection],
+  );
+
+  useEffect(() => {
+    if (!onDraftChange) return;
+    onDraftChange(buildWorkspaceDraftUpdate(), { canSave: canSaveWorkspaceConfig });
+  }, [buildWorkspaceDraftUpdate, canSaveWorkspaceConfig, onDraftChange]);
+
+  const handleSave = useCallback(() => {
+    if (!canSaveWorkspaceConfig) return;
+    onUpdate(buildWorkspaceDraftUpdate());
     setEditing(false);
-  }, [canSaveWorkspaceConfig, configuredReusableWorkspace?.mode, draftExecutionWorkspaceId, draftSelection, onUpdate]);
+  }, [buildWorkspaceDraftUpdate, canSaveWorkspaceConfig, onUpdate]);
 
   // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const handleCancel = useCallback(() => {
@@ -277,7 +341,13 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
     setEditing(false);
   }, [currentSelection, issue.executionWorkspaceId]);
 
+  if (project && projectWorkspacePolicyEnabled && experimentalSettingsLoading) {
+    return <IssueWorkspaceCardSkeleton />;
+  }
+
   if (!policyEnabled || !project) return null;
+
+  const showEditingControls = livePreview || editing;
 
   return (
     <div className="rounded-lg border border-border p-3 space-y-2">
@@ -291,7 +361,7 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
           {workspace ? statusBadge(workspace.status) : statusBadge("idle")}
         </div>
         <div className="flex items-center gap-1">
-          {editing ? (
+          {!livePreview && editing ? (
             <>
               <Button
                 variant="ghost"
@@ -306,7 +376,7 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
                 Save
               </Button>
             </>
-          ) : (
+          ) : !livePreview ? (
             <Button
               variant="ghost"
               size="sm"
@@ -316,12 +386,12 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
               <Pencil className="h-3 w-3 mr-1" />
               Edit
             </Button>
-          )}
+          ) : null}
         </div>
       </div>
 
       {/* Read-only info */}
-      {!editing && (
+      {!showEditingControls && (
         <div className="space-y-1.5 text-xs">
           {workspace?.branchName && (
             <div className="flex items-center gap-1.5">
@@ -376,7 +446,7 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
       )}
 
       {/* Editing controls */}
-      {editing && (
+      {showEditingControls && (
         <div className="space-y-2 pt-1">
           <select
             className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"

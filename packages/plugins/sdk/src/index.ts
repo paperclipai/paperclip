@@ -54,11 +54,7 @@ export { createTestHarness } from "./testing.js";
 export { createPluginBundlerPresets } from "./bundlers.js";
 export { startPluginDevServer, getUiBuildSnapshot } from "./dev-server.js";
 export { startWorkerRpcHost, runWorker } from "./worker-rpc-host.js";
-export {
-  createHostClientHandlers,
-  getRequiredCapability,
-  CapabilityDeniedError,
-} from "./host-client-factory.js";
+export { createHostClientHandlers, getRequiredCapability, CapabilityDeniedError } from "./host-client-factory.js";
 
 // JSON-RPC protocol helpers and constants
 export {
@@ -96,11 +92,7 @@ export type {
   PluginConfigValidationResult,
   PluginWebhookInput,
 } from "./define-plugin.js";
-export type {
-  TestHarness,
-  TestHarnessOptions,
-  TestHarnessLogEntry,
-} from "./testing.js";
+export type { TestHarness, TestHarnessOptions, TestHarnessLogEntry } from "./testing.js";
 export type {
   PluginBundlerPresetInput,
   PluginBundlerPresets,
@@ -108,16 +100,8 @@ export type {
   RollupLikeConfig,
 } from "./bundlers.js";
 export type { PluginDevServer, PluginDevServerOptions } from "./dev-server.js";
-export type {
-  WorkerRpcHostOptions,
-  WorkerRpcHost,
-  RunWorkerOptions,
-} from "./worker-rpc-host.js";
-export type {
-  HostServices,
-  HostClientFactoryOptions,
-  HostClientHandlers,
-} from "./host-client-factory.js";
+export type { WorkerRpcHostOptions, WorkerRpcHost, RunWorkerOptions } from "./worker-rpc-host.js";
+export type { HostServices, HostClientFactoryOptions, HostClientHandlers } from "./host-client-factory.js";
 
 // JSON-RPC protocol types
 export type {
@@ -182,6 +166,7 @@ export type {
   PluginStreamsClient,
   PluginToolsClient,
   PluginMetricsClient,
+  PluginTelemetryClient,
   PluginLogger,
 } from "./types.js";
 

@@ -98,16 +98,16 @@ export function createPluginBundlerPresets(input: PluginBundlerPresetInput = {})
 
   const esbuildUi = uiEntry
     ? {
-      entryPoints: [uiEntry],
-      outdir: `${outdir}/ui`,
-      bundle: true,
-      format: "esm" as const,
-      platform: "browser" as const,
-      target: "es2022",
-      sourcemap,
-      minify,
-      external: uiExternal,
-    }
+        entryPoints: [uiEntry],
+        outdir: `${outdir}/ui`,
+        bundle: true,
+        format: "esm" as const,
+        platform: "browser" as const,
+        target: "es2022",
+        sourcemap,
+        minify,
+        external: uiExternal,
+      }
     : undefined;
 
   const rollupWorker: RollupLikeConfig = {
@@ -134,15 +134,15 @@ export function createPluginBundlerPresets(input: PluginBundlerPresetInput = {})
 
   const rollupUi = uiEntry
     ? {
-      input: uiEntry,
-      output: {
-        dir: `${outdir}/ui`,
-        format: "es" as const,
-        sourcemap,
-        entryFileNames: "index.js",
-      },
-      external: uiExternal,
-    }
+        input: uiEntry,
+        output: {
+          dir: `${outdir}/ui`,
+          format: "es" as const,
+          sourcemap,
+          entryFileNames: "index.js",
+        },
+        external: uiExternal,
+      }
     : undefined;
 
   return {

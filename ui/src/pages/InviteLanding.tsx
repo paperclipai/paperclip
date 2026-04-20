@@ -12,18 +12,7 @@ import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
 type JoinType = "human" | "agent";
 const joinAdapterOptions: AgentAdapterType[] = [...AGENT_ADAPTER_TYPES];
 
-const adapterLabels: Record<string, string> = {
-  claude_local: "Claude (local)",
-  codex_local: "Codex (local)",
-  gemini_local: "Gemini CLI (local)",
-  opencode_local: "OpenCode (local)",
-  pi_local: "Pi (local)",
-  openclaw_gateway: "OpenClaw Gateway",
-  cursor: "Cursor (local)",
-  hermes_local: "Hermes Agent",
-  process: "Process",
-  http: "HTTP",
-};
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
 const ENABLED_INVITE_ADAPTERS = new Set([
   "claude_local",
@@ -32,7 +21,6 @@ const ENABLED_INVITE_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
   "cursor",
-  "hermes_local",
 ]);
 
 function dateTime(value: string) {
@@ -87,7 +75,7 @@ export function InviteLandingPage() {
 
   useEffect(() => {
     if (!availableJoinTypes.includes(joinType)) {
-      setJoinType(availableJoinTypes[0] ?? "human"); // eslint-disable-line react-hooks/set-state-in-effect
+      setJoinType(availableJoinTypes[0] ?? "human");
     }
   }, [availableJoinTypes, joinType]);
 
@@ -285,7 +273,7 @@ export function InviteLandingPage() {
               >
                 {joinAdapterOptions.map((type) => (
                   <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
-                    {adapterLabels[type]}
+                    {getAdapterLabel(type)}
                     {!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
                   </option>
                 ))}

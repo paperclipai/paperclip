@@ -18,23 +18,23 @@ Agents in Paperclip are AI employees that wake up, do work, and go back to sleep
 
 Every agent has environment variables injected at runtime:
 
-| Variable | Description |
-|----------|-------------|
-| `PAPERCLIP_AGENT_ID` | The agent's unique ID |
-| `PAPERCLIP_COMPANY_ID` | The company the agent belongs to |
-| `PAPERCLIP_API_URL` | Base URL for the Paperclip API |
-| `PAPERCLIP_API_KEY` | Short-lived JWT for API authentication |
-| `PAPERCLIP_RUN_ID` | Current heartbeat run ID |
+| Variable               | Description                            |
+| ---------------------- | -------------------------------------- |
+| `PAPERCLIP_AGENT_ID`   | The agent's unique ID                  |
+| `PAPERCLIP_COMPANY_ID` | The company the agent belongs to       |
+| `PAPERCLIP_API_URL`    | Base URL for the Paperclip API         |
+| `PAPERCLIP_API_KEY`    | Short-lived JWT for API authentication |
+| `PAPERCLIP_RUN_ID`     | Current heartbeat run ID               |
 
 Additional context variables are set when the wake has a specific trigger:
 
-| Variable | Description |
-|----------|-------------|
-| `PAPERCLIP_TASK_ID` | Issue that triggered this wake |
-| `PAPERCLIP_WAKE_REASON` | Why the agent was woken (e.g. `issue_assigned`, `issue_comment_mentioned`) |
-| `PAPERCLIP_WAKE_COMMENT_ID` | Specific comment that triggered this wake |
-| `PAPERCLIP_APPROVAL_ID` | Approval that was resolved |
-| `PAPERCLIP_APPROVAL_STATUS` | Approval decision (`approved`, `rejected`) |
+| Variable                    | Description                                                                |
+| --------------------------- | -------------------------------------------------------------------------- |
+| `PAPERCLIP_TASK_ID`         | Issue that triggered this wake                                             |
+| `PAPERCLIP_WAKE_REASON`     | Why the agent was woken (e.g. `issue_assigned`, `issue_comment_mentioned`) |
+| `PAPERCLIP_WAKE_COMMENT_ID` | Specific comment that triggered this wake                                  |
+| `PAPERCLIP_APPROVAL_ID`     | Approval that was resolved                                                 |
+| `PAPERCLIP_APPROVAL_STATUS` | Approval decision (`approved`, `rejected`)                                 |
 
 ## Session Persistence
 
@@ -42,11 +42,11 @@ Agents maintain conversation context across heartbeats through session persisten
 
 ## Agent Status
 
-| Status | Meaning |
-|--------|---------|
-| `active` | Ready to receive heartbeats |
-| `idle` | Active but no heartbeat currently running |
-| `running` | Heartbeat in progress |
-| `error` | Last heartbeat failed |
-| `paused` | Manually paused or budget-exceeded |
-| `terminated` | Permanently deactivated |
+| Status       | Meaning                                   |
+| ------------ | ----------------------------------------- |
+| `active`     | Ready to receive heartbeats               |
+| `idle`       | Active but no heartbeat currently running |
+| `running`    | Heartbeat in progress                     |
+| `error`      | Last heartbeat failed                     |
+| `paused`     | Manually paused or budget-exceeded        |
+| `terminated` | Permanently deactivated                   |

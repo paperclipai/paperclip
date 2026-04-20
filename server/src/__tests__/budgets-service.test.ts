@@ -12,7 +12,9 @@ type SelectResult = unknown[];
 function createDbStub(selectResults: SelectResult[]) {
   const pendingSelects = [...selectResults];
   const selectWhere = vi.fn(async () => pendingSelects.shift() ?? []);
-  const selectThen = vi.fn((resolve: (value: unknown[]) => unknown) => Promise.resolve(resolve(pendingSelects.shift() ?? [])));
+  const selectThen = vi.fn((resolve: (value: unknown[]) => unknown) =>
+    Promise.resolve(resolve(pendingSelects.shift() ?? [])),
+  );
   const selectOrderBy = vi.fn(async () => pendingSelects.shift() ?? []);
   const selectFrom = vi.fn(() => ({
     where: selectWhere,
@@ -84,25 +86,31 @@ describe("budgetService", () => {
       [policy],
       [{ total: 150 }],
       [],
-      [{
-        companyId: "company-1",
-        name: "Budget Agent",
-        status: "running",
-        pauseReason: null,
-      }],
+      [
+        {
+          companyId: "company-1",
+          name: "Budget Agent",
+          status: "running",
+          pauseReason: null,
+        },
+      ],
     ]);
 
-    dbStub.queueInsert([{
-      id: "approval-1",
-      companyId: "company-1",
-      status: "pending",
-    }]);
-    dbStub.queueInsert([{
-      id: "incident-1",
-      companyId: "company-1",
-      policyId: "policy-1",
-      approvalId: "approval-1",
-    }]);
+    dbStub.queueInsert([
+      {
+        id: "approval-1",
+        companyId: "company-1",
+        status: "pending",
+      },
+    ]);
+    dbStub.queueInsert([
+      {
+        id: "incident-1",
+        companyId: "company-1",
+        policyId: "policy-1",
+        approvalId: "approval-1",
+      },
+    ]);
     dbStub.queueUpdate([]);
     const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
 
@@ -167,16 +175,20 @@ describe("budgetService", () => {
     };
 
     const dbStub = createDbStub([
-      [{
-        status: "running",
-        pauseReason: null,
-        companyId: "company-1",
-        name: "Budget Agent",
-      }],
-      [{
-        status: "active",
-        name: "Paperclip",
-      }],
+      [
+        {
+          status: "running",
+          pauseReason: null,
+          companyId: "company-1",
+          name: "Budget Agent",
+        },
+      ],
+      [
+        {
+          status: "active",
+          name: "Paperclip",
+        },
+      ],
       [],
       [agentPolicy],
       [{ total: 120 }],
@@ -195,17 +207,21 @@ describe("budgetService", () => {
 
   it("surfaces a budget-owned company pause distinctly from a manual pause", async () => {
     const dbStub = createDbStub([
-      [{
-        status: "idle",
-        pauseReason: null,
-        companyId: "company-1",
-        name: "Budget Agent",
-      }],
-      [{
-        status: "paused",
-        pauseReason: "budget",
-        name: "Paperclip",
-      }],
+      [
+        {
+          status: "idle",
+          pauseReason: null,
+          companyId: "company-1",
+          name: "Budget Agent",
+        },
+      ],
+      [
+        {
+          status: "paused",
+          pauseReason: "budget",
+          name: "Paperclip",
+        },
+      ],
     ]);
 
     const service = budgetService(dbStub.db as any);
@@ -221,21 +237,25 @@ describe("budgetService", () => {
 
   it("uses live observed spend when raising a budget incident", async () => {
     const dbStub = createDbStub([
-      [{
-        id: "incident-1",
-        companyId: "company-1",
-        policyId: "policy-1",
-        amountObserved: 120,
-        approvalId: "approval-1",
-      }],
-      [{
-        id: "policy-1",
-        companyId: "company-1",
-        scopeType: "company",
-        scopeId: "company-1",
-        metric: "billed_cents",
-        windowKind: "calendar_month_utc",
-      }],
+      [
+        {
+          id: "incident-1",
+          companyId: "company-1",
+          policyId: "policy-1",
+          amountObserved: 120,
+          approvalId: "approval-1",
+        },
+      ],
+      [
+        {
+          id: "policy-1",
+          companyId: "company-1",
+          scopeType: "company",
+          scopeId: "company-1",
+          metric: "billed_cents",
+          windowKind: "calendar_month_utc",
+        },
+      ],
       [{ total: 150 }],
     ]);
 
@@ -254,43 +274,49 @@ describe("budgetService", () => {
   it("syncs company monthly budget when raising and resuming a company incident", async () => {
     const now = new Date();
     const dbStub = createDbStub([
-      [{
-        id: "incident-1",
-        companyId: "company-1",
-        policyId: "policy-1",
-        scopeType: "company",
-        scopeId: "company-1",
-        metric: "billed_cents",
-        windowKind: "calendar_month_utc",
-        windowStart: now,
-        windowEnd: now,
-        thresholdType: "hard",
-        amountLimit: 100,
-        amountObserved: 120,
-        status: "open",
-        approvalId: "approval-1",
-        resolvedAt: null,
-        createdAt: now,
-        updatedAt: now,
-      }],
-      [{
-        id: "policy-1",
-        companyId: "company-1",
-        scopeType: "company",
-        scopeId: "company-1",
-        metric: "billed_cents",
-        windowKind: "calendar_month_utc",
-        amount: 100,
-      }],
+      [
+        {
+          id: "incident-1",
+          companyId: "company-1",
+          policyId: "policy-1",
+          scopeType: "company",
+          scopeId: "company-1",
+          metric: "billed_cents",
+          windowKind: "calendar_month_utc",
+          windowStart: now,
+          windowEnd: now,
+          thresholdType: "hard",
+          amountLimit: 100,
+          amountObserved: 120,
+          status: "open",
+          approvalId: "approval-1",
+          resolvedAt: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      [
+        {
+          id: "policy-1",
+          companyId: "company-1",
+          scopeType: "company",
+          scopeId: "company-1",
+          metric: "billed_cents",
+          windowKind: "calendar_month_utc",
+          amount: 100,
+        },
+      ],
       [{ total: 120 }],
       [{ id: "approval-1", status: "approved" }],
-      [{
-        companyId: "company-1",
-        name: "Paperclip",
-        status: "paused",
-        pauseReason: "budget",
-        pausedAt: now,
-      }],
+      [
+        {
+          companyId: "company-1",
+          name: "Paperclip",
+          status: "paused",
+          pauseReason: "budget",
+          pausedAt: now,
+        },
+      ],
     ]);
 
     const service = budgetService(dbStub.db as any);

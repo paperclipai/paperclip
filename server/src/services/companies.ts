@@ -17,6 +17,7 @@ import {
   heartbeatRunEvents,
   costEvents,
   financeEvents,
+  issueReadStates,
   approvalComments,
   approvals,
   activityLog,
@@ -25,6 +26,7 @@ import {
   invites,
   principalPermissionGrants,
   companyMemberships,
+  companySkills,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -43,6 +45,10 @@ export function companyService(db: Db) {
     budgetMonthlyCents: companies.budgetMonthlyCents,
     spentMonthlyCents: companies.spentMonthlyCents,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
+    feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
+    feedbackDataSharingConsentAt: companies.feedbackDataSharingConsentAt,
+    feedbackDataSharingConsentByUserId: companies.feedbackDataSharingConsentByUserId,
+    feedbackDataSharingTermsVersion: companies.feedbackDataSharingTermsVersion,
     brandColor: companies.brandColor,
     logoAssetId: companyLogos.assetId,
     createdAt: companies.createdAt,
@@ -65,16 +71,13 @@ export function companyService(db: Db) {
     };
   }
 
-  async function getMonthlySpendByCompanyIds(
-    companyIds: string[],
-    database: Pick<Db, "select"> = db,
-  ) {
+  async function getMonthlySpendByCompanyIds(companyIds: string[], database: Pick<Db, "select"> = db) {
     if (companyIds.length === 0) return new Map<string, number>();
     const { start, end } = currentUtcMonthWindow();
     const rows = await database
       .select({
         companyId: costEvents.companyId,
-        spentMonthlyCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+        spentMonthlyCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
       })
       .from(costEvents)
       .where(
@@ -92,7 +95,10 @@ export function companyService(db: Db) {
     rows: T[],
     database: Pick<Db, "select"> = db,
   ) {
-    const spendByCompanyId = await getMonthlySpendByCompanyIds(rows.map((row) => row.id), database);
+    const spendByCompanyId = await getMonthlySpendByCompanyIds(
+      rows.map((row) => row.id),
+      database,
+    );
     return rows.map((row) => ({
       ...row,
       spentMonthlyCents: spendByCompanyId.get(row.id) ?? 0,
@@ -117,16 +123,19 @@ export function companyService(db: Db) {
   }
 
   function isIssuePrefixConflict(error: unknown) {
-    const constraint = typeof error === "object" && error !== null && "constraint" in error
-      ? (error as { constraint?: string }).constraint
-      : typeof error === "object" && error !== null && "constraint_name" in error
-        ? (error as { constraint_name?: string }).constraint_name
-        : undefined;
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: string }).code === "23505"
-      && constraint === "companies_issue_prefix_idx";
+    const constraint =
+      typeof error === "object" && error !== null && "constraint" in error
+        ? (error as { constraint?: string }).constraint
+        : typeof error === "object" && error !== null && "constraint_name" in error
+          ? (error as { constraint_name?: string }).constraint_name
+          : undefined;
+    return (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (error as { code?: string }).code === "23505" &&
+      constraint === "companies_issue_prefix_idx"
+    );
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
@@ -174,10 +183,7 @@ export function companyService(db: Db) {
       return enrichCompany(hydrated);
     },
 
-    update: (
-      id: string,
-      data: Partial<typeof companies.$inferInsert> & { logoAssetId?: string | null },
-    ) =>
+    update: (id: string, data: Partial<typeof companies.$inferInsert> & { logoAssetId?: string | null }) =>
       db.transaction(async (tx) => {
         const existing = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
@@ -228,10 +234,15 @@ export function companyService(db: Db) {
           await tx.delete(assets).where(eq(assets.id, existing.logoAssetId));
         }
 
-        const [hydrated] = await hydrateCompanySpend([{
-          ...updated,
-          logoAssetId: logoAssetId === undefined ? existing.logoAssetId : logoAssetId,
-        }], tx);
+        const [hydrated] = await hydrateCompanySpend(
+          [
+            {
+              ...updated,
+              logoAssetId: logoAssetId === undefined ? existing.logoAssetId : logoAssetId,
+            },
+          ],
+          tx,
+        );
 
         return enrichCompany(hydrated);
       }),
@@ -307,6 +318,7 @@ export function companyService(db: Db) {
         // Delete from child tables in dependency order
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
+        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
@@ -321,30 +333,22 @@ export function companyService(db: Db) {
         await tx.delete(invites).where(eq(invites.companyId, id));
         await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
+        await tx.delete(companySkills).where(eq(companySkills.companyId, id));
+        await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
         await tx.delete(assets).where(eq(assets.companyId, id));
         await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
         await tx.delete(agents).where(eq(agents.companyId, id));
-        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
-        const rows = await tx
-          .delete(companies)
-          .where(eq(companies.id, id))
-          .returning();
+        const rows = await tx.delete(companies).where(eq(companies.id, id)).returning();
         return rows[0] ?? null;
       }),
 
     stats: () =>
       Promise.all([
-        db
-          .select({ companyId: agents.companyId, count: count() })
-          .from(agents)
-          .groupBy(agents.companyId),
-        db
-          .select({ companyId: issues.companyId, count: count() })
-          .from(issues)
-          .groupBy(issues.companyId),
+        db.select({ companyId: agents.companyId, count: count() }).from(agents).groupBy(agents.companyId),
+        db.select({ companyId: issues.companyId, count: count() }).from(issues).groupBy(issues.companyId),
       ]).then(([agentRows, issueRows]) => {
         const result: Record<string, { agentCount: number; issueCount: number }> = {};
         for (const row of agentRows) {

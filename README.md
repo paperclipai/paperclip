@@ -177,6 +177,14 @@ Open source. Self-hosted. No Paperclip account required.
 npx paperclipai onboard --yes
 ```
 
+That quickstart path now defaults to trusted local loopback mode for the fastest first run. To start in authenticated/private mode instead, choose a bind preset explicitly:
+
+```bash
+npx paperclipai onboard --yes --bind lan
+# or:
+npx paperclipai onboard --yes --bind tailnet
+```
+
 If you already have Paperclip configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to edit settings.
 
 Or manually:
@@ -225,10 +233,14 @@ pnpm dev:once         # Full dev without file watching
 pnpm dev:server       # Server only
 pnpm build            # Build all
 pnpm typecheck        # Type checking
-pnpm test:run         # Run tests
+pnpm test             # Cheap default test run (Vitest only)
+pnpm test:watch       # Vitest watch mode
+pnpm test:e2e         # Playwright browser suite
 pnpm db:generate      # Generate DB migration
 pnpm db:migrate       # Apply migrations
 ```
+
+`pnpm test` does not run Playwright. Browser suites stay separate and are typically run only when working on those flows or in CI.
 
 See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 
@@ -243,11 +255,18 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ✅ Skills Manager
 - ✅ Scheduled Routines
 - ✅ Better Budgeting
-- ⚪ Artifacts & Deployments
-- ⚪ CEO Chat
-- ⚪ MAXIMIZER MODE
+- ✅ Agent Reviews and Approvals
 - ⚪ Multiple Human Users
 - ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
+- ⚪ Artifacts & Work Products
+- ⚪ Memory & Knowledge
+- ⚪ Enforced Outcomes
+- ⚪ MAXIMIZER MODE
+- ⚪ Deep Planning
+- ⚪ Work Queues
+- ⚪ Self-Organization
+- ⚪ Automatic Organizational Learning
+- ⚪ CEO Chat
 - ⚪ Cloud deployments
 - ⚪ Desktop App
 
@@ -256,6 +275,19 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 ## Community & Plugins
 
 Find Plugins and more at [awesome-paperclip](https://github.com/gsxdsm/awesome-paperclip)
+
+## Telemetry
+
+Paperclip collects anonymous usage telemetry to help us understand how the product is used and improve it. No personal information, issue content, prompts, file paths, or secrets are ever collected. Private repository references are hashed with a per-install salt before being sent.
+
+Telemetry is **enabled by default** and can be disabled with any of the following:
+
+| Method               | How                                                     |
+| -------------------- | ------------------------------------------------------- |
+| Environment variable | `PAPERCLIP_TELEMETRY_DISABLED=1`                        |
+| Standard convention  | `DO_NOT_TRACK=1`                                        |
+| CI environments      | Automatically disabled when `CI=true`                   |
+| Config file          | Set `telemetry.enabled: false` in your Paperclip config |
 
 ## Contributing
 

@@ -182,7 +182,5 @@ export function truncateAtWord(text: string, maxLen: number): string {
 }
 
 function stripMarkdown(text: string): string {
-  return text
-    .replace(/\\([_*\[\]()~`>#+\-=|{}.!\\])/g, "$1")
-    .replace(/[*_`~]/g, "");
+  return text.replace(/\\([_*\[\]()~`>#+\-=|{}.!\\])/g, "$1").replace(/[*_`~]/g, "");
 }

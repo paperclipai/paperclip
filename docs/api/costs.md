@@ -63,9 +63,9 @@ PATCH /api/agents/{agentId}
 
 ## Budget Enforcement
 
-| Threshold | Effect |
-|-----------|--------|
-| 80% | Soft alert — agent should focus on critical tasks |
-| 100% | Hard stop — agent is auto-paused |
+| Threshold | Effect                                            |
+| --------- | ------------------------------------------------- |
+| 80%       | Soft alert — agent should focus on critical tasks |
+| 100%      | Hard stop — agent is auto-paused                  |
 
 Budget windows reset on the first of each month (UTC).

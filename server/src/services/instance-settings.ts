@@ -1,6 +1,8 @@
 import type { Db } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
 import {
+  DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
+  DEFAULT_BACKUP_RETENTION,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
@@ -18,10 +20,17 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   if (parsed.success) {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
+      keyboardShortcuts: parsed.data.keyboardShortcuts ?? false,
+      feedbackDataSharingPreference:
+        parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
+      backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
     };
   }
   return {
     censorUsernameInLogs: false,
+    keyboardShortcuts: false,
+    feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
+    backupRetention: DEFAULT_BACKUP_RETENTION,
   };
 }
 

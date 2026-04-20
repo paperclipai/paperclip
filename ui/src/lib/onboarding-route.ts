@@ -31,10 +31,7 @@ export function resolveRouteOnboardingOptions(params: {
   }
 
   const matchedCompany =
-    companies.find(
-      (company) =>
-        company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase(),
-    ) ?? null;
+    companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null;
 
   if (!matchedCompany) {
     return { initialStep: 1 };

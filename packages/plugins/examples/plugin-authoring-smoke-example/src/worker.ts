@@ -20,7 +20,7 @@ const plugin = definePlugin({
 
   async onHealth() {
     return { status: "ok", message: "Plugin worker is running" };
-  }
+  },
 });
 
 export default plugin;

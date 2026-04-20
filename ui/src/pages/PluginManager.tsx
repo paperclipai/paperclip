@@ -27,7 +27,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { useToast } from "@/context/ToastContext";
+import { useToastActions } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
@@ -64,7 +64,7 @@ export function PluginManager() {
   const { selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
 
   const [installPackage, setInstallPackage] = useState("");
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
@@ -80,7 +80,11 @@ export function PluginManager() {
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
-  const { data: plugins, isLoading, error } = useQuery({
+  const {
+    data: plugins,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
@@ -148,11 +152,8 @@ export function PluginManager() {
   const installedByPackageName = new Map(installedPlugins.map((plugin) => [plugin.packageName, plugin]));
   const examplePackageNames = new Set(examples.map((example) => example.packageName));
   const errorSummaryByPluginId = useMemo(
-    () =>
-      new Map(
-        installedPlugins.map((plugin) => [plugin.id, getPluginErrorSummary(plugin)])
-      ),
-    [installedPlugins]
+    () => new Map(installedPlugins.map((plugin) => [plugin.id, getPluginErrorSummary(plugin)])),
+    [installedPlugins],
   );
 
   if (isLoading) return <div className="p-4 text-sm text-muted-foreground">Loading plugins...</div>;
@@ -165,7 +166,7 @@ export function PluginManager() {
           <Puzzle className="h-6 w-6 text-muted-foreground" />
           <h1 className="text-xl font-semibold">Plugin Manager</h1>
         </div>
-        
+
         <Dialog open={installDialogOpen} onOpenChange={setInstallDialogOpen}>
           <DialogTrigger asChild>
             <Button size="sm" className="gap-2">
@@ -176,9 +177,7 @@ export function PluginManager() {
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Install Plugin</DialogTitle>
-              <DialogDescription>
-                Enter the npm package name of the plugin you wish to install.
-              </DialogDescription>
+              <DialogDescription>Enter the npm package name of the plugin you wish to install.</DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
@@ -192,7 +191,9 @@ export function PluginManager() {
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>Cancel</Button>
+              <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>
+                Cancel
+              </Button>
               <Button
                 onClick={() => installMutation.mutate({ packageName: installPackage })}
                 disabled={!installPackage || installMutation.isPending}
@@ -314,9 +315,7 @@ export function PluginManager() {
             <CardContent className="flex flex-col items-center justify-center py-10">
               <Puzzle className="h-10 w-10 text-muted-foreground mb-4" />
               <p className="text-sm font-medium">No plugins installed</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Install a plugin to extend functionality.
-              </p>
+              <p className="text-xs text-muted-foreground mt-1">Install a plugin to extend functionality.</p>
             </CardContent>
           </Card>
         ) : (
@@ -333,16 +332,17 @@ export function PluginManager() {
                       >
                         {plugin.manifestJson.displayName ?? plugin.packageName}
                       </Link>
-                      {examplePackageNames.has(plugin.packageName) && (
-                        <Badge variant="outline">Example</Badge>
-                      )}
+                      {examplePackageNames.has(plugin.packageName) && <Badge variant="outline">Example</Badge>}
                     </div>
                     <div>
                       <p className="text-xs text-muted-foreground mt-0.5 truncate" title={plugin.packageName}>
                         {plugin.packageName} · v{plugin.manifestJson.version ?? plugin.version}
                       </p>
                     </div>
-                    <p className="text-sm text-muted-foreground truncate mt-0.5" title={plugin.manifestJson.description}>
+                    <p
+                      className="text-sm text-muted-foreground truncate mt-0.5"
+                      title={plugin.manifestJson.description}
+                    >
                       {plugin.manifestJson.description || "No description provided."}
                     </p>
                     {plugin.status === "error" && (
@@ -381,12 +381,9 @@ export function PluginManager() {
                               ? "default"
                               : plugin.status === "error"
                                 ? "destructive"
-                              : "secondary"
+                                : "secondary"
                           }
-                          className={cn(
-                            "shrink-0",
-                            plugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""
-                          )}
+                          className={cn("shrink-0", plugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : "")}
                         >
                           {plugin.status}
                         </Badge>
@@ -437,7 +434,9 @@ export function PluginManager() {
 
       <Dialog
         open={uninstallPluginId !== null}
-        onOpenChange={(open) => { if (!open) setUninstallPluginId(null); }}
+        onOpenChange={(open) => {
+          if (!open) setUninstallPluginId(null);
+        }}
       >
         <DialogContent>
           <DialogHeader>
@@ -447,7 +446,9 @@ export function PluginManager() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setUninstallPluginId(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setUninstallPluginId(null)}>
+              Cancel
+            </Button>
             <Button
               variant="destructive"
               disabled={uninstallMutation.isPending}
@@ -467,13 +468,16 @@ export function PluginManager() {
 
       <Dialog
         open={errorDetailsPlugin !== null}
-        onOpenChange={(open) => { if (!open) setErrorDetailsPlugin(null); }}
+        onOpenChange={(open) => {
+          if (!open) setErrorDetailsPlugin(null);
+        }}
       >
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Error Details</DialogTitle>
             <DialogDescription>
-              {errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? "Plugin"} hit an error state.
+              {errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? "Plugin"} hit an error
+              state.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -481,9 +485,7 @@ export function PluginManager() {
               <div className="flex items-start gap-3">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
                 <div className="space-y-1 text-sm">
-                  <p className="font-medium text-red-700 dark:text-red-300">
-                    What errored
-                  </p>
+                  <p className="font-medium text-red-700 dark:text-red-300">What errored</p>
                   <p className="text-red-700/90 dark:text-red-200/90 break-words">
                     {errorDetailsPlugin ? getPluginErrorSummary(errorDetailsPlugin) : "No error summary available."}
                   </p>

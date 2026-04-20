@@ -63,7 +63,10 @@ const PAPERCLIP_SKILLS_CANDIDATES = [
 
 async function resolvePaperclipSkillsDir(): Promise<string | null> {
   for (const candidate of PAPERCLIP_SKILLS_CANDIDATES) {
-    const isDir = await fs.stat(candidate).then((s) => s.isDirectory()).catch(() => false);
+    const isDir = await fs
+      .stat(candidate)
+      .then((s) => s.isDirectory())
+      .catch(() => false);
     if (isDir) return candidate;
   }
   return null;
@@ -78,10 +81,7 @@ async function buildSkillsDir(): Promise<string> {
   const entries = await fs.readdir(skillsDir, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      await fs.symlink(
-        path.join(skillsDir, entry.name),
-        path.join(target, entry.name),
-      );
+      await fs.symlink(path.join(skillsDir, entry.name), path.join(target, entry.name));
     }
   }
   return tmp;

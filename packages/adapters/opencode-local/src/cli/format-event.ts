@@ -26,11 +26,7 @@ function errorText(value: unknown): string {
   const rec = asRecord(value);
   if (!rec) return "";
   const data = asRecord(rec.data);
-  const message =
-    asString(rec.message) ||
-    asString(data?.message) ||
-    asString(rec.name) ||
-    "";
+  const message = asString(rec.message) || asString(data?.message) || asString(rec.name) || "";
   if (message) return message;
   try {
     return JSON.stringify(rec);

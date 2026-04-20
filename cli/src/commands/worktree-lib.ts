@@ -102,10 +102,10 @@ function hslComponentToHex(n: number): string {
 function hslToHex(hue: number, saturation: number, lightness: number): string {
   const s = Math.max(0, Math.min(100, saturation)) / 100;
   const l = Math.max(0, Math.min(100, lightness)) / 100;
-  const c = (1 - Math.abs((2 * l) - 1)) * s;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
   const h = ((hue % 360) + 360) % 360;
   const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = l - (c / 2);
+  const m = l - c / 2;
 
   let r = 0;
   let g = 0;
@@ -214,6 +214,8 @@ export function buildWorktreeConfig(input: {
     server: {
       deploymentMode: source?.server.deploymentMode ?? "local_trusted",
       exposure: source?.server.exposure ?? "private",
+      ...(source?.server.bind ? { bind: source.server.bind } : {}),
+      ...(source?.server.customBindHost ? { customBindHost: source.server.customBindHost } : {}),
       host: source?.server.host ?? "127.0.0.1",
       port: serverPort,
       allowedHostnames: source?.server.allowedHostnames ?? [],
@@ -223,6 +225,9 @@ export function buildWorktreeConfig(input: {
       baseUrlMode: source?.auth.baseUrlMode ?? "auto",
       ...(authPublicBaseUrl ? { publicBaseUrl: authPublicBaseUrl } : {}),
       disableSignUp: source?.auth.disableSignUp ?? false,
+    },
+    telemetry: {
+      enabled: source?.telemetry?.enabled ?? true,
     },
     storage: {
       provider: source?.storage.provider ?? "local_disk",

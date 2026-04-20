@@ -28,7 +28,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
   {
     kind: "stderr",
     ts: "2026-03-11T15:21:05.594Z",
-    text: "[paperclip] Skipping saved session resume for task \"PAP-473\" because wake reason is issue_assigned.",
+    text: '[paperclip] Skipping saved session resume for task "PAP-473" because wake reason is issue_assigned.',
   },
   {
     kind: "init",
@@ -70,14 +70,16 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     kind: "tool_result",
     ts: "2026-03-11T15:21:19.034Z",
     toolUseId: "item_1",
-    content: "command: sed -n '1,220p' doc/GOAL.md\nstatus: completed\nexit_code: 0\n\n# Paperclip\n\nPaperclip is the backbone of the autonomous economy.",
+    content:
+      "command: sed -n '1,220p' doc/GOAL.md\nstatus: completed\nexit_code: 0\n\n# Paperclip\n\nPaperclip is the backbone of the autonomous economy.",
     isError: false,
   },
   {
     kind: "tool_result",
     ts: "2026-03-11T15:21:19.035Z",
     toolUseId: "item_2",
-    content: "command: sed -n '1,320p' doc/SPEC-implementation.md\nstatus: completed\nexit_code: 0\n\n# Paperclip V1 Implementation Spec\n\nPaperclip V1 must provide a full control-plane loop for autonomous agents.",
+    content:
+      "command: sed -n '1,320p' doc/SPEC-implementation.md\nstatus: completed\nexit_code: 0\n\n# Paperclip V1 Implementation Spec\n\nPaperclip V1 must provide a full control-plane loop for autonomous agents.",
     isError: false,
   },
   {
@@ -96,7 +98,8 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     name: "command_execution",
     toolUseId: "item_3",
     input: {
-      command: "rg -n \"LiveRunWidget|ActiveAgentsPanel|buildTranscript|TranscriptEntry|transcript\" ui/src server/src packages",
+      command:
+        'rg -n "LiveRunWidget|ActiveAgentsPanel|buildTranscript|TranscriptEntry|transcript" ui/src server/src packages',
       cwd: "/workspace/paperclip",
     },
   },
@@ -104,7 +107,8 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     kind: "tool_result",
     ts: "2026-03-11T15:22:15.982Z",
     toolUseId: "item_3",
-    content: "command: rg -n ...\nstatus: completed\nexit_code: 0\n\nui/src/components/ActiveAgentsPanel.tsx\nui/src/components/LiveRunWidget.tsx\nui/src/pages/AgentDetail.tsx",
+    content:
+      "command: rg -n ...\nstatus: completed\nexit_code: 0\n\nui/src/components/ActiveAgentsPanel.tsx\nui/src/components/LiveRunWidget.tsx\nui/src/pages/AgentDetail.tsx",
     isError: false,
   },
   {
@@ -136,7 +140,8 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     kind: "tool_result",
     ts: "2026-03-11T15:23:26.903Z",
     toolUseId: "item_4",
-    content: "command: pnpm -r typecheck\nstatus: completed\nexit_code: 0\n\npackages/adapter-utils typecheck: Done\nserver typecheck: Done\nui typecheck: Done\ncli typecheck: Done",
+    content:
+      "command: pnpm -r typecheck\nstatus: completed\nexit_code: 0\n\npackages/adapter-utils typecheck: Done\nserver typecheck: Done\nui typecheck: Done\ncli typecheck: Done",
     isError: false,
   },
   {
@@ -158,7 +163,8 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     kind: "tool_result",
     ts: "2026-03-11T15:23:56.944Z",
     toolUseId: "item_5",
-    content: "command: pnpm test:run\nstatus: failed\nexit_code: 1\n\nFAIL packages/db/src/runtime-config.test.ts\nFAIL src/__tests__/worktree.test.ts\n\nAll transcript-adapter tests passed after snapshot updates.",
+    content:
+      "command: pnpm test:run\nstatus: failed\nexit_code: 1\n\nFAIL packages/db/src/runtime-config.test.ts\nFAIL src/__tests__/worktree.test.ts\n\nAll transcript-adapter tests passed after snapshot updates.",
     isError: true,
   },
   {
@@ -194,7 +200,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     name: "command_execution",
     toolUseId: "item_7",
     input: {
-      command: "git commit -m \"Humanize run transcripts across run detail and live surfaces\"",
+      command: 'git commit -m "Humanize run transcripts across run detail and live surfaces"',
       cwd: "/workspace/paperclip",
     },
   },
@@ -202,7 +208,8 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     kind: "tool_result",
     ts: "2026-03-11T15:24:53.104Z",
     toolUseId: "item_7",
-    content: "command: git commit ...\nstatus: completed\nexit_code: 0\n\n87b8e21 Humanize run transcripts across run detail and live surfaces",
+    content:
+      "command: git commit ...\nstatus: completed\nexit_code: 0\n\n87b8e21 Humanize run transcripts across run detail and live surfaces",
     isError: false,
   },
   {
@@ -223,4 +230,3 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     errors: [],
   },
 ];
-

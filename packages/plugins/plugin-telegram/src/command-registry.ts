@@ -4,8 +4,15 @@ import { METRIC_NAMES } from "./constants.js";
 import type { CustomCommand, WorkflowStep } from "./types.js";
 
 const BUILTIN_COMMANDS = new Set([
-  "status", "issues", "agents", "approve", "help",
-  "connect", "connect-topic", "acp", "commands",
+  "status",
+  "issues",
+  "agents",
+  "approve",
+  "help",
+  "connect",
+  "connect-topic",
+  "acp",
+  "commands",
 ]);
 
 export async function handleCommandsCommand(
@@ -32,14 +39,20 @@ export async function handleCommandsCommand(
       await runCommand(ctx, token, chatId, parts[1] ?? "", parts.slice(2), messageThreadId, companyId);
       break;
     default:
-      await sendMessage(ctx, token, chatId, [
-        escapeMarkdownV2("\u{1f6e0}\ufe0f") + " *Custom Commands*",
-        "",
-        `/commands list \\- ${escapeMarkdownV2("Show all custom commands")}`,
-        `/commands import <json> \\- ${escapeMarkdownV2("Import a workflow command")}`,
-        `/commands delete <name> \\- ${escapeMarkdownV2("Remove a custom command")}`,
-        `/commands run <name> [args] \\- ${escapeMarkdownV2("Execute a custom command")}`,
-      ].join("\n"), { parseMode: "MarkdownV2", messageThreadId });
+      await sendMessage(
+        ctx,
+        token,
+        chatId,
+        [
+          escapeMarkdownV2("\u{1f6e0}\ufe0f") + " *Custom Commands*",
+          "",
+          `/commands list \\- ${escapeMarkdownV2("Show all custom commands")}`,
+          `/commands import <json> \\- ${escapeMarkdownV2("Import a workflow command")}`,
+          `/commands delete <name> \\- ${escapeMarkdownV2("Remove a custom command")}`,
+          `/commands run <name> [args] \\- ${escapeMarkdownV2("Execute a custom command")}`,
+        ].join("\n"),
+        { parseMode: "MarkdownV2", messageThreadId },
+      );
   }
 }
 
@@ -62,22 +75,39 @@ export async function tryCustomCommand(
   return true;
 }
 
-async function listCommands(ctx: PluginContext, token: string, chatId: string, messageThreadId: number | undefined, companyId: string) {
+async function listCommands(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  messageThreadId: number | undefined,
+  companyId: string,
+) {
   const resolvedCompanyId = companyId ?? chatId;
   const commands = await getCommandRegistry(ctx, resolvedCompanyId);
   if (commands.length === 0) {
-    await sendMessage(ctx, token, chatId, "No custom commands registered. Use /commands import to add one.", { messageThreadId });
+    await sendMessage(ctx, token, chatId, "No custom commands registered. Use /commands import to add one.", {
+      messageThreadId,
+    });
     return;
   }
   const lines = [escapeMarkdownV2("\u{1f6e0}\ufe0f") + " *Custom Commands*", ""];
   for (const cmd of commands) {
     lines.push(`/${escapeMarkdownV2(cmd.name)} \\- ${escapeMarkdownV2(cmd.description)}`);
-    lines.push(`  Steps: ${escapeMarkdownV2(String(cmd.steps.length))} \\| Created: ${escapeMarkdownV2(cmd.createdAt.split("T")[0] ?? cmd.createdAt)}`);
+    lines.push(
+      `  Steps: ${escapeMarkdownV2(String(cmd.steps.length))} \\| Created: ${escapeMarkdownV2(cmd.createdAt.split("T")[0] ?? cmd.createdAt)}`,
+    );
   }
   await sendMessage(ctx, token, chatId, lines.join("\n"), { parseMode: "MarkdownV2", messageThreadId });
 }
 
-async function importCommand(ctx: PluginContext, token: string, chatId: string, jsonStr: string, messageThreadId: number | undefined, companyId: string) {
+async function importCommand(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  jsonStr: string,
+  messageThreadId: number | undefined,
+  companyId: string,
+) {
   if (!jsonStr.trim()) {
     await sendMessage(ctx, token, chatId, "Usage: /commands import <json-definition>", { messageThreadId });
     return;
@@ -86,11 +116,15 @@ async function importCommand(ctx: PluginContext, token: string, chatId: string, 
   try {
     definition = JSON.parse(jsonStr);
   } catch {
-    await sendMessage(ctx, token, chatId, "Invalid JSON. Please provide a valid command definition.", { messageThreadId });
+    await sendMessage(ctx, token, chatId, "Invalid JSON. Please provide a valid command definition.", {
+      messageThreadId,
+    });
     return;
   }
   if (!definition.name || !definition.steps || !Array.isArray(definition.steps)) {
-    await sendMessage(ctx, token, chatId, "Command definition must have 'name' and 'steps' fields.", { messageThreadId });
+    await sendMessage(ctx, token, chatId, "Command definition must have 'name' and 'steps' fields.", {
+      messageThreadId,
+    });
     return;
   }
   if (BUILTIN_COMMANDS.has(definition.name)) {
@@ -102,9 +136,19 @@ async function importCommand(ctx: PluginContext, token: string, chatId: string, 
       await sendMessage(ctx, token, chatId, "Each step must have 'type' and 'id' fields.", { messageThreadId });
       return;
     }
-    const validTypes = ["fetch_issue", "invoke_agent", "http_request", "send_message", "create_issue", "wait_approval", "set_state"];
+    const validTypes = [
+      "fetch_issue",
+      "invoke_agent",
+      "http_request",
+      "send_message",
+      "create_issue",
+      "wait_approval",
+      "set_state",
+    ];
     if (!validTypes.includes(step.type)) {
-      await sendMessage(ctx, token, chatId, `Invalid step type: ${step.type}. Valid: ${validTypes.join(", ")}`, { messageThreadId });
+      await sendMessage(ctx, token, chatId, `Invalid step type: ${step.type}. Valid: ${validTypes.join(", ")}`, {
+        messageThreadId,
+      });
       return;
     }
   }
@@ -124,10 +168,23 @@ async function importCommand(ctx: PluginContext, token: string, chatId: string, 
     commands.push(newCmd);
   }
   await saveCommandRegistry(ctx, resolvedCompanyId, commands);
-  await sendMessage(ctx, token, chatId, `${escapeMarkdownV2("\u2705")} Command /${escapeMarkdownV2(definition.name!)} ${existingIdx >= 0 ? "updated" : "imported"} \\(${escapeMarkdownV2(String(definition.steps!.length))} steps\\)`, { parseMode: "MarkdownV2", messageThreadId });
+  await sendMessage(
+    ctx,
+    token,
+    chatId,
+    `${escapeMarkdownV2("\u2705")} Command /${escapeMarkdownV2(definition.name!)} ${existingIdx >= 0 ? "updated" : "imported"} \\(${escapeMarkdownV2(String(definition.steps!.length))} steps\\)`,
+    { parseMode: "MarkdownV2", messageThreadId },
+  );
 }
 
-async function deleteCommand(ctx: PluginContext, token: string, chatId: string, name: string, messageThreadId: number | undefined, companyId: string) {
+async function deleteCommand(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  name: string,
+  messageThreadId: number | undefined,
+  companyId: string,
+) {
   if (!name.trim()) {
     await sendMessage(ctx, token, chatId, "Usage: /commands delete <name>", { messageThreadId });
     return;
@@ -140,10 +197,24 @@ async function deleteCommand(ctx: PluginContext, token: string, chatId: string, 
     return;
   }
   await saveCommandRegistry(ctx, resolvedCompanyId, filtered);
-  await sendMessage(ctx, token, chatId, `${escapeMarkdownV2("\u{1f5d1}\ufe0f")} Command /${escapeMarkdownV2(name)} deleted.`, { parseMode: "MarkdownV2", messageThreadId });
+  await sendMessage(
+    ctx,
+    token,
+    chatId,
+    `${escapeMarkdownV2("\u{1f5d1}\ufe0f")} Command /${escapeMarkdownV2(name)} deleted.`,
+    { parseMode: "MarkdownV2", messageThreadId },
+  );
 }
 
-async function runCommand(ctx: PluginContext, token: string, chatId: string, name: string, args: string[], messageThreadId: number | undefined, companyId: string) {
+async function runCommand(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  name: string,
+  args: string[],
+  messageThreadId: number | undefined,
+  companyId: string,
+) {
   const resolvedCompanyId = companyId ?? chatId;
   const commands = await getCommandRegistry(ctx, resolvedCompanyId);
   const cmd = commands.find((c) => c.name === name);
@@ -154,7 +225,15 @@ async function runCommand(ctx: PluginContext, token: string, chatId: string, nam
   await executeWorkflow(ctx, token, chatId, cmd, args, messageThreadId, resolvedCompanyId);
 }
 
-async function executeWorkflow(ctx: PluginContext, token: string, chatId: string, cmd: CustomCommand, args: string[], messageThreadId: number | undefined, companyId: string) {
+async function executeWorkflow(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  cmd: CustomCommand,
+  args: string[],
+  messageThreadId: number | undefined,
+  companyId: string,
+) {
   await sendChatAction(ctx, token, chatId);
   await ctx.metrics.write(METRIC_NAMES.commandsExecuted, 1);
   const results: Array<{ stepId: string; result: string }> = [];
@@ -164,14 +243,25 @@ async function executeWorkflow(ctx: PluginContext, token: string, chatId: string
       results.push({ stepId: step.id, result: result ?? "" });
     } catch (err) {
       ctx.logger.error("Workflow step failed", { command: cmd.name, stepId: step.id, error: String(err) });
-      await sendMessage(ctx, token, chatId, `Step "${step.name ?? step.id}" failed: ${String(err)}`, { messageThreadId });
+      await sendMessage(ctx, token, chatId, `Step "${step.name ?? step.id}" failed: ${String(err)}`, {
+        messageThreadId,
+      });
       return;
     }
   }
   ctx.logger.info("Workflow completed", { command: cmd.name, steps: results.length });
 }
 
-async function executeStep(ctx: PluginContext, token: string, chatId: string, step: WorkflowStep, args: string[], prevResults: Array<{ stepId: string; result: string }>, messageThreadId: number | undefined, companyId: string): Promise<string | null> {
+async function executeStep(
+  ctx: PluginContext,
+  token: string,
+  chatId: string,
+  step: WorkflowStep,
+  args: string[],
+  prevResults: Array<{ stepId: string; result: string }>,
+  messageThreadId: number | undefined,
+  companyId: string,
+): Promise<string | null> {
   const interpolate = (template: string) => {
     let result = template;
     for (let i = 0; i < args.length; i++) {
@@ -197,7 +287,10 @@ async function executeStep(ctx: PluginContext, token: string, chatId: string, st
     }
     case "invoke_agent": {
       const prompt = interpolate(step.prompt!);
-      const { runId } = await ctx.agents.invoke(step.agentId!, companyId, { prompt, reason: `custom_command:${step.id}` });
+      const { runId } = await ctx.agents.invoke(step.agentId!, companyId, {
+        prompt,
+        reason: `custom_command:${step.id}`,
+      });
       return runId;
     }
     case "http_request": {
@@ -205,7 +298,9 @@ async function executeStep(ctx: PluginContext, token: string, chatId: string, st
       const body = step.body ? interpolate(step.body) : undefined;
       const res = await ctx.http.fetch(url, {
         method: step.method,
-        headers: step.headers ? Object.fromEntries(Object.entries(step.headers).map(([k, v]) => [k, interpolate(v)])) : undefined,
+        headers: step.headers
+          ? Object.fromEntries(Object.entries(step.headers).map(([k, v]) => [k, interpolate(v)]))
+          : undefined,
         body,
       });
       return await res.text();
@@ -238,7 +333,10 @@ async function executeStep(ctx: PluginContext, token: string, chatId: string, st
           ],
         ],
       });
-      await ctx.state.set({ scopeKind: "instance", stateKey: `cmd_approval_${approvalId}` }, { status: "pending", createdAt: Date.now() });
+      await ctx.state.set(
+        { scopeKind: "instance", stateKey: `cmd_approval_${approvalId}` },
+        { status: "pending", createdAt: Date.now() },
+      );
       return "awaiting_approval";
     }
     case "set_state": {
@@ -263,5 +361,5 @@ async function saveCommandRegistry(ctx: PluginContext, companyId: string, comman
 
 async function resolveBaseUrl(ctx: PluginContext): Promise<string> {
   const config = await ctx.config.get();
-  return (config as Record<string, unknown>)?.paperclipBaseUrl as string ?? "http://localhost:3100";
+  return ((config as Record<string, unknown>)?.paperclipBaseUrl as string) ?? "http://localhost:3100";
 }

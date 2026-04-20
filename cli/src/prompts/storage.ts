@@ -143,4 +143,3 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
     },
   };
 }
-

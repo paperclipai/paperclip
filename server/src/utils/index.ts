@@ -18,12 +18,6 @@ export {
   type ParsedGitHubCompanyUrl,
 } from "./github-url.js";
 
-export {
-  normalizePortablePath,
-  resolvePortablePath,
-} from "./portable-path.js";
+export { normalizePortablePath, resolvePortablePath } from "./portable-path.js";
 
-export {
-  normalizeSkillSlug,
-  normalizeSkillKey,
-} from "./skill-key.js";
+export { normalizeSkillSlug, normalizeSkillKey } from "./skill-key.js";

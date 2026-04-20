@@ -9,11 +9,7 @@ export function isUuidLike(value: string | null | undefined): boolean {
 
 export function normalizeAgentUrlKey(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(AGENT_URL_KEY_DELIM_RE, "-")
-    .replace(AGENT_URL_KEY_TRIM_RE, "");
+  const normalized = value.trim().toLowerCase().replace(AGENT_URL_KEY_DELIM_RE, "-").replace(AGENT_URL_KEY_TRIM_RE, "");
   return normalized.length > 0 ? normalized : null;
 }
 

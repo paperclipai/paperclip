@@ -11,13 +11,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { ActivityRow } from "../components/ActivityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { History } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 
@@ -89,14 +83,9 @@ export function Activity() {
     return <PageSkeleton variant="list" />;
   }
 
-  const filtered =
-    data && filter !== "all"
-      ? data.filter((e) => e.entityType === filter)
-      : data;
+  const filtered = data && filter !== "all" ? data.filter((e) => e.entityType === filter) : data;
 
-  const entityTypes = data
-    ? [...new Set(data.map((e) => e.entityType))].sort()
-    : [];
+  const entityTypes = data ? [...new Set(data.map((e) => e.entityType))].sort() : [];
 
   return (
     <div className="space-y-4">
@@ -118,9 +107,7 @@ export function Activity() {
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
-      {filtered && filtered.length === 0 && (
-        <EmptyState icon={History} message="No activity yet." />
-      )}
+      {filtered && filtered.length === 0 && <EmptyState icon={History} message="No activity yet." />}
 
       {filtered && filtered.length > 0 && (
         <div className="border border-border divide-y divide-border">

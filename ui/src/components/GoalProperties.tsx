@@ -20,9 +20,9 @@ interface GoalPropertiesProps {
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-3 py-1.5">
-      <span className="text-xs text-muted-foreground shrink-0 w-20">{label}</span>
-      <div className="flex items-center gap-1.5 min-w-0">{children}</div>
+    <div className="flex items-start gap-3 py-1.5">
+      <span className="text-xs text-muted-foreground shrink-0 w-20 mt-0.5">{label}</span>
+      <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">{children}</div>
     </div>
   );
 }
@@ -46,9 +46,7 @@ function PickerButton({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button className="cursor-pointer hover:opacity-80 transition-opacity">
-          {children}
-        </button>
+        <button className="cursor-pointer hover:opacity-80 transition-opacity">{children}</button>
       </PopoverTrigger>
       <PopoverContent className="w-40 p-1" align="end">
         {options.map((opt) => (
@@ -85,24 +83,16 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
     enabled: !!selectedCompanyId,
   });
 
-  const ownerAgent = goal.ownerAgentId
-    ? agents?.find((a) => a.id === goal.ownerAgentId)
-    : null;
+  const ownerAgent = goal.ownerAgentId ? agents?.find((a) => a.id === goal.ownerAgentId) : null;
 
-  const parentGoal = goal.parentId
-    ? allGoals?.find((g) => g.id === goal.parentId)
-    : null;
+  const parentGoal = goal.parentId ? allGoals?.find((g) => g.id === goal.parentId) : null;
 
   return (
     <div className="space-y-4">
       <div className="space-y-1">
         <PropertyRow label="Status">
           {onUpdate ? (
-            <PickerButton
-              current={goal.status}
-              options={GOAL_STATUSES}
-              onChange={(status) => onUpdate({ status })}
-            >
+            <PickerButton current={goal.status} options={GOAL_STATUSES} onChange={(status) => onUpdate({ status })}>
               <StatusBadge status={goal.status} />
             </PickerButton>
           ) : (
@@ -112,11 +102,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
 
         <PropertyRow label="Level">
           {onUpdate ? (
-            <PickerButton
-              current={goal.level}
-              options={GOAL_LEVELS}
-              onChange={(level) => onUpdate({ level })}
-            >
+            <PickerButton current={goal.level} options={GOAL_LEVELS} onChange={(level) => onUpdate({ level })}>
               <span className="text-sm capitalize">{goal.level}</span>
             </PickerButton>
           ) : (
@@ -126,10 +112,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
 
         <PropertyRow label="Owner">
           {ownerAgent ? (
-            <Link
-              to={agentUrl(ownerAgent)}
-              className="text-sm hover:underline"
-            >
+            <Link to={agentUrl(ownerAgent)} className="text-sm hover:underline">
               {ownerAgent.name}
             </Link>
           ) : (
@@ -139,10 +122,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
 
         {goal.parentId && (
           <PropertyRow label="Parent Goal">
-            <Link
-              to={`/goals/${goal.parentId}`}
-              className="text-sm hover:underline"
-            >
+            <Link to={`/goals/${goal.parentId}`} className="text-sm hover:underline">
               {parentGoal?.title ?? goal.parentId.slice(0, 8)}
             </Link>
           </PropertyRow>

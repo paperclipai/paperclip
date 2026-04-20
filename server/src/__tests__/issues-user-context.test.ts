@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { deriveIssueUserContext } from "../services/issues.ts";
 
-function makeIssue(overrides?: Partial<{
-  createdByUserId: string | null;
-  assigneeUserId: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}>) {
+function makeIssue(
+  overrides?: Partial<{
+    createdByUserId: string | null;
+    assigneeUserId: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }>,
+) {
   return {
     createdByUserId: null,
     assigneeUserId: null,
@@ -18,15 +20,11 @@ function makeIssue(overrides?: Partial<{
 
 describe("deriveIssueUserContext", () => {
   it("marks issue unread when external comments are newer than my latest comment", () => {
-    const context = deriveIssueUserContext(
-      makeIssue({ createdByUserId: "user-1" }),
-      "user-1",
-      {
-        myLastCommentAt: new Date("2026-03-06T12:00:00.000Z"),
-        myLastReadAt: null,
-        lastExternalCommentAt: new Date("2026-03-06T13:00:00.000Z"),
-      },
-    );
+    const context = deriveIssueUserContext(makeIssue({ createdByUserId: "user-1" }), "user-1", {
+      myLastCommentAt: new Date("2026-03-06T12:00:00.000Z"),
+      myLastReadAt: null,
+      lastExternalCommentAt: new Date("2026-03-06T13:00:00.000Z"),
+    });
 
     expect(context.myLastTouchAt?.toISOString()).toBe("2026-03-06T12:00:00.000Z");
     expect(context.lastExternalCommentAt?.toISOString()).toBe("2026-03-06T13:00:00.000Z");
@@ -34,15 +32,11 @@ describe("deriveIssueUserContext", () => {
   });
 
   it("marks issue read when my latest comment is newest", () => {
-    const context = deriveIssueUserContext(
-      makeIssue({ createdByUserId: "user-1" }),
-      "user-1",
-      {
-        myLastCommentAt: new Date("2026-03-06T14:00:00.000Z"),
-        myLastReadAt: null,
-        lastExternalCommentAt: new Date("2026-03-06T13:00:00.000Z"),
-      },
-    );
+    const context = deriveIssueUserContext(makeIssue({ createdByUserId: "user-1" }), "user-1", {
+      myLastCommentAt: new Date("2026-03-06T14:00:00.000Z"),
+      myLastReadAt: null,
+      lastExternalCommentAt: new Date("2026-03-06T13:00:00.000Z"),
+    });
 
     expect(context.isUnreadForMe).toBe(false);
   });

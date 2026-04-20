@@ -10,8 +10,12 @@ export const costEvents = pgTable(
   "cost_events",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
-    agentId: uuid("agent_id").notNull().references(() => agents.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
     issueId: uuid("issue_id").references(() => issues.id),
     projectId: uuid("project_id").references(() => projects.id),
     goalId: uuid("goal_id").references(() => goals.id),
@@ -45,9 +49,6 @@ export const costEvents = pgTable(
       table.biller,
       table.occurredAt,
     ),
-    companyHeartbeatRunIdx: index("cost_events_company_heartbeat_run_idx").on(
-      table.companyId,
-      table.heartbeatRunId,
-    ),
+    companyHeartbeatRunIdx: index("cost_events_company_heartbeat_run_idx").on(table.companyId, table.heartbeatRunId),
   }),
 );

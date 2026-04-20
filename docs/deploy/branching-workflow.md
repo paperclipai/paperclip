@@ -9,11 +9,11 @@ This document describes the branching strategy used in the JavierCervilla/paperc
 
 ## Branches
 
-| Branch | Purpose | Deployed to |
-|--------|---------|-------------|
-| `master` | Synced from upstream `paperclipai/paperclip` via GitHub Actions | — |
-| `preview` | Staging environment for verifying features before production | Preview environment |
-| `deploy/dokploy` | Production deployment branch | Production (Dokploy) |
+| Branch           | Purpose                                                         | Deployed to          |
+| ---------------- | --------------------------------------------------------------- | -------------------- |
+| `master`         | Synced from upstream `paperclipai/paperclip` via GitHub Actions | —                    |
+| `preview`        | Staging environment for verifying features before production    | Preview environment  |
+| `deploy/dokploy` | Production deployment branch                                    | Production (Dokploy) |
 
 ## Flow
 

@@ -1,12 +1,6 @@
 import { useState } from "react";
 import { Apple, Monitor, Terminal } from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 type Platform = "mac" | "windows" | "linux";
@@ -22,8 +16,8 @@ const instructions: Record<Platform, { steps: string[]; tip?: string }> = {
     steps: [
       "Open Finder and navigate to the folder.",
       "Right-click (or Control-click) the folder.",
-      "Hold the Option (⌥) key — \"Copy\" changes to \"Copy as Pathname\".",
-      "Click \"Copy as Pathname\", then paste here.",
+      'Hold the Option (⌥) key — "Copy" changes to "Copy as Pathname".',
+      'Click "Copy as Pathname", then paste here.',
     ],
     tip: "You can also open Terminal, type cd, drag the folder into the terminal window, and press Enter. Then type pwd to see the full path.",
   },
@@ -33,7 +27,7 @@ const instructions: Record<Platform, { steps: string[]; tip?: string }> = {
       "Click in the address bar at the top — the full path will appear.",
       "Copy the path, then paste here.",
     ],
-    tip: "Alternatively, hold Shift and right-click the folder, then select \"Copy as path\".",
+    tip: 'Alternatively, hold Shift and right-click the folder, then select "Copy as path".',
   },
   linux: {
     steps: [
@@ -57,10 +51,7 @@ interface PathInstructionsModalProps {
   onOpenChange: (open: boolean) => void;
 }
 
-export function PathInstructionsModal({
-  open,
-  onOpenChange,
-}: PathInstructionsModalProps) {
+export function PathInstructionsModal({ open, onOpenChange }: PathInstructionsModalProps) {
   const [platform, setPlatform] = useState<Platform>(detectPlatform);
 
   const current = instructions[platform];
@@ -72,8 +63,7 @@ export function PathInstructionsModal({
           <DialogTitle className="text-base">How to get a full path</DialogTitle>
           <DialogDescription>
             Paste the absolute path (e.g.{" "}
-            <code className="text-xs bg-muted px-1 py-0.5 rounded">/Users/you/project</code>
-            ) into the input field.
+            <code className="text-xs bg-muted px-1 py-0.5 rounded">/Users/you/project</code>) into the input field.
           </DialogDescription>
         </DialogHeader>
 
@@ -101,19 +91,13 @@ export function PathInstructionsModal({
         <ol className="space-y-2 text-sm">
           {current.steps.map((step, i) => (
             <li key={i} className="flex gap-2">
-              <span className="text-muted-foreground font-mono text-xs mt-0.5 shrink-0">
-                {i + 1}.
-              </span>
+              <span className="text-muted-foreground font-mono text-xs mt-0.5 shrink-0">{i + 1}.</span>
               <span>{step}</span>
             </li>
           ))}
         </ol>
 
-        {current.tip && (
-          <p className="text-xs text-muted-foreground border-l-2 border-border pl-3">
-            {current.tip}
-          </p>
-        )}
+        {current.tip && <p className="text-xs text-muted-foreground border-l-2 border-border pl-3">{current.tip}</p>}
       </DialogContent>
     </Dialog>
   );

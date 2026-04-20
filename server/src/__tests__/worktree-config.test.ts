@@ -197,6 +197,10 @@ describe("worktree config repair", () => {
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.PAPERCLIP_WORKTREE_NAME = "PAP-880-thumbs-capture-for-evals-feature";
     process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    delete process.env.PAPERCLIP_HOME;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_CONFIG;
+    delete process.env.PAPERCLIP_CONTEXT;
 
     const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
     const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
@@ -319,6 +323,10 @@ describe("worktree config repair", () => {
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
     process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    delete process.env.PAPERCLIP_HOME;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_CONFIG;
+    delete process.env.PAPERCLIP_CONTEXT;
 
     const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
     const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
@@ -397,6 +405,8 @@ describe("worktree config repair", () => {
     process.env.PAPERCLIP_HOME = isolatedHome;
     process.env.PAPERCLIP_INSTANCE_ID = "pap-878-create-a-mine-tab-in-inbox";
     process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.PORT;
+    delete process.env.DATABASE_URL;
 
     maybePersistWorktreeRuntimePorts({
       serverPort: 3103,

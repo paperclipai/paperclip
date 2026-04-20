@@ -12,28 +12,28 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 
 ## Configuration Fields
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
-| `model` | string | No | Claude model to use (e.g. `claude-opus-4-6`) |
-| `promptTemplate` | string | No | Prompt used for all runs |
-| `env` | object | No | Environment variables (supports secret refs) |
-| `timeoutSec` | number | No | Process timeout (0 = no timeout) |
-| `graceSec` | number | No | Grace period before force-kill |
-| `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
-| `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (dev only) |
+| Field                        | Type    | Required | Description                                                                                                      |
+| ---------------------------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `cwd`                        | string  | Yes      | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
+| `model`                      | string  | No       | Claude model to use (e.g. `claude-opus-4-6`)                                                                     |
+| `promptTemplate`             | string  | No       | Prompt used for all runs                                                                                         |
+| `env`                        | object  | No       | Environment variables (supports secret refs)                                                                     |
+| `timeoutSec`                 | number  | No       | Process timeout (0 = no timeout)                                                                                 |
+| `graceSec`                   | number  | No       | Grace period before force-kill                                                                                   |
+| `maxTurnsPerRun`             | number  | No       | Max agentic turns per heartbeat (defaults to `300`)                                                              |
+| `dangerouslySkipPermissions` | boolean | No       | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible   |
 
 ## Prompt Templates
 
 Templates support `{{variable}}` substitution:
 
-| Variable | Value |
-|----------|-------|
-| `{{agentId}}` | Agent's ID |
-| `{{companyId}}` | Company ID |
-| `{{runId}}` | Current run ID |
-| `{{agent.name}}` | Agent's name |
-| `{{company.name}}` | Company name |
+| Variable           | Value          |
+| ------------------ | -------------- |
+| `{{agentId}}`      | Agent's ID     |
+| `{{companyId}}`    | Company ID     |
+| `{{runId}}`        | Current run ID |
+| `{{agent.name}}`   | Agent's name   |
+| `{{company.name}}` | Company name   |
 
 ## Session Persistence
 

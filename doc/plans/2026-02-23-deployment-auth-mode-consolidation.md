@@ -47,22 +47,26 @@ Keep Paperclip low-friction while making the mode model simpler and safer:
 ## Modes
 
 1. `local_trusted`
+
 - no login required
 - localhost/loopback only
 - optimized for single-operator local setup
 
 2. `authenticated`
+
 - login required for human actions
 - same auth stack for both private and public deployments
 
 ## Exposure Policy (Within `authenticated`)
 
 1. `private`
+
 - private-network deployments (LAN, VPN, Tailscale)
 - low-friction URL handling (`auto` base URL)
 - strict host allow policy for private targets
 
 2. `public`
+
 - internet-facing deployments
 - explicit public base URL required
 - stricter deployment checks in doctor
@@ -83,11 +87,15 @@ Interactive server step:
 
 1. ask mode with default selection `local_trusted`
 2. copy for options:
+
 - `local_trusted`: "Easiest for local setup (no login, localhost-only)"
 - `authenticated`: "Login required; use for private network or public hosting"
+
 3. if `authenticated`, ask exposure:
+
 - `private`: "Private network access (for example Tailscale), lower setup friction"
 - `public`: "Internet-facing deployment, stricter security requirements"
+
 4. only if `authenticated + public`, ask for explicit public URL
 
 Flags are optional power-user overrides, not required for normal setup.
@@ -122,6 +130,7 @@ Board must be a real DB user principal so user-centric features (task assignment
 ## Target Behavior
 
 1. `local_trusted`
+
 - seed/ensure a deterministic local board user row in `authUsers` during setup/startup.
 - actor middleware uses that real user id instead of synthetic-only identity.
 - ensure:
@@ -129,6 +138,7 @@ Board must be a real DB user principal so user-centric features (task assignment
   - company membership can be created/maintained for this user where needed.
 
 2. `authenticated`
+
 - Better Auth sign-up creates user row.
 - bootstrap/admin flow promotes that real user to `instance_admin`.
 - first company creation flow should ensure creator membership is active.

@@ -41,16 +41,16 @@ Authentication header:
 
 Core endpoints:
 
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/v0/agents` | POST | Launch agent |
-| `/v0/agents/{id}` | GET | Agent status |
-| `/v0/agents/{id}/conversation` | GET | Conversation history |
-| `/v0/agents/{id}/followup` | POST | Follow-up prompt |
-| `/v0/agents/{id}/stop` | POST | Stop/pause running agent |
-| `/v0/models` | GET | Recommended model list |
-| `/v0/me` | GET | API key metadata |
-| `/v0/repositories` | GET | Accessible repos (strictly rate-limited) |
+| Endpoint                       | Method | Purpose                                  |
+| ------------------------------ | ------ | ---------------------------------------- |
+| `/v0/agents`                   | POST   | Launch agent                             |
+| `/v0/agents/{id}`              | GET    | Agent status                             |
+| `/v0/agents/{id}/conversation` | GET    | Conversation history                     |
+| `/v0/agents/{id}/followup`     | POST   | Follow-up prompt                         |
+| `/v0/agents/{id}/stop`         | POST   | Stop/pause running agent                 |
+| `/v0/models`                   | GET    | Recommended model list                   |
+| `/v0/me`                       | GET    | API key metadata                         |
+| `/v0/repositories`             | GET    | Accessible repos (strictly rate-limited) |
 
 Status handling policy for adapter:
 
@@ -401,15 +401,15 @@ Current process-only cancellation maps are insufficient by themselves for Cursor
 
 ## Comparison with `claude_local`
 
-| Aspect | `claude_local` | `cursor_cloud` |
-|---|---|---|
-| Execution model | local subprocess | remote API |
-| Updates | stream-json stdout | webhook + polling + synthesized stdout |
-| Session id | Claude session id | Cursor agent id |
-| Skill delivery | local skill dir injection | authenticated fetch from Paperclip skill endpoints |
-| Paperclip auth | injected local run JWT env var | bootstrap token exchange -> run JWT |
-| Cancellation | OS signals | abort polling + Cursor stop endpoint |
-| Usage/cost | rich | not exposed by Cursor API |
+| Aspect          | `claude_local`                 | `cursor_cloud`                                     |
+| --------------- | ------------------------------ | -------------------------------------------------- |
+| Execution model | local subprocess               | remote API                                         |
+| Updates         | stream-json stdout             | webhook + polling + synthesized stdout             |
+| Session id      | Claude session id              | Cursor agent id                                    |
+| Skill delivery  | local skill dir injection      | authenticated fetch from Paperclip skill endpoints |
+| Paperclip auth  | injected local run JWT env var | bootstrap token exchange -> run JWT                |
+| Cancellation    | OS signals                     | abort polling + Cursor stop endpoint               |
+| Usage/cost      | rich                           | not exposed by Cursor API                          |
 
 ---
 

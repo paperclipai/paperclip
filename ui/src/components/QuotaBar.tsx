@@ -36,9 +36,7 @@ export function QuotaBar({
         <span className="text-xs text-muted-foreground">{label}</span>
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-xs font-medium tabular-nums">{leftLabel}</span>
-          {rightLabel && (
-            <span className="text-xs text-muted-foreground tabular-nums">{rightLabel}</span>
-          )}
+          {rightLabel && <span className="text-xs text-muted-foreground tabular-nums">{rightLabel}</span>}
         </div>
       </div>
 
@@ -54,10 +52,7 @@ export function QuotaBar({
         />
         {/* deficit notch — 2px wide, sits at the fill tip */}
         {showDeficitNotch && clampedPct > 0 && (
-          <div
-            className="absolute inset-y-0 w-[2px] bg-destructive z-10"
-            style={{ left: `${notchLeft}%` }}
-          />
+          <div className="absolute inset-y-0 w-[2px] bg-destructive z-10" style={{ left: `${notchLeft}%` }} />
         )}
       </div>
     </div>

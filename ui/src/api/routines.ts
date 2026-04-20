@@ -35,24 +35,19 @@ export const routinesApi = {
   deleteTrigger: (id: string) => api.delete<void>(`/routine-triggers/${id}`),
   rotateTriggerSecret: (id: string) =>
     api.post<RotateRoutineTriggerResponse>(`/routine-triggers/${id}/rotate-secret`, {}),
-  run: (id: string, data?: Record<string, unknown>) =>
-    api.post<RoutineRun>(`/routines/${id}/run`, data ?? {}),
-  activity: async (
-    companyId: string,
-    routineId: string,
-    related?: { triggerIds?: string[]; runIds?: string[] },
-  ) => {
+  run: (id: string, data?: Record<string, unknown>) => api.post<RoutineRun>(`/routines/${id}/run`, data ?? {}),
+  activity: async (companyId: string, routineId: string, related?: { triggerIds?: string[]; runIds?: string[] }) => {
     const requests = [
       activityApi.list(companyId, { entityType: "routine", entityId: routineId }),
       ...(related?.triggerIds ?? []).map((triggerId) =>
-        activityApi.list(companyId, { entityType: "routine_trigger", entityId: triggerId })),
+        activityApi.list(companyId, { entityType: "routine_trigger", entityId: triggerId }),
+      ),
       ...(related?.runIds ?? []).map((runId) =>
-        activityApi.list(companyId, { entityType: "routine_run", entityId: runId })),
+        activityApi.list(companyId, { entityType: "routine_run", entityId: runId }),
+      ),
     ];
     const events = (await Promise.all(requests)).flat();
     const deduped = new Map(events.map((event) => [event.id, event]));
-    return [...deduped.values()].sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
+    return [...deduped.values()].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   },
 };

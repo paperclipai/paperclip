@@ -169,10 +169,7 @@ export function printCodexStreamEvent(raw: string, _debug: boolean): void {
   if (type === "item.started" || type === "item.completed") {
     const item = asRecord(parsed.item);
     if (item) {
-      const handled =
-        type === "item.started"
-          ? printItemStarted(item)
-          : printItemCompleted(item);
+      const handled = type === "item.started" ? printItemStarted(item) : printItemCompleted(item);
       if (!handled) {
         const itemType = asString(item.type, "unknown");
         const id = asString(item.id);
@@ -196,13 +193,9 @@ export function printCodexStreamEvent(raw: string, _debug: boolean): void {
     const subtype = asString(parsed.subtype);
     const errors = Array.isArray(parsed.errors) ? parsed.errors.map(errorText).filter(Boolean) : [];
 
-    console.log(
-      pc.blue(`tokens: in=${input} out=${output} cached=${cached} cost=$${cost.toFixed(6)}`),
-    );
+    console.log(pc.blue(`tokens: in=${input} out=${output} cached=${cached} cost=$${cost.toFixed(6)}`));
     if (subtype || isError || errors.length > 0) {
-      console.log(
-        pc.red(`result: subtype=${subtype || "unknown"} is_error=${isError ? "true" : "false"}`),
-      );
+      console.log(pc.red(`result: subtype=${subtype || "unknown"} is_error=${isError ? "true" : "false"}`));
       if (errors.length > 0) console.log(pc.red(`errors: ${errors.join(" | ")}`));
     }
     return;

@@ -132,10 +132,7 @@ function printResult(result: CheckResult): void {
   }
 }
 
-async function maybeRepair(
-  result: CheckResult,
-  opts: { repair?: boolean; yes?: boolean },
-): Promise<boolean> {
+async function maybeRepair(result: CheckResult, opts: { repair?: boolean; yes?: boolean }): Promise<boolean> {
   if (result.status === "pass" || !result.canRepair || !result.repair) return false;
   if (!opts.repair) return false;
 

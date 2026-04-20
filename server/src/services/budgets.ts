@@ -1,14 +1,6 @@
 import { and, desc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import {
-  agents,
-  approvals,
-  budgetIncidents,
-  budgetPolicies,
-  companies,
-  costEvents,
-  projects,
-} from "@paperclipai/db";
+import { agents, approvals, budgetIncidents, budgetPolicies, companies, costEvents, projects } from "@paperclipai/db";
 import type {
   BudgetIncident,
   BudgetIncidentResolutionInput,
@@ -156,7 +148,7 @@ async function computeObservedAmount(
 
   const [row] = await db
     .select({
-      total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+      total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
     })
     .from(costEvents)
     .where(and(...conditions));
@@ -318,8 +310,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     const observedAmount = await computeObservedAmount(db, policy);
     const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
     const amount = policy.isActive ? policy.amount : 0;
-    const utilizationPercent =
-      amount > 0 ? Number(((observedAmount / amount) * 100).toFixed(2)) : 0;
+    const utilizationPercent = amount > 0 ? Number(((observedAmount / amount) * 100).toFixed(2)) : 0;
     return {
       policyId: policy.id,
       companyId: policy.companyId,
@@ -336,9 +327,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       hardStopEnabled: policy.hardStopEnabled,
       notifyEnabled: policy.notifyEnabled,
       isActive: policy.isActive,
-      status: policy.isActive
-        ? budgetStatusFromObserved(observedAmount, amount, policy.warnPercent)
-        : "ok",
+      status: policy.isActive ? budgetStatusFromObserved(observedAmount, amount, policy.warnPercent) : "ok",
       paused: scope.paused,
       pauseReason: scope.pauseReason,
       windowStart: start,
@@ -346,11 +335,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     };
   }
 
-  async function createIncidentIfNeeded(
-    policy: PolicyRow,
-    thresholdType: BudgetThresholdType,
-    amountObserved: number,
-  ) {
+  async function createIncidentIfNeeded(policy: PolicyRow, thresholdType: BudgetThresholdType, amountObserved: number) {
     const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
     const existing = await db
       .select()
@@ -376,20 +361,21 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       windowEnd: end,
     });
 
-    const approval = thresholdType === "hard"
-      ? await db
-        .insert(approvals)
-        .values({
-          companyId: policy.companyId,
-          type: "budget_override_required",
-          requestedByUserId: null,
-          requestedByAgentId: null,
-          status: "pending",
-          payload,
-        })
-        .returning()
-        .then((rows) => rows[0] ?? null)
-      : null;
+    const approval =
+      thresholdType === "hard"
+        ? await db
+            .insert(approvals)
+            .values({
+              companyId: policy.companyId,
+              type: "budget_override_required",
+              requestedByUserId: null,
+              requestedByAgentId: null,
+              status: "pending",
+              payload,
+            })
+            .returning()
+            .then((rows) => rows[0] ?? null)
+        : null;
 
     return db
       .insert(budgetIncidents)
@@ -450,18 +436,25 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
 
     if (!approvalStatus || !decidedByUserId) return;
     for (const row of openRows) {
-      await markApprovalStatus(db, row.approvalId ?? null, approvalStatus, "Resolved via budget update", decidedByUserId);
+      await markApprovalStatus(
+        db,
+        row.approvalId ?? null,
+        approvalStatus,
+        "Resolved via budget update",
+        decidedByUserId,
+      );
     }
   }
 
   async function hydrateIncidentRows(rows: IncidentRow[]): Promise<BudgetIncident[]> {
     const approvalIds = rows.map((row) => row.approvalId).filter((value): value is string => Boolean(value));
-    const approvalRows = approvalIds.length > 0
-      ? await db
-        .select({ id: approvals.id, status: approvals.status })
-        .from(approvals)
-        .where(inArray(approvals.id, approvalIds))
-      : [];
+    const approvalRows =
+      approvalIds.length > 0
+        ? await db
+            .select({ id: approvals.id, status: approvals.status })
+            .from(approvals)
+            .where(inArray(approvals.id, approvalIds))
+        : [];
     const approvalStatusById = new Map(approvalRows.map((row) => [row.id, row.status]));
 
     return Promise.all(
@@ -483,7 +476,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           amountObserved: row.amountObserved,
           status: row.status as BudgetIncident["status"],
           approvalId: row.approvalId ?? null,
-          approvalStatus: row.approvalId ? approvalStatusById.get(row.approvalId) ?? null : null,
+          approvalStatus: row.approvalId ? (approvalStatusById.get(row.approvalId) ?? null) : null,
           resolvedAt: row.resolvedAt ?? null,
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
@@ -534,37 +527,37 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       const now = new Date();
       const row = existing
         ? await db
-          .update(budgetPolicies)
-          .set({
-            amount,
-            warnPercent: input.warnPercent ?? existing.warnPercent,
-            hardStopEnabled: input.hardStopEnabled ?? existing.hardStopEnabled,
-            notifyEnabled: input.notifyEnabled ?? existing.notifyEnabled,
-            isActive: nextIsActive,
-            updatedByUserId: actorUserId,
-            updatedAt: now,
-          })
-          .where(eq(budgetPolicies.id, existing.id))
-          .returning()
-          .then((rows) => rows[0])
+            .update(budgetPolicies)
+            .set({
+              amount,
+              warnPercent: input.warnPercent ?? existing.warnPercent,
+              hardStopEnabled: input.hardStopEnabled ?? existing.hardStopEnabled,
+              notifyEnabled: input.notifyEnabled ?? existing.notifyEnabled,
+              isActive: nextIsActive,
+              updatedByUserId: actorUserId,
+              updatedAt: now,
+            })
+            .where(eq(budgetPolicies.id, existing.id))
+            .returning()
+            .then((rows) => rows[0])
         : await db
-          .insert(budgetPolicies)
-          .values({
-            companyId,
-            scopeType: input.scopeType,
-            scopeId: input.scopeId,
-            metric,
-            windowKind,
-            amount,
-            warnPercent: input.warnPercent ?? 80,
-            hardStopEnabled: input.hardStopEnabled ?? true,
-            notifyEnabled: input.notifyEnabled ?? true,
-            isActive: nextIsActive,
-            createdByUserId: actorUserId,
-            updatedByUserId: actorUserId,
-          })
-          .returning()
-          .then((rows) => rows[0]);
+            .insert(budgetPolicies)
+            .values({
+              companyId,
+              scopeType: input.scopeType,
+              scopeId: input.scopeId,
+              metric,
+              windowKind,
+              amount,
+              warnPercent: input.warnPercent ?? 80,
+              hardStopEnabled: input.hardStopEnabled ?? true,
+              notifyEnabled: input.notifyEnabled ?? true,
+              isActive: nextIsActive,
+              createdByUserId: actorUserId,
+              updatedByUserId: actorUserId,
+            })
+            .returning()
+            .then((rows) => rows[0]);
 
       if (input.scopeType === "company" && windowKind === "calendar_month_utc") {
         await db
@@ -946,12 +939,14 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         },
       });
 
-      const [updated] = await hydrateIncidentRows([{
-        ...incident,
-        status: input.action === "raise_budget_and_resume" ? "resolved" : "dismissed",
-        resolvedAt: new Date(),
-        updatedAt: new Date(),
-      }]);
+      const [updated] = await hydrateIncidentRows([
+        {
+          ...incident,
+          status: input.action === "raise_budget_and_resume" ? "resolved" : "dismissed",
+          resolvedAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]);
       return updated!;
     },
   };

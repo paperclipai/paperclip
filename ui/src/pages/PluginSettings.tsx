@@ -1,6 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle } from "lucide-react";
+import {
+  Puzzle,
+  ArrowLeft,
+  ShieldAlert,
+  ActivitySquare,
+  CheckCircle,
+  XCircle,
+  Loader2,
+  Clock,
+  Cpu,
+  Webhook,
+  CalendarClock,
+  AlertTriangle,
+} from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Link, Navigate, useParams } from "@/lib/router";
@@ -9,13 +22,7 @@ import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";
@@ -134,12 +141,7 @@ export function PluginSettings() {
   }
 
   const displayStatus = plugin.status;
-  const statusVariant =
-    plugin.status === "ready"
-      ? "default"
-      : plugin.status === "error"
-        ? "destructive"
-        : "secondary";
+  const statusVariant = plugin.status === "ready" ? "default" : plugin.status === "error" ? "destructive" : "secondary";
   const pluginDescription = plugin.manifestJson.description || "No description provided.";
   const pluginCapabilities = plugin.manifestJson.capabilities ?? [];
 
@@ -163,7 +165,11 @@ export function PluginSettings() {
         </div>
       </div>
 
-      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "configuration" | "status")} className="space-y-6">
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as "configuration" | "status")}
+        className="space-y-6"
+      >
         <PageTabBar
           align="start"
           items={[
@@ -233,12 +239,12 @@ export function PluginSettings() {
                   initialValues={configData?.configJson}
                   isLoading={configLoading}
                   pluginStatus={plugin.status}
-                  supportsConfigTest={(plugin as unknown as { supportsConfigTest?: boolean }).supportsConfigTest === true}
+                  supportsConfigTest={
+                    (plugin as unknown as { supportsConfigTest?: boolean }).supportsConfigTest === true
+                  }
                 />
               ) : (
-                <p className="text-sm text-muted-foreground">
-                  This plugin does not require any settings.
-                </p>
+                <p className="text-sm text-muted-foreground">This plugin does not require any settings.</p>
               )}
             </section>
           </div>
@@ -253,9 +259,7 @@ export function PluginSettings() {
                     <Cpu className="h-4 w-4" />
                     Runtime Dashboard
                   </CardTitle>
-                  <CardDescription>
-                    Worker process, scheduled jobs, and webhook deliveries
-                  </CardDescription>
+                  <CardDescription>Worker process, scheduled jobs, and webhook deliveries</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   {dashboardData ? (
@@ -293,7 +297,8 @@ export function PluginSettings() {
                                     Crashes
                                   </span>
                                   <span className="text-xs">
-                                    {dashboardData.worker.consecutiveCrashes} consecutive / {dashboardData.worker.totalCrashes} total
+                                    {dashboardData.worker.consecutiveCrashes} consecutive /{" "}
+                                    {dashboardData.worker.totalCrashes} total
                                   </span>
                                 </div>
                                 {dashboardData.worker.lastCrashAt && (
@@ -366,7 +371,9 @@ export function PluginSettings() {
                                   </span>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-                                  {delivery.durationMs != null ? <span>{formatDuration(delivery.durationMs)}</span> : null}
+                                  {delivery.durationMs != null ? (
+                                    <span>{formatDuration(delivery.durationMs)}</span>
+                                  ) : null}
                                   <span title={delivery.createdAt}>{formatRelativeTime(delivery.createdAt)}</span>
                                 </div>
                               </div>
@@ -383,9 +390,7 @@ export function PluginSettings() {
                       </div>
                     </>
                   ) : (
-                    <p className="text-sm text-muted-foreground">
-                      Runtime diagnostics are unavailable right now.
-                    </p>
+                    <p className="text-sm text-muted-foreground">Runtime diagnostics are unavailable right now.</p>
                   )}
                 </CardContent>
               </Card>
@@ -414,9 +419,15 @@ export function PluginSettings() {
                                   : "text-muted-foreground"
                           }`}
                         >
-                          <span className="shrink-0 text-muted-foreground/50">{new Date(entry.createdAt).toLocaleTimeString()}</span>
-                          <Badge variant="outline" className="h-4 shrink-0 px-1 text-[10px]">{entry.level}</Badge>
-                          <span className="truncate" title={entry.message}>{entry.message}</span>
+                          <span className="shrink-0 text-muted-foreground/50">
+                            {new Date(entry.createdAt).toLocaleTimeString()}
+                          </span>
+                          <Badge variant="outline" className="h-4 shrink-0 px-1 text-[10px]">
+                            {entry.level}
+                          </Badge>
+                          <span className="truncate" title={entry.message}>
+                            {entry.message}
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -440,9 +451,7 @@ export function PluginSettings() {
                     <div className="space-y-4 text-sm">
                       <div className="flex items-center justify-between">
                         <span className="text-muted-foreground">Overall</span>
-                        <Badge variant={healthData.healthy ? "default" : "destructive"}>
-                          {healthData.status}
-                        </Badge>
+                        <Badge variant={healthData.healthy ? "default" : "destructive"}>{healthData.status}</Badge>
                       </div>
 
                       {healthData.checks.length > 0 ? (
@@ -522,7 +531,10 @@ export function PluginSettings() {
                   {pluginCapabilities.length > 0 ? (
                     <ul className="space-y-2 text-sm text-muted-foreground">
                       {pluginCapabilities.map((cap) => (
-                        <li key={cap} className="rounded-md bg-muted/40 px-2.5 py-2 font-mono text-xs text-foreground/85">
+                        <li
+                          key={cap}
+                          className="rounded-md bg-muted/40 px-2.5 py-2 font-mono text-xs text-foreground/85"
+                        >
                           {cap}
                         </li>
                       ))}
@@ -562,7 +574,14 @@ interface PluginConfigFormProps {
  * Separated from PluginSettings to isolate re-render scope — only the form
  * re-renders on field changes, not the entire page.
  */
-function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
+function PluginConfigForm({
+  pluginId,
+  schema,
+  initialValues,
+  isLoading,
+  pluginStatus,
+  supportsConfigTest,
+}: PluginConfigFormProps) {
   const queryClient = useQueryClient();
 
   // Form values: start with saved values, fall back to schema defaults
@@ -590,15 +609,16 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
   const [testResult, setTestResult] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // Dirty tracking: compare against initial values
-  const isDirty = JSON.stringify(values) !== JSON.stringify({
-    ...getDefaultValues(schema),
-    ...(initialValues ?? {}),
-  });
+  const isDirty =
+    JSON.stringify(values) !==
+    JSON.stringify({
+      ...getDefaultValues(schema),
+      ...(initialValues ?? {}),
+    });
 
   // Save mutation
   const saveMutation = useMutation({
-    mutationFn: (configJson: Record<string, unknown>) =>
-      pluginsApi.saveConfig(pluginId, configJson),
+    mutationFn: (configJson: Record<string, unknown>) => pluginsApi.saveConfig(pluginId, configJson),
     onSuccess: () => {
       setSaveMessage({ type: "success", text: "Configuration saved." });
       setTestResult(null);
@@ -613,8 +633,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
 
   // Test configuration mutation
   const testMutation = useMutation({
-    mutationFn: (configJson: Record<string, unknown>) =>
-      pluginsApi.testConfig(pluginId, configJson),
+    mutationFn: (configJson: Record<string, unknown>) => pluginsApi.testConfig(pluginId, configJson),
     onSuccess: (result) => {
       if (result.valid) {
         setTestResult({ type: "success", text: "Configuration test passed." });
@@ -703,11 +722,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
 
       {/* Action buttons */}
       <div className="flex items-center gap-2 pt-2">
-        <Button
-          onClick={handleSave}
-          disabled={saveMutation.isPending || !isDirty}
-          size="sm"
-        >
+        <Button onClick={handleSave} disabled={saveMutation.isPending || !isDirty} size="sm">
           {saveMutation.isPending ? (
             <>
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -718,12 +733,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
           )}
         </Button>
         {pluginStatus === "ready" && supportsConfigTest && (
-          <Button
-            variant="outline"
-            onClick={handleTestConnection}
-            disabled={testMutation.isPending}
-            size="sm"
-          >
+          <Button variant="outline" onClick={handleTestConnection} disabled={testMutation.isPending} size="sm">
             {testMutation.isPending ? (
               <>
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -807,12 +817,7 @@ function JobStatusDot({ status }: { status: string }) {
           : status === "cancelled"
             ? "bg-gray-400"
             : "bg-amber-500"; // queued, pending
-  return (
-    <span
-      className={`inline-block h-2 w-2 rounded-full shrink-0 ${colorClass}`}
-      title={status}
-    />
-  );
+  return <span className={`inline-block h-2 w-2 rounded-full shrink-0 ${colorClass}`} title={status} />;
 }
 
 /**
@@ -827,10 +832,5 @@ function DeliveryStatusDot({ status }: { status: string }) {
         : status === "received"
           ? "bg-blue-500"
           : "bg-amber-500"; // pending
-  return (
-    <span
-      className={`inline-block h-2 w-2 rounded-full shrink-0 ${colorClass}`}
-      title={status}
-    />
-  );
+  return <span className={`inline-block h-2 w-2 rounded-full shrink-0 ${colorClass}`} title={status} />;
 }

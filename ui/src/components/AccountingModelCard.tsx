@@ -34,8 +34,8 @@ export function AccountingModelCard() {
           Accounting model
         </CardTitle>
         <CardDescription className="max-w-2xl text-sm leading-6">
-          Paperclip now separates request-level inference usage from account-level finance events.
-          That keeps provider reporting honest when the biller is OpenRouter, Cloudflare, Bedrock, or another intermediary.
+          Paperclip now separates request-level inference usage from account-level finance events. That keeps provider
+          reporting honest when the biller is OpenRouter, Cloudflare, Bedrock, or another intermediary.
         </CardDescription>
       </CardHeader>
       <CardContent className="relative grid gap-3 px-5 pb-5 md:grid-cols-3">

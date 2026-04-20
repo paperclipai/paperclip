@@ -35,9 +35,7 @@ function sanitizeFilename(name: string): string {
 
 function issueFolder(issue: Issue, ctx: MapperContext): string {
   if (ctx.folderStructure === "flat") return "Issues";
-  const projectName = issue.projectId
-    ? ctx.projectNames.get(issue.projectId) ?? "Uncategorized"
-    : "Uncategorized";
+  const projectName = issue.projectId ? (ctx.projectNames.get(issue.projectId) ?? "Uncategorized") : "Uncategorized";
   return `Projects/${sanitizeFilename(projectName)}/Issues`;
 }
 
@@ -63,15 +61,9 @@ export function mapIssueToNote(issue: Issue, ctx: MapperContext): ObsidianNote {
   const folder = issueFolder(issue, ctx);
   const relativePath = `${folder}/${filename}.md`;
 
-  const assignee = issue.assigneeAgentId
-    ? ctx.agentNames.get(issue.assigneeAgentId) ?? null
-    : null;
-  const project = issue.projectId
-    ? ctx.projectNames.get(issue.projectId) ?? null
-    : null;
-  const goalTitle = issue.goalId
-    ? ctx.goalTitles.get(issue.goalId) ?? null
-    : null;
+  const assignee = issue.assigneeAgentId ? (ctx.agentNames.get(issue.assigneeAgentId) ?? null) : null;
+  const project = issue.projectId ? (ctx.projectNames.get(issue.projectId) ?? null) : null;
+  const goalTitle = issue.goalId ? (ctx.goalTitles.get(issue.goalId) ?? null) : null;
 
   const frontmatter: Record<string, unknown> = {
     paperclip_id: issue.id,
@@ -121,9 +113,7 @@ export function mapGoalToNote(goal: Goal, ctx: MapperContext): ObsidianNote {
   const folder = goalFolder(goal, ctx);
   const relativePath = `${folder}/${filename}.md`;
 
-  const owner = goal.ownerAgentId
-    ? ctx.agentNames.get(goal.ownerAgentId) ?? null
-    : null;
+  const owner = goal.ownerAgentId ? (ctx.agentNames.get(goal.ownerAgentId) ?? null) : null;
 
   const frontmatter: Record<string, unknown> = {
     paperclip_id: goal.id,

@@ -41,10 +41,10 @@ PATCH /api/agents/{agentId}
 
 Paperclip enforces budgets automatically:
 
-| Threshold | Action |
-|-----------|--------|
-| 80% | Soft alert — agent is warned to focus on critical tasks only |
-| 100% | Hard stop — agent is auto-paused, no more heartbeats |
+| Threshold | Action                                                       |
+| --------- | ------------------------------------------------------------ |
+| 80%       | Soft alert — agent is warned to focus on critical tasks only |
+| 100%      | Hard stop — agent is auto-paused, no more heartbeats         |
 
 An auto-paused agent can be resumed by increasing its budget or waiting for the next calendar month.
 

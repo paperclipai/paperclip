@@ -30,7 +30,16 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({
     getById: vi.fn(),
   }),
+  feedbackService: () => ({
+    listIssueVotesForUser: vi.fn(),
+    listFeedbackTraces: vi.fn(),
+    getFeedbackTraceById: vi.fn(),
+    saveIssueVote: vi.fn(),
+  }),
   logActivity: vi.fn(),
+  instanceSettingsService: () => ({}),
+  assetService: () => ({}),
+  chatService: () => ({}),
 }));
 
 describe("company routes malformed issue path guard", () => {
