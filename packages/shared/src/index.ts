@@ -41,6 +41,7 @@ export {
   ISSUE_STATUSES,
   INBOX_MINE_ISSUE_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
+  ISSUE_LIST_SORTS,
   ISSUE_PRIORITIES,
   ISSUE_BOARD_STATE_KINDS,
   ISSUE_STALL_REASON_CODES,
@@ -127,6 +128,7 @@ export {
   type AgentRole,
   type AgentIconName,
   type IssueStatus,
+  type IssueListSort,
   type IssuePriority,
   type IssueBoardStateKind,
   type IssueStallReasonCode,
@@ -211,6 +213,13 @@ export {
   resolveReleaseGateQaAgent,
 } from "./release-gate-qa.js";
 
+export type {
+  FailedRunSummary,
+  InboxSummary,
+  CompanyRailState,
+  RunActivityDay,
+  RunActivitySummary,
+} from "./types/company-shell-state.js";
 export type {
   BoardBrief,
   BoardBriefTotals,

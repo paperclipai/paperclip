@@ -184,6 +184,12 @@ export const INBOX_MINE_ISSUE_STATUSES = [
   "done",
 ] as const;
 export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(",");
+export const ISSUE_LIST_SORTS = [
+  "priority_then_activity",
+  "updated_desc",
+  "last_activity_desc",
+] as const;
+export type IssueListSort = (typeof ISSUE_LIST_SORTS)[number];
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];

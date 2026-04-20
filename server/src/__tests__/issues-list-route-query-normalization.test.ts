@@ -149,6 +149,41 @@ describe("issue list query normalization", () => {
     );
   });
 
+  it("passes ids, sort, and limit through to the issue service list filter", async () => {
+    const res = await request(createApp()).get(
+      "/api/companies/company-1/issues?ids=issue-1,issue-2&sort=last_activity_desc&limit=25",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        ids: ["issue-1", "issue-2"],
+        sort: "last_activity_desc",
+        limit: 25,
+      }),
+    );
+  });
+
+  it("skips review-signal synthesis on issue list responses unless explicitly requested", async () => {
+    mockIssueService.list.mockResolvedValueOnce([
+      {
+        id: "issue-1",
+        companyId: "company-1",
+        status: "in_review",
+        title: "Review me",
+        updatedAt: new Date("2026-04-20T10:00:00.000Z"),
+        createdAt: new Date("2026-04-20T09:00:00.000Z"),
+      },
+    ]);
+
+    const res = await request(createApp()).get("/api/companies/company-1/issues");
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).not.toHaveProperty("qaGate");
+    expect(res.body[0]).not.toHaveProperty("mergeStatus");
+  });
+
   it("supports bulk archive of closed issues", async () => {
     const res = await request(createApp())
       .post("/api/companies/company-1/issues/archive-closed")

@@ -24,8 +24,10 @@ import {
   projects,
 } from "@paperclipai/db";
 import {
+  ISSUE_LIST_SORTS,
   ISSUE_RECOVERY_DISPOSITIONS,
   IssueRelationIssueSummary,
+  type IssueListSort,
   type IssueRecoveryDisposition,
   extractAgentMentionIds,
   extractProjectMentionIds,
@@ -614,6 +616,8 @@ async function resolveRecoveryTarget({
 
 export interface IssueFilters {
   status?: string;
+  ids?: string[];
+  sort?: IssueListSort;
   includeClosed?: boolean;
   includeRelations?: boolean;
   excludeRecoverySourcesWithOpenSuccessors?: boolean;
@@ -1757,6 +1761,10 @@ export function issueService(db: Db) {
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
         ? Math.max(1, Math.floor(filters.limit))
         : undefined;
+      const ids = filters?.ids?.map((id) => id.trim()).filter((id) => id.length > 0) ?? [];
+      const sort = filters?.sort && ISSUE_LIST_SORTS.includes(filters.sort)
+        ? filters.sort
+        : "priority_then_activity";
       const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
       const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
       const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
@@ -1792,6 +1800,9 @@ export function issueService(db: Db) {
       }
       if (filters?.assigneeUserId) {
         conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+      }
+      if (ids.length > 0) {
+        conditions.push(inArray(issues.id, ids));
       }
       if (touchedByUserId) {
         conditions.push(touchedByUserCondition(companyId, touchedByUserId));
@@ -1854,12 +1865,22 @@ export function issueService(db: Db) {
         .select()
         .from(issues)
         .where(and(...conditions))
-        .orderBy(
-          hasSearch ? asc(searchOrder) : asc(priorityOrder),
-          asc(priorityOrder),
-          desc(canonicalLastActivityAt),
-          desc(issues.updatedAt),
-        );
+        .orderBy(...(
+          hasSearch
+            ? [
+              asc(searchOrder),
+              ...(sort === "updated_desc"
+                ? [desc(issues.updatedAt), desc(canonicalLastActivityAt), asc(priorityOrder)]
+                : sort === "last_activity_desc"
+                  ? [desc(canonicalLastActivityAt), desc(issues.updatedAt), asc(priorityOrder)]
+                  : [asc(priorityOrder), desc(canonicalLastActivityAt), desc(issues.updatedAt)]),
+            ]
+            : sort === "updated_desc"
+              ? [desc(issues.updatedAt), desc(canonicalLastActivityAt), asc(priorityOrder)]
+              : sort === "last_activity_desc"
+                ? [desc(canonicalLastActivityAt), desc(issues.updatedAt), asc(priorityOrder)]
+                : [asc(priorityOrder), desc(canonicalLastActivityAt), desc(issues.updatedAt)]
+        ));
       const rows = limit === undefined ? await baseQuery : await baseQuery.limit(limit);
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);

@@ -1,3 +1,15 @@
+function normalizeFilters(filters?: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(filters ?? {})
+      .filter(([, value]) => {
+        if (value === undefined || value === null) return false;
+        if (Array.isArray(value)) return value.length > 0;
+        return true;
+      })
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
 export const queryKeys = {
   companies: {
     all: ["companies"] as const,
@@ -5,6 +17,9 @@ export const queryKeys = {
     stats: ["companies", "stats"] as const,
     roadmapEpics: (companyId: string) => ["companies", companyId, "roadmap-epics"] as const,
   },
+  railState: ["companies", "rail-state"] as const,
+  inboxSummary: (companyId: string) => ["companies", companyId, "inbox-summary"] as const,
+  runActivity: (companyId: string, days: number = 14) => ["companies", companyId, "run-activity", days] as const,
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
     detail: (companyId: string, skillId: string) => ["company-skills", companyId, skillId] as const,
@@ -35,6 +50,8 @@ export const queryKeys = {
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
+    filtered: (companyId: string, filters?: Record<string, unknown>) =>
+      ["issues", companyId, "filtered", normalizeFilters(filters)] as const,
     search: (companyId: string, q: string, projectId?: string, limit?: number) =>
       ["issues", companyId, "search", q, projectId ?? "__all-projects__", limit ?? "__no-limit__"] as const,
     listAssignedToMe: (companyId: string) => ["issues", companyId, "assigned-to-me"] as const,

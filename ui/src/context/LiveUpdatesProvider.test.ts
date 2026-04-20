@@ -25,13 +25,72 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     );
 
     expect(invalidations).toContainEqual({
-      queryKey: queryKeys.issues.listMineByMe("company-1"),
+      queryKey: queryKeys.inboxSummary("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.dashboard("company-1"),
     });
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listTouchedByMe("company-1"),
     });
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listUnreadTouchedByMe("company-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.list("company-1"),
+    });
+  });
+
+  it("refreshes rail state and exact filtered issue queries affected by issue activity", () => {
+    const invalidations: unknown[] = [];
+    const matchingIdsKey = queryKeys.issues.filtered("company-1", {
+      ids: ["issue-1", "issue-9"],
+      includeReviewSignals: false,
+    });
+    const dashboardRecentKey = queryKeys.issues.filtered("company-1", {
+      sort: "updated_desc",
+      limit: 10,
+      includeReviewSignals: false,
+    });
+    const unrelatedKey = queryKeys.issues.filtered("company-1", {
+      ids: ["issue-2"],
+      includeReviewSignals: false,
+    });
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+      getQueryCache: () => ({
+        findAll: () => [
+          { queryKey: matchingIdsKey },
+          { queryKey: dashboardRecentKey },
+          { queryKey: unrelatedKey },
+        ],
+      }),
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "issue",
+        entityId: "issue-1",
+        details: null,
+      },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.railState,
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: matchingIdsKey,
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: dashboardRecentKey,
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: unrelatedKey,
     });
   });
 
@@ -145,6 +204,64 @@ describe("LiveUpdatesProvider visible issue toast suppression", () => {
 });
 
 describe("LiveUpdatesProvider run lifecycle toasts", () => {
+  it("refreshes summary queries instead of full heartbeat history on heartbeat activity", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => [],
+    };
+
+    __liveUpdatesTestUtils.invalidateHeartbeatQueries(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1" },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.liveRuns("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: ["companies", "company-1", "run-activity"],
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.inboxSummary("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.railState,
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.heartbeats("company-1"),
+    });
+  });
+
+  it("refreshes inbox summary and rail state on agent status updates", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => [],
+    };
+
+    __liveUpdatesTestUtils.invalidateAgentStatusQueries(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1", status: "error" },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.inboxSummary("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.railState,
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.agents.detail("agent-1"),
+    });
+  });
+
   it("does not build start or success toasts for agent runs", () => {
     const queryClient = {
       getQueryData: () => [],

@@ -1,15 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
-import { accessApi } from "../api/access";
-import { ApiError } from "../api/client";
-import { approvalsApi } from "../api/approvals";
-import { dashboardApi } from "../api/dashboard";
-import { heartbeatsApi } from "../api/heartbeats";
-import { issuesApi } from "../api/issues";
+import { companiesApi } from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
 import {
-  computeInboxBadgeData,
   loadDismissedInboxItems,
   saveDismissedInboxItems,
   loadReadInboxItems,
@@ -119,66 +112,22 @@ export function useRetryFeedbackRunIds() {
 }
 
 export function useInboxBadge(companyId: string | null | undefined) {
-  const { dismissed } = useDismissedInboxItems();
-  const { readItems } = useReadInboxItems();
-  const { retryFeedbackRunIds } = useRetryFeedbackRunIds();
-
-  const { data: approvals = [] } = useQuery({
-    queryKey: queryKeys.approvals.list(companyId!),
-    queryFn: () => approvalsApi.list(companyId!),
-    enabled: !!companyId,
-  });
-
-  const { data: joinRequests = [] } = useQuery({
-    queryKey: queryKeys.access.joinRequests(companyId!),
-    queryFn: async () => {
-      try {
-        return await accessApi.listJoinRequests(companyId!, "pending_approval");
-      } catch (err) {
-        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
-          return [];
-        }
-        throw err;
-      }
-    },
-    enabled: !!companyId,
-    retry: false,
-  });
-
-  const { data: dashboard } = useQuery({
-    queryKey: queryKeys.dashboard(companyId!),
-    queryFn: () => dashboardApi.summary(companyId!),
-    enabled: !!companyId,
-  });
-
-  const { data: heartbeatRuns = [] } = useQuery({
-    queryKey: queryKeys.heartbeats(companyId!),
-    queryFn: () => heartbeatsApi.list(companyId!),
-    enabled: !!companyId,
-  });
-
-  const { data: touchedIssues = [] } = useQuery({
-    queryKey: queryKeys.issues.listTouchedByMe(companyId!),
-    queryFn: () =>
-      issuesApi.list(companyId!, {
-        touchedByUserId: "me",
-        status: INBOX_MINE_ISSUE_STATUS_FILTER,
-      }),
+  const { data: summary } = useQuery({
+    queryKey: queryKeys.inboxSummary(companyId!),
+    queryFn: () => companiesApi.inboxSummary(companyId!),
     enabled: !!companyId,
   });
 
   return useMemo(
-    () =>
-      computeInboxBadgeData({
-        approvals,
-        joinRequests,
-        dashboard,
-        heartbeatRuns,
-        mineIssues: touchedIssues,
-        dismissed,
-        readItems,
-        retryFeedbackRunIds,
-      }),
-    [approvals, joinRequests, dashboard, heartbeatRuns, touchedIssues, dismissed, readItems, retryFeedbackRunIds],
+    () => summary ?? {
+      inbox: 0,
+      approvals: 0,
+      failedRuns: 0,
+      joinRequests: 0,
+      mineIssues: 0,
+      alerts: 0,
+      failedRunSummaries: [],
+    },
+    [summary],
   );
 }

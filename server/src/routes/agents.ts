@@ -2198,6 +2198,17 @@ export function agentRoutes(db: Db) {
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const runs = await heartbeat.list(companyId, agentId, limit);
+    if (!limitParam) {
+      logger.warn(
+        {
+          companyId,
+          agentId: agentId ?? null,
+          rowCount: runs.length,
+          responseBytes: Buffer.byteLength(JSON.stringify(runs), "utf8"),
+        },
+        "unbounded heartbeat-runs response",
+      );
+    }
     res.json(runs);
   });
 

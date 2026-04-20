@@ -474,6 +474,55 @@ function buildRunStatusToast(
   };
 }
 
+function readFilteredIssueQueryFilters(
+  queryKey: readonly unknown[],
+  companyId: string,
+): Record<string, unknown> | null {
+  if (
+    queryKey[0] !== "issues"
+    || queryKey[1] !== companyId
+    || queryKey[2] !== "filtered"
+  ) {
+    return null;
+  }
+
+  return readRecord(queryKey[3]);
+}
+
+function filteredIssueQueryMayBeAffected(
+  filters: Record<string, unknown>,
+  issueRefs: Set<string>,
+): boolean {
+  const ids = Array.isArray(filters.ids)
+    ? filters.ids.filter((value): value is string => typeof value === "string")
+    : [];
+  if (ids.some((id) => issueRefs.has(id))) {
+    return true;
+  }
+
+  const sort = readString(filters.sort);
+  return sort === "updated_desc" || sort === "last_activity_desc";
+}
+
+function invalidateMatchingFilteredIssueQueries(
+  queryClient: ReturnType<typeof useQueryClient>,
+  companyId: string,
+  issueRefs: Set<string>,
+) {
+  const queryCache = typeof queryClient.getQueryCache === "function"
+    ? queryClient.getQueryCache()
+    : null;
+  const cachedQueries = queryCache?.findAll?.({ queryKey: ["issues", companyId, "filtered"] }) ?? [];
+
+  for (const query of cachedQueries) {
+    const queryKey = Array.isArray(query.queryKey) ? query.queryKey : null;
+    if (!queryKey) continue;
+    const filters = readFilteredIssueQueryFilters(queryKey, companyId);
+    if (!filters || !filteredIssueQueryMayBeAffected(filters, issueRefs)) continue;
+    queryClient.invalidateQueries({ queryKey });
+  }
+}
+
 function invalidateHeartbeatQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
@@ -481,16 +530,33 @@ function invalidateHeartbeatQueries(
 ) {
   queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.issueExecutionSummaries(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
+  queryClient.invalidateQueries({ queryKey: ["companies", companyId, "run-activity"] });
+  queryClient.invalidateQueries({ queryKey: queryKeys.inboxSummary(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.railState });
   queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
 
   const agentId = readString(payload.agentId);
   if (agentId) {
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
+  }
+}
+
+function invalidateAgentStatusQueries(
+  queryClient: ReturnType<typeof useQueryClient>,
+  companyId: string,
+  payload: Record<string, unknown>,
+) {
+  queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.org(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.inboxSummary(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.railState });
+
+  const agentId = readString(payload.agentId);
+  if (agentId) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
   }
 }
 
@@ -501,19 +567,19 @@ function invalidateActivityQueries(
 ) {
   queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.inboxSummary(companyId) });
 
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
 
   if (entityType === "issue") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.railState });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
     if (entityId) {
       const details = readRecord(payload.details);
       const issueRefs = resolveIssueQueryRefs(queryClient, companyId, entityId, details);
+      invalidateMatchingFilteredIssueQueries(queryClient, companyId, new Set(issueRefs));
       for (const ref of issueRefs) {
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref) });
@@ -556,16 +622,19 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "approval") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.railState });
     queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
     return;
   }
 
   if (entityType === "join_request") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.railState });
     queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
     return;
   }
 
   if (entityType === "cost_event") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.railState });
     queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.usageByProvider(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.usageWindowSpend(companyId) });
@@ -655,11 +724,7 @@ function handleLiveEvent(
   }
 
   if (event.type === "agent.status") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(expectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(expectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.org(expectedCompanyId) });
-    const agentId = readString(payload.agentId);
-    if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
+    invalidateAgentStatusQueries(queryClient, expectedCompanyId, payload);
     const toast = buildAgentStatusToast(payload, nameOf, queryClient, expectedCompanyId);
     if (
       toast &&
@@ -729,6 +794,8 @@ export const __liveUpdatesTestUtils = {
   buildAgentStatusToast,
   buildRunStatusToast,
   closeSocketQuietly,
+  invalidateHeartbeatQueries,
+  invalidateAgentStatusQueries,
   invalidateActivityQueries,
   resolveLiveCompanyId,
   shouldSuppressActivityToastForVisibleIssue,
