@@ -405,5 +405,9 @@
   "executionParticipant.noParticipants": "{{label}} 없음",
   "executionParticipant.assignToMe": "나에게 할당",
   "executionParticipant.requester": "요청자",
-  "executionParticipant.userFallback": "사용자"
+  "executionParticipant.userFallback": "사용자",
+  "filters.hide_routine_runs": "루틴 실행 숨기기",
+  "list.createLabel": "{{label}} 생성",
+  "list.newLabel": "새 {{label}}",
+  "properties.clickToCopy": "클릭하여 복사"
 }

@@ -53,5 +53,6 @@
   "chooseInboxColumns": "표시할 받은함 열을 선택하세요",
   "group": "그룹",
   "groupNone": "없음",
-  "groupType": "유형"
+  "groupType": "유형",
+  "groupWorkspace": "워크스페이스"
 }

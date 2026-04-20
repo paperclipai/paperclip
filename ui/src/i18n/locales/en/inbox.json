@@ -53,5 +53,6 @@
   "chooseInboxColumns": "Choose which inbox columns stay visible",
   "group": "Group",
   "groupNone": "None",
-  "groupType": "Type"
+  "groupType": "Type",
+  "groupWorkspace": "Workspace"
 }

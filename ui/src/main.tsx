@@ -28,10 +28,11 @@ import { loadLanguage } from "./i18n";
 
 initPluginBridge(React, ReactDOM, i18n);
 
-// Preload saved language if not EN/KO (already inlined).
+// Preload saved language if not EN (only EN is inlined in Core).
+// All other languages (ko, ja, es, etc.) are loaded from plugins.
 // Non-blocking — app renders immediately, translations arrive async.
 const savedLang = localStorage.getItem("paperclip.language");
-if (savedLang && savedLang !== "en" && savedLang !== "ko") {
+if (savedLang && savedLang !== "en") {
   void loadLanguage(savedLang);
 }
 
