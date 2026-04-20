@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Building2, Plus, Trash2, Users, Building as BuildingIcon } from "lucide-react";
-import { organizationsApi } from "../api/organizations";
+import { Archive, ArchiveRestore, Building2, Plus, Trash2, Users, Building as BuildingIcon } from "lucide-react";
+import { organizationsApi, type Organization } from "../api/organizations";
 import { companiesApi } from "../api/companies";
+import { authApi } from "../api/auth";
 import { useToastActions } from "../context/ToastContext";
 import { useOrg } from "../context/OrgContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -13,19 +14,59 @@ import { Link } from "@/lib/router";
 export function Organizations() {
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
-  const { organizations, selectedOrg, setSelectedOrgId, loading: orgsLoading } = useOrg();
+  const { selectedOrg, setSelectedOrgId } = useOrg();
 
   const [showCreate, setShowCreate] = useState(false);
   const [newOrgName, setNewOrgName] = useState("");
   const [addMemberEmail, setAddMemberEmail] = useState("");
   const [attachCompanyId, setAttachCompanyId] = useState("");
 
-  const selectedOrgId = selectedOrg?.id ?? null;
+  // Load all orgs (including archived) for this page so archived ones are visible.
+  const allOrgsQuery = useQuery<Organization[]>({
+    queryKey: [...queryKeys.organizations.list, "includeArchived"],
+    queryFn: () => organizationsApi.list({ includeArchived: true }),
+  });
+  const organizations = allOrgsQuery.data ?? [];
+  const orgsLoading = allOrgsQuery.isLoading;
+
+  const sessionQuery = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const currentUserId = sessionQuery.data?.user?.id ?? null;
+
+  // Page-local selection (may point at an archived org, unlike context).
+  const [pageSelectedOrgId, setPageSelectedOrgId] = useState<string | null>(
+    selectedOrg?.id ?? null,
+  );
+  // Fall back to first available org once the includeArchived list resolves.
+  const effectiveSelectedId =
+    pageSelectedOrgId && organizations.some((o) => o.id === pageSelectedOrgId)
+      ? pageSelectedOrgId
+      : (selectedOrg?.id ?? organizations[0]?.id ?? null);
+  const selectedOrgId = effectiveSelectedId;
+  const pageSelectedOrg = useMemo(
+    () => organizations.find((o) => o.id === effectiveSelectedId) ?? null,
+    [organizations, effectiveSelectedId],
+  );
+  const isArchived = !!pageSelectedOrg?.archivedAt;
+  const isOwner = !!pageSelectedOrg && !!currentUserId && pageSelectedOrg.ownerUserId === currentUserId;
+
+  function selectOrg(orgId: string) {
+    setPageSelectedOrgId(orgId);
+    const org = organizations.find((o) => o.id === orgId);
+    if (org && !org.archivedAt) setSelectedOrgId(orgId);
+  }
+
+  function invalidateOrgLists() {
+    queryClient.invalidateQueries({ queryKey: queryKeys.organizations.list });
+    queryClient.invalidateQueries({ queryKey: [...queryKeys.organizations.list, "includeArchived"] });
+  }
 
   const createOrgMutation = useMutation({
     mutationFn: (name: string) => organizationsApi.create({ name }),
     onSuccess: (created) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.organizations.list });
+      invalidateOrgLists();
       setSelectedOrgId(created.id);
       setNewOrgName("");
       setShowCreate(false);
@@ -123,6 +164,53 @@ export function Organizations() {
     },
   });
 
+  const archiveOrgMutation = useMutation({
+    mutationFn: (orgId: string) => organizationsApi.archive(orgId),
+    onSuccess: () => {
+      invalidateOrgLists();
+      pushToast({ title: "Organization archived", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to archive organization",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const unarchiveOrgMutation = useMutation({
+    mutationFn: (orgId: string) => organizationsApi.unarchive(orgId),
+    onSuccess: () => {
+      invalidateOrgLists();
+      pushToast({ title: "Organization restored", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to unarchive organization",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const archiveCompanyMutation = useMutation({
+    mutationFn: (companyId: string) => companiesApi.archive(companyId),
+    onSuccess: () => {
+      if (!selectedOrgId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.organizations.companies(selectedOrgId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      pushToast({ title: "Company archived", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to archive company",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
   const attachableCompanies = useMemo(
     () =>
       (allCompaniesQuery.data ?? []).filter(
@@ -157,11 +245,12 @@ export function Organizations() {
             <select
               className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm outline-none"
               value={selectedOrgId ?? ""}
-              onChange={(e) => setSelectedOrgId(e.target.value)}
+              onChange={(e) => selectOrg(e.target.value)}
             >
               {organizations.map((org) => (
                 <option key={org.id} value={org.id}>
                   {org.name}
+                  {org.archivedAt ? " (archived)" : ""}
                 </option>
               ))}
             </select>
@@ -210,12 +299,53 @@ export function Organizations() {
           </div>
         ) : null}
 
-        {!selectedOrg ? (
+        {!pageSelectedOrg ? (
           <div className="rounded-lg border border-border bg-background px-6 py-10 text-center text-sm text-muted-foreground">
             Create an organization to manage members and companies.
           </div>
         ) : (
           <>
+            {isArchived ? (
+              <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-4 py-3 text-sm">
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Archive className="size-4" />
+                  <span>This organization is archived.</span>
+                </div>
+                {isOwner ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => unarchiveOrgMutation.mutate(pageSelectedOrg.id)}
+                    disabled={unarchiveOrgMutation.isPending}
+                  >
+                    <ArchiveRestore className="size-4" />
+                    {unarchiveOrgMutation.isPending ? "Restoring..." : "Restore"}
+                  </Button>
+                ) : null}
+              </div>
+            ) : isOwner ? (
+              <div className="flex items-center justify-end">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-muted-foreground hover:text-destructive"
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        `Archive "${pageSelectedOrg.name}"? Companies inside will keep working — archive them individually if needed.`,
+                      )
+                    ) {
+                      archiveOrgMutation.mutate(pageSelectedOrg.id);
+                    }
+                  }}
+                  disabled={archiveOrgMutation.isPending}
+                >
+                  <Archive className="size-4" />
+                  {archiveOrgMutation.isPending ? "Archiving..." : "Archive organization"}
+                </Button>
+              </div>
+            ) : null}
+
             <Section
               icon={<Users className="size-4 text-muted-foreground" />}
               title="Members"
@@ -276,7 +406,7 @@ export function Organizations() {
                         onClick={() => {
                           if (
                             window.confirm(
-                              `Remove ${member.displayName || member.email || "this member"} from ${selectedOrg.name}?`,
+                              `Remove ${member.displayName || member.email || "this member"} from ${pageSelectedOrg.name}?`,
                             )
                           ) {
                             removeMemberMutation.mutate(member.userId);
@@ -340,24 +470,48 @@ export function Organizations() {
                           {company.status}
                         </span>
                       </div>
-                      <Button
-                        size="icon-sm"
-                        variant="ghost"
-                        className="text-muted-foreground hover:text-destructive"
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `Detach "${company.name}" from ${selectedOrg.name}?`,
-                            )
-                          ) {
-                            detachCompanyMutation.mutate(company.id);
-                          }
-                        }}
-                        disabled={detachCompanyMutation.isPending}
-                        aria-label="Detach company"
-                      >
-                        <Trash2 className="size-3.5" />
-                      </Button>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {company.status !== "archived" ? (
+                          <Button
+                            size="icon-sm"
+                            variant="ghost"
+                            className="text-muted-foreground hover:text-foreground"
+                            onClick={() => {
+                              if (
+                                window.confirm(
+                                  `Archive company "${company.name}"? It will be hidden from the sidebar and paused.`,
+                                )
+                              ) {
+                                archiveCompanyMutation.mutate(company.id);
+                              }
+                            }}
+                            disabled={archiveCompanyMutation.isPending}
+                            aria-label="Archive company"
+                            title="Archive company"
+                          >
+                            <Archive className="size-3.5" />
+                          </Button>
+                        ) : null}
+                        <Button
+                          size="icon-sm"
+                          variant="ghost"
+                          className="text-muted-foreground hover:text-destructive"
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                `Detach "${company.name}" from ${pageSelectedOrg.name}? The company stays but will no longer belong to this organization.`,
+                              )
+                            ) {
+                              detachCompanyMutation.mutate(company.id);
+                            }
+                          }}
+                          disabled={detachCompanyMutation.isPending}
+                          aria-label="Detach company"
+                          title="Detach from organization"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </div>
                     </li>
                   ))}
                 </ul>

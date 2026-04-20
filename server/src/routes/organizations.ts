@@ -1,6 +1,6 @@
 import type { Request } from "express";
 import { Router } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { organizations, orgMemberships, companies, authUsers } from "@paperclipai/db";
@@ -61,7 +61,10 @@ export function organizationRoutes(db: Db) {
       return row ?? null;
     },
 
-    async listForUser(userId: string) {
+    async listForUser(userId: string, opts: { includeArchived?: boolean } = {}) {
+      const whereClauses = opts.includeArchived
+        ? eq(orgMemberships.userId, userId)
+        : and(eq(orgMemberships.userId, userId), isNull(organizations.archivedAt));
       const rows = await db
         .select({
           id: organizations.id,
@@ -69,14 +72,24 @@ export function organizationRoutes(db: Db) {
           ownerUserId: organizations.ownerUserId,
           settings: organizations.settings,
           role: orgMemberships.role,
+          archivedAt: organizations.archivedAt,
           createdAt: organizations.createdAt,
           updatedAt: organizations.updatedAt,
         })
         .from(orgMemberships)
         .innerJoin(organizations, eq(orgMemberships.organizationId, organizations.id))
-        .where(eq(orgMemberships.userId, userId))
+        .where(whereClauses)
         .orderBy(organizations.name);
       return rows;
+    },
+
+    async setArchived(id: string, archived: boolean) {
+      const [updated] = await db
+        .update(organizations)
+        .set({ archivedAt: archived ? new Date() : null, updatedAt: new Date() })
+        .where(eq(organizations.id, id))
+        .returning();
+      return updated ?? null;
     },
 
     async update(id: string, data: { name?: string; settings?: Record<string, unknown> }) {
@@ -230,8 +243,37 @@ export function organizationRoutes(db: Db) {
     const userId = req.actor.userId;
     if (!userId) throw forbidden("User identity required");
 
-    const orgs = await svc.listForUser(userId);
+    const includeArchived = req.query.includeArchived === "true";
+    const orgs = await svc.listForUser(userId, { includeArchived });
     res.json(orgs);
+  });
+
+  // ── Archive organization ─────────────────────────────────────────────
+  router.post("/organizations/:id/archive", async (req, res) => {
+    assertBoard(req);
+    const orgId = req.params.id as string;
+    const org = await svc.getById(orgId);
+    if (!org) {
+      res.status(404).json({ error: "Organization not found" });
+      return;
+    }
+    await assertOrgOwner(req, orgId);
+    const updated = await svc.setArchived(orgId, true);
+    res.json(updated);
+  });
+
+  // ── Unarchive organization ───────────────────────────────────────────
+  router.post("/organizations/:id/unarchive", async (req, res) => {
+    assertBoard(req);
+    const orgId = req.params.id as string;
+    const org = await svc.getById(orgId);
+    if (!org) {
+      res.status(404).json({ error: "Organization not found" });
+      return;
+    }
+    await assertOrgOwner(req, orgId);
+    const updated = await svc.setArchived(orgId, false);
+    res.json(updated);
   });
 
   // ── Get organization details ─────────────────────────────────────────

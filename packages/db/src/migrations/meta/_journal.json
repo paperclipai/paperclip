@@ -463,6 +463,13 @@
       "when": 1777939320000,
       "tag": "0065_issue_due_date",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1777939380000,
+      "tag": "0066_org_archived_at",
+      "breakpoints": true
     }
   ]
 }

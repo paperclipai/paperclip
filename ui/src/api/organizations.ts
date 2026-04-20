@@ -5,6 +5,7 @@ export interface Organization {
   name: string;
   ownerUserId: string;
   settings: Record<string, unknown>;
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -20,7 +21,10 @@ export interface OrgMember {
 }
 
 export const organizationsApi = {
-  list: () => api.get<Organization[]>("/organizations"),
+  list: (opts?: { includeArchived?: boolean }) =>
+    api.get<Organization[]>(
+      opts?.includeArchived ? "/organizations?includeArchived=true" : "/organizations",
+    ),
 
   get: (id: string) => api.get<Organization>(`/organizations/${id}`),
 
@@ -28,6 +32,10 @@ export const organizationsApi = {
 
   update: (id: string, data: { name?: string; settings?: Record<string, unknown> }) =>
     api.patch<Organization>(`/organizations/${id}`, data),
+
+  archive: (id: string) => api.post<Organization>(`/organizations/${id}/archive`, {}),
+
+  unarchive: (id: string) => api.post<Organization>(`/organizations/${id}/unarchive`, {}),
 
   listCompanies: (organizationId: string) =>
     api.get<Array<{ id: string; name: string; status: string; organizationId: string | null }>>(

@@ -5,6 +5,7 @@ export const organizations = pgTable("organizations", {
   name: text("name").notNull(),
   ownerUserId: text("owner_user_id").notNull(),
   settings: jsonb("settings").$type<Record<string, unknown>>().notNull().default({}),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
