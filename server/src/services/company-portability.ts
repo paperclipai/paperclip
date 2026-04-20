@@ -4283,6 +4283,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               if (newSecretId) {
                 env[ei.key] = { type: "secret_ref", secretId: newSecretId };
               }
+            } else if (ei.kind === "secret" && !ei.secretName) {
+              warnings.push(`Env key "${ei.key}" for agent ${manifestAgent.slug} could not be reconstructed (sensitive binding without secret reference). Re-add manually.`);
             } else if (ei.kind === "plain" && ei.defaultValue !== null) {
               env[ei.key] = { type: "plain", value: ei.defaultValue };
             }
@@ -4422,6 +4424,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             if (newSecretId) {
               reconstructedProjectEnv[ei.key] = { type: "secret_ref", secretId: newSecretId };
             }
+          } else if (ei.kind === "secret" && !ei.secretName) {
+            warnings.push(`Env key "${ei.key}" for project ${planProject.slug} could not be reconstructed (sensitive binding without secret reference). Re-add manually.`);
           } else if (ei.kind === "plain" && ei.defaultValue !== null) {
             reconstructedProjectEnv[ei.key] = { type: "plain", value: ei.defaultValue };
           }
