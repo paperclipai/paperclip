@@ -62,6 +62,32 @@ describe("createDpo().anonymize", () => {
     dpo.close();
   });
 
+  it("anonymisiert regex-Treffer auch wenn confidence threshold strenger ist", async () => {
+    mockClassifier([]); // keine LLM-Findings
+    const dpo = createDpo({
+      mappingDbPath: join(dir, "m.db"),
+      mappingKey: randomBytes(32),
+      auditDir: join(dir, "audit"),
+      classifier: { url: "http://x", model: "g", timeoutMs: 1000 },
+      rules: {
+        tenant: "test",
+        detect: { pii: ["steuernummer"], llm: [] },
+        block: { art_9_categories: false },
+        confidenceThreshold: { block: "high", anonymize: "high" },
+        mapping: { ttlSeconds: 60 },
+      },
+    });
+    // 11-stellige Steuer-IdNr emittiert confidence=medium aus dem Regex-Detektor
+    const result = await dpo.anonymize({
+      text: "Ident 12345678901 vermerken",
+      targetLlm: "claude",
+      agent: "ceo",
+    });
+    if ("blocked" in result) throw new Error("unexpected block");
+    expect(result.anonymizedText).not.toContain("12345678901");
+    dpo.close();
+  });
+
   it("antwortet mit blocked: dpo_unavailable wenn LM Studio offline", async () => {
     vi.spyOn(global, "fetch").mockRejectedValue(new Error("ECONNREFUSED"));
     const dpo = createDpo({

@@ -80,6 +80,8 @@ export function createDpo(opts: DpoOptions): Dpo {
       const piiFindings = detectPii(req.text);
       const all = [...piiFindings, ...llmFindings];
 
+      // Regex-Treffer werden immer anonymisiert (deterministisch, definitorisch sensibel).
+      // Confidence-Schwelle gilt nur für LLM-Findings.
       const anonRank = CONF_RANK[rules.confidenceThreshold.anonymize];
       const filtered = all.filter(
         (f) => f.source === "regex" || CONF_RANK[f.confidence] >= anonRank,
