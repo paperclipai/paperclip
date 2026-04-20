@@ -4849,9 +4849,22 @@ export function heartbeatService(db: Db) {
   }
 
   async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
+    type TerminalSkipEntry = {
+      companyId: string;
+      issueId: string;
+      issueStatus: string;
+      identifier: string | null;
+      agentId: string;
+      runId: string;
+    };
+    type PromotionResult =
+      | null
+      | { run: null; skippedTerminalWakes: TerminalSkipEntry[] }
+      | { run: typeof heartbeatRuns.$inferSelect; skippedTerminalWakes: TerminalSkipEntry[] };
+
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
-    const promotionResult = await db.transaction(async (tx) => {
+    const promotionResult: PromotionResult = await db.transaction(async (tx): Promise<PromotionResult> => {
       if (contextIssueId) {
         await tx.execute(
           sql`select id from issues where company_id = ${run.companyId} and id = ${contextIssueId} for update`,
@@ -4894,6 +4907,8 @@ export function heartbeatService(db: Db) {
           .where(eq(issues.id, issue.id));
       }
 
+      const terminalSkipWakes: TerminalSkipEntry[] = [];
+
       while (true) {
         const deferred = await tx
           .select()
@@ -4909,7 +4924,7 @@ export function heartbeatService(db: Db) {
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
-        if (!deferred) return null;
+        if (!deferred) return terminalSkipWakes.length > 0 ? { run: null, skippedTerminalWakes: terminalSkipWakes } : null;
 
         const deferredAgent = await tx
           .select()
@@ -4940,48 +4955,31 @@ export function heartbeatService(db: Db) {
         const deferredContextSeed = parseObject(deferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
         const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
-        const shouldReopenDeferredCommentWake =
-          deferredCommentIds.length > 0 && (issue.status === "done" || issue.status === "cancelled");
-        let reopenedActivity: LogActivityInput | null = null;
+        const isTerminalIssue = issue.status === "done" || issue.status === "cancelled";
 
-        if (shouldReopenDeferredCommentWake) {
-          const reopenedFromStatus = issue.status;
-          const reopenedIssue = await issuesSvc.update(
-            issue.id,
-            {
-              status: "todo",
-              executionState: null,
-            },
-            tx,
-          );
-          if (reopenedIssue) {
-            issue = {
-              ...issue,
-              identifier: reopenedIssue.identifier,
-              status: reopenedIssue.status,
-              executionRunId: reopenedIssue.executionRunId,
-            };
-            if (!readNonEmptyString(promotedContextSeed.reopenedFrom)) {
-              promotedContextSeed.reopenedFrom = reopenedFromStatus;
-            }
-            reopenedActivity = {
-              companyId: issue.companyId,
-              actorType: "system",
-              actorId: "heartbeat",
-              agentId: deferred.agentId,
-              runId: run.id,
-              action: "issue.updated",
-              entityType: "issue",
-              entityId: issue.id,
-              details: {
-                status: "todo",
-                reopened: true,
-                reopenedFrom: reopenedFromStatus,
-                source: "deferred_comment_wake",
-                identifier: issue.identifier,
-              },
-            };
-          }
+        // Terminal tasks must never be mutated by a stale deferred comment wake.
+        // Drop the wake, mark it failed, record a skip signal, and continue to
+        // the next deferred item so non-comment wakes on the same issue can still
+        // be promoted in the same heartbeat cycle.
+        if (deferredCommentIds.length > 0 && isTerminalIssue) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "failed",
+              finishedAt: new Date(),
+              error: "deferred_comment_wake_terminal_skipped",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          terminalSkipWakes.push({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            issueStatus: issue.status,
+            identifier: issue.identifier,
+            agentId: deferred.agentId,
+            runId: run.id,
+          });
+          continue;
         }
 
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
@@ -5051,16 +5049,37 @@ export function heartbeatService(db: Db) {
 
         return {
           run: newRun,
-          reopenedActivity,
+          skippedTerminalWakes: terminalSkipWakes,
         };
       }
     });
 
-    const promotedRun = promotionResult?.run ?? null;
-    if (!promotedRun) return;
+    // Emit one audit entry per skipped terminal wake — unconditionally, before checking
+    // whether a run was also promoted in the same cycle (mixed cycle: terminal skip on
+    // iteration N, non-comment promotion on iteration N+1 → promotedRun is non-null but
+    // the skip still happened and must be logged).
+    const skips = promotionResult?.skippedTerminalWakes ?? [];
+    for (const skip of skips) {
+      await logActivity(db, {
+        companyId: skip.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        agentId: skip.agentId,
+        runId: skip.runId,
+        action: "issue.wake_ignored_terminal",
+        entityType: "issue",
+        entityId: skip.issueId,
+        details: {
+          source: "deferred_comment_wake_terminal_skipped",
+          status: skip.issueStatus,
+          identifier: skip.identifier,
+        },
+      });
+    }
 
-    if (promotionResult?.reopenedActivity) {
-      await logActivity(db, promotionResult.reopenedActivity);
+    const promotedRun = promotionResult?.run ?? null;
+    if (!promotedRun) {
+      return;
     }
 
     publishLiveEvent({

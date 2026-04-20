@@ -1531,6 +1531,11 @@ export function issueRoutes(
     }
     if (commentBody && effectiveReopenRequested && isClosed && updateFields.status === undefined) {
       updateFields.status = "todo";
+      updateFields.allowTerminalReopen = true;
+    }
+    // Direct status PATCH on a terminal issue is an intentional reopen.
+    if (isClosed && typeof updateFields.status === "string" && !isClosedIssueStatus(updateFields.status)) {
+      updateFields.allowTerminalReopen = true;
     }
     if (req.body.executionPolicy !== undefined) {
       updateFields.executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
@@ -2425,7 +2430,7 @@ export function issueRoutes(
     let currentIssue = issue;
 
     if (effectiveReopenRequested && isClosed) {
-      const reopenedIssue = await svc.update(id, { status: "todo" });
+      const reopenedIssue = await svc.update(id, { status: "todo", allowTerminalReopen: true });
       if (!reopenedIssue) {
         res.status(404).json({ error: "Issue not found" });
         return;

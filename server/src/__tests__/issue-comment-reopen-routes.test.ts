@@ -403,7 +403,7 @@ describe("issue comment reopen routes", () => {
     expect(res.status).toBe(201);
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
-      { status: "todo" },
+      { status: "todo", allowTerminalReopen: true },
     );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
