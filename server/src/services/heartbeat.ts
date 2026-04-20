@@ -2349,6 +2349,24 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0]);
   }
 
+  function mapRunStatusToPluginEvent(
+    status: string,
+  ): "agent.run.started" | "agent.run.finished" | "agent.run.failed" | "agent.run.cancelled" | null {
+    switch (status) {
+      case "running":
+        return "agent.run.started";
+      case "succeeded":
+        return "agent.run.finished";
+      case "failed":
+      case "timed_out":
+        return "agent.run.failed";
+      case "cancelled":
+        return "agent.run.cancelled";
+      default:
+        return null;
+    }
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -2377,6 +2395,30 @@ export function heartbeatService(db: Db) {
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
+
+      const pluginEventAction = mapRunStatusToPluginEvent(updated.status);
+      if (pluginEventAction) {
+        await logActivity(db, {
+          companyId: updated.companyId,
+          actorType: "agent",
+          actorId: updated.agentId,
+          agentId: updated.agentId,
+          runId: updated.id,
+          action: pluginEventAction,
+          entityType: "agent",
+          entityId: updated.agentId,
+          details: {
+            runId: updated.id,
+            status: updated.status,
+            invocationSource: updated.invocationSource,
+            triggerDetail: updated.triggerDetail,
+            error: updated.error ?? null,
+            errorCode: updated.errorCode ?? null,
+            startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
+            finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
+          },
+        });
+      }
     }
 
     return updated;
