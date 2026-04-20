@@ -73,6 +73,7 @@ export interface IssueFilters {
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
   projectId?: string;
+  projectScopeRestrictedTo?: string[];
   executionWorkspaceId?: string;
   parentId?: string;
   labelId?: string;
@@ -1008,6 +1009,16 @@ export function issueService(db: Db) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters?.projectScopeRestrictedTo) {
+        const allowed = filters.projectScopeRestrictedTo;
+        if (allowed.length === 0) {
+          conditions.push(isNull(issues.projectId));
+        } else {
+          conditions.push(
+            or(isNull(issues.projectId), inArray(issues.projectId, allowed))!,
+          );
+        }
+      }
       if (filters?.executionWorkspaceId) {
         conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
       }

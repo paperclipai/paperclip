@@ -104,8 +104,21 @@ export function projectRoutes(db: Db) {
   router.get("/companies/:companyId/projects", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
-    res.json(result);
+    const all = await svc.list(companyId);
+    if (
+      req.actor.type === "board" &&
+      req.actor.source !== "local_implicit" &&
+      !req.actor.isInstanceAdmin &&
+      req.actor.userId
+    ) {
+      const accessibleIds = await access.listAccessibleProjects(companyId, req.actor.userId);
+      if (accessibleIds !== null) {
+        const allowed = new Set(accessibleIds);
+        res.json(all.filter((p) => allowed.has(p.id)));
+        return;
+      }
+    }
+    res.json(all);
   });
 
   router.get("/projects/:id", async (req, res) => {
@@ -115,7 +128,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, project.companyId);
+    await requireProjectAccess(req, access, project.companyId, project.id);
     res.json(project);
   });
 
@@ -155,6 +168,20 @@ export function projectRoutes(db: Db) {
     const hydratedProject = workspace ? await svc.getById(project.id) : project;
 
     const actor = getActorInfo(req);
+    if (
+      req.actor.type === "board" &&
+      req.actor.source !== "local_implicit" &&
+      req.actor.userId
+    ) {
+      await access.addProjectMember(
+        project.id,
+        companyId,
+        "user",
+        req.actor.userId,
+        "super_admin",
+        req.actor.userId,
+      );
+    }
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,

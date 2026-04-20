@@ -47,7 +47,7 @@ import {
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, getActorInfo, requireProjectAccess } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -640,6 +640,17 @@ export function issueRoutes(
       return;
     }
 
+    let projectScopeRestrictedTo: string[] | undefined;
+    if (
+      req.actor.type === "board" &&
+      req.actor.source !== "local_implicit" &&
+      !req.actor.isInstanceAdmin &&
+      req.actor.userId
+    ) {
+      const accessibleIds = await access.listAccessibleProjects(companyId, req.actor.userId);
+      if (accessibleIds !== null) projectScopeRestrictedTo = accessibleIds;
+    }
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
@@ -649,6 +660,7 @@ export function issueRoutes(
       inboxArchivedByUserId,
       unreadForUserId,
       projectId: req.query.projectId as string | undefined,
+      projectScopeRestrictedTo,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
       parentId: req.query.parentId as string | undefined,
       labelId: req.query.labelId as string | undefined,
@@ -725,7 +737,11 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    if (issue.projectId) {
+      await requireProjectAccess(req, access, issue.companyId, issue.projectId);
+    } else {
+      assertCompanyAccess(req, issue.companyId);
+    }
     const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
