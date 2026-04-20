@@ -469,7 +469,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
   );
 
   it(
-    "replays migration 0057 safely when plugin_database_namespaces already exists",
+    "replays migration 0059 safely when plugin_database_namespaces already exists",
     async () => {
       const connectionString = await createTempDatabase();
 
@@ -478,7 +478,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
         const pluginNamespacesHash = await migrationHash(
-          "0057_plugin_database_namespaces.sql",
+          "0059_plugin_database_namespaces.sql",
         );
 
         await sql.unsafe(
@@ -505,7 +505,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
-        pendingMigrations: ["0057_plugin_database_namespaces.sql"],
+        pendingMigrations: ["0059_plugin_database_namespaces.sql"],
         reason: "pending-migrations",
       });
 
