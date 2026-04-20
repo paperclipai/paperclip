@@ -53,8 +53,19 @@ RUN curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/sta
   && install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl \
   && rm kubectl \
   && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
-  && ln -s /app/cli/dist/index.js /usr/local/bin/paperclipai \
   && chmod +x /app/cli/dist/index.js \
+  && ln -s /app/cli/dist/index.js /usr/local/bin/paperclipai \
+  && for pkg in zod postgres; do \
+       target=$(find /app/node_modules/.pnpm -maxdepth 4 -type d -path "*/node_modules/$pkg" 2>/dev/null | head -1); \
+       if [ -n "$target" ]; then \
+         mkdir -p /app/cli/node_modules; \
+         ln -sfn "$target" "/app/cli/node_modules/$pkg"; \
+         echo "CLI dep linked: $pkg -> $target"; \
+       else \
+         echo "CLI dep NOT FOUND in pnpm store: $pkg" >&2; \
+         exit 1; \
+       fi; \
+     done \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
