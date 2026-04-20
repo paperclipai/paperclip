@@ -134,22 +134,25 @@ export async function testEnvironment(
     } else {
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
       const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
-      const sandbox = asBoolean(config.sandbox, false);
-      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 10));
+      if (asBoolean(config.sandbox, false)) {
+        checks.push({
+          code: "gemini_sandbox_unsupported",
+          level: "warn",
+          message: "The sandbox setting is not supported by Gemini CLI v0.36.0 and will be ignored.",
+          hint: "Remove sandbox from adapter config, or use extraArgs if equivalent behavior becomes available.",
+        });
+      }
+      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 30));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
         return asStringArray(config.args);
       })();
 
-      const args = ["--output-format", "stream-json", "--prompt", "Respond with hello."];
+      const args = ["--output-format", "json"];
       if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
       if (approvalMode !== "default") args.push("--approval-mode", approvalMode);
-      if (sandbox) {
-        args.push("--sandbox");
-      } else {
-        args.push("--sandbox=none");
-      }
+
       if (extraArgs.length > 0) args.push(...extraArgs);
 
       const probe = await runChildProcess(
@@ -162,9 +165,24 @@ export async function testEnvironment(
           timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
           onLog: async () => { },
+          stdin: "Respond with hello.",
         },
       );
-      const parsed = parseGeminiJsonl(probe.stdout);
+      // Strip non-JSON noise lines (e.g. "Loaded cached credentials.") that
+      // Gemini CLI v0.35.3+ may print before the actual JSON output.
+      const jsonStart = probe.stdout.indexOf('{');
+      const cleanStdout = jsonStart !== -1 ? probe.stdout.slice(jsonStart) : probe.stdout;
+      const parsed = parseGeminiJsonl(cleanStdout);
+      // Fallback for Gemini CLI v0.36.0 which returns plain JSON instead of JSONL
+      let summary = parsed.summary.trim();
+      if (!summary) {
+        try {
+          const raw = JSON.parse(cleanStdout);
+          if (raw.response) summary = String(raw.response).trim();
+        } catch {
+          // ignore parse errors
+        }
+      }
       const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
       const authMeta = detectGeminiAuthRequired({
         parsed: parsed.resultEvent,
@@ -195,15 +213,15 @@ export async function testEnvironment(
           hint: "Retry the probe. If this persists, verify Gemini can run `Respond with hello.` from this directory manually.",
         });
       } else if ((probe.exitCode ?? 1) === 0) {
-        const summary = parsed.summary.trim();
-        const hasHello = /\bhello\b/i.test(summary);
+        const finalSummary = summary;
+        const hasHello = /\bhello\b/i.test(finalSummary);
         checks.push({
           code: hasHello ? "gemini_hello_probe_passed" : "gemini_hello_probe_unexpected_output",
           level: hasHello ? "info" : "warn",
           message: hasHello
             ? "Gemini hello probe succeeded."
             : "Gemini probe ran but did not return `hello` as expected.",
-          ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
+          ...(finalSummary ? { detail: finalSummary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
           ...(hasHello
             ? {}
             : {
