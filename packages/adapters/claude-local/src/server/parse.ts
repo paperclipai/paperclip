@@ -174,6 +174,8 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
     .filter(Boolean);
 
   return allMessages.some((msg) =>
-    /no conversation found with session id|unknown session|session .* not found/i.test(msg),
+    /no conversation found with session id|unknown session|session .* not found|--resume requires a valid session|is not a UUID|does not match any session title/i.test(
+      msg,
+    ),
   );
 }
