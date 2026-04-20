@@ -606,6 +606,8 @@ export async function startServer(): Promise<StartedServer> {
     bindHost: config.host,
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
+    postDoneCleanupEnabled: config.postDoneCleanupEnabled,
+    postDoneCleanupAllowedRoots: config.postDoneCleanupAllowedRoots,
     betterAuthHandler,
     resolveSession,
   });

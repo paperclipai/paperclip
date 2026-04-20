@@ -70,6 +70,7 @@ import {
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "../services/issue-execution-policy.js";
+import { runPostDoneCleanup } from "../services/post-done-cleanup.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -299,6 +300,8 @@ export function issueRoutes(
         now?: Date;
       }): Promise<unknown>;
     };
+    postDoneCleanupEnabled?: boolean;
+    postDoneCleanupAllowedRoots?: string[];
   },
 ) {
   const router = Router();
@@ -2001,6 +2004,15 @@ export function issueRoutes(
             },
           });
         }
+      }
+
+      if (becameDone && opts?.postDoneCleanupEnabled) {
+        runPostDoneCleanup({
+          db,
+          issueId: issue.id,
+          issueIdentifier: issue.identifier ?? issue.id,
+          allowedRoots: opts.postDoneCleanupAllowedRoots,
+        }).catch((err) => logger.warn({ err, issueId: issue.id }, "post-done-cleanup: unexpected error"));
       }
 
       const becameTerminal =
