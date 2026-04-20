@@ -29,6 +29,7 @@ export const companies = pgTable(
     criticalBoardAlertsEmailEnabled: boolean("critical_board_alerts_email_enabled")
       .notNull()
       .default(true),
+    releaseGateQaAgentId: uuid("release_gate_qa_agent_id"),
     dailyExecutiveSummaryLastSentAt: timestamp("daily_executive_summary_last_sent_at", { withTimezone: true }),
     dailyExecutiveSummaryLastStatus: text("daily_executive_summary_last_status"),
     dailyExecutiveSummaryLastError: text("daily_executive_summary_last_error"),

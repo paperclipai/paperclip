@@ -22,6 +22,14 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockComputeIssueBoardStateMap = vi.hoisted(() => vi.fn());
+const mockIssueWorkflowService = vi.hoisted(() => ({
+  decorateIssue: vi.fn(async (issue: unknown) => issue),
+  evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
+  applyTemplate: vi.fn(),
+  advanceWorkflowDependents: vi.fn(async () => []),
+  invalidateWorkflowDescendants: vi.fn(async () => ({ invalidatedSelf: null, invalidatedDescendants: [] })),
+  handbackWorkflowLane: vi.fn(async () => null),
+}));
 
 vi.mock("../services/issue-board-state.js", () => ({
   computeIssueBoardStateMap: mockComputeIssueBoardStateMap,
@@ -69,11 +77,7 @@ vi.mock("../services/index.js", () => ({
   }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
-  issueWorkflowService: () => ({
-    decorateIssue: vi.fn(async (issue: unknown) => issue),
-    evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
-    applyTemplate: vi.fn(),
-  }),
+  issueWorkflowService: () => mockIssueWorkflowService,
   logActivity: vi.fn(async () => undefined),
   projectService: () => ({
     getById: vi.fn(async () => null),
@@ -153,6 +157,19 @@ describe("issue recovery route guards", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIssueWorkflowService.decorateIssue.mockImplementation(async (issue: unknown) => issue);
+    mockIssueWorkflowService.evaluateLaneCompletion.mockResolvedValue({
+      canComplete: true,
+      blockingReasons: [],
+      artifactStatuses: [],
+    });
+    mockIssueWorkflowService.applyTemplate.mockReset();
+    mockIssueWorkflowService.advanceWorkflowDependents.mockResolvedValue([]);
+    mockIssueWorkflowService.invalidateWorkflowDescendants.mockResolvedValue({
+      invalidatedSelf: null,
+      invalidatedDescendants: [],
+    });
+    mockIssueWorkflowService.handbackWorkflowLane.mockResolvedValue(null);
     mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);

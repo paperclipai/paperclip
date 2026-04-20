@@ -46,6 +46,9 @@ const mockIssueWorkflowService = vi.hoisted(() => ({
   decorateIssue: vi.fn(async (issue: unknown) => issue),
   evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
   applyTemplate: vi.fn(),
+  advanceWorkflowDependents: vi.fn(async () => []),
+  invalidateWorkflowDescendants: vi.fn(async () => ({ invalidatedSelf: null, invalidatedDescendants: [] })),
+  handbackWorkflowLane: vi.fn(async () => null),
 }));
 const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsert = vi.hoisted(() => vi.fn(() => ({ values: mockTxInsertValues })));
@@ -136,6 +139,13 @@ function makeIssue(status: "todo" | "done" | "cancelled") {
 describe("issue comment reopen routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIssueService.getById.mockReset();
+    mockIssueService.update.mockReset();
+    mockIssueService.addComment.mockReset();
+    mockIssueService.listComments.mockReset();
+    mockHeartbeatService.getRun.mockReset();
+    mockHeartbeatService.getActiveRunForAgent.mockReset();
+    mockHeartbeatService.cancelRun.mockReset();
     mockAgentService.getById.mockImplementation(async (id: string) => ({
       id,
       companyId: "company-1",

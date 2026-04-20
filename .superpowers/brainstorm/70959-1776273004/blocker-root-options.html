@@ -1,0 +1,83 @@
+<h2>How should a blocked issue point you to the real blocker?</h2>
+<p class="subtitle">Mocking the issue detail header for COMA-1114. Pick the version that gets you to the right place fastest.</p>
+
+<div class="cards">
+  <div class="card" data-choice="root-card" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Option A · Root blocker card first</div>
+        <div class="mockup-body" style="padding:16px;background:#111827;color:#f3f4f6;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid rgba(239,68,68,.35);background:rgba(127,29,29,.45);padding:14px 16px;">
+            <div>
+              <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#fca5a5;">Root blocker</div>
+              <div style="font-size:18px;font-weight:700;margin-top:4px;">COMA-1098 · Cart API returns stale optimizer state</div>
+              <div style="font-size:13px;color:#d1d5db;margin-top:6px;">7 issues are blocked behind this. Latest owner update was 42 min ago.</div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+              <div style="padding:8px 12px;background:#f3f4f6;color:#111827;font-size:13px;font-weight:600;">Go to root blocker</div>
+              <div style="padding:8px 12px;border:1px solid rgba(255,255,255,.2);font-size:13px;">View chain</div>
+            </div>
+          </div>
+          <div style="margin-top:12px;border:1px solid rgba(255,255,255,.08);padding:12px 14px;background:rgba(255,255,255,.03);">
+            <div style="font-size:13px;color:#e5e7eb;">Why this issue is blocked</div>
+            <div style="font-size:13px;color:#9ca3af;margin-top:4px;">COMA-1114 depends on COMA-1107, which depends on COMA-1098. The root blocker is highlighted above.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Root blocker first</h3>
+      <p>Puts the real problem at the top and gives a single primary button to jump there immediately.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="chain-first" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Option B · Chain first</div>
+        <div class="mockup-body" style="padding:16px;background:#111827;color:#f3f4f6;">
+          <div style="border:1px solid rgba(255,255,255,.08);padding:14px;background:rgba(255,255,255,.03);">
+            <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#9ca3af;">Blocker chain</div>
+            <div style="display:flex;flex-direction:column;gap:10px;margin-top:12px;">
+              <div style="padding:10px 12px;border:1px solid rgba(255,255,255,.08);">COMA-1114 · Fix optimizer mode activation</div>
+              <div style="padding-left:20px;color:#9ca3af;">depends on</div>
+              <div style="padding:10px 12px;border:1px solid rgba(255,255,255,.08);">COMA-1107 · Cart state normalization</div>
+              <div style="padding-left:20px;color:#9ca3af;">depends on</div>
+              <div style="padding:10px 12px;border:1px solid rgba(239,68,68,.35);background:rgba(127,29,29,.45);">COMA-1098 · Cart API returns stale optimizer state</div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:14px;">
+              <div style="padding:8px 12px;background:#f3f4f6;color:#111827;font-size:13px;font-weight:600;">Open highlighted blocker</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Chain first</h3>
+      <p>Shows the full dependency path inline so the root cause is obvious before you click through.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="compact-inline" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Option C · Compact inline summary</div>
+        <div class="mockup-body" style="padding:16px;background:#111827;color:#f3f4f6;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid rgba(255,255,255,.08);padding-bottom:12px;">
+            <div>
+              <div style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#9ca3af;">Blocked by</div>
+              <div style="font-size:16px;font-weight:700;margin-top:4px;">COMA-1098</div>
+              <div style="font-size:13px;color:#9ca3af;margin-top:2px;">through 2 intermediate blockers</div>
+            </div>
+            <div style="padding:8px 12px;background:#f3f4f6;color:#111827;font-size:13px;font-weight:600;">Open blocker</div>
+          </div>
+          <div style="margin-top:12px;font-size:13px;color:#9ca3af;">Compact enough for dense use, but less explanatory when the chain is messy.</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Compact inline</h3>
+      <p>Keeps the detail page dense and scannable, but risks hiding why this is the real blocker.</p>
+    </div>
+  </div>
+</div>

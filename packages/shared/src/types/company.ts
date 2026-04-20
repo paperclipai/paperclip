@@ -1,4 +1,5 @@
 import type { CompanyStatus, ExecutiveSummarySendStatus, PauseReason } from "../constants.js";
+import type { ReleaseGateQaResolutionSource } from "../release-gate-qa.js";
 
 export interface Company {
   id: string;
@@ -22,6 +23,10 @@ export interface Company {
   dailyExecutiveSummaryLastSentAt: Date | null;
   dailyExecutiveSummaryLastStatus: ExecutiveSummarySendStatus | null;
   dailyExecutiveSummaryLastError: string | null;
+  releaseGateQaAgentId?: string | null;
+  resolvedReleaseGateQaAgentId?: string | null;
+  releaseGateQaResolutionSource?: ReleaseGateQaResolutionSource | null;
+  releaseGateQaBlockingReason?: string | null;
   brandColor: string | null;
   logoAssetId: string | null;
   logoUrl: string | null;

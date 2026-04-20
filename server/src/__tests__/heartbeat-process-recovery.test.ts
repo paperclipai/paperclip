@@ -25,9 +25,20 @@ import type { ServerAdapterModule } from "../adapters/index.js";
 import { registerServerAdapter, runningProcesses, unregisterServerAdapter } from "../adapters/index.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
+const mockLogger = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
 
 vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
+}));
+
+vi.mock("../middleware/logger.js", () => ({
+  logger: mockLogger,
+  httpLogger: {},
 }));
 
 vi.mock("@paperclipai/shared/telemetry", async () => {
@@ -375,6 +386,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
     expect(issue?.checkoutRunId).toBe(runId);
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        opsEvent: true,
+        event: "heartbeat.retry.scheduled",
+        companyId: failedRun?.companyId,
+        agentId,
+        runId,
+        retryRunId: retryRun?.id,
+        issueId,
+        reason: "process_lost",
+        retryAttempt: 1,
+      }),
+      "heartbeat.retry.scheduled",
+    );
   });
 
   it("marks a quiet run as suspect before it is declared lost", async () => {
@@ -509,6 +534,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
     expect(issue?.checkoutRunId).toBe(runId);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        opsEvent: true,
+        event: "heartbeat.retry.exhausted",
+        companyId: runs[0]?.companyId,
+        agentId,
+        runId,
+        issueId,
+        reason: "process_lost",
+      }),
+      "heartbeat.retry.exhausted",
+    );
   });
 
   it("queues one retry for non-local adapters after a stale running run is declared lost", async () => {

@@ -230,6 +230,9 @@ export type IssueWorkflowTemplateKey = (typeof ISSUE_WORKFLOW_TEMPLATE_KEYS)[num
 export const ISSUE_WORKFLOW_LANE_ROLES = ["pm", "designer", "engineer", "security", "qa"] as const;
 export type IssueWorkflowLaneRole = (typeof ISSUE_WORKFLOW_LANE_ROLES)[number];
 
+export const ISSUE_WORKFLOW_LANE_PHASES = ["missing", "waiting", "ready", "active", "done"] as const;
+export type IssueWorkflowLanePhase = (typeof ISSUE_WORKFLOW_LANE_PHASES)[number];
+
 export const ISSUE_WORKFLOW_ARTIFACT_KINDS = [
   "document",
   "work_product",

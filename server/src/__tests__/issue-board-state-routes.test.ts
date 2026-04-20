@@ -65,6 +65,9 @@ const mockIssueWorkflowService = vi.hoisted(() => ({
   decorateIssue: vi.fn(),
   evaluateLaneCompletion: vi.fn(),
   applyTemplate: vi.fn(),
+  advanceWorkflowDependents: vi.fn(async () => []),
+  invalidateWorkflowDescendants: vi.fn(async () => ({ invalidatedSelf: null, invalidatedDescendants: [] })),
+  handbackWorkflowLane: vi.fn(async () => null),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());

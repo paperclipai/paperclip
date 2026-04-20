@@ -215,6 +215,9 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
         Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
       }
     }
+    if (requestedStatus) {
+      patch.status = requestedStatus;
+    }
     return { patch };
   }
 

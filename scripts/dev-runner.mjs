@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -16,6 +16,7 @@ const gracefulShutdownTimeoutMs = 10_000;
 const changedPathSampleLimit = 5;
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
+const devServerControlFilePath = path.join(repoRoot, ".paperclip", "dev-server-control.json");
 
 const watchedDirectories = [
   "cli",
@@ -49,6 +50,7 @@ const ignoredDirectoryNames = new Set([
 
 const ignoredRelativePaths = new Set([
   ".paperclip/dev-server-status.json",
+  ".paperclip/dev-server-control.json",
 ]);
 
 const tailscaleAuthFlagNames = new Set([
@@ -81,6 +83,7 @@ const env = {
 
 if (mode === "dev") {
   env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
+  env.PAPERCLIP_DEV_SERVER_CONTROL_FILE = devServerControlFilePath;
 }
 
 if (mode === "watch") {
@@ -244,6 +247,26 @@ function writeDevServerStatus() {
 function clearDevServerStatus() {
   if (mode !== "dev") return;
   rmSync(devServerStatusFilePath, { force: true });
+}
+
+function readPendingDevServerControlAction() {
+  if (mode !== "dev" || !existsSync(devServerControlFilePath)) return null;
+
+  try {
+    if (statSync(devServerControlFilePath).size > 8 * 1024) {
+      rmSync(devServerControlFilePath, { force: true });
+      return null;
+    }
+    const raw = JSON.parse(readFileSync(devServerControlFilePath, "utf8"));
+    return raw.action === "restart" ? "restart" : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearDevServerControl() {
+  if (mode !== "dev") return;
+  rmSync(devServerControlFilePath, { force: true });
 }
 
 async function runPnpm(args, options = {}) {
@@ -489,29 +512,8 @@ async function startServerChild() {
   await markChildAsCurrent();
 }
 
-async function maybeAutoRestartChild() {
-  if (mode !== "dev" || restartInFlight || !child) return;
-  if (dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
-
+async function restartServerChild(errorContext) {
   restartInFlight = true;
-  let health;
-  try {
-    health = await getDevHealthPayload();
-  } catch {
-    restartInFlight = false;
-    return;
-  }
-
-  const devServer = health?.devServer;
-  if (!devServer?.enabled || devServer.autoRestartEnabled !== true) {
-    restartInFlight = false;
-    return;
-  }
-  if ((devServer.activeRunCount ?? 0) > 0) {
-    restartInFlight = false;
-    return;
-  }
-
   try {
     await maybePreflightMigrations({
       autoApply: true,
@@ -521,12 +523,40 @@ async function maybeAutoRestartChild() {
     await stopChildForRestart();
     await startServerChild();
   } catch (error) {
-    const err = toError(error, "Auto-restart failed");
+    const err = toError(error, errorContext);
     process.stderr.write(`${err.stack ?? err.message}\n`);
     process.exit(1);
   } finally {
     restartInFlight = false;
   }
+}
+
+async function maybeAutoRestartChild() {
+  if (mode !== "dev" || restartInFlight || !child) return;
+  if (readPendingDevServerControlAction() === "restart") {
+    clearDevServerControl();
+    console.log("[paperclip] restart requested from board UI; restarting dev server...");
+    await restartServerChild("Requested dev-server restart failed");
+    return;
+  }
+  if (dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
+
+  let health;
+  try {
+    health = await getDevHealthPayload();
+  } catch {
+    return;
+  }
+
+  const devServer = health?.devServer;
+  if (!devServer?.enabled || devServer.autoRestartEnabled !== true) {
+    return;
+  }
+  if ((devServer.activeRunCount ?? 0) > 0) {
+    return;
+  }
+
+  await restartServerChild("Auto-restart failed");
 }
 
 function installDevIntervals() {
@@ -556,6 +586,7 @@ async function shutdown(signal) {
   shuttingDown = true;
   clearDevIntervals();
   clearDevServerStatus();
+  clearDevServerControl();
 
   if (!child) {
     if (signal) {
@@ -582,6 +613,7 @@ process.on("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
+clearDevServerControl();
 await maybePreflightMigrations();
 await startServerChild();
 installDevIntervals();

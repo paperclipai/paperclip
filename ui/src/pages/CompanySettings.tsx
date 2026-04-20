@@ -1,15 +1,21 @@
 import { ChangeEvent, useEffect, useRef, useState } from "react";
 import { Link } from "@/lib/router";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
+  isConfigurableReleaseGateQaAgentStatus,
+  type Agent,
+} from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
+import { agentsApi } from "../api/agents";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Settings, Check, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
@@ -31,6 +37,39 @@ export function normalizeRoadmapPathInput(value: string): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function describeReleaseGateQaSource(source: string | null | undefined) {
+  switch (source) {
+    case "configured":
+      return { label: "Configured owner", variant: "secondary" as const };
+    case "canonical":
+      return { label: "Canonical owner", variant: "outline" as const };
+    case "single_fallback":
+      return { label: "Single QA fallback", variant: "outline" as const };
+    case "configured_unavailable":
+      return { label: "Configured owner unavailable", variant: "destructive" as const };
+    case "ambiguous":
+      return { label: "Needs explicit owner", variant: "destructive" as const };
+    case "none":
+      return { label: "No eligible QA owner", variant: "destructive" as const };
+    default:
+      return { label: "Resolution pending", variant: "outline" as const };
+  }
+}
+
+function formatQaAgentOption(agent: Agent) {
+  const statusLabel = agent.status.replaceAll("_", " ");
+  const parts = [agent.name];
+  if (agent.title && agent.title !== agent.name) {
+    parts.push(agent.title);
+  }
+  parts.push(statusLabel);
+  return parts.join(" · ");
+}
+
+function isSelectableReleaseGateQaAgent(agent: Agent) {
+  return isConfigurableReleaseGateQaAgentStatus(agent.status);
+}
+
 export function CompanySettings() {
   const {
     companies,
@@ -47,6 +86,7 @@ export function CompanySettings() {
   const [roadmapPath, setRoadmapPath] = useState("");
   const [brandColor, setBrandColor] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
+  const [releaseGateQaAgentId, setReleaseGateQaAgentId] = useState("__auto__");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
   const snippetCopyTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -58,6 +98,7 @@ export function CompanySettings() {
     setRoadmapPath(selectedCompany.roadmapPath ?? "");
     setBrandColor(selectedCompany.brandColor ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
+    setReleaseGateQaAgentId(selectedCompany.releaseGateQaAgentId ?? "__auto__");
   }, [selectedCompany]);
 
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -71,6 +112,21 @@ export function CompanySettings() {
       description !== (selectedCompany.description ?? "") ||
       roadmapPath !== (selectedCompany.roadmapPath ?? "") ||
       brandColor !== (selectedCompany.brandColor ?? ""));
+
+  const releaseGateQaDirty =
+    !!selectedCompany
+    && releaseGateQaAgentId !== (selectedCompany.releaseGateQaAgentId ?? "__auto__");
+
+  const agentsQuery = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId ?? ""),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const qaAgents = (agentsQuery.data ?? []).filter((agent) => agent.role === "qa");
+  const resolvedQaAgent = qaAgents.find((agent) => agent.id === selectedCompany?.resolvedReleaseGateQaAgentId) ?? null;
+  const configuredQaAgent = qaAgents.find((agent) => agent.id === selectedCompany?.releaseGateQaAgentId) ?? null;
+  const qaResolution = describeReleaseGateQaSource(selectedCompany?.releaseGateQaResolutionSource ?? null);
 
   const generalMutation = useMutation({
     mutationFn: (data: {
@@ -92,6 +148,16 @@ export function CompanySettings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
+  });
+
+  const releaseGateQaMutation = useMutation({
+    mutationFn: (nextAgentId: string | null) =>
+      companiesApi.update(selectedCompanyId!, {
+        releaseGateQaAgentId: nextAgentId,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
   });
 
   const executiveSummaryMutation = useMutation({
@@ -481,6 +547,97 @@ export function CompanySettings() {
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
           />
+        </div>
+      </div>
+
+      <div className="space-y-4" data-testid="company-settings-release-gate-qa-section">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Release Gate QA
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={qaResolution.variant}>{qaResolution.label}</Badge>
+            {resolvedQaAgent ? (
+              <span className="text-sm text-foreground" data-testid="company-settings-release-gate-qa-resolved-agent">
+                Effective owner: {resolvedQaAgent.name}
+              </span>
+            ) : selectedCompany.resolvedReleaseGateQaAgentId ? (
+              <span className="text-sm text-foreground" data-testid="company-settings-release-gate-qa-resolved-agent">
+                Effective owner: {selectedCompany.resolvedReleaseGateQaAgentId}
+              </span>
+            ) : (
+              <span className="text-sm text-muted-foreground" data-testid="company-settings-release-gate-qa-no-owner">
+                No release-gate QA owner resolves right now.
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Pick the QA agent who owns release-gate verdicts for delivery and workflow QA. Leave this on auto to use canonical-name detection or a single eligible QA fallback.
+          </p>
+          <Field
+            label="Release-gate QA owner"
+            hint="Controls who can receive release-gate QA routing and whose latest QA verdict can close workflow QA."
+          >
+            <select
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              value={releaseGateQaAgentId}
+              onChange={(event) => setReleaseGateQaAgentId(event.target.value)}
+              disabled={agentsQuery.isLoading || releaseGateQaMutation.isPending}
+              data-testid="company-settings-release-gate-qa-select"
+            >
+              <option value="__auto__">Auto-resolve owner</option>
+              {qaAgents.map((agent) => (
+                <option
+                  key={agent.id}
+                  value={agent.id}
+                  disabled={!isSelectableReleaseGateQaAgent(agent)}
+                >
+                  {formatQaAgentOption(agent)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {configuredQaAgent ? (
+            <p className="text-xs text-muted-foreground" data-testid="company-settings-release-gate-qa-configured-agent">
+              Configured owner: {configuredQaAgent.name}
+            </p>
+          ) : selectedCompany.releaseGateQaAgentId ? (
+            <p className="text-xs text-muted-foreground" data-testid="company-settings-release-gate-qa-configured-agent">
+              Configured owner: {selectedCompany.releaseGateQaAgentId}
+            </p>
+          ) : null}
+          {selectedCompany.releaseGateQaBlockingReason ? (
+            <p
+              className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+              data-testid="company-settings-release-gate-qa-blocking-reason"
+            >
+              {selectedCompany.releaseGateQaBlockingReason}
+            </p>
+          ) : null}
+          {agentsQuery.isError ? (
+            <p className="text-xs text-destructive">
+              {agentsQuery.error instanceof Error ? agentsQuery.error.message : "Failed to load QA agents"}
+            </p>
+          ) : null}
+          {releaseGateQaDirty ? (
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                onClick={() => releaseGateQaMutation.mutate(releaseGateQaAgentId === "__auto__" ? null : releaseGateQaAgentId)}
+                disabled={releaseGateQaMutation.isPending}
+                data-testid="company-settings-release-gate-qa-save"
+              >
+                {releaseGateQaMutation.isPending ? "Saving..." : "Save release QA owner"}
+              </Button>
+              {releaseGateQaMutation.isError ? (
+                <span className="text-xs text-destructive">
+                  {releaseGateQaMutation.error instanceof Error
+                    ? releaseGateQaMutation.error.message
+                    : "Failed to save release-gate QA owner"}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
 

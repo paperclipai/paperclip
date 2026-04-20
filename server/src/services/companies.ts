@@ -28,7 +28,9 @@ import {
   companyMemberships,
   companySkills,
 } from "@paperclipai/db";
+import { isConfigurableReleaseGateQaAgentStatus } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { listCompanyReleaseGateQaResolutionMap } from "./release-gate-qa.js";
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
@@ -45,6 +47,7 @@ export function companyService(db: Db) {
     roadmapPath: companies.roadmapPath,
     budgetMonthlyCents: companies.budgetMonthlyCents,
     spentMonthlyCents: companies.spentMonthlyCents,
+    releaseGateQaAgentId: companies.releaseGateQaAgentId,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
     feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
     feedbackDataSharingConsentAt: companies.feedbackDataSharingConsentAt,
@@ -111,6 +114,35 @@ export function companyService(db: Db) {
     }));
   }
 
+  async function hydrateCompanyReleaseGateQa<T extends { id: string; releaseGateQaAgentId?: string | null }>(
+    rows: T[],
+    database: Pick<Db, "select"> = db,
+  ) {
+    const resolutionMap = await listCompanyReleaseGateQaResolutionMap(database, rows.map((row) => row.id));
+    return rows.map((row) => {
+      const resolution = resolutionMap.get(row.id);
+      return {
+        ...row,
+        releaseGateQaAgentId: row.releaseGateQaAgentId ?? null,
+        resolvedReleaseGateQaAgentId: resolution?.releaseGateQaAgent?.id ?? null,
+        releaseGateQaResolutionSource: resolution?.resolution ?? null,
+        releaseGateQaBlockingReason: resolution?.blockingReason ?? null,
+      };
+    });
+  }
+
+  async function hydrateCompanies<T extends {
+    id: string;
+    spentMonthlyCents: number;
+    releaseGateQaAgentId?: string | null;
+  }>(
+    rows: T[],
+    database: Pick<Db, "select"> = db,
+  ) {
+    const withSpend = await hydrateCompanySpend(rows, database);
+    return hydrateCompanyReleaseGateQa(withSpend, database);
+  }
+
   function getCompanyQuery(database: Pick<Db, "select">) {
     return database
       .select(companySelection)
@@ -163,7 +195,7 @@ export function companyService(db: Db) {
   return {
     list: async () => {
       const rows = await getCompanyQuery(db);
-      const hydrated = await hydrateCompanySpend(rows);
+      const hydrated = await hydrateCompanies(rows);
       return hydrated.map((row) => enrichCompany(row));
     },
 
@@ -172,7 +204,7 @@ export function companyService(db: Db) {
         .where(eq(companies.id, id))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
-      const [hydrated] = await hydrateCompanySpend([row], db);
+      const [hydrated] = await hydrateCompanies([row], db);
       return enrichCompany(hydrated);
     },
 
@@ -182,7 +214,7 @@ export function companyService(db: Db) {
         .where(eq(companies.id, created.id))
         .then((rows) => rows[0] ?? null);
       if (!row) throw notFound("Company not found after creation");
-      const [hydrated] = await hydrateCompanySpend([row], db);
+      const [hydrated] = await hydrateCompanies([row], db);
       return enrichCompany(hydrated);
     },
 
@@ -207,6 +239,31 @@ export function companyService(db: Db) {
           if (!nextLogoAsset) throw notFound("Logo asset not found");
           if (nextLogoAsset.companyId !== existing.id) {
             throw unprocessable("Logo asset must belong to the same company");
+          }
+        }
+
+        if (companyPatch.releaseGateQaAgentId !== undefined && companyPatch.releaseGateQaAgentId !== null) {
+          const configuredQaAgent = await tx
+            .select({
+              id: agents.id,
+              companyId: agents.companyId,
+              role: agents.role,
+              status: agents.status,
+            })
+            .from(agents)
+            .where(eq(agents.id, companyPatch.releaseGateQaAgentId))
+            .then((rows) => rows[0] ?? null);
+          if (!configuredQaAgent) {
+            throw notFound("Configured release-gate QA agent not found");
+          }
+          if (configuredQaAgent.companyId !== existing.id) {
+            throw unprocessable("Configured release-gate QA agent must belong to the same company");
+          }
+          if (configuredQaAgent.role !== "qa") {
+            throw unprocessable("Configured release-gate QA owner must be a QA agent");
+          }
+          if (!isConfigurableReleaseGateQaAgentStatus(configuredQaAgent.status)) {
+            throw unprocessable("Configured release-gate QA owner must be an active or resumable QA agent");
           }
         }
 
@@ -240,7 +297,7 @@ export function companyService(db: Db) {
           await tx.delete(assets).where(eq(assets.id, existing.logoAssetId));
         }
 
-        const [hydrated] = await hydrateCompanySpend([{
+        const [hydrated] = await hydrateCompanies([{
           ...updated,
           logoAssetId: logoAssetId === undefined ? existing.logoAssetId : logoAssetId,
         }], tx);
@@ -261,7 +318,7 @@ export function companyService(db: Db) {
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!row) return null;
-        const [hydrated] = await hydrateCompanySpend([row], tx);
+        const [hydrated] = await hydrateCompanies([row], tx);
         return enrichCompany(hydrated);
       }),
 
@@ -283,7 +340,7 @@ export function companyService(db: Db) {
             .where(eq(companies.id, id))
             .then((rows) => rows[0] ?? null);
           if (!row) return null;
-          const [hydrated] = await hydrateCompanySpend([row], tx);
+          const [hydrated] = await hydrateCompanies([row], tx);
           return enrichCompany(hydrated);
         }
 
@@ -302,7 +359,7 @@ export function companyService(db: Db) {
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!row) return null;
-        const [hydrated] = await hydrateCompanySpend([row], tx);
+        const [hydrated] = await hydrateCompanies([row], tx);
         return enrichCompany(hydrated);
       }),
 
@@ -328,7 +385,7 @@ export function companyService(db: Db) {
             .where(eq(companies.id, id))
             .then((rows) => rows[0] ?? null);
           if (!row) return null;
-          const [hydrated] = await hydrateCompanySpend([row], tx);
+          const [hydrated] = await hydrateCompanies([row], tx);
           return enrichCompany(hydrated);
         }
 
@@ -347,7 +404,7 @@ export function companyService(db: Db) {
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!row) return null;
-        const [hydrated] = await hydrateCompanySpend([row], tx);
+        const [hydrated] = await hydrateCompanies([row], tx);
         return enrichCompany(hydrated);
       }),
 

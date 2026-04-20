@@ -1,4 +1,5 @@
 import * as p from "@clack/prompts";
+import { defaultLoggingRotationConfig } from "@paperclipai/shared";
 import pc from "picocolors";
 import { readConfig, writeConfig, configExists, resolveConfigPath } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
@@ -50,6 +51,7 @@ function defaultConfig(): PaperclipConfig {
     logging: {
       mode: "file",
       logDir: resolveDefaultLogsDir(instanceId),
+      rotation: { ...defaultLoggingRotationConfig },
     },
     server: {
       deploymentMode: "local_trusted",
@@ -141,7 +143,7 @@ export async function configure(opts: {
         break;
       }
       case "logging":
-        config.logging = await promptLogging();
+        config.logging = await promptLogging(config.logging);
         break;
       case "server":
         {

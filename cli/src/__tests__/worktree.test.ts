@@ -62,6 +62,11 @@ function buildSourceConfig(): PaperclipConfig {
     logging: {
       mode: "file",
       logDir: "/tmp/main/logs",
+      rotation: {
+        enabled: true,
+        maxFileSizeMb: 100,
+        maxFiles: 10,
+      },
     },
     server: {
       deploymentMode: "authenticated",
@@ -377,6 +382,11 @@ describe("worktree helpers", () => {
             logging: {
               mode: "file",
               logDir: path.join(siblingInstanceRoot, "logs"),
+              rotation: {
+                enabled: true,
+                maxFileSizeMb: 100,
+                maxFiles: 10,
+              },
             },
             server: {
               deploymentMode: "authenticated",

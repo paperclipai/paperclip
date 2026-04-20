@@ -193,6 +193,41 @@ describe("qa gate helpers", () => {
     expect(gate.missingRequirements).toContain("qa_gate_failing_review");
   });
 
+  it("parses repeated failing QA verdicts deterministically across repeated calls", () => {
+    const qaComments = [
+      {
+        id: "comment-1",
+        body: [
+          "[CQ:pass] [EH:pass] [TC:fail] [CM:pass] [DOC:pass]",
+          "[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]",
+          "[QA PASS]",
+          "[RELEASE CONFIRMED]",
+        ].join("\n"),
+        createdAt: new Date("2026-04-11T11:00:00Z"),
+      },
+    ];
+
+    const first = buildIssueQaGate({
+      issue: { status: "in_review" },
+      assigneeRole: "engineer",
+      qaComments,
+      latestDecisionOutcome: null,
+      now: new Date("2026-04-11T12:00:00Z"),
+    });
+    const second = buildIssueQaGate({
+      issue: { status: "in_review" },
+      assigneeRole: "engineer",
+      qaComments,
+      latestDecisionOutcome: null,
+      now: new Date("2026-04-11T12:00:00Z"),
+    });
+
+    expect(first.review.overall).toBe("fail");
+    expect(second.review.overall).toBe("fail");
+    expect(first.missingRequirements).toContain("qa_gate_failing_review");
+    expect(second.missingRequirements).toContain("qa_gate_failing_review");
+  });
+
   it("requires explicit passing verification tokens on the latest QA verdict before shipping", () => {
     const gate = buildIssueQaGate({
       issue: { status: "in_review" },

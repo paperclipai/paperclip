@@ -19,6 +19,9 @@ const mockIssueWorkflowService = vi.hoisted(() => ({
   decorateIssue: vi.fn(async (issue: unknown) => issue),
   evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
   applyTemplate: vi.fn(),
+  advanceWorkflowDependents: vi.fn(async () => []),
+  invalidateWorkflowDescendants: vi.fn(async () => ({ invalidatedSelf: null, invalidatedDescendants: [] })),
+  handbackWorkflowLane: vi.fn(async () => null),
 }));
 
 vi.mock("../services/index.js", () => ({

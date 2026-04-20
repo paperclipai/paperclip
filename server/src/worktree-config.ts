@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { defaultLoggingRotationConfig } from "@paperclipai/shared";
 import type { PaperclipConfig } from "@paperclipai/shared";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 
@@ -254,6 +255,7 @@ function buildIsolatedWorktreeConfig(
     logging: {
       ...config.logging,
       logDir: context.logDir,
+      rotation: config.logging.rotation ?? { ...defaultLoggingRotationConfig },
     },
     storage: {
       ...config.storage,

@@ -1,5 +1,5 @@
-import { logger } from "../middleware/logger.js";
 import { HttpError } from "../errors.js";
+import { logOpsInfo, logOpsWarn } from "../ops-log.js";
 import { getAgentNotInvokableStatus, isAgentNotInvokableWakeupError } from "./wakeup-errors.js";
 
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
@@ -79,11 +79,14 @@ export async function queueIssueAssignmentWakeup(input: {
   } catch (err) {
     const detailsCode = readHttpErrorCode(err);
     if (isAgentNotInvokableWakeupError(err)) {
-      logger.debug(
-        { err, issueId: input.issue.id, agentStatus: getAgentNotInvokableStatus(err) },
-        "skipping assignee wakeup because agent is not invokable",
-      );
       const status = getAgentNotInvokableStatus(err);
+      logOpsInfo("heartbeat.wakeup.skipped_not_invokable", {
+        issueId: input.issue.id,
+        agentId: input.issue.assigneeAgentId,
+        reason: input.reason,
+        mutation: input.mutation,
+        agentStatus: status,
+      });
       if (input.rethrowOnError) throw err;
       return {
         status: "warning",
@@ -105,7 +108,14 @@ export async function queueIssueAssignmentWakeup(input: {
           ? err.message
           : "Unable to wake assigned agent for this issue update.",
     };
-    logger.warn({ err, issueId: input.issue.id }, "failed to wake assignee on issue assignment");
+    logOpsWarn("heartbeat.wakeup.failed", {
+      issueId: input.issue.id,
+      agentId: input.issue.assigneeAgentId,
+      reason: input.reason,
+      mutation: input.mutation,
+      errorCode: detailsCode ?? undefined,
+      errorMessage: warning.message,
+    });
     if (input.rethrowOnError) throw err;
     return { status: "warning", warning };
   }

@@ -58,6 +58,7 @@ export const issues = pgTable(
     workflowTemplateKey: text("workflow_template_key"),
     workflowLaneRole: text("workflow_lane_role"),
     workflowRequiredArtifacts: jsonb("workflow_required_artifacts").$type<Record<string, unknown>[]>(),
+    workflowInvalidatedAt: timestamp("workflow_invalidated_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),

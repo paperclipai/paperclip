@@ -223,6 +223,8 @@ describeEmbeddedPostgres("agentHeartbeatModelService QA coverage", () => {
     expect(agentsMd).toContain("[RELEASE CONFIRMED]");
     expect(agentsMd).toContain("[CQ:pass|warn|fail|na]");
     expect(agentsMd).toContain("[DOC:pass|warn|fail|na]");
+    expect(agentsMd).toContain("[TYPECHECK:pass|fail]");
+    expect(agentsMd).toContain("[SMOKE:pass|fail|na]");
   });
 
   it("skips companies that do not have a tech team", async () => {

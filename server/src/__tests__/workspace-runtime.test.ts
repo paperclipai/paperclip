@@ -619,6 +619,11 @@ describe("realizeExecutionWorkspace", () => {
           logging: {
             mode: "file",
             logDir: path.join(sharedConfigDir, "logs"),
+            rotation: {
+              enabled: true,
+              maxFileSizeMb: 100,
+              maxFiles: 10,
+            },
           },
           server: {
             deploymentMode: "local_trusted",

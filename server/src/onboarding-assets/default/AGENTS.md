@@ -37,6 +37,7 @@ When you are proposing direction, plans, or approval requests that other agents 
 - `Next Step` must choose exactly one mode: `Execute`, `Run Probe`, or `Escalate`.
 - When uncertainty is material, recommend the smallest informative probe instead of bluffing confidence.
 - When in doubt between `Execute` and `Run Probe`, default to `Run Probe`.
+- A source issue linked by `recovered_by` may remain `blocked` as a valid recovery state when the board explicitly created a continuation issue.
 
 ## Role Charter Baseline
 

@@ -34,6 +34,7 @@ export interface CompanyPortabilityCompanyManifestEntry {
   description: string | null;
   brandColor: string | null;
   logoPath: string | null;
+  releaseGateQaAgentSlug?: string | null;
   requireBoardApprovalForNewAgents: boolean;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: string | null;

@@ -104,15 +104,21 @@ describe("IssueWorkflowPanel", () => {
               templateKey: "engineering_delivery_v1",
               isBlocked: true,
               blockingReasons: ["SECURITY: Lane has no assigned owner."],
+              activeRoles: ["pm"],
+              waitingRoles: ["security"],
+              ownerNeededRoles: ["qa"],
               lanes: [
                 {
                   issueId: "issue-pm",
                   role: "pm",
                   title: "PM: Issue title",
                   status: "done",
+                  phase: "done",
                   assigneeAgentId: "agent-pm",
                   assigneeUserId: null,
                   workspaceMode: null,
+                  blockedByRoles: [],
+                  ready: false,
                   unresolvedOwnership: false,
                   artifactStatuses: [
                     {
@@ -121,6 +127,7 @@ describe("IssueWorkflowPanel", () => {
                       kind: "document",
                       blocking: true,
                       satisfied: true,
+                      stale: false,
                       detail: null,
                     },
                   ],
@@ -131,12 +138,30 @@ describe("IssueWorkflowPanel", () => {
                   role: "security",
                   title: "Security: Issue title",
                   status: "todo",
+                  phase: "waiting",
                   assigneeAgentId: null,
                   assigneeUserId: null,
                   workspaceMode: "isolated_workspace",
+                  blockedByRoles: ["engineer"],
+                  ready: false,
                   unresolvedOwnership: true,
                   artifactStatuses: [],
                   blockingReasons: ["Lane has no assigned owner."],
+                },
+                {
+                  issueId: "issue-qa",
+                  role: "qa",
+                  title: "QA: Issue title",
+                  status: "todo",
+                  phase: "ready",
+                  assigneeAgentId: null,
+                  assigneeUserId: null,
+                  workspaceMode: "isolated_workspace",
+                  blockedByRoles: [],
+                  ready: true,
+                  unresolvedOwnership: true,
+                  artifactStatuses: [],
+                  blockingReasons: ["Workflow QA lane requires an authorized release-gate QA owner."],
                 },
               ],
             },
@@ -149,7 +174,15 @@ describe("IssueWorkflowPanel", () => {
     expect(container.textContent).toContain("Specialist delivery lanes");
     expect(container.textContent).toContain("PM: Issue title");
     expect(container.textContent).toContain("Security: Issue title");
+    expect(container.textContent).toContain("QA: Issue title");
     expect(container.textContent).toContain("SECURITY: Lane has no assigned owner.");
+    expect(container.textContent).toContain("Actionable now");
+    expect(container.textContent).toContain("PM");
+    expect(container.textContent).toContain("QA");
+    expect(container.textContent).toContain("Waiting on dependencies");
+    expect(container.textContent).toContain("Security");
+    expect(container.textContent).toContain("Needs owner");
+    expect(container.textContent).toContain("Waiting on Build");
     const laneLink = Array.from(container.querySelectorAll("a")).find((node) => node.textContent?.includes("PM: Issue title"));
     expect(laneLink?.getAttribute("href")).toBe("/issues/issue-pm");
 
@@ -174,7 +207,8 @@ describe("IssueWorkflowPanel", () => {
                 kind: "document",
                 blocking: true,
                 satisfied: false,
-                detail: "Threat review document is missing.",
+                stale: true,
+                detail: "Threat review document is stale and must be refreshed after upstream changes.",
               },
             ],
           })}
@@ -184,7 +218,7 @@ describe("IssueWorkflowPanel", () => {
 
     expect(container.textContent).toContain("Security lane requirements");
     expect(container.textContent).toContain("Threat review document");
-    expect(container.textContent).toContain("Missing");
+    expect(container.textContent).toContain("Stale");
 
     act(() => {
       root.unmount();

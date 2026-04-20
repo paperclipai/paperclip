@@ -5,6 +5,8 @@ This project can run fully in local dev without setting up PostgreSQL manually.
 ## Quick Links
 
 - [Closed Issue Auto-Archive](#closed-issue-auto-archive)
+- [Log File Rotation](#log-file-rotation)
+- [Structured Ops Logs](#structured-ops-logs)
 
 ## Deployment Modes
 
@@ -60,6 +62,12 @@ pnpm dev:list
 pnpm dev:stop
 ```
 
+Smoke-check the repo-root dev runner entrypoint without starting the server:
+
+```sh
+PAPERCLIP_DEV_RUNNER_SMOKE_EXIT=1 pnpm dev:once
+```
+
 If embedded PostgreSQL fails to start with shared-memory errors (for example
 `could not create shared memory segment`), run the recovery helper:
 
@@ -67,7 +75,7 @@ If embedded PostgreSQL fails to start with shared-memory errors (for example
 pnpm dev:recover
 ```
 
-`pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
+`pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner with a `Restart now` button for immediate restarts from the board. It uses the normal backend route when available and falls back to the parent `dev-runner` only when the current backend child is too old to expose that route yet. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
 Tailscale/private-auth dev mode:
 
@@ -83,6 +91,78 @@ Allow additional private hostnames (for example custom Tailscale hostnames):
 pnpm paperclipai allowed-hostname dotta-macbook-pro
 ```
 
+## Log File Rotation
+
+Local file logging now rotates `server.log` automatically when `logging.mode` is `file`.
+
+- Active log file: `~/.paperclip/instances/default/logs/server.log`
+- Rotated siblings: `server.log.YYYYMMDD-HHMMSS` (UTC timestamp suffix)
+- Default retention: `logging.rotation.enabled=true`, `logging.rotation.maxFileSizeMb=100`, `logging.rotation.maxFiles=10`
+- `maxFiles` counts the active `server.log` plus rotated siblings, so the default keeps about `1 GB` of server logs on disk
+
+Tune the settings interactively:
+
+```sh
+pnpm paperclipai configure --section logging
+```
+
+Or set them directly in `config.json`:
+
+```json
+{
+  "logging": {
+    "mode": "file",
+    "logDir": "~/.paperclip/instances/default/logs",
+    "rotation": {
+      "enabled": true,
+      "maxFileSizeMb": 100,
+      "maxFiles": 10
+    }
+  }
+}
+```
+
+If you need to disable built-in rotation temporarily, set `logging.rotation.enabled` to `false`.
+
+File rotation is handled by the app itself for local installs. You do not need host-level `logrotate` just to keep `server.log` bounded.
+
+## Structured Ops Logs
+
+Operational monitoring is log-based for now.
+
+- Use `server.log` as the monitoring source.
+- Use issue activity as the audit/UI surface, not the alert source.
+- Filter for structured server records with `opsEvent=true`.
+- Query the `event` field rather than matching free-form message text.
+
+Current high-signal ops events include:
+
+- `heartbeat.wakeup.queued`
+- `heartbeat.wakeup.coalesced`
+- `heartbeat.wakeup.deferred_issue_execution`
+- `heartbeat.wakeup.skipped_live_run_limit`
+- `heartbeat.wakeup.skipped_not_invokable`
+- `heartbeat.wakeup.failed`
+- `heartbeat.retry.scheduled`
+- `heartbeat.retry.exhausted`
+- `workflow.root.close_blocked`
+- `workflow.lane.close_blocked`
+- `workflow.handback`
+- `workflow.lane.invalidated`
+- `workflow.lane.unblocked`
+
+The core emission points live in:
+
+- `server/src/services/heartbeat.ts`
+- `server/src/services/issue-assignment-wakeup.ts`
+- `server/src/routes/issues.ts`
+
+When adding a new ops log, keep the shape stable:
+
+- always include `event`
+- include `companyId`, `issueId`, `rootIssueId`, `agentId`, `runId`, `templateKey`, `laneRole`, `reason`, and `errorCode` when that context exists
+- prefer explicit state fields such as `retryAttempt`, `blockingReasons`, `invalidatedIssueIds`, or `liveRunCount` over prose
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:
@@ -96,6 +176,21 @@ pnpm paperclipai run
 1. auto-onboard if config is missing
 2. `paperclipai doctor` with repair enabled
 3. starts the server when checks pass
+
+## Integrity Repair Commands
+
+Manual integrity sweeps that use the same server-side repair logic as production paths:
+
+```sh
+pnpm runtime-integrity:reconcile
+pnpm runtime-integrity:reconcile -- --apply
+pnpm routine-execution:reconcile
+pnpm routine-execution:reconcile -- --apply
+pnpm workflow-integrity:reconcile
+pnpm workflow-integrity:reconcile -- --apply
+```
+
+The workflow sweep only inspects visible root workflow issues (`hiddenAt is null`), so archived roots are left untouched.
 
 ## Docker Quickstart (No local Node install)
 
@@ -518,6 +613,18 @@ Recommended flow for workflow-template changes:
 2. Run `pnpm install` inside the worktree.
 3. Generate schema changes with `pnpm db:generate` after editing DB schema.
 4. Run focused package verification before full repo verification.
+
+For workflow DAG and handback changes, the focused verification set should include:
+- `pnpm vitest run server/src/__tests__/issue-dependency-wakeups-routes.test.ts`
+- `pnpm vitest run server/src/__tests__/issue-qa-gate-routes.test.ts`
+- `pnpm vitest run server/src/__tests__/issue-workflows.test.ts`
+- `pnpm vitest run ui/src/components/IssueWorkflowPanel.test.tsx`
+- `pnpm vitest run ui/src/context/LiveUpdatesProvider.test.ts`
+
+Operator visibility matters for workflow automation too:
+- workflow lane unblocks and downstream invalidations should emit issue activity so the company activity feed and live query invalidation reflect DAG changes immediately
+- child-lane issue activity should carry `parentId` context so an open root workflow issue refreshes when one of its lanes changes state
+- root workflow issues should be treated as orchestration containers, not same-issue QA tickets: completion, QA auto-fix, and QA auto-merge assertions need explicit regression coverage for `workflowTemplateKey` without `workflowLaneRole`
 
 Current worktree caveats observed during implementation:
 - In restricted desktop sandboxes, `pnpm paperclipai worktree init --name <name>` can fail when it tries to mirror hooks under `.git/worktrees/...` because those hook writes may be blocked. Feature development in the worktree still works, but hook mirroring may need to be skipped in that environment.

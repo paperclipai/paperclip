@@ -17,7 +17,6 @@ import { CircleDot } from "lucide-react";
 
 const ARCHIVE_CLOSED_CONFIRM_WINDOW_MS = 5000;
 const DEFAULT_ISSUES_PAGE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
-
 export function Issues() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();

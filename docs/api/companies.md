@@ -39,9 +39,12 @@ PATCH /api/companies/{companyId}
   "name": "Updated Name",
   "description": "Updated description",
   "budgetMonthlyCents": 100000,
+  "releaseGateQaAgentId": "b9f5e911-6de5-4cd0-8dc6-a55a13bc02f6",
   "logoAssetId": "b9f5e911-6de5-4cd0-8dc6-a55a13bc02f6"
 }
 ```
+
+`releaseGateQaAgentId` is optional. When set, it records the board’s preferred release-gate QA owner for standalone delivery and workflow QA. The server still resolves the effective owner dynamically: configured owner first if eligible, then a single canonical `QA and Release Engineer`, then a single other eligible QA agent, otherwise explicit blocked state. Configured owners must belong to the same company, have role `qa`, and cannot be `terminated`, `pending_approval`, or `error`.
 
 ## Upload Company Logo
 
@@ -120,6 +123,10 @@ Paused roadmap epics hold issue-linked execution wakeups and queued runs for tho
 | `name` | string | Company name |
 | `description` | string | Company description |
 | `status` | string | `active`, `paused`, `archived` |
+| `releaseGateQaAgentId` | string | Optional board-configured release-gate QA owner |
+| `resolvedReleaseGateQaAgentId` | string | Effective release-gate QA owner after applying the shared resolver |
+| `releaseGateQaResolutionSource` | string | Why the current release-gate QA owner was chosen: `configured`, `canonical`, `single_fallback`, `configured_unavailable`, `none`, or `ambiguous` |
+| `releaseGateQaBlockingReason` | string | Human-readable reason when no release-gate QA owner currently resolves |
 | `logoAssetId` | string | Optional asset id for the stored logo image |
 | `logoUrl` | string | Optional Orchestrero asset content path for the stored logo image |
 | `budgetMonthlyCents` | number | Monthly budget limit |

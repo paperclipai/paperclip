@@ -46,6 +46,9 @@ The response also includes:
 - `blockerPath`: the direct chain from this issue to the selected root blocker
 - `qaGate`: QA readiness snapshot for delivery-scoped issues
 - `mergeStatus`: merge readiness/status snapshot when the issue is tied to an execution workspace branch flow
+- `workflowInvalidatedAt`: timestamp used to mark stale workflow artifacts after an upstream handback/reopen
+- `workflowSummary`: synthesized workflow state for root workflow issues
+- `workflowArtifactStatus`: per-artifact readiness/staleness state for workflow lane issues
 
 ## Create Issue
 
@@ -82,9 +85,9 @@ The optional `comment` field adds a comment in the same call.
 
 Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
-Update responses may also include refreshed `boardState`, `primaryBlocker`, `qaGate`, and `mergeStatus` snapshots.
+Update responses may also include refreshed `boardState`, `primaryBlocker`, `qaGate`, `mergeStatus`, `workflowSummary`, and `workflowArtifactStatus` snapshots.
 
-Recovery updates via the `recovery` field are board-only and are rejected with `403` unless the caller is a board actor. Agent-authenticated callers must keep recovery on the same issue and escalate if a successor issue is truly required.
+Recovery updates via the `recovery` field are board-only. Agent-authenticated callers must keep recovery on the same issue and escalate if a successor issue is truly required.
 
 ## Checkout (Claim Task)
 
@@ -141,7 +144,15 @@ POST /api/issues/{issueId}/comments
 
 Fresh issue comments also drive automatic recovery heuristics. Explicit blocker, handoff, or wait-state truth in a recent comment suppresses operations recovery nudges for a cooldown window, but only when the comment uses structured markers rather than incidental prose. Supported examples include `Status: blocked`, `Blocked: ...`, `Handoff: ...`, `[BLOCKER]`, `[HANDOFF]`, `[QA ROUTE]`, `[READY FOR QA]`, `[AUTO-FIX BLOCKED]`, `[POISONED SESSION]`, `DONE: ...`, `Workflow gate: ...`, `Missing permission: ...`, and `Board action required.` PrivateClip also prefers the latest structured truth comment over newer ordinary chatter, and it ignores markers that only appear inside fenced code blocks or blockquotes.
 
-When the current assignee agent comments on a delivery-scoped issue in `in_progress` with clear QA handoff truth, PrivateClip can auto-route that issue into `in_review`. This currently recognizes `[READY FOR QA]`, `[AUTO-FIX READY FOR QA]`, and explicit completion truth such as `DONE:` comments, and it uses the same sole-eligible-QA auto-assignment rule as a manual `status: "in_review"` transition.
+When the current assignee agent comments on a non-workflow delivery-scoped issue in `in_progress` with clear QA handoff truth, PrivateClip can auto-route that issue into `in_review`. This currently recognizes `[READY FOR QA]`, `[AUTO-FIX READY FOR QA]`, and explicit completion truth such as `DONE:` comments, and it uses the same sole-eligible-QA auto-assignment rule as a manual `status: "in_review"` transition.
+
+Workflow QA/Security comments behave differently. On workflow lane issues, failing QA review or verification comments, plus `[SECURITY FAIL]` / `[SECURITY BLOCKED]` comments, trigger a visible cross-lane handback instead of same-issue QA routing or same-issue auto-fix.
+
+QA ship-verdict comments are enforced on write. When a delivery-scoped issue comment includes `[QA PASS]` or `[RELEASE CONFIRMED]`, the API rejects malformed verdicts with `422` unless the comment comes from the authorized release-gate QA owner and includes:
+
+- the canonical Smart Review token line
+- the canonical verification token line
+- both `[QA PASS]` and `[RELEASE CONFIRMED]`
 
 ## Documents
 
@@ -263,3 +274,32 @@ When an issue participates in the delivery/QA flow, the API can surface:
 - `mergeStatus.state` — `not_applicable`, `pending`, `ready`, `blocked`, or `merged`
 - `mergeStatus.reason` — why merge is blocked or waiting
 - `mergeStatus.targetBranch` / `sourceBranch` — the resolved branch pair when available
+
+## Workflow Metadata
+
+Workflow-enabled issues can also surface:
+
+- `workflowInvalidatedAt` — when this workflow lane was last invalidated by an upstream reopen or review handback
+- `workflowSummary.activeRoles` — workflow lanes that are actionable now on the root issue
+- `workflowSummary.waitingRoles` — workflow lanes that exist but are still dependency-gated by active upstream blockers
+- `workflowSummary.ownerNeededRoles` — actionable workflow lanes that still need an assigned owner
+- `workflowSummary.lanes[].phase` — one of `missing`, `waiting`, `ready`, `active`, or `done`
+- `workflowSummary.lanes[].blockedByRoles` — active upstream workflow blockers for a lane
+- `workflowSummary.lanes[].ready` — compatibility boolean for “actionable now”
+- `workflowArtifactStatus[].stale` — whether matching evidence exists but is older than `workflowInvalidatedAt`
+- workflow root `blockingReasons` only include actionable blockers now; downstream waiting lanes do not contribute future artifact gaps until they become actionable
+- workflow QA lanes use the same release-gate QA owner resolver as standalone delivery: configured company owner, then exactly one canonical `QA and Release Engineer`, then exactly one other eligible QA agent, otherwise explicit owner-blocked state
+- workflow QA lanes use the latest authorized release-gate QA verdict comment, not an aggregate across comments
+- workflow QA lanes require a non-stale `qa-verdict` document plus a latest authorized QA verdict comment with:
+  - full Smart Review summary
+  - passing verification evidence (`TYPECHECK`, `TESTS`, `BUILD`, and `SMOKE`/`NA`)
+  - `[QA PASS]`
+  - `[RELEASE CONFIRMED]`
+
+For `engineering_delivery_v1`, the dependency graph is:
+
+- `pm -> designer -> engineer`
+- `engineer -> security`
+- `engineer -> qa`
+
+Only dependency-free lanes wake on template application. Downstream lanes start in `blocked`, then promote to `todo` when their final workflow blocker becomes terminal.

@@ -1,31 +1,89 @@
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
+import type { TransportTargetOptions } from "pino";
+import {
+  defaultLoggingRotationConfig,
+  type LoggingRotationConfig,
+} from "@paperclipai/shared";
 import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 import { sanitizeRecord } from "../redaction.js";
 
-function resolveServerLogDir(): string {
+type ResolvedServerLoggingConfig = {
+  mode: "file" | "cloud";
+  logDir: string;
+  rotation: LoggingRotationConfig;
+};
+
+function resolveServerLoggingConfig(): ResolvedServerLoggingConfig {
+  const configLogging = readConfigFile()?.logging;
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
-  if (envOverride) return resolveHomeAwarePath(envOverride);
+  const logDir = envOverride
+    ? resolveHomeAwarePath(envOverride)
+    : (configLogging?.logDir?.trim() ? resolveHomeAwarePath(configLogging.logDir) : resolveDefaultLogsDir());
 
-  const fileLogDir = readConfigFile()?.logging.logDir?.trim();
-  if (fileLogDir) return resolveHomeAwarePath(fileLogDir);
-
-  return resolveDefaultLogsDir();
+  return {
+    mode: configLogging?.mode ?? "file",
+    logDir,
+    rotation: {
+      ...defaultLoggingRotationConfig,
+      ...(configLogging?.rotation ?? {}),
+    },
+  };
 }
 
-const logDir = resolveServerLogDir();
+const loggingConfig = resolveServerLoggingConfig();
+const logDir = loggingConfig.logDir;
 fs.mkdirSync(logDir, { recursive: true });
 
 const logFile = path.join(logDir, "server.log");
+const rotatingPrettyTarget = fileURLToPath(new URL("../logging/rotating-pretty-target.js", import.meta.url));
+const canUseRotatingPrettyTarget =
+  process.env.PAPERCLIP_FORCE_ROTATING_PRETTY_TARGET === "1"
+  || fs.existsSync(rotatingPrettyTarget);
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
   ignore: "pid,hostname",
   singleLine: true,
 };
+
+const targets: TransportTargetOptions[] = [
+  {
+    target: "pino-pretty",
+    options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
+    level: "info",
+  },
+];
+
+if (loggingConfig.mode === "file") {
+  targets.push({
+    target: canUseRotatingPrettyTarget ? rotatingPrettyTarget : "pino-pretty",
+    options: canUseRotatingPrettyTarget
+      ? {
+        ...sharedOpts,
+        colorize: false,
+        logFile,
+        rotation: loggingConfig.rotation,
+      }
+      : {
+        ...sharedOpts,
+        colorize: false,
+        destination: logFile,
+        mkdir: true,
+      },
+    level: "debug",
+  } as TransportTargetOptions);
+} else {
+  targets.push({
+    target: "pino-pretty",
+    options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
+    level: "debug",
+  } as TransportTargetOptions);
+}
 
 export const logger = pino({
   level: "debug",
@@ -39,16 +97,7 @@ export const logger = pino({
   ],
 }, pino.transport({
   targets: [
-    {
-      target: "pino-pretty",
-      options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
-      level: "info",
-    },
-    {
-      target: "pino-pretty",
-      options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
-      level: "debug",
-    },
+    ...targets,
   ],
 }));
 

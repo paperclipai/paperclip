@@ -1,9 +1,11 @@
 import detectPort from "detect-port";
+import { resolveDevRunnerControlPort } from "@paperclipai/shared";
 
 export interface DevRunnerPortSelection {
   requestedPort: number;
   selectedPort: number;
   hmrPort: number;
+  controlPort: number;
   attempts: number;
 }
 
@@ -43,10 +45,18 @@ export async function selectAvailableDevRunnerPort(
       continue;
     }
 
+    const controlPort = resolveDevRunnerControlPort(candidate);
+    const detectedControlPort = await detectPort({ port: controlPort, hostname });
+    if (detectedControlPort !== controlPort) {
+      candidate += 1;
+      continue;
+    }
+
     return {
       requestedPort,
       selectedPort: candidate,
       hmrPort,
+      controlPort,
       attempts,
     };
   }

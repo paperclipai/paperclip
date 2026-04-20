@@ -38,9 +38,22 @@ export const databaseConfigSchema = z.object({
   }),
 });
 
+export const defaultLoggingRotationConfig = {
+  enabled: true,
+  maxFileSizeMb: 100,
+  maxFiles: 10,
+} as const;
+
+export const loggingRotationConfigSchema = z.object({
+  enabled: z.boolean().default(defaultLoggingRotationConfig.enabled),
+  maxFileSizeMb: z.number().int().min(1).max(10_000).default(defaultLoggingRotationConfig.maxFileSizeMb),
+  maxFiles: z.number().int().min(1).max(1_000).default(defaultLoggingRotationConfig.maxFiles),
+});
+
 export const loggingConfigSchema = z.object({
   mode: z.enum(["file", "cloud"]),
   logDir: z.string().default("~/.paperclip/instances/default/logs"),
+  rotation: loggingRotationConfigSchema.default(defaultLoggingRotationConfig),
 });
 
 export const serverConfigSchema = z.object({
@@ -172,6 +185,7 @@ export type PaperclipConfig = z.infer<typeof paperclipConfigSchema>;
 export type LlmConfig = z.infer<typeof llmConfigSchema>;
 export type DatabaseConfig = z.infer<typeof databaseConfigSchema>;
 export type LoggingConfig = z.infer<typeof loggingConfigSchema>;
+export type LoggingRotationConfig = z.infer<typeof loggingRotationConfigSchema>;
 export type ServerConfig = z.infer<typeof serverConfigSchema>;
 export type StorageConfig = z.infer<typeof storageConfigSchema>;
 export type StorageLocalDiskConfig = z.infer<typeof storageLocalDiskConfigSchema>;

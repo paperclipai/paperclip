@@ -41,8 +41,15 @@ const mockIssueWorkflowService = vi.hoisted(() => ({
   decorateIssue: vi.fn(async (issue: unknown) => issue),
   evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
   applyTemplate: vi.fn(),
+  advanceWorkflowDependents: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockLogger = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -73,6 +80,11 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({
     listForIssue: vi.fn(async () => []),
   }),
+}));
+
+vi.mock("../middleware/logger.js", () => ({
+  logger: mockLogger,
+  httpLogger: {},
 }));
 
 function createApp() {
@@ -113,7 +125,12 @@ describe("issue dependency wakeups in issue routes", () => {
     mockIssueWorkflowService.decorateIssue.mockReset();
     mockIssueWorkflowService.evaluateLaneCompletion.mockReset();
     mockIssueWorkflowService.applyTemplate.mockReset();
+    mockIssueWorkflowService.advanceWorkflowDependents.mockReset();
     mockLogActivity.mockReset();
+    mockLogger.debug.mockReset();
+    mockLogger.info.mockReset();
+    mockLogger.warn.mockReset();
+    mockLogger.error.mockReset();
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.getCommentCursor.mockResolvedValue({
@@ -144,6 +161,7 @@ describe("issue dependency wakeups in issue routes", () => {
       artifactStatuses: [],
     });
     mockIssueWorkflowService.applyTemplate.mockResolvedValue(undefined);
+    mockIssueWorkflowService.advanceWorkflowDependents.mockResolvedValue([]);
     mockLogActivity.mockResolvedValue(undefined);
   }, 60_000);
 
@@ -317,6 +335,209 @@ describe("issue dependency wakeups in issue routes", () => {
         payload: expect.objectContaining({
           issueId: "parent-1",
           completedChildIssueId: "child-1",
+        }),
+      }),
+    );
+  });
+
+  it("promotes workflow dependents before waking them when a workflow lane becomes terminal", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-110",
+      title: "Finish PM lane",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+      parentId: "root-1",
+      assigneeAgentId: "agent-pm",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      workflowTemplateKey: "engineering_delivery_v1",
+      workflowLaneRole: "pm",
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-110",
+      title: "Finish PM lane",
+      description: null,
+      status: "done",
+      priority: "medium",
+      parentId: "root-1",
+      assigneeAgentId: "agent-pm",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      workflowTemplateKey: "engineering_delivery_v1",
+      workflowLaneRole: "pm",
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueWorkflowService.advanceWorkflowDependents.mockResolvedValue([
+      {
+        id: "issue-2",
+        companyId: "company-1",
+        identifier: "PAP-111",
+        title: "Design lane",
+        description: null,
+        status: "todo",
+        priority: "medium",
+        parentId: "root-1",
+        assigneeAgentId: "agent-designer",
+        assigneeUserId: null,
+        blockedByIssueIds: ["issue-1"],
+        labels: [],
+        labelIds: [],
+      },
+    ]);
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: "issue-2",
+        assigneeAgentId: "agent-designer",
+        blockerIssueIds: ["issue-1"],
+      },
+    ]);
+
+    const res = await request(createApp()).patch("/api/issues/issue-1").send({ status: "done" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(res.status).toBe(200);
+    expect(mockIssueWorkflowService.advanceWorkflowDependents).toHaveBeenCalledWith("issue-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.workflow_lane_unblocked",
+        entityType: "issue",
+        entityId: "issue-2",
+        details: expect.objectContaining({
+          parentId: "root-1",
+          resolvedBlockerIssueId: "issue-1",
+          blockerIssueIds: ["issue-1"],
+        }),
+      }),
+    );
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        opsEvent: true,
+        event: "workflow.lane.unblocked",
+        companyId: "company-1",
+        issueId: "issue-2",
+        rootIssueId: "root-1",
+        resolvedBlockerIssueId: "issue-1",
+        blockerIssueIds: ["issue-1"],
+      }),
+      "workflow.lane.unblocked",
+    );
+    expect(mockWakeup).toHaveBeenCalledWith(
+      "agent-designer",
+      expect.objectContaining({
+        reason: "issue_blockers_resolved",
+        payload: expect.objectContaining({
+          issueId: "issue-2",
+          resolvedBlockerIssueId: "issue-1",
+        }),
+      }),
+    );
+  });
+
+  it("wakes only ready workflow children when applying a workflow template", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "root-1",
+      companyId: "company-1",
+      identifier: "PAP-120",
+      title: "Ship checkout",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-pm",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueWorkflowService.applyTemplate.mockResolvedValue({
+      parentIssue: {
+        id: "root-1",
+        companyId: "company-1",
+        identifier: "PAP-120",
+        title: "Ship checkout",
+        description: null,
+        status: "todo",
+        priority: "medium",
+        parentId: null,
+        assigneeAgentId: "agent-pm",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        workflowTemplateKey: "engineering_delivery_v1",
+        labels: [],
+        labelIds: [],
+      },
+      createdChildren: [
+        {
+          id: "lane-pm",
+          companyId: "company-1",
+          identifier: "PAP-121",
+          title: "PM: Ship checkout",
+          description: null,
+          status: "todo",
+          priority: "medium",
+          parentId: "root-1",
+          assigneeAgentId: "agent-pm",
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionWorkspaceId: null,
+          workflowTemplateKey: "engineering_delivery_v1",
+          workflowLaneRole: "pm",
+          labels: [],
+          labelIds: [],
+        },
+        {
+          id: "lane-design",
+          companyId: "company-1",
+          identifier: "PAP-122",
+          title: "Design: Ship checkout",
+          description: null,
+          status: "blocked",
+          priority: "medium",
+          parentId: "root-1",
+          assigneeAgentId: "agent-designer",
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionWorkspaceId: null,
+          workflowTemplateKey: "engineering_delivery_v1",
+          workflowLaneRole: "designer",
+          labels: [],
+          labelIds: [],
+        },
+      ],
+    });
+
+    const res = await request(createApp())
+      .post("/api/issues/root-1/apply-workflow-template")
+      .send({ workflowTemplateKey: "engineering_delivery_v1" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(res.status).toBe(200);
+    expect(mockWakeup).toHaveBeenCalledTimes(1);
+    expect(mockWakeup).toHaveBeenCalledWith(
+      "agent-pm",
+      expect.objectContaining({
+        reason: "issue_assigned",
+        payload: expect.objectContaining({
+          issueId: "lane-pm",
         }),
       }),
     );

@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import { patchInstanceExperimentalSettingsSchema, patchInstanceGeneralSettingsSchema } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { conflict, forbidden } from "../errors.js";
+import { writePersistedDevServerControl } from "../dev-server-control.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService, logActivity } from "../services/index.js";
 import { getActorInfo } from "./authz.js";
@@ -97,6 +99,49 @@ export function instanceSettingsRoutes(db: Db) {
       res.json(updated.experimental);
     },
   );
+
+  router.post("/instance/dev-server/restart", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+
+    const actor = getActorInfo(req);
+    const requestId = randomUUID();
+    const requestedAt = new Date().toISOString();
+    const accepted = writePersistedDevServerControl({
+      action: "restart",
+      requestId,
+      requestedAt,
+      requestedBy: actor.actorId,
+    });
+    if (!accepted) {
+      throw conflict("Managed dev-server restart is not available in this runtime");
+    }
+
+    const companyIds = await svc.listCompanyIds();
+    await Promise.all(
+      companyIds.map((companyId) =>
+        logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "instance.dev_server_restart_requested",
+          entityType: "instance_settings",
+          entityId: "dev-server",
+          details: {
+            requestId,
+            requestedAt,
+          },
+        }),
+      ),
+    );
+
+    res.status(202).json({
+      accepted: true,
+      requestId,
+      requestedAt,
+    });
+  });
 
   return router;
 }

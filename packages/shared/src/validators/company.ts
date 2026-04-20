@@ -19,6 +19,7 @@ export const updateCompanySchema = createCompanySchema
   .extend({
     status: z.enum(COMPANY_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
+    releaseGateQaAgentId: z.string().uuid().nullable().optional(),
     requireBoardApprovalForNewAgents: z.boolean().optional(),
     feedbackDataSharingEnabled: z.boolean().optional(),
     dailyExecutiveSummaryEnabled: z.boolean().optional(),

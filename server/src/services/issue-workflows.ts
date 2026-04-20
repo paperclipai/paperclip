@@ -1,10 +1,11 @@
-import { and, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, issueComments, issueDocuments, issueWorkProducts, issues } from "@paperclipai/db";
+import { agents, documents, issueComments, issueDocuments, issueRelations, issueWorkProducts, issues } from "@paperclipai/db";
 import type {
   IssueBoardState,
   IssueWorkflowArtifactRequirement,
   IssueWorkflowArtifactStatus,
+  IssueWorkflowLanePhase,
   IssueWorkflowLaneRole,
   IssueWorkflowLaneSummary,
   IssueWorkflowSummary,
@@ -13,6 +14,7 @@ import type {
 } from "@paperclipai/shared";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { pickOperationsAssignmentCandidate, type OpenAssignedIssueForRouting, type OperationsAssignmentCandidate } from "./issue-routing-heuristics.js";
+import { evaluateWorkflowQaLaneGate, resolveAuthorizedWorkflowQaOwnerAgentId } from "./workflow-qa-lane-gate.js";
 import { conflict, unprocessable } from "../errors.js";
 
 type WorkflowTemplateDefinition = {
@@ -26,16 +28,20 @@ type WorkflowLaneDefinition = {
   titlePrefix: string;
   description: string;
   isolatedWorkspace: boolean;
+  dependsOnRoles: IssueWorkflowLaneRole[];
+  handbackRole: IssueWorkflowLaneRole | null;
   requiredArtifacts: IssueWorkflowArtifactRequirement[];
   desiredSkills?: string[];
 };
 
 type WorkflowArtifactCarrier = {
   id: string;
+  workflowInvalidatedAt?: Date | null;
   workflowRequiredArtifacts?: IssueWorkflowArtifactRequirement[] | Record<string, unknown>[] | null;
 };
 
 type WorkflowLaneCompletionIssue = WorkflowArtifactCarrier & {
+  companyId: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   workflowLaneRole?: string | null;
@@ -43,6 +49,7 @@ type WorkflowLaneCompletionIssue = WorkflowArtifactCarrier & {
 
 type WorkflowDecoratableIssue = WorkflowLaneCompletionIssue & {
   companyId: string;
+  parentId: string | null;
   title: string;
   description: string | null;
   identifier: string | null;
@@ -98,6 +105,8 @@ const ENGINEERING_DELIVERY_V1_TEMPLATE: WorkflowTemplateDefinition = {
       titlePrefix: "PM",
       description: "Define plan, acceptance criteria, dependencies, and scope guardrails. Complete with a `plan` document.",
       isolatedWorkspace: false,
+      dependsOnRoles: [],
+      handbackRole: null,
       requiredArtifacts: [
         {
           key: "plan",
@@ -113,6 +122,8 @@ const ENGINEERING_DELIVERY_V1_TEMPLATE: WorkflowTemplateDefinition = {
       titlePrefix: "Design",
       description: "Produce a design-ready spec for the implementation lane. Complete with a `design` document or design work product.",
       isolatedWorkspace: false,
+      dependsOnRoles: ["pm"],
+      handbackRole: "pm",
       requiredArtifacts: [
         {
           key: "design",
@@ -129,6 +140,8 @@ const ENGINEERING_DELIVERY_V1_TEMPLATE: WorkflowTemplateDefinition = {
       titlePrefix: "Build",
       description: "Implement the requested change. Complete with an `implementation-summary` document or a concrete implementation work product.",
       isolatedWorkspace: true,
+      dependsOnRoles: ["designer"],
+      handbackRole: "designer",
       requiredArtifacts: [
         {
           key: "implementation-summary",
@@ -145,6 +158,8 @@ const ENGINEERING_DELIVERY_V1_TEMPLATE: WorkflowTemplateDefinition = {
       titlePrefix: "Security",
       description: "Perform threat review and capture blocking findings. Complete with a `threat-review` document.",
       isolatedWorkspace: true,
+      dependsOnRoles: ["engineer"],
+      handbackRole: "engineer",
       requiredArtifacts: [
         {
           key: "threat-review",
@@ -158,8 +173,10 @@ const ENGINEERING_DELIVERY_V1_TEMPLATE: WorkflowTemplateDefinition = {
     {
       role: "qa",
       titlePrefix: "QA",
-      description: "Validate the delivery and confirm release readiness. Complete with a `qa-verdict` document plus `[QA PASS]` and `[RELEASE CONFIRMED]` comments.",
+      description: "Validate the delivery and confirm release readiness. Complete with a `qa-verdict` document and a latest authorized QA verdict comment that includes Smart Review, verification evidence, `[QA PASS]`, and `[RELEASE CONFIRMED]`.",
       isolatedWorkspace: true,
+      dependsOnRoles: ["engineer"],
+      handbackRole: "engineer",
       requiredArtifacts: [
         {
           key: "qa-verdict",
@@ -191,6 +208,10 @@ const WORKFLOW_TEMPLATES: Record<IssueWorkflowTemplateKey, WorkflowTemplateDefin
   engineering_delivery_v1: ENGINEERING_DELIVERY_V1_TEMPLATE,
 };
 
+function isTerminalIssueStatus(status: string | null | undefined) {
+  return status === "done" || status === "cancelled";
+}
+
 function normalizeText(value: string | null | undefined) {
   return (value ?? "").trim();
 }
@@ -220,6 +241,16 @@ function artifactMissingDetail(requirement: IssueWorkflowArtifactRequirement) {
     default:
       return `${requirement.label} is missing.`;
   }
+}
+
+function artifactStaleDetail(requirement: IssueWorkflowArtifactRequirement) {
+  return `${requirement.label} is stale and must be refreshed after upstream changes.`;
+}
+
+function maxDate(left: Date | null, right: Date | null) {
+  if (!left) return right;
+  if (!right) return left;
+  return left.getTime() >= right.getTime() ? left : right;
 }
 
 function resolveWorkflowTemplate(templateKey: string | null | undefined) {
@@ -263,6 +294,257 @@ function getLaneDefinition(templateKey: string | null | undefined, laneRole: str
   const template = resolveWorkflowTemplate(templateKey);
   if (!template || !laneRole) return null;
   return template.lanes.find((lane) => lane.role === laneRole) ?? null;
+}
+
+function deriveWorkflowLanePhase(input: {
+  issueId: string | null;
+  status: string | null | undefined;
+  blockedByRoles: IssueWorkflowLaneRole[];
+}): IssueWorkflowLanePhase {
+  if (!input.issueId) return "missing";
+  if (input.status === "done") return "done";
+  if (input.blockedByRoles.length > 0) return "waiting";
+  if (input.status === "in_progress" || input.status === "in_review") return "active";
+  return "ready";
+}
+
+function isActionableWorkflowLanePhase(phase: IssueWorkflowLanePhase) {
+  return phase === "ready" || phase === "active";
+}
+
+function sameWorkflowIssueIdSet(left: string[], right: string[]) {
+  const normalizedLeft = [...new Set(left)].sort();
+  const normalizedRight = [...new Set(right)].sort();
+  if (normalizedLeft.length !== normalizedRight.length) return false;
+  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
+}
+
+type WorkflowTemplateGraphInspection = {
+  templateKey: string;
+  relationUpdates: Array<{
+    issueId: string;
+    laneRole: IssueWorkflowLaneRole;
+    blockerIssueIds: string[];
+    existingBlockerIssueIds: string[];
+  }>;
+  statusUpdates: Array<{
+    issueId: string;
+    laneRole: IssueWorkflowLaneRole;
+    previousStatus: string;
+    status: "blocked" | "todo";
+  }>;
+};
+
+async function inspectWorkflowTemplateGraph(
+  db: Db,
+  input: {
+    companyId: string;
+    parentIssueId: string;
+    templateKey: string;
+  },
+) : Promise<WorkflowTemplateGraphInspection | null> {
+  const template = resolveWorkflowTemplate(input.templateKey);
+  if (!template) return null;
+
+  const childIssues = await db
+    .select({
+      id: issues.id,
+      status: issues.status,
+      workflowLaneRole: issues.workflowLaneRole,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, input.companyId),
+        eq(issues.parentId, input.parentIssueId),
+        eq(issues.workflowTemplateKey, input.templateKey),
+      ),
+    );
+  if (childIssues.length === 0) {
+    return {
+      templateKey: input.templateKey,
+      relationUpdates: [],
+      statusUpdates: [],
+    };
+  }
+
+  const childIssueByRole = new Map(
+    childIssues
+      .filter((issue) => typeof issue.workflowLaneRole === "string")
+      .map((issue) => [issue.workflowLaneRole as IssueWorkflowLaneRole, issue]),
+  );
+  const childIssueById = new Map(childIssues.map((issue) => [issue.id, issue]));
+  const childIssueIds = childIssues.map((issue) => issue.id);
+  const existingRelationRows = childIssueIds.length === 0
+    ? []
+    : await db
+        .select({
+          blockerIssueId: issueRelations.issueId,
+          blockedIssueId: issueRelations.relatedIssueId,
+        })
+        .from(issueRelations)
+        .where(
+          and(
+            eq(issueRelations.companyId, input.companyId),
+            eq(issueRelations.type, "blocks"),
+            inArray(issueRelations.relatedIssueId, childIssueIds),
+          ),
+        );
+  const existingBlockedByIssueIdsByChildId = new Map<string, string[]>();
+  for (const relation of existingRelationRows) {
+    const blockers = existingBlockedByIssueIdsByChildId.get(relation.blockedIssueId) ?? [];
+    blockers.push(relation.blockerIssueId);
+    existingBlockedByIssueIdsByChildId.set(relation.blockedIssueId, blockers);
+  }
+
+  const relationUpdates: WorkflowTemplateGraphInspection["relationUpdates"] = [];
+  const statusUpdates: WorkflowTemplateGraphInspection["statusUpdates"] = [];
+  for (const lane of template.lanes) {
+    const childIssue = childIssueByRole.get(lane.role);
+    if (!childIssue) continue;
+
+    const expectedBlockedByIssueIds = lane.dependsOnRoles
+      .map((role) => childIssueByRole.get(role)?.id)
+      .filter((issueId): issueId is string => typeof issueId === "string");
+    const existingBlockedByIssueIds = existingBlockedByIssueIdsByChildId.get(childIssue.id) ?? [];
+    if (!sameWorkflowIssueIdSet(expectedBlockedByIssueIds, existingBlockedByIssueIds)) {
+      relationUpdates.push({
+        issueId: childIssue.id,
+        laneRole: lane.role,
+        blockerIssueIds: expectedBlockedByIssueIds,
+        existingBlockerIssueIds: existingBlockedByIssueIds,
+      });
+    }
+
+    if (!["backlog", "todo", "blocked"].includes(childIssue.status)) continue;
+    const activeBlockedByIssueIds = expectedBlockedByIssueIds.filter((blockerIssueId) => {
+      const blockerIssue = childIssueById.get(blockerIssueId);
+      return blockerIssue ? !isTerminalIssueStatus(blockerIssue.status) : false;
+    });
+    if (activeBlockedByIssueIds.length > 0 && childIssue.status !== "blocked") {
+      statusUpdates.push({
+        issueId: childIssue.id,
+        laneRole: lane.role,
+        previousStatus: childIssue.status,
+        status: "blocked",
+      });
+      continue;
+    }
+    if (childIssue.status === "backlog" && activeBlockedByIssueIds.length === 0) {
+      statusUpdates.push({
+        issueId: childIssue.id,
+        laneRole: lane.role,
+        previousStatus: childIssue.status,
+        status: "todo",
+      });
+    }
+  }
+
+  return {
+    templateKey: input.templateKey,
+    relationUpdates,
+    statusUpdates,
+  };
+}
+
+async function reconcileWorkflowTemplateGraph(
+  db: Db,
+  input: {
+    companyId: string;
+    parentIssueId: string;
+    templateKey: string;
+  },
+) {
+  const inspection = await inspectWorkflowTemplateGraph(db, input);
+  if (!inspection) {
+    return {
+      repaired: false,
+      relationUpdates: [],
+      statusUpdates: [],
+    };
+  }
+  const { relationUpdates, statusUpdates } = inspection;
+
+  if (relationUpdates.length === 0 && statusUpdates.length === 0) {
+    return {
+      repaired: false,
+      relationUpdates,
+      statusUpdates,
+    };
+  }
+
+  await db.transaction(async (tx) => {
+    for (const relationUpdate of relationUpdates) {
+      await tx
+        .delete(issueRelations)
+        .where(
+          and(
+            eq(issueRelations.companyId, input.companyId),
+            eq(issueRelations.relatedIssueId, relationUpdate.issueId),
+            eq(issueRelations.type, "blocks"),
+          ),
+        );
+      if (relationUpdate.blockerIssueIds.length === 0) continue;
+      await tx.insert(issueRelations).values(
+        relationUpdate.blockerIssueIds.map((blockerIssueId) => ({
+          companyId: input.companyId,
+          issueId: blockerIssueId,
+          relatedIssueId: relationUpdate.issueId,
+          type: "blocks" as const,
+          createdByAgentId: null,
+          createdByUserId: null,
+        })),
+      );
+    }
+
+    for (const statusUpdate of statusUpdates) {
+      await tx
+        .update(issues)
+        .set({
+          status: statusUpdate.status,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          completedAt: null,
+          cancelledAt: null,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(issues.id, statusUpdate.issueId));
+    }
+  });
+
+  return {
+    repaired: true,
+    relationUpdates,
+    statusUpdates,
+  };
+}
+
+async function reconcileWorkflowTemplateGraphForIssue(db: Db, issueId: string) {
+  const workflowIssue = await db
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      parentId: issues.parentId,
+      workflowTemplateKey: issues.workflowTemplateKey,
+    })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .then((rows) => rows[0] ?? null);
+  if (!workflowIssue?.workflowTemplateKey) {
+    return {
+      repaired: false,
+      relationUpdates: [],
+      statusUpdates: [],
+    };
+  }
+
+  return reconcileWorkflowTemplateGraph(db, {
+    companyId: workflowIssue.companyId,
+    parentIssueId: workflowIssue.parentId ?? workflowIssue.id,
+    templateKey: workflowIssue.workflowTemplateKey,
+  });
 }
 
 async function listWorkflowOpenAssignedIssues(db: Db, companyId: string) {
@@ -330,45 +612,67 @@ async function computeWorkflowArtifactStatus(
   ));
   const requiresCommentScan = requirements.some((requirement) => requirement.kind === "comment_marker");
 
-  const [documents, workProducts, comments] = await Promise.all([
+  const [documentRows, workProducts, comments] = await Promise.all([
     documentKeys.length > 0
       ? db
-          .select({ key: issueDocuments.key })
+          .select({ key: issueDocuments.key, updatedAt: documents.updatedAt })
           .from(issueDocuments)
+          .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
           .where(and(eq(issueDocuments.issueId, issue.id), inArray(issueDocuments.key, documentKeys)))
       : Promise.resolve([]),
     workProductTypes.length > 0
       ? db
-          .select({ type: issueWorkProducts.type, title: issueWorkProducts.title })
+          .select({ type: issueWorkProducts.type, createdAt: issueWorkProducts.createdAt })
           .from(issueWorkProducts)
           .where(and(eq(issueWorkProducts.issueId, issue.id), inArray(issueWorkProducts.type, workProductTypes)))
       : Promise.resolve([]),
     requiresCommentScan
       ? db
-          .select({ body: issueComments.body })
+          .select({ body: issueComments.body, createdAt: issueComments.createdAt })
           .from(issueComments)
           .where(eq(issueComments.issueId, issue.id))
       : Promise.resolve([]),
   ]);
 
-  const documentKeySet = new Set(documents.map((document) => document.key));
-  const workProductTypeSet = new Set(workProducts.map((workProduct) => workProduct.type));
-  const commentBodies = comments.map((comment) => comment.body);
+  const invalidatedAt = issue.workflowInvalidatedAt ? new Date(issue.workflowInvalidatedAt) : null;
+  const documentUpdatedAtByKey = new Map<string, Date>();
+  for (const document of documentRows) {
+    documentUpdatedAtByKey.set(
+      document.key,
+      maxDate(documentUpdatedAtByKey.get(document.key) ?? null, document.updatedAt) ?? document.updatedAt,
+    );
+  }
+  const workProductCreatedAtByType = new Map<IssueWorkProductType, Date>();
+  for (const workProduct of workProducts) {
+    const workProductType = workProduct.type as IssueWorkProductType;
+    workProductCreatedAtByType.set(
+      workProductType,
+      maxDate(workProductCreatedAtByType.get(workProductType) ?? null, workProduct.createdAt) ?? workProduct.createdAt,
+    );
+  }
 
   return requirements.map((requirement) => {
-    let satisfied = false;
+    let evidenceAt: Date | null = null;
     if (requirement.kind === "document") {
-      satisfied = Boolean(requirement.documentKey && documentKeySet.has(requirement.documentKey));
+      evidenceAt = requirement.documentKey ? (documentUpdatedAtByKey.get(requirement.documentKey) ?? null) : null;
     } else if (requirement.kind === "work_product") {
-      satisfied = (requirement.workProductTypes ?? []).some((type) => workProductTypeSet.has(type));
+      evidenceAt = (requirement.workProductTypes ?? [])
+        .reduce<Date | null>((latest, type) => maxDate(latest, workProductCreatedAtByType.get(type) ?? null), null);
     } else if (requirement.kind === "document_or_work_product") {
-      satisfied = Boolean(
-        (requirement.documentKey && documentKeySet.has(requirement.documentKey))
-        || (requirement.workProductTypes ?? []).some((type) => workProductTypeSet.has(type)),
+      evidenceAt = maxDate(
+        requirement.documentKey ? (documentUpdatedAtByKey.get(requirement.documentKey) ?? null) : null,
+        (requirement.workProductTypes ?? [])
+          .reduce<Date | null>((latest, type) => maxDate(latest, workProductCreatedAtByType.get(type) ?? null), null),
       );
     } else if (requirement.kind === "comment_marker") {
-      satisfied = commentBodies.some((body) => hasMatchingCommentMarker(body, requirement.commentMarkers));
+      evidenceAt = comments.reduce<Date | null>((latest, comment) =>
+        hasMatchingCommentMarker(comment.body, requirement.commentMarkers)
+          ? maxDate(latest, comment.createdAt)
+          : latest, null);
     }
+
+    const stale = Boolean(evidenceAt && invalidatedAt && evidenceAt.getTime() < invalidatedAt.getTime());
+    const satisfied = Boolean(evidenceAt) && !stale;
 
     return {
       key: requirement.key,
@@ -376,12 +680,13 @@ async function computeWorkflowArtifactStatus(
       kind: requirement.kind,
       blocking: requirement.blocking,
       satisfied,
-      detail: satisfied ? null : artifactMissingDetail(requirement),
+      stale,
+      detail: satisfied ? null : stale ? artifactStaleDetail(requirement) : artifactMissingDetail(requirement),
     } satisfies IssueWorkflowArtifactStatus;
   });
 }
 
-async function computeLaneBlockingReasons(
+async function computeStandardLaneBlockingReasons(
   db: Db,
   issue: WorkflowLaneCompletionIssue,
   artifactStatuses: IssueWorkflowArtifactStatus[],
@@ -407,13 +712,30 @@ async function computeLaneBlockingReasons(
   return Array.from(new Set(reasons));
 }
 
-async function decorateWorkflowLaneIssue<TIssue extends WorkflowDecoratableIssue>(db: Db, issue: TIssue) {
-  const workflowArtifactStatus = issue.workflowRequiredArtifacts?.length
+async function evaluateWorkflowLaneGate(
+  db: Db,
+  issue: WorkflowLaneCompletionIssue,
+) {
+  if (issue.workflowLaneRole === "qa") {
+    return evaluateWorkflowQaLaneGate(db, issue);
+  }
+
+  const artifactStatuses = issue.workflowRequiredArtifacts?.length
     ? await computeWorkflowArtifactStatus(db, issue)
     : [];
+  const blockingReasons = await computeStandardLaneBlockingReasons(db, issue, artifactStatuses);
+  return {
+    artifactStatuses,
+    blockingReasons,
+    canComplete: blockingReasons.length === 0,
+  };
+}
+
+async function decorateWorkflowLaneIssue<TIssue extends WorkflowDecoratableIssue>(db: Db, issue: TIssue) {
+  const laneGate = await evaluateWorkflowLaneGate(db, issue);
   return {
     ...issue,
-    workflowArtifactStatus,
+    workflowArtifactStatus: laneGate.artifactStatuses,
   };
 }
 
@@ -433,21 +755,56 @@ async function computeWorkflowSummary(
       .filter((issue) => typeof issue.workflowLaneRole === "string")
       .map((issue) => [issue.workflowLaneRole as IssueWorkflowLaneRole, issue]),
   );
+  const childIssueIds = childIssues.map((issue) => issue.id);
+  const activeBlockerRows = childIssueIds.length === 0
+    ? []
+    : await db
+        .select({
+          blockedIssueId: issueRelations.relatedIssueId,
+          blockerRole: issues.workflowLaneRole,
+          blockerStatus: issues.status,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+        .where(
+          and(
+            eq(issueRelations.companyId, parentIssue.companyId),
+            eq(issueRelations.type, "blocks"),
+            inArray(issueRelations.relatedIssueId, childIssueIds),
+          ),
+        );
+  const activeBlockedByRolesByIssueId = new Map<string, IssueWorkflowLaneRole[]>();
+  for (const blocker of activeBlockerRows) {
+    if (!blocker.blockerRole || isTerminalIssueStatus(blocker.blockerStatus)) continue;
+    const roles = activeBlockedByRolesByIssueId.get(blocker.blockedIssueId) ?? [];
+    if (!roles.includes(blocker.blockerRole as IssueWorkflowLaneRole)) {
+      roles.push(blocker.blockerRole as IssueWorkflowLaneRole);
+      activeBlockedByRolesByIssueId.set(blocker.blockedIssueId, roles);
+    }
+  }
 
   const lanes: IssueWorkflowLaneSummary[] = [];
+  const blockingReasons: string[] = [];
+  const activeRoles: IssueWorkflowLaneRole[] = [];
+  const waitingRoles: IssueWorkflowLaneRole[] = [];
+  const ownerNeededRoles: IssueWorkflowLaneRole[] = [];
   for (const laneRole of LANE_ORDER) {
     const laneDefinition = getLaneDefinition(parentIssue.workflowTemplateKey, laneRole);
     if (!laneDefinition) continue;
     const childIssue = childIssueByRole.get(laneRole) ?? null;
     if (!childIssue) {
+      blockingReasons.push(`${laneRole.toUpperCase()}: Lane issue is missing.`);
       lanes.push({
         issueId: null,
         role: laneRole,
         title: `${laneDefinition.titlePrefix}: missing lane`,
         status: "missing",
+        phase: "missing",
         assigneeAgentId: null,
         assigneeUserId: null,
         workspaceMode: laneDefinition.isolatedWorkspace ? "isolated_workspace" : null,
+        blockedByRoles: [],
+        ready: false,
         unresolvedOwnership: true,
         artifactStatuses: [],
         blockingReasons: ["Lane issue is missing."],
@@ -455,13 +812,34 @@ async function computeWorkflowSummary(
       continue;
     }
 
-    const decoratedLane = await decorateWorkflowLaneIssue(db, childIssue);
-    const blockingReasons = await computeLaneBlockingReasons(db, childIssue, decoratedLane.workflowArtifactStatus ?? []);
-      lanes.push({
-        issueId: childIssue.id,
-        role: laneRole,
-        title: childIssue.title,
-        status: childIssue.status as IssueWorkflowLaneSummary["status"],
+    const blockedByRoles = activeBlockedByRolesByIssueId.get(childIssue.id) ?? [];
+    const phase = deriveWorkflowLanePhase({
+      issueId: childIssue.id,
+      status: childIssue.status,
+      blockedByRoles,
+    });
+    const laneGate = await evaluateWorkflowLaneGate(db, childIssue);
+    const actionable = isActionableWorkflowLanePhase(phase);
+    const laneBlockingReasons = actionable ? laneGate.blockingReasons : [];
+    if (phase === "waiting") {
+      waitingRoles.push(laneRole);
+    }
+    if (actionable) {
+      activeRoles.push(laneRole);
+    }
+    if (actionable && !childIssue.assigneeAgentId && !childIssue.assigneeUserId) {
+      ownerNeededRoles.push(laneRole);
+    }
+    for (const reason of laneBlockingReasons) {
+      blockingReasons.push(`${laneRole.toUpperCase()}: ${reason}`);
+    }
+
+    lanes.push({
+      issueId: childIssue.id,
+      role: laneRole,
+      title: childIssue.title,
+      status: childIssue.status as IssueWorkflowLaneSummary["status"],
+      phase,
       assigneeAgentId: childIssue.assigneeAgentId,
       assigneeUserId: childIssue.assigneeUserId,
       workspaceMode:
@@ -471,19 +849,154 @@ async function computeWorkflowSummary(
           && typeof (childIssue.executionWorkspaceSettings as Record<string, unknown>).mode === "string")
           ? String((childIssue.executionWorkspaceSettings as Record<string, unknown>).mode)
           : childIssue.executionWorkspacePreference,
+      blockedByRoles,
+      ready: actionable,
       unresolvedOwnership: !childIssue.assigneeAgentId && !childIssue.assigneeUserId,
-      artifactStatuses: decoratedLane.workflowArtifactStatus ?? [],
-      blockingReasons,
+      artifactStatuses: laneGate.artifactStatuses ?? [],
+      blockingReasons: laneBlockingReasons,
     });
   }
 
-  const blockingReasons = lanes.flatMap((lane) => lane.blockingReasons.map((reason) => `${lane.role.toUpperCase()}: ${reason}`));
   return {
     templateKey: template.key,
     isBlocked: blockingReasons.length > 0,
-    blockingReasons,
+    blockingReasons: Array.from(new Set(blockingReasons)),
+    activeRoles,
+    waitingRoles,
+    ownerNeededRoles,
     lanes,
   };
+}
+
+async function listWorkflowDependentsReadyForPromotion(
+  db: Db,
+  blockerIssueId: string,
+) {
+  const blockerIssue = await db
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      workflowTemplateKey: issues.workflowTemplateKey,
+      workflowLaneRole: issues.workflowLaneRole,
+    })
+    .from(issues)
+    .where(eq(issues.id, blockerIssueId))
+    .then((rows) => rows[0] ?? null);
+  if (!blockerIssue?.workflowTemplateKey || !blockerIssue.workflowLaneRole) return [];
+
+  const candidates = await db
+    .select({
+      id: issues.id,
+      status: issues.status,
+    })
+    .from(issueRelations)
+    .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+    .where(
+      and(
+        eq(issueRelations.companyId, blockerIssue.companyId),
+        eq(issueRelations.type, "blocks"),
+        eq(issueRelations.issueId, blockerIssueId),
+        eq(issues.workflowTemplateKey, blockerIssue.workflowTemplateKey),
+        isNull(issues.hiddenAt),
+      ),
+    );
+  if (candidates.length === 0) return [];
+
+  const candidateIds = candidates
+    .filter((candidate) => candidate.status === "blocked")
+    .map((candidate) => candidate.id);
+  if (candidateIds.length === 0) return [];
+
+  const blockerRows = await db
+    .select({
+      issueId: issueRelations.relatedIssueId,
+      blockerStatus: issues.status,
+    })
+    .from(issueRelations)
+    .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+    .where(
+      and(
+        eq(issueRelations.companyId, blockerIssue.companyId),
+        eq(issueRelations.type, "blocks"),
+        inArray(issueRelations.relatedIssueId, candidateIds),
+      ),
+    );
+
+  const blockerStatusesByIssueId = new Map<string, string[]>();
+  for (const row of blockerRows) {
+    const statuses = blockerStatusesByIssueId.get(row.issueId) ?? [];
+    statuses.push(row.blockerStatus);
+    blockerStatusesByIssueId.set(row.issueId, statuses);
+  }
+
+  return candidateIds.filter((issueId) => {
+    const blockerStatuses = blockerStatusesByIssueId.get(issueId) ?? [];
+    return blockerStatuses.length > 0 && blockerStatuses.every((status) => isTerminalIssueStatus(status));
+  });
+}
+
+async function getWorkflowLaneContext(
+  db: Db,
+  issueId: string,
+) {
+  return db
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      parentId: issues.parentId,
+      status: issues.status,
+      assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+      workflowTemplateKey: issues.workflowTemplateKey,
+      workflowLaneRole: issues.workflowLaneRole,
+      workflowInvalidatedAt: issues.workflowInvalidatedAt,
+    })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .then((rows) => rows[0] ?? null);
+}
+
+async function listWorkflowDescendantIssueIds(
+  db: Db,
+  input: {
+    companyId: string;
+    parentId: string;
+    workflowTemplateKey: string;
+    rootIssueId: string;
+  },
+) {
+  const descendants: string[] = [];
+  const seen = new Set<string>([input.rootIssueId]);
+  let frontier = [input.rootIssueId];
+
+  while (frontier.length > 0) {
+    const rows = await db
+      .select({
+        id: issues.id,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.companyId, input.companyId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issueRelations.issueId, frontier),
+          eq(issues.parentId, input.parentId),
+          eq(issues.workflowTemplateKey, input.workflowTemplateKey),
+          isNull(issues.hiddenAt),
+        ),
+      );
+    const nextFrontier: string[] = [];
+    for (const row of rows) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      descendants.push(row.id);
+      nextFrontier.push(row.id);
+    }
+    frontier = nextFrontier;
+  }
+
+  return descendants;
 }
 
 function buildWorkflowChildTitle(parentTitle: string, lane: WorkflowLaneDefinition) {
@@ -494,6 +1007,7 @@ function buildWorkflowChildInput(
   parentIssue: Pick<WorkflowTemplateParentIssue, "id" | "projectId" | "goalId" | "priority" | "title">,
   lane: WorkflowLaneDefinition,
   assigneeAgentId: string | null,
+  blockedByIssueIds: string[],
   actor: { agentId?: string | null; userId?: string | null },
 ): WorkflowTemplateApplyIssueInput {
   const executionWorkspaceSettings = lane.isolatedWorkspace
@@ -505,13 +1019,14 @@ function buildWorkflowChildInput(
     goalId: parentIssue.goalId,
     title: buildWorkflowChildTitle(parentIssue.title, lane),
     description: lane.description,
-    status: "todo",
+    status: blockedByIssueIds.length > 0 ? "blocked" : "todo",
     priority: parentIssue.priority,
     assigneeAgentId,
     assigneeUserId: null,
     workflowTemplateKey: ENGINEERING_DELIVERY_V1_TEMPLATE.key,
     workflowLaneRole: lane.role,
     workflowRequiredArtifacts: lane.requiredArtifacts as unknown as Record<string, unknown>[],
+    blockedByIssueIds,
     inheritExecutionWorkspaceFromIssueId: parentIssue.id,
     ...(lane.isolatedWorkspace ? {
       executionWorkspacePreference: "isolated_workspace",
@@ -537,7 +1052,11 @@ function buildRoutingIssue(parentIssue: Pick<WorkflowTemplateParentIssue, "id" |
 function resolveWorkflowLaneAssigneeId(
   lane: WorkflowLaneDefinition,
   candidate: OperationsAssignmentCandidate | null | undefined,
+  qaAssigneeAgentId: string | null,
 ) {
+  if (lane.role === "qa") {
+    return qaAssigneeAgentId;
+  }
   if (!candidate) return null;
   if (lane.role === "security" && candidate.role !== "security") {
     return null;
@@ -590,16 +1109,17 @@ export function synthesizeWorkflowBoardState(issue: {
 
 export function issueWorkflowService(db: Db) {
   async function evaluateLaneCompletion(issue: WorkflowLaneCompletionIssue) {
-    const artifactStatuses = await computeWorkflowArtifactStatus(db, issue);
-    const blockingReasons = await computeLaneBlockingReasons(db, issue, artifactStatuses);
-    return {
-      artifactStatuses,
-      blockingReasons,
-      canComplete: blockingReasons.length === 0,
-    };
+    return evaluateWorkflowLaneGate(db, issue);
   }
 
   async function decorateIssue<TIssue extends WorkflowDecoratableIssue>(issue: TIssue) {
+    if (issue.workflowTemplateKey) {
+      await reconcileWorkflowTemplateGraph(db, {
+        companyId: issue.companyId,
+        parentIssueId: issue.workflowLaneRole ? (issue.parentId ?? issue.id) : issue.id,
+        templateKey: issue.workflowTemplateKey,
+      });
+    }
     const decoratedLane = await decorateWorkflowLaneIssue(db, issue);
     const workflowSummary =
       issue.workflowTemplateKey && !issue.workflowLaneRole
@@ -633,6 +1153,7 @@ export function issueWorkflowService(db: Db) {
 
     const candidatePool = await listWorkflowAssignmentCandidates(db, input.companyId);
     const openAssignedIssues = await listWorkflowOpenAssignedIssues(db, input.companyId);
+    const workflowQaAssigneeAgentId = await resolveAuthorizedWorkflowQaOwnerAgentId(db, input.companyId);
     try {
       return await db.transaction(async (tx) => {
         const persistedParent = await tx
@@ -677,6 +1198,7 @@ export function issueWorkflowService(db: Db) {
         }
 
         const createdChildren: WorkflowCreatedIssue[] = [];
+        const childIssueIdByRole = new Map<IssueWorkflowLaneRole, string>();
         for (const lane of template.lanes) {
           const candidate = pickOperationsAssignmentCandidate({
             issue: buildRoutingIssue(input.parentIssue, lane),
@@ -685,17 +1207,22 @@ export function issueWorkflowService(db: Db) {
             pausedFallbackCandidates: candidatePool,
             allowPausedFallback: false,
           });
-          const assigneeAgentId = resolveWorkflowLaneAssigneeId(lane, candidate);
+          const assigneeAgentId = resolveWorkflowLaneAssigneeId(lane, candidate, workflowQaAssigneeAgentId);
+          const blockedByIssueIds = lane.dependsOnRoles
+            .map((role) => childIssueIdByRole.get(role))
+            .filter((issueId): issueId is string => typeof issueId === "string");
           const created = await input.createIssue(
             buildWorkflowChildInput(
               input.parentIssue,
               lane,
               assigneeAgentId,
+              blockedByIssueIds,
               { agentId: input.actorAgentId ?? null, userId: input.actorUserId ?? null },
             ),
             tx,
           );
           createdChildren.push(created);
+          childIssueIdByRole.set(lane.role, created.id);
           if (assigneeAgentId) {
             updateOpenAssignmentLoad(openAssignedIssues, candidatePool, input.parentIssue, assigneeAgentId);
           }
@@ -714,6 +1241,201 @@ export function issueWorkflowService(db: Db) {
     }
   }
 
+  async function advanceWorkflowDependents(blockerIssueId: string) {
+    await reconcileWorkflowTemplateGraphForIssue(db, blockerIssueId);
+    const readyIssueIds = await listWorkflowDependentsReadyForPromotion(db, blockerIssueId);
+    if (readyIssueIds.length === 0) return [] as typeof issues.$inferSelect[];
+    const readyIssues = await db
+      .select()
+      .from(issues)
+      .where(inArray(issues.id, readyIssueIds));
+    if (readyIssues.length === 0) return [] as typeof issues.$inferSelect[];
+
+    const qaOwnerAgentIdByCompanyId = new Map<string, string | null>();
+    return db.transaction(async (tx) => {
+      const promotedIssues: typeof issues.$inferSelect[] = [];
+      for (const readyIssue of readyIssues) {
+        let assigneeAgentId = readyIssue.assigneeAgentId;
+        let assigneeUserId = readyIssue.assigneeUserId;
+        if (readyIssue.workflowLaneRole === "qa") {
+          if (!qaOwnerAgentIdByCompanyId.has(readyIssue.companyId)) {
+            qaOwnerAgentIdByCompanyId.set(
+              readyIssue.companyId,
+              await resolveAuthorizedWorkflowQaOwnerAgentId(tx, readyIssue.companyId),
+            );
+          }
+          assigneeAgentId = qaOwnerAgentIdByCompanyId.get(readyIssue.companyId) ?? null;
+          assigneeUserId = null;
+        }
+
+        const promotedIssue = await tx
+          .update(issues)
+          .set({
+            status: "todo",
+            assigneeAgentId,
+            assigneeUserId,
+            updatedAt: sql`now()`,
+          })
+          .where(eq(issues.id, readyIssue.id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (promotedIssue) {
+          promotedIssues.push(promotedIssue);
+        }
+      }
+      return promotedIssues;
+    });
+  }
+
+  async function invalidateWorkflowDescendants(input: {
+    issueId: string;
+    invalidateSelf?: boolean;
+  }) {
+    await reconcileWorkflowTemplateGraphForIssue(db, input.issueId);
+    const workflowIssue = await getWorkflowLaneContext(db, input.issueId);
+    if (!workflowIssue?.parentId || !workflowIssue.workflowTemplateKey || !workflowIssue.workflowLaneRole) {
+      return {
+        invalidatedSelf: null as typeof issues.$inferSelect | null,
+        invalidatedDescendants: [] as typeof issues.$inferSelect[],
+      };
+    }
+
+    const descendantIssueIds = await listWorkflowDescendantIssueIds(db, {
+      companyId: workflowIssue.companyId,
+      parentId: workflowIssue.parentId,
+      workflowTemplateKey: workflowIssue.workflowTemplateKey,
+      rootIssueId: workflowIssue.id,
+    });
+    const now = new Date();
+
+    return await db.transaction(async (tx) => {
+      const invalidatedSelf =
+        input.invalidateSelf
+          ? await tx
+              .update(issues)
+              .set({
+                workflowInvalidatedAt: now,
+                checkoutRunId: null,
+                executionRunId: null,
+                executionAgentNameKey: null,
+                executionLockedAt: null,
+                executionState: null,
+                completedAt: null,
+                cancelledAt: null,
+                updatedAt: sql`now()`,
+              })
+              .where(eq(issues.id, workflowIssue.id))
+              .returning()
+              .then((rows) => rows[0] ?? null)
+          : null;
+
+      const invalidatedDescendants =
+        descendantIssueIds.length === 0
+          ? []
+          : await tx
+              .update(issues)
+              .set({
+                status: "blocked",
+                workflowInvalidatedAt: now,
+                checkoutRunId: null,
+                executionRunId: null,
+                executionAgentNameKey: null,
+                executionLockedAt: null,
+                executionState: null,
+                completedAt: null,
+                cancelledAt: null,
+                updatedAt: sql`now()`,
+              })
+              .where(inArray(issues.id, descendantIssueIds))
+              .returning();
+
+      return { invalidatedSelf, invalidatedDescendants };
+    });
+  }
+
+  async function handbackWorkflowLane(sourceIssueId: string) {
+    await reconcileWorkflowTemplateGraphForIssue(db, sourceIssueId);
+    const sourceIssue = await getWorkflowLaneContext(db, sourceIssueId);
+    if (!sourceIssue?.parentId || !sourceIssue.workflowTemplateKey || !sourceIssue.workflowLaneRole) {
+      return null;
+    }
+
+    const laneDefinition = getLaneDefinition(sourceIssue.workflowTemplateKey, sourceIssue.workflowLaneRole);
+    if (!laneDefinition?.handbackRole) {
+      return null;
+    }
+
+    const targetIssue = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, sourceIssue.companyId),
+          eq(issues.parentId, sourceIssue.parentId),
+          eq(issues.workflowTemplateKey, sourceIssue.workflowTemplateKey),
+          eq(issues.workflowLaneRole, laneDefinition.handbackRole),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!targetIssue) {
+      return null;
+    }
+
+    const descendantIssueIds = await listWorkflowDescendantIssueIds(db, {
+      companyId: sourceIssue.companyId,
+      parentId: sourceIssue.parentId,
+      workflowTemplateKey: sourceIssue.workflowTemplateKey,
+      rootIssueId: targetIssue.id,
+    });
+    const now = new Date();
+
+    return await db.transaction(async (tx) => {
+      const reopenedTarget = await tx
+        .update(issues)
+        .set({
+          status: "todo",
+          workflowInvalidatedAt: now,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          executionState: null,
+          completedAt: null,
+          cancelledAt: null,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(issues.id, targetIssue.id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      const invalidatedDescendants =
+        descendantIssueIds.length === 0
+          ? []
+          : await tx
+              .update(issues)
+              .set({
+                status: "blocked",
+                workflowInvalidatedAt: now,
+                checkoutRunId: null,
+                executionRunId: null,
+                executionAgentNameKey: null,
+                executionLockedAt: null,
+                executionState: null,
+                completedAt: null,
+                cancelledAt: null,
+                updatedAt: sql`now()`,
+              })
+              .where(inArray(issues.id, descendantIssueIds))
+              .returning();
+
+      return {
+        sourceIssueId,
+        targetIssue: reopenedTarget,
+        invalidatedDescendants,
+      };
+    });
+  }
+
   return {
     getTemplate(templateKey: IssueWorkflowTemplateKey) {
       return resolveWorkflowTemplate(templateKey);
@@ -721,5 +1443,27 @@ export function issueWorkflowService(db: Db) {
     evaluateLaneCompletion,
     decorateIssue,
     applyTemplate,
+    inspectWorkflowTemplateGraph: async (issueId: string) => {
+      const workflowIssue = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          parentId: issues.parentId,
+          workflowTemplateKey: issues.workflowTemplateKey,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!workflowIssue?.workflowTemplateKey) return null;
+      return inspectWorkflowTemplateGraph(db, {
+        companyId: workflowIssue.companyId,
+        parentIssueId: workflowIssue.parentId ?? workflowIssue.id,
+        templateKey: workflowIssue.workflowTemplateKey,
+      });
+    },
+    reconcileWorkflowTemplateGraph: async (issueId: string) => await reconcileWorkflowTemplateGraphForIssue(db, issueId),
+    advanceWorkflowDependents,
+    invalidateWorkflowDescendants,
+    handbackWorkflowLane,
   };
 }

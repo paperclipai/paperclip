@@ -15,4 +15,6 @@ export const instanceSettingsApi = {
     api.get<InstanceExperimentalSettings>("/instance/settings/experimental"),
   updateExperimental: (patch: PatchInstanceExperimentalSettings) =>
     api.patch<InstanceExperimentalSettings>("/instance/settings/experimental", patch),
+  restartDevServer: () =>
+    api.post<{ accepted: boolean; requestId: string; requestedAt: string }>("/instance/dev-server/restart", {}),
 };

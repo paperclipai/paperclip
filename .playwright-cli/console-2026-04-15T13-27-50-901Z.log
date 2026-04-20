@@ -1,0 +1,28 @@
+[ 5834729ms] [LOG] [vite] server connection lost. Polling for restart... @ http://127.0.0.1:3100/@vite/client:963
+[ 5834768ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5835774ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5836778ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5837782ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5838787ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5843980ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:3100/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102
+[ 5844112ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://127.0.0.1:3100/api/auth/get-session:0
+[ 5844176ms] [LOG] [vite] server connection lost. Polling for restart... @ http://127.0.0.1:3100/@vite/client:963
+[ 5844177ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5844178ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/api/health:0
+[ 5844183ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/api/adapters:0
+[ 5844183ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/api/companies:0
+[ 5845180ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5845186ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/api/adapters:0
+[ 5846181ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5847183ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5847188ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/api/adapters:0
+[ 5851845ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:3100/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102
+[ 5851928ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://127.0.0.1:3100/api/auth/get-session:0
+[ 5876220ms] [LOG] [vite] server connection lost. Polling for restart... @ http://127.0.0.1:3100/@vite/client:963
+[ 5876221ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5877224ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5878226ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5879228ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5880229ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13100/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3100/@vite/client:1034
+[ 5885224ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:3100/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102
+[ 5885333ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://127.0.0.1:3100/api/auth/get-session:0

@@ -1,0 +1,1 @@
+ALTER TABLE "issues" ADD COLUMN "workflow_invalidated_at" timestamp with time zone;

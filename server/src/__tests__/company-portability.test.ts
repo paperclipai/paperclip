@@ -141,6 +141,7 @@ describe("company portability", () => {
       brandColor: "#5c5fff",
       logoAssetId: null,
       logoUrl: null,
+      releaseGateQaAgentId: null,
       requireBoardApprovalForNewAgents: true,
     });
     agentSvc.list.mockResolvedValue([
@@ -612,6 +613,127 @@ describe("company portability", () => {
       contentType: "image/png",
     });
     expect(exported.files[".paperclip.yaml"]).toContain('logoPath: "images/company-logo.png"');
+  });
+
+  it("exports and re-imports the configured release-gate QA owner using a portable agent slug", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.getById.mockResolvedValue({
+      id: "company-1",
+      name: "PrivateClip",
+      description: null,
+      issuePrefix: "PAP",
+      brandColor: "#5c5fff",
+      logoAssetId: null,
+      logoUrl: null,
+      releaseGateQaAgentId: "agent-qa-runner",
+      requireBoardApprovalForNewAgents: true,
+    });
+    agentSvc.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "ClaudeCoder",
+        urlKey: "claudecoder",
+        status: "idle",
+        role: "engineer",
+        title: "Software Engineer",
+        icon: "code",
+        reportsTo: null,
+        capabilities: "Writes code",
+        adapterType: "claude_local",
+        adapterConfig: { promptTemplate: "You are ClaudeCoder." },
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        permissions: { canCreateAgents: false },
+        metadata: null,
+      },
+      {
+        id: "agent-qa-runner",
+        name: "QA Runner",
+        urlKey: "qa-runner",
+        status: "active",
+        role: "qa",
+        title: "Release Tester",
+        icon: "shield",
+        reportsTo: null,
+        capabilities: "Owns release verification",
+        adapterType: "claude_local",
+        adapterConfig: { promptTemplate: "You are QA Runner." },
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        permissions: { canCreateAgents: false },
+        metadata: null,
+      },
+    ]);
+    agentInstructionsSvc.exportFiles.mockImplementation(async (agent: { name: string }) => ({
+      files: { "AGENTS.md": `You are ${agent.name}.` },
+      entryFile: "AGENTS.md",
+      warnings: [],
+    }));
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    expect(exported.manifest.company?.releaseGateQaAgentSlug).toBe("qa-runner");
+    expect(asTextFile(exported.files[".paperclip.yaml"])).toContain('releaseGateQaAgentSlug: "qa-runner"');
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported PrivateClip",
+    });
+    companySvc.update.mockImplementation(async (companyId: string, patch: Record<string, unknown>) => ({
+      id: companyId,
+      name: "Imported PrivateClip",
+      ...patch,
+    }));
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: input.name === "QA Runner" ? "agent-imported-qa-runner" : "agent-imported-other",
+      companyId: "company-imported",
+      name: `${input.name ?? "Imported Agent"}`,
+      urlKey: input.name === "QA Runner" ? "qa-runner" : "agent-imported-other",
+      ...input,
+    }));
+    agentSvc.update.mockImplementation(async (agentId: string, patch: Record<string, unknown>) => ({
+      id: agentId,
+      companyId: "company-imported",
+      name: `${patch.name ?? "Imported Agent"}`,
+      urlKey: normalizeAgentUrlKey(`${patch.name ?? "Imported Agent"}`) ?? agentId,
+      ...patch,
+    }));
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "new_company",
+        newCompanyName: "Imported PrivateClip",
+      },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(companySvc.update).toHaveBeenCalledWith(
+      "company-imported",
+      expect.objectContaining({
+        releaseGateQaAgentId: "agent-imported-qa-runner",
+      }),
+    );
   });
 
   it("exports duplicate skill slugs into readable namespaced paths", async () => {
@@ -2469,6 +2591,165 @@ describe("company portability", () => {
         reason: null,
       },
     ]);
+  });
+
+  it("does not clear release-gate QA ownership when importing an older package without that field", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    companySvc.update.mockClear();
+    companySvc.getById.mockResolvedValue({
+      id: "company-1",
+      name: "PrivateClip",
+      description: "Existing company",
+      brandColor: "#123456",
+      releaseGateQaAgentId: "agent-existing-qa",
+      requireBoardApprovalForNewAgents: false,
+      feedbackDataSharingEnabled: false,
+    });
+    agentSvc.list.mockResolvedValue([]);
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(
+      companySvc.update.mock.calls.some(([, patch]) =>
+        Object.prototype.hasOwnProperty.call(patch as Record<string, unknown>, "releaseGateQaAgentId"),
+      ),
+    ).toBe(false);
+  });
+
+  it("warns instead of failing when imported release-gate QA ownership resolves to an invalid target agent", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.getById.mockResolvedValue({
+      id: "company-1",
+      name: "PrivateClip",
+      description: null,
+      issuePrefix: "PAP",
+      brandColor: "#5c5fff",
+      logoAssetId: null,
+      logoUrl: null,
+      releaseGateQaAgentId: "agent-qa-runner",
+      requireBoardApprovalForNewAgents: true,
+    });
+    agentSvc.list.mockResolvedValue([
+      {
+        id: "agent-qa-runner",
+        name: "QA Runner",
+        urlKey: "qa-runner",
+        status: "active",
+        role: "qa",
+        title: "Release Tester",
+        icon: "shield",
+        reportsTo: null,
+        capabilities: "Owns release verification",
+        adapterType: "claude_local",
+        adapterConfig: { promptTemplate: "You are QA Runner." },
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        permissions: { canCreateAgents: false },
+        metadata: null,
+      },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    companySvc.update
+      .mockImplementationOnce(async (_companyId: string, patch: Record<string, unknown>) => ({
+        id: "company-1",
+        name: "PrivateClip",
+        ...patch,
+      }))
+      .mockImplementationOnce(async (_companyId: string, patch: Record<string, unknown>) => ({
+        id: "company-1",
+        name: "PrivateClip",
+        ...patch,
+      }))
+      .mockRejectedValueOnce(new Error("Configured release-gate QA owner must be a QA agent"));
+    companySvc.getById.mockResolvedValue({
+      id: "company-1",
+      name: "Existing PrivateClip",
+      description: "Existing company",
+      brandColor: "#123456",
+      releaseGateQaAgentId: "agent-existing-qa",
+      requireBoardApprovalForNewAgents: false,
+      feedbackDataSharingEnabled: false,
+    });
+    agentSvc.list.mockResolvedValue([
+      {
+        id: "agent-engineer-qa-runner",
+        name: "QA Runner",
+        urlKey: "qa-runner",
+        status: "idle",
+        role: "engineer",
+        title: "Software Engineer",
+        icon: "code",
+        reportsTo: null,
+        capabilities: "Writes code",
+        adapterType: "claude_local",
+        adapterConfig: { promptTemplate: "You are Engineer QA Runner." },
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        permissions: { canCreateAgents: false },
+        metadata: null,
+      },
+    ]);
+
+    const result = await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("Skipped release-gate QA owner qa-runner;"),
+    ]));
+    expect(result.warnings.join("\n")).toContain("Configured release-gate QA owner must be a QA agent");
   });
 
   it("applies adapter overrides while keeping imported AGENTS content implicit", async () => {

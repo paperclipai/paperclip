@@ -5,6 +5,7 @@ import type {
   IssueExecutionPolicyMode,
   IssueExecutionStageType,
   IssueWorkflowArtifactKind,
+  IssueWorkflowLanePhase,
   IssueWorkflowLaneRole,
   IssueWorkflowTemplateKey,
   IssueExecutionStateStatus,
@@ -301,6 +302,7 @@ export interface IssueWorkflowArtifactStatus {
   kind: IssueWorkflowArtifactKind;
   blocking: boolean;
   satisfied: boolean;
+  stale: boolean;
   detail: string | null;
 }
 
@@ -309,9 +311,12 @@ export interface IssueWorkflowLaneSummary {
   role: IssueWorkflowLaneRole;
   title: string;
   status: IssueStatus | "missing";
+  phase: IssueWorkflowLanePhase;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   workspaceMode: string | null;
+  blockedByRoles: IssueWorkflowLaneRole[];
+  ready: boolean;
   unresolvedOwnership: boolean;
   artifactStatuses: IssueWorkflowArtifactStatus[];
   blockingReasons: string[];
@@ -321,6 +326,9 @@ export interface IssueWorkflowSummary {
   templateKey: IssueWorkflowTemplateKey;
   isBlocked: boolean;
   blockingReasons: string[];
+  activeRoles: IssueWorkflowLaneRole[];
+  waitingRoles: IssueWorkflowLaneRole[];
+  ownerNeededRoles: IssueWorkflowLaneRole[];
   lanes: IssueWorkflowLaneSummary[];
 }
 
@@ -362,6 +370,7 @@ export interface Issue {
   workflowTemplateKey?: IssueWorkflowTemplateKey | null;
   workflowLaneRole?: AgentRole | IssueWorkflowLaneRole | null;
   workflowRequiredArtifacts?: IssueWorkflowArtifactRequirement[] | null;
+  workflowInvalidatedAt?: Date | null;
   workflowArtifactStatus?: IssueWorkflowArtifactStatus[] | null;
   workflowSummary?: IssueWorkflowSummary | null;
   startedAt: Date | null;

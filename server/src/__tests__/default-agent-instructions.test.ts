@@ -35,6 +35,9 @@ describe("loadDefaultAgentInstructionsBundle", () => {
     expect(ceoBundle["AGENTS.md"]).toContain("You are the CEO.");
     expect(ceoBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
     expect(cooBundle["AGENTS.md"]).toContain("Same-issue recovery is the default for stuck work.");
+    expect(cooBundle["AGENTS.md"]).toContain(
+      "A source issue linked by `recovered_by` may remain `blocked` as a valid recovery state when the board explicitly created a successor.",
+    );
     expect(cooBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
     expect(designerBundle["AGENTS.md"]).toContain("You are the Designer.");
     expect(designerBundle["AGENTS.md"]).toContain("`design` issue document");
@@ -51,6 +54,9 @@ describe("loadDefaultAgentInstructionsBundle", () => {
       "Successor issues linked by `recovered_by` are exceptional board-controlled recovery only.",
     );
     expect(defaultBundle["AGENTS.md"]).toContain("[POISONED SESSION]");
+    expect(defaultBundle["AGENTS.md"]).toContain(
+      "Same-issue recovery is the default for stuck work. Do not create continuation issues as routine recovery.",
+    );
     expect(defaultBundle["ROLE_TEMPLATE.md"]).toContain("Default Agent Role Charter Baseline");
   });
 

@@ -1,7 +1,11 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
+import { readPersistedDevServerControl } from "../dev-server-control.js";
 import { instanceSettingsRoutes } from "../routes/instance-settings.js";
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
@@ -31,8 +35,18 @@ function createApp(actor: any) {
 }
 
 describe("instance settings routes", () => {
+  const originalControlFile = process.env.PAPERCLIP_DEV_SERVER_CONTROL_FILE;
+  const tempDirs: string[] = [];
+
+  function createTempControlFilePath() {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-instance-settings-"));
+    tempDirs.push(dir);
+    return path.join(dir, "dev-server-control.json");
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.PAPERCLIP_DEV_SERVER_CONTROL_FILE;
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
@@ -62,6 +76,17 @@ describe("instance settings routes", () => {
       },
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
+  });
+
+  afterEach(() => {
+    if (originalControlFile) {
+      process.env.PAPERCLIP_DEV_SERVER_CONTROL_FILE = originalControlFile;
+    } else {
+      delete process.env.PAPERCLIP_DEV_SERVER_CONTROL_FILE;
+    }
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("allows local board users to read and update experimental settings", async () => {
@@ -106,6 +131,46 @@ describe("instance settings routes", () => {
     expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
       autoRestartDevServerWhenIdle: true,
     });
+  });
+
+  it("accepts explicit dev-server restart requests when managed dev control is available", async () => {
+    const controlFilePath = createTempControlFilePath();
+    process.env.PAPERCLIP_DEV_SERVER_CONTROL_FILE = controlFilePath;
+
+    const app = createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .post("/api/instance/dev-server/restart")
+      .send({});
+
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({ accepted: true });
+    expect(readPersistedDevServerControl({ PAPERCLIP_DEV_SERVER_CONTROL_FILE: controlFilePath })).toMatchObject({
+      action: "restart",
+      requestedBy: "local-board",
+    });
+    expect(mockLogActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects dev-server restart requests when managed dev control is unavailable", async () => {
+    const app = createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .post("/api/instance/dev-server/restart")
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "Managed dev-server restart is not available in this runtime" });
   });
 
   it("allows local board users to read and update general settings", async () => {

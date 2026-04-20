@@ -222,7 +222,6 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       liveIssueIds={liveIssueIds}
       projectId={projectId}
       viewStateKey={`paperclip:project-view:${projectId}`}
-      excludeRecoverySourcesWithOpenSuccessors
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );

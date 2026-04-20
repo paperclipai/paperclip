@@ -893,6 +893,8 @@ V1 now supports one built-in workflow template on root issues: `engineering_deli
 Contract:
 - template application creates deterministic child issues, not hidden internal stages
 - child issues are labeled with lane role metadata and required artifact contracts
+- workflow templates also create persistent blocker relations for the lane dependency graph
+- the workflow template DAG is canonical; if legacy roots lose blocker relations or drift lane `blocked`/`todo` state, the workflow service reconciles the graph from template metadata before deriving summaries or advancing dependents
 - root issues store the applied template key and synthesize a workflow summary from child issue state
 - workflow templates can only be applied to root issues
 - re-applying a workflow template to the same issue is rejected
@@ -904,14 +906,43 @@ Lane set for `engineering_delivery_v1`:
 - `security`
 - `qa`
 
+Dependency graph for `engineering_delivery_v1`:
+- `pm -> designer -> engineer`
+- `engineer -> security`
+- `engineer -> qa`
+
+Execution rules:
+- template application creates all child lanes eagerly
+- only dependency-free lanes start in `todo` and receive an assignment wake
+- dependency lanes start in `blocked`
+- workflow QA lane assignment uses the shared release-gate QA resolver in this order: configured company owner, then exactly one canonical `QA and Release Engineer`, then exactly one other eligible QA agent, otherwise explicit owner-blocked state
+- when the final active blocker for a workflow lane becomes terminal, that lane is promoted from `blocked` to `todo`; workflow QA lanes re-resolve and auto-assign the current authorized release-gate QA owner at that point when one exists
+- ordinary non-workflow blocked issues keep their existing wake-only behavior
+
 Artifact contracts:
 - `pm`: `plan` document
 - `designer`: `design` document or design work product
 - `engineer`: `implementation-summary` document or implementation work product
 - `security`: `threat-review` document
-- `qa`: `qa-verdict` document and existing `[QA PASS]` / `[RELEASE CONFIRMED]` comment markers
+- `qa`: a non-stale `qa-verdict` document plus the latest authorized release-gate QA verdict comment, which must include a full Smart Review summary, passing verification tokens (`[TYPECHECK] [TESTS] [BUILD] [SMOKE]`), `[QA PASS]`, and `[RELEASE CONFIRMED]`
 
 Completion rules:
+- a root workflow issue cannot transition to `done` while any specialist lane remains non-`done`; board actors must use `forceDone` to override that state deliberately
 - a workflow child issue cannot transition to `done` while required artifacts are missing unless a board actor explicitly force-completes it
 - security fail-level findings marked with `[SECURITY FAIL]` or `[SECURITY BLOCKED]` keep the security lane blocked
 - engineer, security, and QA lanes request isolated execution by default when isolated workspace support is enabled
+- same-issue QA auto-routing (`[READY FOR QA]`, `DONE:`), QA auto-fix loops, and QA ship-marker auto-merge only apply to non-workflow delivery issues; workflow roots and workflow lanes advance through dependency unblocking instead
+- workflow lane-local execution-policy review remains same-lane; generic `changes_requested` does not trigger cross-lane routing
+
+Workflow remediation rules:
+- failing Security comments hand work back to the `engineer` lane
+- failing QA review or verification comments hand work back to the `engineer` lane
+- workflow handbacks never create successor issues
+- a handback reopens the target upstream lane, re-blocks downstream lanes in the workflow graph, and clears their live execution state
+- invalidated workflow lanes stamp `workflow_invalidated_at`; required artifacts older than that timestamp become `stale` rather than `missing`
+- root workflow summaries distinguish actionable lanes (`activeRoles`), dependency-gated lanes (`waitingRoles`), and actionable unowned lanes (`ownerNeededRoles`)
+- per-lane workflow summaries expose a derived phase: `missing`, `waiting`, `ready`, `active`, or `done`
+- root workflow `blockingReasons` only include blockers that are actionable now; downstream waiting lanes do not surface future artifact gaps until they become actionable
+- automated lane promotions, handbacks, and invalidations must remain visible through issue activity so operators can audit and monitor workflow churn
+- operational monitoring is currently log-based: the server must emit structured `opsEvent=true` records for workflow handbacks, invalidations, lane unblocks, wakeup failures/skips, and heartbeat retry scheduling/exhaustion
+- operators can inspect and repair stale workflow DAG rows manually with `pnpm workflow-integrity:reconcile` and `pnpm workflow-integrity:reconcile -- --apply`; this sweep restores missing blocker edges and dependency-gated lane status drift from workflow template metadata

@@ -1,0 +1,2 @@
+[     582ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3102/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102
+[     739ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://localhost:3102/api/auth/get-session:0

@@ -682,7 +682,7 @@ describe("issue execution policy transitions", () => {
       expect(result.patch).toEqual({});
     });
 
-    it("no policy and no state is a no-op", () => {
+    it("preserves explicit status changes when no policy or state exists", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: {
           status: "in_progress",
@@ -697,7 +697,7 @@ describe("issue execution policy transitions", () => {
         actor: { agentId: coderAgentId },
       });
 
-      expect(result.patch).toEqual({});
+      expect(result.patch).toEqual({ status: "done" });
     });
   });
 

@@ -2449,6 +2449,13 @@ function buildManifestFromPackageFiles(
       description: asString(companyFrontmatter.description),
       brandColor: asString(paperclipCompany.brandColor),
       logoPath: asString(paperclipCompany.logoPath) ?? asString(paperclipCompany.logo),
+      ...(Object.prototype.hasOwnProperty.call(paperclipCompany, "releaseGateQaAgentSlug")
+        ? {
+            releaseGateQaAgentSlug:
+              normalizeAgentUrlKey(asString(paperclipCompany.releaseGateQaAgentSlug) ?? "")
+              ?? null,
+          }
+        : {}),
       requireBoardApprovalForNewAgents:
         typeof paperclipCompany.requireBoardApprovalForNewAgents === "boolean"
           ? paperclipCompany.requireBoardApprovalForNewAgents
@@ -2904,7 +2911,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const rootPath = normalizeAgentUrlKey(company.name) ?? "company-package";
     let companyLogoPath: string | null = null;
 
-    const allAgentRows = include.agents ? await agents.list(companyId, { includeTerminated: true }) : [];
+    const allAgentRows =
+      include.agents || Boolean(company.releaseGateQaAgentId)
+        ? await agents.list(companyId, { includeTerminated: true })
+        : [];
     const liveAgentRows = allAgentRows.filter((agent) => agent.status !== "terminated");
     const companySkillRows = include.skills || include.agents ? await companySkills.listFull(companyId) : [];
     if (include.agents) {
@@ -2953,6 +2963,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const slug = uniqueSlug(baseSlug, usedSlugs);
       idToSlug.set(agent.id, slug);
     }
+    const configuredReleaseGateQaAgent = company.releaseGateQaAgentId
+      ? allAgentRows.find((agent) => agent.id === company.releaseGateQaAgentId) ?? null
+      : null;
+    const configuredReleaseGateQaAgentSlug = company.releaseGateQaAgentId
+      ? idToSlug.get(company.releaseGateQaAgentId)
+        ?? configuredReleaseGateQaAgent?.urlKey
+        ?? normalizeAgentUrlKey(configuredReleaseGateQaAgent?.name ?? "")
+        ?? null
+      : null;
 
     const projectsSvc = projectService(db);
     const issuesSvc = issueService(db);
@@ -3402,6 +3421,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         company: stripEmptyValues({
           brandColor: company.brandColor ?? null,
           logoPath: companyLogoPath,
+          releaseGateQaAgentSlug: configuredReleaseGateQaAgentSlug,
           requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? undefined : false,
           feedbackDataSharingEnabled: company.feedbackDataSharingEnabled ? true : undefined,
           feedbackDataSharingConsentAt: company.feedbackDataSharingConsentAt?.toISOString() ?? null,
@@ -4020,6 +4040,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const existingAgents = await agents.list(targetCompany.id);
     for (const existing of existingAgents) {
       existingSlugToAgentId.set(normalizeAgentUrlKey(existing.name) ?? existing.id, existing.id);
+      if (existing.urlKey) {
+        existingSlugToAgentId.set(existing.urlKey, existing.id);
+      }
     }
     const importedSlugToProjectId = new Map<string, string>();
     const importedProjectWorkspaceIdByProjectSlug = new Map<string, Map<string, string>>();
@@ -4165,6 +4188,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
           importedSlugToAgentId.set(planAgent.slug, updated.id);
           existingSlugToAgentId.set(normalizeAgentUrlKey(updated.name) ?? updated.id, updated.id);
+          if (updated.urlKey) {
+            existingSlugToAgentId.set(updated.urlKey, updated.id);
+          }
           resultAgents.push({
             slug: planAgent.slug,
             id: updated.id,
@@ -4196,6 +4222,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         }
         importedSlugToAgentId.set(planAgent.slug, created.id);
         existingSlugToAgentId.set(normalizeAgentUrlKey(created.name) ?? created.id, created.id);
+        if (created.urlKey) {
+          existingSlugToAgentId.set(created.urlKey, created.id);
+        }
         resultAgents.push({
           slug: planAgent.slug,
           id: created.id,
@@ -4217,6 +4246,46 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           await agents.update(agentId, { reportsTo: managerId });
         } catch {
           warnings.push(`Could not assign manager ${managerSlug} for imported agent ${manifestAgent.slug}.`);
+        }
+      }
+    }
+
+    const releaseGateQaAgentSlug = include.company ? sourceManifest.company?.releaseGateQaAgentSlug : undefined;
+    if (include.company && sourceManifest.company && releaseGateQaAgentSlug !== undefined) {
+      if (releaseGateQaAgentSlug === null) {
+        if (input.target.mode === "existing_company") {
+          try {
+            const updated = await companies.update(targetCompany.id, { releaseGateQaAgentId: null });
+            targetCompany = updated ?? targetCompany;
+            if (companyAction === "unchanged") {
+              companyAction = "updated";
+            }
+          } catch (err) {
+            warnings.push(
+              `Failed to clear release-gate QA owner during import: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+      } else {
+        const resolvedAgentId = importedSlugToAgentId.get(releaseGateQaAgentSlug)
+          ?? existingSlugToAgentId.get(releaseGateQaAgentSlug)
+          ?? null;
+        if (resolvedAgentId) {
+          try {
+            const updated = await companies.update(targetCompany.id, { releaseGateQaAgentId: resolvedAgentId });
+            targetCompany = updated ?? targetCompany;
+            if (companyAction === "unchanged") {
+              companyAction = "updated";
+            }
+          } catch (err) {
+            warnings.push(
+              `Skipped release-gate QA owner ${releaseGateQaAgentSlug}; ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        } else {
+          warnings.push(
+            `Skipped release-gate QA owner ${releaseGateQaAgentSlug}; no matching QA agent exists in the target company.`,
+          );
         }
       }
     }

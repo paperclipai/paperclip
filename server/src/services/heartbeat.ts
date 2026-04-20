@@ -6,9 +6,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   buildAgentMentionHref,
-  isEligibleQaAgentStatus,
   issuePriorityWeight,
-  resolveReleaseGateQaAgent as resolveSharedReleaseGateQaAgent,
   type BillingType,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
@@ -31,12 +29,14 @@ import {
 } from "@paperclipai/db";
 import { HttpError, conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { logOpsInfo, logOpsWarn } from "../ops-log.js";
 import { publishLiveEvent } from "./live-events.js";
 import { logActivity } from "./activity-log.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { resolveCompanyReleaseGateQaAgent } from "./release-gate-qa.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
@@ -81,6 +81,7 @@ import { issueService } from "./issues.js";
 import { computeIssueBoardStateMap } from "./issue-board-state.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
+import { issueMergeService } from "./issue-merge.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
   gateProjectExecutionWorkspacePolicy,
@@ -91,6 +92,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isDeliveryScopedAssigneeRole } from "./qa-gate.js";
+import { finalizeQaValidatedIssueFromComment } from "./issue-qa-finalization.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { roadmapEpicService } from "./roadmap-epics.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
@@ -467,21 +469,6 @@ function isExecutionPolicyReviewIssue(input: {
     executionState?.currentStageType != null
     && EXECUTION_REVIEW_STAGE_TYPES.has(executionState.currentStageType)
   );
-}
-
-async function resolveCompanyReleaseGateQaAgent(db: Db, companyId: string) {
-  const qaAgents = await db
-    .select({
-      id: agents.id,
-      role: agents.role,
-      status: agents.status,
-      name: agents.name,
-      title: agents.title,
-    })
-    .from(agents)
-    .where(and(eq(agents.companyId, companyId), eq(agents.role, "qa")));
-  const eligibleQaAgents = qaAgents.filter((agent) => isEligibleQaAgentStatus(agent.status));
-  return resolveSharedReleaseGateQaAgent(eligibleQaAgents);
 }
 
 export function isOperationsOrchestratorAgent(agent: {
@@ -2275,6 +2262,7 @@ export function heartbeatService(db: Db) {
   const issuesSvc = issueService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
+  const issueMerge = issueMergeService();
   const activeRunExecutions = new Set<string>();
   const executionGate = executionGateService(db);
   const budgetHooks = {
@@ -2284,6 +2272,27 @@ export function heartbeatService(db: Db) {
   };
   const budgets = budgetService(db, budgetHooks);
   const roadmapEpics = roadmapEpicService(db);
+
+  async function persistExecutionWorkspaceMergeStatus(
+    workspace: ExecutionWorkspace | null,
+    mergeStatus: Awaited<ReturnType<typeof issueMerge.getIssueMergeStatus>>,
+  ) {
+    if (!workspace || !mergeStatus) return workspace;
+    const metadata = {
+      ...((workspace.metadata as Record<string, unknown> | null) ?? {}),
+      merge: {
+        state: mergeStatus.state,
+        targetBranch: mergeStatus.targetBranch,
+        sourceBranch: mergeStatus.sourceBranch,
+        repoRoot: mergeStatus.repoRoot,
+        reason: mergeStatus.reason,
+        mergedCommit: mergeStatus.mergedCommit,
+        mergedAt: mergeStatus.mergedAt?.toISOString() ?? null,
+        lastAttemptedAt: mergeStatus.lastAttemptedAt?.toISOString() ?? null,
+      },
+    };
+    return await executionWorkspacesSvc.update(workspace.id, { metadata });
+  }
 
   async function getAgent(agentId: string) {
     return db
@@ -4021,6 +4030,8 @@ export function heartbeatService(db: Db) {
     now: Date,
   ) {
     const classification = classifyAutomaticRetry(run);
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
 
     if (!classification.eligible) {
       const finalized = await setRunStatus(run.id, run.status, {
@@ -4093,6 +4104,15 @@ export function heartbeatService(db: Db) {
         retryScheduledFor: null,
       });
       const effectiveRun = exhausted ?? run;
+      logOpsWarn("heartbeat.retry.exhausted", {
+        companyId: effectiveRun.companyId,
+        agentId: effectiveRun.agentId,
+        runId: effectiveRun.id,
+        issueId,
+        reason: classification.retryReason,
+        retryClass: classification.retryClass,
+        retryAttempt: effectiveRun.retryAttempt ?? run.retryAttempt ?? 0,
+      });
       await appendRunEvent(effectiveRun, await nextRunEventSeq(effectiveRun.id), {
         eventType: "lifecycle",
         stream: "system",
@@ -4119,6 +4139,16 @@ export function heartbeatService(db: Db) {
       },
     });
     const effectiveRun = scheduled ?? run;
+    logOpsInfo("heartbeat.retry.scheduled", {
+      companyId: effectiveRun.companyId,
+      agentId: effectiveRun.agentId,
+      runId: effectiveRun.id,
+      retryRunId: queuedRun.id,
+      issueId,
+      reason: classification.retryReason,
+      retryClass: classification.retryClass,
+      retryAttempt: queuedRun.retryAttempt ?? ((run.retryAttempt ?? 0) + 1),
+    });
     await logRunRecoveryActivity(effectiveRun, "heartbeat.recovery_queued", {
       retryRunId: queuedRun.id,
       retryAttempt: queuedRun.retryAttempt,
@@ -4464,7 +4494,6 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      const shouldRetry = (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = run.processPid
         ? `Process lost -- child pid ${run.processPid} is no longer running`
         : "Process lost -- server may have restarted";
@@ -4483,14 +4512,12 @@ export function heartbeatService(db: Db) {
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       let recoveryOutcome: "retry_queued" | "blocked" | "exhausted" | "non_retriable" | "skipped" = "skipped";
-      if (shouldRetry) {
-        const agent = await getAgent(run.agentId);
-        if (agent) {
-          const recovery = await planAutomaticRetry(finalizedRun, agent, now);
-          recoveryOutcome = recovery.outcome;
-          retriedRun = recovery.queuedRun;
-          finalizedRun = recovery.updatedRun;
-        }
+      const agent = await getAgent(run.agentId);
+      if (agent) {
+        const recovery = await planAutomaticRetry(finalizedRun, agent, now);
+        recoveryOutcome = recovery.outcome;
+        retriedRun = recovery.queuedRun;
+        finalizedRun = recovery.updatedRun;
       }
       if (recoveryOutcome !== "retry_queued") {
         await releaseIssueExecutionAndPromote(finalizedRun);
@@ -5320,7 +5347,7 @@ export function heartbeatService(db: Db) {
               await recordOwnershipCorrection({
                 issue: updatedIssue,
                 correctionReason: "qa_release_gate_reassigned",
-                detail: "release-gate QA ownership resolution requires reassignment to the canonical or unique QA owner",
+                detail: "release-gate QA ownership resolution requires reassignment to the configured, canonical, or single eligible QA owner",
               });
             } catch (err) {
               logger.warn(
@@ -6898,7 +6925,46 @@ export function heartbeatService(db: Db) {
               hasExistingRunComment: Boolean(existingRunComment),
             });
             if (issueComment) {
-              await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: finalizedRun.id });
+              const persistedComment = await issuesSvc.addComment(issueId, issueComment, {
+                agentId: agent.id,
+                runId: finalizedRun.id,
+              });
+              const currentIssue = await issuesSvc.getById(issueId);
+              if (currentIssue) {
+                await finalizeQaValidatedIssueFromComment({
+                  db,
+                  issue: currentIssue,
+                  comment: persistedComment,
+                  actor: {
+                    actorType: "agent",
+                    actorId: agent.id,
+                    agentId: agent.id,
+                    runId: finalizedRun.id,
+                  },
+                  logActivity,
+                  resolveReleaseGateQaAgent: async (companyId) => await resolveCompanyReleaseGateQaAgent(db, companyId),
+                  issues: {
+                    update: async (commentIssueId, patch) => await issuesSvc.update(commentIssueId, patch),
+                    addComment: async (commentIssueId, body, actor) =>
+                      await issuesSvc.addComment(commentIssueId, body, actor),
+                  },
+                  issueMerge,
+                  projects: {
+                    getById: async (projectId) =>
+                      await db
+                        .select({
+                          executionWorkspacePolicy: projects.executionWorkspacePolicy,
+                        })
+                        .from(projects)
+                        .where(eq(projects.id, projectId))
+                        .then((rows) => rows[0] ?? null),
+                  },
+                  executionWorkspaces: {
+                    getById: async (workspaceId) => await executionWorkspacesSvc.getById(workspaceId),
+                  },
+                  persistExecutionWorkspaceMergeStatus,
+                });
+              }
             }
           } catch (err) {
             await onLog(
@@ -7565,22 +7631,45 @@ export function heartbeatService(db: Db) {
         return { kind: "queued" as const, run: newRun };
       });
 
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
-      if (outcome.kind === "live_run_limit_reached") {
-        logger.warn(
-          {
-            agentId,
-            companyId: agent.companyId,
-            source,
-            triggerDetail,
-            liveRunCount: outcome.liveRunCount,
-            liveRunLimit: policy.maxLiveRuns,
-          },
-          "heartbeat wakeup skipped due to live run limit",
-        );
+      if (outcome.kind === "deferred") {
+        logOpsInfo("heartbeat.wakeup.deferred_issue_execution", {
+          companyId: agent.companyId,
+          agentId,
+          issueId,
+          source,
+          triggerDetail,
+          reason,
+          wakeCommentId,
+        });
         return null;
       }
-      if (outcome.kind === "coalesced") return outcome.run;
+      if (outcome.kind === "skipped") return null;
+      if (outcome.kind === "live_run_limit_reached") {
+        logOpsWarn("heartbeat.wakeup.skipped_live_run_limit", {
+          companyId: agent.companyId,
+          agentId,
+          issueId,
+          source,
+          triggerDetail,
+          reason,
+          liveRunCount: outcome.liveRunCount,
+          liveRunLimit: policy.maxLiveRuns,
+        });
+        return null;
+      }
+      if (outcome.kind === "coalesced") {
+        logOpsInfo("heartbeat.wakeup.coalesced", {
+          companyId: outcome.run.companyId,
+          agentId,
+          issueId,
+          source,
+          triggerDetail,
+          reason,
+          runId: outcome.run.id,
+          wakeCommentId,
+        });
+        return outcome.run;
+      }
 
       const newRun = outcome.run;
       publishLiveEvent({
@@ -7595,6 +7684,16 @@ export function heartbeatService(db: Db) {
         },
       });
 
+      logOpsInfo("heartbeat.wakeup.queued", {
+        companyId: newRun.companyId,
+        agentId: newRun.agentId,
+        issueId,
+        source,
+        triggerDetail,
+        reason,
+        runId: newRun.id,
+        wakeupRequestId: newRun.wakeupRequestId,
+      });
       await startNextQueuedRunForAgent(agent.id);
       return newRun;
     }
@@ -7648,6 +7747,16 @@ export function heartbeatService(db: Db) {
         runId: mergedRun.id,
         finishedAt: new Date(),
       });
+      logOpsInfo("heartbeat.wakeup.coalesced", {
+        companyId: mergedRun.companyId,
+        agentId,
+        issueId,
+        source,
+        triggerDetail,
+        reason,
+        runId: mergedRun.id,
+        wakeCommentId,
+      });
       return mergedRun;
     }
 
@@ -7667,17 +7776,16 @@ export function heartbeatService(db: Db) {
         finishedAt: new Date(),
       });
 
-      logger.warn(
-        {
-          agentId,
-          companyId: agent.companyId,
-          source,
-          triggerDetail,
-          liveRunCount,
-          liveRunLimit: policy.maxLiveRuns,
-        },
-        "heartbeat wakeup skipped due to live run limit",
-      );
+      logOpsWarn("heartbeat.wakeup.skipped_live_run_limit", {
+        companyId: agent.companyId,
+        agentId,
+        issueId,
+        source,
+        triggerDetail,
+        reason,
+        liveRunCount,
+        liveRunLimit: policy.maxLiveRuns,
+      });
       return null;
     }
 
@@ -7733,6 +7841,16 @@ export function heartbeatService(db: Db) {
       },
     });
 
+    logOpsInfo("heartbeat.wakeup.queued", {
+      companyId: newRun.companyId,
+      agentId: newRun.agentId,
+      issueId,
+      source,
+      triggerDetail,
+      reason,
+      runId: newRun.id,
+      wakeupRequestId: newRun.wakeupRequestId,
+    });
     await startNextQueuedRunForAgent(agent.id);
 
     return newRun;

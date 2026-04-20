@@ -6,7 +6,7 @@ import path from "node:path";
 import { createServer } from "node:http";
 import { and, asc, eq, or } from "drizzle-orm";
 import { WebSocketServer } from "ws";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentWakeupRequests,
@@ -23,6 +23,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import { heartbeatService, resolveOperationsHeartbeatTarget } from "../services/heartbeat.ts";
+import { logger } from "../middleware/logger.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -99,7 +100,9 @@ async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 
   throw new Error("Timed out waiting for condition");
 }
 
-async function createControlledGatewayServer() {
+async function createControlledGatewayServer(options?: {
+  waitPayload?: Record<string, unknown>;
+}) {
   const server = createServer();
   const wss = new WebSocketServer({ server });
   const agentPayloads: Array<Record<string, unknown>> = [];
@@ -175,17 +178,19 @@ async function createControlledGatewayServer() {
         if (waitCount === 1) {
           await firstWaitGate;
         }
+        const payload = {
+          runId: frame.params?.runId,
+          status: "ok",
+          startedAt: 1,
+          endedAt: 2,
+          ...(options?.waitPayload ?? {}),
+        };
         socket.send(
           JSON.stringify({
             type: "res",
             id: frame.id,
             ok: true,
-            payload: {
-              runId: frame.params?.runId,
-              status: "ok",
-              startedAt: 1,
-              endedAt: 2,
-            },
+            payload,
           }),
         );
       }
@@ -238,6 +243,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
   }, 45_000);
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const activeRuns = await db
         .select({ id: heartbeatRuns.id })
@@ -278,6 +284,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const agentId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const heartbeat = heartbeatService(db);
+    const infoSpy = vi.spyOn(logger, "info");
 
     try {
       await db.insert(companies).values({
@@ -355,6 +362,16 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         );
 
       expect(skippedWakeups).toHaveLength(0);
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          opsEvent: true,
+          event: "heartbeat.wakeup.queued",
+          companyId,
+          agentId,
+          reason: "manual_probe",
+        }),
+        "heartbeat.wakeup.queued",
+      );
     } finally {
       await db
         .update(heartbeatRuns)
@@ -442,6 +459,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const gateway = await createControlledGatewayServer();
     const { companyId, issueId, ownerAgentId, followerAgentId } = await seedGatewaySlotOptimizerCompany(gateway.url);
     const heartbeat = heartbeatService(db);
+    const infoSpy = vi.spyOn(logger, "info");
 
     try {
       const firstRun = await heartbeat.wakeup(ownerAgentId, {
@@ -495,6 +513,17 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       expect(deferredWake?.reason).toBe("issue_execution_deferred");
       expect((deferredWake?.payload as Record<string, unknown> | null)?.issueId).toBe(issueId);
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          opsEvent: true,
+          event: "heartbeat.wakeup.deferred_issue_execution",
+          companyId,
+          agentId: followerAgentId,
+          issueId,
+          reason: "issue_assigned",
+        }),
+        "heartbeat.wakeup.deferred_issue_execution",
+      );
 
       gateway.releaseFirstWait();
 
@@ -528,6 +557,71 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 60_000);
+
+  it("logs live run limit skips as structured ops events", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+    const warnSpy = vi.spyOn(logger, "warn");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Limit Guard Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Limited Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: "ws://127.0.0.1:9",
+      },
+      runtimeConfig: {
+        heartbeat: {
+          maxLiveRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      status: "running",
+      contextSnapshot: { taskId: "seed-running" },
+    });
+
+    const wakeResult = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      payload: { probe: true },
+      contextSnapshot: { taskId: "manual-live-limit" },
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(wakeResult).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        opsEvent: true,
+        event: "heartbeat.wakeup.skipped_live_run_limit",
+        companyId,
+        agentId,
+        reason: "manual_probe",
+        liveRunLimit: 1,
+      }),
+      "heartbeat.wakeup.skipped_live_run_limit",
+    );
+  });
 
   it("does not steal valid running work when issue_comment_mentioned arrives", async () => {
     const gateway = await createControlledGatewayServer();
@@ -2737,6 +2831,111 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(comments).toHaveLength(1);
       expect(comments[0]?.body).toContain("Run completed without publishing an issue comment");
       expect(recoveryEvents).toHaveLength(1);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 20_000);
+
+  it("closes an in_review issue when a heartbeat-posted canonical QA summary satisfies the QA gate", async () => {
+    const qaSummary = [
+      "[CQ:pass] [EH:pass] [TC:pass] [CM:pass] [DOC:pass]",
+      "[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]",
+      "[QA PASS]",
+      "[RELEASE CONFIRMED]",
+    ].join("\n");
+    const gateway = await createControlledGatewayServer({
+      waitPayload: {
+        summary: qaSummary,
+        result: qaSummary,
+      },
+    });
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "QA Close Co",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "QA and Release Engineer",
+        role: "qa",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "QA runtime close path",
+        status: "in_review",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const run = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_status_changed",
+        payload: { issueId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_status_changed",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+
+      expect(run).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+      gateway.releaseFirstWait();
+
+      await waitFor(async () => {
+        const issue = await db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null);
+        return issue?.status === "done";
+      });
+
+      const persistedIssue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      const persistedComments = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId))
+        .orderBy(asc(issueComments.createdAt));
+
+      expect(persistedIssue?.status).toBe("done");
+      expect(persistedComments.some((comment) => comment.body.includes("[QA PASS]"))).toBe(true);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

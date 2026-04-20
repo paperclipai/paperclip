@@ -1,12 +1,17 @@
 #!/usr/bin/env -S node --import tsx
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.mjs";
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
+import { resolveDevRunnerControlPort } from "../packages/shared/src/dev-runner-control.ts";
+import {
+  startDevRunnerControlServer,
+  type StartedDevRunnerControlServer,
+} from "../server/src/dev-runner-control-server.ts";
 import { createManagedChildSpawnOptions, signalChildProcessTree } from "../server/src/dev-runner-process.ts";
 import { selectAvailableDevRunnerPort } from "../server/src/dev-server-ports.ts";
 import { installStdinErrorHandler } from "../server/src/stdin-error-handler.ts";
@@ -28,6 +33,7 @@ const runtimePortPollIntervalMs = 100;
 const runtimePortPollTimeoutMs = 15_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
+const devServerControlFilePath = path.join(repoRoot, ".paperclip", "dev-server-control.json");
 
 const watchedDirectories = [
   "cli",
@@ -61,6 +67,7 @@ const ignoredDirectoryNames = new Set([
 
 const ignoredRelativePaths = new Set([
   ".paperclip/dev-server-status.json",
+  ".paperclip/dev-server-control.json",
 ]);
 
 const tailscaleAuthFlagNames = new Set([
@@ -100,6 +107,7 @@ env.PAPERCLIP_DEV_SERVER_RUNTIME_FILE = devServerRuntimeFilePath;
 
 if (mode === "dev") {
   env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
+  env.PAPERCLIP_DEV_SERVER_CONTROL_FILE = devServerControlFilePath;
   env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
 }
 
@@ -124,6 +132,13 @@ const devService = createDevServiceIdentity({
   tailscaleAuth,
   port: requestedServerPort,
 });
+
+// Test-only fast path for launch smoke checks. This runs after module loading and
+// CLI/env normalization, but before any filesystem or subprocess side effects.
+if (env.PAPERCLIP_DEV_RUNNER_SMOKE_EXIT === "1") {
+  console.log(`[paperclip] dev runner smoke exit (${devService.serviceName})`);
+  process.exit(0);
+}
 
 const existingRunner = await findAdoptableLocalService({
   serviceKey: devService.serviceKey,
@@ -153,6 +168,8 @@ let scanTimer: ReturnType<typeof setInterval> | null = null;
 let autoRestartTimer: ReturnType<typeof setInterval> | null = null;
 let currentServerPort: number | null = null;
 let currentServerUrl: string | null = null;
+let controlServer: StartedDevRunnerControlServer | null = null;
+let currentControlPort: number | null = null;
 const removeStdinErrorHandler = installStdinErrorHandler(stdin, { label: "dev-runner" });
 
 function toError(error: unknown, context = "Dev runner command failed") {
@@ -290,6 +307,114 @@ function writeDevServerStatus() {
 function clearDevServerStatus() {
   if (mode !== "dev") return;
   rmSync(devServerStatusFilePath, { force: true });
+}
+
+function readPendingDevServerControlAction() {
+  if (mode !== "dev" || !existsSync(devServerControlFilePath)) return null;
+
+  try {
+    if (statSync(devServerControlFilePath).size > 8 * 1024) {
+      rmSync(devServerControlFilePath, { force: true });
+      return null;
+    }
+    const raw = JSON.parse(readFileSync(devServerControlFilePath, "utf8")) as { action?: unknown };
+    return raw.action === "restart" ? "restart" : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearDevServerControl() {
+  if (mode !== "dev") return;
+  rmSync(devServerControlFilePath, { force: true });
+}
+
+function getDevRunnerControlHost() {
+  if (env.HOST === "0.0.0.0" || env.HOST === "::") {
+    return env.HOST;
+  }
+  return "127.0.0.1";
+}
+
+function getAllowedDevRunnerOrigins() {
+  const activePort = currentServerPort ?? requestedServerPort;
+  const origins = new Set<string>([
+    `http://127.0.0.1:${activePort}`,
+    `http://localhost:${activePort}`,
+    `http://[::1]:${activePort}`,
+  ]);
+
+  if (currentServerUrl) {
+    try {
+      origins.add(new URL(currentServerUrl).origin);
+    } catch {
+      // Ignore malformed runtime URLs.
+    }
+  }
+
+  return [...origins];
+}
+
+function getOriginPort(origin: URL) {
+  if (origin.port) {
+    const parsed = Number.parseInt(origin.port, 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+  if (origin.protocol === "http:") return 80;
+  if (origin.protocol === "https:") return 443;
+  return null;
+}
+
+function isAllowedPrivateNetworkDevOrigin(origin: string) {
+  if (env.HOST !== "0.0.0.0" && env.HOST !== "::") return false;
+
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
+    return getOriginPort(parsed) === (currentServerPort ?? requestedServerPort);
+  } catch {
+    return false;
+  }
+}
+
+async function ensureDevRunnerControlServer(controlPort?: number) {
+  if (mode !== "dev") return;
+  const nextControlPort = controlPort ?? resolveDevRunnerControlPort(currentServerPort ?? requestedServerPort);
+  if (controlServer && currentControlPort === nextControlPort) {
+    return;
+  }
+
+  if (controlServer) {
+    await controlServer.close();
+    controlServer = null;
+    currentControlPort = null;
+  }
+
+  controlServer = await startDevRunnerControlServer({
+    port: nextControlPort,
+    host: getDevRunnerControlHost(),
+    getAllowedOrigins: getAllowedDevRunnerOrigins,
+    isOriginAllowed: isAllowedPrivateNetworkDevOrigin,
+    onRestartRequested: async () => {
+      if (restartInFlight || !child) return;
+      console.log("[paperclip] restart requested from board UI; restarting dev server...");
+      await restartServerChild("Requested dev-server restart failed");
+    },
+    onError: (error) => {
+      const err = toError(error, "Dev-runner control server request failed");
+      process.stderr.write(`${err.stack ?? err.message}\n`);
+    },
+  });
+  currentControlPort = controlServer.listenPort;
+}
+
+async function stopDevRunnerControlServer() {
+  if (!controlServer) return;
+  await controlServer.close();
+  controlServer = null;
+  currentControlPort = null;
 }
 
 async function updateDevServiceRecord(extra?: Record<string, unknown>) {
@@ -535,6 +660,7 @@ async function syncCurrentServerRuntime() {
     if (runtime) {
       currentServerPort = runtime.listenPort;
       currentServerUrl = runtime.apiUrl ?? `http://127.0.0.1:${runtime.listenPort}`;
+      await ensureDevRunnerControlServer();
       await updateDevServiceRecord({ requestedPort: runtime.requestedPort });
       return;
     }
@@ -542,6 +668,7 @@ async function syncCurrentServerRuntime() {
     await new Promise((resolve) => setTimeout(resolve, runtimePortPollIntervalMs));
   }
 
+  await ensureDevRunnerControlServer();
   await updateDevServiceRecord();
 }
 
@@ -572,6 +699,9 @@ async function startServerChild() {
   await buildPluginSdk();
   clearDevServerRuntimeFile();
   const portSelection = await selectAvailableDevRunnerPort(requestedServerPort);
+  currentServerPort = portSelection.selectedPort;
+  currentServerUrl = `http://127.0.0.1:${portSelection.selectedPort}`;
+  await ensureDevRunnerControlServer(portSelection.controlPort);
   const childEnv: NodeJS.ProcessEnv = {
     ...env,
     PORT: String(portSelection.selectedPort),
@@ -579,7 +709,7 @@ async function startServerChild() {
 
   if (portSelection.selectedPort !== requestedServerPort) {
     console.log(
-      `[paperclip] requested port ${requestedServerPort} is busy; starting child on ${portSelection.selectedPort} (hmr ${portSelection.hmrPort})`,
+      `[paperclip] requested port ${requestedServerPort} is busy; starting child on ${portSelection.selectedPort} (hmr ${portSelection.hmrPort}, control ${portSelection.controlPort})`,
     );
   }
 
@@ -628,29 +758,8 @@ async function startServerChild() {
   await syncCurrentServerRuntime();
 }
 
-async function maybeAutoRestartChild() {
-  if (mode !== "dev" || restartInFlight || !child) return;
-  if (dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
-
+async function restartServerChild(errorContext: string) {
   restartInFlight = true;
-  let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
-  try {
-    health = await getDevHealthPayload();
-  } catch {
-    restartInFlight = false;
-    return;
-  }
-
-  const devServer = health?.devServer;
-  if (!devServer?.enabled || devServer.autoRestartEnabled !== true) {
-    restartInFlight = false;
-    return;
-  }
-  if ((devServer.activeRunCount ?? 0) > 0) {
-    restartInFlight = false;
-    return;
-  }
-
   try {
     await maybePreflightMigrations({
       autoApply: true,
@@ -660,12 +769,40 @@ async function maybeAutoRestartChild() {
     await stopChildForRestart();
     await startServerChild();
   } catch (error) {
-    const err = toError(error, "Auto-restart failed");
+    const err = toError(error, errorContext);
     process.stderr.write(`${err.stack ?? err.message}\n`);
     process.exit(1);
   } finally {
     restartInFlight = false;
   }
+}
+
+async function maybeAutoRestartChild() {
+  if (mode !== "dev" || restartInFlight || !child) return;
+  if (readPendingDevServerControlAction() === "restart") {
+    clearDevServerControl();
+    console.log("[paperclip] restart requested from board UI; restarting dev server...");
+    await restartServerChild("Requested dev-server restart failed");
+    return;
+  }
+  if (dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
+
+  let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
+  try {
+    health = await getDevHealthPayload();
+  } catch {
+    return;
+  }
+
+  const devServer = health?.devServer;
+  if (!devServer?.enabled || devServer.autoRestartEnabled !== true) {
+    return;
+  }
+  if ((devServer.activeRunCount ?? 0) > 0) {
+    return;
+  }
+
+  await restartServerChild("Auto-restart failed");
 }
 
 function installDevIntervals() {
@@ -696,6 +833,8 @@ async function shutdown(signal: NodeJS.Signals) {
   removeStdinErrorHandler();
   clearDevIntervals();
   clearDevServerStatus();
+  clearDevServerControl();
+  await stopDevRunnerControlServer();
   await removeLocalServiceRegistryRecord(devService.serviceKey);
   clearDevServerRuntimeFile();
 
@@ -721,6 +860,7 @@ process.on("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
+clearDevServerControl();
 await maybePreflightMigrations();
 await startServerChild();
 installDevIntervals();

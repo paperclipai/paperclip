@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { BookOpen, Moon, Settings, Sun } from "lucide-react";
 import { Link, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
@@ -23,9 +23,11 @@ import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useTheme } from "../context/ThemeContext";
+import { useToast } from "../context/ToastContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
+import { devRunnerApi } from "../api/devRunner";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
 import {
@@ -53,6 +55,7 @@ export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
   const { togglePanelVisible } = usePanel();
+  const { pushToast } = useToast();
   const {
     companies,
     loading: companiesLoading,
@@ -70,6 +73,7 @@ export function Layout() {
   const lastMainScrollTop = useRef(0);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [instanceSettingsTarget, setInstanceSettingsTarget] = useState<string>(() => readRememberedInstanceSettingsPath());
+  const [devRestartRequested, setDevRestartRequested] = useState(false);
   const nextTheme = theme === "dark" ? "light" : "dark";
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
@@ -92,6 +96,20 @@ export function Layout() {
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
   }).data?.keyboardShortcuts === true;
+  const restartDevServer = useMutation({
+    mutationFn: () => devRunnerApi.restart(),
+    onSuccess: () => {
+      setDevRestartRequested(true);
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Failed to request a dev-server restart.";
+      pushToast({
+        title: "Dev-server restart failed",
+        body: message,
+        tone: "error",
+      });
+    },
+  });
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
@@ -266,6 +284,11 @@ export function Layout() {
     }
   }, [location.hash, location.pathname, location.search]);
 
+  useEffect(() => {
+    if (health?.devServer?.restartRequired === true) return;
+    setDevRestartRequested(false);
+  }, [health?.devServer?.restartRequired]);
+
   return (
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
@@ -281,7 +304,12 @@ export function Layout() {
         Skip to Main Content
       </a>
       <WorktreeBanner />
-      <DevRestartBanner devServer={health?.devServer} />
+      <DevRestartBanner
+        devServer={health?.devServer}
+        onRestart={() => restartDevServer.mutate()}
+        restartPending={restartDevServer.isPending}
+        restartRequested={devRestartRequested}
+      />
       <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-hidden")}>
         {isMobile && sidebarOpen && (
           <button

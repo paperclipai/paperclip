@@ -31,6 +31,19 @@ type QaVerificationMap = {
   smoke: IssueQaReviewDimension;
 };
 
+export type QaSummaryParseResult = {
+  dimensions: QaDimensionMap;
+  hasSummary: boolean;
+  overall: IssueQaReviewOverall;
+};
+
+export type QaVerificationParseResult = {
+  verification: QaVerificationMap;
+  hasVerification: boolean;
+  complete: boolean;
+  overall: IssueQaReviewOverall;
+};
+
 function defaultDimensions(): QaDimensionMap {
   return {
     codeQuality: "unknown",
@@ -54,7 +67,7 @@ function summaryIsComplete(dimensions: QaDimensionMap) {
   return Object.values(dimensions).every((value) => value !== "unknown");
 }
 
-function toOverall(dimensions: QaDimensionMap): IssueQaReviewOverall {
+export function qaSummaryOverall(dimensions: QaDimensionMap): IssueQaReviewOverall {
   const values = Object.values(dimensions);
   if (values.includes("fail")) return "fail";
   if (values.every((value) => value === "pass" || value === "na")) return "pass";
@@ -66,7 +79,8 @@ function parseSummaryDimensions(body: string | null | undefined) {
   const dimensions = defaultDimensions();
   if (!body) return { dimensions, hasSummary: false };
   const normalized = String(body);
-  for (const match of normalized.matchAll(QA_SUMMARY_TOKEN_REGEX)) {
+  const summaryRegex = new RegExp(QA_SUMMARY_TOKEN_REGEX);
+  for (const match of normalized.matchAll(summaryRegex)) {
     const token = match[1]?.toUpperCase();
     const state = (match[2]?.toLowerCase() ?? "unknown") as IssueQaReviewDimension;
     if (token === "CQ") dimensions.codeQuality = state;
@@ -78,12 +92,21 @@ function parseSummaryDimensions(body: string | null | undefined) {
   return { dimensions, hasSummary: summaryIsComplete(dimensions) };
 }
 
+export function parseQaSummary(body: string | null | undefined): QaSummaryParseResult {
+  const parsed = parseSummaryDimensions(body);
+  return {
+    ...parsed,
+    overall: qaSummaryOverall(parsed.dimensions),
+  };
+}
+
 function parseVerificationDimensions(body: string | null | undefined) {
   const verification = defaultVerification();
   let hasVerification = false;
   if (!body) return { verification, hasVerification };
   const normalized = String(body);
-  for (const match of normalized.matchAll(QA_VERIFICATION_TOKEN_REGEX)) {
+  const verificationRegex = new RegExp(QA_VERIFICATION_TOKEN_REGEX);
+  for (const match of normalized.matchAll(verificationRegex)) {
     hasVerification = true;
     const token = match[1]?.toUpperCase();
     const state = (match[2]?.toLowerCase() ?? "unknown") as IssueQaReviewDimension;
@@ -95,11 +118,11 @@ function parseVerificationDimensions(body: string | null | undefined) {
   return { verification, hasVerification };
 }
 
-function verificationIsComplete(verification: QaVerificationMap) {
+export function qaVerificationIsComplete(verification: QaVerificationMap) {
   return Object.values(verification).every((value) => value !== "unknown");
 }
 
-function verificationOverall(verification: QaVerificationMap): IssueQaReviewOverall {
+export function qaVerificationOverall(verification: QaVerificationMap): IssueQaReviewOverall {
   const requiredStates = [verification.typecheck, verification.tests, verification.build];
   if (requiredStates.some((value) => value === "fail" || value === "warn" || value === "na")) return "fail";
   if (verification.smoke === "fail" || verification.smoke === "warn") return "fail";
@@ -107,6 +130,37 @@ function verificationOverall(verification: QaVerificationMap): IssueQaReviewOver
     return "pass";
   }
   return "unknown";
+}
+
+export function parseQaVerification(body: string | null | undefined): QaVerificationParseResult {
+  const parsed = parseVerificationDimensions(body);
+  return {
+    ...parsed,
+    complete: qaVerificationIsComplete(parsed.verification),
+    overall: qaVerificationOverall(parsed.verification),
+  };
+}
+
+export function qaCommentHasQaPassMarker(body: string | null | undefined) {
+  return QA_PASS_REGEX.test(body ?? "");
+}
+
+export function qaCommentHasReleaseConfirmedMarker(body: string | null | undefined) {
+  return RELEASE_CONFIRMED_REGEX.test(body ?? "");
+}
+
+export function sortIssueCommentsDesc(a: Pick<IssueComment, "createdAt" | "id">, b: Pick<IssueComment, "createdAt" | "id">) {
+  return sortCommentsDesc(a, b);
+}
+
+export function qaCommentHasFailingReview(body: string | null | undefined) {
+  const parsed = parseQaSummary(body);
+  return parsed.hasSummary && parsed.overall === "fail";
+}
+
+export function qaCommentHasFailingVerification(body: string | null | undefined) {
+  const parsed = parseQaVerification(body);
+  return parsed.complete && parsed.overall !== "pass";
 }
 
 function sortCommentsDesc(a: Pick<IssueComment, "createdAt" | "id">, b: Pick<IssueComment, "createdAt" | "id">) {
@@ -164,14 +218,14 @@ export function buildIssueQaGate(input: {
   const qaComments = [...input.qaComments].sort(sortCommentsDesc);
   const latestQaComment = qaComments[0] ?? null;
   const latestBody = latestQaComment?.body ?? "";
-  const latestSummary = parseSummaryDimensions(latestBody);
-  const latestVerification = parseVerificationDimensions(latestBody);
+  const latestSummary = parseQaSummary(latestBody);
+  const latestVerification = parseQaVerification(latestBody);
   const summaryDimensions = latestSummary.dimensions;
   const hasSummary = latestSummary.hasSummary;
   const lastQaSummaryAt = latestQaComment && hasSummary ? new Date(latestQaComment.createdAt) : null;
   const verificationStatus = latestVerification.verification;
 
-  let overall = toOverall(summaryDimensions);
+  let overall = latestSummary.overall;
   const latestDecisionOutcome = input.latestDecisionOutcome ?? null;
   if (latestDecisionOutcome === "changes_requested") {
     overall = "fail";
@@ -191,10 +245,10 @@ export function buildIssueQaGate(input: {
     if (!latestQaComment) {
       missingRequirements.push("qa_gate_missing_qa_comment");
     } else {
-      if (!QA_PASS_REGEX.test(latestBody)) {
+      if (!qaCommentHasQaPassMarker(latestBody)) {
         missingRequirements.push("qa_gate_missing_qa_pass");
       }
-      if (!RELEASE_CONFIRMED_REGEX.test(latestBody)) {
+      if (!qaCommentHasReleaseConfirmedMarker(latestBody)) {
         missingRequirements.push("qa_gate_missing_release_confirmation");
       }
       if (!hasSummary) {
@@ -202,9 +256,9 @@ export function buildIssueQaGate(input: {
       } else if (overall === "fail") {
         missingRequirements.push("qa_gate_failing_review");
       }
-      if (!verificationIsComplete(verificationStatus)) {
+      if (!latestVerification.complete) {
         missingRequirements.push("qa_gate_missing_verification");
-      } else if (verificationOverall(verificationStatus) !== "pass") {
+      } else if (latestVerification.overall !== "pass") {
         missingRequirements.push("qa_gate_failing_verification");
       }
     }

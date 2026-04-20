@@ -36,6 +36,7 @@ export const companiesApi = {
         | "status"
         | "roadmapPath"
         | "budgetMonthlyCents"
+        | "releaseGateQaAgentId"
         | "requireBoardApprovalForNewAgents"
         | "feedbackDataSharingEnabled"
         | "dailyExecutiveSummaryEnabled"

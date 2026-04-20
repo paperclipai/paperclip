@@ -7,6 +7,7 @@ import {
   DEPLOYMENT_MODES,
   SECRET_PROVIDERS,
   STORAGE_PROVIDERS,
+  defaultLoggingRotationConfig,
   type AuthBaseUrlMode,
   type DeploymentExposure,
   type DeploymentMode,
@@ -179,6 +180,7 @@ function quickstartDefaultsFromEnv(): {
     logging: {
       mode: "file",
       logDir: resolveDefaultLogsDir(instanceId),
+      rotation: { ...defaultLoggingRotationConfig },
     },
     server: {
       deploymentMode,
@@ -438,7 +440,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     }
 
     p.log.step(pc.bold("Logging"));
-    logging = await promptLogging();
+    logging = await promptLogging(logging);
 
     p.log.step(pc.bold("Server"));
     ({ server, auth } = await promptServer({ currentServer: server, currentAuth: auth }));

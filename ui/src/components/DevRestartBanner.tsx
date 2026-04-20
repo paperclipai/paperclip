@@ -1,4 +1,5 @@
 import { AlertTriangle, RotateCcw, TimerReset } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import type { DevServerHealthStatus } from "../api/health";
 
 function formatRelativeTimestamp(value: string | null): string | null {
@@ -26,11 +27,25 @@ function describeReason(devServer: DevServerHealthStatus): string {
   return "backend files changed since this server booted";
 }
 
-export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthStatus }) {
+export function DevRestartBanner({
+  devServer,
+  onRestart,
+  restartPending = false,
+  restartRequested = false,
+}: {
+  devServer?: DevServerHealthStatus;
+  onRestart?: () => void;
+  restartPending?: boolean;
+  restartRequested?: boolean;
+}) {
   if (!devServer?.enabled || !devServer.restartRequired) return null;
 
   const changedAt = formatRelativeTimestamp(devServer.lastChangedAt);
   const sample = devServer.changedPathsSample.slice(0, 3);
+  const interruptWarning =
+    devServer.activeRunCount > 0
+      ? `Restarting now will interrupt ${devServer.activeRunCount} live run${devServer.activeRunCount === 1 ? "" : "s"}.`
+      : null;
 
   return (
     <div className="border-b border-amber-300/60 bg-amber-50 text-amber-950 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-100">
@@ -65,23 +80,50 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2 text-xs font-medium">
-          {devServer.waitingForIdle ? (
-            <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">
-              <TimerReset className="h-3.5 w-3.5" />
-              <span>Waiting for {devServer.activeRunCount} live run{devServer.activeRunCount === 1 ? "" : "s"} to finish</span>
-            </div>
-          ) : devServer.autoRestartEnabled ? (
-            <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">
-              <RotateCcw className="h-3.5 w-3.5" />
-              <span>Auto-restart will trigger when the instance is idle</span>
-            </div>
-          ) : (
-            <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">
-              <RotateCcw className="h-3.5 w-3.5" />
-              <span>Restart <code>pnpm dev:once</code> after the active work is safe to interrupt</span>
-            </div>
-          )}
+        <div className="flex shrink-0 flex-col items-stretch gap-2 md:items-end">
+          <div className="flex items-center gap-2 text-xs font-medium">
+            {restartPending || restartRequested ? (
+              <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">
+                <RotateCcw className="h-3.5 w-3.5 animate-spin" />
+                <span>Restart requested. Waiting for the dev runner to restart the server</span>
+              </div>
+            ) : devServer.waitingForIdle ? (
+              <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">
+                <TimerReset className="h-3.5 w-3.5" />
+                <span>Waiting for {devServer.activeRunCount} live run{devServer.activeRunCount === 1 ? "" : "s"} to finish</span>
+              </div>
+            ) : devServer.autoRestartEnabled ? (
+              <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>Auto-restart will trigger when the instance is idle</span>
+              </div>
+            ) : (
+              <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>Use Restart now to reboot the dev server from the board</span>
+              </div>
+            )}
+          </div>
+
+          {onRestart ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="border-amber-400/70 bg-amber-100/80 text-amber-950 hover:bg-amber-200 dark:border-amber-300/25 dark:bg-amber-100/10 dark:text-amber-50 dark:hover:bg-amber-100/20"
+              disabled={restartPending || restartRequested}
+              onClick={onRestart}
+            >
+              <RotateCcw className={`h-3.5 w-3.5${restartPending ? " animate-spin" : ""}`} />
+              <span>{restartPending ? "Requesting..." : restartRequested ? "Restart requested" : "Restart now"}</span>
+            </Button>
+          ) : null}
+
+          {interruptWarning ? (
+            <p className="max-w-xs text-[11px] text-amber-900/80 dark:text-amber-100/75 md:text-right">
+              {interruptWarning}
+            </p>
+          ) : null}
         </div>
       </div>
     </div>

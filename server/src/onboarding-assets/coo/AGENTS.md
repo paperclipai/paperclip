@@ -39,6 +39,12 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 - Successor issues linked by `recovered_by` are exceptional board-controlled recovery only.
 - If a successor issue is truly necessary, escalate to the board instead of creating it yourself.
 - Generic bug-report wording like "verify", "test", or "restaurant owner trust" is not enough to make work QA-owned; only explicit QA/release intent or a real `In Review` handoff should route engineering issues to QA.
+- A source issue linked by `recovered_by` may remain `blocked` as a valid recovery state when the board explicitly created a successor.
+- Same-issue recovery is the default for stuck work. Do not create continuation issues as routine recovery.
+- You may autonomously correct ownership on the same issue when specialist routing or truthful WIP requires it.
+- Successor issues linked by `recovered_by` are exceptional board-controlled recovery only.
+- If a successor issue is truly necessary, escalate to the board instead of creating it yourself.
+- Generic bug-report wording like "verify", "test", or "restaurant owner trust" is not enough to make work QA-owned; only explicit QA/release intent or a real `In Review` handoff should route engineering issues to QA.
 
 ## Ownership
 

@@ -45,6 +45,11 @@ function buildLegacyConfig(sharedRoot: string) {
     logging: {
       mode: "file" as const,
       logDir: path.join(sharedRoot, "logs"),
+      rotation: {
+        enabled: true,
+        maxFileSizeMb: 100,
+        maxFiles: 10,
+      },
     },
     server: {
       deploymentMode: "local_trusted" as const,
@@ -242,6 +247,11 @@ describe("worktree config repair", () => {
           logging: {
             mode: "file",
             logDir: path.join(currentInstanceRoot, "logs"),
+            rotation: {
+              enabled: true,
+              maxFileSizeMb: 100,
+              maxFiles: 10,
+            },
           },
           server: {
             deploymentMode: "local_trusted",
@@ -358,6 +368,11 @@ describe("worktree config repair", () => {
           logging: {
             mode: "file",
             logDir: path.join(instanceRoot, "logs"),
+            rotation: {
+              enabled: true,
+              maxFileSizeMb: 100,
+              maxFiles: 10,
+            },
           },
           server: {
             deploymentMode: "local_trusted",

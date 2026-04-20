@@ -29,15 +29,15 @@ import {
   updateIssueSchema,
   type IssueComment,
   getClosedIsolatedExecutionWorkspaceMessage,
-  isEligibleQaAgentStatus,
-  isClosedIsolatedExecutionWorkspace,
   resolveReleaseGateQaAgent as resolveSharedReleaseGateQaAgent,
+  isClosedIsolatedExecutionWorkspace,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
+import * as services from "../services/index.js";
 import {
   accessService,
   agentService,
@@ -57,6 +57,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
+import { logOpsInfo, logOpsWarn } from "../ops-log.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
@@ -74,10 +75,19 @@ import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } fr
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { issueMergeService } from "../services/issue-merge.js";
 import { getAgentNotInvokableStatus, isAgentNotInvokableWakeupError } from "../services/wakeup-errors.js";
-import { buildIssueQaGate, isDeliveryScopedAssigneeRole, issueQaGateReasonMessage } from "../services/qa-gate.js";
+import {
+  buildIssueQaGate,
+  isDeliveryScopedAssigneeRole,
+  issueQaGateReasonMessage,
+  parseQaSummary,
+  parseQaVerification,
+  qaCommentHasFailingReview,
+  qaCommentHasFailingVerification,
+} from "../services/qa-gate.js";
 import { buildIssueRoutingText } from "../services/issue-routing-heuristics.js";
 import { computeIssueBoardStateMap } from "../services/issue-board-state.js";
 import { synthesizeWorkflowBoardState } from "../services/issue-workflows.js";
+import { finalizeQaValidatedIssueFromComment } from "../services/issue-qa-finalization.js";
 import {
   classifyIssueTruthFromCommentBody,
   hasReadyForQaTruthFromCommentBody,
@@ -92,6 +102,7 @@ const QA_ROUTE_COMMENT_MARKER = "[qa-routing]";
 const QA_ASSIGNMENT_REQUIRED_COMMENT_MARKER = "[qa-assignment-required]";
 const RECOVERY_SUCCESSOR_NOTE_MARKER = "[recovery-successor-note]";
 const QA_MERGE_BLOCKED_MARKER = "[merge-blocked]";
+const SECURITY_FAIL_MARKER_REGEX = /\[(SECURITY FAIL|SECURITY BLOCKED)\]/i;
 const QA_ASSIGNMENT_REQUIRED_COMMENT_LOOKBACK = 25;
 const QA_PASS_MARKER_REGEX = /\[QA PASS\]/i;
 const RELEASE_CONFIRMED_MARKER_REGEX = /\[RELEASE CONFIRMED\]/i;
@@ -176,6 +187,14 @@ export function issueRoutes(
   const feedback = feedbackService(db);
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
+  const companyServiceFactory =
+    Object.prototype.hasOwnProperty.call(services, "companyService")
+      ? services.companyService
+      : undefined;
+  const companiesSvc =
+    typeof companyServiceFactory === "function"
+      ? companyServiceFactory(db)
+      : { getById: async () => null as null };
   const issueMerge = issueMergeService();
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
@@ -186,6 +205,7 @@ export function issueRoutes(
   const documentsSvc = documentService(db);
   const routinesSvc = routineService(db);
   const feedbackExportService = opts?.feedbackExportService;
+  type PersistedIssue = NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -372,30 +392,42 @@ export function issueRoutes(
     return promise;
   }
 
-  async function listEligibleQaAgents(companyId: string) {
-    if (typeof (agentsSvc as { list?: unknown }).list !== "function") return [];
-    const agents = await Promise.resolve(
-      (agentsSvc as {
-        list: (id: string) => Promise<Array<{
-          id: string;
-          companyId: string;
-          role?: string | null;
-          status?: string | null;
-          name?: string | null;
-          title?: string | null;
-        }>>;
-      }).list(companyId),
-    );
-    return agents.filter((agent) =>
-      agent.companyId === companyId
-      && agent.role === "qa"
-      && isEligibleQaAgentStatus(agent.status ?? null)
-    );
-  }
-
   async function resolveReleaseGateQaAgent(companyId: string) {
-    const eligibleQaAgents = await listEligibleQaAgents(companyId);
-    return resolveSharedReleaseGateQaAgent(eligibleQaAgents);
+    const [company, companyAgents] = await Promise.all([
+      companiesSvc.getById(companyId),
+      typeof (agentsSvc as { list?: unknown }).list === "function"
+        ? Promise.resolve(
+            (agentsSvc as {
+              list: (id: string) => Promise<Array<{
+                id: string;
+                companyId: string;
+                role?: string | null;
+                status?: string | null;
+                name?: string | null;
+                title?: string | null;
+              }>>;
+            }).list(companyId),
+          )
+        : Promise.resolve([]),
+    ]);
+
+    const qaAgents = companyAgents.filter((agent) =>
+      agent.companyId === companyId
+      && agent.role === "qa");
+    const resolution = resolveSharedReleaseGateQaAgent(qaAgents, {
+      configuredAgentId: company?.releaseGateQaAgentId ?? null,
+    });
+    return {
+      ...resolution,
+      blockingReason:
+        resolution.resolution === "configured_unavailable"
+          ? "Configured release-gate QA owner is unavailable."
+          : resolution.resolution === "none"
+            ? "No eligible QA agent is available for the release gate."
+            : resolution.resolution === "ambiguous"
+              ? "Release-gate QA ownership is ambiguous and must be configured explicitly."
+              : null,
+    };
   }
 
   function sameActivityValue(left: unknown, right: unknown): boolean {
@@ -442,11 +474,15 @@ export function issueRoutes(
 
   function buildQaAssignmentRequiredComment(input: {
     eligibleQaAgents: Array<{ name?: string | null }>;
+    blockingReason?: string | null;
   }) {
     const reason =
-      input.eligibleQaAgents.length === 0
-        ? "No healthy QA agent is currently available for automatic routing."
-        : `Automatic routing is ambiguous because ${input.eligibleQaAgents.length} healthy QA agents are currently eligible.`;
+      input.blockingReason
+      ?? (
+        input.eligibleQaAgents.length === 0
+          ? "No healthy QA agent is currently available for automatic routing."
+          : `Automatic routing is ambiguous because ${input.eligibleQaAgents.length} healthy QA agents are currently eligible.`
+      );
     const eligibleQaNames = input.eligibleQaAgents
       .map((agent) => agent.name?.trim())
       .filter((name): name is string => Boolean(name));
@@ -456,13 +492,14 @@ export function issueRoutes(
       "Workflow gate: requires QA assignee before entering in_review.",
       reason,
       eligibleQaNames.length > 0 ? `Eligible QA agents: ${eligibleQaNames.join(", ")}.` : null,
-      "Board action required: assign a single QA owner or reduce the eligible QA roster, then resume QA routing.",
+      "Board action required: configure the release-gate QA owner or reduce the eligible QA roster, then resume QA routing.",
     ].filter((line): line is string => Boolean(line)).join("\n");
   }
 
   async function maybeAddQaAssignmentRequiredComment(input: {
     issueId: string;
     eligibleQaAgents: Array<{ name?: string | null }>;
+    blockingReason?: string | null;
   }) {
     type QaAssignmentCommentRecord = {
       body: string | null | undefined;
@@ -547,6 +584,8 @@ export function issueRoutes(
       title?: string | null;
       description?: string | null;
       executionPolicy?: unknown;
+      workflowTemplateKey?: string | null;
+      workflowLaneRole?: string | null;
     },
   >(input: {
     issue: TIssue;
@@ -560,6 +599,9 @@ export function issueRoutes(
   }) {
     if (input.issue.status !== "in_progress") {
       return { issue: input.issue, qaAutoRouting: null as { agentId: string; agentName: string | null } | null };
+    }
+    if (input.issue.workflowTemplateKey || input.issue.workflowLaneRole) {
+      return { issue: input.issue, qaAutoRouting: null };
     }
     if (input.issue.assigneeAgentId == null || input.comment.authorAgentId !== input.issue.assigneeAgentId) {
       return { issue: input.issue, qaAutoRouting: null };
@@ -587,6 +629,7 @@ export function issueRoutes(
       await maybeAddQaAssignmentRequiredComment({
         issueId: input.issue.id,
         eligibleQaAgents: qaResolution.eligibleQaAgents,
+        blockingReason: qaResolution.blockingReason,
       });
       return { issue: input.issue, qaAutoRouting: null };
     }
@@ -821,6 +864,120 @@ export function issueRoutes(
     };
   }
 
+  async function validateQaVerdictComment(input: {
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      identifier?: string | null;
+      title?: string;
+      projectId?: string | null;
+      executionState?: { lastDecisionOutcome?: IssueExecutionDecisionOutcome | null } | null;
+      workflowTemplateKey?: string | null;
+      workflowLaneRole?: string | null;
+    };
+    body: string;
+    actor: {
+      actorType: "agent" | "user";
+      actorId: string;
+      agentId: string | null;
+    };
+  }): Promise<null | { reasonCode?: IssueQaGateReasonCode; error: string }> {
+    const hasQaPassMarker = QA_PASS_MARKER_REGEX.test(input.body);
+    const hasReleaseConfirmedMarker = RELEASE_CONFIRMED_MARKER_REGEX.test(input.body);
+    if (!hasQaPassMarker && !hasReleaseConfirmedMarker) return null;
+
+    const assigneeRole = input.issue.assigneeAgentId
+      ? await getAgentRole(input.issue.assigneeAgentId, input.issue.companyId)
+      : null;
+    const projectName =
+      input.issue.projectId
+        ? (await projectsSvc.getById(input.issue.projectId).catch(() => null))?.name ?? null
+        : null;
+    const latestDecisionOutcome =
+      input.issue.executionState && typeof input.issue.executionState === "object"
+        ? (input.issue.executionState.lastDecisionOutcome ?? null)
+        : null;
+    const qaScope = buildIssueQaGate({
+      issue: { status: input.issue.status as IssueStatus },
+      assigneeRole,
+      issueText: buildIssueRoutingText({
+        identifier: input.issue.identifier ?? null,
+        title: input.issue.title ?? "",
+        projectName,
+      }),
+      qaComments: [],
+      latestDecisionOutcome,
+    });
+    if (!qaScope.isDeliveryScoped && input.issue.workflowLaneRole !== "qa") {
+      return null;
+    }
+
+    const qaResolution = await resolveReleaseGateQaAgent(input.issue.companyId);
+    if (!qaResolution.releaseGateQaAgent) {
+      return {
+        error:
+          qaResolution.blockingReason
+          ?? "No authorized release-gate QA owner is available for this company.",
+      };
+    }
+    if (input.actor.agentId !== qaResolution.releaseGateQaAgent.id) {
+      return {
+        error: "Only the authorized release-gate QA agent can post [QA PASS] or [RELEASE CONFIRMED] verdict comments.",
+      };
+    }
+    if (!input.issue.workflowTemplateKey && !input.issue.workflowLaneRole && input.issue.status !== "in_review") {
+      return {
+        reasonCode: "qa_gate_requires_in_review",
+        error: issueQaGateReasonMessage("qa_gate_requires_in_review"),
+      };
+    }
+
+    const summary = parseQaSummary(input.body);
+    if (!summary.hasSummary) {
+      return {
+        reasonCode: "qa_gate_missing_qa_summary",
+        error: issueQaGateReasonMessage("qa_gate_missing_qa_summary"),
+      };
+    }
+    if (summary.overall === "fail") {
+      return {
+        reasonCode: "qa_gate_failing_review",
+        error: issueQaGateReasonMessage("qa_gate_failing_review"),
+      };
+    }
+
+    const verification = parseQaVerification(input.body);
+    if (!verification.complete) {
+      return {
+        reasonCode: "qa_gate_missing_verification",
+        error: issueQaGateReasonMessage("qa_gate_missing_verification"),
+      };
+    }
+    if (verification.overall !== "pass") {
+      return {
+        reasonCode: "qa_gate_failing_verification",
+        error: issueQaGateReasonMessage("qa_gate_failing_verification"),
+      };
+    }
+
+    if (!hasQaPassMarker) {
+      return {
+        reasonCode: "qa_gate_missing_qa_pass",
+        error: issueQaGateReasonMessage("qa_gate_missing_qa_pass"),
+      };
+    }
+    if (!hasReleaseConfirmedMarker) {
+      return {
+        reasonCode: "qa_gate_missing_release_confirmation",
+        error: issueQaGateReasonMessage("qa_gate_missing_release_confirmation"),
+      };
+    }
+
+    return null;
+  }
+
   async function computeIssueMergeStatusSafe(
     issue: {
       id: string;
@@ -909,6 +1066,10 @@ export function issueRoutes(
         },
       });
 
+      if (child.status === "blocked") {
+        continue;
+      }
+
       void queueIssueAssignmentWakeup({
         heartbeat,
         issue: child,
@@ -973,6 +1134,7 @@ export function issueRoutes(
       title?: string;
       executionRunId?: string | null;
       executionWorkspaceId?: string | null;
+      workflowTemplateKey?: string | null;
     },
   >(input: {
     issue: TIssue;
@@ -984,88 +1146,30 @@ export function issueRoutes(
       runId: string | null;
     };
   }) {
-    if (input.issue.status !== "in_review") return { issue: input.issue, mergeStatus: null };
-    if (!input.comment.authorAgentId) return { issue: input.issue, mergeStatus: null };
-    const authorRole = await getAgentRole(input.comment.authorAgentId, input.issue.companyId);
-    if (authorRole !== "qa") return { issue: input.issue, mergeStatus: null };
-    const qaResolution = await resolveReleaseGateQaAgent(input.issue.companyId);
-    if (!qaResolution.releaseGateQaAgent || input.comment.authorAgentId !== qaResolution.releaseGateQaAgent.id) {
-      return { issue: input.issue, mergeStatus: null };
-    }
-    if (!QA_PASS_MARKER_REGEX.test(input.comment.body) || !RELEASE_CONFIRMED_MARKER_REGEX.test(input.comment.body)) {
-      return { issue: input.issue, mergeStatus: null };
-    }
-    const qaGate = await computeIssueQaGateSafe(input.issue, { commentLimit: MAX_ISSUE_COMMENT_LIMIT });
-    if (!qaGate?.canShip) {
-      return { issue: input.issue, mergeStatus: null };
-    }
-
-    const [project, executionWorkspace] = await Promise.all([
-      input.issue.projectId ? projectsSvc.getById(input.issue.projectId) : Promise.resolve(null),
-      input.issue.executionWorkspaceId ? executionWorkspacesSvc.getById(input.issue.executionWorkspaceId) : Promise.resolve(null),
-    ]);
-    const projectPolicy = parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy ?? null);
-    const mergeResult = await issueMerge.attemptQaPassAutoMerge({
-      projectPolicy,
-      executionWorkspace,
+    const result = await finalizeQaValidatedIssueFromComment({
+      db,
+      issue: input.issue,
+      comment: input.comment,
+      actor: input.actor,
+      logActivity,
+      resolveReleaseGateQaAgent,
+      issues: {
+        update: async (issueId, patch) => await svc.update(issueId, patch),
+        addComment: async (issueId, body, opts) => await svc.addComment(issueId, body, opts),
+      },
+      issueMerge,
+      projects: {
+        getById: async (projectId) => await projectsSvc.getById(projectId),
+      },
+      executionWorkspaces: {
+        getById: async (workspaceId) => await executionWorkspacesSvc.getById(workspaceId),
+      },
+      persistExecutionWorkspaceMergeStatus,
     });
-    if (mergeResult.status && executionWorkspace) {
-      await persistExecutionWorkspaceMergeStatus(executionWorkspace, mergeResult.status);
-    }
-    if (mergeResult.outcome === "merged") {
-      const closedIssue = await svc.update(input.issue.id, {
-        status: "done",
-        actorAgentId: input.actor.agentId ?? null,
-        actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
-      });
-      if (!closedIssue) {
-        return { issue: input.issue, mergeStatus: mergeResult.status };
-      }
-      await logActivity(db, {
-        companyId: closedIssue.companyId,
-        actorType: input.actor.actorType,
-        actorId: input.actor.actorId,
-        agentId: input.actor.agentId,
-        runId: input.actor.runId,
-        action: "issue.auto_merged",
-        entityType: "issue",
-        entityId: closedIssue.id,
-        details: {
-          identifier: closedIssue.identifier,
-          targetBranch: mergeResult.status.targetBranch,
-          sourceBranch: mergeResult.status.sourceBranch,
-          mergedCommit: mergeResult.status.mergedCommit,
-        },
-      });
-      return { issue: closedIssue as unknown as TIssue, mergeStatus: mergeResult.status };
-    }
-    if (mergeResult.outcome === "blocked") {
-      await svc.addComment(
-        input.issue.id,
-        [
-          QA_MERGE_BLOCKED_MARKER,
-          "QA validation passed, but auto-merge is blocked.",
-          mergeResult.status.reason ?? "Orchestrero could not determine the merge blocker.",
-        ].join("\n"),
-        {},
-      );
-      await logActivity(db, {
-        companyId: input.issue.companyId,
-        actorType: "system",
-        actorId: "issue-merge",
-        action: "issue.auto_merge_blocked",
-        entityType: "issue",
-        entityId: input.issue.id,
-        details: {
-          identifier: input.issue.identifier ?? null,
-          targetBranch: mergeResult.status.targetBranch,
-          sourceBranch: mergeResult.status.sourceBranch,
-          reason: mergeResult.status.reason,
-        },
-      });
-      return { issue: input.issue, mergeStatus: mergeResult.status };
-    }
-    return { issue: input.issue, mergeStatus: mergeResult.status };
+    return {
+      issue: result.issue as unknown as TIssue,
+      mergeStatus: result.mergeStatus,
+    };
   }
   async function computeIssueQaGateSafe(
     issue: {
@@ -1094,6 +1198,8 @@ export function issueRoutes(
       executionState?: { lastDecisionOutcome?: IssueExecutionDecisionOutcome | null } | null;
       identifier?: string | null;
       title?: string;
+      workflowTemplateKey?: string | null;
+      workflowLaneRole?: string | null;
     },
     actor: {
       actorType: "agent" | "user";
@@ -1105,6 +1211,7 @@ export function issueRoutes(
   ) {
     if (!issue.assigneeAgentId) return;
     if (issue.status !== "in_review") return;
+    if (issue.workflowTemplateKey || issue.workflowLaneRole) return;
     if (typeof (svc as { listComments?: unknown }).listComments !== "function") return;
 
     const qaGate = await computeIssueQaGateSafe(issue);
@@ -1187,22 +1294,243 @@ export function issueRoutes(
         },
       })
       .catch((err) =>
-        logWakeupFailure(err, { issueId: issue.id, agentId: issue.assigneeAgentId ?? undefined }, "failed to wake assignee for qa auto-fix"));
+        logWakeupFailure(
+          err,
+          {
+            companyId: issue.companyId,
+            issueId: issue.id,
+            agentId: issue.assigneeAgentId ?? undefined,
+            reason: "qa_autofix_requested",
+          },
+          "failed to wake assignee for qa auto-fix",
+        ));
+  }
+
+  async function maybeHandleWorkflowHandbackFromComment<
+    TIssue extends {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId?: string | null;
+      parentId?: string | null;
+      workflowTemplateKey?: string | null;
+      workflowLaneRole?: string | null;
+      identifier?: string | null;
+      title?: string;
+      executionState?: { lastDecisionOutcome?: IssueExecutionDecisionOutcome | null } | null;
+    },
+  >(input: {
+    issue: TIssue;
+    comment: Pick<IssueComment, "body" | "id" | "authorAgentId" | "authorUserId">;
+    actor: {
+      actorType: "agent" | "user";
+      actorId: string;
+      agentId: string | null;
+      runId: string | null;
+    };
+  }) {
+    if (!input.issue.workflowTemplateKey || !input.issue.workflowLaneRole) {
+      return { issue: input.issue, handback: null as null | Awaited<ReturnType<typeof issueWorkflowsSvc.handbackWorkflowLane>> };
+    }
+    if (!input.issue.assigneeAgentId || input.comment.authorAgentId !== input.issue.assigneeAgentId) {
+      return { issue: input.issue, handback: null as null | Awaited<ReturnType<typeof issueWorkflowsSvc.handbackWorkflowLane>> };
+    }
+    if (input.issue.status === "blocked" || input.issue.status === "cancelled") {
+      return { issue: input.issue, handback: null as null | Awaited<ReturnType<typeof issueWorkflowsSvc.handbackWorkflowLane>> };
+    }
+
+    let shouldHandback = false;
+    if (input.issue.workflowLaneRole === "security") {
+      shouldHandback = SECURITY_FAIL_MARKER_REGEX.test(input.comment.body ?? "");
+    } else if (input.issue.workflowLaneRole === "qa") {
+      shouldHandback =
+        qaCommentHasFailingReview(input.comment.body)
+        || qaCommentHasFailingVerification(input.comment.body);
+    }
+    if (!shouldHandback) {
+      return { issue: input.issue, handback: null };
+    }
+
+    const handback = await issueWorkflowsSvc.handbackWorkflowLane(input.issue.id);
+    if (!handback?.targetIssue) {
+      return { issue: input.issue, handback };
+    }
+
+    const refreshedSourceIssue = handback.invalidatedDescendants.find((candidate) => candidate.id === input.issue.id)
+      ?? input.issue;
+
+    logOpsInfo("workflow.handback", {
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+      rootIssueId: handback.targetIssue.parentId ?? input.issue.parentId ?? null,
+      templateKey: input.issue.workflowTemplateKey,
+      sourceLaneRole: input.issue.workflowLaneRole,
+      targetLaneRole: handback.targetIssue.workflowLaneRole ?? null,
+      targetIssueId: handback.targetIssue.id,
+      invalidatedIssueIds: handback.invalidatedDescendants.map((candidate) => candidate.id),
+      commentId: input.comment.id,
+    });
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "issue.workflow_handback",
+      entityType: "issue",
+      entityId: handback.targetIssue.id,
+      details: {
+        identifier: handback.targetIssue.identifier,
+        parentId: handback.targetIssue.parentId,
+        sourceIssueId: input.issue.id,
+        sourceLaneRole: input.issue.workflowLaneRole,
+        targetLaneRole: handback.targetIssue.workflowLaneRole,
+        invalidatedIssueIds: handback.invalidatedDescendants.map((candidate) => candidate.id),
+        commentId: input.comment.id,
+      },
+    });
+
+    for (const invalidatedIssue of handback.invalidatedDescendants) {
+      logOpsInfo("workflow.lane.invalidated", {
+        companyId: invalidatedIssue.companyId,
+        issueId: invalidatedIssue.id,
+        rootIssueId: invalidatedIssue.parentId ?? handback.targetIssue.parentId ?? null,
+        templateKey: invalidatedIssue.workflowTemplateKey ?? input.issue.workflowTemplateKey,
+        laneRole: invalidatedIssue.workflowLaneRole ?? null,
+        sourceLaneRole: input.issue.workflowLaneRole,
+        targetLaneRole: handback.targetIssue.workflowLaneRole ?? null,
+        targetIssueId: handback.targetIssue.id,
+        reason: "workflow_handback",
+        commentId: input.comment.id,
+        status: invalidatedIssue.status,
+      });
+      await logActivity(db, {
+        companyId: invalidatedIssue.companyId,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        agentId: input.actor.agentId,
+        runId: input.actor.runId,
+        action: "issue.workflow_lane_invalidated",
+        entityType: "issue",
+        entityId: invalidatedIssue.id,
+        details: {
+          identifier: invalidatedIssue.identifier,
+          parentId: invalidatedIssue.parentId,
+          sourceIssueId: input.issue.id,
+          sourceLaneRole: input.issue.workflowLaneRole,
+          targetIssueId: handback.targetIssue.id,
+          targetLaneRole: handback.targetIssue.workflowLaneRole,
+          status: invalidatedIssue.status,
+          commentId: input.comment.id,
+        },
+      });
+    }
+
+    if (handback.targetIssue.assigneeAgentId) {
+      await heartbeat.wakeup(handback.targetIssue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_status_changed",
+        payload: {
+          issueId: handback.targetIssue.id,
+          workflowHandbackFromIssueId: input.issue.id,
+          sourceIssueId: input.issue.id,
+          sourceLaneRole: input.issue.workflowLaneRole,
+          targetLaneRole: handback.targetIssue.workflowLaneRole,
+          commentId: input.comment.id,
+        },
+        requestedByActorType: input.actor.actorType,
+        requestedByActorId: input.actor.actorId,
+        contextSnapshot: {
+          issueId: handback.targetIssue.id,
+          taskId: handback.targetIssue.id,
+          wakeReason: "issue_status_changed",
+          source: "issue.workflow_handback",
+          workflowHandbackFromIssueId: input.issue.id,
+          sourceLaneRole: input.issue.workflowLaneRole,
+          targetLaneRole: handback.targetIssue.workflowLaneRole,
+          commentId: input.comment.id,
+        },
+      }).catch((err) =>
+        logWakeupFailure(
+          err,
+          {
+            companyId: handback.targetIssue?.companyId ?? input.issue.companyId,
+            issueId: handback.targetIssue?.id ?? input.issue.id,
+            agentId: handback.targetIssue?.assigneeAgentId ?? undefined,
+            reason: "issue_status_changed",
+          },
+          "failed to wake workflow handback target",
+        ));
+    }
+
+    return {
+      issue: refreshedSourceIssue as TIssue,
+      handback,
+    };
+  }
+
+  function getWorkflowDependentBlockerIssueIds(candidate: unknown) {
+    const value = (candidate as { blockedByIssueIds?: unknown } | null)?.blockedByIssueIds;
+    if (!Array.isArray(value)) return undefined;
+    return value.filter((entry): entry is string => typeof entry === "string");
+  }
+
+  async function evaluateWorkflowRootCompletion(issue: PersistedIssue) {
+    if (!issue.workflowTemplateKey || issue.workflowLaneRole) return null;
+    const decoratedIssue = await issueWorkflowsSvc.decorateIssue(issue);
+    const workflowSummary = decoratedIssue.workflowSummary;
+    if (!workflowSummary) return null;
+
+    const blockingReasons = [...workflowSummary.blockingReasons];
+    for (const lane of workflowSummary.lanes) {
+      if (!lane.issueId) {
+        blockingReasons.push(`${lane.role.toUpperCase()}: lane issue is missing.`);
+        continue;
+      }
+      if (lane.status !== "done") {
+        blockingReasons.push(`${lane.role.toUpperCase()}: lane must be done before the workflow can close.`);
+      }
+    }
+
+    const uniqueReasons = Array.from(new Set(blockingReasons));
+    return {
+      canComplete: uniqueReasons.length === 0,
+      blockingReasons: uniqueReasons,
+      workflowSummary,
+    };
   }
 
   function logWakeupFailure(
     err: unknown,
-    context: { issueId: string; agentId?: string },
+    context: { companyId?: string; issueId: string; agentId?: string; reason?: string | null },
     message: string,
   ) {
+    const errorCode =
+      err instanceof HttpError && err.details && typeof err.details === "object"
+        ? ((err.details as Record<string, unknown>).code as string | undefined)
+          ?? ((err.details as Record<string, unknown>).status as string | undefined)
+        : undefined;
     if (isAgentNotInvokableWakeupError(err)) {
-      logger.debug(
-        { err, issueId: context.issueId, agentId: context.agentId, agentStatus: getAgentNotInvokableStatus(err) },
-        `${message} (agent not invokable)`,
-      );
+      logOpsInfo("heartbeat.wakeup.skipped_not_invokable", {
+        companyId: context.companyId,
+        issueId: context.issueId,
+        agentId: context.agentId,
+        reason: context.reason ?? undefined,
+        agentStatus: getAgentNotInvokableStatus(err),
+      });
       return;
     }
-    logger.warn({ err, issueId: context.issueId, agentId: context.agentId }, message);
+    logOpsWarn("heartbeat.wakeup.failed", {
+      companyId: context.companyId,
+      issueId: context.issueId,
+      agentId: context.agentId,
+      reason: context.reason ?? undefined,
+      errorCode,
+      errorMessage: err instanceof Error ? err.message : message,
+    });
   }
 
   type IssueMutationWakeupWarning = IssueAssignmentWakeupWarning & { reason: string; agentId: string };
@@ -2786,12 +3114,32 @@ export function issueRoutes(
       updateFields.executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
     }
 
+    const requestedStatusBeforeExecutionTransition =
+      typeof updateFields.status === "string" ? updateFields.status : existing.status;
+    const effectiveExecutionPolicy =
+      updateFields.executionPolicy !== undefined
+        ? (updateFields.executionPolicy as NonNullable<typeof updateFields.executionPolicy> | null)
+        : normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+    const closesWithoutExecutionPolicy =
+      existing.status !== "done"
+      && requestedStatusBeforeExecutionTransition === "done"
+      && effectiveExecutionPolicy == null
+      && !existing.workflowTemplateKey
+      && !existing.workflowLaneRole;
+    if (closesWithoutExecutionPolicy && !forceDoneRequested) {
+      const existingQaGate = await computeIssueQaGate(existing, { commentLimit: MAX_ISSUE_COMMENT_LIMIT });
+      const gateFailure = existingQaGate.isDeliveryScoped
+        ? (existingQaGate.missingRequirements[0] ?? null)
+        : null;
+      if (gateFailure) {
+        respondIssueUpdate422(res, gateFailure);
+        return;
+      }
+    }
+
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
-      policy:
-        updateFields.executionPolicy !== undefined
-          ? (updateFields.executionPolicy as NonNullable<typeof updateFields.executionPolicy> | null)
-          : normalizeIssueExecutionPolicy(existing.executionPolicy ?? null),
+      policy: effectiveExecutionPolicy,
       requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
       requestedAssigneePatch: {
         assigneeAgentId:
@@ -2898,9 +3246,35 @@ export function issueRoutes(
     const isDoneTransition = existing.status !== "done" && requestedNextStatus === "done";
     let qaGateSnapshot = null as Awaited<ReturnType<typeof computeIssueQaGate>> | null;
     if (isDoneTransition) {
+      if (existing.workflowTemplateKey && !existing.workflowLaneRole && !forceDoneRequested) {
+        const workflowRootGate = await evaluateWorkflowRootCompletion(existing);
+        if (workflowRootGate && !workflowRootGate.canComplete) {
+          logOpsInfo("workflow.root.close_blocked", {
+            companyId: existing.companyId,
+            issueId: existing.id,
+            rootIssueId: existing.id,
+            templateKey: existing.workflowTemplateKey,
+            blockingReasons: workflowRootGate.blockingReasons,
+            activeRoles: workflowRootGate.workflowSummary?.activeRoles ?? [],
+          });
+          res.status(422).json({
+            error: workflowRootGate.blockingReasons[0] ?? "Workflow root cannot be closed while specialist lanes remain incomplete",
+            blockingReasons: workflowRootGate.blockingReasons,
+          });
+          return;
+        }
+      }
       if (existing.workflowLaneRole && (existing.workflowRequiredArtifacts?.length ?? 0) > 0 && !forceDoneRequested) {
         const workflowGate = await issueWorkflowsSvc.evaluateLaneCompletion(existing);
         if (!workflowGate.canComplete) {
+          logOpsInfo("workflow.lane.close_blocked", {
+            companyId: existing.companyId,
+            issueId: existing.id,
+            rootIssueId: existing.parentId ?? existing.id,
+            templateKey: existing.workflowTemplateKey,
+            laneRole: existing.workflowLaneRole,
+            blockingReasons: workflowGate.blockingReasons,
+          });
           res.status(422).json({
             error: workflowGate.blockingReasons[0] ?? "Workflow requirements are not satisfied",
             blockingReasons: workflowGate.blockingReasons,
@@ -2908,12 +3282,15 @@ export function issueRoutes(
           return;
         }
       }
-      qaGateSnapshot = await computeIssueQaGate(existing, { commentLimit: MAX_ISSUE_COMMENT_LIMIT });
-      if (qaGateSnapshot.isDeliveryScoped && !forceDoneRequested) {
-        const gateFailure = qaGateSnapshot.missingRequirements[0] ?? null;
-        if (gateFailure) {
-          respondIssueUpdate422(res, gateFailure);
-          return;
+      const usesWorkflowCompletionRules = Boolean(existing.workflowTemplateKey || existing.workflowLaneRole);
+      if (!usesWorkflowCompletionRules) {
+        qaGateSnapshot = await computeIssueQaGate(existing, { commentLimit: MAX_ISSUE_COMMENT_LIMIT });
+        if (qaGateSnapshot.isDeliveryScoped && !forceDoneRequested) {
+          const gateFailure = qaGateSnapshot.missingRequirements[0] ?? null;
+          if (gateFailure) {
+            respondIssueUpdate422(res, gateFailure);
+            return;
+          }
         }
       }
     }
@@ -3048,6 +3425,7 @@ export function issueRoutes(
         details: {
           ...next,
           identifier: issue.identifier,
+          parentId: issue.parentId,
           ...(commentBody ? { source: "comment" } : {}),
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
           ...(interruptedRunId ? { interruptedRunId } : {}),
@@ -3150,6 +3528,7 @@ export function issueRoutes(
           bodySnippet: comment.body.slice(0, 120),
           identifier: issue.identifier,
           issueTitle: issue.title,
+          parentId: issue.parentId,
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
           ...(interruptedRunId ? { interruptedRunId } : {}),
           ...(hasFieldChanges ? { updated: true } : {}),
@@ -3182,6 +3561,68 @@ export function issueRoutes(
         },
       });
     }
+
+    const reopenedWorkflowLane =
+      Boolean(issue.workflowLaneRole)
+      && ["done", "cancelled"].includes(existing.status)
+      && !["done", "cancelled"].includes(issue.status);
+    if (reopenedWorkflowLane) {
+      const invalidation = await issueWorkflowsSvc.invalidateWorkflowDescendants({
+        issueId: issue.id,
+        invalidateSelf: true,
+      });
+      if (invalidation.invalidatedSelf) {
+        issue = {
+          ...issue,
+          ...invalidation.invalidatedSelf,
+        };
+        issueResponse = {
+          ...issueResponse,
+          ...invalidation.invalidatedSelf,
+        };
+      }
+      for (const invalidatedIssue of invalidation.invalidatedDescendants) {
+        logOpsInfo("workflow.lane.invalidated", {
+          companyId: invalidatedIssue.companyId,
+          issueId: invalidatedIssue.id,
+          rootIssueId: invalidatedIssue.parentId ?? issue.parentId ?? null,
+          templateKey: invalidatedIssue.workflowTemplateKey ?? issue.workflowTemplateKey,
+          laneRole: invalidatedIssue.workflowLaneRole ?? null,
+          sourceLaneRole: issue.workflowLaneRole ?? null,
+          reason: "lane_reopened",
+          status: invalidatedIssue.status,
+        });
+        await logActivity(db, {
+          companyId: invalidatedIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.workflow_lane_invalidated",
+          entityType: "issue",
+          entityId: invalidatedIssue.id,
+          details: {
+            identifier: invalidatedIssue.identifier,
+            parentId: invalidatedIssue.parentId,
+            sourceIssueId: issue.id,
+            sourceLaneRole: issue.workflowLaneRole ?? null,
+            status: invalidatedIssue.status,
+            reason: "lane_reopened",
+          },
+        });
+      }
+    }
+
+    if (comment) {
+      const workflowHandback = await maybeHandleWorkflowHandbackFromComment({
+        issue,
+        comment,
+        actor,
+      });
+      issue = workflowHandback.issue;
+      issueResponse = { ...issueResponse, ...issue };
+    }
+
     let mergeStatus = await computeIssueMergeStatusSafe(issue, { qaGate: qaGateSnapshot });
     if (comment) {
       const mergeResult = await maybeAutoMergeValidatedIssue({
@@ -3314,8 +3755,63 @@ export function issueRoutes(
       const becameTerminalForDependents =
         !["done", "cancelled"].includes(existing.status) && ["done", "cancelled"].includes(issue.status);
       if (becameTerminalForDependents) {
+        const promotedWorkflowDependents = await issueWorkflowsSvc.advanceWorkflowDependents(issue.id);
+        const promotedWorkflowDependentIds = new Set(promotedWorkflowDependents.map((dependent) => dependent.id));
+        for (const dependent of promotedWorkflowDependents) {
+          const blockerIssueIds = getWorkflowDependentBlockerIssueIds(dependent);
+          logOpsInfo("workflow.lane.unblocked", {
+            companyId: dependent.companyId,
+            issueId: dependent.id,
+            rootIssueId: dependent.parentId ?? null,
+            templateKey: dependent.workflowTemplateKey ?? issue.workflowTemplateKey,
+            laneRole: dependent.workflowLaneRole ?? null,
+            resolvedBlockerIssueId: issue.id,
+            blockerIssueIds,
+          });
+          await logActivity(db, {
+            companyId: dependent.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.workflow_lane_unblocked",
+            entityType: "issue",
+            entityId: dependent.id,
+            details: {
+              identifier: dependent.identifier,
+              parentId: dependent.parentId,
+              status: dependent.status,
+              resolvedBlockerIssueId: issue.id,
+              blockerIssueIds,
+              workflowLaneRole: dependent.workflowLaneRole ?? null,
+            },
+          });
+          if (!dependent.assigneeAgentId) continue;
+          addWakeup(dependent.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_blockers_resolved",
+            payload: {
+              issueId: dependent.id,
+              resolvedBlockerIssueId: issue.id,
+              blockerIssueIds,
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: dependent.id,
+              taskId: dependent.id,
+              wakeReason: "issue_blockers_resolved",
+              source: "issue.blockers_resolved",
+              resolvedBlockerIssueId: issue.id,
+              blockerIssueIds,
+            },
+          });
+        }
+
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
+          if (promotedWorkflowDependentIds.has(dependent.id)) continue;
           addWakeup(dependent.assigneeAgentId, {
             source: "automation",
             triggerDetail: "system",
@@ -3370,7 +3866,17 @@ export function issueRoutes(
       for (const { agentId, wakeup } of wakeups.values()) {
         heartbeat
           .wakeup(agentId, wakeup)
-          .catch((err) => logWakeupFailure(err, { issueId: issue.id, agentId }, "failed to wake agent on issue update"));
+          .catch((err) =>
+            logWakeupFailure(
+              err,
+              {
+                companyId: issue.companyId,
+                issueId: issue.id,
+                agentId,
+                reason: wakeup.reason ?? null,
+              },
+              "failed to wake agent on issue update",
+            ));
       }
     })();
     void maybeTriggerQaAutoFix(issue, actor, "patch_update").catch((err) =>
@@ -3502,7 +4008,17 @@ export function issueRoutes(
           requestedByActorId: actor.actorId,
           contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
         })
-        .catch((err) => logWakeupFailure(err, { issueId: issue.id }, "failed to wake assignee on issue checkout"));
+        .catch((err) =>
+          logWakeupFailure(
+            err,
+            {
+              companyId: issue.companyId,
+              issueId: issue.id,
+              agentId: req.body.agentId,
+              reason: "issue_checked_out",
+            },
+            "failed to wake assignee on issue checkout",
+          ));
     }
 
     res.json(await decorateIssueDetailWithBoardState(updated));
@@ -3779,6 +4295,20 @@ export function issueRoutes(
       },
     });
 
+    const qaVerdictValidation = await validateQaVerdictComment({
+      issue: currentIssue,
+      body: normalizedCommentBody,
+      actor,
+    });
+    if (qaVerdictValidation) {
+      if (qaVerdictValidation.reasonCode) {
+        respondIssueUpdate422(res, qaVerdictValidation.reasonCode, qaVerdictValidation.error);
+      } else {
+        res.status(422).json({ error: qaVerdictValidation.error });
+      }
+      return;
+    }
+
     const comment = await svc.addComment(id, normalizedCommentBody, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -3848,6 +4378,13 @@ export function issueRoutes(
       });
     }
 
+    const workflowHandback = await maybeHandleWorkflowHandbackFromComment({
+      issue: currentIssue,
+      comment,
+      actor,
+    });
+    currentIssue = workflowHandback.issue;
+
     const mergeResult = await maybeAutoMergeValidatedIssue({
       issue: currentIssue,
       comment,
@@ -3857,7 +4394,7 @@ export function issueRoutes(
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
-      const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+      const wakeups = new Map<string, NonNullable<Parameters<typeof heartbeat.wakeup>[1]>>();
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
@@ -3972,7 +4509,16 @@ export function issueRoutes(
         heartbeat
           .wakeup(agentId, wakeup)
           .catch((err) =>
-            logWakeupFailure(err, { issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
+            logWakeupFailure(
+              err,
+              {
+                companyId: currentIssue.companyId,
+                issueId: currentIssue.id,
+                agentId,
+                reason: wakeup.reason ?? null,
+              },
+              "failed to wake agent on issue comment",
+            ));
       }
     })();
     void maybeTriggerQaAutoFix(currentIssue, actor, "comment").catch((err) =>

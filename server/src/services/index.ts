@@ -50,6 +50,7 @@ export { workspaceOperationService } from "./workspace-operations.js";
 export { workProductService } from "./work-products.js";
 export { parseSchedulerHeartbeatPolicy, parseBooleanLike, parseNumberLike } from "./scheduler-heartbeat-policy.js";
 export { runtimeIntegrityService } from "./runtime-integrity.js";
+export { workflowIntegrityService } from "./workflow-integrity.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";

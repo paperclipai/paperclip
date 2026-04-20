@@ -29,6 +29,11 @@ function makeConfigPath(root: string, enabled: boolean): string {
     logging: {
       mode: "file",
       logDir: path.join(root, "runtime", "logs"),
+      rotation: {
+        enabled: true,
+        maxFileSizeMb: 100,
+        maxFiles: 10,
+      },
     },
     server: {
       deploymentMode: "local_trusted",

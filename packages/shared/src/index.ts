@@ -1,6 +1,7 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export { LEGACY_AGENT_ROLE_ALIASES, canonicalizeAgentRole, normalizeAgentRoleInput } from "./agent-role.js";
 export { issuePriorityWeight, normalizeIssuePriority, normalizeIssuePriorityInput } from "./issue-priority.js";
+export { resolveDevRunnerControlPort, resolveDevRunnerRestartUrl } from "./dev-runner-control.js";
 export {
   BOARD_BRIEF_HEALTH_TONES,
   BOARD_BRIEF_FRESHNESS_STATUSES,
@@ -50,6 +51,7 @@ export {
   ISSUE_RECOVERY_DISPOSITIONS,
   ISSUE_WORKFLOW_TEMPLATE_KEYS,
   ISSUE_WORKFLOW_LANE_ROLES,
+  ISSUE_WORKFLOW_LANE_PHASES,
   ISSUE_WORKFLOW_ARTIFACT_KINDS,
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
@@ -135,6 +137,7 @@ export {
   type IssueRecoveryDisposition,
   type IssueWorkflowTemplateKey,
   type IssueWorkflowLaneRole,
+  type IssueWorkflowLanePhase,
   type IssueWorkflowArtifactKind,
   type IssueExecutionPolicyMode,
   type IssueExecutionStageType,
@@ -201,8 +204,10 @@ export {
 export {
   QA_RELEASE_DEFAULT_NAME,
   QA_RELEASE_DEFAULT_TITLE,
+  isConfigurableReleaseGateQaAgentStatus,
   isEligibleQaAgentStatus,
   isCanonicalReleaseGateQaAgent,
+  type ReleaseGateQaResolutionSource,
   resolveReleaseGateQaAgent,
 } from "./release-gate-qa.js";
 
@@ -799,7 +804,9 @@ export {
   llmConfigSchema,
   databaseBackupConfigSchema,
   databaseConfigSchema,
+  defaultLoggingRotationConfig,
   loggingConfigSchema,
+  loggingRotationConfigSchema,
   serverConfigSchema,
   authConfigSchema,
   secretsConfigSchema,
@@ -814,6 +821,7 @@ export {
   type DatabaseBackupConfig,
   type DatabaseConfig,
   type LoggingConfig,
+  type LoggingRotationConfig,
   type ServerConfig,
   type AuthConfig,
   type StorageConfig,

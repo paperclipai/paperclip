@@ -1,5 +1,6 @@
 import { randomInt } from "node:crypto";
 import path from "node:path";
+import { defaultLoggingRotationConfig } from "@paperclipai/shared";
 import type { PaperclipConfig } from "../config/schema.js";
 import { expandHomePrefix } from "../config/home.js";
 
@@ -210,6 +211,7 @@ export function buildWorktreeConfig(input: {
     logging: {
       mode: source?.logging.mode ?? "file",
       logDir: paths.logDir,
+      rotation: source?.logging.rotation ?? { ...defaultLoggingRotationConfig },
     },
     server: {
       deploymentMode: source?.server.deploymentMode ?? "local_trusted",

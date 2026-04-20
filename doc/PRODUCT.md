@@ -161,6 +161,12 @@ The parent issue remains the coordination hub. Child lanes carry explicit role m
 - Designer: `design` document or design work product
 - Engineer: `implementation-summary` document or implementation work product
 - Security: `threat-review` document
-- QA: `qa-verdict` document plus `[QA PASS]` and `[RELEASE CONFIRMED]`
+- QA: a non-stale `qa-verdict` document plus the latest authorized release-gate QA verdict comment, which must include a full Smart Review summary, passing verification tokens (`[TYPECHECK] [TESTS] [BUILD] [SMOKE]`), and `[QA PASS]` / `[RELEASE CONFIRMED]`
+
+The lane graph is explicit and operator-visible: `PM -> Design -> Build`, then `Security` and `QA` run in parallel after Build completes. Only dependency-free lanes wake at template creation time; downstream lanes stay blocked until their upstream lane reaches a terminal state.
 
 Security is a first-class blocking lane. If no security specialist is available, the lane remains unresolved instead of silently falling back into QA.
+
+Workflow QA ownership is also explicit. The QA lane uses the same release-gate QA resolver as standalone delivery: a board-configured company QA owner if one is set and eligible, otherwise one canonical `QA and Release Engineer`, otherwise one other eligible QA specialist, otherwise an explicit owner-needed blocker.
+
+Review remediation is also workflow-native. A failing Security lane hands work back to Build. A failing QA lane also hands work back to Build. That handback reopens the upstream lane, blocks downstream lanes again, and marks their earlier artifacts as stale until they are refreshed. Paperclip treats this as visible control-plane state, not hidden recursive thinking inside one heartbeat run.
