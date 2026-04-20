@@ -1,28 +1,17 @@
 import type { HeartbeatRun } from "@paperclipai/shared";
-
-/* ---- Utilities ---- */
-
-export function getLast14Days(): string[] {
-  return Array.from({ length: 14 }, (_, i) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (13 - i));
-    return d.toISOString().slice(0, 10);
-  });
-}
+import { formatDayKeyForTimeZone, getLast14Days, getLocalTimeZone } from "../lib/activity-chart-days";
 
 function formatDayLabel(dateStr: string): string {
   const d = new Date(dateStr + "T12:00:00");
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-/* ---- Sub-components ---- */
-
 function DateLabels({ days }: { days: string[] }) {
   return (
     <div className="flex gap-[3px] mt-1.5">
       {days.map((day, i) => (
         <div key={day} className="flex-1 text-center">
-          {(i === 0 || i === 6 || i === 13) ? (
+          {i === 0 || i === 6 || i === 13 ? (
             <span className="text-[9px] text-muted-foreground tabular-nums">{formatDayLabel(day)}</span>
           ) : null}
         </div>
@@ -34,7 +23,7 @@ function DateLabels({ days }: { days: string[] }) {
 function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
   return (
     <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-2">
-      {items.map(item => (
+      {items.map((item) => (
         <span key={item.label} className="flex items-center gap-1 text-[9px] text-muted-foreground">
           <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
           {item.label}
@@ -56,15 +45,14 @@ export function ChartCard({ title, subtitle, children }: { title: string; subtit
   );
 }
 
-/* ---- Chart Components ---- */
-
 export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
-  const days = getLast14Days();
+  const timeZone = getLocalTimeZone();
+  const days = getLast14Days(new Date(), timeZone);
 
   const grouped = new Map<string, { succeeded: number; failed: number; other: number }>();
   for (const day of days) grouped.set(day, { succeeded: 0, failed: 0, other: 0 });
   for (const run of runs) {
-    const day = new Date(run.createdAt).toISOString().slice(0, 10);
+    const day = formatDayKeyForTimeZone(run.createdAt, timeZone);
     const entry = grouped.get(day);
     if (!entry) continue;
     if (run.status === "succeeded") entry.succeeded++;
@@ -72,15 +60,15 @@ export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
     else entry.other++;
   }
 
-  const maxValue = Math.max(...Array.from(grouped.values()).map(v => v.succeeded + v.failed + v.other), 1);
-  const hasData = Array.from(grouped.values()).some(v => v.succeeded + v.failed + v.other > 0);
+  const maxValue = Math.max(...Array.from(grouped.values()).map((v) => v.succeeded + v.failed + v.other), 1);
+  const hasData = Array.from(grouped.values()).some((v) => v.succeeded + v.failed + v.other > 0);
 
   if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
 
   return (
     <div>
       <div className="flex items-end gap-[3px] h-20">
-        {days.map(day => {
+        {days.map((day) => {
           const entry = grouped.get(day)!;
           const total = entry.succeeded + entry.failed + entry.other;
           const heightPct = (total / maxValue) * 100;
@@ -114,25 +102,26 @@ const priorityColors: Record<string, string> = {
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
 
 export function PriorityChart({ issues }: { issues: { priority: string; createdAt: Date }[] }) {
-  const days = getLast14Days();
+  const timeZone = getLocalTimeZone();
+  const days = getLast14Days(new Date(), timeZone);
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, { critical: 0, high: 0, medium: 0, low: 0 });
   for (const issue of issues) {
-    const day = new Date(issue.createdAt).toISOString().slice(0, 10);
+    const day = formatDayKeyForTimeZone(issue.createdAt, timeZone);
     const entry = grouped.get(day);
     if (!entry) continue;
     if (issue.priority in entry) entry[issue.priority]++;
   }
 
-  const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
-  const hasData = Array.from(grouped.values()).some(v => Object.values(v).reduce((a, b) => a + b, 0) > 0);
+  const maxValue = Math.max(...Array.from(grouped.values()).map((v) => Object.values(v).reduce((a, b) => a + b, 0)), 1);
+  const hasData = Array.from(grouped.values()).some((v) => Object.values(v).reduce((a, b) => a + b, 0) > 0);
 
   if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
 
   return (
     <div>
       <div className="flex items-end gap-[3px] h-20">
-        {days.map(day => {
+        {days.map((day) => {
           const entry = grouped.get(day)!;
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
@@ -140,9 +129,9 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  {priorityOrder.map(p => entry[p] > 0 ? (
-                    <div key={p} style={{ flex: entry[p], backgroundColor: priorityColors[p] }} />
-                  ) : null)}
+                  {priorityOrder.map((p) =>
+                    entry[p] > 0 ? <div key={p} style={{ flex: entry[p], backgroundColor: priorityColors[p] }} /> : null,
+                  )}
                 </div>
               ) : (
                 <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
@@ -152,7 +141,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={priorityOrder.map(p => ({ color: priorityColors[p], label: p.charAt(0).toUpperCase() + p.slice(1) }))} />
+      <ChartLegend items={priorityOrder.map((p) => ({ color: priorityColors[p], label: p.charAt(0).toUpperCase() + p.slice(1) }))} />
     </div>
   );
 }
@@ -178,20 +167,21 @@ const statusLabels: Record<string, string> = {
 };
 
 export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
-  const days = getLast14Days();
+  const timeZone = getLocalTimeZone();
+  const days = getLast14Days(new Date(), timeZone);
   const allStatuses = new Set<string>();
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, {});
   for (const issue of issues) {
-    const day = new Date(issue.createdAt).toISOString().slice(0, 10);
+    const day = formatDayKeyForTimeZone(issue.createdAt, timeZone);
     const entry = grouped.get(day);
     if (!entry) continue;
     entry[issue.status] = (entry[issue.status] ?? 0) + 1;
     allStatuses.add(issue.status);
   }
 
-  const statusOrder = ["todo", "in_progress", "in_review", "done", "blocked", "cancelled", "backlog"].filter(s => allStatuses.has(s));
-  const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
+  const statusOrder = ["todo", "in_progress", "in_review", "done", "blocked", "cancelled", "backlog"].filter((s) => allStatuses.has(s));
+  const maxValue = Math.max(...Array.from(grouped.values()).map((v) => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = allStatuses.size > 0;
 
   if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
@@ -199,7 +189,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   return (
     <div>
       <div className="flex items-end gap-[3px] h-20">
-        {days.map(day => {
+        {days.map((day) => {
           const entry = grouped.get(day)!;
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
@@ -207,9 +197,9 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
-                    <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "#6b7280" }} />
-                  ) : null)}
+                  {statusOrder.map((s) =>
+                    (entry[s] ?? 0) > 0 ? <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "#6b7280" }} /> : null,
+                  )}
                 </div>
               ) : (
                 <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
@@ -219,35 +209,40 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "#6b7280", label: statusLabels[s] ?? s }))} />
+      <ChartLegend items={statusOrder.map((s) => ({ color: statusColors[s] ?? "#6b7280", label: statusLabels[s] ?? s }))} />
     </div>
   );
 }
 
 export function SuccessRateChart({ runs }: { runs: HeartbeatRun[] }) {
-  const days = getLast14Days();
+  const timeZone = getLocalTimeZone();
+  const days = getLast14Days(new Date(), timeZone);
   const grouped = new Map<string, { succeeded: number; total: number }>();
   for (const day of days) grouped.set(day, { succeeded: 0, total: 0 });
   for (const run of runs) {
-    const day = new Date(run.createdAt).toISOString().slice(0, 10);
+    const day = formatDayKeyForTimeZone(run.createdAt, timeZone);
     const entry = grouped.get(day);
     if (!entry) continue;
     entry.total++;
     if (run.status === "succeeded") entry.succeeded++;
   }
 
-  const hasData = Array.from(grouped.values()).some(v => v.total > 0);
+  const hasData = Array.from(grouped.values()).some((v) => v.total > 0);
   if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
 
   return (
     <div>
       <div className="flex items-end gap-[3px] h-20">
-        {days.map(day => {
+        {days.map((day) => {
           const entry = grouped.get(day)!;
           const rate = entry.total > 0 ? entry.succeeded / entry.total : 0;
           const color = entry.total === 0 ? undefined : rate >= 0.8 ? "#10b981" : rate >= 0.5 ? "#eab308" : "#ef4444";
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}>
+            <div
+              key={day}
+              className="flex-1 h-full flex flex-col justify-end"
+              title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}
+            >
               {entry.total > 0 ? (
                 <div style={{ height: `${rate * 100}%`, minHeight: 2, backgroundColor: color }} />
               ) : (
