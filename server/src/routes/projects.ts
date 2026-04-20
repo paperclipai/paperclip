@@ -13,7 +13,7 @@ import {
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
-import { conflict } from "../errors.js";
+import { conflict, notFound } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -59,12 +59,15 @@ export function projectRoutes(db: Db) {
   async function normalizeProjectReference(req: Request, rawId: string) {
     if (isUuidLike(rawId)) return rawId;
     const companyId = await resolveCompanyIdForProjectReference(req);
-    if (!companyId) return rawId;
+    if (!companyId) throw notFound("Project not found");
     const resolved = await svc.resolveByReference(companyId, rawId);
     if (resolved.ambiguous) {
       throw conflict("Project shortname is ambiguous in this company. Use the project ID.");
     }
-    return resolved.project?.id ?? rawId;
+    if (!resolved.project) {
+      throw notFound(`Project not found`);
+    }
+    return resolved.project.id;
   }
 
   router.param("id", async (req, _res, next, rawId) => {
