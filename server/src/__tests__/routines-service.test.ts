@@ -150,13 +150,6 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
             status: "queued",
             contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
           });
-          await db
-            .update(issues)
-            .set({
-              executionRunId: queuedRunId,
-              executionLockedAt: new Date(),
-            })
-            .where(eq(issues.id, issueId));
           return { id: queuedRunId };
         },
       },
@@ -759,13 +752,6 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           status: "queued",
           contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
         });
-        await db
-          .update(issues)
-          .set({
-            executionRunId: queuedRunId,
-            executionLockedAt: new Date(),
-          })
-          .where(eq(issues.id, issueId));
         return { id: queuedRunId };
       },
     });
