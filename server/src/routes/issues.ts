@@ -70,6 +70,10 @@ import {
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "../services/issue-execution-policy.js";
+import {
+  countPriorChangesRequestedForActiveGateStage,
+  getExecutionStageGateContext,
+} from "../services/quality-gate-contract.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -91,6 +95,9 @@ type ExecutionStageWakeContext = {
   wakeRole: "reviewer" | "approver" | "executor";
   stageId: string | null;
   stageType: ParsedExecutionState["currentStageType"];
+  gateKey: string | null;
+  gateContractKind: string | null;
+  reviewBudgetsMinutes: { docsTemplate: number; normalCodeChange: number } | null;
   currentParticipant: ParsedExecutionState["currentParticipant"];
   returnAssignee: ParsedExecutionState["returnAssignee"];
   lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
@@ -107,13 +114,18 @@ function executionPrincipalsEqual(
 
 function buildExecutionStageWakeContext(input: {
   state: ParsedExecutionState;
+  policy: NormalizedExecutionPolicy | null;
   wakeRole: ExecutionStageWakeContext["wakeRole"];
   allowedActions: string[];
 }): ExecutionStageWakeContext {
+  const gateContext = getExecutionStageGateContext(input.policy, input.state.currentStageId);
   return {
     wakeRole: input.wakeRole,
     stageId: input.state.currentStageId,
     stageType: input.state.currentStageType,
+    gateKey: gateContext?.gateKey ?? null,
+    gateContractKind: gateContext?.gateContractKind ?? null,
+    reviewBudgetsMinutes: gateContext?.reviewBudgetsMinutes ?? null,
     currentParticipant: input.state.currentParticipant,
     returnAssignee: input.state.returnAssignee,
     lastDecisionOutcome: input.state.lastDecisionOutcome,
@@ -192,6 +204,7 @@ function diffExecutionParticipants(
 
 function buildExecutionStageWakeup(input: {
   issueId: string;
+  policy: NormalizedExecutionPolicy | null;
   previousState: ParsedExecutionState | null;
   nextState: ParsedExecutionState | null;
   interruptedRunId: string | null;
@@ -214,6 +227,7 @@ function buildExecutionStageWakeup(input: {
       nextState.currentStageType === "approval" ? "execution_approval_requested" : "execution_review_requested";
     const executionStage = buildExecutionStageWakeContext({
       state: nextState,
+      policy: input.policy,
       wakeRole: nextState.currentStageType === "approval" ? "approver" : "reviewer",
       allowedActions: ["approve", "request_changes"],
     });
@@ -254,6 +268,7 @@ function buildExecutionStageWakeup(input: {
 
     const executionStage = buildExecutionStageWakeContext({
       state: nextState,
+      policy: input.policy,
       wakeRole: "executor",
       allowedActions: ["address_changes", "resubmit"],
     });
@@ -1543,6 +1558,12 @@ export function issueRoutes(
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
+    const priorChangesRequestedCountForActiveStage =
+      await countPriorChangesRequestedForActiveGateStage(db, {
+        id: existing.id,
+        executionPolicy: nextExecutionPolicy,
+        executionState: existing.executionState,
+      });
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
@@ -1558,6 +1579,7 @@ export function issueRoutes(
         userId: actor.actorType === "user" ? actor.actorId : null,
       },
       commentBody,
+      priorChangesRequestedCountForActiveStage,
     });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
@@ -1615,6 +1637,7 @@ export function issueRoutes(
             issueId: updated.id,
             stageId: decision.stageId,
             stageType: decision.stageType,
+            gateKey: decision.gateKey ?? null,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
             outcome: decision.outcome,
@@ -1846,6 +1869,7 @@ export function issueRoutes(
     const nextExecutionState = parseIssueExecutionState(issue.executionState);
     const executionStageWakeup = buildExecutionStageWakeup({
       issueId: issue.id,
+      policy: nextExecutionPolicy,
       previousState: previousExecutionState,
       nextState: nextExecutionState,
       interruptedRunId,

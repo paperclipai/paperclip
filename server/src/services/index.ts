@@ -11,6 +11,16 @@ export {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
+export {
+  assertApprovalMergeGateReadyForIssue,
+  assertApprovalMergeGateReadyForIssueIds,
+  assertApprovalMergeGateReadyForLinkedIssues,
+  assertIssueCanMoveToDone,
+  countPriorChangesRequestedForActiveGateStage,
+  getExecutionStageGateContext,
+  isMergeGateApprovalPayload,
+  parseGateVerdict,
+} from "./quality-gate-contract.js";
 export { projectService } from "./projects.js";
 export {
   clampIssueListLimit,

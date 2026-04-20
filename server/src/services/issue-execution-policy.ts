@@ -31,11 +31,12 @@ type TransitionInput = {
   requestedAssigneePatch: RequestedAssigneePatch;
   actor: ActorLike;
   commentBody?: string | null;
+  priorChangesRequestedCountForActiveStage?: number;
 };
 
 type TransitionResult = {
   patch: Record<string, unknown>;
-  decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body">;
+  decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "gateKey" | "outcome" | "body">;
   workflowControlledAssignment?: boolean;
 };
 
@@ -74,6 +75,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
       return {
         id: stage.id ?? randomUUID(),
         type: stage.type,
+        gateKey: stage.gateKey ?? null,
         approvalsNeeded: 1 as const,
         participants: dedupedParticipants,
       };
@@ -85,6 +87,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   return {
     mode: parsed.data.mode ?? "normal",
     commentRequired: true,
+    gateContract: parsed.data.gateContract ?? null,
     stages,
   };
 }
@@ -384,6 +387,7 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
             decision: {
               stageId: activeStage.id,
               stageType: activeStage.type,
+              gateKey: activeStage.gateKey ?? null,
               outcome: "approved",
               body: input.commentBody.trim(),
             },
@@ -411,6 +415,7 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
           decision: {
             stageId: activeStage.id,
             stageType: activeStage.type,
+            gateKey: activeStage.gateKey ?? null,
             outcome: "approved",
             body: input.commentBody.trim(),
           },
@@ -421,6 +426,13 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
       if (requestedStatus && requestedStatus !== "in_review") {
         if (!input.commentBody?.trim()) {
           throw unprocessable("Requesting changes requires a comment");
+        }
+        if (
+          input.policy.gateContract?.kind === "aetherion_quality_funnel" &&
+          activeStage.gateKey === "adversarial_review" &&
+          (input.priorChangesRequestedCountForActiveStage ?? 0) >= input.policy.gateContract.maxAdversarialChangeRequests
+        ) {
+          throw unprocessable("Adversarial review fix loop is already exhausted; escalate, narrow scope, or split follow-up work.");
         }
         if (!existingState?.returnAssignee) {
           throw unprocessable("This execution stage has no return assignee");
@@ -433,6 +445,7 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
           decision: {
             stageId: activeStage.id,
             stageType: activeStage.type,
+            gateKey: activeStage.gateKey ?? null,
             outcome: "changes_requested",
             body: input.commentBody.trim(),
           },

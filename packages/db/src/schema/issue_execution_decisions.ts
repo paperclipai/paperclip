@@ -12,6 +12,7 @@ export const issueExecutionDecisions = pgTable(
     issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
     stageId: uuid("stage_id").notNull(),
     stageType: text("stage_type").notNull(),
+    gateKey: text("gate_key"),
     actorAgentId: uuid("actor_agent_id").references(() => agents.id),
     actorUserId: text("actor_user_id"),
     outcome: text("outcome").notNull(),
@@ -23,5 +24,6 @@ export const issueExecutionDecisions = pgTable(
   (table) => ({
     companyIssueIdx: index("issue_execution_decisions_company_issue_idx").on(table.companyId, table.issueId),
     stageIdx: index("issue_execution_decisions_stage_idx").on(table.issueId, table.stageId, table.createdAt),
+    gateKeyIdx: index("issue_execution_decisions_gate_key_idx").on(table.issueId, table.gateKey, table.createdAt),
   }),
 );

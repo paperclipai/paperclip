@@ -9,9 +9,14 @@ const ctoUserId = "cto-user";
 const boardUserId = "board-user";
 
 function makePolicy(
-  stages: Array<{ type: "review" | "approval"; participants: Array<{ type: "agent" | "user"; agentId?: string; userId?: string }> }>,
+  stages: Array<{
+    type: "review" | "approval";
+    gateKey?: "adversarial_review" | "code_review" | "merge_gate";
+    participants: Array<{ type: "agent" | "user"; agentId?: string; userId?: string }>;
+  }>,
+  gateContract?: Record<string, unknown>,
 ) {
-  return normalizeIssueExecutionPolicy({ stages })!;
+  return normalizeIssueExecutionPolicy({ stages, gateContract })!;
 }
 
 function twoStagePolicy() {
@@ -93,6 +98,77 @@ describe("normalizeIssueExecutionPolicy", () => {
       ],
     });
     expect(result!.mode).toBe("normal");
+  });
+
+  it("preserves gate contracts and per-stage gate keys", () => {
+    const result = normalizeIssueExecutionPolicy({
+      gateContract: { kind: "aetherion_quality_funnel" },
+      stages: [
+        {
+          type: "review",
+          gateKey: "adversarial_review",
+          participants: [{ type: "agent", agentId: qaAgentId }],
+        },
+      ],
+    });
+    expect(result!.gateContract).toMatchObject({
+      kind: "aetherion_quality_funnel",
+      artifactKeys: {
+        adversarialReview: "adversarial_review",
+        codeReview: "code_review",
+      },
+      reviewBudgetsMinutes: {
+        docsTemplate: 15,
+        normalCodeChange: 40,
+      },
+      maxAdversarialChangeRequests: 1,
+    });
+    expect(result!.stages[0].gateKey).toBe("adversarial_review");
+  });
+
+  it("locks aetherion quality funnel contracts to the canonical gate constants", () => {
+    const result = normalizeIssueExecutionPolicy({
+      gateContract: {
+        kind: "aetherion_quality_funnel",
+        artifactKeys: {
+          planAudit: "plan_audit",
+          executionReport: "execution_report",
+          adversarialReview: "adversarial_review",
+          codeReview: "review_findings",
+          verification: "verification",
+          closeout: "closeout",
+        },
+        reviewBudgetsMinutes: {
+          docsTemplate: 5,
+          normalCodeChange: 120,
+        },
+        maxAdversarialChangeRequests: 3,
+      },
+      stages: [
+        {
+          type: "review",
+          gateKey: "adversarial_review",
+          participants: [{ type: "agent", agentId: qaAgentId }],
+        },
+      ],
+    });
+
+    expect(result!.gateContract).toMatchObject({
+      kind: "aetherion_quality_funnel",
+      artifactKeys: {
+        planAudit: "plan_audit",
+        executionReport: "execution_report",
+        adversarialReview: "adversarial_review",
+        codeReview: "code_review",
+        verification: "verification",
+        closeout: "closeout",
+      },
+      reviewBudgetsMinutes: {
+        docsTemplate: 15,
+        normalCodeChange: 40,
+      },
+      maxAdversarialChangeRequests: 1,
+    });
   });
 
   it("rejects approvalsNeeded values above 1", () => {
@@ -336,6 +412,48 @@ describe("issue execution policy transitions", () => {
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: qaAgentId },
       });
+    });
+
+    it("blocks a second adversarial-review changes-requested loop for contracted issues", () => {
+      const contractPolicy = makePolicy(
+        [
+          {
+            type: "review",
+            gateKey: "adversarial_review",
+            participants: [{ type: "agent", agentId: qaAgentId }],
+          },
+        ],
+        { kind: "aetherion_quality_funnel", maxAdversarialChangeRequests: 1 },
+      );
+      const adversarialStageId = contractPolicy.stages[0].id;
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: contractPolicy,
+            executionState: {
+              status: "pending",
+              currentStageId: adversarialStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy: contractPolicy,
+          requestedStatus: "in_progress",
+          requestedAssigneePatch: {},
+          actor: { agentId: qaAgentId },
+          commentBody: "Still not good enough",
+          priorChangesRequestedCountForActiveStage: 1,
+        }),
+      ).toThrow("Adversarial review fix loop is already exhausted");
     });
   });
 

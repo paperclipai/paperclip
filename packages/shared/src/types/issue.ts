@@ -1,5 +1,7 @@
 import type {
   IssueExecutionDecisionOutcome,
+  IssueExecutionGateContractKind,
+  IssueExecutionGateKey,
   IssueExecutionPolicyMode,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
@@ -133,9 +135,31 @@ export interface IssueExecutionStageParticipant extends IssueExecutionStagePrinc
   id: string;
 }
 
+export interface IssueExecutionGateContractArtifactKeys {
+  planAudit: string;
+  executionReport: string;
+  adversarialReview: string;
+  codeReview: string;
+  verification: string;
+  closeout: string;
+}
+
+export interface IssueExecutionGateContractReviewBudgets {
+  docsTemplate: number;
+  normalCodeChange: number;
+}
+
+export interface IssueExecutionGateContract {
+  kind: IssueExecutionGateContractKind;
+  artifactKeys: IssueExecutionGateContractArtifactKeys;
+  reviewBudgetsMinutes: IssueExecutionGateContractReviewBudgets;
+  maxAdversarialChangeRequests: number;
+}
+
 export interface IssueExecutionStage {
   id: string;
   type: IssueExecutionStageType;
+  gateKey?: IssueExecutionGateKey | null;
   approvalsNeeded: 1;
   participants: IssueExecutionStageParticipant[];
 }
@@ -143,6 +167,7 @@ export interface IssueExecutionStage {
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
   commentRequired: boolean;
+  gateContract?: IssueExecutionGateContract | null;
   stages: IssueExecutionStage[];
 }
 
@@ -164,6 +189,7 @@ export interface IssueExecutionDecision {
   issueId: string;
   stageId: string;
   stageType: IssueExecutionStageType;
+  gateKey: IssueExecutionGateKey | null;
   actorAgentId: string | null;
   actorUserId: string | null;
   outcome: IssueExecutionDecisionOutcome;

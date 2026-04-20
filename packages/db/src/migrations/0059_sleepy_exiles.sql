@@ -1,0 +1,2 @@
+ALTER TABLE "issue_execution_decisions" ADD COLUMN "gate_key" text;--> statement-breakpoint
+CREATE INDEX "issue_execution_decisions_gate_key_idx" ON "issue_execution_decisions" USING btree ("issue_id","gate_key","created_at");

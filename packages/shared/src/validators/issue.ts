@@ -1,6 +1,11 @@
 import { z } from "zod";
 import {
+  AETHERION_QUALITY_FUNNEL_ARTIFACT_KEYS,
+  AETHERION_QUALITY_FUNNEL_MAX_ADVERSARIAL_CHANGE_REQUESTS,
+  AETHERION_QUALITY_FUNNEL_REVIEW_BUDGETS_MINUTES,
   ISSUE_EXECUTION_DECISION_OUTCOMES,
+  ISSUE_EXECUTION_GATE_CONTRACT_KINDS,
+  ISSUE_EXECUTION_GATE_KEYS,
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
@@ -91,13 +96,27 @@ export const issueExecutionStageParticipantSchema = issueExecutionStagePrincipal
 export const issueExecutionStageSchema = z.object({
   id: z.string().uuid().optional(),
   type: z.enum(ISSUE_EXECUTION_STAGE_TYPES),
+  gateKey: z.enum(ISSUE_EXECUTION_GATE_KEYS).optional().nullable(),
   approvalsNeeded: z.literal(1).optional().default(1),
   participants: z.array(issueExecutionStageParticipantSchema).default([]),
 });
 
+export const issueExecutionGateContractSchema = z.object({
+  kind: z.enum(ISSUE_EXECUTION_GATE_CONTRACT_KINDS),
+  artifactKeys: z.unknown().optional(),
+  reviewBudgetsMinutes: z.unknown().optional(),
+  maxAdversarialChangeRequests: z.unknown().optional(),
+}).transform((value) => ({
+  kind: value.kind,
+  artifactKeys: { ...AETHERION_QUALITY_FUNNEL_ARTIFACT_KEYS },
+  reviewBudgetsMinutes: { ...AETHERION_QUALITY_FUNNEL_REVIEW_BUDGETS_MINUTES },
+  maxAdversarialChangeRequests: AETHERION_QUALITY_FUNNEL_MAX_ADVERSARIAL_CHANGE_REQUESTS,
+}));
+
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
+  gateContract: issueExecutionGateContractSchema.optional().nullable(),
   stages: z.array(issueExecutionStageSchema).default([]),
 });
 

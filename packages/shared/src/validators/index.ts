@@ -137,6 +137,7 @@ export {
   createChildIssueSchema,
   createIssueLabelSchema,
   updateIssueSchema,
+  issueExecutionGateContractSchema,
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
   issueExecutionWorkspaceSettingsSchema,

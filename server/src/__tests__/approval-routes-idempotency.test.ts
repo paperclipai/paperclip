@@ -28,8 +28,12 @@ const mockSecretService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockAssertApprovalMergeGateReadyForIssueIds = vi.hoisted(() => vi.fn(async () => undefined));
+const mockAssertApprovalMergeGateReadyForLinkedIssues = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../services/index.js", () => ({
+  assertApprovalMergeGateReadyForIssueIds: mockAssertApprovalMergeGateReadyForIssueIds,
+  assertApprovalMergeGateReadyForLinkedIssues: mockAssertApprovalMergeGateReadyForLinkedIssues,
   approvalService: () => mockApprovalService,
   heartbeatService: () => mockHeartbeatService,
   issueApprovalService: () => mockIssueApprovalService,
@@ -39,6 +43,8 @@ vi.mock("../services/index.js", () => ({
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
+    assertApprovalMergeGateReadyForIssueIds: mockAssertApprovalMergeGateReadyForIssueIds,
+    assertApprovalMergeGateReadyForLinkedIssues: mockAssertApprovalMergeGateReadyForLinkedIssues,
     approvalService: () => mockApprovalService,
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => mockIssueApprovalService,
@@ -102,6 +108,8 @@ describe("approval routes idempotent retries", () => {
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
     mockLogActivity.mockResolvedValue(undefined);
+    mockAssertApprovalMergeGateReadyForIssueIds.mockResolvedValue(undefined);
+    mockAssertApprovalMergeGateReadyForLinkedIssues.mockResolvedValue(undefined);
   });
 
   it("does not emit duplicate approval side effects when approve is already resolved", async () => {
@@ -328,6 +336,84 @@ describe("approval routes idempotent retries", () => {
         actorType: "agent",
         actorId: "agent-1",
         action: "approval.created",
+      }),
+    );
+  });
+
+  it("blocks merge-gate approval creation before linking side effects when gate evidence is incomplete", async () => {
+    const { HttpError } = await import("../errors.js");
+    mockAssertApprovalMergeGateReadyForIssueIds.mockRejectedValueOnce(
+      new HttpError(422, "Merge gate blocked: missing code review artifact"),
+    );
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { stage: "merge_gate" },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("missing code review artifact");
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("blocks merge-gate approval resolution when linked issue evidence is incomplete", async () => {
+    const { HttpError } = await import("../errors.js");
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-merge-gate",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: { stage: "merge_gate" },
+      requestedByAgentId: "agent-1",
+    });
+    mockAssertApprovalMergeGateReadyForLinkedIssues.mockRejectedValueOnce(
+      new HttpError(422, "Merge gate blocked: missing code review artifact"),
+    );
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-merge-gate/approve")
+      .send({});
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("missing code review artifact");
+    expect(mockApprovalService.approve).not.toHaveBeenCalled();
+    expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("blocks merge-gate approval resubmit when linked issue evidence is incomplete", async () => {
+    const { HttpError } = await import("../errors.js");
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-merge-gate",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: { stage: "implementation_notes" },
+      requestedByAgentId: "agent-1",
+    });
+    mockAssertApprovalMergeGateReadyForLinkedIssues.mockRejectedValueOnce(
+      new HttpError(422, "Merge gate blocked: missing code review artifact"),
+    );
+
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-merge-gate/resubmit")
+      .send({ payload: { stage: "merge_gate" } });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("missing code review artifact");
+    expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockAssertApprovalMergeGateReadyForLinkedIssues).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        id: "approval-merge-gate",
+        payload: { stage: "merge_gate" },
       }),
     );
   });

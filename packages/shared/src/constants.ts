@@ -159,6 +159,32 @@ export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[num
 export const ISSUE_EXECUTION_STAGE_TYPES = ["review", "approval"] as const;
 export type IssueExecutionStageType = (typeof ISSUE_EXECUTION_STAGE_TYPES)[number];
 
+export const ISSUE_EXECUTION_GATE_CONTRACT_KINDS = ["aetherion_quality_funnel"] as const;
+export type IssueExecutionGateContractKind = (typeof ISSUE_EXECUTION_GATE_CONTRACT_KINDS)[number];
+
+export const AETHERION_QUALITY_FUNNEL_ARTIFACT_KEYS = {
+  planAudit: "plan_audit",
+  executionReport: "execution_report",
+  adversarialReview: "adversarial_review",
+  codeReview: "code_review",
+  verification: "verification",
+  closeout: "closeout",
+} as const;
+
+export const AETHERION_QUALITY_FUNNEL_REVIEW_BUDGETS_MINUTES = {
+  docsTemplate: 15,
+  normalCodeChange: 40,
+} as const;
+
+export const AETHERION_QUALITY_FUNNEL_MAX_ADVERSARIAL_CHANGE_REQUESTS = 1;
+
+export const ISSUE_EXECUTION_GATE_KEYS = [
+  "adversarial_review",
+  "code_review",
+  "merge_gate",
+] as const;
+export type IssueExecutionGateKey = (typeof ISSUE_EXECUTION_GATE_KEYS)[number];
+
 export const ISSUE_EXECUTION_STATE_STATUSES = ["idle", "pending", "changes_requested", "completed"] as const;
 export type IssueExecutionStateStatus = (typeof ISSUE_EXECUTION_STATE_STATUSES)[number];
 

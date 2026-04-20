@@ -35,6 +35,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { assertIssueCanMoveToDone } from "./quality-gate-contract.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -1767,6 +1768,9 @@ export function issueService(db: Db) {
         }
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (issue.status === "done") {
+          await assertIssueCanMoveToDone(tx, issue);
+        }
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
@@ -1837,6 +1841,13 @@ export function issueService(db: Db) {
       }
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
+      }
+      if (issueData.status === "done") {
+        const gatePolicy =
+          issueData.executionPolicy === undefined || issueData.executionPolicy === null
+            ? existing.executionPolicy
+            : issueData.executionPolicy;
+        await assertIssueCanMoveToDone(dbOrTx, { ...existing, executionPolicy: gatePolicy });
       }
       if (issueData.assigneeAgentId) {
         await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);

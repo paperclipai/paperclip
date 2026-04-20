@@ -138,9 +138,11 @@ async function installActor(app: express.Express, actor?: Record<string, unknown
 }
 
 async function normalizePolicy(input: {
+  gateContract?: Record<string, unknown>;
   stages: Array<{
     id: string;
     type: "review" | "approval";
+    gateKey?: "adversarial_review" | "code_review" | "merge_gate";
     participants: Array<{ type: "agent"; agentId: string } | { type: "user"; userId: string }>;
   }>;
 }) {
@@ -570,10 +572,12 @@ describe("issue comment reopen routes", () => {
 
   it("coerces executor handoff patches into workflow-controlled review wakes", async () => {
     const policy = await normalizePolicy({
+      gateContract: { kind: "aetherion_quality_funnel" },
       stages: [
         {
           id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           type: "review",
+          gateKey: "adversarial_review",
           participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
         },
       ],
@@ -637,6 +641,12 @@ describe("issue comment reopen routes", () => {
           executionStage: expect.objectContaining({
             wakeRole: "reviewer",
             stageType: "review",
+            gateKey: "adversarial_review",
+            gateContractKind: "aetherion_quality_funnel",
+            reviewBudgetsMinutes: {
+              docsTemplate: 15,
+              normalCodeChange: 40,
+            },
             allowedActions: ["approve", "request_changes"],
           }),
         }),

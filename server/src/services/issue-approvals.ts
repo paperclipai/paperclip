@@ -3,6 +3,10 @@ import type { Db } from "@paperclipai/db";
 import { approvals, issueApprovals, issues } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactEventPayload } from "../redaction.js";
+import {
+  assertApprovalMergeGateReadyForIssue,
+  assertApprovalMergeGateReadyForIssueIds,
+} from "./quality-gate-contract.js";
 
 interface LinkActor {
   agentId?: string | null;
@@ -105,7 +109,8 @@ export function issueApprovalService(db: Db) {
     },
 
     link: async (issueId: string, approvalId: string, actor?: LinkActor) => {
-      const { issue } = await assertIssueAndApprovalSameCompany(issueId, approvalId);
+      const { issue, approval } = await assertIssueAndApprovalSameCompany(issueId, approvalId);
+      await assertApprovalMergeGateReadyForIssue(db, approval, issueId);
 
       await db
         .insert(issueApprovals)
@@ -156,6 +161,7 @@ export function issueApprovalService(db: Db) {
           throw unprocessable("Issue and approval must belong to the same company");
         }
       }
+      await assertApprovalMergeGateReadyForIssueIds(db, approval, uniqueIssueIds);
 
       await db
         .insert(issueApprovals)
