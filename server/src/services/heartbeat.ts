@@ -128,6 +128,7 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const LOCAL_CHILD_METADATA_GRACE_MS = 20 * 60 * 1000;
 const execFile = promisify(execFileCallback);
 const ACTIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -3364,8 +3365,9 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; metadataMissingGraceMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const metadataGraceMs = opts?.metadataMissingGraceMs ?? LOCAL_CHILD_METADATA_GRACE_MS;
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -3391,6 +3393,12 @@ export function heartbeatService(db: Db) {
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      if (tracksLocalChild && !run.processPid) {
+        const startedRef = run.startedAt ? new Date(run.startedAt).getTime() : 0;
+        const updatedRef = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        const refTime = Math.max(startedRef, updatedRef, 0);
+        if (refTime > 0 && now.getTime() - refTime < metadataGraceMs) continue;
+      }
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
@@ -5811,6 +5819,53 @@ export function heartbeatService(db: Db) {
     return runs.length;
   }
 
+  async function drainRunningRunsForShutdownInternal(reason = "Cancelled due to server shutdown") {
+    const now = new Date();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.status, "running"));
+
+    for (const run of runs) {
+      const running = runningProcesses.get(run.id);
+      if (running) {
+        await terminateHeartbeatRunProcess({
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs: Math.max(1, running.graceSec) * 1000,
+        });
+      } else if (run.processPid || run.processGroupId) {
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      }
+
+      const cancelled = await setRunStatus(run.id, "cancelled", {
+        finishedAt: now,
+        error: reason,
+        errorCode: "cancelled",
+      });
+
+      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+        finishedAt: now,
+        error: reason,
+      });
+
+      if (cancelled) {
+        await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "run cancelled during server shutdown drain",
+        });
+        await releaseIssueExecutionAndPromote(cancelled);
+      }
+
+      runningProcesses.delete(run.id);
+      await finalizeAgentStatus(run.agentId, "cancelled");
+    }
+
+    return runs.length;
+  }
+
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
     if (scope.scopeType === "agent") {
       await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
@@ -6093,6 +6148,8 @@ export function heartbeatService(db: Db) {
     cancelRun: (runId: string) => cancelRunInternal(runId),
 
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
+
+    drainRunningRunsForShutdown: (reason?: string) => drainRunningRunsForShutdownInternal(reason),
 
     cancelBudgetScopeWork,
 
