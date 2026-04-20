@@ -25,6 +25,7 @@ const ENABLED_INVITE_ADAPTERS = new Set([
   "gemini_local",
   "opencode_local",
   "pi_local",
+  "qodo_local",
   "cursor",
 ]);
 
