@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Archive, ArchiveRestore, Building2, Plus, Trash2, Users, Building as BuildingIcon } from "lucide-react";
-import { organizationsApi, type Organization } from "../api/organizations";
+import { organizationsApi } from "../api/organizations";
 import { companiesApi } from "../api/companies";
 import { authApi } from "../api/auth";
 import { useToastActions } from "../context/ToastContext";
@@ -14,20 +14,12 @@ import { Link } from "@/lib/router";
 export function Organizations() {
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
-  const { selectedOrg, setSelectedOrgId } = useOrg();
+  const { organizations, selectedOrg, setSelectedOrgId, loading: orgsLoading } = useOrg();
 
   const [showCreate, setShowCreate] = useState(false);
   const [newOrgName, setNewOrgName] = useState("");
   const [addMemberEmail, setAddMemberEmail] = useState("");
   const [attachCompanyId, setAttachCompanyId] = useState("");
-
-  // Load all orgs (including archived) for this page so archived ones are visible.
-  const allOrgsQuery = useQuery<Organization[]>({
-    queryKey: [...queryKeys.organizations.list, "includeArchived"],
-    queryFn: () => organizationsApi.list({ includeArchived: true }),
-  });
-  const organizations = allOrgsQuery.data ?? [];
-  const orgsLoading = allOrgsQuery.isLoading;
 
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
@@ -35,11 +27,11 @@ export function Organizations() {
   });
   const currentUserId = sessionQuery.data?.user?.id ?? null;
 
-  // Page-local selection (may point at an archived org, unlike context).
+  // Page-local selection so the user can inspect an archived org without
+  // leaking that selection into the rest of the app.
   const [pageSelectedOrgId, setPageSelectedOrgId] = useState<string | null>(
     selectedOrg?.id ?? null,
   );
-  // Fall back to first available org once the includeArchived list resolves.
   const effectiveSelectedId =
     pageSelectedOrgId && organizations.some((o) => o.id === pageSelectedOrgId)
       ? pageSelectedOrgId
@@ -54,13 +46,11 @@ export function Organizations() {
 
   function selectOrg(orgId: string) {
     setPageSelectedOrgId(orgId);
-    const org = organizations.find((o) => o.id === orgId);
-    if (org && !org.archivedAt) setSelectedOrgId(orgId);
+    setSelectedOrgId(orgId);
   }
 
   function invalidateOrgLists() {
     queryClient.invalidateQueries({ queryKey: queryKeys.organizations.list });
-    queryClient.invalidateQueries({ queryKey: [...queryKeys.organizations.list, "includeArchived"] });
   }
 
   const createOrgMutation = useMutation({

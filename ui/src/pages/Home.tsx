@@ -82,6 +82,7 @@ export function HomePage() {
                   {organizations.map((org) => (
                     <option key={org.id} value={org.id}>
                       {org.name}
+                      {org.archivedAt ? " (archived)" : ""}
                     </option>
                   ))}
                 </select>

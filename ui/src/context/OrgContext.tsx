@@ -14,6 +14,7 @@ import { queryKeys } from "../lib/queryKeys";
 
 interface OrgContextValue {
   organizations: Organization[];
+  activeOrganizations: Organization[];
   selectedOrgId: string | null;
   selectedOrg: Organization | null;
   loading: boolean;
@@ -37,7 +38,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     queryKey: queryKeys.organizations.list,
     queryFn: async () => {
       try {
-        return await organizationsApi.list();
+        return await organizationsApi.list({ includeArchived: true });
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
           return [];
@@ -48,15 +49,25 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     retry: false,
   });
 
+  const activeOrganizations = useMemo(
+    () => organizations.filter((o) => !o.archivedAt),
+    [organizations],
+  );
+
   useEffect(() => {
     if (organizations.length === 0) return;
     const stored = localStorage.getItem(STORAGE_KEY);
+    // Keep the stored selection if it still exists, even if archived — this
+    // lets the Layout route-to-org effect land on companies attached to an
+    // archived org without fighting the auto-select logic.
     if (stored && organizations.some((o) => o.id === stored)) return;
     if (selectedOrgId && organizations.some((o) => o.id === selectedOrgId)) return;
-    const next = organizations[0]!.id;
+    // Prefer the first active org; fall back to any org (even archived) so
+    // users whose only org is archived still have a valid selection.
+    const next = (activeOrganizations[0] ?? organizations[0])!.id;
     setSelectedOrgIdState(next);
     localStorage.setItem(STORAGE_KEY, next);
-  }, [organizations, selectedOrgId]);
+  }, [organizations, activeOrganizations, selectedOrgId]);
 
   const setSelectedOrgId = useCallback((orgId: string) => {
     setSelectedOrgIdState(orgId);
@@ -88,6 +99,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       organizations,
+      activeOrganizations,
       selectedOrgId,
       selectedOrg,
       loading: isLoading,
@@ -98,6 +110,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     }),
     [
       organizations,
+      activeOrganizations,
       selectedOrgId,
       selectedOrg,
       isLoading,
