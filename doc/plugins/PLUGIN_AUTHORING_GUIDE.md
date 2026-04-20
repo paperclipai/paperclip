@@ -113,6 +113,29 @@ Mount surfaces currently wired in the host include:
 - `contextMenuItem`
 - `commentAnnotation`
 - `commentContextMenuItem`
+- `newIssueFormExtension`
+
+### `newIssueFormExtension`
+
+Renders inline inside the native "New Issue" dialog, between the assignee/reviewer rows and the description editor.
+
+**Context:** Company-scoped. `context.companyId` and `context.companyPrefix` reflect the currently selected company.
+
+**Form access:**
+- `context.formState.description` — current description field value (read-only snapshot)
+- `context.formActions.setDescription(value)` — replace the description field content
+
+**What the host owns:** Title, status, priority, assignee, reviewer, approver, project, execution workspace, file attachments, draft auto-save, mentions, company switching, and the submit action. The plugin cannot modify or block these.
+
+**Capability:** `ui.action.register`
+
+**Failure isolation:** If the plugin render fails or is uninstalled, the dialog reverts to its normal behavior with no visible change.
+
+**Typed props:** `PluginNewIssueFormExtensionProps` from `@paperclipai/plugin-sdk/ui`
+
+**Example use cases:**
+- Issue type selector that inserts markdown templates into the description
+- Pre-fill controls that seed description from external sources
 
 ## Company routes
 

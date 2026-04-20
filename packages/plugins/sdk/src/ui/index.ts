@@ -84,4 +84,7 @@ export type {
   PluginCommentAnnotationProps,
   PluginCommentContextMenuItemProps,
   PluginSettingsPageProps,
+  PluginNewIssueFormExtensionProps,
+  NewIssueFormState,
+  NewIssueFormActions,
 } from "./types.js";

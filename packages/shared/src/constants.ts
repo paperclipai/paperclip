@@ -564,6 +564,7 @@ export const PLUGIN_UI_SLOT_TYPES = [
   "commentAnnotation",
   "commentContextMenuItem",
   "settingsPage",
+  "newIssueFormExtension",
 ] as const;
 export type PluginUiSlotType = (typeof PLUGIN_UI_SLOT_TYPES)[number];
 
@@ -614,6 +615,7 @@ export const PLUGIN_LAUNCHER_PLACEMENT_ZONES = [
   "commentAnnotation",
   "commentContextMenuItem",
   "settingsPage",
+  "newIssueFormExtension",
 ] as const;
 export type PluginLauncherPlacementZone = (typeof PLUGIN_LAUNCHER_PLACEMENT_ZONES)[number];
 
