@@ -373,6 +373,20 @@ function describeSessionResetReason(
   return null;
 }
 
+export function shouldDeferFollowupWakeForSameIssue(input: {
+  activeRunStatus: string | null | undefined;
+  isSameExecutionAgent: boolean;
+  wakeCommentId: string | null | undefined;
+  forceFreshSession: boolean;
+}) {
+  // A comment follow-up or explicit fresh-session wake needs a new run boundary.
+  if (!input.isSameExecutionAgent) return false;
+  if (input.activeRunStatus !== "running") return false;
+  if (input.wakeCommentId) return true;
+  if (input.forceFreshSession) return true;
+  return false;
+}
+
 function deriveCommentId(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
@@ -2372,12 +2386,14 @@ export function heartbeatService(db: Db) {
             normalizeAgentNameKey(executionAgent?.name);
           const isSameExecutionAgent =
             Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey;
-          const shouldQueueFollowupForCommentWake =
-            Boolean(wakeCommentId) &&
-            activeExecutionRun.status === "running" &&
-            isSameExecutionAgent;
+          const shouldDeferFollowupWake = shouldDeferFollowupWakeForSameIssue({
+            activeRunStatus: activeExecutionRun.status,
+            isSameExecutionAgent,
+            wakeCommentId,
+            forceFreshSession: enrichedContextSnapshot.forceFreshSession === true,
+          });
 
-          if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake) {
+          if (isSameExecutionAgent && !shouldDeferFollowupWake) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               activeExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
