@@ -180,7 +180,6 @@ describe("issue feedback trace routes", () => {
     });
 
     const res = await request(app).get("/api/feedback-traces/trace-1");
-
     expect(res.status).toBe(403);
     expect(mockFeedbackService.getFeedbackTraceById).not.toHaveBeenCalled();
   });

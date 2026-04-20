@@ -5,7 +5,12 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssueChatThread, canStopIssueChatRun, resolveAssistantMessageFoldedState } from "./IssueChatThread";
+import {
+  IssueChatThread,
+  canStopIssueChatRun,
+  resolveAssistantMessageFoldedState,
+  resolveIssueChatHumanAuthor,
+} from "./IssueChatThread";
 
 const { markdownEditorFocusMock } = vi.hoisted(() => ({
   markdownEditorFocusMock: vi.fn(),
@@ -660,5 +665,34 @@ describe("IssueChatThread", () => {
       runStatus: "cancelled",
       activeRunIds: new Set<string>(),
     })).toBe(false);
+  });
+
+  it("uses company profile data to distinguish the current user from other humans", () => {
+    const userProfileMap = new Map([
+      ["user-1", { label: "Dotta", image: "/avatars/dotta.png" }],
+      ["user-2", { label: "Alice", image: "/avatars/alice.png" }],
+    ]);
+
+    expect(resolveIssueChatHumanAuthor({
+      authorName: "You",
+      authorUserId: "user-1",
+      currentUserId: "user-1",
+      userProfileMap,
+    })).toEqual({
+      isCurrentUser: true,
+      authorName: "Dotta",
+      avatarUrl: "/avatars/dotta.png",
+    });
+
+    expect(resolveIssueChatHumanAuthor({
+      authorName: "Alice",
+      authorUserId: "user-2",
+      currentUserId: "user-1",
+      userProfileMap,
+    })).toEqual({
+      isCurrentUser: false,
+      authorName: "Alice",
+      avatarUrl: "/avatars/alice.png",
+    });
   });
 });

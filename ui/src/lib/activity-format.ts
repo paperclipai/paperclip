@@ -1,4 +1,5 @@
 import type { Agent } from "@paperclipai/shared";
+import type { CompanyUserProfile } from "./company-members";
 
 type ActivityDetails = Record<string, unknown> | null | undefined;
 
@@ -16,6 +17,7 @@ type ActivityIssueReference = {
 
 interface ActivityFormatOptions {
   agentMap?: Map<string, Agent>;
+  userProfileMap?: Map<string, CompanyUserProfile>;
   currentUserId?: string | null;
 }
 
@@ -118,9 +120,11 @@ function readIssueReferences(details: ActivityDetails, key: string): ActivityIss
   return value.filter(isActivityIssueReference);
 }
 
-function formatUserLabel(userId: string | null | undefined, currentUserId?: string | null): string {
+function formatUserLabel(userId: string | null | undefined, options: ActivityFormatOptions = {}): string {
   if (!userId || userId === "local-board") return "Board";
-  if (currentUserId && userId === currentUserId) return "You";
+  if (options.currentUserId && userId === options.currentUserId) return "You";
+  const profile = options.userProfileMap?.get(userId);
+  if (profile) return profile.label;
   return `user ${userId.slice(0, 5)}`;
 }
 
@@ -129,7 +133,7 @@ function formatParticipantLabel(participant: ActivityParticipant, options: Activ
     const agentId = participant.agentId ?? "";
     return options.agentMap?.get(agentId)?.name ?? "agent";
   }
-  return formatUserLabel(participant.userId, options.currentUserId);
+  return formatUserLabel(participant.userId, options);
 }
 
 function formatIssueReferenceLabel(reference: ActivityIssueReference): string {
@@ -167,7 +171,20 @@ function formatIssueUpdatedVerb(details: ActivityDetails): string | null {
   return null;
 }
 
-function formatIssueUpdatedAction(details: ActivityDetails): string | null {
+function formatAssigneeName(details: ActivityDetails, options: ActivityFormatOptions): string | null {
+  if (!details) return null;
+  const agentId = details.assigneeAgentId;
+  const userId = details.assigneeUserId;
+  if (typeof agentId === "string" && agentId) {
+    return options.agentMap?.get(agentId)?.name ?? "agent";
+  }
+  if (typeof userId === "string" && userId) {
+    return formatUserLabel(userId, options);
+  }
+  return null;
+}
+
+function formatIssueUpdatedAction(details: ActivityDetails, options: ActivityFormatOptions = {}): string | null {
   if (!details) return null;
   const previous = asRecord(details._previous) ?? {};
   const parts: string[] = [];
@@ -189,7 +206,8 @@ function formatIssueUpdatedAction(details: ActivityDetails): string | null {
     );
   }
   if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
-    parts.push(details.assigneeAgentId || details.assigneeUserId ? "assigned the issue" : "unassigned the issue");
+    const assigneeName = formatAssigneeName(details, options);
+    parts.push(assigneeName ? `assigned the issue to ${assigneeName}` : "unassigned the issue");
   }
   if (details.title !== undefined) parts.push("updated the title");
   if (details.description !== undefined) parts.push("updated the description");
@@ -266,7 +284,7 @@ export function formatIssueActivityAction(
   options: ActivityFormatOptions = {},
 ): string {
   if (action === "issue.updated") {
-    const issueUpdatedAction = formatIssueUpdatedAction(details);
+    const issueUpdatedAction = formatIssueUpdatedAction(details, options);
     if (issueUpdatedAction) return issueUpdatedAction;
   }
 

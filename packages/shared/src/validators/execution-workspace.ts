@@ -99,7 +99,6 @@ export const workspaceRuntimeServiceSchema = z.object({
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 }).strict();
-
 export const executionWorkspaceCloseReadinessSchema = z.object({
   workspaceId: z.string().uuid(),
   state: executionWorkspaceCloseReadinessStateSchema,
