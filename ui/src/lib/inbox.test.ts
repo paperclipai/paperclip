@@ -457,6 +457,34 @@ describe("inbox helpers", () => {
     expect(result.approvals).toBe(0);
   });
 
+  it("ignores transient null inbox entities during badge computation", () => {
+    const result = computeInboxBadgeData({
+      approvals: [
+        null as unknown as Approval,
+        { ...makeApproval("pending"), requestedByUserId: "user-1" },
+      ],
+      joinRequests: [null as unknown as JoinRequest, makeJoinRequest("join-1")],
+      dashboard,
+      heartbeatRuns: [
+        null as unknown as HeartbeatRun,
+        makeRun("run-1", "failed", "2026-03-11T00:00:00.000Z"),
+      ],
+      mineIssues: [null as unknown as Issue, makeIssue("1", true)],
+      dismissedAlerts: new Set<string>(),
+      dismissedAtByKey: new Map(),
+      currentUserId: "user-1",
+    });
+
+    expect(result).toEqual({
+      inbox: 4,
+      approvals: 1,
+      failedRuns: 1,
+      joinRequests: 1,
+      mineIssues: 1,
+      alerts: 1,
+    });
+  });
+
   it("does not count company-wide alerts in the personal inbox badge", () => {
     const result = computeInboxBadgeData({
       approvals: [],
