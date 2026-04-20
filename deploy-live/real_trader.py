@@ -1000,4 +1000,767 @@ def create_executors(session: aiohttp.ClientSession) -> Dict[str, ExchangeExecut
     return executors
 
 
+# ---------------------------------------------------------------------------
+# Disabled exchanges (togglable at runtime)
+# ---------------------------------------------------------------------------
+DISABLED_EXCHANGES: List[str] = []
+
+
+# ---------------------------------------------------------------------------
+# HTTP helper
+# ---------------------------------------------------------------------------
+async def _get(session, url, timeout=8):
+    """Async HTTP GET with timeout — returns parsed JSON or None."""
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+            if r.status != 200:
+                return None
+            return await r.json()
+    except Exception:
+        return None
+
+
+# ===========================================================================
+# Exchange WS Manager — real-time ticker feeds (OKX, Bybit)
+# ===========================================================================
+
+class ExchangeWSManager:
+    """Manages persistent websocket connections for real-time bid/ask tickers."""
+
+    def __init__(self):
+        self.cache: Dict[str, Dict[str, dict]] = {}  # "Bybit_PERP" -> {symbol -> {bid, ask, ts}}
+        self._tasks = []
+        self._session = None
+        self._running = False
+        self._connected: Dict[str, bool] = {}
+        self._vol_cache: Dict[str, Dict[str, float]] = {}
+
+    async def start(self, session: aiohttp.ClientSession):
+        self._session = session
+        self._running = True
+        ws_runners = [
+            ("Bybit_PERP", self._run_bybit_perp_ws),
+            ("OKX_PERP", self._run_okx_perp_ws),
+        ]
+        for key, coro in ws_runners:
+            self.cache[key] = {}
+            self._connected[key] = False
+            self._vol_cache[key] = {}
+            self._tasks.append(asyncio.create_task(coro()))
+        # Periodic volume refresh (WS doesn't include volume)
+        self._tasks.append(asyncio.create_task(self._refresh_volumes()))
+        log.info("Multi-exchange WS manager started")
+
+    async def stop(self):
+        self._running = False
+        for t in self._tasks:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    def _update(self, key: str, sym: str, bid: float, ask: float):
+        if bid > 0 and ask > 0:
+            self.cache.setdefault(key, {})[sym] = {"bid": bid, "ask": ask, "ts": time.time()}
+
+    def is_connected(self, exchange: str, instrument: str = "PERP") -> bool:
+        key = f"{exchange}_{instrument}"
+        return self._connected.get(key, False) and len(self.cache.get(key, {})) > 10
+
+    def get_quotes(self, exchange: str, instrument: str, symbols_set) -> List[PriceQuote]:
+        key = f"{exchange}_{instrument}"
+        quotes = []
+        stale_cutoff = time.time() - 10
+        for sym, d in self.cache.get(key, {}).items():
+            if symbols_set and sym not in symbols_set:
+                continue
+            if d["ts"] < stale_cutoff or d["bid"] <= 0 or d["ask"] <= 0:
+                continue
+            mid = (d["bid"] + d["ask"]) / 2
+            vol = self._vol_cache.get(key, {}).get(sym, 0)
+            fr = get_funding_rate(exchange, sym) if instrument == "PERP" else 0
+            quotes.append(PriceQuote(exchange=exchange, symbol=sym, bid=d["bid"], ask=d["ask"],
+                                     mid=mid, volume_24h_usd=vol, funding_rate=fr, instrument=instrument))
+        return quotes
+
+    async def _refresh_volumes(self):
+        """Refresh 24h volumes via REST every 5 min for WS-connected exchanges."""
+        while self._running:
+            try:
+                # Bybit perp
+                data = await _get(self._session, "https://api.bybit.com/v5/market/tickers?category=linear")
+                if data and data.get("retCode") == 0:
+                    for t in data.get("result", {}).get("list", []):
+                        sym = t.get("symbol", "")
+                        if sym.endswith("USDT"):
+                            self._vol_cache.setdefault("Bybit_PERP", {})[sym] = float(t.get("turnover24h", 0))
+                # OKX perp
+                data = await _get(self._session, "https://www.okx.com/api/v5/market/tickers?instType=SWAP")
+                if data and data.get("code") == "0":
+                    for t in data.get("data", []):
+                        inst = t.get("instId", "")
+                        if inst.endswith("-USDT-SWAP"):
+                            sym = inst.replace("-", "").replace("SWAP", "")
+                            self._vol_cache.setdefault("OKX_PERP", {})[sym] = float(t.get("volCcy24h", 0))
+            except Exception as e:
+                log.debug(f"Exchange WS volume refresh error: {e}")
+            await asyncio.sleep(300)
+
+    async def _run_bybit_perp_ws(self):
+        """Bybit linear — subscribe to allTickers topic for real-time bid/ask."""
+        key = "Bybit_PERP"
+        delay = 1
+        while self._running:
+            try:
+                url = "wss://stream.bybit.com/v5/public/linear"
+                async with self._session.ws_connect(url, heartbeat=20, timeout=30) as ws:
+                    self._connected[key] = True
+                    delay = 1
+                    await ws.send_json({"op": "subscribe", "args": ["tickers.BTCUSDT"]})
+                    log.info(f"{key} WS connected")
+                    async for msg in ws:
+                        if not self._running:
+                            break
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            try:
+                                d = json.loads(msg.data)
+                                topic = d.get("topic", "")
+                                if topic.startswith("tickers."):
+                                    data = d.get("data", {})
+                                    sym = data.get("symbol", "")
+                                    if sym.endswith("USDT"):
+                                        bid = float(data.get("bid1Price", 0) or 0)
+                                        ask = float(data.get("ask1Price", 0) or 0)
+                                        self._update(key, sym, bid, ask)
+                            except Exception:
+                                pass
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            break
+            except Exception as e:
+                log.warning(f"{key} WS error: {e}, reconnect in {delay}s")
+            finally:
+                self._connected[key] = False
+            if self._running:
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+
+    async def _run_okx_perp_ws(self):
+        """OKX perpetual swaps — subscribe to all SWAP tickers."""
+        key = "OKX_PERP"
+        delay = 1
+        while self._running:
+            try:
+                url = "wss://ws.okx.com:8443/ws/v5/public"
+                async with self._session.ws_connect(url, heartbeat=20, timeout=30) as ws:
+                    self._connected[key] = True
+                    delay = 1
+                    log.info(f"{key} WS connected")
+                    async for msg in ws:
+                        if not self._running:
+                            break
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            try:
+                                d = json.loads(msg.data)
+                                if d.get("arg", {}).get("channel") == "tickers":
+                                    for item in d.get("data", []):
+                                        inst_id = item.get("instId", "")
+                                        if inst_id.endswith("-USDT-SWAP"):
+                                            sym = inst_id.replace("-", "").replace("SWAP", "")
+                                            bid = float(item.get("bidPx", 0) or 0)
+                                            ask = float(item.get("askPx", 0) or 0)
+                                            self._update(key, sym, bid, ask)
+                            except Exception:
+                                pass
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            break
+            except Exception as e:
+                log.warning(f"{key} WS error: {e}, reconnect in {delay}s")
+            finally:
+                self._connected[key] = False
+            if self._running:
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+
+    async def subscribe_symbols(self, symbols: List[str]):
+        """Subscribe to specific symbols on OKX and Bybit (which need per-symbol subs)."""
+        for key, cache in self.cache.items():
+            if not self._connected.get(key):
+                continue
+            # Note: subscription happens via the WS connection tasks
+
+
+_exchange_ws = ExchangeWSManager()
+
+
+# ===========================================================================
+# Orderbook WS Manager — real-time L2 depth (OKX, Bybit)
+# ===========================================================================
+
+OB_WS_MAX_SYMBOLS = 40          # Track top N symbols across all exchanges
+OB_WS_STALE_SECONDS = 5         # Consider OB data stale after 5s
+OB_WS_LEVELS = 20               # Keep 20 levels per side (matches OB_LEVELS_LIMIT)
+
+
+class OrderbookWSManager:
+    """Maintains real-time L2 orderbook depth via WebSocket for top symbols.
+    Dynamically subscribes to the most active candidates to eliminate REST OB calls.
+    Falls back to REST for symbols not in the active set."""
+
+    def __init__(self):
+        self.cache: Dict[str, Dict[str, dict]] = {}
+        self._tasks: list = []
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._running = False
+        self._connected: Dict[str, bool] = {}
+        self._subscribed: Dict[str, set] = {}
+        self._active_symbols: set = set()
+        self._sub_lock = asyncio.Lock()
+        self.hits = 0
+        self.misses = 0
+
+    async def start(self, session: aiohttp.ClientSession):
+        self._session = session
+        self._running = True
+        runners = [
+            ("Bybit_PERP", self._run_bybit_perp_ob),
+            ("Bybit_SPOT", self._run_bybit_spot_ob),
+            ("OKX_PERP", self._run_okx_ob),
+        ]
+        for key, coro in runners:
+            self.cache[key] = {}
+            self._connected[key] = False
+            self._subscribed[key] = set()
+            self._tasks.append(asyncio.create_task(coro()))
+        log.info(f"Orderbook WS manager started — tracking top {OB_WS_MAX_SYMBOLS} symbols")
+
+    async def stop(self):
+        self._running = False
+        for t in self._tasks:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    def update_active_symbols(self, symbols: set):
+        """Called by main loop to update which symbols should be tracked."""
+        self._active_symbols = set(list(symbols)[:OB_WS_MAX_SYMBOLS])
+
+    def get_orderbook(self, exchange: str, symbol: str, instrument: str):
+        """Get cached L2 orderbook levels. Returns (bids, asks) or (None, None) if not cached/stale."""
+        key = f"{exchange}_{instrument}"
+        data = self.cache.get(key, {}).get(symbol)
+        if not data:
+            self.misses += 1
+            return None, None
+        if time.time() - data["ts"] > OB_WS_STALE_SECONDS:
+            self.misses += 1
+            return None, None
+        self.hits += 1
+        return data["bids"], data["asks"]
+
+    def _store(self, key: str, symbol: str, bids_raw: list, asks_raw: list):
+        """Parse and store orderbook levels in normalized format [(price, usd), ...]."""
+        bids = []
+        asks = []
+        for entry in bids_raw:
+            try:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    px, qty = float(entry[0]), float(entry[1])
+                elif isinstance(entry, dict):
+                    px = float(entry.get('p', entry.get('price', 0)))
+                    qty = float(entry.get('s', entry.get('size', entry.get('qty', 0))))
+                else:
+                    continue
+                if px > 0 and qty > 0:
+                    bids.append((px, px * qty))
+            except (ValueError, TypeError):
+                continue
+        for entry in asks_raw:
+            try:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    px, qty = float(entry[0]), float(entry[1])
+                elif isinstance(entry, dict):
+                    px = float(entry.get('p', entry.get('price', 0)))
+                    qty = float(entry.get('s', entry.get('size', entry.get('qty', 0))))
+                else:
+                    continue
+                if px > 0 and qty > 0:
+                    asks.append((px, px * qty))
+            except (ValueError, TypeError):
+                continue
+        if bids and asks:
+            self.cache.setdefault(key, {})[symbol] = {
+                "bids": bids, "asks": asks, "ts": time.time()
+            }
+
+    # -- Bybit Perp: orderbook.25 topic per symbol --
+    async def _run_bybit_perp_ob(self):
+        key = "Bybit_PERP"
+        delay = 1
+        while self._running:
+            try:
+                while not self._active_symbols and self._running:
+                    await asyncio.sleep(5)
+                syms = [s for s in self._active_symbols if s.endswith("USDT")]
+                if not syms:
+                    await asyncio.sleep(5)
+                    continue
+                url = "wss://stream.bybit.com/v5/public/linear"
+                async with self._session.ws_connect(url, heartbeat=20, timeout=30) as ws:
+                    self._connected[key] = True
+                    delay = 1
+                    args = [f"orderbook.25.{s}" for s in syms[:40]]
+                    await ws.send_json({"op": "subscribe", "args": args})
+                    self._subscribed[key] = set(syms)
+                    log.info(f"{key} OB WS connected — {len(syms)} symbols")
+                    async for msg in ws:
+                        if not self._running:
+                            break
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            try:
+                                d = json.loads(msg.data)
+                                topic = d.get("topic", "")
+                                if topic.startswith("orderbook.25."):
+                                    sym = topic.split(".")[-1]
+                                    data = d.get("data", {})
+                                    ob_type = d.get("type", "")
+                                    if ob_type == "snapshot":
+                                        self._store(key, sym, data.get("b", []), data.get("a", []))
+                                    elif ob_type == "delta":
+                                        existing = self.cache.get(key, {}).get(sym)
+                                        if existing:
+                                            self._apply_bybit_delta(key, sym, data)
+                            except Exception:
+                                pass
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            break
+            except Exception as e:
+                log.warning(f"{key} OB WS error: {e}, reconnect in {delay}s")
+            finally:
+                self._connected[key] = False
+            if self._running:
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+
+    async def _run_bybit_spot_ob(self):
+        key = "Bybit_SPOT"
+        delay = 1
+        while self._running:
+            try:
+                while not self._active_symbols and self._running:
+                    await asyncio.sleep(5)
+                syms = [s for s in self._active_symbols if s.endswith("USDT")]
+                if not syms:
+                    await asyncio.sleep(5)
+                    continue
+                url = "wss://stream.bybit.com/v5/public/spot"
+                async with self._session.ws_connect(url, heartbeat=20, timeout=30) as ws:
+                    self._connected[key] = True
+                    delay = 1
+                    args = [f"orderbook.25.{s}" for s in syms[:40]]
+                    await ws.send_json({"op": "subscribe", "args": args})
+                    self._subscribed[key] = set(syms)
+                    log.info(f"{key} OB WS connected — {len(syms)} symbols")
+                    async for msg in ws:
+                        if not self._running:
+                            break
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            try:
+                                d = json.loads(msg.data)
+                                topic = d.get("topic", "")
+                                if topic.startswith("orderbook.25."):
+                                    sym = topic.split(".")[-1]
+                                    data = d.get("data", {})
+                                    ob_type = d.get("type", "")
+                                    if ob_type == "snapshot":
+                                        self._store(key, sym, data.get("b", []), data.get("a", []))
+                                    elif ob_type == "delta":
+                                        existing = self.cache.get(key, {}).get(sym)
+                                        if existing:
+                                            self._apply_bybit_delta(key, sym, data)
+                            except Exception:
+                                pass
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            break
+            except Exception as e:
+                log.warning(f"{key} OB WS error: {e}, reconnect in {delay}s")
+            finally:
+                self._connected[key] = False
+            if self._running:
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+
+    def _apply_bybit_delta(self, key: str, sym: str, data: dict):
+        """Apply Bybit delta updates to cached orderbook."""
+        existing = self.cache.get(key, {}).get(sym)
+        if not existing:
+            return
+        for side, side_key in [("b", "bids"), ("a", "asks")]:
+            updates = data.get(side, [])
+            if not updates:
+                continue
+            current = {px: usd for px, usd in existing[side_key]}
+            for entry in updates:
+                try:
+                    px = float(entry[0])
+                    qty = float(entry[1])
+                    if qty == 0:
+                        current.pop(px, None)
+                    else:
+                        current[px] = px * qty
+                except (ValueError, IndexError):
+                    continue
+            if side_key == "bids":
+                existing[side_key] = sorted(current.items(), key=lambda x: -x[0])
+            else:
+                existing[side_key] = sorted(current.items(), key=lambda x: x[0])
+        existing["ts"] = time.time()
+
+    # -- OKX: books channel per instrument --
+    async def _run_okx_ob(self):
+        key = "OKX_PERP"
+        delay = 1
+        while self._running:
+            try:
+                while not self._active_symbols and self._running:
+                    await asyncio.sleep(5)
+                syms = [s for s in self._active_symbols if s.endswith("USDT")]
+                if not syms:
+                    await asyncio.sleep(5)
+                    continue
+                url = "wss://ws.okx.com:8443/ws/v5/public"
+                async with self._session.ws_connect(url, heartbeat=20, timeout=30) as ws:
+                    self._connected[key] = True
+                    delay = 1
+                    args = []
+                    for s in syms[:40]:
+                        base = s.replace("USDT", "")
+                        args.append({"channel": "books5", "instId": f"{base}-USDT-SWAP"})
+                    await ws.send_json({"op": "subscribe", "args": args})
+                    self._subscribed[key] = set(syms)
+                    log.info(f"{key} OB WS connected — {len(syms)} symbols")
+                    async for msg in ws:
+                        if not self._running:
+                            break
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            try:
+                                d = json.loads(msg.data)
+                                arg = d.get("arg", {})
+                                if arg.get("channel") in ("books5", "books"):
+                                    inst_id = arg.get("instId", "")
+                                    if inst_id.endswith("-USDT-SWAP"):
+                                        sym = inst_id.replace("-", "").replace("SWAP", "")
+                                        for item in d.get("data", []):
+                                            self._store(key, sym, item.get("bids", []), item.get("asks", []))
+                            except Exception:
+                                pass
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            break
+            except Exception as e:
+                log.warning(f"{key} OB WS error: {e}, reconnect in {delay}s")
+            finally:
+                self._connected[key] = False
+            if self._running:
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+
+
+_ob_ws = OrderbookWSManager()
+
+
+# ===========================================================================
+# REST Batch Fetchers — 1 API call per exchange fetches ALL tickers
+# ===========================================================================
+
+async def fetch_okx_perp(session, symbols_set) -> List[PriceQuote]:
+    """OKX swaps — use WS cache if connected, else fall back to REST."""
+    if _exchange_ws.is_connected("OKX", "PERP"):
+        return _exchange_ws.get_quotes("OKX", "PERP", symbols_set)
+    quotes = []
+    data = await _get(session, "https://www.okx.com/api/v5/market/tickers?instType=SWAP")
+    if not data or data.get("code") != "0":
+        return quotes
+    for t in data.get("data", []):
+        inst_id = t.get("instId", "")  # BTC-USDT-SWAP
+        if not inst_id.endswith("-USDT-SWAP"):
+            continue
+        sym = inst_id.replace("-", "").replace("SWAP", "")  # BTCUSDT
+        bid = float(t.get("bidPx", 0))
+        ask = float(t.get("askPx", 0))
+        last = float(t.get("last", 0))
+        if bid == 0: bid = last
+        if ask == 0: ask = last
+        if bid <= 0 or ask <= 0:
+            continue
+        mid = (bid + ask) / 2
+        vol = float(t.get("volCcy24h", 0))
+        quotes.append(PriceQuote(exchange="OKX", symbol=sym, bid=bid, ask=ask, mid=mid,
+                                 volume_24h_usd=vol, funding_rate=0))
+    return quotes
+
+
+async def fetch_okx_spot(session, symbols_set) -> List[PriceQuote]:
+    """OKX spot — single call returns ALL tickers."""
+    quotes = []
+    data = await _get(session, "https://www.okx.com/api/v5/market/tickers?instType=SPOT")
+    if not data or data.get("code") != "0":
+        return quotes
+    for t in data.get("data", []):
+        inst_id = t.get("instId", "")  # BTC-USDT
+        if not inst_id.endswith("-USDT"):
+            continue
+        sym = inst_id.replace("-", "")  # BTCUSDT
+        if sym not in symbols_set:
+            continue
+        bid = float(t.get("bidPx", 0))
+        ask = float(t.get("askPx", 0))
+        last = float(t.get("last", 0))
+        if bid == 0: bid = last
+        if ask == 0: ask = last
+        if bid <= 0 or ask <= 0:
+            continue
+        mid = (bid + ask) / 2
+        vol = float(t.get("volCcy24h", 0))
+        quotes.append(PriceQuote(exchange="OKX", symbol=sym, bid=bid, ask=ask, mid=mid,
+                                 volume_24h_usd=vol, funding_rate=0, instrument="SPOT"))
+    return quotes
+
+
+async def fetch_bybit_perp(session, symbols_set) -> List[PriceQuote]:
+    """Bybit linear — use WS cache if connected, else fall back to REST."""
+    if _exchange_ws.is_connected("Bybit", "PERP"):
+        return _exchange_ws.get_quotes("Bybit", "PERP", symbols_set)
+    quotes = []
+    data = await _get(session, "https://api.bybit.com/v5/market/tickers?category=linear")
+    if not data or data.get("retCode") != 0:
+        return quotes
+    for t in data.get("result", {}).get("list", []):
+        sym = t.get("symbol", "")
+        if not sym.endswith("USDT"):
+            continue
+        bid = float(t.get("bid1Price", 0))
+        ask = float(t.get("ask1Price", 0))
+        if bid <= 0 or ask <= 0:
+            continue
+        mid = (bid + ask) / 2
+        vol = float(t.get("turnover24h", 0))
+        fr = float(t.get("fundingRate", 0))
+        quotes.append(PriceQuote(exchange="Bybit", symbol=sym, bid=bid, ask=ask, mid=mid,
+                                 volume_24h_usd=vol, funding_rate=fr))
+    return quotes
+
+
+async def fetch_bybit_spot(session, symbols_set) -> List[PriceQuote]:
+    """Bybit spot — single call returns ALL tickers."""
+    quotes = []
+    data = await _get(session, "https://api.bybit.com/v5/market/tickers?category=spot")
+    if not data or data.get("retCode") != 0:
+        return quotes
+    for t in data.get("result", {}).get("list", []):
+        sym = t.get("symbol", "")
+        if not sym.endswith("USDT") or sym not in symbols_set:
+            continue
+        bid = float(t.get("bid1Price", 0))
+        ask = float(t.get("ask1Price", 0))
+        if bid <= 0 or ask <= 0:
+            continue
+        mid = (bid + ask) / 2
+        vol = float(t.get("turnover24h", 0))
+        quotes.append(PriceQuote(exchange="Bybit", symbol=sym, bid=bid, ask=ask, mid=mid,
+                                 volume_24h_usd=vol, funding_rate=0, instrument="SPOT"))
+    return quotes
+
+
+async def fetch_mexc_perp(session, symbols_set) -> List[PriceQuote]:
+    """MEXC futures — single call returns ALL tickers."""
+    quotes = []
+    data = await _get(session, "https://contract.mexc.com/api/v1/contract/ticker")
+    if not data or not data.get("success"):
+        return quotes
+    for t in data.get("data", []):
+        sym_raw = t.get("symbol", "")
+        sym = sym_raw.replace("_", "")
+        if not sym.endswith("USDT"):
+            continue
+        bid = float(t.get("bid1", 0))
+        ask = float(t.get("ask1", 0))
+        last = float(t.get("lastPrice", 0))
+        if bid == 0: bid = last
+        if ask == 0: ask = last
+        if bid <= 0 or ask <= 0:
+            continue
+        mid = (bid + ask) / 2
+        fr = float(t.get("fundingRate", 0))
+        vol = float(t.get("volume24", 0))
+        quotes.append(PriceQuote(exchange="MEXC", symbol=sym, bid=bid, ask=ask, mid=mid,
+                                 volume_24h_usd=vol, funding_rate=fr))
+    return quotes
+
+
+async def fetch_mexc_spot(session, symbols_set) -> List[PriceQuote]:
+    """MEXC spot — 24hr ticker has bid/ask + volume."""
+    quotes = []
+    data = await _get(session, "https://api.mexc.com/api/v3/ticker/24hr", timeout=12)
+    if not data or not isinstance(data, list):
+        return quotes
+    for t in data:
+        sym = t.get("symbol", "")
+        if not sym.endswith("USDT") or sym not in symbols_set:
+            continue
+        bid = float(t.get("bidPrice", 0))
+        ask = float(t.get("askPrice", 0))
+        if bid <= 0 or ask <= 0:
+            continue
+        mid = (bid + ask) / 2
+        vol = float(t.get("quoteVolume", 0))
+        quotes.append(PriceQuote(exchange="MEXC", symbol=sym, bid=bid, ask=ask, mid=mid,
+                                 volume_24h_usd=vol, funding_rate=0, instrument="SPOT"))
+    return quotes
+
+
+async def fetch_blofin_perp(session, symbols_set) -> List[PriceQuote]:
+    """BloFin perpetual swaps — single call returns all tickers."""
+    quotes = []
+    data = await _get(session, "https://openapi.blofin.com/api/v1/market/tickers")
+    if not data or data.get("code") != "0":
+        return quotes
+    for t in data.get("data", []):
+        inst_id = t.get("instId", "")  # BTC-USDT
+        if not inst_id.endswith("-USDT"):
+            continue
+        sym = inst_id.replace("-", "")  # BTCUSDT
+        if symbols_set and sym not in symbols_set:
+            continue
+        bid = float(t.get("bidPrice", 0))
+        ask = float(t.get("askPrice", 0))
+        last = float(t.get("last", 0))
+        if bid == 0: bid = last
+        if ask == 0: ask = last
+        if bid <= 0 or ask <= 0:
+            continue
+        mid = (bid + ask) / 2
+        vol_base = float(t.get("volCurrency24h", 0))
+        vol_usd = vol_base * last
+        quotes.append(PriceQuote(exchange="BloFin", symbol=sym, bid=bid, ask=ask, mid=mid,
+                                 volume_24h_usd=vol_usd, funding_rate=0))
+    return quotes
+
+
+# ===========================================================================
+# Funding Rate Cache — fetch live rates for our 4 exchanges every 5 minutes
+# ===========================================================================
+
+_funding_cache: Dict[str, Dict[str, float]] = {}  # exchange -> {symbol -> rate}
+_funding_cache_ts: float = 0
+
+
+async def refresh_funding_rates(session):
+    """Fetch current funding rates from all 4 exchanges in parallel."""
+    global _funding_cache, _funding_cache_ts
+    cache = {}
+
+    async def _bybit_fr():
+        data = await _get(session, "https://api.bybit.com/v5/market/tickers?category=linear")
+        rates = {}
+        if data and data.get("retCode") == 0:
+            for t in data.get("result", {}).get("list", []):
+                sym = t.get("symbol", "")
+                if sym.endswith("USDT"):
+                    rates[sym] = float(t.get("fundingRate", 0))
+        return "Bybit", rates
+
+    async def _okx_fr():
+        data = await _get(session, "https://www.okx.com/api/v5/public/funding-rate")
+        rates = {}
+        if data and data.get("code") == "0":
+            for t in data.get("data", []):
+                inst = t.get("instId", "")
+                if inst.endswith("-USDT-SWAP"):
+                    sym = inst.replace("-", "").replace("SWAP", "")
+                    rates[sym] = float(t.get("fundingRate", 0)) * 100
+        return "OKX", rates
+
+    async def _mexc_fr():
+        data = await _get(session, "https://contract.mexc.com/api/v1/contract/ticker")
+        rates = {}
+        if data and data.get("success"):
+            for t in data.get("data", []):
+                sym = t.get("symbol", "").replace("_", "")
+                if sym.endswith("USDT"):
+                    rates[sym] = float(t.get("fundingRate", 0))
+        return "MEXC", rates
+
+    async def _blofin_fr():
+        rates = {}
+        data = await _get(session, "https://openapi.blofin.com/api/v1/market/funding-rate")
+        if data and data.get("code") == "0":
+            for t in data.get("data", []):
+                inst_id = t.get("instId", "")
+                if inst_id.endswith("-USDT"):
+                    sym = inst_id.replace("-", "")
+                    rates[sym] = float(t.get("fundingRate", 0))
+        return "BloFin", rates
+
+    results = await asyncio.gather(
+        _bybit_fr(), _okx_fr(), _mexc_fr(), _blofin_fr(),
+        return_exceptions=True
+    )
+    for r in results:
+        if isinstance(r, Exception):
+            continue
+        exchange, rates = r
+        if rates:
+            cache[exchange] = rates
+
+    _funding_cache = cache
+    _funding_cache_ts = time.time()
+    total = sum(len(v) for v in cache.values())
+    log.info(f"Funding rates refreshed: {total} symbols across {len(cache)} exchanges")
+
+
+def get_funding_rate(exchange: str, symbol: str) -> float:
+    """Get cached funding rate for a symbol on an exchange."""
+    return _funding_cache.get(exchange, {}).get(symbol, 0.0)
+
+
+# ===========================================================================
+# BATCH_FETCHERS registry — all REST fetcher functions
+# ===========================================================================
+
+BATCH_FETCHERS = [
+    fetch_okx_perp, fetch_okx_spot,
+    fetch_bybit_perp, fetch_bybit_spot,
+    fetch_mexc_perp, fetch_mexc_spot,
+    fetch_blofin_perp,
+]
+
+
+# ===========================================================================
+# Symbol Discovery — find USDT symbols listed on 2+ of our exchanges
+# ===========================================================================
+
+async def discover_symbols(session) -> List[str]:
+    """Discover all symbols on MIN_EXCHANGES_PER_SYMBOL+ exchanges by doing one batch fetch."""
+    results = await asyncio.gather(
+        *[f(session, set()) for f in BATCH_FETCHERS],  # empty set = fetch all USDT
+        return_exceptions=True
+    )
+    # Count unique exchange+instrument per symbol
+    sym_sources: Dict[str, set] = collections.defaultdict(set)
+    for result in results:
+        if isinstance(result, Exception):
+            continue
+        for q in result:
+            sym_sources[q.symbol].add(f"{q.exchange}|{q.instrument}")
+
+    # Keep symbols with 2+ unique sources, excluding delisted assets
+    symbols = sorted([s for s, sources in sym_sources.items()
+                     if len(sources) >= MIN_EXCHANGES_PER_SYMBOL
+                     and s not in DELISTED_SYMBOLS
+                     and s not in BLOCKED_SYMBOLS])
+    return symbols
+
+
 # Classes, functions, and main loop will be added in subsequent tasks.
