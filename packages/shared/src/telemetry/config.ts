@@ -16,10 +16,13 @@ export function resolveTelemetryConfig(fileConfig?: { enabled?: boolean }): Tele
   if (isCI()) {
     return { enabled: false };
   }
-  if (fileConfig?.enabled === false) {
+  if (fileConfig?.enabled !== true) {
     return { enabled: false };
   }
 
   const endpoint = process.env.PAPERCLIP_TELEMETRY_ENDPOINT || undefined;
+  if (!endpoint) {
+    return { enabled: false };
+  }
   return { enabled: true, endpoint };
 }

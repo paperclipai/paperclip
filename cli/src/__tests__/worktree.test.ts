@@ -393,7 +393,7 @@ describe("worktree helpers", () => {
         const sourceDbClient = createDb(sourceDb.connectionString);
         await sourceDbClient.insert(authUsers).values({
           id: "user-existing",
-          email: "existing@paperclip.ing",
+          email: "existing@aiteamcorp.local",
           name: "Existing User",
           emailVerified: true,
           createdAt: new Date(),
@@ -453,7 +453,7 @@ describe("worktree helpers", () => {
             `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
           );
           const seededUsers = await targetDb.select().from(authUsers);
-          expect(seededUsers.some((row) => row.email === "existing@paperclip.ing")).toBe(true);
+          expect(seededUsers.some((row) => row.email === "existing@aiteamcorp.local")).toBe(true);
         } finally {
           await targetPg.stop();
         }
