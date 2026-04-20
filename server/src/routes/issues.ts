@@ -590,6 +590,28 @@ export function issueRoutes(
     }
   });
 
+  // Accept /companies/:companyId/issues/:issueId/* as aliases for the flat
+  // /issues/:issueId/* handlers. The URL's companyId is advisory — authz
+  // stays actor-based inside each handler.
+  router.use((req, _res, next) => {
+    const queryIdx = req.url.indexOf("?");
+    const pathname = queryIdx === -1 ? req.url : req.url.slice(0, queryIdx);
+    const query = queryIdx === -1 ? "" : req.url.slice(queryIdx);
+
+    const match = pathname.match(/^\/companies\/[^/]+\/issues\/([^/]+)(\/.*)?$/);
+    if (!match) return next();
+
+    const [, issueId, subpath = ""] = match;
+
+    // Bypass paths that have a native nested handler with no flat equivalent.
+    // Today only POST /.../attachments qualifies; extend this list if more
+    // nested-only endpoints are added.
+    if (subpath === "/attachments" && req.method === "POST") return next();
+
+    req.url = `/issues/${issueId}${subpath}${query}`;
+    next();
+  });
+
   // Common malformed path when companyId is empty in "/api/companies/{companyId}/issues".
   router.get("/issues", (_req, res) => {
     res.status(400).json({
