@@ -129,6 +129,18 @@ describe("adapter routes", () => {
     expect(cursorAdapter).toBeDefined();
     expect(cursorAdapter.capabilities.requiresMaterializedRuntimeSkills).toBe(true);
     expect(cursorAdapter.capabilities.supportsInstructionsBundle).toBe(true);
+
+    // hermes_local currently supports skills + local JWT, but not the managed
+    // instructions bundle flow because the bundled adapter does not consume
+    // instructionsFilePath at runtime.
+    const hermesAdapter = res.body.find((a: any) => a.type === "hermes_local");
+    expect(hermesAdapter).toBeDefined();
+    expect(hermesAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: false,
+      supportsSkills: true,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: false,
+    });
   });
 
   it("GET /api/adapters derives supportsSkills from listSkills/syncSkills presence", async () => {
