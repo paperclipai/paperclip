@@ -149,8 +149,11 @@ export function resolveSessionKey(input: {
   if (input.strategy === "run") {
     return prefixSessionKeyForAgent(`paperclip:run:${input.runId}`, input.agentId);
   }
-  if (input.strategy === "issue" && input.issueId) {
-    return prefixSessionKeyForAgent(`paperclip:issue:${input.issueId}`, input.agentId);
+  if (input.strategy === "issue") {
+    return prefixSessionKeyForAgent(
+      input.issueId ? `paperclip:issue:${input.issueId}` : `paperclip:run:${input.runId}`,
+      input.agentId,
+    );
   }
   return prefixSessionKeyForAgent(fallback, input.agentId);
 }
