@@ -80,7 +80,7 @@ describe("claude local skill sync", () => {
   });
 
   it("shows host-level user-installed Claude skills as read-only external entries", async () => {
-    const home = await makeTempDir("paperclip-claude-user-skills-");
+    const home = await makeTempDir("aiteamcorp-claude-user-skills-");
     cleanupDirs.add(home);
     await createSkillDir(path.join(home, ".claude", "skills"), "crack-python");
 

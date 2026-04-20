@@ -42,8 +42,8 @@ describe("agent instructions service", () => {
   });
 
   it("copies the existing bundle into the managed root when switching to managed mode", async () => {
-    const aiteamcorpHome = await makeTempDir("paperclip-agent-instructions-home-");
-    const externalRoot = await makeTempDir("paperclip-agent-instructions-external-");
+    const aiteamcorpHome = await makeTempDir("aiteamcorp-agent-instructions-home-");
+    const externalRoot = await makeTempDir("aiteamcorp-agent-instructions-external-");
     cleanupDirs.add(aiteamcorpHome);
     cleanupDirs.add(externalRoot);
     process.env.AITEAMCORP_HOME = aiteamcorpHome;
@@ -82,7 +82,7 @@ describe("agent instructions service", () => {
   });
 
   it("creates the target entry file when switching to a new external root", async () => {
-    const aiteamcorpHome = await makeTempDir("paperclip-agent-instructions-home-");
+    const aiteamcorpHome = await makeTempDir("aiteamcorp-agent-instructions-home-");
     const managedRoot = path.join(
       aiteamcorpHome,
       "instances",
@@ -93,7 +93,7 @@ describe("agent instructions service", () => {
       "agent-1",
       "instructions",
     );
-    const externalRoot = await makeTempDir("paperclip-agent-instructions-new-external-");
+    const externalRoot = await makeTempDir("aiteamcorp-agent-instructions-new-external-");
     cleanupDirs.add(aiteamcorpHome);
     cleanupDirs.add(externalRoot);
     process.env.AITEAMCORP_HOME = aiteamcorpHome;
@@ -122,7 +122,7 @@ describe("agent instructions service", () => {
   });
 
   it("filters junk files, dependency bundles, and python caches from bundle listings and exports", async () => {
-    const externalRoot = await makeTempDir("paperclip-agent-instructions-ignore-");
+    const externalRoot = await makeTempDir("aiteamcorp-agent-instructions-ignore-");
     cleanupDirs.add(externalRoot);
 
     await fs.writeFile(path.join(externalRoot, "AGENTS.md"), "# External Agent\n", "utf8");
@@ -163,7 +163,7 @@ describe("agent instructions service", () => {
   });
 
   it("recovers a managed bundle from disk when bundle config metadata is missing", async () => {
-    const aiteamcorpHome = await makeTempDir("paperclip-agent-instructions-recover-");
+    const aiteamcorpHome = await makeTempDir("aiteamcorp-agent-instructions-recover-");
     cleanupDirs.add(aiteamcorpHome);
     process.env.AITEAMCORP_HOME = aiteamcorpHome;
     process.env.AITEAMCORP_INSTANCE_ID = "test-instance";
@@ -194,8 +194,8 @@ describe("agent instructions service", () => {
   });
 
   it("prefers the managed bundle on disk when managed metadata points at a stale root", async () => {
-    const aiteamcorpHome = await makeTempDir("paperclip-agent-instructions-stale-managed-");
-    const staleRoot = await makeTempDir("paperclip-agent-instructions-stale-root-");
+    const aiteamcorpHome = await makeTempDir("aiteamcorp-agent-instructions-stale-managed-");
+    const staleRoot = await makeTempDir("aiteamcorp-agent-instructions-stale-root-");
     cleanupDirs.add(aiteamcorpHome);
     cleanupDirs.add(staleRoot);
     process.env.AITEAMCORP_HOME = aiteamcorpHome;
@@ -237,8 +237,8 @@ describe("agent instructions service", () => {
   });
 
   it("heals stale managed metadata when writing bundle files", async () => {
-    const aiteamcorpHome = await makeTempDir("paperclip-agent-instructions-heal-write-");
-    const staleRoot = await makeTempDir("paperclip-agent-instructions-heal-write-stale-");
+    const aiteamcorpHome = await makeTempDir("aiteamcorp-agent-instructions-heal-write-");
+    const staleRoot = await makeTempDir("aiteamcorp-agent-instructions-heal-write-stale-");
     cleanupDirs.add(aiteamcorpHome);
     cleanupDirs.add(staleRoot);
     process.env.AITEAMCORP_HOME = aiteamcorpHome;
@@ -277,8 +277,8 @@ describe("agent instructions service", () => {
   });
 
   it("heals stale managed metadata when deleting bundle files", async () => {
-    const aiteamcorpHome = await makeTempDir("paperclip-agent-instructions-heal-delete-");
-    const staleRoot = await makeTempDir("paperclip-agent-instructions-heal-delete-stale-");
+    const aiteamcorpHome = await makeTempDir("aiteamcorp-agent-instructions-heal-delete-");
+    const staleRoot = await makeTempDir("aiteamcorp-agent-instructions-heal-delete-stale-");
     cleanupDirs.add(aiteamcorpHome);
     cleanupDirs.add(staleRoot);
     process.env.AITEAMCORP_HOME = aiteamcorpHome;
@@ -319,8 +319,8 @@ describe("agent instructions service", () => {
   });
 
   it("recovers the managed bundle when stale root metadata is present but mode is missing", async () => {
-    const aiteamcorpHome = await makeTempDir("paperclip-agent-instructions-partial-managed-");
-    const staleRoot = await makeTempDir("paperclip-agent-instructions-partial-root-");
+    const aiteamcorpHome = await makeTempDir("aiteamcorp-agent-instructions-partial-managed-");
+    const staleRoot = await makeTempDir("aiteamcorp-agent-instructions-partial-root-");
     cleanupDirs.add(aiteamcorpHome);
     cleanupDirs.add(staleRoot);
     process.env.AITEAMCORP_HOME = aiteamcorpHome;

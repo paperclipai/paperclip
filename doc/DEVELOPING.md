@@ -121,13 +121,13 @@ pnpm aiteamcorp run
 Build and run AiTeamCorp in Docker:
 
 ```sh
-docker build -t paperclip-local .
-docker run --name paperclip \
+docker build -t aiteamcorp-local .
+docker run --name aiteamcorp \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e AITEAMCORP_HOME=/aiteamcorp \
-  -v "$(pwd)/data/docker-paperclip:/aiteamcorp" \
-  paperclip-local
+  -v "$(pwd)/data/docker-aiteamcorp:/aiteamcorp" \
+  aiteamcorp-local
 ```
 
 Or use Compose:
@@ -190,7 +190,7 @@ When developing from multiple git worktrees, do not point two AiTeamCorp servers
 Instead, create a repo-local AiTeamCorp config plus an isolated instance for the worktree:
 
 ```sh
-paperclipai worktree init
+aiteamcorp worktree init
 # or create the git worktree and initialize it in one step:
 pnpm aiteamcorp worktree:make aiteamcorp-pr-432
 ```
@@ -226,9 +226,9 @@ The server/UI use those values for worktree-specific branding such as the top ba
 Print shell exports explicitly when needed:
 
 ```sh
-paperclipai worktree env
+aiteamcorp worktree env
 # or:
-eval "$(paperclipai worktree env)"
+eval "$(aiteamcorp worktree env)"
 ```
 
 ### Worktree CLI Reference
@@ -252,11 +252,11 @@ eval "$(paperclipai worktree env)"
 Examples:
 
 ```sh
-paperclipai worktree init --no-seed
-paperclipai worktree init --seed-mode full
-paperclipai worktree init --from-instance default
-paperclipai worktree init --from-data-dir ~/.aiteamcorp
-paperclipai worktree init --force
+aiteamcorp worktree init --no-seed
+aiteamcorp worktree init --seed-mode full
+aiteamcorp worktree init --from-instance default
+aiteamcorp worktree init --from-data-dir ~/.aiteamcorp
+aiteamcorp worktree init --force
 ```
 
 Repair an already-created repo-managed worktree and reseed its isolated instance from the main default install:
@@ -288,12 +288,12 @@ For an already-created worktree where you want the CLI to decide whether to rebu
 Examples:
 
 ```sh
-# From inside a linked worktree, rebuild missing .paperclip metadata and reseed it from the default instance.
+# From inside a linked worktree, rebuild missing .aiteamcorp metadata and reseed it from the default instance.
 cd /path/to/aiteamcorp/.aiteamcorp/worktrees/PAP-1132-assistant-ui-pap-1131-make-issues-comments-be-like-a-chat
 pnpm aiteamcorp worktree repair
 
 # From the primary checkout, create or repair a linked worktree for a branch under .aiteamcorp/worktrees/.
-cd /path/to/paperclip
+cd /path/to/aiteamcorp
 pnpm aiteamcorp worktree repair --branch PAP-1132-assistant-ui-pap-1131-make-issues-comments-be-like-a-chat
 ```
 
@@ -316,7 +316,7 @@ Examples:
 
 ```sh
 # From the main repo, reseed a worktree from the current default/master instance.
-cd /path/to/paperclip
+cd /path/to/aiteamcorp
 pnpm aiteamcorp worktree reseed \
   --from current \
   --to PAP-1132-assistant-ui-pap-1131-make-issues-comments-be-like-a-chat \
@@ -553,7 +553,7 @@ Model behavior for this smoke script:
 
 State behavior for this smoke script:
 
-- defaults to isolated config dir `~/.openclaw-paperclip-smoke`
+- defaults to isolated config dir `~/.openclaw-aiteamcorp-smoke`
 - resets smoke agent state each run by default (`OPENCLAW_RESET_STATE=1`) to avoid stale provider/auth drift
 
 Networking behavior for this smoke script:

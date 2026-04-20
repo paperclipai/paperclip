@@ -2,7 +2,7 @@
 
 Status: design report, not a V1 commitment
 
-AiTeamCorp V1 explicitly excludes a plugin framework in [doc/SPEC-implementation.md](../SPEC-implementation.md), but the long-horizon spec says the architecture should leave room for extensions. This report studies the `opencode` plugin system and translates the useful patterns into a Paperclip-shaped design.
+AiTeamCorp V1 explicitly excludes a plugin framework in [doc/SPEC-implementation.md](../SPEC-implementation.md), but the long-horizon spec says the architecture should leave room for extensions. This report studies the `opencode` plugin system and translates the useful patterns into a AiTeamCorp-shaped design.
 
 Assumption for this document: AiTeamCorp is a single-tenant operator-controlled instance. Plugin installation should therefore be global across the instance. "Companies" are still first-class AiTeamCorp objects, but they are organizational records, not tenant-isolation boundaries for plugin trust or installation.
 
@@ -17,7 +17,7 @@ Assumption for this document: AiTeamCorp is a single-tenant operator-controlled 
 - they can extend provider auth flows
 - they run in-process and can mutate runtime behavior directly
 
-That model works well for a local coding tool. It should not be copied literally into Paperclip.
+That model works well for a local coding tool. It should not be copied literally into AiTeamCorp.
 
 The main conclusion is:
 
@@ -194,7 +194,7 @@ The most aggressive part of the design:
 That is very powerful for a local coding assistant.
 It is too dangerous for AiTeamCorp core actions.
 
-However, the concept of plugins contributing agent-usable tools is very valuable for Paperclip — as long as plugin tools are namespaced (cannot shadow core tools) and capability-gated.
+However, the concept of plugins contributing agent-usable tools is very valuable for AiTeamCorp — as long as plugin tools are namespaced (cannot shadow core tools) and capability-gated.
 
 ## 7. Auth is also a plugin surface
 
@@ -365,7 +365,7 @@ AiTeamCorp should require an explicit operator install step.
 
 The products are solving different problems.
 
-| Topic | OpenCode | Paperclip |
+| Topic | OpenCode | AiTeamCorp |
 |---|---|---|
 | Primary unit | local project/worktree | single-tenant operator instance with company objects |
 | Trust assumption | local power user on own machine | operator managing one trusted AiTeamCorp instance |
@@ -529,7 +529,7 @@ This is a natural fit — the plugin already has the SDK context, the external A
 
 ## 8. Support plugin-to-plugin events
 
-Plugins should be able to emit custom events that other plugins can subscribe to. For example, the git plugin detects a push and emits `plugin.@paperclip/plugin-git.push-detected`. The GitHub Issues plugin subscribes to that event and updates PR links.
+Plugins should be able to emit custom events that other plugins can subscribe to. For example, the git plugin detects a push and emits `plugin.@aiteamcorp/plugin-git.push-detected`. The GitHub Issues plugin subscribes to that event and updates PR links.
 
 This avoids plugins needing to coordinate through shared state or external channels. The host routes plugin events through the same event bus with the same delivery semantics as core events.
 
@@ -608,7 +608,7 @@ Recommended approach:
 - **UI surface versioned with worker**: Both worker and UI surfaces are in the same package, so they version together. Breaking changes to shared UI components require a major version bump just like worker API changes.
 - **Published compatibility matrix**: The host publishes a matrix of supported API versions and SDK ranges, queryable via API.
 
-## A Concrete SDK Shape For Paperclip
+## A Concrete SDK Shape For AiTeamCorp
 
 An intentionally narrow first pass could look like this:
 
@@ -648,7 +648,7 @@ export default definePlugin({
     });
 
     // subscribe to events from another plugin
-    ctx.events.on("plugin.@paperclip/plugin-git.push-detected", async (event) => {
+    ctx.events.on("plugin.@aiteamcorp/plugin-git.push-detected", async (event) => {
       // react to the git plugin detecting a push
     });
 
@@ -1017,7 +1017,7 @@ This is a useful middle ground:
 
 ## Workspace File Browser
 
-Package idea: `@paperclip/plugin-workspace-files`
+Package idea: `@aiteamcorp/plugin-workspace-files`
 
 This plugin lets the board inspect project workspaces, agent workspaces, generated artifacts, and issue-related files without dropping to the shell. It is useful for:
 
@@ -1094,7 +1094,7 @@ Optional event subscriptions:
 
 ## Workspace Terminal
 
-Package idea: `@paperclip/plugin-terminal`
+Package idea: `@aiteamcorp/plugin-terminal`
 
 This plugin gives the board a controlled terminal UI for project workspaces and agent workspaces. It is useful for:
 
@@ -1165,7 +1165,7 @@ Optional event subscriptions:
 
 ## Git Workflow
 
-Package idea: `@paperclip/plugin-git`
+Package idea: `@aiteamcorp/plugin-git`
 
 This plugin adds repo-aware workflow tooling around issues and workspaces. It is useful for:
 
@@ -1216,8 +1216,8 @@ Main screens and interactions:
 Core workflows:
 
 - Board creates a branch from an issue and ties it to the project's primary workspace.
-- Board opens a project page and reviews the diff for that project's workspace without leaving Paperclip.
-- Board reviews the diff after a run without leaving Paperclip.
+- Board opens a project page and reviews the diff for that project's workspace without leaving AiTeamCorp.
+- Board reviews the diff after a run without leaving AiTeamCorp.
 - Board opens a worktree list to understand parallel branches across agents.
 
 ### Hooks needed
@@ -1232,7 +1232,7 @@ Recommended capabilities and extension points:
 - `projects.read`
 - `project.workspaces.read`
 - optional `agent.tools.register` (e.g. `create-branch`, `get-diff`, `get-status`)
-- optional `events.emit` (e.g. `plugin.@paperclip/plugin-git.push-detected`)
+- optional `events.emit` (e.g. `plugin.@aiteamcorp/plugin-git.push-detected`)
 - `activity.log.write`
 
 The plugin resolves workspace paths through `ctx.projects` and handles all git operations (status, diff, log, branch create, commit, worktree create, push) directly using git CLI or a git library.
@@ -1243,7 +1243,7 @@ Optional event subscriptions:
 - `events.subscribe(issue.updated)`
 - `events.subscribe(agent.run.finished)`
 
-The git plugin can emit `plugin.@paperclip/plugin-git.push-detected` events that other plugins (e.g. GitHub Issues) subscribe to for cross-plugin coordination.
+The git plugin can emit `plugin.@aiteamcorp/plugin-git.push-detected` events that other plugins (e.g. GitHub Issues) subscribe to for cross-plugin coordination.
 
 Note: GitHub/GitLab PR creation should likely live in a separate connector plugin rather than overloading the local git plugin.
 
@@ -1293,7 +1293,7 @@ Main screens and interactions:
 
 Core workflows:
 
-- Board enables the plugin, maps a Linear team, and imports a backlog into Paperclip.
+- Board enables the plugin, maps a Linear team, and imports a backlog into AiTeamCorp.
 - AiTeamCorp issue status changes push to Linear and Linear comments arrive back through webhooks.
 - Board resolves mapping conflicts from the plugin page instead of silently drifting state.
 
@@ -1329,7 +1329,7 @@ Important constraint:
 
 ## GitHub Issue Tracking
 
-Package idea: `@paperclip/plugin-github-issues`
+Package idea: `@aiteamcorp/plugin-github-issues`
 
 This plugin syncs AiTeamCorp issues with GitHub Issues and optionally links PRs. It is useful for:
 
@@ -1371,7 +1371,7 @@ Main screens and interactions:
 
 Core workflows:
 
-- Board imports GitHub Issues for a repo into Paperclip.
+- Board imports GitHub Issues for a repo into AiTeamCorp.
 - GitHub webhooks update status/comment state in AiTeamCorp.
 - A PR is linked back to the AiTeamCorp issue so the board can follow delivery status.
 
@@ -1387,7 +1387,7 @@ Recommended capabilities and extension points:
 - `events.subscribe(issue.created)`
 - `events.subscribe(issue.updated)`
 - `events.subscribe(issue.comment.created)`
-- `events.subscribe(plugin.@paperclip/plugin-git.push-detected)` (cross-plugin coordination)
+- `events.subscribe(plugin.@aiteamcorp/plugin-git.push-detected)` (cross-plugin coordination)
 - `jobs.schedule`
 - `webhooks.receive`
 - `http.outbound`
@@ -1405,9 +1405,9 @@ Important constraint:
 
 ## Grafana Metrics
 
-Package idea: `@paperclip/plugin-grafana`
+Package idea: `@aiteamcorp/plugin-grafana`
 
-This plugin surfaces external metrics and dashboards inside Paperclip. It is useful for:
+This plugin surfaces external metrics and dashboards inside AiTeamCorp. It is useful for:
 
 - company KPI visibility
 - infrastructure/incident monitoring
@@ -1476,7 +1476,7 @@ Important constraint:
 
 ## Child Process / Server Tracking
 
-Package idea: `@paperclip/plugin-runtime-processes`
+Package idea: `@aiteamcorp/plugin-runtime-processes`
 
 This plugin tracks long-lived local processes and dev servers started in project workspaces. It is useful for:
 
@@ -1549,9 +1549,9 @@ Optional event subscriptions:
 
 ## Stripe Revenue Tracking
 
-Package idea: `@paperclip/plugin-stripe`
+Package idea: `@aiteamcorp/plugin-stripe`
 
-This plugin pulls Stripe revenue and subscription data into Paperclip. It is useful for:
+This plugin pulls Stripe revenue and subscription data into AiTeamCorp. It is useful for:
 
 - showing MRR and churn next to company goals
 - tracking trials, conversions, and failed payments
@@ -1723,7 +1723,7 @@ AiTeamCorp should implement "a plugin platform with multiple trust tiers":
 
 That gets the upside of `opencode`'s extensibility without importing the wrong threat model.
 
-## Concrete Next Steps I Would Take In Paperclip
+## Concrete Next Steps I Would Take In AiTeamCorp
 
 1. Write a short extension architecture RFC that formalizes the distinction between `platform modules` and `plugins`.
 2. Introduce a small plugin manifest type in `packages/shared` and a `plugins` install/config section in the instance config.

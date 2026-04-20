@@ -21,7 +21,7 @@ describeEmbeddedPostgres("activity service", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-activity-service-");
+    tempDb = await startEmbeddedPostgresTestDatabase("aiteamcorp-activity-service-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 

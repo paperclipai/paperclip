@@ -47,10 +47,10 @@ import {
 } from "./feedback-redaction.js";
 import { getRunLogStore } from "./run-log-store.js";
 
-const FEEDBACK_SCHEMA_VERSION = "paperclip-feedback-envelope-v2";
-const FEEDBACK_BUNDLE_VERSION = "paperclip-feedback-bundle-v2";
-const FEEDBACK_PAYLOAD_VERSION = "paperclip-feedback-v1";
-const FEEDBACK_DESTINATION = "paperclip_labs_feedback_v1";
+const FEEDBACK_SCHEMA_VERSION = "aiteamcorp-feedback-envelope-v2";
+const FEEDBACK_BUNDLE_VERSION = "aiteamcorp-feedback-bundle-v2";
+const FEEDBACK_PAYLOAD_VERSION = "aiteamcorp-feedback-v1";
+const FEEDBACK_DESTINATION = "aiteamcorp_labs_feedback_v1";
 const FEEDBACK_CONTEXT_WINDOW = 3;
 const MAX_EXCERPT_CHARS = 200;
 const MAX_PRIMARY_CONTENT_CHARS = 8_000;
@@ -367,9 +367,9 @@ function captureStatusFromFiles(files: FeedbackTraceBundleFile[]): FeedbackTrace
   }
 
   const hasAdapterFiles = files.some((file) =>
-    file.source !== "paperclip_run" &&
-    file.source !== "paperclip_run_events" &&
-    file.source !== "paperclip_run_log",
+    file.source !== "aiteamcorp_run" &&
+    file.source !== "aiteamcorp_run_events" &&
+    file.source !== "aiteamcorp_run_log",
   );
   if (hasAdapterFiles) return "partial";
   return files.length > 0 ? "partial" : "unavailable";
@@ -1522,9 +1522,9 @@ async function buildFeedbackTraceBundleFromRow(
       ) as Record<string, unknown>;
 
       files.push(makeBundleFile({
-        path: "paperclip/run.json",
+        path: "aiteamcorp/run.json",
         contentType: "application/json",
-        source: "paperclip_run",
+        source: "aiteamcorp_run",
         contents: `${JSON.stringify(aiteamcorpRun, null, 2)}\n`,
       }));
 
@@ -1535,17 +1535,17 @@ async function buildFeedbackTraceBundleFromRow(
         MAX_TRACE_FILE_CHARS,
       );
       files.push(makeBundleFile({
-        path: "paperclip/run-events.json",
+        path: "aiteamcorp/run-events.json",
         contentType: "application/json",
-        source: "paperclip_run_events",
+        source: "aiteamcorp_run_events",
         contents: `${JSON.stringify(sanitizedEvents, null, 2)}\n`,
       }));
 
       if (logText) {
         files.push(makeBundleFile({
-          path: "paperclip/run-log.ndjson",
+          path: "aiteamcorp/run-log.ndjson",
           contentType: "application/x-ndjson",
-          source: "paperclip_run_log",
+          source: "aiteamcorp_run_log",
           contents: `${sanitizeFeedbackText(logText, state, "bundle.aiteamcorpRun.log", MAX_TRACE_FILE_CHARS)}\n`,
         }));
       } else {

@@ -6,7 +6,7 @@ import type { AiTeamCorpConfig } from "../config/schema.js";
 import { addAllowedHostname } from "../commands/allowed-hostname.js";
 
 function createTempConfigPath() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-allowed-hostname-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-allowed-hostname-"));
   return path.join(dir, "config.json");
 }
 

@@ -1,6 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="140" height="32" viewBox="0 0 140 32" fill="none">
-  <g stroke-linecap="round" stroke-linejoin="round">
-    <path stroke="#e4e4e7" stroke-width="2" d="m18 4-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"/>
-  </g>
-  <text x="32" y="22" font-family="system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#e4e4e7">Paperclip</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="180" height="32" viewBox="0 0 180 32" fill="none">
+  <rect x="0" y="4" width="24" height="24" rx="4" fill="#D97757"/>
+  <text x="12" y="21" text-anchor="middle" font-family="'Source Serif 4', Georgia, serif" font-weight="700" font-size="16" fill="#191919">A</text>
+  <text x="32" y="22" font-family="system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#FAFAF7">AiTeamCorp</text>
 </svg>

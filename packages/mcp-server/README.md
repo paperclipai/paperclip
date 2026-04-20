@@ -1,6 +1,6 @@
 # AiTeamCorp MCP Server
 
-Model Context Protocol server for Paperclip.
+Model Context Protocol server for AiTeamCorp.
 
 This package is a thin MCP wrapper over the existing AiTeamCorp REST API. It does
 not talk to the database directly and it does not reimplement business logic.

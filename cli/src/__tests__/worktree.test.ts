@@ -188,7 +188,7 @@ describe("worktree helpers", () => {
 
   it("rewrites loopback auth URLs to the new port only", () => {
     expect(rewriteLocalUrlPort("http://127.0.0.1:3100", 3110)).toBe("http://127.0.0.1:3110/");
-    expect(rewriteLocalUrlPort("https://paperclip.example", 3110)).toBe("https://paperclip.example");
+    expect(rewriteLocalUrlPort("https://aiteamcorp.example", 3110)).toBe("https://aiteamcorp.example");
   });
 
   it("builds isolated config and env paths for a worktree", () => {
@@ -908,7 +908,7 @@ describe("worktree helpers", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-worktree-make-"));
     const repoRoot = path.join(tempRoot, "repo");
     const fakeHome = path.join(tempRoot, "home");
-    const worktreePath = path.join(fakeHome, "paperclip-make-test");
+    const worktreePath = path.join(fakeHome, "aiteamcorp-make-test");
     const originalCwd = process.cwd();
     const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(fakeHome);
 
@@ -924,7 +924,7 @@ describe("worktree helpers", () => {
 
       process.chdir(repoRoot);
 
-      await worktreeMakeCommand("paperclip-make-test", {
+      await worktreeMakeCommand("aiteamcorp-make-test", {
         seed: false,
         home: path.join(tempRoot, ".aiteamcorp-worktrees"),
       });

@@ -21,7 +21,7 @@ describe("opencode local skill sync", () => {
   });
 
   it("reports configured AiTeamCorp skills and installs them into the shared Claude/OpenCode skills home", async () => {
-    const home = await makeTempDir("paperclip-opencode-skill-sync-");
+    const home = await makeTempDir("aiteamcorp-opencode-skill-sync-");
     cleanupDirs.add(home);
 
     const ctx = {
@@ -51,7 +51,7 @@ describe("opencode local skill sync", () => {
   });
 
   it("keeps required bundled AiTeamCorp skills installed even when the desired set is emptied", async () => {
-    const home = await makeTempDir("paperclip-opencode-skill-prune-");
+    const home = await makeTempDir("aiteamcorp-opencode-skill-prune-");
     cleanupDirs.add(home);
 
     const configuredCtx = {

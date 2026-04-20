@@ -284,7 +284,7 @@ describe("company portability", () => {
         slug: "aiteamcorp",
         name: "aiteamcorp",
         description: "AiTeamCorp coordination skill",
-        markdown: "---\nname: paperclip\ndescription: AiTeamCorp coordination skill\n---\n\n# AiTeamCorp\n",
+        markdown: "---\nname: aiteamcorp\ndescription: AiTeamCorp coordination skill\n---\n\n# AiTeamCorp\n",
         sourceType: "github",
         sourceLocator: "https://github.com/aiteamcorporated-collab/ai-team-coprorated/tree/master/skills/aiteamcorp",
         sourceRef: "0123456789abcdef0123456789abcdef01234567",
@@ -296,7 +296,7 @@ describe("company portability", () => {
         ],
         metadata: {
           sourceKind: "github",
-          owner: "paperclipai",
+          owner: "aiteamcorp",
           repo: "aiteamcorp",
           ref: "0123456789abcdef0123456789abcdef01234567",
           trackingRef: "master",
@@ -347,7 +347,7 @@ describe("company portability", () => {
         path: relativePath,
         kind: relativePath === "SKILL.md" ? "skill" : "reference",
         content: relativePath === "SKILL.md"
-          ? "---\nname: paperclip\ndescription: AiTeamCorp coordination skill\n---\n\n# AiTeamCorp\n"
+          ? "---\nname: aiteamcorp\ndescription: AiTeamCorp coordination skill\n---\n\n# AiTeamCorp\n"
           : "# API\n",
         language: "markdown",
         markdown: true,
@@ -392,10 +392,10 @@ describe("company portability", () => {
 
   it("parses canonical GitHub import URLs with explicit ref and package path", () => {
     expect(
-      parseGitHubSourceUrl("https://github.com/paperclipai/companies?ref=feature%2Fdemo&path=gstack"),
+      parseGitHubSourceUrl("https://github.com/aiteamcorp/companies?ref=feature%2Fdemo&path=gstack"),
     ).toEqual({
       hostname: "github.com",
-      owner: "paperclipai",
+      owner: "aiteamcorp",
       repo: "companies",
       ref: "feature/demo",
       basePath: "gstack",
@@ -406,11 +406,11 @@ describe("company portability", () => {
   it("parses canonical GitHub import URLs with explicit companyPath", () => {
     expect(
       parseGitHubSourceUrl(
-        "https://github.com/paperclipai/companies?ref=abc123&companyPath=gstack%2FCOMPANY.md",
+        "https://github.com/aiteamcorp/companies?ref=abc123&companyPath=gstack%2FCOMPANY.md",
       ),
     ).toEqual({
       hostname: "github.com",
-      owner: "paperclipai",
+      owner: "aiteamcorp",
       repo: "companies",
       ref: "abc123",
       basePath: "gstack",
@@ -679,7 +679,7 @@ describe("company portability", () => {
         fileInventory: [{ path: "SKILL.md", kind: "skill" }],
         metadata: {
           sourceKind: "aiteamcorp_bundled",
-          owner: "paperclipai",
+          owner: "aiteamcorp",
           repo: "aiteamcorp",
           ref: "0123456789abcdef0123456789abcdef01234567",
           trackingRef: "master",

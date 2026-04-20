@@ -2,7 +2,7 @@ Use this exact checklist.
 
 1. Start AiTeamCorp in auth mode.
 ```bash
-cd <paperclip-repo-root>
+cd <aiteamcorp-repo-root>
 pnpm dev --bind lan
 ```
 Then verify:
@@ -81,7 +81,7 @@ docker exec openclaw-docker-openclaw-gateway-1 sh -lc 'TOK="$(node -e \"const fs
 
 10. Watch logs during test (optional but helpful):
 ```bash
-docker compose -f /tmp/openclaw-docker/docker-compose.yml -f /tmp/openclaw-docker/.paperclip-openclaw.override.yml logs -f openclaw-gateway
+docker compose -f /tmp/openclaw-docker/docker-compose.yml -f /tmp/openclaw-docker/.aiteamcorp-openclaw.override.yml logs -f openclaw-gateway
 ```
 
 11. Expected pass criteria.

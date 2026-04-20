@@ -21,13 +21,13 @@ describe("cursor local adapter skill injection", () => {
   });
 
   it("links missing AiTeamCorp skills into Cursor skills home", async () => {
-    const skillsDir = await makeTempDir("paperclip-cursor-skills-src-");
-    const skillsHome = await makeTempDir("paperclip-cursor-skills-home-");
+    const skillsDir = await makeTempDir("aiteamcorp-cursor-skills-src-");
+    const skillsHome = await makeTempDir("aiteamcorp-cursor-skills-home-");
     cleanupDirs.add(skillsDir);
     cleanupDirs.add(skillsHome);
 
     await createSkillDir(skillsDir, "aiteamcorp");
-    await createSkillDir(skillsDir, "paperclip-create-agent");
+    await createSkillDir(skillsDir, "aiteamcorp-create-agent");
     await fs.writeFile(path.join(skillsDir, "README.txt"), "ignore", "utf8");
 
     const logs: string[] = [];
@@ -39,25 +39,25 @@ describe("cursor local adapter skill injection", () => {
     );
 
     const injectedA = path.join(skillsHome, "aiteamcorp");
-    const injectedB = path.join(skillsHome, "paperclip-create-agent");
+    const injectedB = path.join(skillsHome, "aiteamcorp-create-agent");
     expect((await fs.lstat(injectedA)).isSymbolicLink()).toBe(true);
     expect((await fs.lstat(injectedB)).isSymbolicLink()).toBe(true);
     expect(await fs.realpath(injectedA)).toBe(await fs.realpath(path.join(skillsDir, "aiteamcorp")));
     expect(await fs.realpath(injectedB)).toBe(
-      await fs.realpath(path.join(skillsDir, "paperclip-create-agent")),
+      await fs.realpath(path.join(skillsDir, "aiteamcorp-create-agent")),
     );
     expect(logs.some((line) => line.includes('Injected Cursor skill "aiteamcorp"'))).toBe(true);
-    expect(logs.some((line) => line.includes('Injected Cursor skill "paperclip-create-agent"'))).toBe(true);
+    expect(logs.some((line) => line.includes('Injected Cursor skill "aiteamcorp-create-agent"'))).toBe(true);
   });
 
   it("preserves existing targets and only links missing skills", async () => {
-    const skillsDir = await makeTempDir("paperclip-cursor-preserve-src-");
-    const skillsHome = await makeTempDir("paperclip-cursor-preserve-home-");
+    const skillsDir = await makeTempDir("aiteamcorp-cursor-preserve-src-");
+    const skillsHome = await makeTempDir("aiteamcorp-cursor-preserve-home-");
     cleanupDirs.add(skillsDir);
     cleanupDirs.add(skillsHome);
 
     await createSkillDir(skillsDir, "aiteamcorp");
-    await createSkillDir(skillsDir, "paperclip-create-agent");
+    await createSkillDir(skillsDir, "aiteamcorp-create-agent");
 
     const existingTarget = path.join(skillsHome, "aiteamcorp");
     await fs.mkdir(existingTarget, { recursive: true });
@@ -67,12 +67,12 @@ describe("cursor local adapter skill injection", () => {
 
     expect((await fs.lstat(existingTarget)).isDirectory()).toBe(true);
     expect(await fs.readFile(path.join(existingTarget, "keep.txt"), "utf8")).toBe("keep");
-    expect((await fs.lstat(path.join(skillsHome, "paperclip-create-agent"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(skillsHome, "aiteamcorp-create-agent"))).isSymbolicLink()).toBe(true);
   });
 
   it("logs per-skill link failures and continues without throwing", async () => {
-    const skillsDir = await makeTempDir("paperclip-cursor-fail-src-");
-    const skillsHome = await makeTempDir("paperclip-cursor-fail-home-");
+    const skillsDir = await makeTempDir("aiteamcorp-cursor-fail-src-");
+    const skillsHome = await makeTempDir("aiteamcorp-cursor-fail-home-");
     cleanupDirs.add(skillsDir);
     cleanupDirs.add(skillsHome);
 

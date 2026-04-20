@@ -51,7 +51,7 @@ const execFileAsync = promisify(execFile);
 // ---------------------------------------------------------------------------
 
 interface AdapterInstallRequest {
-  /** npm package name (e.g., "droid-paperclip-adapter") or local path */
+  /** npm package name (e.g., "droid-aiteamcorp-adapter") or local path */
   packageName: string;
   /** True if packageName is a local filesystem path */
   isLocalPath?: boolean;

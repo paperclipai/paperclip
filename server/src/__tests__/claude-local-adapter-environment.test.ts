@@ -159,7 +159,7 @@ describe("claude_local environment diagnostics", () => {
   it("creates a missing working directory when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),
-      `paperclip-claude-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `aiteamcorp-claude-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       "workspace",
     );
 

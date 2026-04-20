@@ -162,7 +162,7 @@ export function scaffoldPluginProject(options: ScaffoldPluginOptions): string {
       build: "node ./esbuild.config.mjs",
       "build:rollup": "rollup -c",
       dev: "node ./esbuild.config.mjs --watch",
-      "dev:ui": "paperclip-plugin-dev-server --root . --ui-dir dist/ui --port 4177",
+      "dev:ui": "aiteamcorp-plugin-dev-server --root . --ui-dir dist/ui --port 4177",
       test: "vitest run --config ./vitest.config.ts",
       typecheck: "tsc --noEmit"
     },
@@ -437,7 +437,7 @@ ${sdkDependency.startsWith("file:")
   ? `This scaffold snapshots \`@aiteamcorp/plugin-sdk\` and \`@aiteamcorp/shared\` from a local AiTeamCorp checkout at:\n\n\`${toPosixPath(localSdkPath)}\`\n\nThe packed tarballs live in \`.aiteamcorp-sdk/\` for local development. Before publishing this plugin, switch those dependencies to published package versions once they are available on npm.\n\n`
   : ""}
 
-## Install Into Paperclip
+## Install Into AiTeamCorp
 
 \`\`\`bash
 curl -X POST http://127.0.0.1:3100/api/plugins/install \\

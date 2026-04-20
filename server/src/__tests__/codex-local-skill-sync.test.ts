@@ -21,7 +21,7 @@ describe("codex local skill sync", () => {
   });
 
   it("reports configured AiTeamCorp skills for workspace injection on the next run", async () => {
-    const codexHome = await makeTempDir("paperclip-codex-skill-sync-");
+    const codexHome = await makeTempDir("aiteamcorp-codex-skill-sync-");
     cleanupDirs.add(codexHome);
 
     const ctx = {
@@ -47,7 +47,7 @@ describe("codex local skill sync", () => {
   });
 
   it("does not persist AiTeamCorp skills into CODEX_HOME during sync", async () => {
-    const codexHome = await makeTempDir("paperclip-codex-skill-prune-");
+    const codexHome = await makeTempDir("aiteamcorp-codex-skill-prune-");
     cleanupDirs.add(codexHome);
 
     const configuredCtx = {
@@ -73,7 +73,7 @@ describe("codex local skill sync", () => {
   });
 
   it("keeps required bundled AiTeamCorp skills configured even when the desired set is emptied", async () => {
-    const codexHome = await makeTempDir("paperclip-codex-skill-required-");
+    const codexHome = await makeTempDir("aiteamcorp-codex-skill-required-");
     cleanupDirs.add(codexHome);
 
     const configuredCtx = {
@@ -96,7 +96,7 @@ describe("codex local skill sync", () => {
   });
 
   it("normalizes legacy flat AiTeamCorp skill refs before reporting configured state", async () => {
-    const codexHome = await makeTempDir("paperclip-codex-legacy-skill-sync-");
+    const codexHome = await makeTempDir("aiteamcorp-codex-legacy-skill-sync-");
     cleanupDirs.add(codexHome);
 
     const snapshot = await listCodexSkills({

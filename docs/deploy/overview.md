@@ -38,7 +38,7 @@ AiTeamCorp supports three deployment configurations, from zero-friction local to
 
 ## Choosing a Mode
 
-- **Just trying Paperclip?** Use `local_trusted` (the default)
+- **Just trying AiTeamCorp?** Use `local_trusted` (the default)
 - **Sharing with a team on private network?** Use `authenticated` + `private`
 - **Deploying to the cloud?** Use `authenticated` + `public`
 

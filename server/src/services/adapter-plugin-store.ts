@@ -21,7 +21,7 @@ import os from "node:os";
 // ---------------------------------------------------------------------------
 
 export interface AdapterPluginRecord {
-  /** npm package name (e.g., "droid-paperclip-adapter") */
+  /** npm package name (e.g., "droid-aiteamcorp-adapter") */
   packageName: string;
   /** Absolute local filesystem path (for locally linked adapters) */
   localPath?: string;
@@ -64,7 +64,7 @@ function ensureDirs(): void {
   const pkgJsonPath = path.join(ADAPTER_PLUGINS_DIR, "package.json");
   if (!fs.existsSync(pkgJsonPath)) {
     fs.writeFileSync(pkgJsonPath, JSON.stringify({
-      name: "paperclip-adapter-plugins",
+      name: "aiteamcorp-adapter-plugins",
       version: "0.0.0",
       private: true,
       description: "Managed directory for AiTeamCorp external adapter plugins. Do not edit manually.",

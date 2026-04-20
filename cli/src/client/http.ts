@@ -112,7 +112,7 @@ export class AiTeamCorpApiClient {
     }
 
     if (this.runId) {
-      headers["x-paperclip-run-id"] = this.runId;
+      headers["x-aiteamcorp-run-id"] = this.runId;
     }
 
     let response: Response;
@@ -214,7 +214,7 @@ function buildConnectionErrorMessage(input: {
   }
   lines.push(
     "",
-    "This usually means the AiTeamCorp server is not running, the configured URL is wrong, or the request is being blocked before it reaches Paperclip.",
+    "This usually means the AiTeamCorp server is not running, the configured URL is wrong, or the request is being blocked before it reaches AiTeamCorp.",
     "",
     "Try:",
     "- Start AiTeamCorp with `pnpm dev` or `pnpm aiteamcorp run`.",

@@ -28,7 +28,7 @@ describe("cursor local skill sync", () => {
   });
 
   it("reports configured AiTeamCorp skills and installs them into the Cursor skills home", async () => {
-    const home = await makeTempDir("paperclip-cursor-skill-sync-");
+    const home = await makeTempDir("aiteamcorp-cursor-skill-sync-");
     cleanupDirs.add(home);
 
     const ctx = {
@@ -57,8 +57,8 @@ describe("cursor local skill sync", () => {
   });
 
   it("recognizes company-library runtime skills supplied outside the bundled AiTeamCorp directory", async () => {
-    const home = await makeTempDir("paperclip-cursor-runtime-skills-home-");
-    const runtimeSkills = await makeTempDir("paperclip-cursor-runtime-skills-src-");
+    const home = await makeTempDir("aiteamcorp-cursor-runtime-skills-home-");
+    const runtimeSkills = await makeTempDir("aiteamcorp-cursor-runtime-skills-src-");
     cleanupDirs.add(home);
     cleanupDirs.add(runtimeSkills);
 
@@ -105,7 +105,7 @@ describe("cursor local skill sync", () => {
   });
 
   it("keeps required bundled AiTeamCorp skills installed even when the desired set is emptied", async () => {
-    const home = await makeTempDir("paperclip-cursor-skill-prune-");
+    const home = await makeTempDir("aiteamcorp-cursor-skill-prune-");
     cleanupDirs.add(home);
 
     const configuredCtx = {

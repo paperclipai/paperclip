@@ -155,7 +155,7 @@ test.describe("Onboarding wizard", () => {
     expect(task.description).toContain(
       "You are the CEO. You set the direction for the company."
     );
-    expect(task.description).not.toContain("github.com/paperclipai/companies");
+    expect(task.description).not.toContain("github.com/aiteamcorp/companies");
 
     if (!SKIP_LLM) {
       await expect(async () => {

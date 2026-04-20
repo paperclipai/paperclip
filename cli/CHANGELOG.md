@@ -1,4 +1,4 @@
-# paperclipai
+# aiteamcorp
 
 ## 0.3.1
 

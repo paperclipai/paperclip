@@ -40,7 +40,7 @@ fi
 TARGET_COMMIT="$(git -C "$REPO_ROOT" rev-parse --verify "${TARGET_REF}^{commit}")"
 
 export KEEP_TEMP="${KEEP_TEMP:-0}"
-export PC_TEST_ROOT="${PC_TEST_ROOT:-$(mktemp -d /tmp/paperclip-clean-ref.XXXXXX)}"
+export PC_TEST_ROOT="${PC_TEST_ROOT:-$(mktemp -d /tmp/aiteamcorp-clean-ref.XXXXXX)}"
 export PC_HOME="${PC_HOME:-$PC_TEST_ROOT/home}"
 export PC_CACHE="${PC_CACHE:-$PC_TEST_ROOT/npm-cache}"
 export PC_DATA="${PC_DATA:-$PC_TEST_ROOT/aiteamcorp-data}"

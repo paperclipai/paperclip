@@ -110,7 +110,7 @@ async function runGit(cwd: string, args: string[]) {
 }
 
 async function createTempRepo() {
-  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-execution-workspace-"));
+  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-execution-workspace-"));
   await runGit(repoRoot, ["init"]);
   await runGit(repoRoot, ["config", "user.name", "AiTeamCorp Test"]);
   await runGit(repoRoot, ["config", "user.email", "test@aiteamcorp.local"]);
@@ -128,7 +128,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   const tempDirs = new Set<string>();
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-workspaces-service-");
+    tempDb = await startEmbeddedPostgresTestDatabase("aiteamcorp-execution-workspaces-service-");
     db = createDb(tempDb.connectionString);
     svc = executionWorkspaceService(db);
   }, 20_000);
@@ -229,8 +229,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const worktreePath = path.join(path.dirname(repoRoot), `aiteamcorp-worktree-${randomUUID()}`);
     tempDirs.add(worktreePath);
 
-    await runGit(repoRoot, ["branch", "paperclip-close-check"]);
-    await runGit(repoRoot, ["worktree", "add", worktreePath, "paperclip-close-check"]);
+    await runGit(repoRoot, ["branch", "aiteamcorp-close-check"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "aiteamcorp-close-check"]);
     await fs.writeFile(path.join(worktreePath, "feature.txt"), "hello\n", "utf8");
     await runGit(worktreePath, ["add", "feature.txt"]);
     await runGit(worktreePath, ["commit", "-m", "Feature commit"]);
@@ -282,7 +282,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       providerType: "git_worktree",
       cwd: worktreePath,
       providerRef: worktreePath,
-      branchName: "paperclip-close-check",
+      branchName: "aiteamcorp-close-check",
       baseRef: "main",
       metadata: {
         createdByRuntime: true,
@@ -302,7 +302,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       isDestructiveCloseAllowed: true,
       git: {
         workspacePath: worktreePath,
-        branchName: "paperclip-close-check",
+        branchName: "aiteamcorp-close-check",
         baseRef: "main",
         createdByRuntime: true,
         hasDirtyTrackedFiles: false,

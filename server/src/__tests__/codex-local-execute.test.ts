@@ -43,8 +43,8 @@ type LogEntry = {
 };
 
 describe("codex execute", () => {
-  it("uses a Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-default-"));
+  it("uses a AiTeamCorp-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-codex-execute-default-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
@@ -98,7 +98,7 @@ describe("codex execute", () => {
           env: {
             AITEAMCORP_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the aiteamcorp heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
@@ -123,7 +123,7 @@ describe("codex execute", () => {
       expect(logs).toContainEqual(
         expect.objectContaining({
           stream: "stdout",
-          chunk: expect.stringContaining("Using Paperclip-managed Codex home"),
+          chunk: expect.stringContaining("Using AiTeamCorp-managed Codex home"),
         }),
       );
     } finally {
@@ -142,7 +142,7 @@ describe("codex execute", () => {
   });
 
   it("emits a command note that Codex auto-applies repo-scoped AGENTS.md files", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-notes-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-codex-execute-notes-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
@@ -175,7 +175,7 @@ describe("codex execute", () => {
           env: {
             AITEAMCORP_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the aiteamcorp heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
@@ -198,7 +198,7 @@ describe("codex execute", () => {
   });
 
   it("logs HOME and the resolved executable path in invocation metadata", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-meta-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-codex-execute-meta-"));
     const workspace = path.join(root, "workspace");
     const binDir = path.join(root, "bin");
     const commandPath = path.join(binDir, "codex");
@@ -236,7 +236,7 @@ describe("codex execute", () => {
           env: {
             AITEAMCORP_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the aiteamcorp heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
@@ -262,7 +262,7 @@ describe("codex execute", () => {
   });
 
   it("injects structured AiTeamCorp wake payloads into env and prompt", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-wake-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-codex-execute-wake-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
@@ -294,7 +294,7 @@ describe("codex execute", () => {
           env: {
             AITEAMCORP_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the aiteamcorp heartbeat.",
         },
         context: {
           issueId: "issue-1",
@@ -370,7 +370,7 @@ describe("codex execute", () => {
   });
 
   it("renders execution-stage wake instructions for reviewer and executor roles", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-stage-wake-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-codex-execute-stage-wake-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
@@ -402,7 +402,7 @@ describe("codex execute", () => {
           env: {
             AITEAMCORP_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the aiteamcorp heartbeat.",
         },
         context: {
           issueId: "issue-1",
@@ -471,7 +471,7 @@ describe("codex execute", () => {
           env: {
             AITEAMCORP_TEST_CAPTURE_PATH: executorCapturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the aiteamcorp heartbeat.",
         },
         context: {
           issueId: "issue-1",
@@ -524,7 +524,7 @@ describe("codex execute", () => {
   });
 
   it("renders an issue-scoped wake prompt even when the wake has no comments yet", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-issue-wake-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-codex-execute-issue-wake-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
@@ -556,7 +556,7 @@ describe("codex execute", () => {
           env: {
             AITEAMCORP_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the aiteamcorp heartbeat.",
         },
         context: {
           issueId: "issue-1",
@@ -620,7 +620,7 @@ describe("codex execute", () => {
   });
 
   it("uses a compact wake delta instead of the full heartbeat prompt when resuming a session", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-resume-wake-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-codex-execute-resume-wake-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
@@ -661,7 +661,7 @@ describe("codex execute", () => {
           env: {
             AITEAMCORP_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the aiteamcorp heartbeat.",
         },
         context: {
           issueId: "issue-1",
@@ -715,7 +715,7 @@ describe("codex execute", () => {
       expect(capture.prompt).toContain("## AiTeamCorp Resume Delta");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
       expect(capture.prompt).toContain("Second comment");
-      expect(capture.prompt).not.toContain("Follow the paperclip heartbeat.");
+      expect(capture.prompt).not.toContain("Follow the aiteamcorp heartbeat.");
       expect(capture.prompt).not.toContain("You are managed instructions.");
       expect(invocationPrompt).toContain("## AiTeamCorp Resume Delta");
       expect(invocationNotes).toContain(
@@ -730,7 +730,7 @@ describe("codex execute", () => {
     }
   });
   it("uses a worktree-isolated CODEX_HOME while preserving shared auth and config", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-codex-execute-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
@@ -785,7 +785,7 @@ describe("codex execute", () => {
           env: {
             AITEAMCORP_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the aiteamcorp heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
@@ -800,7 +800,7 @@ describe("codex execute", () => {
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.codexHome).toBe(isolatedCodexHome);
       expect(capture.argv).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
-      expect(capture.prompt).toContain("Follow the paperclip heartbeat.");
+      expect(capture.prompt).toContain("Follow the aiteamcorp heartbeat.");
       expect(capture.aiteamcorpEnvKeys).toEqual(
         expect.arrayContaining([
           "AITEAMCORP_AGENT_ID",
@@ -847,7 +847,7 @@ describe("codex execute", () => {
   });
 
   it("respects an explicit CODEX_HOME config override even in worktree mode", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-explicit-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-codex-execute-explicit-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
@@ -893,7 +893,7 @@ describe("codex execute", () => {
             AITEAMCORP_TEST_CAPTURE_PATH: capturePath,
             CODEX_HOME: explicitCodexHome,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the aiteamcorp heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",

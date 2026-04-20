@@ -874,7 +874,7 @@ const presets = createPluginBundlerPresets({ uiEntry: "src/ui/index.tsx" });
 ## Local dev server (hot-reload events)
 
 ```bash
-paperclip-plugin-dev-server --root . --ui-dir dist/ui --port 4177
+aiteamcorp-plugin-dev-server --root . --ui-dir dist/ui --port 4177
 ```
 
 Or programmatically:

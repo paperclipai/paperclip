@@ -1,4 +1,4 @@
 export function buildCliCommandLabel(): string {
   const args = process.argv.slice(2);
-  return args.length > 0 ? `aiteamcorp ${args.join(" ")}` : "paperclipai";
+  return args.length > 0 ? `aiteamcorp ${args.join(" ")}` : "aiteamcorp";
 }

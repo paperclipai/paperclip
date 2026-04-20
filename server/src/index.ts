@@ -413,7 +413,7 @@ export async function startServer(): Promise<StartedServer> {
     const embeddedAdminConnectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${port}/postgres`;
     const dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "aiteamcorp");
     if (dbStatus === "created") {
-      logger.info("Created embedded PostgreSQL database: paperclip");
+      logger.info("Created embedded PostgreSQL database: aiteamcorp");
     }
   
     const embeddedConnectionString = `postgres://aiteamcorp:aiteamcorp@127.0.0.1:${port}/aiteamcorp`;

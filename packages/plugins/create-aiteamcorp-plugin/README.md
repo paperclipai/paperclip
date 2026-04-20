@@ -13,7 +13,7 @@ npx @aiteamcorp/create-aiteamcorp-plugin @acme/my-plugin \
   --template connector \
   --category connector \
   --display-name "Acme Connector" \
-  --description "Syncs Acme data into Paperclip" \
+  --description "Syncs Acme data into AiTeamCorp" \
   --author "Acme Inc"
 ```
 
@@ -25,7 +25,7 @@ Generates:
 - example UI widget using the supported `@aiteamcorp/plugin-sdk/ui` hooks
 - test file using `@aiteamcorp/plugin-sdk/testing`
 - `esbuild` and `rollup` config files using SDK bundler presets
-- dev server script for hot-reload (`paperclip-plugin-dev-server`)
+- dev server script for hot-reload (`aiteamcorp-plugin-dev-server`)
 
 The scaffold intentionally uses plain React elements rather than host-provided UI kit components, because the current plugin runtime does not ship a stable shared component library yet.
 

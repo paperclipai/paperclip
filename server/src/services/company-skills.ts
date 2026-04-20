@@ -289,7 +289,7 @@ function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: R
     ?? asString(metadata?.aiteamcorpSkillKey),
   );
   if (direct) return direct;
-  const aiteamcorp = isPlainRecord(metadata?.paperclip) ? metadata?.aiteamcorp as Record<string, unknown> : null;
+  const aiteamcorp = isPlainRecord(metadata?.aiteamcorp) ? metadata?.aiteamcorp as Record<string, unknown> : null;
   return normalizeSkillKey(
     asString(aiteamcorp?.skillKey)
     ?? asString(aiteamcorp?.key),
@@ -2308,7 +2308,7 @@ export function companySkillService(db: Db) {
         existing
         && existingMeta.sourceKind === "aiteamcorp_bundled"
         && incomingKind === "github"
-        && incomingOwner === "paperclipai"
+        && incomingOwner === "aiteamcorp"
         && incomingRepo === "aiteamcorp"
       ) {
         out.push(existing);

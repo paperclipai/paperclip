@@ -7,7 +7,7 @@ All commands below assume you are in the **project root** (the directory contain
 ## Building the image
 
 ```sh
-docker build -t paperclip-local .
+docker build -t aiteamcorp-local .
 ```
 
 The Dockerfile installs common agent tools (`git`, `gh`, `curl`, `wget`, `ripgrep`, `python3`) and the Claude, Codex, and OpenCode CLIs.
@@ -20,21 +20,21 @@ Build arguments:
 | `USER_GID` | `1000` | GID for the container `node` group |
 
 ```sh
-docker build -t paperclip-local \
+docker build -t aiteamcorp-local \
   --build-arg USER_UID=$(id -u) --build-arg USER_GID=$(id -g) .
 ```
 
 ## One-liner (build + run)
 
 ```sh
-docker build -t paperclip-local . && \
-docker run --name paperclip \
+docker build -t aiteamcorp-local . && \
+docker run --name aiteamcorp \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e AITEAMCORP_HOME=/aiteamcorp \
   -e BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
-  -v "$(pwd)/data/docker-paperclip:/aiteamcorp" \
-  paperclip-local
+  -v "$(pwd)/data/docker-aiteamcorp:/aiteamcorp" \
+  aiteamcorp-local
 ```
 
 Open: `http://localhost:3100`
@@ -46,7 +46,7 @@ Data persistence:
 - local secrets key
 - local agent workspace data
 
-All persisted under your bind mount (`./data/docker-paperclip` in the example above).
+All persisted under your bind mount (`./data/docker-aiteamcorp` in the example above).
 
 ## Docker Compose
 
@@ -62,7 +62,7 @@ BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
 Defaults:
 
 - host port: `3100`
-- persistent data dir: `./data/docker-paperclip`
+- persistent data dir: `./data/docker-aiteamcorp`
 
 Optional overrides:
 
@@ -103,7 +103,7 @@ For authenticated deployments, set one canonical public URL and let AiTeamCorp d
 
 ```yaml
 services:
-  paperclip:
+  aiteamcorp:
     environment:
       AITEAMCORP_DEPLOYMENT_MODE: authenticated
       AITEAMCORP_DEPLOYMENT_EXPOSURE: private
@@ -131,14 +131,14 @@ The image pre-installs:
 If you want local adapter runs inside the container, pass API keys when starting the container:
 
 ```sh
-docker run --name paperclip \
+docker run --name aiteamcorp \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e AITEAMCORP_HOME=/aiteamcorp \
   -e OPENAI_API_KEY=... \
   -e ANTHROPIC_API_KEY=... \
-  -v "$(pwd)/data/docker-paperclip:/aiteamcorp" \
-  paperclip-local
+  -v "$(pwd)/data/docker-aiteamcorp:/aiteamcorp" \
+  aiteamcorp-local
 ```
 
 Notes:
@@ -148,7 +148,7 @@ Notes:
 
 ## Podman Quadlet (systemd)
 
-The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQL as systemd services via Podman Quadlet.
+The `docker/quadlet/` directory contains unit files to run AiTeamCorp + PostgreSQL as systemd services via Podman Quadlet.
 
 | File | Purpose |
 |------|---------|
@@ -175,12 +175,12 @@ The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQ
 3. Create a secrets env file (keep out of version control):
 
    ```sh
-   cat > ~/.config/containers/systemd/paperclip.env <<EOL
+   cat > ~/.config/containers/systemd/aiteamcorp.env <<EOL
    BETTER_AUTH_SECRET=$(openssl rand -hex 32)
    POSTGRES_USER=aiteamcorp
    POSTGRES_PASSWORD=aiteamcorp
    POSTGRES_DB=aiteamcorp
-   DATABASE_URL=postgres://aiteamcorp:aiteamcorp@127.0.0.1:5432/paperclip
+   DATABASE_URL=postgres://aiteamcorp:aiteamcorp@127.0.0.1:5432/aiteamcorp
    # OPENAI_API_KEY=sk-...
    # ANTHROPIC_API_KEY=sk-...
    EOL
@@ -189,26 +189,26 @@ The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQ
 4. Create the data directory and start:
 
    ```sh
-   mkdir -p ~/.local/share/paperclip
+   mkdir -p ~/.local/share/aiteamcorp
    systemctl --user daemon-reload
-   systemctl --user start paperclip-pod
+   systemctl --user start aiteamcorp-pod
    ```
 
 ### Quadlet management
 
 ```sh
-journalctl --user -u paperclip -f        # App logs
-journalctl --user -u paperclip-db -f     # DB logs
-systemctl --user status paperclip-pod    # Pod status
-systemctl --user restart paperclip-pod   # Restart all
-systemctl --user stop paperclip-pod      # Stop all
+journalctl --user -u aiteamcorp -f        # App logs
+journalctl --user -u aiteamcorp-db -f     # DB logs
+systemctl --user status aiteamcorp-pod    # Pod status
+systemctl --user restart aiteamcorp-pod   # Restart all
+systemctl --user stop aiteamcorp-pod      # Stop all
 ```
 
 ### Quadlet notes
 
-- **First boot**: Unlike Docker Compose's `condition: service_healthy`, Quadlet's `After=` only waits for the DB unit to *start*, not for PostgreSQL to be ready. On a cold first boot you may see one or two restart attempts in `journalctl --user -u paperclip` while PostgreSQL initialises — this is expected and resolves automatically via `Restart=on-failure`.
+- **First boot**: Unlike Docker Compose's `condition: service_healthy`, Quadlet's `After=` only waits for the DB unit to *start*, not for PostgreSQL to be ready. On a cold first boot you may see one or two restart attempts in `journalctl --user -u aiteamcorp` while PostgreSQL initialises — this is expected and resolves automatically via `Restart=on-failure`.
 - Containers in a pod share `localhost`, so AiTeamCorp reaches Postgres at `127.0.0.1:5432`.
-- PostgreSQL data persists in the `paperclip-pgdata` named volume.
+- PostgreSQL data persists in the `aiteamcorp-pgdata` named volume.
 - AiTeamCorp data persists at `~/.local/share/aiteamcorp`.
 - For rootful quadlet deployment, remove `%h` prefixes and use absolute paths.
 

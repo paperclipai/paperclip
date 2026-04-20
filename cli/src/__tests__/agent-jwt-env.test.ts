@@ -14,7 +14,7 @@ import { agentJwtSecretCheck } from "../checks/agent-jwt-secret-check.js";
 const ORIGINAL_ENV = { ...process.env };
 
 function tempConfigPath(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-jwt-env-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-jwt-env-"));
   const configDir = path.join(dir, "custom");
   fs.mkdirSync(configDir, { recursive: true });
   return path.join(configDir, "config.json");

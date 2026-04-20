@@ -8,7 +8,7 @@ Use the copy from the website in cases where we need some.
 ## Outline
 
 - image header up top
-- Paperclip
+- AiTeamCorp
 - Manage autonomous AI Businesses
 - The open-source AI-agent orchestrator teams of agents that run companies
 

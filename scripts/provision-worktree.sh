@@ -3,9 +3,9 @@ set -euo pipefail
 
 base_cwd="${AITEAMCORP_WORKSPACE_BASE_CWD:?AITEAMCORP_WORKSPACE_BASE_CWD is required}"
 worktree_cwd="${AITEAMCORP_WORKSPACE_CWD:?AITEAMCORP_WORKSPACE_CWD is required}"
-paperclip_home="${AITEAMCORP_HOME:-$HOME/.paperclip}"
+paperclip_home="${AITEAMCORP_HOME:-$HOME/.aiteamcorp}"
 paperclip_instance_id="${AITEAMCORP_INSTANCE_ID:-default}"
-paperclip_dir="$worktree_cwd/.paperclip"
+paperclip_dir="$worktree_cwd/.aiteamcorp"
 worktree_config_path="$paperclip_dir/config.json"
 worktree_env_path="$paperclip_dir/.env"
 worktree_name="${AITEAMCORP_WORKSPACE_BRANCH:-$(basename "$worktree_cwd")}"
@@ -51,10 +51,10 @@ run_isolated_worktree_init() {
     return 0
   fi
 
-  if command -v paperclipai >/dev/null 2>&1; then
+  if command -v aiteamcorp >/dev/null 2>&1; then
     (
       cd "$worktree_cwd"
-      paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+      aiteamcorp worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
     )
     return 0
   fi
@@ -73,7 +73,7 @@ paperclipai_command_available() {
     return 0
   fi
 
-  if command -v paperclipai >/dev/null 2>&1; then
+  if command -v aiteamcorp >/dev/null 2>&1; then
     return 0
   fi
 
@@ -269,7 +269,7 @@ async function main() {
         baseDir: path.resolve(instanceRoot, "data", "storage"),
       },
       s3: {
-        bucket: sourceConfig?.storage?.s3?.bucket ?? "paperclip",
+        bucket: sourceConfig?.storage?.s3?.bucket ?? "aiteamcorp",
         region: sourceConfig?.storage?.s3?.region ?? "us-east-1",
         endpoint: sourceConfig?.storage?.s3?.endpoint,
         prefix: sourceConfig?.storage?.s3?.prefix ?? "",
@@ -335,7 +335,7 @@ EOF
 if paperclipai_command_available; then
   run_isolated_worktree_init
 else
-  echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
+  echo "aiteamcorp CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
   write_fallback_worktree_config
 fi
 
@@ -364,7 +364,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
   done < <(list_base_node_modules_paths)
 
   if [[ "$needs_install" -eq 1 ]]; then
-    backup_suffix=".paperclip-backup-${BASHPID:-$$}"
+    backup_suffix=".aiteamcorp-backup-${BASHPID:-$$}"
     moved_symlink_paths=()
 
     while IFS= read -r relative_path; do

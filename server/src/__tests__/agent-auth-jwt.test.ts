@@ -51,7 +51,7 @@ describe("agent local JWT", () => {
       adapter_type: "claude_local",
       run_id: "run-1",
       iss: "aiteamcorp",
-      aud: "paperclip-api",
+      aud: "aiteamcorp-api",
     });
   });
 
@@ -94,7 +94,7 @@ describe("agent local JWT", () => {
     const token = createLocalAgentJwt("agent-1", "company-1", "codex_local", "run-1");
 
     process.env[issuerEnv] = "aiteamcorp";
-    process.env[audienceEnv] = "paperclip-api";
+    process.env[audienceEnv] = "aiteamcorp-api";
     expect(verifyLocalAgentJwt(token!)).toBeNull();
   });
 });

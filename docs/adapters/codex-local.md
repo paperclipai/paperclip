@@ -59,7 +59,7 @@ This installs any missing skills, creates an agent API key, and prints shell exp
 
 If `instructionsFilePath` is configured, AiTeamCorp reads that file and prepends it to the stdin prompt sent to `codex exec` on every run.
 
-This is separate from any workspace-level instruction discovery that Codex itself performs in the run `cwd`. AiTeamCorp does not disable Codex-native repo instruction files, so a repo-local `AGENTS.md` may still be loaded by Codex in addition to the Paperclip-managed agent instructions.
+This is separate from any workspace-level instruction discovery that Codex itself performs in the run `cwd`. AiTeamCorp does not disable Codex-native repo instruction files, so a repo-local `AGENTS.md` may still be loaded by Codex in addition to the AiTeamCorp-managed agent instructions.
 
 ## Environment Test
 

@@ -21,7 +21,7 @@ To start AiTeamCorp again later:
 npx aiteamcorp run
 ```
 
-> **Note:** If you used `npx` for setup, always use `npx paperclipai` to run commands. The `pnpm paperclipai` form only works inside a cloned copy of the AiTeamCorp repository (see Local Development below).
+> **Note:** If you used `npx` for setup, always use `npx aiteamcorp` to run commands. The `pnpm aiteamcorp` form only works inside a cloned copy of the AiTeamCorp repository (see Local Development below).
 
 ## Local Development
 
@@ -58,5 +58,5 @@ Once AiTeamCorp is running:
 6. Hit go — agents start their heartbeats and the company runs
 
 <Card title="Core Concepts" href="/start/core-concepts">
-  Learn the key concepts behind Paperclip
+  Learn the key concepts behind AiTeamCorp
 </Card>

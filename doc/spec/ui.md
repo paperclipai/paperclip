@@ -192,7 +192,7 @@ The breadcrumb bar sits above the main content and properties panel. It serves a
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Projects › Paperclip › Issues › CLIP-42  [⭐] [···]     [🔔] [⬜] │
+│ Projects › AiTeamCorp › Issues › CLIP-42  [⭐] [···]     [🔔] [⬜] │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -437,7 +437,7 @@ Triggered by the sidebar pencil icon, keyboard shortcut `C`, or the `+` buttons 
 - `···` more button reveals: Goal, Start date, Target date, Billing code, Parent issue.
 
 **Footer:**
-- Attachment button (paperclip icon).
+- Attachment button (aiteamcorp icon).
 - "Create more" toggle — when on, creating an issue clears the form and stays open for rapid entry.
 - "Create issue" primary button.
 

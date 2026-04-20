@@ -45,8 +45,8 @@ type CapturePayload = {
 };
 
 describe("gemini execute", () => {
-  it("passes prompt via --prompt and injects paperclip env vars", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-execute-"));
+  it("passes prompt via --prompt and injects aiteamcorp env vars", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-gemini-execute-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
     const capturePath = path.join(root, "capture.json");
@@ -80,7 +80,7 @@ describe("gemini execute", () => {
           env: {
             AITEAMCORP_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the aiteamcorp heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
@@ -101,7 +101,7 @@ describe("gemini execute", () => {
       expect(capture.argv).toContain("yolo");
       const promptFlagIndex = capture.argv.indexOf("--prompt");
       const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
-      expect(promptArg).toContain("Follow the paperclip heartbeat.");
+      expect(promptArg).toContain("Follow the aiteamcorp heartbeat.");
       expect(promptArg).toContain("AiTeamCorp runtime note:");
       expect(capture.aiteamcorpEnvKeys).toEqual(
         expect.arrayContaining([
@@ -128,7 +128,7 @@ describe("gemini execute", () => {
   });
 
   it("always passes --approval-mode yolo", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-yolo-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-gemini-yolo-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
     const capturePath = path.join(root, "capture.json");
@@ -170,7 +170,7 @@ describe("gemini execute", () => {
   });
 
   it("uses a compact wake delta instead of the full heartbeat prompt when resuming a session", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-resume-wake-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-gemini-resume-wake-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
     const capturePath = path.join(root, "capture.json");
@@ -203,7 +203,7 @@ describe("gemini execute", () => {
           env: {
             AITEAMCORP_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the aiteamcorp heartbeat.",
         },
         context: {
           issueId: "issue-1",
@@ -255,7 +255,7 @@ describe("gemini execute", () => {
       expect(promptArg).toContain("## AiTeamCorp Resume Delta");
       expect(promptArg).toContain("Do not switch to another issue until you have handled this wake.");
       expect(promptArg).toContain("Second comment");
-      expect(promptArg).not.toContain("Follow the paperclip heartbeat.");
+      expect(promptArg).not.toContain("Follow the aiteamcorp heartbeat.");
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;

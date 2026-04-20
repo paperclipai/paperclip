@@ -12,7 +12,7 @@ function toDisplayLines(records: Awaited<ReturnType<typeof listLocalServiceRegis
 
 const command = process.argv[2] ?? "list";
 const records = await listLocalServiceRegistryRecords({
-  profileKind: "paperclip-dev",
+  profileKind: "aiteamcorp-dev",
   metadata: { repoRoot },
 });
 

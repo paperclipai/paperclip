@@ -25,7 +25,7 @@ type EnvVarRow = {
 
 const DEFAULT_AGENT_JWT_TTL_SECONDS = "172800";
 const DEFAULT_AGENT_JWT_ISSUER = "aiteamcorp";
-const DEFAULT_AGENT_JWT_AUDIENCE = "paperclip-api";
+const DEFAULT_AGENT_JWT_AUDIENCE = "aiteamcorp-api";
 const DEFAULT_HEARTBEAT_SCHEDULER_INTERVAL_MS = "30000";
 const DEFAULT_SECRETS_PROVIDER = "local_encrypted";
 const DEFAULT_STORAGE_PROVIDER = "local_disk";

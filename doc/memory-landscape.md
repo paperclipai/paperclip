@@ -2,7 +2,7 @@
 
 Date: 2026-03-17
 
-This document summarizes the memory systems referenced in task `PAP-530` and extracts the design patterns that matter for Paperclip.
+This document summarizes the memory systems referenced in task `PAP-530` and extracts the design patterns that matter for AiTeamCorp.
 
 ## What AiTeamCorp Needs From This Survey
 
@@ -46,7 +46,7 @@ These emphasize local persistence, inspectability, and low operational overhead.
 
 ## Per-Project Notes
 
-| Project | Shape | Notable API / model | Strong fit for Paperclip | Main mismatch |
+| Project | Shape | Notable API / model | Strong fit for AiTeamCorp | Main mismatch |
 |---|---|---|---|---|
 | [nuggets](https://github.com/NeoVertex1/nuggets) | local memory engine + messaging gateway | topic-scoped HRR memory with `remember`, `recall`, `forget`, fact promotion into `MEMORY.md` | good example of lightweight local memory and automatic promotion | very specific architecture; not a general multi-tenant service |
 | [mem0](https://github.com/mem0ai/mem0) | hosted + OSS SDK | `add`, `search`, `getAll`, `get`, `update`, `delete`, `deleteAll`; entity partitioning via `user_id`, `agent_id`, `run_id`, `app_id` | closest to a clean provider API with identities and metadata filters | provider owns extraction heavily; AiTeamCorp should not assume every backend behaves like mem0 |
@@ -86,7 +86,7 @@ These differences are exactly why AiTeamCorp needs a layered contract instead of
 AiTeamCorp should support both:
 
 - provider-managed extraction
-- Paperclip-managed extraction with provider-managed storage / retrieval
+- AiTeamCorp-managed extraction with provider-managed storage / retrieval
 
 ### 2. What is the source of truth?
 
@@ -112,7 +112,7 @@ AiTeamCorp should make plain search the minimum contract and richer outputs opti
 
 AiTeamCorp needs both direct request/response operations and background maintenance hooks.
 
-## Paperclip-Specific Takeaways
+## AiTeamCorp-Specific Takeaways
 
 ### AiTeamCorp should own these concerns
 

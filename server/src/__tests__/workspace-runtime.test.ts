@@ -1154,10 +1154,10 @@ describe("realizeExecutionWorkspace", () => {
         fakePnpmPath,
         [
           "#!/bin/sh",
-          "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"--help\" ]; then",
+          "if [ \"$1\" = \"aiteamcorp\" ] && [ \"$2\" = \"--help\" ]; then",
           "  exit 0",
           "fi",
-          "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"worktree\" ] && [ \"$3\" = \"init\" ]; then",
+          "if [ \"$1\" = \"aiteamcorp\" ] && [ \"$2\" = \"worktree\" ] && [ \"$3\" = \"init\" ]; then",
           "  echo \"simulated init failure\" >&2",
           "  exit 42",
           "fi",
@@ -1228,7 +1228,7 @@ describe("realizeExecutionWorkspace", () => {
         fakePnpmPath,
         [
           "#!/bin/sh",
-          "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"--help\" ]; then",
+          "if [ \"$1\" = \"aiteamcorp\" ] && [ \"$2\" = \"--help\" ]; then",
           "  exit 1",
           "fi",
           "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--frozen-lockfile\" ]; then",
@@ -1533,7 +1533,7 @@ describe("realizeExecutionWorkspace", () => {
       [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
-        "printf '%s\\n' \"$AITEAMCORP_WORKSPACE_BRANCH\" > .paperclip-restored-branch",
+        "printf '%s\\n' \"$AITEAMCORP_WORKSPACE_BRANCH\" > .aiteamcorp-restored-branch",
       ].join("\n"),
       "utf8",
     );
@@ -1616,7 +1616,7 @@ describe("realizeExecutionWorkspace", () => {
     expect(restored).not.toBeNull();
     expect(restored?.cwd).toBe(initial.cwd);
     await expect(fs.readFile(path.join(initial.cwd, "feature.txt"), "utf8")).resolves.toBe("persisted\n");
-    await expect(fs.readFile(path.join(initial.cwd, ".paperclip-restored-branch"), "utf8")).resolves.toBe(`${branchName}\n`);
+    await expect(fs.readFile(path.join(initial.cwd, ".aiteamcorp-restored-branch"), "utf8")).resolves.toBe(`${branchName}\n`);
     const actualHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: initial.cwd })).stdout.trim();
     expect(actualHead).toBe(expectedHead);
   });
@@ -2007,7 +2007,7 @@ describe("realizeExecutionWorkspace", () => {
 
 describe("ensureRuntimeServicesForRun", () => {
   it("reuses shared runtime services across runs and starts a new service after release", async () => {
-    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-workspace-"));
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-workspace-"));
     const workspace = buildWorkspace(workspaceRoot);
     const serviceCommand =
       "node -e \"require('node:http').createServer((req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1')\"";
@@ -2106,7 +2106,7 @@ describe("ensureRuntimeServicesForRun", () => {
   });
 
   it("does not reuse project-scoped shared services across different workspace launch contexts", async () => {
-    const primaryWorkspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-primary-"));
+    const primaryWorkspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-primary-"));
     const worktreeWorkspaceRoot = path.join(primaryWorkspaceRoot, ".aiteamcorp", "worktrees", "PAP-874-chat-speed-issues");
     await fs.mkdir(worktreeWorkspaceRoot, { recursive: true });
 
@@ -2125,7 +2125,7 @@ describe("ensureRuntimeServicesForRun", () => {
       workspaceRuntime: {
         services: [
           {
-            name: "paperclip-dev",
+            name: "aiteamcorp-dev",
             command: serviceCommand,
             cwd: ".",
             env: {
@@ -2201,7 +2201,7 @@ describe("ensureRuntimeServicesForRun", () => {
   });
 
   it("does not leak parent AiTeamCorp instance env into runtime service commands", async () => {
-    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-env-"));
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-env-"));
     const workspace = buildWorkspace(workspaceRoot);
     const envCapturePath = path.join(workspaceRoot, "captured-env.json");
     const serviceCommand = [
@@ -2222,8 +2222,8 @@ describe("ensureRuntimeServicesForRun", () => {
       ),
     ].join(" ");
 
-    process.env.AITEAMCORP_CONFIG = "/tmp/base-paperclip-config.json";
-    process.env.AITEAMCORP_HOME = "/tmp/base-paperclip-home";
+    process.env.AITEAMCORP_CONFIG = "/tmp/base-aiteamcorp-config.json";
+    process.env.AITEAMCORP_HOME = "/tmp/base-aiteamcorp-home";
     process.env.AITEAMCORP_INSTANCE_ID = "base-instance";
     process.env.DATABASE_URL = "postgres://shared-db.example.com/aiteamcorp";
 
@@ -2281,7 +2281,7 @@ describe("ensureRuntimeServicesForRun", () => {
   });
 
   it("stops execution workspace runtime services by executionWorkspaceId", async () => {
-    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-stop-"));
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-stop-"));
     const workspace = buildWorkspace(workspaceRoot);
     const runId = "run-stop";
     leasedRunIds.add(runId);
@@ -2335,7 +2335,7 @@ describe("ensureRuntimeServicesForRun", () => {
   });
 
   it("does not stop services in sibling directories when matching by workspace cwd", async () => {
-    const workspaceParent = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-sibling-"));
+    const workspaceParent = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-sibling-"));
     const targetWorkspaceRoot = path.join(workspaceParent, "project");
     const siblingWorkspaceRoot = path.join(workspaceParent, "project-extended", "service");
     await fs.mkdir(targetWorkspaceRoot, { recursive: true });
@@ -2394,7 +2394,7 @@ describe("ensureRuntimeServicesForRun", () => {
   });
 
   it("starts only the selected workspace-controlled runtime service", async () => {
-    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-control-start-"));
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-control-start-"));
     const workspace = buildWorkspace(workspaceRoot);
 
     const services = await startRuntimeServicesForWorkspaceControl({
@@ -2455,7 +2455,7 @@ describe("ensureRuntimeServicesForRun", () => {
   });
 
   it("stops only the selected execution workspace runtime service", async () => {
-    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-control-stop-"));
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-control-stop-"));
     const workspace = buildWorkspace(workspaceRoot);
 
     const services = await startRuntimeServicesForWorkspaceControl({
@@ -2692,7 +2692,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-runtime-");
+    tempDb = await startEmbeddedPostgresTestDatabase("aiteamcorp-workspace-runtime-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -2711,8 +2711,8 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   });
 
   it("adopts a live auto-port shared service after runtime state is reset", async () => {
-    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-reconcile-"));
-    const aiteamcorpHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-reconcile-"));
+    const aiteamcorpHome = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-home-"));
     process.env.AITEAMCORP_HOME = aiteamcorpHome;
     process.env.AITEAMCORP_INSTANCE_ID = `runtime-reconcile-${randomUUID()}`;
 
@@ -2856,10 +2856,10 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       issueId: null,
       scopeType: "project_workspace",
       scopeId: projectWorkspaceId,
-      serviceName: "paperclip-dev",
+      serviceName: "aiteamcorp-dev",
       status: "running",
       lifecycle: "shared",
-      reuseKey: `project_workspace:${projectWorkspaceId}:paperclip-dev`,
+      reuseKey: `project_workspace:${projectWorkspaceId}:aiteamcorp-dev`,
       command: "pnpm dev",
       cwd: "/tmp/aiteamcorp-primary",
       port: 49195,
@@ -2878,9 +2878,9 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     });
     await writeLocalServiceRegistryRecord({
       version: 1,
-      serviceKey: "workspace-runtime-paperclip-dev-stale",
+      serviceKey: "workspace-runtime-aiteamcorp-dev-stale",
       profileKind: "workspace-runtime",
-      serviceName: "paperclip-dev",
+      serviceName: "aiteamcorp-dev",
       command: "pnpm dev",
       cwd: "/tmp/aiteamcorp-primary",
       envFingerprint: "fingerprint",
@@ -2890,7 +2890,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       processGroupId: 999999,
       provider: "local_process",
       runtimeServiceId,
-      reuseKey: `project_workspace:${projectWorkspaceId}:paperclip-dev`,
+      reuseKey: `project_workspace:${projectWorkspaceId}:aiteamcorp-dev`,
       startedAt: startedAt.toISOString(),
       lastSeenAt: updatedAt.toISOString(),
       metadata: null,
@@ -2909,7 +2909,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   });
 
   it("persists controlled execution workspace stops as stopped", async () => {
-    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-stop-persisted-"));
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-runtime-stop-persisted-"));
     const companyId = randomUUID();
     const agentId = randomUUID();
     const projectId = randomUUID();

@@ -11,7 +11,7 @@ import {
 } from "../client/context.js";
 
 function createTempContextPath(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-context-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-cli-context-"));
   return path.join(dir, "context.json");
 }
 

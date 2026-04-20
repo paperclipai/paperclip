@@ -29,7 +29,7 @@ process.exit(0);
 
 describe("pi_local execute", () => {
   it("fails the run when Pi exhausts automatic retries despite exiting 0", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-execute-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiteamcorp-pi-execute-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "pi");
     await fs.mkdir(workspace, { recursive: true });

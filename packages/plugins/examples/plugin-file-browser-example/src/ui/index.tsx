@@ -12,7 +12,7 @@ import { javascript } from "@codemirror/lang-javascript";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 
-const PLUGIN_KEY = "paperclip-file-browser-example";
+const PLUGIN_KEY = "aiteamcorp-file-browser-example";
 const FILES_TAB_SLOT_ID = "files-tab";
 
 const editorBaseTheme = {

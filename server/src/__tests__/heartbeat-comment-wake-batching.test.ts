@@ -63,7 +63,7 @@ async function getAvailablePort(): Promise<number> {
 }
 
 async function startTempDatabase() {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-heartbeat-comment-wake-"));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-heartbeat-comment-wake-"));
   const port = await getAvailablePort();
   const EmbeddedPostgres = await getEmbeddedPostgresCtor();
   const instance = new EmbeddedPostgres({
@@ -414,7 +414,7 @@ describe("heartbeat comment wake batching", () => {
       }, 90_000);
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
+      expect(secondPayload.aiteamcorp).toMatchObject({
         wake: {
           commentIds: [comment2.id, comment3.id],
           latestCommentId: comment3.id,
@@ -594,7 +594,7 @@ describe("heartbeat comment wake batching", () => {
       });
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
+      expect(secondPayload.aiteamcorp).toMatchObject({
         wake: {
           reason: "issue_commented",
           commentIds: [comment2.id],
@@ -680,7 +680,7 @@ describe("heartbeat comment wake batching", () => {
       expect(firstRun).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1);
       const firstPayload = gateway.getAgentPayloads()[0] ?? {};
-      expect(firstPayload.paperclip).toMatchObject({
+      expect(firstPayload.aiteamcorp).toMatchObject({
         wake: {
           reason: "issue_assigned",
           issue: {

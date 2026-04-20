@@ -42,7 +42,7 @@ describe("resolveDatabaseTarget", () => {
   });
 
   it("uses DATABASE_URL from repo-local .aiteamcorp/.env", () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-db-runtime-"));
     const projectDir = path.join(tempDir, "repo");
     fs.mkdirSync(projectDir, { recursive: true });
     process.chdir(projectDir);
@@ -60,12 +60,12 @@ describe("resolveDatabaseTarget", () => {
     expect(target).toMatchObject({
       mode: "postgres",
       connectionString: "postgres://file-user:file-pass@db.example.com:6543/aiteamcorp",
-      source: "paperclip-env",
+      source: "aiteamcorp-env",
     });
   });
 
   it("uses config postgres connection string when configured", () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-db-runtime-"));
     const configPath = path.join(tempDir, "instance", "config.json");
     process.env.AITEAMCORP_CONFIG = configPath;
     writeJson(configPath, {
@@ -85,7 +85,7 @@ describe("resolveDatabaseTarget", () => {
   });
 
   it("falls back to embedded postgres settings from config", () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-db-runtime-"));
     const configPath = path.join(tempDir, "instance", "config.json");
     process.env.AITEAMCORP_CONFIG = configPath;
     writeJson(configPath, {
@@ -100,7 +100,7 @@ describe("resolveDatabaseTarget", () => {
 
     expect(target).toMatchObject({
       mode: "embedded-postgres",
-      dataDir: path.resolve(os.homedir(), "paperclip-test-db"),
+      dataDir: path.resolve(os.homedir(), "aiteamcorp-test-db"),
       port: 55444,
       source: "embedded-postgres@55444",
     });

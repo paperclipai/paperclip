@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMAGE_NAME="${IMAGE_NAME:-paperclip-onboard-smoke}"
+IMAGE_NAME="${IMAGE_NAME:-aiteamcorp-onboard-smoke}"
 HOST_PORT="${HOST_PORT:-3131}"
 AITEAMCORP_VERSION="${AITEAMCORP_VERSION:-latest}"
 DATA_DIR="${DATA_DIR:-$REPO_ROOT/data/docker-onboard-smoke}"
@@ -15,7 +15,7 @@ AITEAMCORP_PUBLIC_URL="${AITEAMCORP_PUBLIC_URL:-http://localhost:${HOST_PORT}}"
 SMOKE_AUTO_BOOTSTRAP="${SMOKE_AUTO_BOOTSTRAP:-true}"
 SMOKE_ADMIN_NAME="${SMOKE_ADMIN_NAME:-Smoke Admin}"
 SMOKE_ADMIN_EMAIL="${SMOKE_ADMIN_EMAIL:-smoke-admin@aiteamcorp.local}"
-SMOKE_ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-paperclip-smoke-password}"
+SMOKE_ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-aiteamcorp-smoke-password}"
 CONTAINER_NAME="${IMAGE_NAME//[^a-zA-Z0-9_.-]/-}"
 LOG_PID=""
 COOKIE_JAR=""
@@ -91,9 +91,9 @@ generate_bootstrap_invite_url() {
       -e AITEAMCORP_DEPLOYMENT_MODE="$AITEAMCORP_DEPLOYMENT_MODE" \
       -e AITEAMCORP_DEPLOYMENT_EXPOSURE="$AITEAMCORP_DEPLOYMENT_EXPOSURE" \
       -e AITEAMCORP_PUBLIC_URL="$AITEAMCORP_PUBLIC_URL" \
-      -e AITEAMCORP_HOME="/paperclip" \
+      -e AITEAMCORP_HOME="/aiteamcorp" \
       "$CONTAINER_NAME" bash -lc \
-      'timeout 20s npx --yes "paperclipai@${AITEAMCORP_VERSION}" auth bootstrap-ceo --data-dir "$AITEAMCORP_HOME" --base-url "$AITEAMCORP_PUBLIC_URL"' \
+      'timeout 20s npx --yes "aiteamcorp@${AITEAMCORP_VERSION}" auth bootstrap-ceo --data-dir "$AITEAMCORP_HOME" --base-url "$AITEAMCORP_PUBLIC_URL"' \
       2>&1
   )"; then
     bootstrap_status=0
@@ -267,7 +267,7 @@ docker run -d --rm \
   -e AITEAMCORP_DEPLOYMENT_MODE="$AITEAMCORP_DEPLOYMENT_MODE" \
   -e AITEAMCORP_DEPLOYMENT_EXPOSURE="$AITEAMCORP_DEPLOYMENT_EXPOSURE" \
   -e AITEAMCORP_PUBLIC_URL="$AITEAMCORP_PUBLIC_URL" \
-  -v "$DATA_DIR:/paperclip" \
+  -v "$DATA_DIR:/aiteamcorp" \
   "$IMAGE_NAME" >/dev/null
 
 if [[ "$SMOKE_DETACH" != "true" ]]; then
@@ -275,7 +275,7 @@ if [[ "$SMOKE_DETACH" != "true" ]]; then
   LOG_PID=$!
 fi
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-onboard-smoke.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/aiteamcorp-onboard-smoke.XXXXXX")"
 COOKIE_JAR="$TMP_DIR/cookies.txt"
 
 if ! wait_for_http "$AITEAMCORP_PUBLIC_URL/api/health" 90 1; then

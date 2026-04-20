@@ -9,10 +9,10 @@ AiTeamCorp supports external adapter plugins that can be installed from npm pack
 
 | | Built-in | External |
 |---|---|---|
-| Source location | Inside `paperclip-fork/packages/adapters/` | Separate npm package or local directory |
+| Source location | Inside `aiteamcorp-fork/packages/adapters/` | Separate npm package or local directory |
 | Registration | Hardcoded in three registries | Loaded at startup via plugin system |
 | UI parser | Static import at build time | Dynamically loaded from API (see [UI Parser](/adapters/adapter-ui-parser)) |
-| Distribution | Ships with Paperclip | Published to npm or linked via `file:` |
+| Distribution | Ships with AiTeamCorp | Published to npm or linked via `file:` |
 | Updates | Requires AiTeamCorp release | Independent versioning |
 
 ## Quick Start
@@ -70,7 +70,7 @@ Key fields:
 |-------|---------|
 | `exports["."]` | Entry point — must export `createServerAdapter` |
 | `exports["./ui-parser"]` | Self-contained UI parser module (optional but recommended) |
-| `paperclip.adapterUiParser` | Contract version for the UI parser (`"1.0.0"`) |
+| `aiteamcorp.adapterUiParser` | Contract version for the UI parser (`"1.0.0"`) |
 | `files` | Limits what gets published — only `dist/` |
 
 ### tsconfig.json

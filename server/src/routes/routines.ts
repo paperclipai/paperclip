@@ -296,9 +296,9 @@ export function routineRoutes(db: Db) {
   router.post("/routine-triggers/public/:publicId/fire", async (req, res) => {
     const result = await svc.firePublicTrigger(req.params.publicId as string, {
       authorizationHeader: req.header("authorization"),
-      signatureHeader: req.header("x-paperclip-signature"),
+      signatureHeader: req.header("x-aiteamcorp-signature"),
       hubSignatureHeader: req.header("x-hub-signature-256"),
-      timestampHeader: req.header("x-paperclip-timestamp"),
+      timestampHeader: req.header("x-aiteamcorp-timestamp"),
       idempotencyKey: req.header("idempotency-key"),
       rawBody: (req as { rawBody?: Buffer }).rawBody ?? null,
       payload: typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : null,

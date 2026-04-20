@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="doc/assets/header.png" alt="Paperclip — runs your business" width="720" />
+  <img src="doc/assets/header.png" alt="AiTeamCorp — runs your business" width="720" />
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
 
 <br/>
 
-## What is Paperclip?
+## What is AiTeamCorp?
 
 # Open-source orchestration for zero-human companies
 
@@ -120,7 +120,7 @@ Monitor and manage your autonomous businesses from anywhere.
 
 ## Problems AiTeamCorp solves
 
-| Without Paperclip                                                                                                                     | With Paperclip                                                                                                                         |
+| Without AiTeamCorp                                                                                                                     | With AiTeamCorp                                                                                                                         |
 | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | ❌ You have 20 Claude Code tabs open and can't track which one does what. On reboot you lose everything.                              | ✅ Tasks are ticket-based, conversations are threaded, sessions persist across reboots.                                                |
 | ❌ You manually gather context from several places to remind your bot what you're actually doing.                                     | ✅ Context flows from the task up through the project and company goals — your agent always knows what to do and why.                  |
@@ -155,7 +155,7 @@ AiTeamCorp handles the hard orchestration details correctly.
 | **Not an agent framework.**  | We don't tell you how to build agents. We tell you how to run a company made of them.                                |
 | **Not a workflow builder.**  | No drag-and-drop pipelines. AiTeamCorp models companies — with org charts, goals, budgets, and governance.            |
 | **Not a prompt manager.**    | Agents bring their own prompts, models, and runtimes. AiTeamCorp manages the organization they work in.               |
-| **Not a single-agent tool.** | This is for teams. If you have one agent, you probably don't need Paperclip. If you have twenty — you definitely do. |
+| **Not a single-agent tool.** | This is for teams. If you have one agent, you probably don't need AiTeamCorp. If you have twenty — you definitely do. |
 | **Not a code review tool.**  | AiTeamCorp orchestrates work, not pull requests. Bring your own review process.                                       |
 
 <br/>
@@ -182,7 +182,7 @@ Or manually:
 
 ```bash
 git clone https://github.com/aiteamcorporated-collab/ai-team-coprorated.git
-cd paperclip
+cd aiteamcorp
 pnpm install
 pnpm dev
 ```
@@ -204,7 +204,7 @@ If you're a solo-entreprenuer you can use Tailscale to access AiTeamCorp on the 
 Yes. A single deployment can run an unlimited number of companies with complete data isolation.
 
 **How is AiTeamCorp different from agents like OpenClaw or Claude Code?**
-Paperclip _uses_ those agents. It orchestrates them into a company — with org charts, budgets, goals, governance, and accountability.
+AiTeamCorp _uses_ those agents. It orchestrates them into a company — with org charts, budgets, goals, governance, and accountability.
 
 **Why should I use AiTeamCorp instead of just pointing my OpenClaw to Asana or Trello?**
 Agent orchestration has subtleties in how you coordinate who has work checked out, how to maintain sessions, monitoring costs, establishing governance - AiTeamCorp does this for you.

@@ -64,7 +64,7 @@ docker image rm openclaw:local || true
 OPENCLAW_RESET_STATE=1 OPENCLAW_BUILD=1 ./scripts/smoke/openclaw-docker-ui.sh
 ```
 
-### 1) Start Paperclip
+### 1) Start AiTeamCorp
 ```bash
 pnpm dev --bind lan
 curl -fsS http://127.0.0.1:3100/api/health

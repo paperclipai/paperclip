@@ -60,7 +60,7 @@ This returns a repository object for the private fork. Save the `full_name` and 
 Clone it and set up your workspace:
 
 ```
-# Clone the private fork somewhere outside ~/paperclip
+# Clone the private fork somewhere outside ~/aiteamcorp
 git clone <clone_url_from_response> ~/security-patch-{{ghsaId}}
 cd ~/security-patch-{{ghsaId}}
 git checkout -b security-fix
@@ -182,7 +182,7 @@ Publishing the advisory simultaneously:
 ### 6c. Cut a release immediately after merge
 
 ```
-cd ~/paperclip
+cd ~/aiteamcorp
 git pull origin master
 
 gh release create v{{patchedVersion}} \

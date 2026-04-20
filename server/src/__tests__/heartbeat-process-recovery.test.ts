@@ -151,7 +151,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   const cleanupPids = new Set<number>();
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
+    tempDb = await startEmbeddedPostgresTestDatabase("aiteamcorp-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 

@@ -56,7 +56,7 @@ Inside the container:
 
 ```sh
 review-checkout-pr aiteamcorporated-collab/ai-team-coprorated 432
-cd /work/checkouts/paperclipai-paperclip/pr-432
+cd /work/checkouts/aiteamcorp-aiteamcorp/pr-432
 ```
 
 What this does:

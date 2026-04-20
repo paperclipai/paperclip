@@ -1,13 +1,13 @@
 ---
 title: Adapters Overview
-summary: What adapters are and how they connect agents to Paperclip
+summary: What adapters are and how they connect agents to AiTeamCorp
 ---
 
 Adapters are the bridge between AiTeamCorp's orchestration layer and agent runtimes. Each adapter knows how to invoke a specific type of AI agent and capture its results.
 
 ## How Adapters Work
 
-When a heartbeat fires, Paperclip:
+When a heartbeat fires, AiTeamCorp:
 
 1. Looks up the agent's `adapterType` and `adapterConfig`
 2. Calls the adapter's `execute()` function with the execution context
@@ -24,7 +24,7 @@ When a heartbeat fires, Paperclip:
 | OpenCode Local | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
 | Cursor | `cursor` | Runs Cursor in background mode |
 | Pi Local | `pi_local` | Runs an embedded Pi agent locally |
-| Hermes Local | `hermes_local` | Runs Hermes CLI locally (`hermes-paperclip-adapter`) |
+| Hermes Local | `hermes_local` | Runs Hermes CLI locally (`hermes-aiteamcorp-adapter`) |
 | OpenClaw Gateway | `openclaw_gateway` | Connects to an OpenClaw gateway endpoint |
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
 | [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |
@@ -35,7 +35,7 @@ These adapters ship as standalone npm packages and are installed via the plugin 
 
 | Adapter | Package | Type Key | Description |
 |---------|---------|----------|-------------|
-| Droid Local | `@henkey/droid-paperclip-adapter` | `droid_local` | Runs Factory Droid locally |
+| Droid Local | `@henkey/droid-aiteamcorp-adapter` | `droid_local` | Runs Factory Droid locally |
 
 ## External Adapters
 

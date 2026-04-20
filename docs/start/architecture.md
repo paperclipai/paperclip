@@ -38,7 +38,7 @@ AiTeamCorp is a monorepo with four main layers.
 ## Repository Structure
 
 ```
-paperclip/
+aiteamcorp/
 ├── ui/                          # React frontend
 │   ├── src/pages/              # Route pages
 │   ├── src/components/         # React components
@@ -60,7 +60,7 @@ paperclip/
 │       └── codex-local/         # OpenAI Codex adapter
 │
 ├── skills/                      # Agent skills
-│   └── paperclip/               # Core AiTeamCorp skill (heartbeat protocol)
+│   └── aiteamcorp/               # Core AiTeamCorp skill (heartbeat protocol)
 │
 ├── cli/                         # CLI client
 │   └── src/                     # Setup and control-plane commands

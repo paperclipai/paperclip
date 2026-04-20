@@ -27,7 +27,7 @@ function makeTrace(overrides: Partial<FeedbackTrace> = {}): FeedbackTrace {
     targetId: "comment-123",
     vote: "down",
     status: "pending",
-    destination: "paperclip_labs_feedback_v1",
+    destination: "aiteamcorp_labs_feedback_v1",
     exportId: null,
     consentVersion: "feedback-data-sharing-v1",
     schemaVersion: "1",
@@ -128,7 +128,7 @@ describe("renderFeedbackReport", () => {
 
 describe("writeFeedbackExportBundle", () => {
   it("writes votes, traces, a manifest, and a zip archive", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-feedback-export-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "aiteamcorp-feedback-export-"));
     const outputDir = path.join(tempDir, "feedback-export");
     const traces = [
       makeTrace(),

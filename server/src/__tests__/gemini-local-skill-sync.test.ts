@@ -21,7 +21,7 @@ describe("gemini local skill sync", () => {
   });
 
   it("reports configured AiTeamCorp skills and installs them into the Gemini skills home", async () => {
-    const home = await makeTempDir("paperclip-gemini-skill-sync-");
+    const home = await makeTempDir("aiteamcorp-gemini-skill-sync-");
     cleanupDirs.add(home);
 
     const ctx = {
@@ -50,7 +50,7 @@ describe("gemini local skill sync", () => {
   });
 
   it("keeps required bundled AiTeamCorp skills installed even when the desired set is emptied", async () => {
-    const home = await makeTempDir("paperclip-gemini-skill-prune-");
+    const home = await makeTempDir("aiteamcorp-gemini-skill-prune-");
     cleanupDirs.add(home);
 
     const configuredCtx = {

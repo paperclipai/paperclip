@@ -1,5 +1,5 @@
 ---
-name: paperclip-create-agent
+name: aiteamcorp-create-agent
 description: >
   Create new agents in AiTeamCorp with governance-aware hiring. Use when you need
   to inspect adapter configuration options, compare existing agent configs,
@@ -141,4 +141,4 @@ Before sending a hire request:
 - If board requests revision, update payload and resubmit through approval flow.
 
 For endpoint payload shapes and full examples, read:
-`skills/paperclip-create-agent/references/api-reference.md`
+`skills/aiteamcorp-create-agent/references/api-reference.md`

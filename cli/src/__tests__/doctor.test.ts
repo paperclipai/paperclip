@@ -9,7 +9,7 @@ import type { AiTeamCorpConfig } from "../config/schema.js";
 const ORIGINAL_ENV = { ...process.env };
 
 function createTempConfig(): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-doctor-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-doctor-"));
   const configPath = path.join(root, ".aiteamcorp", "config.json");
   const runtimeRoot = path.join(root, "runtime");
 

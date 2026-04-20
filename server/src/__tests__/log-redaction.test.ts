@@ -7,7 +7,7 @@ import {
 
 describe("log redaction", () => {
   it("redacts the active username inside home-directory paths", () => {
-    const userName = "paperclipuser";
+    const userName = "aiteamcorpuser";
     const maskedUserName = maskUserNameForLogs(userName);
     const input = [
       `cwd=/Users/${userName}/aiteamcorp`,
@@ -27,10 +27,10 @@ describe("log redaction", () => {
   });
 
   it("redacts standalone username mentions without mangling larger tokens", () => {
-    const userName = "paperclipuser";
+    const userName = "aiteamcorpuser";
     const maskedUserName = maskUserNameForLogs(userName);
     const result = redactCurrentUserText(
-      `user ${userName} said ${userName}/project should stay but apaperclipuserz should not change`,
+      `user ${userName} said ${userName}/project should stay but aaiteamcorpuserz should not change`,
       {
         userNames: [userName],
         homeDirs: [],
@@ -38,12 +38,12 @@ describe("log redaction", () => {
     );
 
     expect(result).toBe(
-      `user ${maskedUserName} said ${maskedUserName}/project should stay but apaperclipuserz should not change`,
+      `user ${maskedUserName} said ${maskedUserName}/project should stay but aaiteamcorpuserz should not change`,
     );
   });
 
   it("recursively redacts nested event payloads", () => {
-    const userName = "paperclipuser";
+    const userName = "aiteamcorpuser";
     const maskedUserName = maskUserNameForLogs(userName);
     const result = redactCurrentUserValue({
       cwd: `/Users/${userName}/aiteamcorp`,
@@ -68,7 +68,7 @@ describe("log redaction", () => {
   });
 
   it("skips redaction when disabled", () => {
-    const input = "cwd=/Users/paperclipuser/aiteamcorp";
+    const input = "cwd=/Users/aiteamcorpuser/aiteamcorp";
     expect(redactCurrentUserText(input, { enabled: false })).toBe(input);
   });
 });

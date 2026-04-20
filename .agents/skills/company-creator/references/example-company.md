@@ -53,7 +53,7 @@ name: CEO
 title: Chief Executive Officer
 reportsTo: null
 skills:
-  - paperclip
+  - aiteamcorp
 ---
 
 You are the CEO of Lean Dev Shop. You oversee company strategy, coordinate work across the team, and ensure projects ship on time.
@@ -74,7 +74,7 @@ title: Chief Technology Officer
 reportsTo: ceo
 skills:
   - code-review
-  - paperclip
+  - aiteamcorp
 ---
 
 You are the CTO of Lean Dev Shop. You lead the engineering team and make technical decisions.
@@ -95,7 +95,7 @@ title: Software Engineer
 reportsTo: cto
 skills:
   - code-review
-  - paperclip
+  - aiteamcorp
 ---
 
 You are a software engineer at Lean Dev Shop. You write code, fix bugs, and ship features.

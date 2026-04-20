@@ -412,7 +412,7 @@ export function createToolDefinitions(client: AiTeamCorpApiClient): ToolDefiniti
     ),
     makeTool(
       "aiteamcorpApiRequest",
-      "Make a JSON request to an existing Paperclip /api endpoint for unsupported operations",
+      "Make a JSON request to an existing AiTeamCorp /api endpoint for unsupported operations",
       apiRequestSchema,
       async ({ method, path, jsonBody }) => {
         if (!path.startsWith("/") || path.includes("..")) {

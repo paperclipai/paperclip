@@ -16,7 +16,7 @@
  * The lifecycle manager, scheduler, and job store are independent services
  * with clean single-responsibility boundaries. The coordinator provides
  * the "glue" between them without adding coupling. This pattern is used
- * throughout Paperclip (e.g. heartbeat service coordinates timers + runs).
+ * throughout AiTeamCorp (e.g. heartbeat service coordinates timers + runs).
  *
  * @see PLUGIN_SPEC.md §17 — Scheduled Jobs
  * @see ./plugin-job-scheduler.ts — Scheduler service

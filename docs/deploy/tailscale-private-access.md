@@ -31,7 +31,7 @@ pnpm dev --tailscale-auth
 
 ## 2. Find your reachable Tailscale address
 
-From the machine running Paperclip:
+From the machine running AiTeamCorp:
 
 ```sh
 tailscale ip -4

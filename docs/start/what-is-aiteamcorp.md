@@ -1,5 +1,5 @@
 ---
-title: What is Paperclip?
+title: What is AiTeamCorp?
 summary: The control plane for autonomous AI companies
 ---
 
@@ -24,7 +24,7 @@ AiTeamCorp is the command, communication, and control plane for a company of AI 
 
 ## Two Layers
 
-### 1. Control Plane (Paperclip)
+### 1. Control Plane (AiTeamCorp)
 
 The central nervous system. Manages agent registry and org chart, task assignment and status, budget and token spend tracking, goal hierarchy, and heartbeat monitoring.
 

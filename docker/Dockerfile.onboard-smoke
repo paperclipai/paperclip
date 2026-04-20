@@ -37,4 +37,4 @@ WORKDIR /home/aiteamcorp/workspace
 EXPOSE 3100
 USER aiteamcorp
 
-CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$AITEAMCORP_HOME\"; npx --yes \"paperclipai@${AITEAMCORP_VERSION}\" onboard --yes --data-dir \"$AITEAMCORP_HOME\""]
+CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$AITEAMCORP_HOME\"; npx --yes \"aiteamcorp@${AITEAMCORP_VERSION}\" onboard --yes --data-dir \"$AITEAMCORP_HOME\""]

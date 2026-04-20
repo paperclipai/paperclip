@@ -11,7 +11,7 @@ async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
-describe("paperclip skill utils", () => {
+describe("aiteamcorp skill utils", () => {
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -20,7 +20,7 @@ describe("paperclip skill utils", () => {
   });
 
   it("lists runtime skills from ./skills without pulling in .agents/skills", async () => {
-    const root = await makeTempDir("paperclip-skill-roots-");
+    const root = await makeTempDir("aiteamcorp-skill-roots-");
     cleanupDirs.add(root);
 
     const moduleDir = path.join(root, "a", "b", "c", "d", "e");
@@ -36,7 +36,7 @@ describe("paperclip skill utils", () => {
   });
 
   it("removes stale maintainer-only symlinks from a shared skills home", async () => {
-    const root = await makeTempDir("paperclip-skill-cleanup-");
+    const root = await makeTempDir("aiteamcorp-skill-cleanup-");
     cleanupDirs.add(root);
 
     const skillsHome = path.join(root, "skills-home");

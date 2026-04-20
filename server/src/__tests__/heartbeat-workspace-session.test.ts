@@ -176,7 +176,7 @@ describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
         name: "PAP-880-thumbs-capture-for-evals-feature",
         status: "active",
         cwd: "/tmp/reused-worktree",
-        repoUrl: "https://example.com/paperclip.git",
+        repoUrl: "https://example.com/aiteamcorp.git",
         baseRef: "main",
         branchName: "PAP-880-thumbs-capture-for-evals-feature",
         providerType: "git_worktree",
@@ -456,7 +456,7 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
 });
 
 describe("parseSessionCompactionPolicy", () => {
-  it("disables Paperclip-managed rotation by default for codex and claude local", () => {
+  it("disables AiTeamCorp-managed rotation by default for codex and claude local", () => {
     expect(parseSessionCompactionPolicy(buildAgent("codex_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 0,

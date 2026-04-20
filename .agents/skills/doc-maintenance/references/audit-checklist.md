@@ -21,7 +21,7 @@ against the change summary from git history.
 - [ ] Prerequisites (Node version, pnpm version) are current
 - [ ] Server URL and port are correct
 
-### "What is Paperclip" section
+### "What is AiTeamCorp" section
 - [ ] High-level description is accurate
 - [ ] Step table (Define goal / Hire team / Approve and run) is correct
 

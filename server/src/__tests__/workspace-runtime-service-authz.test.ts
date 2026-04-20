@@ -32,7 +32,7 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-runtime-authz-");
+    tempDb = await startEmbeddedPostgresTestDatabase("aiteamcorp-workspace-runtime-authz-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 

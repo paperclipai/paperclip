@@ -6,7 +6,7 @@ import { resolveServerDevWatchIgnorePaths } from "../dev-watch-ignore.js";
 
 describe("resolveServerDevWatchIgnorePaths", () => {
   it("includes both the worktree UI paths and their real shared targets", () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-dev-watch-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-dev-watch-"));
     const sharedUiRoot = path.join(tempRoot, "shared-ui");
     const worktreeRoot = path.join(tempRoot, "repo", ".aiteamcorp", "worktrees", "PAP-884");
     const serverRoot = path.join(worktreeRoot, "server");

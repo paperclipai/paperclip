@@ -105,7 +105,7 @@ A key goal: **the entire org's agent configurations are exportable.** You can ex
 
 Configurable per agent. Two ends of the spectrum:
 
-- **Fat payload** — AiTeamCorp bundles relevant context (current tasks, messages, company state, metrics) into the heartbeat invocation. Suited for simple/stateless agents that can't call back to Paperclip.
+- **Fat payload** — AiTeamCorp bundles relevant context (current tasks, messages, company state, metrics) into the heartbeat invocation. Suited for simple/stateless agents that can't call back to AiTeamCorp.
 - **Thin ping** — Heartbeat is just a wake-up signal. Agent calls AiTeamCorp's API to fetch whatever context it needs. Suited for sophisticated agents that manage their own state.
 
 #### Minimum Contract
@@ -275,11 +275,11 @@ Full hierarchy: **Initiative** (company goal) → Projects → Milestones → Is
 
 ## 6. Cost Tracking [DRAFT]
 
-Token/LLM cost budgeting is a core part of Paperclip. External revenue and expense tracking is a future plugin.
+Token/LLM cost budgeting is a core part of AiTeamCorp. External revenue and expense tracking is a future plugin.
 
 ### Cost Reporting
 
-Fully-instrumented Agents report token/API usage back to Paperclip. Costs are tracked at every level:
+Fully-instrumented Agents report token/API usage back to AiTeamCorp. Costs are tracked at every level:
 
 - **Per Agent** — how much is this employee costing?
 - **Per task** — how much did this unit of work cost?
@@ -338,7 +338,7 @@ This means the default CEO config tells the CEO to review strategy, check on rep
 
 ### AiTeamCorp Skill (SKILL.md)
 
-A skill definition that teaches agents how to interact with Paperclip. Provides:
+A skill definition that teaches agents how to interact with AiTeamCorp. Provides:
 
 - Task CRUD (create, read, update, complete tasks)
 - Status reporting (check in, report progress)

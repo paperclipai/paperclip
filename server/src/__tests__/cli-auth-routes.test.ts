@@ -92,7 +92,7 @@ describe("cli auth routes", () => {
     const res = await request(app)
       .post("/api/cli-auth/challenges")
       .send({
-        command: "paperclipai company import",
+        command: "aiteamcorp company import",
         clientName: "aiteamcorp cli",
         requestedAccess: "board",
       });
@@ -120,7 +120,7 @@ describe("cli auth routes", () => {
     expect(skillRes.status).toBe(401);
   });
 
-  it("serves the invite-scoped paperclip skill anonymously for active invites", async () => {
+  it("serves the invite-scoped aiteamcorp skill anonymously for active invites", async () => {
     const invite = {
       id: "invite-1",
       companyId: "company-1",
@@ -155,7 +155,7 @@ describe("cli auth routes", () => {
     mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({
       id: "challenge-1",
       status: "pending",
-      command: "paperclipai company import",
+      command: "aiteamcorp company import",
       clientName: "aiteamcorp cli",
       requestedAccess: "board",
       requestedCompanyId: null,

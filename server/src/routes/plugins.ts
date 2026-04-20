@@ -126,7 +126,7 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
   },
   {
     packageName: "@aiteamcorp/plugin-file-browser-example",
-    pluginKey: "paperclip-file-browser-example",
+    pluginKey: "aiteamcorp-file-browser-example",
     displayName: "File Browser (Example)",
     description: "Example plugin that adds a Files link in project navigation plus a project detail file browser.",
     localPath: "packages/plugins/examples/plugin-file-browser-example",
@@ -134,7 +134,7 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
   },
   {
     packageName: "@aiteamcorp/plugin-kitchen-sink-example",
-    pluginKey: "paperclip-kitchen-sink-example",
+    pluginKey: "aiteamcorp-kitchen-sink-example",
     displayName: "Kitchen Sink (Example)",
     description: "Reference plugin that demonstrates the current AiTeamCorp plugin API surface, bridge flows, UI extension surfaces, jobs, webhooks, tools, streams, and trusted local workspace/process demos.",
     localPath: "packages/plugins/examples/plugin-kitchen-sink-example",

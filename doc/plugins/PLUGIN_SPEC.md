@@ -812,7 +812,7 @@ Plugins may emit custom events using `ctx.events.emit(name, payload)`. Plugin-em
 Other plugins may subscribe to these events using the same `ctx.events.on()` API:
 
 ```ts
-ctx.events.on("plugin.@paperclip/plugin-git.push-detected", async (event) => {
+ctx.events.on("plugin.@aiteamcorp/plugin-git.push-detected", async (event) => {
   // react to the git plugin detecting a push
 });
 ```
@@ -1502,14 +1502,14 @@ The host should publish a starter template (`create-aiteamcorp-plugin`) that sca
 
 This spec directly supports the following plugin types:
 
-- `@paperclip/plugin-workspace-files`
-- `@paperclip/plugin-terminal`
-- `@paperclip/plugin-git`
+- `@aiteamcorp/plugin-workspace-files`
+- `@aiteamcorp/plugin-terminal`
+- `@aiteamcorp/plugin-git`
 - `@aiteamcorp/plugin-linear`
-- `@paperclip/plugin-github-issues`
-- `@paperclip/plugin-grafana`
-- `@paperclip/plugin-runtime-processes`
-- `@paperclip/plugin-stripe`
+- `@aiteamcorp/plugin-github-issues`
+- `@aiteamcorp/plugin-grafana`
+- `@aiteamcorp/plugin-runtime-processes`
+- `@aiteamcorp/plugin-stripe`
 
 ## 29. Compatibility And Versioning
 

@@ -160,7 +160,7 @@ function normalizeSkillKey(value: string | null | undefined) {
 
 function readSkillKey(frontmatter: Record<string, unknown>) {
   const metadata = isPlainRecord(frontmatter.metadata) ? frontmatter.metadata : null;
-  const aiteamcorp = isPlainRecord(metadata?.paperclip) ? metadata?.aiteamcorp as Record<string, unknown> : null;
+  const aiteamcorp = isPlainRecord(metadata?.aiteamcorp) ? metadata?.aiteamcorp as Record<string, unknown> : null;
   return normalizeSkillKey(
     asString(frontmatter.key)
     ?? asString(frontmatter.skillKey)
@@ -2023,8 +2023,8 @@ async function withSkillSourceMetadata(skill: CompanySkill, markdown: string) {
   }
   metadata.skillKey = skill.key;
   metadata.aiteamcorpSkillKey = skill.key;
-  metadata.paperclip = {
-    ...(isPlainRecord(metadata.paperclip) ? metadata.paperclip : {}),
+  metadata.aiteamcorp = {
+    ...(isPlainRecord(metadata.aiteamcorp) ? metadata.aiteamcorp : {}),
     skillKey: skill.key,
     slug: skill.slug,
   };

@@ -1,5 +1,5 @@
 ---
-name: paperclip
+name: aiteamcorp
 description: >
   Interact with the AiTeamCorp control plane API to manage tasks, coordinate with
   other agents, and follow company governance. Use when you need to check
@@ -123,7 +123,7 @@ Headers: X-AiTeamCorp-Run-Id: $AITEAMCORP_RUN_ID
 For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string. That is how comments get "smooshed" together. Use the helper below or an equivalent `jq --arg` pattern so literal newlines survive JSON encoding:
 
 ```bash
-scripts/paperclip-issue-update.sh --issue-id "$AITEAMCORP_TASK_ID" --status done <<'MD'
+scripts/aiteamcorp-issue-update.sh --issue-id "$AITEAMCORP_TASK_ID" --status done <<'MD'
 Done
 
 - Fixed the newline-preserving issue update path
@@ -301,7 +301,7 @@ If you are asked to create or manage routines you MUST read:
 - **@-mentions** (`@AgentName` in comments) trigger heartbeats — use sparingly, they cost budget.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
-- **Hiring**: use `paperclip-create-agent` skill for new agent creation workflows.
+- **Hiring**: use `aiteamcorp-create-agent` skill for new agent creation workflows.
 - **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: AiTeamCorp <noreply@aiteamcorp.local>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: AiTeamCorp <noreply@aiteamcorp.local>`
 
 ## Comment Style (Required)
@@ -334,7 +334,7 @@ Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always i
 **Preserve markdown line breaks (required):** When posting comments through shell commands, build the JSON payload from multiline stdin or another multiline source. Do not flatten a list or multi-paragraph update into a single quoted JSON line. Preferred helper:
 
 ```bash
-scripts/paperclip-issue-update.sh --issue-id "$AITEAMCORP_TASK_ID" --status in_progress <<'MD'
+scripts/aiteamcorp-issue-update.sh --issue-id "$AITEAMCORP_TASK_ID" --status in_progress <<'MD'
 Investigating comment formatting
 
 - Pulled the raw stored comment body

@@ -17,8 +17,8 @@ OPENCLAW_AGENT_NAME="${OPENCLAW_AGENT_NAME:-OpenClaw Smoke Agent}"
 OPENCLAW_WEBHOOK_URL="${OPENCLAW_WEBHOOK_URL:-}"
 OPENCLAW_WEBHOOK_AUTH="${OPENCLAW_WEBHOOK_AUTH:-Bearer openclaw-smoke-secret}"
 USE_DOCKER_RECEIVER="${USE_DOCKER_RECEIVER:-1}"
-SMOKE_IMAGE="${SMOKE_IMAGE:-paperclip-openclaw-smoke:local}"
-SMOKE_CONTAINER_NAME="${SMOKE_CONTAINER_NAME:-paperclip-openclaw-smoke}"
+SMOKE_IMAGE="${SMOKE_IMAGE:-aiteamcorp-openclaw-smoke:local}"
+SMOKE_CONTAINER_NAME="${SMOKE_CONTAINER_NAME:-aiteamcorp-openclaw-smoke}"
 SMOKE_PORT="${SMOKE_PORT:-19091}"
 SMOKE_TIMEOUT_SEC="${SMOKE_TIMEOUT_SEC:-45}"
 
@@ -268,7 +268,7 @@ for _ in $(seq 1 "$SMOKE_TIMEOUT_SEC"); do
   else
     break
   fi
-  MATCH_COUNT="$(jq -r --arg agentId "$CREATED_AGENT_ID" '[.events[] | select(((.body.paperclip.agentId // "") == $agentId))] | length' <<<"$LAST_EVENTS")"
+  MATCH_COUNT="$(jq -r --arg agentId "$CREATED_AGENT_ID" '[.events[] | select(((.body.aiteamcorp.agentId // "") == $agentId))] | length' <<<"$LAST_EVENTS")"
   if [[ "$MATCH_COUNT" -gt 0 ]]; then
     FOUND_EVENT="1"
     break

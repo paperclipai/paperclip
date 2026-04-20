@@ -13,7 +13,7 @@ pnpm dev
 That's it. On first start the server:
 
 1. Creates a `~/.aiteamcorp/instances/default/db/` directory for storage
-2. Ensures the `paperclip` database exists
+2. Ensures the `aiteamcorp` database exists
 3. Runs migrations automatically for empty databases
 4. Starts serving requests
 
@@ -44,13 +44,13 @@ This starts PostgreSQL 17 on `localhost:5432`. Then set the connection string:
 ```sh
 cp .env.example .env
 # .env already contains:
-# DATABASE_URL=postgres://aiteamcorp:aiteamcorp@localhost:5432/paperclip
+# DATABASE_URL=postgres://aiteamcorp:aiteamcorp@localhost:5432/aiteamcorp
 ```
 
 Run migrations (once the migration generation issue is fixed) or use `drizzle-kit push`:
 
 ```sh
-DATABASE_URL=postgres://aiteamcorp:aiteamcorp@localhost:5432/paperclip \
+DATABASE_URL=postgres://aiteamcorp:aiteamcorp@localhost:5432/aiteamcorp \
   npx drizzle-kit push
 ```
 

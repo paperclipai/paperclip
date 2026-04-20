@@ -30,7 +30,7 @@ const DATA_DIR_OPTION_HELP =
   "AiTeamCorp data directory root (isolates state from ~/.aiteamcorp)";
 
 program
-  .name("paperclipai")
+  .name("aiteamcorp")
   .description("AiTeamCorp CLI — setup, diagnose, and configure your instance")
   .version(cliVersion);
 
@@ -105,7 +105,7 @@ program
 
 program
   .command("run")
-  .description("Bootstrap local setup (onboard + doctor) and run Paperclip")
+  .description("Bootstrap local setup (onboard + doctor) and run AiTeamCorp")
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("-i, --instance <id>", "Local instance id (default: default)")

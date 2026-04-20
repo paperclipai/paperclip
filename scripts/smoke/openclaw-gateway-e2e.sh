@@ -35,7 +35,7 @@ OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}"
 OPENCLAW_TMP_DIR="${OPENCLAW_TMP_DIR:-${TMPDIR:-/tmp}}"
 OPENCLAW_TMP_DIR="${OPENCLAW_TMP_DIR%/}"
 OPENCLAW_TMP_DIR="${OPENCLAW_TMP_DIR:-/tmp}"
-OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-${OPENCLAW_TMP_DIR}/openclaw-paperclip-smoke}"
+OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-${OPENCLAW_TMP_DIR}/openclaw-aiteamcorp-smoke}"
 OPENCLAW_WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-${OPENCLAW_CONFIG_DIR}/workspace}"
 OPENCLAW_CONTAINER_NAME="${OPENCLAW_CONTAINER_NAME:-openclaw-docker-openclaw-gateway-1}"
 OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-openclaw:local}"
@@ -420,7 +420,7 @@ create_and_approve_gateway_join() {
         role: "operator",
         scopes: ["operator.admin"],
         sessionKeyStrategy: "fixed",
-        sessionKey: "paperclip",
+        sessionKey: "aiteamcorp",
         timeoutSec: $timeoutSec,
         waitTimeoutMs: $waitTimeoutMs,
         aiteamcorpApiUrl: $aiteamcorpApiUrl
@@ -460,7 +460,7 @@ create_and_approve_gateway_join() {
 persist_claimed_key_artifacts() {
   local claim_json="$1"
   local workspace_dir="${OPENCLAW_CONFIG_DIR%/}/workspace"
-  local skill_dir="${OPENCLAW_CONFIG_DIR%/}/skills/paperclip"
+  local skill_dir="${OPENCLAW_CONFIG_DIR%/}/skills/aiteamcorp"
   local claimed_file="${workspace_dir}/aiteamcorp-claimed-api-key.json"
   local claimed_raw_file="${workspace_dir}/aiteamcorp-claimed-api-key.raw.json"
 
@@ -485,7 +485,7 @@ persist_claimed_key_artifacts() {
   fi
 
   if [[ "$AUTO_INSTALL_SKILL" == "1" ]]; then
-    api_request "GET" "/skills/paperclip"
+    api_request "GET" "/skills/aiteamcorp"
     assert_status "200"
     {
       echo "AITEAMCORP_API_URL=${AITEAMCORP_API_URL_FOR_OPENCLAW}"
@@ -887,7 +887,7 @@ main() {
   wait_http_ready "${AITEAMCORP_API_URL%/}/api/health" 15 || fail "AiTeamCorp API health endpoint not reachable"
   api_request "GET" "/health"
   assert_status "200"
-  log "paperclip health deploymentMode=$(jq -r '.deploymentMode // "unknown"' <<<"$RESPONSE_BODY") exposure=$(jq -r '.deploymentExposure // "unknown"' <<<"$RESPONSE_BODY")"
+  log "aiteamcorp health deploymentMode=$(jq -r '.deploymentMode // "unknown"' <<<"$RESPONSE_BODY") exposure=$(jq -r '.deploymentExposure // "unknown"' <<<"$RESPONSE_BODY")"
 
   require_board_auth
   resolve_company_id

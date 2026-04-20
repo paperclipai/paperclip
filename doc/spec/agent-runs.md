@@ -527,7 +527,7 @@ Runtime log storage is deployment-configured (not per-agent by default).
   "runLogStore": {
     "type": "local_file | object_store | postgres",
     "basePath": "./data/run-logs",
-    "bucket": "paperclip-run-logs",
+    "bucket": "aiteamcorp-run-logs",
     "prefix": "runs/",
     "compress": true,
     "maxInlineExcerptBytes": 32768
@@ -561,7 +561,7 @@ Rules:
 - `run.source`
 - `run.startedAt`
 - `heartbeat.reason`
-- `paperclip.skill` (shared AiTeamCorp skill text block)
+- `aiteamcorp.skill` (shared AiTeamCorp skill text block)
 - `credentials.apiBaseUrl`
 - `credentials.apiKey` (optional, sensitive)
 

@@ -42,7 +42,7 @@ describeEmbeddedPostgres("GET /companies/:companyId/invites", () => {
   let companyId!: string;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-invite-list-route-");
+    tempDb = await startEmbeddedPostgresTestDatabase("aiteamcorp-invite-list-route-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 

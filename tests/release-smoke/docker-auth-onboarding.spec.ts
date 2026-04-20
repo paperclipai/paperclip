@@ -7,7 +7,7 @@ const ADMIN_EMAIL =
 const ADMIN_PASSWORD =
   process.env.AITEAMCORP_RELEASE_SMOKE_PASSWORD ??
   process.env.SMOKE_ADMIN_PASSWORD ??
-  "paperclip-smoke-password";
+  "aiteamcorp-smoke-password";
 
 const COMPANY_NAME = `Release-Smoke-${Date.now()}`;
 const AGENT_NAME = "CEO";

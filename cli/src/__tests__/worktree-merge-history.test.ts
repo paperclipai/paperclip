@@ -291,7 +291,7 @@ describe("worktree merge history planner", () => {
     const sourceWorkspace = makeProjectWorkspace({
       id: "source-workspace-1",
       projectId: "source-project-1",
-      cwd: "/Users/dotta/paperclip-evals",
+      cwd: "/Users/dotta/aiteamcorp-evals",
       repoUrl: "https://github.com/aiteamcorporated-collab/ai-team-coprorated-evals.git",
     });
 

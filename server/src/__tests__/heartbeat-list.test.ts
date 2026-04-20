@@ -21,7 +21,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-list-");
+    tempDb = await startEmbeddedPostgresTestDatabase("aiteamcorp-heartbeat-list-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 

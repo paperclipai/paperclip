@@ -12,7 +12,7 @@ This specification is an extension of the Agent Skills specification, not a repl
 
 It defines how company-, team-, and agent-level package structure composes around the existing `SKILL.md` model.
 
-This specification is vendor-neutral. It is intended to be usable by any agent-company runtime, not only Paperclip.
+This specification is vendor-neutral. It is intended to be usable by any agent-company runtime, not only AiTeamCorp.
 
 The format is designed to:
 
@@ -294,7 +294,7 @@ Rules:
 
 - `SKILL.md` should follow the Agent Skills spec
 - AiTeamCorp must not require extra top-level fields for skill validity
-- Paperclip-specific extensions must live under `metadata.paperclip` or `metadata.sources`
+- AiTeamCorp-specific extensions must live under `metadata.aiteamcorp` or `metadata.sources`
 - a skill directory may include `scripts/`, `references/`, and `assets/` exactly as the Agent Skills ecosystem expects
 - tools implementing this spec should treat `skills.sh` compatibility as a first-class goal rather than inventing a parallel skill format
 
@@ -310,7 +310,7 @@ allowed-tools:
   - Read
   - Grep
 metadata:
-  paperclip:
+  aiteamcorp:
     tags:
       - engineering
       - review
@@ -433,7 +433,7 @@ Example uses:
 - budgets
 - approval policies
 - project execution workspace policies
-- issue/task Paperclip-only metadata
+- issue/task AiTeamCorp-only metadata
 
 Rules:
 
@@ -541,21 +541,21 @@ AiTeamCorp can map this spec to its runtime model like this:
   - `SKILL.md` -> imported skill package
   - `sources[]` -> provenance and pinned upstream refs
 - AiTeamCorp extension:
-  - `.aiteamcorp.yaml` -> adapter config, runtime config, env input declarations, permissions, budgets, routine triggers, and other Paperclip-specific fidelity
+  - `.aiteamcorp.yaml` -> adapter config, runtime config, env input declarations, permissions, budgets, routine triggers, and other AiTeamCorp-specific fidelity
 
-Inline Paperclip-only metadata that must live inside a shared markdown file should use:
+Inline AiTeamCorp-only metadata that must live inside a shared markdown file should use:
 
-- `metadata.paperclip`
+- `metadata.aiteamcorp`
 
 That keeps the base format broader than AiTeamCorp.
 
-This specification itself remains vendor-neutral and intended for any agent-company runtime, not only Paperclip.
+This specification itself remains vendor-neutral and intended for any agent-company runtime, not only AiTeamCorp.
 
 ## 20. Cutover
 
 AiTeamCorp should cut over to this markdown-first package model as the primary portability format.
 
-`paperclip.manifest.json` does not need to be preserved as a compatibility requirement for the future package system.
+`aiteamcorp.manifest.json` does not need to be preserved as a compatibility requirement for the future package system.
 
 For AiTeamCorp, this should be treated as a hard cutover in product direction rather than a long-lived dual-format strategy.
 

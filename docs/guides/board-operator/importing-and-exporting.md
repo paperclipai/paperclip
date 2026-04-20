@@ -27,14 +27,14 @@ my-company/
 - **COMPANY.md** defines company name, description, and metadata.
 - **AGENT.md** files contain agent identity, role, and instructions.
 - **SKILL.md** files are compatible with the Agent Skills ecosystem.
-- **.aiteamcorp.yaml** holds Paperclip-specific config (adapter types, env inputs, budgets) as an optional sidecar.
+- **.aiteamcorp.yaml** holds AiTeamCorp-specific config (adapter types, env inputs, budgets) as an optional sidecar.
 
 ## Exporting a Company
 
 Export a company into a portable folder:
 
 ```sh
-paperclipai company export <company-id> --out ./my-export
+aiteamcorp company export <company-id> --out ./my-export
 ```
 
 ### Options
@@ -53,13 +53,13 @@ paperclipai company export <company-id> --out ./my-export
 
 ```sh
 # Export company with agents and projects
-paperclipai company export abc123 --out ./backup --include company,agents,projects
+aiteamcorp company export abc123 --out ./backup --include company,agents,projects
 
 # Export everything including tasks and skills
-paperclipai company export abc123 --out ./full-export --include company,agents,projects,tasks,skills
+aiteamcorp company export abc123 --out ./full-export --include company,agents,projects,tasks,skills
 
 # Export only specific skills
-paperclipai company export abc123 --out ./skills-only --include skills --skills review,deploy
+aiteamcorp company export abc123 --out ./skills-only --include skills --skills review,deploy
 ```
 
 ### What Gets Exported
@@ -79,17 +79,17 @@ Import from a local directory, GitHub URL, or GitHub shorthand:
 
 ```sh
 # From a local folder
-paperclipai company import ./my-export
+aiteamcorp company import ./my-export
 
 # From a GitHub URL
-paperclipai company import https://github.com/org/repo
+aiteamcorp company import https://github.com/org/repo
 
 # From a GitHub subfolder
-paperclipai company import https://github.com/org/repo/tree/main/companies/acme
+aiteamcorp company import https://github.com/org/repo/tree/main/companies/acme
 
 # From GitHub shorthand
-paperclipai company import org/repo
-paperclipai company import org/repo/companies/acme
+aiteamcorp company import org/repo
+aiteamcorp company import org/repo/companies/acme
 ```
 
 ### Options
@@ -131,7 +131,7 @@ When running interactively (no `--yes` or `--json` flags), the import command sh
 Always preview first with `--dry-run`:
 
 ```sh
-paperclipai company import org/repo --target existing --company-id abc123 --dry-run
+aiteamcorp company import org/repo --target existing --company-id abc123 --dry-run
 ```
 
 The preview shows:
@@ -147,7 +147,7 @@ Imported agents always land with timer heartbeats disabled. Assignment/on-demand
 **Clone a company template from GitHub:**
 
 ```sh
-paperclipai company import org/company-templates/engineering-team \
+aiteamcorp company import org/company-templates/engineering-team \
   --target new \
   --new-company-name "My Engineering Team"
 ```
@@ -155,7 +155,7 @@ paperclipai company import org/company-templates/engineering-team \
 **Add agents from a package into your existing company:**
 
 ```sh
-paperclipai company import ./shared-agents \
+aiteamcorp company import ./shared-agents \
   --target existing \
   --company-id abc123 \
   --include agents \
@@ -165,13 +165,13 @@ paperclipai company import ./shared-agents \
 **Import a specific branch or tag:**
 
 ```sh
-paperclipai company import org/repo --ref v2.0.0 --dry-run
+aiteamcorp company import org/repo --ref v2.0.0 --dry-run
 ```
 
 **Non-interactive import (CI/scripts):**
 
 ```sh
-paperclipai company import ./package \
+aiteamcorp company import ./package \
   --target new \
   --yes \
   --json

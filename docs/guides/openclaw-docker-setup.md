@@ -39,7 +39,7 @@ What this command does:
 
 - clones/updates `openclaw/openclaw` in `/tmp/openclaw-docker`
 - builds `openclaw:local` (unless `OPENCLAW_BUILD=0`)
-- writes isolated smoke config under `~/.openclaw-paperclip-smoke/openclaw.json` and Docker `.env`
+- writes isolated smoke config under `~/.openclaw-aiteamcorp-smoke/openclaw.json` and Docker `.env`
 - pins agent model defaults to OpenAI (`openai/gpt-5.2` with OpenAI fallback)
 - starts `openclaw-gateway` via Compose (with required `/tmp` tmpfs override)
 - probes and prints a AiTeamCorp host URL that is reachable from inside OpenClaw Docker
@@ -59,7 +59,7 @@ Environment knobs:
 - `OPENCLAW_DISABLE_DEVICE_AUTH=0` keeps pairing enabled (then approve browser with `devices` CLI commands)
 - `OPENCLAW_MODEL_PRIMARY` (default `openai/gpt-5.2`)
 - `OPENCLAW_MODEL_FALLBACK` (default `openai/gpt-5.2-chat-latest`)
-- `OPENCLAW_CONFIG_DIR` (default `~/.openclaw-paperclip-smoke`)
+- `OPENCLAW_CONFIG_DIR` (default `~/.openclaw-aiteamcorp-smoke`)
 - `OPENCLAW_RESET_STATE=1` (default) resets smoke agent state on each run to avoid stale auth/session drift
 - `AITEAMCORP_HOST_PORT` (default `3100`)
 - `AITEAMCORP_HOST_FROM_CONTAINER` (default `host.docker.internal`)

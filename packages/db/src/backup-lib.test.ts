@@ -23,7 +23,7 @@ function createTempDir(prefix: string): string {
 }
 
 async function createTempDatabase(): Promise<string> {
-  const db = await startEmbeddedPostgresTestDatabase("paperclip-db-backup-");
+  const db = await startEmbeddedPostgresTestDatabase("aiteamcorp-db-backup-");
   cleanups.push(db.cleanup);
   return db.connectionString;
 }
@@ -52,7 +52,7 @@ if (!embeddedPostgresSupport.supported) {
 
 describe("createBufferedTextFileWriter", () => {
   it("preserves line boundaries across buffered flushes", async () => {
-    const tempDir = createTempDir("paperclip-buffered-writer-");
+    const tempDir = createTempDir("aiteamcorp-buffered-writer-");
     const outputPath = path.join(tempDir, "backup.sql");
     const writer = createBufferedTextFileWriter(outputPath, 16);
     const lines = [
@@ -82,7 +82,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         sourceConnectionString,
         "paperclip_restore_target",
       );
-      const backupDir = createTempDir("paperclip-db-backup-output-");
+      const backupDir = createTempDir("aiteamcorp-db-backup-output-");
       const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
       const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
 
@@ -126,7 +126,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           connectionString: sourceConnectionString,
           backupDir,
           retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
-          filenamePrefix: "paperclip-test",
+          filenamePrefix: "aiteamcorp-test",
         });
 
         expect(result.backupFile).toMatch(/paperclip-test-.*\.sql\.gz$/);
@@ -182,7 +182,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     async () => {
       const restoreConnectionString = await createTempDatabase();
       const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
-      const backupDir = createTempDir("paperclip-db-restore-manual-");
+      const backupDir = createTempDir("aiteamcorp-db-restore-manual-");
       const backupFile = path.join(backupDir, "manual.sql");
 
       try {

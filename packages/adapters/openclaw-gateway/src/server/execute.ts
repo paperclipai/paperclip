@@ -761,7 +761,7 @@ class GatewayWsClient {
 
   close() {
     if (!this.ws) return;
-    this.ws.close(1000, "paperclip-complete");
+    this.ws.close(1000, "aiteamcorp-complete");
     this.ws = null;
   }
 

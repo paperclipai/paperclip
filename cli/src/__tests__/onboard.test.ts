@@ -8,7 +8,7 @@ import type { AiTeamCorpConfig } from "../config/schema.js";
 const ORIGINAL_ENV = { ...process.env };
 
 function createExistingConfigFixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-onboard-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-onboard-"));
   const runtimeRoot = path.join(root, "runtime");
   const configPath = path.join(root, ".aiteamcorp", "config.json");
   const config: AiTeamCorpConfig = {
@@ -75,7 +75,7 @@ function createExistingConfigFixture() {
 }
 
 function createFreshConfigPath() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-onboard-fresh-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-onboard-fresh-"));
   return path.join(root, ".aiteamcorp", "config.json");
 }
 

@@ -7,7 +7,7 @@ import { defineConfig } from "@playwright/test";
 // even when the dev server is running on :3100 in authenticated mode.
 const PORT = Number(process.env.AITEAMCORP_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
-const AITEAMCORP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-e2e-home-"));
+const AITEAMCORP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-e2e-home-"));
 
 export default defineConfig({
   testDir: ".",

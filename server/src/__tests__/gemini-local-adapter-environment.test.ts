@@ -45,7 +45,7 @@ describe("gemini_local environment diagnostics", () => {
   it("creates a missing working directory when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),
-      `paperclip-gemini-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `aiteamcorp-gemini-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       "workspace",
     );
 
@@ -70,7 +70,7 @@ describe("gemini_local environment diagnostics", () => {
   it("passes model and yolo flags to the hello probe", async () => {
     const root = path.join(
       os.tmpdir(),
-      `paperclip-gemini-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `aiteamcorp-gemini-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const binDir = path.join(root, "bin");
     const cwd = path.join(root, "workspace");
@@ -107,7 +107,7 @@ describe("gemini_local environment diagnostics", () => {
   it("classifies quota exhaustion as a quota warning instead of a generic failure", async () => {
     const root = path.join(
       os.tmpdir(),
-      `paperclip-gemini-local-quota-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `aiteamcorp-gemini-local-quota-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const binDir = path.join(root, "bin");
     const cwd = path.join(root, "workspace");

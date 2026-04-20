@@ -16,7 +16,7 @@ Open [http://localhost:3100](http://localhost:3100).
 Defaults:
 
 - Host port: `3100`
-- Data directory: `./data/docker-paperclip`
+- Data directory: `./data/docker-aiteamcorp`
 
 Override with environment variables:
 
@@ -30,18 +30,18 @@ AITEAMCORP_PORT=3200 AITEAMCORP_DATA_DIR=../data/pc \
 ## Manual Docker Build
 
 ```sh
-docker build -t paperclip-local .
-docker run --name paperclip \
+docker build -t aiteamcorp-local .
+docker run --name aiteamcorp \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e AITEAMCORP_HOME=/aiteamcorp \
-  -v "$(pwd)/data/docker-paperclip:/aiteamcorp" \
-  paperclip-local
+  -v "$(pwd)/data/docker-aiteamcorp:/aiteamcorp" \
+  aiteamcorp-local
 ```
 
 ## Data Persistence
 
-All data is persisted under the bind mount (`./data/docker-paperclip`):
+All data is persisted under the bind mount (`./data/docker-aiteamcorp`):
 
 - Embedded PostgreSQL data
 - Uploaded assets
@@ -58,14 +58,14 @@ The Docker image pre-installs:
 Pass API keys to enable local adapter runs inside the container:
 
 ```sh
-docker run --name paperclip \
+docker run --name aiteamcorp \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
   -e AITEAMCORP_HOME=/aiteamcorp \
   -e OPENAI_API_KEY=sk-... \
   -e ANTHROPIC_API_KEY=sk-... \
-  -v "$(pwd)/data/docker-paperclip:/aiteamcorp" \
-  paperclip-local
+  -v "$(pwd)/data/docker-aiteamcorp:/aiteamcorp" \
+  aiteamcorp-local
 ```
 
 Without API keys, the app runs normally — adapter environment checks will surface missing prerequisites.

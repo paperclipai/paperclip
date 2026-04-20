@@ -40,9 +40,9 @@ describe("codex local adapter skill injection", () => {
   });
 
   it("repairs a Codex AiTeamCorp skill symlink that still points at another live checkout", async () => {
-    const currentRepo = await makeTempDir("paperclip-codex-current-");
-    const oldRepo = await makeTempDir("paperclip-codex-old-");
-    const skillsHome = await makeTempDir("paperclip-codex-home-");
+    const currentRepo = await makeTempDir("aiteamcorp-codex-current-");
+    const oldRepo = await makeTempDir("aiteamcorp-codex-old-");
+    const skillsHome = await makeTempDir("aiteamcorp-codex-home-");
     cleanupDirs.add(currentRepo);
     cleanupDirs.add(oldRepo);
     cleanupDirs.add(skillsHome);
@@ -78,9 +78,9 @@ describe("codex local adapter skill injection", () => {
   });
 
   it("preserves a custom Codex skill symlink outside AiTeamCorp repo checkouts", async () => {
-    const currentRepo = await makeTempDir("paperclip-codex-current-");
-    const customRoot = await makeTempDir("paperclip-codex-custom-");
-    const skillsHome = await makeTempDir("paperclip-codex-home-");
+    const currentRepo = await makeTempDir("aiteamcorp-codex-current-");
+    const customRoot = await makeTempDir("aiteamcorp-codex-custom-");
+    const skillsHome = await makeTempDir("aiteamcorp-codex-home-");
     cleanupDirs.add(currentRepo);
     cleanupDirs.add(customRoot);
     cleanupDirs.add(skillsHome);
@@ -104,9 +104,9 @@ describe("codex local adapter skill injection", () => {
   });
 
   it("prunes broken symlinks for unavailable AiTeamCorp repo skills before Codex starts", async () => {
-    const currentRepo = await makeTempDir("paperclip-codex-current-");
-    const oldRepo = await makeTempDir("paperclip-codex-old-");
-    const skillsHome = await makeTempDir("paperclip-codex-home-");
+    const currentRepo = await makeTempDir("aiteamcorp-codex-current-");
+    const oldRepo = await makeTempDir("aiteamcorp-codex-old-");
+    const skillsHome = await makeTempDir("aiteamcorp-codex-home-");
     cleanupDirs.add(currentRepo);
     cleanupDirs.add(oldRepo);
     cleanupDirs.add(skillsHome);
@@ -144,8 +144,8 @@ describe("codex local adapter skill injection", () => {
   });
 
   it("preserves other live AiTeamCorp skill symlinks in the shared workspace skill directory", async () => {
-    const currentRepo = await makeTempDir("paperclip-codex-current-");
-    const skillsHome = await makeTempDir("paperclip-codex-home-");
+    const currentRepo = await makeTempDir("aiteamcorp-codex-current-");
+    const skillsHome = await makeTempDir("aiteamcorp-codex-home-");
     cleanupDirs.add(currentRepo);
     cleanupDirs.add(skillsHome);
 

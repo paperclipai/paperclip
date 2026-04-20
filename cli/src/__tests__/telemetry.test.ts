@@ -84,7 +84,7 @@ describe("cli telemetry", () => {
   });
 
   it("respects telemetry.enabled=false from the config file", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-telemetry-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-cli-telemetry-"));
     const configPath = makeConfigPath(root, false);
     process.env.AITEAMCORP_HOME = path.join(root, "home");
     process.env.AITEAMCORP_INSTANCE_ID = "telemetry-test";
@@ -97,7 +97,7 @@ describe("cli telemetry", () => {
   });
 
   it("creates telemetry state only after the first event is tracked", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-telemetry-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "aiteamcorp-cli-telemetry-"));
     process.env.AITEAMCORP_HOME = path.join(root, "home");
     process.env.AITEAMCORP_INSTANCE_ID = "telemetry-test";
 

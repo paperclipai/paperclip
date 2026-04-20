@@ -853,7 +853,7 @@ V1 supports company import/export using a portable package contract:
 
 - markdown-first package rooted at `COMPANY.md`
 - implicit folder discovery by convention
-- `.aiteamcorp.yaml` sidecar for Paperclip-specific fidelity
+- `.aiteamcorp.yaml` sidecar for AiTeamCorp-specific fidelity
 - canonical base package is vendor-neutral and aligned with `docs/companies/companies-spec.md`
 - common conventions:
   - `agents/<slug>/AGENTS.md`

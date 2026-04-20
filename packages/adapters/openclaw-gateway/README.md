@@ -49,7 +49,7 @@ The agent request is built as:
 
 - required fields:
   - `message` (wake text plus optional `payloadTemplate.message`/`payloadTemplate.text` prefix)
-  - `idempotencyKey` (Paperclip `runId`)
+  - `idempotencyKey` (AiTeamCorp `runId`)
   - `sessionKey` (resolved strategy)
 - optional additions:
   - all `payloadTemplate` fields merged in

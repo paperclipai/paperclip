@@ -21,7 +21,7 @@ describe("pi local skill sync", () => {
   });
 
   it("reports configured AiTeamCorp skills and installs them into the Pi skills home", async () => {
-    const home = await makeTempDir("paperclip-pi-skill-sync-");
+    const home = await makeTempDir("aiteamcorp-pi-skill-sync-");
     cleanupDirs.add(home);
 
     const ctx = {
@@ -50,7 +50,7 @@ describe("pi local skill sync", () => {
   });
 
   it("keeps required bundled AiTeamCorp skills installed even when the desired set is emptied", async () => {
-    const home = await makeTempDir("paperclip-pi-skill-prune-");
+    const home = await makeTempDir("aiteamcorp-pi-skill-prune-");
     cleanupDirs.add(home);
 
     const configuredCtx = {

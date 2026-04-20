@@ -131,8 +131,8 @@ function readSkillMarkdown(skillName: string): string | null {
   const normalized = skillName.trim().toLowerCase();
   if (
     normalized !== "aiteamcorp" &&
-    normalized !== "paperclip-create-agent" &&
-    normalized !== "paperclip-create-plugin" &&
+    normalized !== "aiteamcorp-create-agent" &&
+    normalized !== "aiteamcorp-create-plugin" &&
     normalized !== "para-memory-files"
   )
     return null;
@@ -201,7 +201,7 @@ function listAvailableSkills(): AvailableSkill[] {
   const claudeSkillsDir = path.join(homeDir, ".claude", "skills");
   const aiteamcorpSkillsDir = resolveAiTeamCorpSkillsDir();
 
-  // Build set of Paperclip-managed skill names
+  // Build set of AiTeamCorp-managed skill names
   const aiteamcorpSkillNames = new Set<string>();
   if (aiteamcorpSkillsDir) {
     try {
@@ -854,21 +854,21 @@ export function normalizeAgentDefaultsForJoin(input: {
         parsedAiTeamCorpApiUrl.protocol !== "https:"
       ) {
         diagnostics.push({
-          code: "openclaw_gateway_paperclip_api_url_protocol",
+          code: "openclaw_gateway_aiteamcorp_api_url_protocol",
           level: "warn",
           message: `aiteamcorpApiUrl must use http:// or https:// (got ${parsedAiTeamCorpApiUrl.protocol}).`
         });
       } else {
         normalized.aiteamcorpApiUrl = parsedAiTeamCorpApiUrl.toString();
         diagnostics.push({
-          code: "openclaw_gateway_paperclip_api_url_configured",
+          code: "openclaw_gateway_aiteamcorp_api_url_configured",
           level: "info",
           message: `aiteamcorpApiUrl set to ${parsedAiTeamCorpApiUrl.toString()}`
         });
       }
     } catch {
       diagnostics.push({
-        code: "openclaw_gateway_paperclip_api_url_invalid",
+        code: "openclaw_gateway_aiteamcorp_api_url_invalid",
         level: "warn",
         message: `Invalid aiteamcorpApiUrl: ${rawAiTeamCorpApiUrl}`
       });
@@ -1603,7 +1603,7 @@ export function buildInviteOnboardingTextDocument(
       "capabilities": "Optional summary",
       "agentDefaultsPayload": {
         "url": "wss://your-openclaw-gateway.example",
-        "aiteamcorpApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
+        "aiteamcorpApiUrl": "https://aiteamcorp-hostname-your-agent-can-reach:3100",
         "headers": { "x-openclaw-token": "replace-me" },
         "waitTimeoutMs": 120000,
         "sessionKeyStrategy": "issue",
@@ -2485,8 +2485,8 @@ export function accessRoutes(
           path: "/api/skills/para-memory-files"
         },
         {
-          name: "paperclip-create-agent",
-          path: "/api/skills/paperclip-create-agent"
+          name: "aiteamcorp-create-agent",
+          path: "/api/skills/aiteamcorp-create-agent"
         }
       ]
     });

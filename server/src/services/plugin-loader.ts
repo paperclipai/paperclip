@@ -5,7 +5,7 @@
  *
  * 1. **Discovery** — Scans the local plugin directory
  *    (`~/.aiteamcorp/plugins/`) and `node_modules` for packages matching
- *    the `paperclip-plugin-*` naming convention. Aggregates results with
+ *    the `aiteamcorp-plugin-*` naming convention. Aggregates results with
  *    path-based deduplication.
  *
  * 2. **Installation** — `installPlugin()` downloads from npm (or reads a
@@ -62,7 +62,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *
  * @see PLUGIN_SPEC.md §10 — Package Contract
  */
-export const NPM_PLUGIN_PACKAGE_PREFIX = "paperclip-plugin-";
+export const NPM_PLUGIN_PACKAGE_PREFIX = "aiteamcorp-plugin-";
 
 /**
  * Default local plugin directory.  The loader scans this directory for
@@ -105,7 +105,7 @@ export interface DiscoveredPlugin {
  */
 export type PluginSource =
   | "local-filesystem"  // ~/.aiteamcorp/plugins/ local directory
-  | "npm"               // npm packages matching paperclip-plugin-* convention
+  | "npm"               // npm packages matching aiteamcorp-plugin-* convention
   | "registry";         // future: remote plugin registry URL
 
 type ParsedSemver = {
@@ -154,7 +154,7 @@ export interface PluginLoaderOptions {
   enableLocalFilesystem?: boolean;
 
   /**
-   * Whether to discover installed npm packages matching the paperclip-plugin-*
+   * Whether to discover installed npm packages matching the aiteamcorp-plugin-*
    * naming convention.
    * Defaults to true.
    */
@@ -177,7 +177,7 @@ export interface PluginLoaderOptions {
  */
 export interface PluginInstallOptions {
   /**
-   * npm package name to install (e.g. "paperclip-plugin-linear" or "@acme/plugin-linear").
+   * npm package name to install (e.g. "aiteamcorp-plugin-linear" or "@acme/plugin-linear").
    * Either packageName or localPath must be set.
    */
   packageName?: string;
@@ -337,7 +337,7 @@ export interface PluginLoader {
 
   /**
    * Discover AiTeamCorp plugins installed as npm packages in the current
-   * Node.js environment matching the "paperclip-plugin-*" naming convention.
+   * Node.js environment matching the "aiteamcorp-plugin-*" naming convention.
    *
    * Looks for packages in node_modules that match the naming convention.
    *
@@ -501,7 +501,7 @@ export interface PluginLoader {
 
 /**
  * Check whether a package name matches the AiTeamCorp plugin naming convention.
- * Accepts both the "paperclip-plugin-" prefix and scoped "@scope/plugin-" packages.
+ * Accepts both the "aiteamcorp-plugin-" prefix and scoped "@scope/plugin-" packages.
  *
  * @see PLUGIN_SPEC.md §10 — Package Contract
  */
@@ -695,7 +695,7 @@ export function getPluginUiContributionMetadata(
  *
  * // Install a specific plugin
  * const discovered = await loader.installPlugin({
- *   packageName: "paperclip-plugin-linear",
+ *   packageName: "aiteamcorp-plugin-linear",
  *   version: "^1.0.0",
  * });
  * ```

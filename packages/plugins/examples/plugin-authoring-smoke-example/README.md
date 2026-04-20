@@ -11,7 +11,7 @@ pnpm dev:ui         # local dev server with hot-reload events
 pnpm test
 ```
 
-## Install Into Paperclip
+## Install Into AiTeamCorp
 
 ```bash
 pnpm aiteamcorp plugin install ./

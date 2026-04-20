@@ -6,7 +6,7 @@
 
 ## 1. Vision & Positioning
 
-**ClipHub** sells **entire team configurations** — org charts, agent roles, inter-agent workflows, governance rules, and project templates — for Paperclip-managed companies.
+**ClipHub** sells **entire team configurations** — org charts, agent roles, inter-agent workflows, governance rules, and project templates — for AiTeamCorp-managed companies.
 
 | Dimension | ClipHub |
 |---|---|
@@ -423,7 +423,7 @@ The install handler:
 1. Validates buyer owns the purchase
 2. Validates target company access
 3. For each agent in blueprint:
-   - `POST /api/companies/:id/agents` (if `paperclip-create-agent` supports it, or via approval flow)
+   - `POST /api/companies/:id/agents` (if `aiteamcorp-create-agent` supports it, or via approval flow)
    - Sets adapter config, prompt template, instructions path
 4. Sets reporting chains
 5. Creates projects and workspaces
@@ -455,14 +455,14 @@ The install handler:
 
 ### 9.1 Stack
 
-- **Frontend**: Next.js (React), Tailwind CSS, same UI framework as Paperclip
+- **Frontend**: Next.js (React), Tailwind CSS, same UI framework as AiTeamCorp
 - **Backend**: Node.js API (or extend AiTeamCorp server)
 - **Database**: Postgres (can share AiTeamCorp's DB or separate)
 - **Payments**: Stripe Connect (marketplace mode)
 - **Storage**: S3/R2 for listing bundles and images
 - **Auth**: Shared with AiTeamCorp auth (or OAuth2)
 
-### 9.2 Integration with Paperclip
+### 9.2 Integration with AiTeamCorp
 
 ClipHub can be:
 - **Option A**: A separate app that calls AiTeamCorp's API to install blueprints
