@@ -399,9 +399,17 @@ export function issueRoutes(
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
-    if (runId) return runId;
-    res.status(401).json({ error: "Agent run id required" });
-    return null;
+    if (!runId) {
+      res.status(401).json({ error: "Agent run id required" });
+      return null;
+    }
+    // Validate runId is a valid UUID (required for database operations)
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(runId)) {
+      res.status(400).json({ error: "Invalid run id format: must be a valid UUID" });
+      return null;
+    }
+    return runId;
   }
 
   async function assertAgentRunCheckoutOwnership(

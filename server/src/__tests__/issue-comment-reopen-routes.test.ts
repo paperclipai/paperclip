@@ -597,7 +597,7 @@ describe("issue comment reopen routes", () => {
         type: "agent",
         agentId: "22222222-2222-4222-8222-222222222222",
         companyId: "company-1",
-        runId: "run-1",
+        runId: "00000000-0000-4000-8000-000000000001",
       }),
     )
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
