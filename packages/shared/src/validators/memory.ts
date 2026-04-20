@@ -1,7 +1,10 @@
 import { z } from "zod";
 import {
   MEMORY_BINDING_TARGET_TYPES,
+  MEMORY_EXTRACTION_HARNESSES,
+  MEMORY_HOOK_EXTRACTION_MODES,
   MEMORY_HOOK_KINDS,
+  MEMORY_HOOK_RUN_MODES,
   MEMORY_OPERATION_STATUSES,
   MEMORY_OPERATION_TYPES,
   MEMORY_PRINCIPAL_TYPES,
@@ -125,6 +128,26 @@ export const memoryProviderConfigMetadataSchema = z
     pathSuggestions: z.array(memoryProviderConfigPathSuggestionSchema).max(20).optional(),
     healthChecks: z.array(memoryProviderHealthCheckSchema).max(50).optional(),
   })
+  .strict();
+
+export const memoryHookPolicySchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    extractionMode: z.enum(MEMORY_HOOK_EXTRACTION_MODES).optional(),
+    runMode: z.enum(MEMORY_HOOK_RUN_MODES).optional(),
+    harness: z.enum(MEMORY_EXTRACTION_HARNESSES).optional(),
+    sensitivityLabel: z.enum(MEMORY_SENSITIVITY_LABELS).optional(),
+    reviewState: z.enum(MEMORY_REVIEW_STATES).optional(),
+    retentionPolicy: z.record(z.unknown()).nullable().optional(),
+    modelProvider: z.string().trim().min(1).max(128).nullable().optional(),
+    model: z.string().trim().min(1).max(200).nullable().optional(),
+    config: z.record(z.unknown()).nullable().optional(),
+  })
+  .strict();
+
+export const memoryHookPoliciesSchema = z
+  .object(Object.fromEntries(MEMORY_HOOK_KINDS.map((kind) => [kind, memoryHookPolicySchema.optional()])))
+  .partial()
   .strict();
 
 export const createMemoryBindingSchema = z
@@ -300,6 +323,27 @@ export const memoryListExtractionJobsQuerySchema = z
   })
   .strict();
 
+export const memoryRefreshJobSchema = z
+  .object({
+    bindingKey: z.string().trim().min(1).max(64).optional(),
+    scope: memoryScopeSchema.optional().default({}),
+    sourceKinds: z
+      .array(z.enum(["issue", "issue_comment", "issue_document", "run"]))
+      .min(1)
+      .max(4)
+      .optional()
+      .default(["issue", "issue_comment", "issue_document"]),
+    issueIds: z.array(z.string().uuid()).max(500).optional(),
+    projectId: z.string().uuid().nullable().optional(),
+    agentId: z.string().uuid().nullable().optional(),
+    runIds: z.array(z.string().uuid()).max(500).optional(),
+    since: z.coerce.date().nullable().optional(),
+    until: z.coerce.date().nullable().optional(),
+    dryRun: z.boolean().optional().default(false),
+    limit: z.number().int().positive().max(5000).optional().default(500),
+  })
+  .strict();
+
 export const memoryBindingTargetTypeSchema = z.enum(MEMORY_BINDING_TARGET_TYPES);
 
 export type MemoryScopeInput = z.infer<typeof memoryScopeSchema>;
@@ -307,6 +351,8 @@ export type MemoryGovernedScopeInput = z.infer<typeof memoryGovernedScopeSchema>
 export type MemoryPrincipalRefInput = z.infer<typeof memoryPrincipalRefSchema>;
 export type MemoryCitationInput = z.infer<typeof memoryCitationSchema>;
 export type MemorySourceRefInput = z.infer<typeof memorySourceRefSchema>;
+export type MemoryHookPolicyInput = z.infer<typeof memoryHookPolicySchema>;
+export type MemoryHookPoliciesInput = z.infer<typeof memoryHookPoliciesSchema>;
 export type CreateMemoryBinding = z.infer<typeof createMemoryBindingSchema>;
 export type UpdateMemoryBinding = z.infer<typeof updateMemoryBindingSchema>;
 export type SetCompanyMemoryBinding = z.infer<typeof setCompanyMemoryBindingSchema>;
@@ -322,3 +368,4 @@ export type MemoryRetentionSweep = z.infer<typeof memoryRetentionSweepSchema>;
 export type MemoryListRecordsQuery = z.infer<typeof memoryListRecordsQuerySchema>;
 export type MemoryListOperationsQuery = z.infer<typeof memoryListOperationsQuerySchema>;
 export type MemoryListExtractionJobsQuery = z.infer<typeof memoryListExtractionJobsQuerySchema>;
+export type MemoryRefreshJob = z.infer<typeof memoryRefreshJobSchema>;

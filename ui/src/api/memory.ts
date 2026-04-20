@@ -9,6 +9,7 @@ import type {
   MemoryOperation,
   MemoryProviderDescriptor,
   MemoryRecord,
+  MemoryRefreshJobResult,
   MemoryRetentionSweep,
   MemoryRetentionSweepResult,
   MemoryReview,
@@ -20,6 +21,7 @@ import type {
   SetCompanyMemoryBinding,
   SetProjectMemoryBinding,
   UpdateMemoryBinding,
+  MemoryRefreshJob,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -77,6 +79,11 @@ export const memoryApi = {
   sweepRetention: (companyId: string, data: Partial<MemoryRetentionSweep> = {}) =>
     api.post<MemoryRetentionSweepResult>(
       `/companies/${encodeURIComponent(companyId)}/memory/retention/sweep`,
+      data,
+    ),
+  startRefreshJob: (companyId: string, data: MemoryRefreshJob) =>
+    api.post<MemoryRefreshJobResult>(
+      `/companies/${encodeURIComponent(companyId)}/memory/refresh-jobs`,
       data,
     ),
 };

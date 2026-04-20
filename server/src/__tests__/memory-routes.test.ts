@@ -30,6 +30,7 @@ const mockMemoryService = vi.hoisted(() => ({
   getRecord: vi.fn(),
   listOperations: vi.fn(),
   listExtractionJobs: vi.fn(),
+  startRefreshJob: vi.fn(),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -299,5 +300,67 @@ describe("memory routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockMemoryService.setProjectOverride).not.toHaveBeenCalled();
+  });
+
+  it("starts memory refresh jobs through the memory service and logs activity", async () => {
+    mockMemoryService.startRefreshJob.mockResolvedValue({
+      job: {
+        id: "99999999-9999-4999-8999-999999999999",
+        companyId: companyA,
+        key: "memory.refresh",
+        jobType: "memory_refresh",
+      },
+      run: {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: companyA,
+        jobKey: "memory.refresh",
+        jobType: "memory_refresh",
+        status: "queued",
+      },
+      dryRun: false,
+      sourceCounts: {
+        issue: 1,
+        issue_comment: 2,
+        issue_document: 1,
+        run: 0,
+      },
+      recordCount: 0,
+    });
+    const app = createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      companyIds: [companyA],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyA}/memory/refresh-jobs`)
+      .set("Origin", "http://localhost:3100")
+      .send({
+        sourceKinds: ["issue", "issue_comment", "issue_document"],
+        issueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+        dryRun: false,
+      });
+
+    expect(res.status).toBe(202);
+    expect(mockMemoryService.startRefreshJob).toHaveBeenCalledWith(
+      companyA,
+      expect.objectContaining({
+        sourceKinds: ["issue", "issue_comment", "issue_document"],
+        issueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+        dryRun: false,
+      }),
+      expect.objectContaining({ actorType: "user", userId: "board-user" }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: companyA,
+        action: "memory.refresh_job_started",
+        entityType: "background_job_run",
+        entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }),
+    );
   });
 });

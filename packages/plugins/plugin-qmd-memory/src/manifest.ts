@@ -56,6 +56,11 @@ const manifest: PaperclipPluginManifestV1 = {
             description: "Optional absolute path to qmd. Leave empty to use qmd from PATH.",
             default: null,
           },
+          hookPolicies: {
+            type: "object",
+            title: "Hook policies",
+            description: "Optional per-hook Paperclip extraction policy overrides.",
+          },
         },
       },
       configMetadata: buildQmdMemoryConfigMetadata(),

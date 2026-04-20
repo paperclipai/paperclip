@@ -129,6 +129,8 @@ export type {
   MemoryProviderConfigPathSuggestion,
   MemoryProviderConfigMetadata,
   MemoryProviderDescriptor,
+  MemoryHookPolicy,
+  MemoryHookPolicyMap,
   MemoryUsage,
   MemoryGovernedScope,
   MemoryPrincipalRef,
@@ -142,6 +144,8 @@ export type {
   MemoryRecord,
   MemoryOperation,
   MemoryExtractionJob,
+  MemoryRefreshJobSourceCounts,
+  MemoryRefreshJobResult,
   MemoryQueryResult,
   MemoryCaptureResult,
   MemoryForgetResult,
@@ -158,6 +162,12 @@ export type {
   MemoryProviderForgetInput,
   MemoryProviderForgetOutput,
 } from "./memory.js";
+export type {
+  BackgroundJob,
+  BackgroundJobRun,
+  BackgroundJobEvent,
+  BackgroundJobCostEvent,
+} from "./background-job.js";
 export type {
   BudgetPolicy,
   BudgetPolicySummary,

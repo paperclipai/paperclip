@@ -253,6 +253,8 @@ export type {
   MemoryProviderQueryInput,
   MemoryProviderQueryOutput,
   MemoryOperation,
+  MemoryHookPolicy,
+  MemoryHookPolicyMap,
   MemoryProviderCapabilities,
   MemoryProviderConfigFieldInput,
   MemoryProviderConfigFieldOption,

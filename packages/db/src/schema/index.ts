@@ -58,6 +58,12 @@ export { memoryBindingTargets } from "./memory_binding_targets.js";
 export { memoryOperations } from "./memory_operations.js";
 export { memoryExtractionJobs } from "./memory_extraction_jobs.js";
 export { memoryLocalRecords } from "./memory_local_records.js";
+export {
+  backgroundJobs,
+  backgroundJobRuns,
+  backgroundJobEvents,
+  backgroundJobCostEvents,
+} from "./background_jobs.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";

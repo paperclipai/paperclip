@@ -38,6 +38,137 @@ function makeBinding(id: string, key: string, providerKey = "local_basic") {
   };
 }
 
+function makeMemoryRecordRow(overrides: Record<string, unknown> = {}) {
+  const now = new Date("2026-04-01T00:00:00.000Z");
+  return {
+    id: "44444444-4444-4444-8444-444444444444",
+    companyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    bindingId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    providerKey: "local_basic",
+    scopeAgentId: null,
+    scopeProjectId: null,
+    scopeIssueId: "55555555-5555-4555-8555-555555555555",
+    scopeRunId: null,
+    scopeSubjectId: null,
+    scopeType: "org",
+    scopeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    scopeWorkspaceId: null,
+    scopeTeamId: null,
+    sourceKind: "issue_comment",
+    sourceIssueId: "55555555-5555-4555-8555-555555555555",
+    sourceCommentId: "66666666-6666-4666-8666-666666666666",
+    sourceDocumentKey: null,
+    sourceRunId: null,
+    sourceActivityId: null,
+    sourceExternalRef: null,
+    ownerType: "user",
+    ownerId: "board-user",
+    createdByActorType: "user",
+    createdByActorId: "board-user",
+    sensitivityLabel: "internal",
+    retentionPolicy: null,
+    expiresAt: null,
+    retentionState: "active",
+    reviewState: "accepted",
+    reviewedAt: null,
+    reviewedByActorType: null,
+    reviewedByActorId: null,
+    reviewNote: null,
+    citationJson: null,
+    supersedesRecordId: null,
+    supersededByRecordId: null,
+    revokedAt: null,
+    revokedByActorType: null,
+    revokedByActorId: null,
+    revocationReason: null,
+    title: "Issue comment",
+    content: "Remember that the launch checklist lives in the issue document.",
+    summary: "Remember that the launch checklist lives in the issue document.",
+    metadata: {},
+    createdByOperationId: "77777777-7777-4777-8777-777777777777",
+    deletedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+function makeOperationRow(overrides: Record<string, unknown> = {}) {
+  const now = new Date("2026-04-01T00:00:00.000Z");
+  return {
+    id: "77777777-7777-4777-8777-777777777777",
+    companyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    bindingId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    providerKey: "local_basic",
+    operationType: "upsert",
+    triggerKind: "hook",
+    hookKind: "issue_comment_capture",
+    status: "succeeded",
+    actorType: "user",
+    actorId: "board-user",
+    agentId: null,
+    userId: "board-user",
+    scopeAgentId: null,
+    scopeProjectId: null,
+    scopeIssueId: "55555555-5555-4555-8555-555555555555",
+    scopeRunId: null,
+    scopeSubjectId: null,
+    scopeType: "org",
+    scopeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    scopeWorkspaceId: null,
+    scopeTeamId: null,
+    maxSensitivityLabel: null,
+    sourceKind: "issue_comment",
+    sourceIssueId: "55555555-5555-4555-8555-555555555555",
+    sourceCommentId: "66666666-6666-4666-8666-666666666666",
+    sourceDocumentKey: null,
+    sourceRunId: null,
+    sourceActivityId: null,
+    sourceExternalRef: null,
+    queryText: null,
+    recordCount: 1,
+    requestJson: null,
+    resultJson: null,
+    policyDecisionJson: null,
+    revocationSelectorJson: null,
+    retentionActionJson: null,
+    usageJson: [],
+    error: null,
+    costEventId: null,
+    financeEventId: null,
+    occurredAt: now,
+    createdAt: now,
+    ...overrides,
+  };
+}
+
+function makeExtractionJobRow(overrides: Record<string, unknown> = {}) {
+  const now = new Date("2026-04-01T00:00:00.000Z");
+  return {
+    id: "88888888-8888-4888-8888-888888888888",
+    companyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    bindingId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    providerKey: "local_basic",
+    operationId: null,
+    status: "running",
+    providerJobId: null,
+    sourceKind: "issue_comment",
+    sourceIssueId: "55555555-5555-4555-8555-555555555555",
+    sourceCommentId: "66666666-6666-4666-8666-666666666666",
+    sourceDocumentKey: null,
+    sourceRunId: null,
+    sourceActivityId: null,
+    sourceExternalRef: null,
+    resultJson: null,
+    error: null,
+    startedAt: now,
+    completedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
 describe("memoryService.forget", () => {
   it("rejects record sets that span multiple bindings", async () => {
     const rows = [
@@ -178,5 +309,132 @@ describe("memoryService.resolveBinding", () => {
         { projectId: "22222222-2222-4222-8222-222222222222" },
       ),
     ).rejects.toThrow("Memory scope project does not belong to company");
+  });
+});
+
+describe("memoryService hook policies", () => {
+  it("runs issue comment capture through an extraction job when policy requests Paperclip-managed extraction", async () => {
+    const binding = {
+      ...makeBinding("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "company"),
+      config: {
+        enableIssueCommentCapture: true,
+        hookPolicies: {
+          issue_comment_capture: {
+            enabled: true,
+            extractionMode: "paperclip_managed",
+            runMode: "sync",
+            harness: "server_worker",
+            sensitivityLabel: "internal",
+            reviewState: "accepted",
+          },
+        },
+      },
+    };
+    const target = {
+      id: "target-company",
+      companyId: binding.companyId,
+      bindingId: binding.id,
+      targetType: "company",
+      targetId: binding.companyId,
+      createdAt: binding.createdAt,
+      updatedAt: binding.updatedAt,
+    };
+    const selectResults = [
+      [{ target, binding }],
+      [{ target, binding }],
+    ];
+    const insertResults = [
+      [makeExtractionJobRow()],
+      [makeMemoryRecordRow()],
+      [makeOperationRow()],
+    ];
+    const updateResults = [
+      [
+        makeExtractionJobRow({
+          status: "succeeded",
+          operationId: "77777777-7777-4777-8777-777777777777",
+          completedAt: new Date("2026-04-01T00:00:01.000Z"),
+        }),
+      ],
+    ];
+    const insertedValues: unknown[] = [];
+    const updatedValues: unknown[] = [];
+    const selectThenable = () => ({
+      from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      orderBy: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      then: vi.fn((resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve(selectResults.shift() ?? []))),
+    });
+    const db = {
+      select: vi.fn(() => selectThenable()),
+      insert: vi.fn(() => ({
+        values: vi.fn((value: unknown) => {
+          insertedValues.push(value);
+          return {
+            returning: vi.fn().mockResolvedValue(insertResults.shift() ?? []),
+          };
+        }),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn((value: unknown) => {
+          updatedValues.push(value);
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue(updateResults.shift() ?? []),
+            }),
+          };
+        }),
+      })),
+    } as any;
+
+    const result = await memoryService(db).captureIssueComment({
+      companyId: binding.companyId,
+      issueId: "55555555-5555-4555-8555-555555555555",
+      commentId: "66666666-6666-4666-8666-666666666666",
+      body: "Remember that the launch checklist lives in the issue document.",
+      actor: {
+        actorType: "user",
+        actorId: "board-user",
+        agentId: null,
+        userId: "board-user",
+        runId: null,
+      },
+    });
+
+    expect(result?.operation.hookKind).toBe("issue_comment_capture");
+    expect(db.insert).toHaveBeenCalledTimes(3);
+    expect(insertedValues[0]).toMatchObject({
+      companyId: binding.companyId,
+      bindingId: binding.id,
+      status: "running",
+      sourceKind: "issue_comment",
+      resultJson: {
+        hookKind: "issue_comment_capture",
+        policy: {
+          extractionMode: "paperclip_managed",
+          harness: "server_worker",
+        },
+      },
+    });
+    expect(insertedValues[1]).toMatchObject({
+      reviewState: "accepted",
+      metadata: {
+        extraction: {
+          mode: "paperclip_managed",
+          harness: "server_worker",
+          jobId: "88888888-8888-4888-8888-888888888888",
+        },
+      },
+    });
+    expect(updatedValues[0]).toMatchObject({
+      status: "succeeded",
+      operationId: "77777777-7777-4777-8777-777777777777",
+      resultJson: {
+        hookKind: "issue_comment_capture",
+        recordIds: ["44444444-4444-4444-8444-444444444444"],
+      },
+    });
   });
 });

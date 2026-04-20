@@ -421,6 +421,23 @@ export const MEMORY_HOOK_KINDS = [
 ] as const;
 export type MemoryHookKind = (typeof MEMORY_HOOK_KINDS)[number];
 
+export const MEMORY_HOOK_EXTRACTION_MODES = [
+  "raw_capture",
+  "provider_managed",
+  "paperclip_managed",
+] as const;
+export type MemoryHookExtractionMode = (typeof MEMORY_HOOK_EXTRACTION_MODES)[number];
+
+export const MEMORY_HOOK_RUN_MODES = ["sync", "async"] as const;
+export type MemoryHookRunMode = (typeof MEMORY_HOOK_RUN_MODES)[number];
+
+export const MEMORY_EXTRACTION_HARNESSES = [
+  "server_worker",
+  "plugin_worker",
+  "agent",
+] as const;
+export type MemoryExtractionHarness = (typeof MEMORY_EXTRACTION_HARNESSES)[number];
+
 export const MEMORY_SOURCE_KINDS = [
   "issue_comment",
   "issue_document",
@@ -455,6 +472,57 @@ export type MemoryRetentionState = (typeof MEMORY_RETENTION_STATES)[number];
 
 export const MEMORY_REVIEW_STATES = ["pending", "accepted", "rejected"] as const;
 export type MemoryReviewState = (typeof MEMORY_REVIEW_STATES)[number];
+
+export const BACKGROUND_JOB_BACKEND_KINDS = [
+  "server_worker",
+  "plugin_worker",
+  "agent_run",
+] as const;
+export type BackgroundJobBackendKind = (typeof BACKGROUND_JOB_BACKEND_KINDS)[number];
+
+export const BACKGROUND_JOB_STATUSES = [
+  "active",
+  "paused",
+  "archived",
+] as const;
+export type BackgroundJobStatus = (typeof BACKGROUND_JOB_STATUSES)[number];
+
+export const BACKGROUND_JOB_RUN_STATUSES = [
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+] as const;
+export type BackgroundJobRunStatus = (typeof BACKGROUND_JOB_RUN_STATUSES)[number];
+
+export const BACKGROUND_JOB_RUN_TRIGGERS = [
+  "manual",
+  "schedule",
+  "hook",
+  "retry",
+] as const;
+export type BackgroundJobRunTrigger = (typeof BACKGROUND_JOB_RUN_TRIGGERS)[number];
+
+export const BACKGROUND_JOB_EVENT_TYPES = [
+  "queued",
+  "started",
+  "progress",
+  "log",
+  "checkpoint",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+export type BackgroundJobEventType = (typeof BACKGROUND_JOB_EVENT_TYPES)[number];
+
+export const BACKGROUND_JOB_EVENT_LEVELS = [
+  "debug",
+  "info",
+  "warn",
+  "error",
+] as const;
+export type BackgroundJobEventLevel = (typeof BACKGROUND_JOB_EVENT_LEVELS)[number];
 
 // ---------------------------------------------------------------------------
 // Plugin System — see doc/plugins/PLUGIN_SPEC.md for the full specification

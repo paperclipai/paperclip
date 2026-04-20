@@ -135,7 +135,7 @@ function buildRecord(
     retentionPolicy: input.retentionPolicy ?? null,
     expiresAt: normalizeDate(input.expiresAt),
     retentionState: "active",
-    reviewState: "pending",
+    reviewState: input.reviewState ?? "pending",
     reviewedAt: null,
     reviewedBy: null,
     reviewNote: null,
@@ -171,6 +171,16 @@ export function buildQmdMemoryConfigMetadata(dataDir = resolveQmdMemoryDataDir()
       topK: 5,
       autoIndexOnWrite: true,
       qmdBinaryPath: null,
+      hookPolicies: {
+        issue_comment_capture: {
+          enabled: false,
+          extractionMode: "paperclip_managed",
+          runMode: "sync",
+          harness: "server_worker",
+          sensitivityLabel: "internal",
+          reviewState: "accepted",
+        },
+      },
     },
     pathSuggestions: [
       {

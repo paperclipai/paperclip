@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, ilike, inArray, isNull, isNotNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNull, isNotNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  documents,
+  heartbeatRuns,
+  issueComments,
+  issueDocuments,
+  issues,
   memoryBindings,
   memoryBindingTargets,
   memoryExtractionJobs,
@@ -19,6 +24,9 @@ import type {
   MemoryCitation,
   MemoryCorrect,
   MemoryCorrectResult,
+  MemoryHookKind,
+  MemoryHookPolicy,
+  MemoryHookPolicyMap,
   MemoryExtractionJob,
   MemoryForget,
   MemoryForgetResult,
@@ -32,6 +40,9 @@ import type {
   MemoryQuery,
   MemoryQueryResult,
   MemoryRecord,
+  MemoryRefreshJob,
+  MemoryRefreshJobResult,
+  MemoryRefreshJobSourceCounts,
   MemoryRetentionSweep,
   MemoryRetentionSweepResult,
   MemoryRevoke,
@@ -45,10 +56,11 @@ import type {
   MemorySourceRef,
   MemoryUsage,
 } from "@paperclipai/shared";
-import { createMemoryBindingSchema, memoryCorrectSchema, memoryRetentionSweepSchema, memoryReviewSchema, memoryRevokeSchema, updateMemoryBindingSchema } from "@paperclipai/shared";
+import { createMemoryBindingSchema, memoryCorrectSchema, memoryHookPoliciesSchema, memoryRefreshJobSchema, memoryRetentionSweepSchema, memoryReviewSchema, memoryRevokeSchema, updateMemoryBindingSchema } from "@paperclipai/shared";
 import { z } from "zod";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { costService } from "./costs.js";
+import { backgroundJobService } from "./background-jobs.js";
 import { validateInstanceConfig } from "./plugin-config-validator.js";
 import {
   getDefaultPluginMemoryProviderDispatcher,
@@ -75,6 +87,50 @@ type OperationRow = typeof memoryOperations.$inferSelect;
 type RecordRow = typeof memoryLocalRecords.$inferSelect;
 type ExtractionJobRow = typeof memoryExtractionJobs.$inferSelect;
 
+type RefreshSource =
+  | {
+    kind: "issue";
+    id: string;
+    issueId: string;
+    projectId: string | null;
+    agentId: string | null;
+    title: string;
+    content: string;
+    createdAt: Date;
+  }
+  | {
+    kind: "issue_comment";
+    id: string;
+    issueId: string;
+    projectId: string | null;
+    agentId: string | null;
+    title: string;
+    content: string;
+    createdAt: Date;
+  }
+  | {
+    kind: "issue_document";
+    id: string;
+    issueId: string;
+    projectId: string | null;
+    agentId: string | null;
+    documentKey: string;
+    title: string;
+    content: string;
+    createdAt: Date;
+  }
+  | {
+    kind: "run";
+    id: string;
+    runId: string;
+    agentId: string | null;
+    projectId: string | null;
+    issueId: string | null;
+    title: string;
+    content: string;
+    createdAt: Date;
+  };
+
 export interface MemoryPreRunHydrateResult {
   preamble: string | null;
   trace: MemoryHookTrace;
@@ -85,6 +141,7 @@ export interface MemoryPostRunCaptureResult {
 }
 
 const LOCAL_BASIC_PROVIDER_KEY = "local_basic";
+const MEMORY_HOOK_POLICIES_CONFIG_KEY = "hookPolicies";
 
 const localBasicConfigSchema = z
   .object({
@@ -97,6 +154,19 @@ const localBasicConfigSchema = z
   .strict();
 
 type LocalBasicConfig = z.infer<typeof localBasicConfigSchema>;
+
+const DEFAULT_CAPTURE_HOOK_POLICY: MemoryHookPolicy = {
+  enabled: true,
+  extractionMode: "raw_capture",
+  runMode: "sync",
+  harness: "server_worker",
+  sensitivityLabel: "internal",
+  reviewState: "accepted",
+  retentionPolicy: null,
+  modelProvider: null,
+  model: null,
+  config: null,
+};
 
 const LOCAL_BASIC_PROVIDER: MemoryProviderDescriptor = {
   key: LOCAL_BASIC_PROVIDER_KEY,
@@ -119,6 +189,10 @@ const LOCAL_BASIC_PROVIDER: MemoryProviderDescriptor = {
       enableIssueCommentCapture: { type: "boolean", default: false },
       enableIssueDocumentCapture: { type: "boolean", default: true },
       maxHydrateSnippets: { type: "integer", minimum: 1, maximum: 10, default: 5 },
+      hookPolicies: {
+        type: "object",
+        description: "Optional per-hook extraction policy overrides.",
+      },
     },
   },
   configMetadata: {
@@ -128,6 +202,16 @@ const LOCAL_BASIC_PROVIDER: MemoryProviderDescriptor = {
       enableIssueCommentCapture: false,
       enableIssueDocumentCapture: true,
       maxHydrateSnippets: 5,
+      hookPolicies: {
+        issue_comment_capture: {
+          enabled: false,
+          extractionMode: "raw_capture",
+          runMode: "sync",
+          harness: "server_worker",
+          sensitivityLabel: "internal",
+          reviewState: "accepted",
+        },
+      },
     },
     fields: [
       {
@@ -194,7 +278,29 @@ const SENSITIVITY_RANK: Record<MemorySensitivityLabel, number> = {
 const DEFAULT_AGENT_MAX_SENSITIVITY: MemorySensitivityLabel = "confidential";
 
 function parseLocalBasicConfig(config: Record<string, unknown> | null | undefined): LocalBasicConfig {
-  return localBasicConfigSchema.parse(config ?? {});
+  return localBasicConfigSchema.parse(stripMemoryHookPolicies(config ?? {}));
+}
+
+function stripMemoryHookPolicies(config: Record<string, unknown>) {
+  const { [MEMORY_HOOK_POLICIES_CONFIG_KEY]: _policies, ...providerConfig } = config;
+  return providerConfig;
+}
+
+function parseMemoryHookPolicies(config: Record<string, unknown> | null | undefined): MemoryHookPolicyMap {
+  const raw = config?.[MEMORY_HOOK_POLICIES_CONFIG_KEY];
+  if (!raw) return {};
+  return memoryHookPoliciesSchema.parse(raw);
+}
+
+function mergeProviderConfigWithHookPolicies(
+  providerConfig: Record<string, unknown>,
+  hookPolicies: MemoryHookPolicyMap,
+) {
+  if (Object.keys(hookPolicies).length === 0) return providerConfig;
+  return {
+    ...providerConfig,
+    [MEMORY_HOOK_POLICIES_CONFIG_KEY]: hookPolicies,
+  };
 }
 
 function normalizeScopeType(scope: MemoryScope, fallback: MemoryScopeType = "org"): MemoryScopeType {
@@ -387,6 +493,13 @@ function mapBinding(row: BindingRow): MemoryBinding {
     enabled: row.enabled,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function mapBindingForProvider(row: BindingRow): MemoryBinding {
+  return {
+    ...mapBinding(row),
+    config: stripMemoryHookPolicies(row.config ?? {}),
   };
 }
 
@@ -601,6 +714,7 @@ export function memoryService(
   },
 ) {
   const pluginMemoryProviders = opts?.pluginMemoryProviders ?? getDefaultPluginMemoryProviderDispatcher();
+  const backgroundJobsSvc = backgroundJobService(db);
   async function getBindingOrThrow(bindingId: string) {
     const binding = await db
       .select()
@@ -612,8 +726,11 @@ export function memoryService(
   }
 
   async function validateProviderConfig(providerKey: string, config: Record<string, unknown>) {
+    const hookPolicies = parseMemoryHookPolicies(config);
+    const providerConfig = stripMemoryHookPolicies(config);
+
     if (providerKey === LOCAL_BASIC_PROVIDER_KEY) {
-      return parseLocalBasicConfig(config);
+      return mergeProviderConfigWithHookPolicies(parseLocalBasicConfig(providerConfig), hookPolicies);
     }
 
     const pluginProvider = pluginMemoryProviders?.getProvider(providerKey);
@@ -622,15 +739,15 @@ export function memoryService(
     }
 
     const schema = pluginProvider.descriptor.configSchema;
-    if (!schema) return config;
+    if (!schema) return mergeProviderConfigWithHookPolicies(providerConfig, hookPolicies);
 
-    const validation = validateInstanceConfig(config, schema);
+    const validation = validateInstanceConfig(providerConfig, schema);
     if (!validation.valid) {
       const detail = validation.errors?.map((error) => `${error.field} ${error.message}`).join("; ") ?? "invalid config";
       throw unprocessable(`Invalid memory provider config: ${detail}`);
     }
 
-    return config;
+    return mergeProviderConfigWithHookPolicies(providerConfig, hookPolicies);
   }
 
   function resolutionSource(
@@ -1148,6 +1265,109 @@ export function memoryService(
     return mapOperation(row);
   }
 
+  async function createExtractionJob(input: {
+    companyId: string;
+    binding: BindingRow;
+    hookKind: MemoryHookKind;
+    source: MemorySourceRef;
+    policy: MemoryHookPolicy;
+  }) {
+    const now = new Date();
+    const [row] = await db
+      .insert(memoryExtractionJobs)
+      .values({
+        id: randomUUID(),
+        companyId: input.companyId,
+        bindingId: input.binding.id,
+        providerKey: input.binding.providerKey,
+        status: "running",
+        sourceKind: input.source.kind,
+        sourceIssueId: input.source.issueId ?? null,
+        sourceCommentId: input.source.commentId ?? null,
+        sourceDocumentKey: input.source.documentKey ?? null,
+        sourceRunId: input.source.runId ?? null,
+        sourceActivityId: input.source.activityId ?? null,
+        sourceExternalRef: input.source.externalRef ?? null,
+        resultJson: {
+          hookKind: input.hookKind,
+          policy: extractionPolicyJson(input.policy),
+        },
+        startedAt: now,
+        updatedAt: now,
+      })
+      .returning();
+    return mapExtractionJob(row);
+  }
+
+  async function completeExtractionJob(input: {
+    jobId: string;
+    operationId?: string | null;
+    status: "succeeded" | "failed";
+    resultJson: Record<string, unknown>;
+    error?: string | null;
+  }) {
+    const now = new Date();
+    const [row] = await db
+      .update(memoryExtractionJobs)
+      .set({
+        operationId: input.operationId ?? null,
+        status: input.status,
+        resultJson: input.resultJson,
+        error: input.error ?? null,
+        completedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(memoryExtractionJobs.id, input.jobId))
+      .returning();
+    return mapExtractionJob(row);
+  }
+
+  function extractionPolicyJson(policy: MemoryHookPolicy): Record<string, unknown> {
+    return {
+      enabled: policy.enabled,
+      extractionMode: policy.extractionMode,
+      runMode: policy.runMode,
+      harness: policy.harness,
+      sensitivityLabel: policy.sensitivityLabel,
+      reviewState: policy.reviewState,
+      retentionPolicy: policy.retentionPolicy ?? null,
+      modelProvider: policy.modelProvider ?? null,
+      model: policy.model ?? null,
+      config: policy.config ?? null,
+    };
+  }
+
+  function assertHookPolicySupported(binding: BindingRow, policy: MemoryHookPolicy) {
+    if (policy.extractionMode === "raw_capture") return;
+    const descriptor = isPluginProvider(binding.providerKey)
+      ? pluginMemoryProviders?.getProvider(binding.providerKey)?.descriptor
+      : LOCAL_BASIC_PROVIDER;
+    if (policy.extractionMode === "provider_managed" && !descriptor?.capabilities.providerManagedExtraction) {
+      throw unprocessable(`Memory provider ${binding.providerKey} does not support provider-managed extraction`);
+    }
+    if (policy.extractionMode === "paperclip_managed" && policy.harness !== "server_worker") {
+      throw unprocessable("Only server_worker Paperclip-managed extraction is available");
+    }
+  }
+
+  function extractionMetadata(
+    metadata: Record<string, unknown> | undefined,
+    policy: MemoryHookPolicy,
+    jobId: string | null,
+  ) {
+    return {
+      ...(metadata ?? {}),
+      extraction: {
+        mode: policy.extractionMode,
+        runMode: policy.runMode,
+        harness: policy.harness,
+        modelProvider: policy.modelProvider ?? null,
+        model: policy.model ?? null,
+        jobId,
+      },
+    };
+  }
+
   function ensureBindingEnabled(binding: BindingRow | null): BindingRow {
     if (!binding) {
       throw notFound("No memory binding is configured");
@@ -1162,7 +1382,7 @@ export function memoryService(
     return providerKey !== LOCAL_BASIC_PROVIDER_KEY;
   }
 
-  function isHookEnabled(
+  function legacyHookEnabled(
     binding: BindingRow,
     hook: "preRunHydrate" | "postRunCapture" | "issueCommentCapture" | "issueDocumentCapture",
   ) {
@@ -1183,6 +1403,46 @@ export function memoryService(
     }
   }
 
+  function normalizeHookPolicy(binding: BindingRow, hookKind: MemoryHookKind): MemoryHookPolicy {
+    const configured = parseMemoryHookPolicies(binding.config)[hookKind] ?? {};
+    let enabled = DEFAULT_CAPTURE_HOOK_POLICY.enabled;
+    if (hookKind === "pre_run_hydrate") enabled = legacyHookEnabled(binding, "preRunHydrate");
+    if (hookKind === "post_run_capture") enabled = legacyHookEnabled(binding, "postRunCapture");
+    if (hookKind === "issue_comment_capture") enabled = legacyHookEnabled(binding, "issueCommentCapture");
+    if (hookKind === "issue_document_capture") enabled = legacyHookEnabled(binding, "issueDocumentCapture");
+
+    const providerDescriptor = isPluginProvider(binding.providerKey)
+      ? pluginMemoryProviders?.getProvider(binding.providerKey)?.descriptor
+      : LOCAL_BASIC_PROVIDER;
+    const defaultExtractionMode = providerDescriptor?.capabilities.providerManagedExtraction
+      ? "provider_managed"
+      : DEFAULT_CAPTURE_HOOK_POLICY.extractionMode;
+    const extractionMode = configured.extractionMode ?? defaultExtractionMode;
+
+    return {
+      ...DEFAULT_CAPTURE_HOOK_POLICY,
+      ...configured,
+      enabled: configured.enabled ?? enabled,
+      extractionMode,
+      harness:
+        configured.harness
+        ?? (extractionMode === "provider_managed" && isPluginProvider(binding.providerKey)
+          ? "plugin_worker"
+          : DEFAULT_CAPTURE_HOOK_POLICY.harness),
+      runMode: configured.runMode ?? DEFAULT_CAPTURE_HOOK_POLICY.runMode,
+      sensitivityLabel: configured.sensitivityLabel ?? DEFAULT_CAPTURE_HOOK_POLICY.sensitivityLabel,
+      reviewState: configured.reviewState ?? DEFAULT_CAPTURE_HOOK_POLICY.reviewState,
+      retentionPolicy: configured.retentionPolicy ?? DEFAULT_CAPTURE_HOOK_POLICY.retentionPolicy,
+      modelProvider: configured.modelProvider ?? DEFAULT_CAPTURE_HOOK_POLICY.modelProvider,
+      model: configured.model ?? DEFAULT_CAPTURE_HOOK_POLICY.model,
+      config: configured.config ?? DEFAULT_CAPTURE_HOOK_POLICY.config,
+    };
+  }
+
+  function isHookEnabled(binding: BindingRow, hookKind: MemoryHookKind) {
+    return normalizeHookPolicy(binding, hookKind).enabled;
+  }
+
   function getHydrateTopK(binding: BindingRow) {
     if (binding.providerKey === LOCAL_BASIC_PROVIDER_KEY) {
       return parseLocalBasicConfig(binding.config).maxHydrateSnippets;
@@ -1192,6 +1452,499 @@ export function memoryService(
     return typeof raw === "number" && Number.isFinite(raw) && raw > 0
       ? Math.min(Math.max(Math.floor(raw), 1), 25)
       : 5;
+  }
+
+  async function captureWithHookPolicy(input: {
+    companyId: string;
+    binding: BindingRow;
+    hookKind: MemoryHookKind;
+    scope: MemoryScope;
+    scopeType: MemoryScopeType;
+    scopeId: string;
+    source: MemorySourceRef;
+    citation: MemoryCitation;
+    title: string;
+    content: string;
+    summary: string;
+    actor: ActorInfo;
+    metadata?: Record<string, unknown>;
+  }) {
+    const policy = normalizeHookPolicy(input.binding, input.hookKind);
+    if (!policy.enabled) return null;
+    assertHookPolicySupported(input.binding, policy);
+
+    if (policy.extractionMode === "raw_capture") {
+      return {
+        result: await service.capture(
+          input.companyId,
+          {
+            scope: input.scope,
+            scopeType: input.scopeType,
+            scopeId: input.scopeId,
+            source: input.source,
+            citation: input.citation,
+            sensitivityLabel: policy.sensitivityLabel,
+            retentionPolicy: policy.retentionPolicy ?? null,
+            title: input.title,
+            content: input.content,
+            summary: input.summary,
+            reviewState: policy.reviewState,
+            metadata: extractionMetadata(input.metadata, policy, null),
+          },
+          input.actor,
+          "hook",
+          input.hookKind,
+        ),
+        job: null,
+        policy,
+      };
+    }
+
+    const job = await createExtractionJob({
+      companyId: input.companyId,
+      binding: input.binding,
+      hookKind: input.hookKind,
+      source: input.source,
+      policy,
+    });
+
+    try {
+      const result = await service.capture(
+        input.companyId,
+        {
+          scope: input.scope,
+          scopeType: input.scopeType,
+          scopeId: input.scopeId,
+          source: input.source,
+          citation: input.citation,
+          sensitivityLabel: policy.sensitivityLabel,
+          retentionPolicy: policy.retentionPolicy ?? null,
+          title: input.title,
+          content: input.content,
+          summary: input.summary,
+          reviewState: policy.reviewState,
+          metadata: extractionMetadata(input.metadata, policy, job.id),
+        },
+        input.actor,
+        "hook",
+        input.hookKind,
+      );
+
+      const completedJob = await completeExtractionJob({
+        jobId: job.id,
+        operationId: result.operation.id,
+        status: "succeeded",
+        resultJson: {
+          hookKind: input.hookKind,
+          policy: extractionPolicyJson(policy),
+          operationId: result.operation.id,
+          recordIds: result.records.map((record) => record.id),
+        },
+      });
+      return { result, job: completedJob, policy };
+    } catch (error) {
+      await completeExtractionJob({
+        jobId: job.id,
+        status: "failed",
+        resultJson: {
+          hookKind: input.hookKind,
+          policy: extractionPolicyJson(policy),
+        },
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  function refreshSourceCounts(sources: RefreshSource[]): MemoryRefreshJobSourceCounts {
+    return sources.reduce<MemoryRefreshJobSourceCounts>(
+      (counts, source) => {
+        counts[source.kind] += 1;
+        return counts;
+      },
+      { issue: 0, issue_comment: 0, issue_document: 0, run: 0 },
+    );
+  }
+
+  function sourceSummary(content: string) {
+    return content.replace(/\s+/g, " ").slice(0, 240);
+  }
+
+  function truncateRefreshContent(content: string) {
+    return content.trim().slice(0, 20_000);
+  }
+
+  function buildRunSourceContent(row: {
+    status: string;
+    error: string | null;
+    stdoutExcerpt: string | null;
+    stderrExcerpt: string | null;
+    resultJson: unknown;
+    contextSnapshot: unknown;
+  }) {
+    const parts = [
+      `Status: ${row.status}`,
+      row.error ? `Error: ${row.error}` : null,
+      row.stdoutExcerpt ? `Stdout: ${row.stdoutExcerpt}` : null,
+      row.stderrExcerpt ? `Stderr: ${row.stderrExcerpt}` : null,
+      row.resultJson ? `Result: ${JSON.stringify(row.resultJson)}` : null,
+      row.contextSnapshot ? `Context: ${JSON.stringify(row.contextSnapshot)}` : null,
+    ].filter((part): part is string => Boolean(part));
+    return truncateRefreshContent(parts.join("\n\n"));
+  }
+
+  function sourceScope(companyId: string, source: RefreshSource, baseScope: MemoryScope): {
+    scope: MemoryScope;
+    scopeType: MemoryScopeType;
+    scopeId: string;
+  } {
+    const projectId = source.projectId ?? baseScope.projectId ?? null;
+    const agentId = source.agentId ?? baseScope.agentId ?? null;
+    const issueId = "issueId" in source ? source.issueId : null;
+    const runId = source.kind === "run" ? source.runId : null;
+    const scopeType: MemoryScopeType = runId ? "run" : projectId ? "project" : agentId ? "agent" : "org";
+    const scopeId = runId ?? projectId ?? agentId ?? companyId;
+    return {
+      scope: {
+        ...baseScope,
+        scopeType,
+        scopeId,
+        agentId,
+        projectId,
+        issueId,
+        runId,
+      },
+      scopeType,
+      scopeId,
+    };
+  }
+
+  function sourceRef(source: RefreshSource): MemorySourceRef {
+    if (source.kind === "run") {
+      return {
+        kind: "run",
+        issueId: source.issueId,
+        runId: source.runId,
+      };
+    }
+    if (source.kind === "issue_document") {
+      return {
+        kind: "issue_document",
+        issueId: source.issueId,
+        documentKey: source.documentKey,
+      };
+    }
+    if (source.kind === "issue_comment") {
+      return {
+        kind: "issue_comment",
+        issueId: source.issueId,
+        commentId: source.id,
+      };
+    }
+    return {
+      kind: "issue",
+      issueId: source.issueId,
+    };
+  }
+
+  async function collectRefreshSources(companyId: string, request: MemoryRefreshJob): Promise<RefreshSource[]> {
+    const sources: RefreshSource[] = [];
+    const sourceKinds = new Set(request.sourceKinds);
+    const issueIdFilter = request.issueIds?.length ? request.issueIds : null;
+    const runIdFilter = request.runIds?.length ? request.runIds : null;
+    const since = request.since ?? null;
+    const until = request.until ?? null;
+
+    if (sourceKinds.has("issue")) {
+      const conditions = [eq(issues.companyId, companyId)];
+      if (issueIdFilter) conditions.push(inArray(issues.id, issueIdFilter));
+      if (request.projectId) conditions.push(eq(issues.projectId, request.projectId));
+      if (request.agentId) conditions.push(eq(issues.assigneeAgentId, request.agentId));
+      if (since) conditions.push(gte(issues.createdAt, since));
+      if (until) conditions.push(lte(issues.createdAt, until));
+      const rows = await db
+        .select({
+          id: issues.id,
+          projectId: issues.projectId,
+          agentId: issues.assigneeAgentId,
+          title: issues.title,
+          description: issues.description,
+          createdAt: issues.createdAt,
+        })
+        .from(issues)
+        .where(and(...conditions))
+        .orderBy(asc(issues.createdAt))
+        .limit(request.limit);
+      for (const row of rows) {
+        const content = truncateRefreshContent([row.title, row.description].filter(Boolean).join("\n\n"));
+        if (!content) continue;
+        sources.push({
+          kind: "issue",
+          id: row.id,
+          issueId: row.id,
+          projectId: row.projectId ?? null,
+          agentId: row.agentId ?? null,
+          title: row.title,
+          content,
+          createdAt: row.createdAt,
+        });
+      }
+    }
+
+    if (sources.length < request.limit && sourceKinds.has("issue_comment")) {
+      const conditions = [eq(issueComments.companyId, companyId)];
+      if (issueIdFilter) conditions.push(inArray(issueComments.issueId, issueIdFilter));
+      if (request.projectId) conditions.push(eq(issues.projectId, request.projectId));
+      if (request.agentId) conditions.push(eq(issues.assigneeAgentId, request.agentId));
+      if (since) conditions.push(gte(issueComments.createdAt, since));
+      if (until) conditions.push(lte(issueComments.createdAt, until));
+      const rows = await db
+        .select({
+          id: issueComments.id,
+          issueId: issueComments.issueId,
+          projectId: issues.projectId,
+          agentId: issueComments.authorAgentId,
+          fallbackAgentId: issues.assigneeAgentId,
+          body: issueComments.body,
+          createdAt: issueComments.createdAt,
+        })
+        .from(issueComments)
+        .innerJoin(issues, eq(issueComments.issueId, issues.id))
+        .where(and(...conditions))
+        .orderBy(asc(issueComments.createdAt))
+        .limit(request.limit - sources.length);
+      for (const row of rows) {
+        const content = truncateRefreshContent(row.body);
+        if (!content) continue;
+        sources.push({
+          kind: "issue_comment",
+          id: row.id,
+          issueId: row.issueId,
+          projectId: row.projectId ?? null,
+          agentId: row.agentId ?? row.fallbackAgentId ?? null,
+          title: "Issue comment",
+          content,
+          createdAt: row.createdAt,
+        });
+      }
+    }
+
+    if (sources.length < request.limit && sourceKinds.has("issue_document")) {
+      const conditions = [eq(issueDocuments.companyId, companyId)];
+      if (issueIdFilter) conditions.push(inArray(issueDocuments.issueId, issueIdFilter));
+      if (request.projectId) conditions.push(eq(issues.projectId, request.projectId));
+      if (request.agentId) conditions.push(eq(issues.assigneeAgentId, request.agentId));
+      if (since) conditions.push(gte(documents.updatedAt, since));
+      if (until) conditions.push(lte(documents.updatedAt, until));
+      const rows = await db
+        .select({
+          id: issueDocuments.id,
+          issueId: issueDocuments.issueId,
+          key: issueDocuments.key,
+          projectId: issues.projectId,
+          agentId: issues.assigneeAgentId,
+          title: documents.title,
+          body: documents.latestBody,
+          updatedAt: documents.updatedAt,
+        })
+        .from(issueDocuments)
+        .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+        .innerJoin(issues, eq(issueDocuments.issueId, issues.id))
+        .where(and(...conditions))
+        .orderBy(asc(documents.updatedAt))
+        .limit(request.limit - sources.length);
+      for (const row of rows) {
+        const content = truncateRefreshContent(row.body);
+        if (!content) continue;
+        sources.push({
+          kind: "issue_document",
+          id: row.id,
+          issueId: row.issueId,
+          projectId: row.projectId ?? null,
+          agentId: row.agentId ?? null,
+          documentKey: row.key,
+          title: row.title ?? row.key,
+          content,
+          createdAt: row.updatedAt,
+        });
+      }
+    }
+
+    if (sources.length < request.limit && sourceKinds.has("run")) {
+      const conditions = [eq(heartbeatRuns.companyId, companyId)];
+      if (runIdFilter) conditions.push(inArray(heartbeatRuns.id, runIdFilter));
+      if (request.agentId) conditions.push(eq(heartbeatRuns.agentId, request.agentId));
+      if (since) conditions.push(gte(heartbeatRuns.createdAt, since));
+      if (until) conditions.push(lte(heartbeatRuns.createdAt, until));
+      const rows = await db
+        .select({
+          id: heartbeatRuns.id,
+          agentId: heartbeatRuns.agentId,
+          status: heartbeatRuns.status,
+          error: heartbeatRuns.error,
+          stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
+          stderrExcerpt: heartbeatRuns.stderrExcerpt,
+          resultJson: heartbeatRuns.resultJson,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+          createdAt: heartbeatRuns.createdAt,
+        })
+        .from(heartbeatRuns)
+        .where(and(...conditions))
+        .orderBy(asc(heartbeatRuns.createdAt))
+        .limit(request.limit - sources.length);
+      for (const row of rows) {
+        const content = buildRunSourceContent(row);
+        if (!content) continue;
+        sources.push({
+          kind: "run",
+          id: row.id,
+          runId: row.id,
+          agentId: row.agentId ?? null,
+          projectId: request.projectId ?? null,
+          issueId: null,
+          title: `Heartbeat run ${row.id}`,
+          content,
+          createdAt: row.createdAt,
+        });
+      }
+    }
+
+    return sources;
+  }
+
+  async function executeRefreshJob(input: {
+    companyId: string;
+    runId: string;
+    request: MemoryRefreshJob;
+    sources: RefreshSource[];
+    actor: ActorInfo;
+  }): Promise<{ run: Awaited<ReturnType<typeof backgroundJobsSvc.getRun>>; recordCount: number }> {
+    let recordCount = 0;
+    await backgroundJobsSvc.startRun(input.runId);
+    if (input.request.dryRun) {
+      const run = await backgroundJobsSvc.completeRun(input.runId, {
+        status: "succeeded",
+        result: {
+          dryRun: true,
+          sourceCounts: refreshSourceCounts(input.sources),
+          recordCount,
+        },
+      });
+      return { run, recordCount };
+    }
+
+    let processed = 0;
+    let succeeded = 0;
+    let failed = 0;
+    let skipped = 0;
+    for (const source of input.sources) {
+      if (await backgroundJobsSvc.isCancellationRequested(input.runId)) {
+        const run = await backgroundJobsSvc.completeRun(input.runId, {
+          status: "cancelled",
+          result: {
+            dryRun: false,
+            sourceCounts: refreshSourceCounts(input.sources),
+            recordCount,
+            processed,
+            succeeded,
+            failed,
+            skipped,
+          },
+        });
+        return { run, recordCount };
+      }
+
+      processed += 1;
+      await backgroundJobsSvc.updateRunProgress(input.runId, {
+        totalItems: input.sources.length,
+        processedItems: processed - 1,
+        succeededItems: succeeded,
+        failedItems: failed,
+        skippedItems: skipped,
+        currentItem: `${source.kind}:${source.id}`,
+      });
+
+      try {
+        const scoped = sourceScope(input.companyId, source, input.request.scope ?? {});
+        const result = await service.capture(
+          input.companyId,
+          {
+            bindingKey: input.request.bindingKey,
+            scope: scoped.scope,
+            scopeType: scoped.scopeType,
+            scopeId: scoped.scopeId,
+            source: sourceRef(source),
+            citation: {
+              label: source.kind.replace(/_/g, " "),
+              sourceTitle: source.title,
+            },
+            sensitivityLabel: "internal",
+            title: source.title,
+            content: source.content,
+            summary: sourceSummary(source.content),
+            reviewState: "pending",
+            metadata: {
+              backgroundJobRunId: input.runId,
+              refreshSourceKind: source.kind,
+              refreshSourceId: source.id,
+            },
+          },
+          input.actor,
+          "manual",
+          undefined,
+        );
+        recordCount += result.records.length;
+        succeeded += 1;
+        await backgroundJobsSvc.appendEvent(input.runId, {
+          eventType: "checkpoint",
+          level: "info",
+          message: `Captured ${result.records.length} memory record(s) from ${source.kind}`,
+          currentItem: `${source.kind}:${source.id}`,
+          details: {
+            sourceKind: source.kind,
+            sourceId: source.id,
+            operationId: result.operation.id,
+            recordIds: result.records.map((record) => record.id),
+          },
+        });
+      } catch (error) {
+        failed += 1;
+        await backgroundJobsSvc.appendEvent(input.runId, {
+          eventType: "failed",
+          level: "error",
+          message: error instanceof Error ? error.message : String(error),
+          currentItem: `${source.kind}:${source.id}`,
+          details: {
+            sourceKind: source.kind,
+            sourceId: source.id,
+          },
+        });
+      }
+
+      await backgroundJobsSvc.updateRunProgress(input.runId, {
+        totalItems: input.sources.length,
+        processedItems: processed,
+        succeededItems: succeeded,
+        failedItems: failed,
+        skippedItems: skipped,
+        currentItem: null,
+      });
+    }
+
+    const run = await backgroundJobsSvc.completeRun(input.runId, {
+      status: failed > 0 ? "failed" : "succeeded",
+      error: failed > 0 ? `${failed} source(s) failed during memory refresh` : null,
+      result: {
+        dryRun: false,
+        sourceCounts: refreshSourceCounts(input.sources),
+        recordCount,
+        processed,
+        succeeded,
+        failed,
+        skipped,
+      },
+    });
+    return { run, recordCount };
   }
 
   const service = {
@@ -1396,7 +2149,7 @@ export function memoryService(
           throw unprocessable(`Unknown memory provider: ${binding.providerKey}`);
         }
         const providerResult = await pluginMemoryProviders.query(binding.providerKey, {
-          binding: mapBinding(binding),
+          binding: mapBindingForProvider(binding),
           scope: data.scope ?? {},
           query: data.query,
           topK: Math.min(data.topK ?? getHydrateTopK(binding), 25),
@@ -1492,7 +2245,7 @@ export function memoryService(
           throw unprocessable(`Unknown memory provider: ${binding.providerKey}`);
         }
         const providerResult = await pluginMemoryProviders.capture(binding.providerKey, {
-          binding: mapBinding(binding),
+          binding: mapBindingForProvider(binding),
           scope: data.scope ?? {},
           source: data.source,
           scopeType: data.scopeType ?? data.scope?.scopeType ?? null,
@@ -1507,6 +2260,7 @@ export function memoryService(
           content: data.content,
           summary: data.summary ?? null,
           metadata: data.metadata ?? {},
+          reviewState: data.reviewState,
         });
         records = providerResult.records;
         usage = providerResult.usage ?? [];
@@ -1569,7 +2323,7 @@ export function memoryService(
           throw unprocessable(`Unknown memory provider: ${binding.providerKey}`);
         }
         const providerResult = await pluginMemoryProviders.forget(binding.providerKey, {
-          binding: mapBinding(binding),
+          binding: mapBindingForProvider(binding),
           scope: data.scope ?? {},
           recordIds,
         });
@@ -1655,7 +2409,7 @@ export function memoryService(
             throw unprocessable(`Unknown memory provider: ${binding.providerKey}`);
           }
           const providerResult = await pluginMemoryProviders.forget(binding.providerKey, {
-            binding: mapBinding(binding),
+            binding: mapBindingForProvider(binding),
             scope: {},
             recordIds: bindingRecordIds,
           });
@@ -1963,6 +2717,104 @@ export function memoryService(
       return rows.map((row) => mapExtractionJob(row));
     },
 
+    startRefreshJob: async (
+      companyId: string,
+      data: MemoryRefreshJob,
+      actor: ActorInfo,
+      options?: { runInline?: boolean },
+    ): Promise<MemoryRefreshJobResult> => {
+      const parsed = memoryRefreshJobSchema.parse(data);
+      const sources = await collectRefreshSources(companyId, parsed);
+      const sourceCounts = refreshSourceCounts(sources);
+      const job = await backgroundJobsSvc.createOrUpdateJob(
+        companyId,
+        {
+          key: "memory.refresh",
+          jobType: "memory_refresh",
+          displayName: "Memory refresh",
+          description: "Refresh historical Paperclip sources into the configured memory provider.",
+          backendKind: "server_worker",
+          status: "active",
+          config: {
+            sourceKinds: parsed.sourceKinds,
+          },
+          sourceIssueId: parsed.issueIds?.length === 1 ? parsed.issueIds[0] : null,
+          sourceProjectId: parsed.projectId ?? null,
+        },
+        {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          userId: actor.userId,
+        },
+      );
+      const run = await backgroundJobsSvc.createRun(
+        companyId,
+        {
+          jobId: job.id,
+          trigger: "manual",
+          sourceIssueId: parsed.issueIds?.length === 1 ? parsed.issueIds[0] : null,
+          sourceProjectId: parsed.projectId ?? null,
+          sourceAgentId: parsed.agentId ?? null,
+          heartbeatRunId: actor.runId ?? null,
+          totalItems: sources.length,
+          config: {
+            bindingKey: parsed.bindingKey ?? null,
+            sourceKinds: parsed.sourceKinds,
+            dryRun: parsed.dryRun,
+          },
+        },
+        {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          userId: actor.userId,
+        },
+      );
+
+      if (options?.runInline || parsed.dryRun) {
+        const completed = await executeRefreshJob({
+          companyId,
+          runId: run.id,
+          request: parsed,
+          sources,
+          actor,
+        });
+        return {
+          job,
+          run: completed.run,
+          dryRun: parsed.dryRun,
+          sourceCounts,
+          recordCount: completed.recordCount,
+        };
+      }
+
+      void executeRefreshJob({
+        companyId,
+        runId: run.id,
+        request: parsed,
+        sources,
+        actor,
+      }).catch(async (error) => {
+        await backgroundJobsSvc.completeRun(run.id, {
+          status: "failed",
+          error: error instanceof Error ? error.message : String(error),
+          result: {
+            dryRun: parsed.dryRun,
+            sourceCounts,
+          },
+        }).catch(() => undefined);
+      });
+
+      return {
+        job,
+        run,
+        dryRun: parsed.dryRun,
+        sourceCounts,
+        recordCount: 0,
+      };
+    },
+
     preRunHydrate: async (input: {
       companyId: string;
       agentId: string;
@@ -1991,7 +2843,7 @@ export function memoryService(
           }),
         };
       }
-      if (!isHookEnabled(resolved.binding, "preRunHydrate")) {
+      if (!isHookEnabled(resolved.binding, "pre_run_hydrate")) {
         return {
           preamble: null,
           trace: buildSkippedMemoryHookTrace({
@@ -2060,7 +2912,7 @@ export function memoryService(
           }),
         };
       }
-      if (!isHookEnabled(resolved.binding, "postRunCapture")) {
+      if (!isHookEnabled(resolved.binding, "post_run_capture")) {
         return {
           trace: buildSkippedMemoryHookTrace({
             hookKind: "post_run_capture",
@@ -2069,46 +2921,51 @@ export function memoryService(
           }),
         };
       }
-      const result = await service.capture(
-        input.companyId,
-        {
-          scope: {
-            scopeType: "run",
-            scopeId: input.runId,
-            agentId: input.agentId,
-            projectId: input.projectId ?? null,
-            issueId: input.issueId ?? null,
-            runId: input.runId,
-          },
+      const captured = await captureWithHookPolicy({
+        companyId: input.companyId,
+        binding: resolved.binding,
+        hookKind: "post_run_capture",
+        scope: {
           scopeType: "run",
           scopeId: input.runId,
-          source: {
-            kind: "run",
-            issueId: input.issueId ?? null,
-            runId: input.runId,
-          },
-          sensitivityLabel: "internal",
-          citation: {
-            label: "Run summary",
-            sourceTitle: input.title ?? "Run summary",
-          },
-          title: input.title ?? "Run summary",
-          content: input.summary,
-          summary: input.summary,
-          reviewState: "accepted",
+          agentId: input.agentId,
+          projectId: input.projectId ?? null,
+          issueId: input.issueId ?? null,
+          runId: input.runId,
         },
-        {
+        scopeType: "run",
+        scopeId: input.runId,
+        source: {
+          kind: "run",
+          issueId: input.issueId ?? null,
+          runId: input.runId,
+        },
+        citation: {
+          label: "Run summary",
+          sourceTitle: input.title ?? "Run summary",
+        },
+        title: input.title ?? "Run summary",
+        content: input.summary,
+        summary: input.summary,
+        actor: {
           actorType: "agent",
           actorId: input.agentId,
           agentId: input.agentId,
           userId: null,
           runId: input.runId,
         },
-        "hook",
-        "post_run_capture",
-      );
+      });
+      if (!captured) {
+        return {
+          trace: buildSkippedMemoryHookTrace({
+            hookKind: "post_run_capture",
+            reason: "hook_disabled",
+            binding: mapBinding(resolved.binding),
+          }),
+        };
+      }
       return {
-        trace: buildPostRunCaptureTrace(mapBinding(resolved.binding), result),
+        trace: buildPostRunCaptureTrace(mapBinding(resolved.binding), captured.result),
       };
     },
 
@@ -2131,38 +2988,36 @@ export function memoryService(
         null,
       );
       if (!resolved.binding || !resolved.binding.enabled) return null;
-      if (!isHookEnabled(resolved.binding, "issueCommentCapture")) return null;
-      return service.capture(
-        input.companyId,
-        {
-          scope: {
-            scopeType: input.projectId ? "project" : input.agentId ? "agent" : "org",
-            scopeId: input.projectId ?? input.agentId ?? input.companyId,
-            agentId: input.agentId ?? null,
-            projectId: input.projectId ?? null,
-            issueId: input.issueId,
-          },
-          scopeType: input.projectId ? "project" : input.agentId ? "agent" : "org",
-          scopeId: input.projectId ?? input.agentId ?? input.companyId,
-          source: {
-            kind: "issue_comment",
-            issueId: input.issueId,
-            commentId: input.commentId,
-          },
-          citation: {
-            label: "Issue comment",
-            sourceTitle: `Issue comment ${input.commentId}`,
-          },
-          sensitivityLabel: "internal",
-          title: "Issue comment",
-          content: input.body,
-          summary: input.body.replace(/\s+/g, " ").slice(0, 240),
-          reviewState: "accepted",
+      if (!isHookEnabled(resolved.binding, "issue_comment_capture")) return null;
+      const scopeType = input.projectId ? "project" : input.agentId ? "agent" : "org";
+      const scopeId = input.projectId ?? input.agentId ?? input.companyId;
+      return captureWithHookPolicy({
+        companyId: input.companyId,
+        binding: resolved.binding,
+        hookKind: "issue_comment_capture",
+        scope: {
+          scopeType,
+          scopeId,
+          agentId: input.agentId ?? null,
+          projectId: input.projectId ?? null,
+          issueId: input.issueId,
         },
-        input.actor,
-        "hook",
-        "issue_comment_capture",
-      );
+        scopeType,
+        scopeId,
+        source: {
+          kind: "issue_comment",
+          issueId: input.issueId,
+          commentId: input.commentId,
+        },
+        citation: {
+          label: "Issue comment",
+          sourceTitle: `Issue comment ${input.commentId}`,
+        },
+        title: "Issue comment",
+        content: input.body,
+        summary: input.body.replace(/\s+/g, " ").slice(0, 240),
+        actor: input.actor,
+      }).then((capture) => capture?.result ?? null);
     },
 
     captureIssueDocument: async (input: {
@@ -2185,38 +3040,36 @@ export function memoryService(
         null,
       );
       if (!resolved.binding || !resolved.binding.enabled) return null;
-      if (!isHookEnabled(resolved.binding, "issueDocumentCapture")) return null;
-      return service.capture(
-        input.companyId,
-        {
-          scope: {
-            scopeType: input.projectId ? "project" : input.agentId ? "agent" : "org",
-            scopeId: input.projectId ?? input.agentId ?? input.companyId,
-            agentId: input.agentId ?? null,
-            projectId: input.projectId ?? null,
-            issueId: input.issueId,
-          },
-          scopeType: input.projectId ? "project" : input.agentId ? "agent" : "org",
-          scopeId: input.projectId ?? input.agentId ?? input.companyId,
-          source: {
-            kind: "issue_document",
-            issueId: input.issueId,
-            documentKey: input.key,
-          },
-          citation: {
-            label: "Issue document",
-            sourceTitle: input.title ?? input.key,
-          },
-          sensitivityLabel: "internal",
-          title: input.title ?? `Issue document: ${input.key}`,
-          content: input.body,
-          summary: input.body.replace(/\s+/g, " ").slice(0, 240),
-          reviewState: "accepted",
+      if (!isHookEnabled(resolved.binding, "issue_document_capture")) return null;
+      const scopeType = input.projectId ? "project" : input.agentId ? "agent" : "org";
+      const scopeId = input.projectId ?? input.agentId ?? input.companyId;
+      return captureWithHookPolicy({
+        companyId: input.companyId,
+        binding: resolved.binding,
+        hookKind: "issue_document_capture",
+        scope: {
+          scopeType,
+          scopeId,
+          agentId: input.agentId ?? null,
+          projectId: input.projectId ?? null,
+          issueId: input.issueId,
         },
-        input.actor,
-        "hook",
-        "issue_document_capture",
-      );
+        scopeType,
+        scopeId,
+        source: {
+          kind: "issue_document",
+          issueId: input.issueId,
+          documentKey: input.key,
+        },
+        citation: {
+          label: "Issue document",
+          sourceTitle: input.title ?? input.key,
+        },
+        title: input.title ?? `Issue document: ${input.key}`,
+        content: input.body,
+        summary: input.body.replace(/\s+/g, " ").slice(0, 240),
+        actor: input.actor,
+      }).then((capture) => capture?.result ?? null);
     },
   };
 

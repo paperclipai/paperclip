@@ -18,3 +18,4 @@ export { sidebarBadgesApi } from "./sidebarBadges";
 export { inboxDismissalsApi } from "./inboxDismissals";
 export { companySkillsApi } from "./companySkills";
 export { memoryApi } from "./memory";
+export { backgroundJobsApi } from "./backgroundJobs";

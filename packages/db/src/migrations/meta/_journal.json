@@ -414,6 +414,13 @@
       "when": 1776647797670,
       "tag": "0058_lovely_eternals",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1776648937778,
+      "tag": "0059_lazy_nick_fury",
+      "breakpoints": true
     }
   ]
 }

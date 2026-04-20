@@ -1,7 +1,10 @@
 import type {
   MemoryBindingTargetType,
+  MemoryExtractionHarness,
   MemoryExtractionJobStatus,
+  MemoryHookExtractionMode,
   MemoryHookKind,
+  MemoryHookRunMode,
   MemoryOperationStatus,
   MemoryOperationType,
   MemoryPrincipalType,
@@ -13,6 +16,7 @@ import type {
   MemorySourceKind,
   MemoryTriggerKind,
 } from "../constants.js";
+import type { BackgroundJob, BackgroundJobRun } from "./background-job.js";
 
 export interface MemoryProviderCapabilities {
   browse: boolean;
@@ -84,6 +88,21 @@ export interface MemoryProviderDescriptor {
   configSchema: Record<string, unknown> | null;
   configMetadata: MemoryProviderConfigMetadata | null;
 }
+
+export interface MemoryHookPolicy {
+  enabled: boolean;
+  extractionMode: MemoryHookExtractionMode;
+  runMode: MemoryHookRunMode;
+  harness: MemoryExtractionHarness;
+  sensitivityLabel: MemorySensitivityLabel;
+  reviewState: MemoryReviewState;
+  retentionPolicy?: Record<string, unknown> | null;
+  modelProvider?: string | null;
+  model?: string | null;
+  config?: Record<string, unknown> | null;
+}
+
+export type MemoryHookPolicyMap = Partial<Record<MemoryHookKind, Partial<MemoryHookPolicy>>>;
 
 export interface MemoryUsage {
   provider: string;
@@ -262,6 +281,21 @@ export interface MemoryExtractionJob {
   updatedAt: Date;
 }
 
+export interface MemoryRefreshJobSourceCounts {
+  issue: number;
+  issue_comment: number;
+  issue_document: number;
+  run: number;
+}
+
+export interface MemoryRefreshJobResult {
+  job: BackgroundJob;
+  run: BackgroundJobRun;
+  dryRun: boolean;
+  sourceCounts: MemoryRefreshJobSourceCounts;
+  recordCount: number;
+}
+
 export interface MemoryQueryResult {
   operation: MemoryOperation;
   records: MemoryRecord[];
@@ -310,6 +344,7 @@ export interface MemoryProviderCaptureInput {
   content: string;
   summary?: string | null;
   metadata?: Record<string, unknown>;
+  reviewState?: MemoryReviewState;
 }
 
 export interface MemoryProviderCaptureOutput {

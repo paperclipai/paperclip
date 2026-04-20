@@ -8,6 +8,7 @@ import {
   memoryListOperationsQuerySchema,
   memoryListRecordsQuerySchema,
   memoryQuerySchema,
+  memoryRefreshJobSchema,
   memoryRetentionSweepSchema,
   memoryReviewSchema,
   memoryRevokeSchema,
@@ -381,6 +382,29 @@ export function memoryRoutes(
     assertBoard(req);
     const parsed = memoryListExtractionJobsQuerySchema.parse(req.query);
     res.json(await memory.listExtractionJobs(companyId, parsed));
+  });
+
+  router.post("/companies/:companyId/memory/refresh-jobs", validate(memoryRefreshJobSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const result = await memory.startRefreshJob(companyId, req.body, actorInfoFromReq(req));
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "memory.refresh_job_started",
+      entityType: "background_job_run",
+      entityId: result.run.id,
+      details: {
+        jobId: result.job.id,
+        dryRun: result.dryRun,
+        sourceCounts: result.sourceCounts,
+      },
+    });
+    res.status(202).json(result);
   });
 
   return router;

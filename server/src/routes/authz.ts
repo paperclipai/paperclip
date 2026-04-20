@@ -39,6 +39,7 @@ export function getActorInfo(req: Request) {
       actorType: "agent" as const,
       actorId: req.actor.agentId ?? "unknown-agent",
       agentId: req.actor.agentId ?? null,
+      userId: null,
       runId: req.actor.runId ?? null,
     };
   }
@@ -47,6 +48,7 @@ export function getActorInfo(req: Request) {
     actorType: "user" as const,
     actorId: req.actor.userId ?? "board",
     agentId: null,
+    userId: req.actor.userId ?? null,
     runId: req.actor.runId ?? null,
   };
 }
