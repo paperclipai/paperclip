@@ -1812,7 +1812,12 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       const toolDeclarations = manifest.tools ?? [];
       if (toolDeclarations.length > 0) {
-        toolDispatcher.registerPluginTools(pluginKey, manifest);
+        // Pass pluginId (DB UUID) as the 3rd arg so tool entries store the
+        // correct `pluginDbId` — without it, `workerManager.isRunning()`
+        // lookups in the dispatcher fail and every plugin tool call 502s
+        // with "worker for plugin is not running". See dispatcher's
+        // registerPluginTools jsdoc.
+        toolDispatcher.registerPluginTools(pluginKey, manifest, pluginId);
         registered.tools = toolDeclarations.length;
 
         log.info(
