@@ -23,13 +23,7 @@ Review tasks live in `in_review` status (not `todo`). Coordinator creates them w
    - Redundant systems duplicating existing functionality
    - Missing use of existing helpers/traits/abstractions
 
-   **IP**:
-   - PF2e/Golarion names (deities, locations, NPCs)
-   - "Pathfinder" references
-   - Copy-pasted PF2e text
-   - De-IPed materials creeping back: "Mithral", "Darkwood"
-
-3. Fix directly. IP fixes > quality fixes.
+3. Fix directly.
 4. Large refactors (multi-file, architectural) → file Paperclip issue for Coordinator.
 5. `PATCH /api/issues/{issueId}` with `{"status":"done","comment":"<summary>"}`. Every task exits `done` — whether you fixed things or found nothing to fix. A comment without a status change is not completion.
 

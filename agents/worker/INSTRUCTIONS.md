@@ -40,13 +40,6 @@ Every code change ships with tests:
 - Data-driven: content in JSON, systems in Rust
 - `AbilityMechanic`: reusable primitives, not one-off handlers
 
-## IP
-
-- PF2e math/mechanics OK (ORC License)
-- NO Golarion names (deities, places, NPCs, lore), "Pathfinder" branding, copy-pasted PF2e text
-- De-IPed: Titanium(Mithral), Ironwood(Darkwood), BogOak(Darkwood tree)
-- Folklore spell names OK (Fireball, Lightning Bolt, Heal)
-
 ## Art Tasks
 
 ```sh
