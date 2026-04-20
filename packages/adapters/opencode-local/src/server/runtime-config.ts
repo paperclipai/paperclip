@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import { asBoolean, asNonEmptyString } from "@paperclipai/adapter-utils/server-utils";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -76,11 +76,19 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   };
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 
+  const env: Record<string, string> = {
+    ...input.env,
+    XDG_CONFIG_HOME: runtimeConfigHome,
+  };
+  // Inject OPENAI_BASE_URL if providerBaseUrl is configured.
+  // This allows MiniMax and other OpenAI-compatible providers to work
+  // when the server process doesn't have access to the user's opencode.json.
+  const baseUrl = asNonEmptyString(input.config.providerBaseUrl);
+  if (baseUrl) {
+    env.OPENAI_BASE_URL = baseUrl;
+  }
   return {
-    env: {
-      ...input.env,
-      XDG_CONFIG_HOME: runtimeConfigHome,
-    },
+    env,
     notes: [
       "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
     ],

@@ -49,6 +49,23 @@ export function OpenCodeLocalConfigFields({
           </div>
         </Field>
       )}
+      <Field label="Provider base URL" hint="MiniMax, Groq, OpenRouter — leave empty to use default OpenAI. Only needed for custom OpenAI-compatible providers.">
+        <DraftInput
+          value={
+            isCreate
+              ? values!.providerBaseUrl ?? ""
+              : eff("adapterConfig", "providerBaseUrl", String(config.providerBaseUrl ?? ""))
+          }
+          onCommit={(v) =>
+            isCreate
+              ? set!({ providerBaseUrl: v || undefined })
+              : mark("adapterConfig", "providerBaseUrl", v || undefined)
+          }
+          immediate
+          className={inputClass}
+          placeholder="https://api.minimax.chat/v1"
+        />
+      </Field>
       <ToggleField
         label="Skip permissions"
         hint={help.dangerouslySkipPermissions}
