@@ -450,17 +450,6 @@ function appendWakeText(baseText: string, wakeText: string): string {
   return trimmedBase.length > 0 ? `${trimmedBase}\n\n${wakeText}` : wakeText;
 }
 
-function joinWakePayloadSections(structuredWakePrompt: string, structuredWakeJson: string): string {
-  const sections = [
-    structuredWakePrompt.trim(),
-    "Structured wake payload JSON:",
-    "```json",
-    structuredWakeJson,
-    "```",
-  ].filter((entry) => entry.trim().length > 0);
-  return sections.join("\n");
-}
-
 function buildStandardPaperclipPayload(
   ctx: AdapterExecutionContext,
   wakePayload: WakePayload,
@@ -517,6 +506,25 @@ function buildStandardPaperclipPayload(
   };
 }
 
+function joinWakePayloadSections(structuredWakePrompt: string, structuredWakeJson: string): string {
+  const sections = [
+    structuredWakePrompt.trim(),
+    "Structured wake payload JSON:",
+    "```json",
+    structuredWakeJson,
+    "```",
+  ].filter((entry) => entry.trim().length > 0);
+  return sections.join("\n");
+}
+
+function joinPaperclipContextSection(paperclipContext: Record<string, unknown>): string {
+  return [
+    "Paperclip context JSON:",
+    "```json",
+    JSON.stringify(paperclipContext, null, 2),
+    "```",
+  ].join("\n");
+}
 function normalizeUrl(input: string): URL | null {
   try {
     return new URL(input);
@@ -1103,14 +1111,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
+  const paperclipContext = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
-    structuredWakeJson
-      ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
-      : structuredWakePrompt,
+    [
+      structuredWakeJson
+        ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
+        : structuredWakePrompt,
+      joinPaperclipContextSection(paperclipContext),
+    ]
+      .filter((entry) => entry.trim().length > 0)
+      .join("\n\n"),
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -1125,8 +1139,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
-  const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
-
   const agentParams: Record<string, unknown> = {
     ...payloadTemplate,
     message,
@@ -1134,7 +1146,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  delete agentParams.paperclip;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
