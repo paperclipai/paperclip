@@ -75,11 +75,11 @@ env:
 
 # -- Secret containing `agentJwtSecret` and optional `masterKey` seed.
 secret:
-  # -- Name of a pre-existing Secret to read credentials from. Leave empty to have the chart generate one from the inline values below.
-  existingSecret: ""
-  # -- JWT secret for the Paperclip agent. Required. Auto-generated on `helm install` if empty and no `existingSecret`.
+  # -- Name of a pre-existing Secret to read credentials from. Strongly recommended under GitOps: the templated secret uses `randAlphaNum` which re-rolls on every render, keeping the app perpetually OutOfSync (and thrashing pods under `selfHeal`). See `docs/operations.md` in the ops repo for the `kubectl create secret` recipe.
+  existingSecret: "paperclip-credentials"
+  # -- JWT secret for the Paperclip agent. Only used when `existingSecret` is empty — avoid under GitOps (non-deterministic render).
   agentJwtSecret: ""
-  # -- Base64-encoded master key to seed `/paperclip/instances/<instanceId>/secrets/master.key` on first boot. Ignored if the file already exists on the PVC. Leave empty to let Paperclip generate its own on first run.
+  # -- Base64-encoded master key to seed `/paperclip/instances/<instanceId>/secrets/master.key` on first boot. Ignored if the file already exists on the PVC. Only used when `existingSecret` is empty. Leave empty to let Paperclip generate its own on first run.
   masterKey: ""
 
 # -- Pod spec knobs.
