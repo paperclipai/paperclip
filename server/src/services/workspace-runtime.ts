@@ -413,32 +413,33 @@ function formatCommandForDisplay(command: string, args: string[]) {
     .join(" ");
 }
 
+function trimToLastBytes(value: string, limit: number) {
+  const byteLength = Buffer.byteLength(value, "utf8");
+  if (byteLength <= limit) return value;
+  return Buffer.from(value, "utf8").subarray(byteLength - limit).toString("utf8");
+}
+
 function createProcessOutputCapture(maxBytes: number): ProcessOutputAccumulator {
   const limit = Math.max(1, Math.trunc(maxBytes));
-  let chunks: string[] = [];
+  let text = "";
   let truncated = false;
   let totalBytes = 0;
 
   return {
     append(chunk: string) {
       if (!chunk) return;
-      chunks.push(chunk);
       totalBytes += Buffer.byteLength(chunk, "utf8");
 
-      let currentBytes = chunks.reduce((sum, value) => sum + Buffer.byteLength(value, "utf8"), 0);
-      if (currentBytes <= limit) return;
-
-      const combined = Buffer.from(chunks.join(""), "utf8");
-      const tail = combined.subarray(Math.max(0, combined.length - limit)).toString("utf8");
-      chunks = [tail];
-      truncated = true;
-      currentBytes = Buffer.byteLength(tail, "utf8");
-      if (currentBytes > limit) {
-        chunks = [Buffer.from(tail, "utf8").subarray(Math.max(0, currentBytes - limit)).toString("utf8")];
+      const combined = text + chunk;
+      if (Buffer.byteLength(combined, "utf8") <= limit) {
+        text = combined;
+        return;
       }
+
+      text = trimToLastBytes(combined, limit);
+      truncated = true;
     },
     finish(): ProcessOutputCapture {
-      const text = chunks.join("");
       if (!truncated) {
         return {
           text,

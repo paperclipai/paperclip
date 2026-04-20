@@ -47,6 +47,10 @@ export interface CompanyMemberRecord extends CompanyMembership {
   membershipRole: HumanCompanyMembershipRole | null;
   user: AccessUserProfile | null;
   grants: PrincipalPermissionGrant[];
+  removal?: {
+    canArchive: boolean;
+    reason: string | null;
+  };
 }
 
 export interface CompanyMembersResponse {
@@ -57,6 +61,11 @@ export interface CompanyMembersResponse {
     canInviteUsers: boolean;
     canApproveJoinRequests: boolean;
   };
+}
+
+export interface ArchiveCompanyMemberResponse {
+  member: CompanyMemberRecord;
+  reassignedIssueCount: number;
 }
 
 export interface Invite {

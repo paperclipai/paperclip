@@ -1,6 +1,14 @@
 import type { HeartbeatRun, HeartbeatRunEvent, InstanceSchedulerHeartbeatAgent, WorkspaceOperation } from "@paperclipai/shared";
 import { api } from "./client";
 
+export interface RunLivenessFields {
+  livenessState: HeartbeatRun["livenessState"];
+  livenessReason: string | null;
+  continuationAttempt: number;
+  lastUsefulActionAt: string | Date | null;
+  nextAction: string | null;
+}
+
 export interface ActiveRunForIssue {
   id: string;
   status: string;
@@ -13,6 +21,11 @@ export interface ActiveRunForIssue {
   agentName: string;
   adapterType: string;
   issueId?: string | null;
+  livenessState?: RunLivenessFields["livenessState"];
+  livenessReason?: string | null;
+  continuationAttempt?: number;
+  lastUsefulActionAt?: string | Date | null;
+  nextAction?: string | null;
 }
 
 export interface LiveRunForIssue {
@@ -27,6 +40,11 @@ export interface LiveRunForIssue {
   agentName: string;
   adapterType: string;
   issueId?: string | null;
+  livenessState?: RunLivenessFields["livenessState"];
+  livenessReason?: string | null;
+  continuationAttempt?: number;
+  lastUsefulActionAt?: string | null;
+  nextAction?: string | null;
 }
 
 export const heartbeatsApi = {

@@ -120,12 +120,21 @@ export type CompanyMember = {
   companyId: string;
   principalType: "user";
   principalId: string;
-  status: "pending" | "active" | "suspended";
+  status: "pending" | "active" | "suspended" | "archived";
   membershipRole: HumanCompanyRole | null;
   createdAt: string;
   updatedAt: string;
   user: { id: string; email: string | null; name: string | null; image: string | null } | null;
   grants: CompanyMemberGrant[];
+  removal?: {
+    canArchive: boolean;
+    reason: string | null;
+  };
+};
+
+export type ArchiveCompanyMemberResponse = {
+  member: CompanyMember;
+  reassignedIssueCount: number;
 };
 
 export type CompanyMembersResponse = {
@@ -205,7 +214,7 @@ export type UserCompanyAccessEntry = {
   companyId: string;
   principalType: "user";
   principalId: string;
-  status: "pending" | "active" | "suspended";
+  status: "pending" | "active" | "suspended" | "archived";
   membershipRole: HumanCompanyRole | "member" | null;
   createdAt: string;
   updatedAt: string;
@@ -340,6 +349,17 @@ export const accessApi = {
       }>;
     },
   ) => api.patch<CompanyMember>(`/companies/${companyId}/members/${memberId}/role-and-grants`, input),
+
+  archiveMember: (
+    companyId: string,
+    memberId: string,
+    input: {
+      reassignment?: {
+        assigneeAgentId?: string | null;
+        assigneeUserId?: string | null;
+      } | null;
+    } = {},
+  ) => api.post<ArchiveCompanyMemberResponse>(`/companies/${companyId}/members/${memberId}/archive`, input),
 
   approveJoinRequest: (companyId: string, requestId: string) =>
     api.post<JoinRequest>(`/companies/${companyId}/join-requests/${requestId}/approve`, {}),

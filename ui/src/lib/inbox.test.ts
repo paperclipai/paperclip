@@ -154,6 +154,11 @@ function makeRun(id: string, status: HeartbeatRun["status"], createdAt: string, 
     processStartedAt: null,
     retryOfRunId: null,
     processLossRetryCount: 0,
+    livenessState: null,
+    livenessReason: null,
+    continuationAttempt: 0,
+    lastUsefulActionAt: null,
+    nextAction: null,
     stdoutExcerpt: null,
     stderrExcerpt: null,
     contextSnapshot: null,
@@ -401,7 +406,7 @@ describe("inbox helpers", () => {
     expect(issues).toHaveLength(2);
   });
 
-  it("shows only my approvals on mine, while recent and unread stay company-wide", () => {
+  it("shows actionable approvals on mine, while recent and unread stay company-wide", () => {
     const approvals = [
       {
         ...makeApprovalWithTimestamps("approval-approved", "approved", "2026-03-11T02:00:00.000Z"),
@@ -420,6 +425,7 @@ describe("inbox helpers", () => {
     expect(getApprovalsForTab(approvals, "mine", "all", "user-1").map((approval) => approval.id)).toEqual([
       "approval-revision",
       "approval-approved",
+      "approval-pending",
     ]);
     expect(getApprovalsForTab(approvals, "recent", "all").map((approval) => approval.id)).toEqual([
       "approval-revision",
@@ -435,13 +441,21 @@ describe("inbox helpers", () => {
     ]);
   });
 
-  it("keeps unrelated approvals out of a new user's badge and mine tab", () => {
+  it("surfaces agent-requested actionable approvals in mine and the badge", () => {
     const approvals = [
-      { ...makeApproval("pending"), requestedByUserId: "user-2" },
-      { ...makeApproval("revision_requested"), decidedByUserId: "user-3" },
+      {
+        ...makeApprovalWithTimestamps("approval-agent-requested", "pending", "2026-03-11T02:00:00.000Z"),
+        requestedByUserId: null,
+      },
+      {
+        ...makeApprovalWithTimestamps("approval-unrelated-resolved", "approved", "2026-03-11T03:00:00.000Z"),
+        requestedByUserId: "user-2",
+      },
     ];
 
-    expect(getApprovalsForTab(approvals, "mine", "all", "user-1")).toEqual([]);
+    expect(getApprovalsForTab(approvals, "mine", "all", "user-1").map((approval) => approval.id)).toEqual([
+      "approval-agent-requested",
+    ]);
 
     const result = computeInboxBadgeData({
       approvals,
@@ -454,7 +468,7 @@ describe("inbox helpers", () => {
       currentUserId: "user-1",
     });
 
-    expect(result.approvals).toBe(0);
+    expect(result.approvals).toBe(1);
   });
 
   it("does not count company-wide alerts in the personal inbox badge", () => {

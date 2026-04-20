@@ -54,7 +54,7 @@ export function ProjectWorkspaceSummaryCard({
   const actionKey = `${summary.key}:${hasRunningServices ? "stop" : "start"}`;
 
   return (
-    <div className="border-b border-border px-4 py-4 last:border-b-0 sm:px-5">
+    <div className="rounded-lg border border-border bg-background p-4 shadow-sm sm:p-5">
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0 space-y-2">
@@ -143,14 +143,31 @@ export function ProjectWorkspaceSummaryCard({
           </div>
         </div>
 
-        <div className="rounded-xl border border-border/70 bg-muted/15 px-3 py-3">
+        <div className="rounded-lg border border-border/70 bg-background px-3 py-3">
           <div className="space-y-2 text-sm">
             {summary.branchName ? (
               <div className="flex items-start gap-2">
                 <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Branch</div>
-                  <div className="break-all font-mono text-xs text-foreground">{summary.branchName}</div>
+                  <div className="flex items-start gap-2">
+                    <CopyText
+                      text={summary.branchName}
+                      containerClassName="min-w-0"
+                      className="min-w-0 break-all text-left font-mono text-xs text-foreground"
+                      copiedLabel="Branch copied"
+                    >
+                      {summary.branchName}
+                    </CopyText>
+                    <CopyText
+                      text={summary.branchName}
+                      ariaLabel="Copy branch"
+                      className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
+                      copiedLabel="Branch copied"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </CopyText>
+                  </div>
                 </div>
               </div>
             ) : null}
@@ -161,10 +178,21 @@ export function ProjectWorkspaceSummaryCard({
                 <div className="min-w-0 flex-1">
                   <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Path</div>
                   <div className="flex items-start gap-2">
-                    <span className="min-w-0 break-all font-mono text-xs text-foreground" title={summary.cwd}>
+                    <CopyText
+                      text={summary.cwd}
+                      title={summary.cwd}
+                      containerClassName="min-w-0"
+                      className="min-w-0 break-all text-left font-mono text-xs text-foreground"
+                      copiedLabel="Path copied"
+                    >
                       {truncatePath(summary.cwd)}
-                    </span>
-                    <CopyText text={summary.cwd} className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground" copiedLabel="Path copied">
+                    </CopyText>
+                    <CopyText
+                      text={summary.cwd}
+                      ariaLabel="Copy path"
+                      className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
+                      copiedLabel="Path copied"
+                    >
                       <Copy className="h-3.5 w-3.5" />
                     </CopyText>
                   </div>
@@ -181,7 +209,12 @@ export function ProjectWorkspaceSummaryCard({
                     href={summary.primaryServiceUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="break-all font-mono text-xs text-foreground hover:underline"
+                    className={cn(
+                      "break-all font-mono text-xs hover:underline",
+                      summary.primaryServiceUrlRunning
+                        ? "text-emerald-700 hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200"
+                        : "text-foreground",
+                    )}
                   >
                     {summary.primaryServiceUrl}
                   </a>

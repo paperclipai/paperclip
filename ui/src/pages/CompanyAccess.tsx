@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS, PERMISSION_KEYS, type PermissionKey } from "@paperclipai/shared";
-import { ShieldCheck, Users } from "lucide-react";
+import {
+  HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,
+  PERMISSION_KEYS,
+  type Agent,
+  type PermissionKey,
+} from "@paperclipai/shared";
+import { ShieldCheck, Trash2, Users } from "lucide-react";
 import { accessApi, type CompanyMember } from "@/api/access";
+import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";
+import { issuesApi } from "@/api/issues";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -41,6 +48,9 @@ const implicitRoleGrantMap: Record<NonNullable<CompanyMember["membershipRole"]>,
   viewer: [],
 };
 
+const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
+type EditableMemberStatus = "pending" | "active" | "suspended";
+
 function getImplicitGrantKeys(role: CompanyMember["membershipRole"]) {
   return role ? implicitRoleGrantMap[role] : [];
 }
@@ -51,8 +61,10 @@ export function CompanyAccess() {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
+  const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
+  const [reassignmentTarget, setReassignmentTarget] = useState<string>("__unassigned");
   const [draftRole, setDraftRole] = useState<CompanyMember["membershipRole"]>(null);
-  const [draftStatus, setDraftStatus] = useState<CompanyMember["status"]>("active");
+  const [draftStatus, setDraftStatus] = useState<EditableMemberStatus>("active");
   const [draftGrants, setDraftGrants] = useState<Set<PermissionKey>>(new Set());
 
   useEffect(() => {
@@ -66,6 +78,12 @@ export function CompanyAccess() {
   const membersQuery = useQuery({
     queryKey: queryKeys.access.companyMembers(selectedCompanyId ?? ""),
     queryFn: () => accessApi.listMembers(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const agentsQuery = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId ?? ""),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -83,7 +101,7 @@ export function CompanyAccess() {
   };
 
   const updateMemberMutation = useMutation({
-    mutationFn: async (input: { memberId: string; membershipRole: CompanyMember["membershipRole"]; status: CompanyMember["status"]; grants: PermissionKey[] }) => {
+    mutationFn: async (input: { memberId: string; membershipRole: CompanyMember["membershipRole"]; status: EditableMemberStatus; grants: PermissionKey[] }) => {
       return accessApi.updateMemberAccess(selectedCompanyId!, input.memberId, {
         membershipRole: input.membershipRole,
         status: input.status,
@@ -147,13 +165,69 @@ export function CompanyAccess() {
     () => membersQuery.data?.members.find((member) => member.id === editingMemberId) ?? null,
     [editingMemberId, membersQuery.data?.members],
   );
+  const removingMember = useMemo(
+    () => membersQuery.data?.members.find((member) => member.id === removingMemberId) ?? null,
+    [removingMemberId, membersQuery.data?.members],
+  );
+
+  const assignedIssuesQuery = useQuery({
+    queryKey: ["access", "member-assigned-issues", selectedCompanyId ?? "", removingMember?.principalId ?? ""],
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, {
+        assigneeUserId: removingMember!.principalId,
+        status: reassignmentIssueStatuses,
+      }),
+    enabled: !!selectedCompanyId && !!removingMember,
+  });
+
+  const archiveMemberMutation = useMutation({
+    mutationFn: async (input: { memberId: string; target: string }) => {
+      const reassignment =
+        input.target.startsWith("agent:")
+          ? { assigneeAgentId: input.target.slice("agent:".length), assigneeUserId: null }
+          : input.target.startsWith("user:")
+            ? { assigneeAgentId: null, assigneeUserId: input.target.slice("user:".length) }
+            : null;
+      return accessApi.archiveMember(selectedCompanyId!, input.memberId, { reassignment });
+    },
+    onSuccess: async (result) => {
+      setRemovingMemberId(null);
+      setReassignmentTarget("__unassigned");
+      await refreshAccessData();
+      if (selectedCompanyId) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.issues.listAssignedToMe(selectedCompanyId) });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
+      }
+      pushToast({
+        title: "Member removed",
+        body:
+          result.reassignedIssueCount > 0
+            ? `${result.reassignedIssueCount} assigned issue${result.reassignedIssueCount === 1 ? "" : "s"} cleaned up.`
+            : undefined,
+        tone: "success",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to remove member",
+        body: error instanceof Error ? error.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
 
   useEffect(() => {
     if (!editingMember) return;
     setDraftRole(editingMember.membershipRole);
-    setDraftStatus(editingMember.status);
+    setDraftStatus(isEditableMemberStatus(editingMember.status) ? editingMember.status : "suspended");
     setDraftGrants(new Set(editingMember.grants.map((grant) => grant.permissionKey)));
   }, [editingMember]);
+
+  useEffect(() => {
+    if (!removingMember) return;
+    setReassignmentTarget("__unassigned");
+  }, [removingMember]);
 
   if (!selectedCompanyId) {
     return <div className="text-sm text-muted-foreground">Select a company to manage access.</div>;
@@ -181,6 +255,14 @@ export function CompanyAccess() {
     approveJoinRequestMutation.isPending || rejectJoinRequestMutation.isPending;
   const implicitGrantKeys = getImplicitGrantKeys(draftRole);
   const implicitGrantSet = new Set(implicitGrantKeys);
+  const activeReassignmentUsers = members.filter(
+    (member) =>
+      member.status === "active" &&
+      member.principalType === "user" &&
+      member.id !== removingMemberId,
+  );
+  const activeReassignmentAgents = (agentsQuery.data ?? []).filter(isAssignableAgent);
+  const assignedIssues = assignedIssuesQuery.data ?? [];
 
   return (
     <div className="max-w-6xl space-y-8">
@@ -256,7 +338,7 @@ export function CompanyAccess() {
         ) : null}
 
         <div className="overflow-hidden rounded-xl border border-border">
-          <div className="grid grid-cols-[minmax(0,1.5fr)_120px_120px_minmax(0,1.2fr)_120px] gap-3 border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <div className="grid grid-cols-[minmax(0,1.5fr)_120px_120px_minmax(0,1.2fr)_180px] gap-3 border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
             <div>User account</div>
             <div>Role</div>
             <div>Status</div>
@@ -266,33 +348,52 @@ export function CompanyAccess() {
           {members.length === 0 ? (
             <div className="px-4 py-8 text-sm text-muted-foreground">No user memberships found for this company yet.</div>
           ) : (
-            members.map((member) => (
-              <div
-                key={member.id}
-                className="grid grid-cols-[minmax(0,1.5fr)_120px_120px_minmax(0,1.2fr)_120px] gap-3 border-b border-border px-4 py-3 last:border-b-0"
-              >
-                <div className="min-w-0">
-                  <div className="truncate font-medium">{member.user?.name?.trim() || member.user?.email || member.principalId}</div>
-                  <div className="truncate text-xs text-muted-foreground">{member.user?.email || member.principalId}</div>
+            members.map((member) => {
+              const removalReason = member.removal?.reason ?? null;
+              const canArchive = member.removal?.canArchive ?? true;
+              return (
+                <div
+                  key={member.id}
+                  className="grid grid-cols-[minmax(0,1.5fr)_120px_120px_minmax(0,1.2fr)_180px] gap-3 border-b border-border px-4 py-3 last:border-b-0"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate font-medium">{member.user?.name?.trim() || member.user?.email || member.principalId}</div>
+                    <div className="truncate text-xs text-muted-foreground">{member.user?.email || member.principalId}</div>
+                  </div>
+                  <div className="text-sm">
+                    {member.membershipRole
+                      ? HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[member.membershipRole]
+                      : "Unset"}
+                  </div>
+                  <div>
+                    <Badge variant={member.status === "active" ? "secondary" : member.status === "suspended" ? "destructive" : "outline"}>
+                      {member.status.replace("_", " ")}
+                    </Badge>
+                  </div>
+                  <div className="min-w-0 text-sm text-muted-foreground">{formatGrantSummary(member)}</div>
+                  <div className="space-y-1 text-right">
+                    <div className="flex justify-end gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setEditingMemberId(member.id)}>
+                        Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setRemovingMemberId(member.id)}
+                        disabled={!canArchive}
+                        title={removalReason ?? undefined}
+                      >
+                        <Trash2 className="mr-1 h-3.5 w-3.5" />
+                        Remove
+                      </Button>
+                    </div>
+                    {removalReason ? (
+                      <div className="text-xs text-muted-foreground">{removalReason}</div>
+                    ) : null}
+                  </div>
                 </div>
-                <div className="text-sm">
-                  {member.membershipRole
-                    ? HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[member.membershipRole]
-                    : "Unset"}
-                </div>
-                <div>
-                  <Badge variant={member.status === "active" ? "secondary" : member.status === "suspended" ? "destructive" : "outline"}>
-                    {member.status.replace("_", " ")}
-                  </Badge>
-                </div>
-                <div className="min-w-0 text-sm text-muted-foreground">{formatGrantSummary(member)}</div>
-                <div className="text-right">
-                  <Button size="sm" variant="outline" onClick={() => setEditingMemberId(member.id)}>
-                    Edit
-                  </Button>
-                </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       </section>
@@ -331,7 +432,7 @@ export function CompanyAccess() {
                     className="w-full rounded-md border border-border bg-background px-3 py-2"
                     value={draftStatus}
                     onChange={(event) =>
-                      setDraftStatus(event.target.value as CompanyMember["status"])
+                      setDraftStatus(event.target.value as EditableMemberStatus)
                     }
                   >
                     <option value="active">Active</option>
@@ -423,8 +524,107 @@ export function CompanyAccess() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={!!removingMember} onOpenChange={(open) => !open && setRemovingMemberId(null)}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Remove member</DialogTitle>
+            <DialogDescription>
+              Archive {memberDisplayName(removingMember)} and move active assignments before hiding this user from assignment fields.
+            </DialogDescription>
+          </DialogHeader>
+          {removingMember && (
+            <div className="space-y-5">
+              <div className="rounded-lg border border-border px-3 py-3">
+                <div className="text-sm font-medium">{memberDisplayName(removingMember)}</div>
+                <div className="text-sm text-muted-foreground">{removingMember.user?.email || removingMember.principalId}</div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                  {assignedIssuesQuery.isLoading
+                    ? "Checking assigned issues..."
+                    : `${assignedIssues.length} open assigned issue${assignedIssues.length === 1 ? "" : "s"}`}
+                </div>
+              </div>
+
+              {assignedIssues.length > 0 ? (
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">Issue reassignment</div>
+                  <select
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                    value={reassignmentTarget}
+                    onChange={(event) => setReassignmentTarget(event.target.value)}
+                  >
+                    <option value="__unassigned">Leave unassigned</option>
+                    {activeReassignmentUsers.length > 0 ? (
+                      <optgroup label="Humans">
+                        {activeReassignmentUsers.map((member) => (
+                          <option key={member.id} value={`user:${member.principalId}`}>
+                            {memberDisplayName(member)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null}
+                    {activeReassignmentAgents.length > 0 ? (
+                      <optgroup label="Agents">
+                        {activeReassignmentAgents.map((agent) => (
+                          <option key={agent.id} value={`agent:${agent.id}`}>
+                            {agent.name} ({agent.role})
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null}
+                  </select>
+                  <div className="max-h-36 overflow-auto rounded-lg border border-border">
+                    {assignedIssues.slice(0, 6).map((issue) => (
+                      <div key={issue.id} className="border-b border-border px-3 py-2 text-sm last:border-b-0">
+                        <div className="font-medium">{issue.identifier ?? issue.id.slice(0, 8)}</div>
+                        <div className="truncate text-muted-foreground">{issue.title}</div>
+                      </div>
+                    ))}
+                    {assignedIssues.length > 6 ? (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">
+                        {assignedIssues.length - 6} more issue{assignedIssues.length - 6 === 1 ? "" : "s"}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRemovingMemberId(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (!removingMember) return;
+                archiveMemberMutation.mutate({
+                  memberId: removingMember.id,
+                  target: reassignmentTarget,
+                });
+              }}
+              disabled={archiveMemberMutation.isPending || assignedIssuesQuery.isLoading}
+            >
+              {archiveMemberMutation.isPending ? "Removing..." : "Remove member"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
+}
+
+function memberDisplayName(member: CompanyMember | null) {
+  if (!member) return "this member";
+  return member.user?.name?.trim() || member.user?.email || member.principalId;
+}
+
+function isAssignableAgent(agent: Agent) {
+  return agent.status !== "terminated" && agent.status !== "pending_approval";
+}
+
+function isEditableMemberStatus(status: CompanyMember["status"]): status is EditableMemberStatus {
+  return status === "pending" || status === "active" || status === "suspended";
 }
 
 function PendingJoinRequestCard({

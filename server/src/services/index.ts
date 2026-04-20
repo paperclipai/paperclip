@@ -5,8 +5,20 @@ export { agentService, deduplicateAgentName } from "./agents.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
+export {
+  ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  buildContinuationSummaryMarkdown,
+  getIssueContinuationSummaryDocument,
+  refreshIssueContinuationSummary,
+} from "./issue-continuation-summary.js";
 export { projectService } from "./projects.js";
-export { issueService, type IssueFilters } from "./issues.js";
+export {
+  clampIssueListLimit,
+  ISSUE_LIST_DEFAULT_LIMIT,
+  ISSUE_LIST_MAX_LIMIT,
+  issueService,
+  type IssueFilters,
+} from "./issues.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";

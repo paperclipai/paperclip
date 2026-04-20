@@ -7,6 +7,7 @@ import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -162,6 +163,7 @@ export function RoutineRunVariablesDialog({
     [projects, selection.projectId],
   );
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [open]);
+  const recentProjectIds = useMemo(() => getRecentProjectIds(), [open]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
       sortAgentsByRecency(
@@ -271,6 +273,7 @@ export function RoutineRunVariablesDialog({
               <InlineEntitySelector
                 value={selection.assigneeAgentId}
                 options={assigneeOptions}
+                recentOptionIds={recentAssigneeIds}
                 placeholder="Agent"
                 noneLabel="Select an agent"
                 searchPlaceholder="Search agents..."
@@ -312,6 +315,7 @@ export function RoutineRunVariablesDialog({
               <InlineEntitySelector
                 value={selection.projectId}
                 options={projectOptions}
+                recentOptionIds={recentProjectIds}
                 placeholder="Project"
                 noneLabel="No project"
                 searchPlaceholder="Search projects..."
@@ -320,6 +324,7 @@ export function RoutineRunVariablesDialog({
                 openOnFocus={false}
                 onChange={(projectId) => {
                   const project = projects.find((entry) => entry.id === projectId) ?? null;
+                  if (projectId) trackRecentProject(projectId);
                   setSelection((current) => ({ ...current, projectId }));
                   setWorkspaceConfig(buildInitialWorkspaceConfig(project));
                   setWorkspaceConfigValid(true);

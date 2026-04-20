@@ -128,6 +128,15 @@ vi.mock("../services/index.js", () => ({
     })),
     tickTimers: vi.fn(async () => ({ enqueued: 0 })),
   })),
+  instanceSettingsService: vi.fn(() => ({
+    getGeneral: vi.fn(async () => ({
+      backupRetention: {
+        dailyDays: 7,
+        weeklyWeeks: 4,
+        monthlyMonths: 1,
+      },
+    })),
+  })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   routineService: vi.fn(() => ({
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),

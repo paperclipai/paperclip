@@ -16,10 +16,6 @@ vi.mock("./IssuesQuicklook", () => ({
   IssuesQuicklook: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
-vi.mock("./CopyText", () => ({
-  CopyText: ({ children }: { children: ReactNode }) => <span>{children}</span>,
-}));
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -75,6 +71,7 @@ function createSummary(overrides: Partial<ProjectWorkspaceSummary> = {}): Projec
     serviceCount: overrides.serviceCount ?? 2,
     runningServiceCount: overrides.runningServiceCount ?? 0,
     primaryServiceUrl: overrides.primaryServiceUrl ?? "http://127.0.0.1:62474",
+    primaryServiceUrlRunning: overrides.primaryServiceUrlRunning ?? false,
     hasRuntimeConfig: overrides.hasRuntimeConfig ?? true,
     issues: overrides.issues ?? [
       createIssue({ id: "issue-1", identifier: "PAP-1364" }),
@@ -88,10 +85,20 @@ function createSummary(overrides: Partial<ProjectWorkspaceSummary> = {}): Projec
 
 describe("ProjectWorkspaceSummaryCard", () => {
   let container: HTMLDivElement;
+  let writeClipboard: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    writeClipboard = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: writeClipboard },
+    });
+    Object.defineProperty(window, "isSecureContext", {
+      configurable: true,
+      value: true,
+    });
   });
 
   afterEach(() => {
@@ -124,6 +131,9 @@ describe("ProjectWorkspaceSummaryCard", () => {
 
     const actions = container.querySelector('[data-testid="workspace-summary-actions"]');
     expect(actions?.className).toContain("flex-col");
+    const card = container.firstElementChild;
+    expect(card?.className).toContain("rounded-lg");
+    expect(card?.className).toContain("border");
 
     act(() => {
       root.unmount();
@@ -184,6 +194,89 @@ describe("ProjectWorkspaceSummaryCard", () => {
     });
 
     expect(container.textContent).toContain("Retry close");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("copies branch and path from both text and icon controls with feedback", async () => {
+    const root = createRoot(container);
+    const summary = createSummary({
+      branchName: "PAP-1552-workspace-polish",
+      cwd: "/Users/dotta/paperclip/.worktrees/PAP-1552-workspace-polish",
+    });
+
+    await act(async () => {
+      root.render(
+        <ProjectWorkspaceSummaryCard
+          projectRef="paperclip-app"
+          summary={summary}
+          runtimeActionKey={null}
+          runtimeActionPending={false}
+          onRuntimeAction={() => {}}
+          onCloseWorkspace={() => {}}
+        />,
+      );
+    });
+
+    const branchTextButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === summary.branchName);
+    const pathTextButton = container.querySelector(`button[title="${summary.cwd}"]`);
+    const branchIconButton = container.querySelector('button[aria-label="Copy branch"]');
+    const pathIconButton = container.querySelector('button[aria-label="Copy path"]');
+
+    expect(branchTextButton).not.toBeNull();
+    expect(pathTextButton).not.toBeNull();
+    expect(branchIconButton).not.toBeNull();
+    expect(pathIconButton).not.toBeNull();
+
+    await act(async () => {
+      branchTextButton!.click();
+    });
+    expect(writeClipboard).toHaveBeenLastCalledWith(summary.branchName);
+    expect(branchTextButton?.nextElementSibling?.className).toContain("opacity-100");
+
+    await act(async () => {
+      pathTextButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(writeClipboard).toHaveBeenLastCalledWith(summary.cwd);
+    expect(pathTextButton?.nextElementSibling?.className).toContain("opacity-100");
+
+    await act(async () => {
+      branchIconButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      pathIconButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(writeClipboard).toHaveBeenCalledWith(summary.branchName);
+    expect(writeClipboard).toHaveBeenCalledWith(summary.cwd);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("colors live service urls green", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ProjectWorkspaceSummaryCard
+          projectRef="paperclip-app"
+          summary={createSummary({
+            primaryServiceUrl: "http://127.0.0.1:62475",
+            primaryServiceUrlRunning: true,
+            runningServiceCount: 1,
+          })}
+          runtimeActionKey={null}
+          runtimeActionPending={false}
+          onRuntimeAction={() => {}}
+          onCloseWorkspace={() => {}}
+        />,
+      );
+    });
+
+    const serviceLink = container.querySelector("a[href='http://127.0.0.1:62475']");
+    expect(serviceLink?.className).toContain("text-emerald");
 
     act(() => {
       root.unmount();

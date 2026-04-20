@@ -130,7 +130,10 @@ export const issuesApi = {
     ),
   cancelComment: (id: string, commentId: string) =>
     api.delete<IssueComment>(`/issues/${id}/comments/${commentId}`),
-  listDocuments: (id: string) => api.get<IssueDocument[]>(`/issues/${id}/documents`),
+  listDocuments: (id: string, options?: { includeSystem?: boolean }) =>
+    api.get<IssueDocument[]>(
+      `/issues/${id}/documents${options?.includeSystem ? "?includeSystem=true" : ""}`,
+    ),
   getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>
     api.put<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`, data),

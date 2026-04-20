@@ -1,6 +1,20 @@
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, heartbeatRuns, issues } from "@paperclipai/db";
+import {
+  activityLog,
+  agents,
+  documentRevisions,
+  heartbeatRunEvents,
+  heartbeatRuns,
+  issueComments,
+  issueDocuments,
+  issues,
+  issueWorkProducts,
+  workspaceOperations,
+} from "@paperclipai/db";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+import { logger } from "../middleware/logger.js";
+import { classifyRunLiveness } from "./run-liveness.js";
 
 export interface ActivityFilters {
   companyId: string;
@@ -10,6 +24,7 @@ export interface ActivityFilters {
 }
 
 export function activityService(db: Db) {
+  const scheduledLivenessBackfills = new Set<string>();
   const issueIdAsText = sql<string>`${issues.id}::text`;
   const summarizedUsageJson = sql<Record<string, unknown> | null>`
     case
@@ -74,10 +89,229 @@ export function activityService(db: Db) {
           ${heartbeatRuns.resultJson} -> 'total_cost_usd',
           ${heartbeatRuns.resultJson} -> 'cost_usd',
           ${heartbeatRuns.resultJson} -> 'costUsd'
-        )
+        ),
+        'stopReason', ${heartbeatRuns.resultJson} -> 'stopReason',
+        'effectiveTimeoutSec', ${heartbeatRuns.resultJson} -> 'effectiveTimeoutSec',
+        'effectiveTimeoutMs', ${heartbeatRuns.resultJson} -> 'effectiveTimeoutMs',
+        'timeoutConfigured', ${heartbeatRuns.resultJson} -> 'timeoutConfigured',
+        'timeoutSource', ${heartbeatRuns.resultJson} -> 'timeoutSource',
+        'timeoutFired', ${heartbeatRuns.resultJson} -> 'timeoutFired'
       ))
     end
   `.as("resultJson");
+
+  function countValue(value: unknown) {
+    const parsed = Number(value ?? 0);
+    return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
+  }
+
+  function dateValue(value: unknown) {
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    if (typeof value === "string" || typeof value === "number") {
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+    return null;
+  }
+
+  function latestDate(...values: unknown[]) {
+    let latest: Date | null = null;
+    for (const value of values) {
+      const parsed = dateValue(value);
+      if (!parsed) continue;
+      if (!latest || parsed.getTime() > latest.getTime()) latest = parsed;
+    }
+    return latest;
+  }
+
+  function asRecord(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    return value as Record<string, unknown>;
+  }
+
+  function readNumber(value: unknown) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+
+  async function backfillMissingRunLivenessForIssue(companyId: string, issueId: string) {
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        resultJson: heartbeatRuns.resultJson,
+        stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
+        stderrExcerpt: heartbeatRuns.stderrExcerpt,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        continuationAttempt: heartbeatRuns.continuationAttempt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          isNull(heartbeatRuns.livenessState),
+          sql`${heartbeatRuns.status} not in ('queued', 'running')`,
+          or(
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            sql`exists (
+              select 1
+              from ${activityLog}
+              where ${activityLog.companyId} = ${companyId}
+                and ${activityLog.entityType} = 'issue'
+                and ${activityLog.entityId} = ${issueId}
+                and ${activityLog.runId} = ${heartbeatRuns.id}
+            )`,
+          ),
+        ),
+      )
+      .limit(20);
+
+    if (runs.length === 0) return;
+
+    const issue = await db
+      .select({
+        status: issues.status,
+        title: issues.title,
+        description: issues.description,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+
+    for (const run of runs) {
+      const context = asRecord(run.contextSnapshot);
+      const continuationAttempt =
+        readNumber(context?.continuationAttempt) ??
+        readNumber(context?.livenessContinuationAttempt) ??
+        run.continuationAttempt ??
+        0;
+
+      const [commentStats] = await db
+        .select({
+          count: sql<number>`count(*)::int`,
+          latestAt: sql<Date | null>`max(${issueComments.createdAt})`,
+        })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, companyId),
+            eq(issueComments.issueId, issueId),
+            eq(issueComments.createdByRunId, run.id),
+          ),
+        );
+
+      const [documentStats] = await db
+        .select({
+          count: sql<number>`count(*)::int`,
+          planCount: sql<number>`count(*) filter (where ${issueDocuments.key} = 'plan')::int`,
+          latestAt: sql<Date | null>`max(${documentRevisions.createdAt})`,
+        })
+        .from(documentRevisions)
+        .innerJoin(issueDocuments, eq(documentRevisions.documentId, issueDocuments.documentId))
+        .where(
+          and(
+            eq(documentRevisions.companyId, companyId),
+            eq(documentRevisions.createdByRunId, run.id),
+            eq(issueDocuments.companyId, companyId),
+            eq(issueDocuments.issueId, issueId),
+            sql`${issueDocuments.key} != ${ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY}`,
+          ),
+        );
+
+      const [workProductStats] = await db
+        .select({
+          count: sql<number>`count(*)::int`,
+          latestAt: sql<Date | null>`max(${issueWorkProducts.createdAt})`,
+        })
+        .from(issueWorkProducts)
+        .where(
+          and(
+            eq(issueWorkProducts.companyId, companyId),
+            eq(issueWorkProducts.issueId, issueId),
+            eq(issueWorkProducts.createdByRunId, run.id),
+          ),
+        );
+
+      const [workspaceOperationStats] = await db
+        .select({
+          count: sql<number>`count(*)::int`,
+          latestAt: sql<Date | null>`max(${workspaceOperations.startedAt})`,
+        })
+        .from(workspaceOperations)
+        .where(and(eq(workspaceOperations.companyId, companyId), eq(workspaceOperations.heartbeatRunId, run.id)));
+
+      const [activityStats] = await db
+        .select({
+          count: sql<number>`count(*)::int`,
+          latestAt: sql<Date | null>`max(${activityLog.createdAt})`,
+        })
+        .from(activityLog)
+        .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, run.id)));
+
+      const [eventStats] = await db
+        .select({
+          count: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
+          latestAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))`,
+        })
+        .from(heartbeatRunEvents)
+        .where(and(eq(heartbeatRunEvents.companyId, companyId), eq(heartbeatRunEvents.runId, run.id)));
+
+      const classification = classifyRunLiveness({
+        runStatus: run.status,
+        issue,
+        resultJson: asRecord(run.resultJson),
+        stdoutExcerpt: run.stdoutExcerpt,
+        stderrExcerpt: run.stderrExcerpt,
+        error: run.error,
+        errorCode: run.errorCode,
+        continuationAttempt,
+        evidence: {
+          issueCommentsCreated: countValue(commentStats?.count),
+          documentRevisionsCreated: countValue(documentStats?.count),
+          planDocumentRevisionsCreated: countValue(documentStats?.planCount),
+          workProductsCreated: countValue(workProductStats?.count),
+          workspaceOperationsCreated: countValue(workspaceOperationStats?.count),
+          activityEventsCreated: countValue(activityStats?.count),
+          toolOrActionEventsCreated: countValue(eventStats?.count),
+          latestEvidenceAt: latestDate(
+            commentStats?.latestAt,
+            documentStats?.latestAt,
+            workProductStats?.latestAt,
+            workspaceOperationStats?.latestAt,
+            activityStats?.latestAt,
+            eventStats?.latestAt,
+          ),
+        },
+      });
+
+      await db
+        .update(heartbeatRuns)
+        .set({
+          livenessState: classification.livenessState,
+          livenessReason: classification.livenessReason,
+          continuationAttempt: classification.continuationAttempt,
+          lastUsefulActionAt: classification.lastUsefulActionAt,
+          nextAction: classification.nextAction,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.livenessState)));
+    }
+  }
+
+  function scheduleRunLivenessBackfill(companyId: string, issueId: string) {
+    const key = `${companyId}:${issueId}`;
+    if (scheduledLivenessBackfills.has(key)) return;
+    scheduledLivenessBackfills.add(key);
+    void backfillMissingRunLivenessForIssue(companyId, issueId)
+      .catch((err: unknown) => {
+        logger.warn({ err, companyId, issueId }, "run liveness backfill failed");
+      })
+      .finally(() => {
+        scheduledLivenessBackfills.delete(key);
+      });
+  }
 
   return {
     list: (filters: ActivityFilters) => {
@@ -128,8 +362,9 @@ export function activityService(db: Db) {
         )
         .orderBy(desc(activityLog.createdAt)),
 
-    runsForIssue: (companyId: string, issueId: string) =>
-      db
+    runsForIssue: async (companyId: string, issueId: string) => {
+      scheduleRunLivenessBackfill(companyId, issueId);
+      return db
         .select({
           runId: heartbeatRuns.id,
           status: heartbeatRuns.status,
@@ -142,6 +377,11 @@ export function activityService(db: Db) {
           usageJson: summarizedUsageJson,
           resultJson: summarizedResultJson,
           logBytes: heartbeatRuns.logBytes,
+          livenessState: heartbeatRuns.livenessState,
+          livenessReason: heartbeatRuns.livenessReason,
+          continuationAttempt: heartbeatRuns.continuationAttempt,
+          lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
+          nextAction: heartbeatRuns.nextAction,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -167,7 +407,8 @@ export function activityService(db: Db) {
             ),
           ),
         )
-        .orderBy(desc(heartbeatRuns.createdAt)),
+        .orderBy(desc(heartbeatRuns.createdAt));
+    },
 
     issuesForRun: async (runId: string) => {
       const run = await db

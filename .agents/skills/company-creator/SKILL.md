@@ -154,6 +154,14 @@ Each AGENTS.md body should include not just what the agent does, but how they fi
 
 This turns a collection of agents into an organization that actually works together. Without workflow context, agents operate in isolation — they do their job but don't know what happens before or after them.
 
+Add a concise execution contract to every generated working agent:
+
+- Start actionable work in the same heartbeat and do not stop at a plan unless planning was requested.
+- Leave durable progress in comments, documents, or work products with the next action.
+- Use child issues for long or parallel delegated work instead of polling agents, sessions, or processes.
+- Mark blocked work with the unblock owner and action.
+- Respect budget, pause/cancel, approval gates, and company boundaries.
+
 ### Step 5: Confirm Output Location
 
 Ask the user where to write the package. Common options:
