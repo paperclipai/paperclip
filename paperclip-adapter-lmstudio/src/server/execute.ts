@@ -212,6 +212,8 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
   const model = asString(config.model, "") || asString(config.defaultModel, "");
   const timeoutMs = asNumber(config.timeoutMs, 120000);
   const maxIterations = asNumber(config.maxIterations, 25);
+  const maxRunSeconds = asNumber(config.maxRunSeconds, 300);
+  const runDeadlineMs = Date.now() + maxRunSeconds * 1000;
 
   if (!model) {
     return {
@@ -254,6 +256,26 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
   const TERMINAL_STATUSES = new Set(["done", "blocked", "cancelled", "in_review"]);
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
+    if (Date.now() > runDeadlineMs) {
+      await runPostRunGuard({
+        checkedOutIssues,
+        updatedIssues,
+        finalSummary: `Run deadline of ${maxRunSeconds}s exceeded after ${iteration} iterations.`,
+        paperclipCtx,
+        onLog: ctx.onLog,
+      });
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: true,
+        errorMessage: `Run deadline exceeded: wallclock budget of ${maxRunSeconds}s reached after ${iteration} iteration(s). Kill-switch to prevent runaway LLM calls.`,
+        errorCode: "run_deadline_exceeded",
+        model,
+        provider: "lmstudio",
+        usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
+      };
+    }
+
     let response;
     try {
       response = await callChatCompletion({

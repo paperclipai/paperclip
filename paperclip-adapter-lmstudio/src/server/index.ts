@@ -86,6 +86,13 @@ export function createServerAdapter(): ServerAdapterModule {
             hint: "Maximale Anzahl Tool-Aufrufe pro Heartbeat (Sicherheitslimit)",
           },
           {
+            key: "maxRunSeconds",
+            label: "Max Run-Laufzeit (s)",
+            type: "number" as const,
+            default: 300,
+            hint: "Wallclock-Budget pro Run. Verhindert durchlaufende Tool-Schleifen, die LM Studio stundenlang belasten.",
+          },
+          {
             key: "instructionsFilePath",
             label: "Instructions File (AGENTS.md)",
             type: "text" as const,
