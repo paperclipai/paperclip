@@ -36,10 +36,23 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills`,
       payload,
     ),
-  importFromSource: (companyId: string, source: string) =>
+  importFromSource: (companyId: string, source: string, authToken?: string) =>
     api.post<CompanySkillImportResult>(
       `/companies/${encodeURIComponent(companyId)}/skills/import`,
-      { source },
+      { source, ...(authToken ? { authToken } : {}) },
+    ),
+  updateAuth: (companyId: string, skillId: string, authToken: string | null) =>
+    api.patch<CompanySkill>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/auth`,
+      { authToken },
+    ),
+  remove: (companyId: string, skillId: string) =>
+    api.delete<CompanySkill>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}`,
+    ),
+  removeBySource: (companyId: string, sourceLocator: string) =>
+    api.delete<{ deleted: CompanySkill[] }>(
+      `/companies/${encodeURIComponent(companyId)}/skills/by-source?source=${encodeURIComponent(sourceLocator)}`,
     ),
   scanProjects: (companyId: string, payload: CompanySkillProjectScanRequest = {}) =>
     api.post<CompanySkillProjectScanResult>(
@@ -50,9 +63,5 @@ export const companySkillsApi = {
     api.post<CompanySkill>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/install-update`,
       {},
-    ),
-  delete: (companyId: string, skillId: string) =>
-    api.delete<CompanySkill>(
-      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}`,
     ),
 };

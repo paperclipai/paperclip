@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type SVGProps } from "react";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  CompanySkill,
   CompanySkillCreateRequest,
   CompanySkillDetail,
   CompanySkillFileDetail,
@@ -52,6 +53,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  ShieldCheck,
   Trash2,
 } from "lucide-react";
 
@@ -487,6 +489,103 @@ function SkillList({
   );
 }
 
+function SkillAuthSection({
+  companyId,
+  skillId,
+  hasAuth,
+}: {
+  companyId: string;
+  skillId: string;
+  hasAuth: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const [editing, setEditing] = useState(false);
+  const [token, setToken] = useState("");
+
+  const updateAuth = useMutation({
+    mutationFn: (authToken: string | null) =>
+      companySkillsApi.updateAuth(companyId, skillId, authToken),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(companyId, skillId) });
+      setEditing(false);
+      setToken("");
+      pushToast({ tone: "success", title: "Auth updated" });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Failed to update auth",
+        body: error instanceof Error ? error.message : "Unknown error",
+      });
+    },
+  });
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Auth</span>
+      {!editing ? (
+        <>
+          {hasAuth ? (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setEditing(true)}
+              >
+                <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                PAT configured
+              </Button>
+              <button
+                className="inline-flex items-center text-muted-foreground/50 hover:text-destructive transition-colors"
+                onClick={() => updateAuth.mutate(null)}
+                disabled={updateAuth.isPending}
+                title="Remove PAT"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </>
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setEditing(true)}
+            >
+              Add PAT
+            </Button>
+          )}
+        </>
+      ) : (
+        <>
+          <input
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="GitHub Personal Access Token"
+            className="flex-1 min-w-[200px] rounded-md border border-border px-2 py-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/50"
+            autoComplete="off"
+            autoFocus
+          />
+          <Button
+            size="sm"
+            onClick={() => updateAuth.mutate(token.trim())}
+            disabled={!token.trim() || updateAuth.isPending}
+          >
+            {updateAuth.isPending ? "Saving..." : "Save"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => { setEditing(false); setToken(""); }}
+          >
+            Cancel
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function SkillPane({
   loading,
   detail,
@@ -525,7 +624,7 @@ function SkillPane({
   checkUpdatesPending: boolean;
   onInstallUpdate: () => void;
   installUpdatePending: boolean;
-  onDelete: () => void;
+  onDelete: (sourceLocator?: string | null) => void;
   deletePending: boolean;
   onSave: () => void;
   savePending: boolean;
@@ -572,7 +671,7 @@ function SkillPane({
             <Button
               variant="ghost"
               size="sm"
-              onClick={onDelete}
+              onClick={() => onDelete()}
               disabled={deletePending}
               title={removeDisabledReason ?? undefined}
             >
@@ -612,8 +711,23 @@ function SkillPane({
                 ) : (
                   <span className="truncate">{source.label}</span>
                 )}
+                <button
+                  className="inline-flex items-center text-muted-foreground/50 hover:text-destructive transition-colors"
+                  onClick={() => onDelete(detail.sourceLocator)}
+                  disabled={deletePending}
+                  title={detail.sourceLocator ? "Remove this source and all its skills" : "Remove this skill"}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
               </span>
             </div>
+            {(detail.sourceType === "github" || detail.sourceType === "skills_sh") && (
+              <SkillAuthSection
+                companyId={detail.companyId}
+                skillId={detail.id}
+                hasAuth={Boolean((detail.metadata as Record<string, unknown> | null)?.sourceAuthSecretId)}
+              />
+            )}
             {detail.sourceType === "github" && (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Pin</span>
@@ -762,6 +876,7 @@ export function CompanySkills() {
   const { pushToast } = useToastActions();
   const [skillFilter, setSkillFilter] = useState("");
   const [source, setSource] = useState("");
+  const [importAuthToken, setImportAuthToken] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [emptySourceHelpOpen, setEmptySourceHelpOpen] = useState(false);
   const [expandedSkillId, setExpandedSkillId] = useState<string | null>(null);
@@ -775,6 +890,7 @@ export function CompanySkills() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTargetSkillId, setDeleteTargetSkillId] = useState<string | null>(null);
   const [deleteTargetDetail, setDeleteTargetDetail] = useState<CompanySkillDetail | null>(null);
+  const [deleteTargetSourceLocator, setDeleteTargetSourceLocator] = useState<string | null>(null);
   const parsedRoute = useMemo(() => parseSkillRoute(routePath), [routePath]);
   const routeSkillId = parsedRoute.skillId;
   const selectedPath = parsedRoute.filePath;
@@ -883,11 +999,24 @@ export function CompanySkills() {
     if (!open) {
       setDeleteTargetSkillId(null);
       setDeleteTargetDetail(null);
+      setDeleteTargetSourceLocator(null);
+    }
+  }
+
+  function handleDeleteSkill(sourceLocator?: string | null) {
+    if (sourceLocator) {
+      setDeleteTargetSourceLocator(sourceLocator);
+      setDeleteTargetSkillId(null);
+      setDeleteTargetDetail(null);
+      setDeleteOpen(true);
+    } else {
+      openDeleteDialog();
     }
   }
 
   const importSkill = useMutation({
-    mutationFn: (importSource: string) => companySkillsApi.importFromSource(selectedCompanyId!, importSource),
+    mutationFn: ({ importSource, authToken }: { importSource: string; authToken?: string }) =>
+      companySkillsApi.importFromSource(selectedCompanyId!, importSource, authToken),
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
       if (result.imported[0]) navigate(skillRoute(result.imported[0].id));
@@ -900,6 +1029,7 @@ export function CompanySkills() {
         pushToast({ tone: "warn", title: "Import warnings", body: result.warnings[0] });
       }
       setSource("");
+      setImportAuthToken("");
     },
     onError: (error) => {
       pushToast({
@@ -1026,8 +1156,13 @@ export function CompanySkills() {
   });
 
   const deleteSkill = useMutation({
-    mutationFn: () => companySkillsApi.delete(selectedCompanyId!, deleteTargetSkillId!),
-    onSuccess: async (skill) => {
+    mutationFn: (sourceLocator?: string | null): Promise<{ deleted: CompanySkill[] }> => {
+      if (sourceLocator) {
+        return companySkillsApi.removeBySource(selectedCompanyId!, sourceLocator);
+      }
+      return companySkillsApi.remove(selectedCompanyId!, deleteTargetSkillId!).then((skill) => ({ deleted: [skill] }));
+    },
+    onSuccess: async (result) => {
       closeDeleteDialog(false);
       setDisplayedDetail(null);
       setDisplayedFile(null);
@@ -1048,10 +1183,10 @@ export function CompanySkills() {
         type: "active",
       });
       navigate("/skills", { replace: true });
+      const count = result.deleted.length;
       pushToast({
         tone: "success",
-        title: "Skill removed",
-        body: `${skill.name} was removed from the company skill library.`,
+        title: `${count} skill${count === 1 ? "" : "s"} removed`,
       });
     },
     onError: (error) => {
@@ -1073,7 +1208,8 @@ export function CompanySkills() {
       setEmptySourceHelpOpen(true);
       return;
     }
-    importSkill.mutate(trimmedSource);
+    const token = importAuthToken.trim() || undefined;
+    importSkill.mutate({ importSource: trimmedSource, authToken: token });
   }
 
   return (
@@ -1081,30 +1217,40 @@ export function CompanySkills() {
       <Dialog open={deleteOpen} onOpenChange={closeDeleteDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Remove skill</DialogTitle>
+            <DialogTitle>{deleteTargetSourceLocator ? "Remove skills from source" : "Remove skill"}</DialogTitle>
             <DialogDescription>
-              Remove this skill from the company library. If any agents still use it, removal will be blocked until it is detached.
+              {deleteTargetSourceLocator
+                ? `All skills imported from this source will be permanently removed from the company library.`
+                : "Remove this skill from the company library. If any agents still use it, removal will be blocked until it is detached."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
-            <p>
-              {deleteTargetDetail
-                ? `You are about to remove ${deleteTargetDetail.name}.`
-                : "You are about to remove this skill."}
-            </p>
-            {deleteTargetDetail?.usedByAgents?.length ? (
-              <div className="rounded-md border border-border px-3 py-3 text-muted-foreground">
-                Currently used by {deleteTargetDetail.usedByAgents.map((agent) => agent.name).join(", ")}.
-              </div>
-            ) : null}
-            {(deleteTargetDetail?.usedByAgents.length ?? 0) > 0 ? (
-              <p className="text-muted-foreground">
-                Detach this skill from all agents to enable removal.
+            {deleteTargetSourceLocator ? (
+              <p className="rounded-md border border-destructive/50 bg-destructive/5 px-3 py-2 font-mono text-xs break-all">
+                {deleteTargetSourceLocator}
               </p>
-            ) : null}
+            ) : (
+              <>
+                <p>
+                  {deleteTargetDetail
+                    ? `You are about to remove ${deleteTargetDetail.name}.`
+                    : "You are about to remove this skill."}
+                </p>
+                {deleteTargetDetail?.usedByAgents?.length ? (
+                  <div className="rounded-md border border-border px-3 py-3 text-muted-foreground">
+                    Currently used by {deleteTargetDetail.usedByAgents.map((agent) => agent.name).join(", ")}.
+                  </div>
+                ) : null}
+                {(deleteTargetDetail?.usedByAgents.length ?? 0) > 0 ? (
+                  <p className="text-muted-foreground">
+                    Detach this skill from all agents to enable removal.
+                  </p>
+                ) : null}
+              </>
+            )}
           </div>
           <DialogFooter>
-            {(deleteTargetDetail?.usedByAgents.length ?? 0) > 0 ? (
+            {(deleteTargetDetail?.usedByAgents.length ?? 0) > 0 && !deleteTargetSourceLocator ? (
               <Button variant="ghost" onClick={() => closeDeleteDialog(false)}>
                 Close
               </Button>
@@ -1115,10 +1261,10 @@ export function CompanySkills() {
                 </Button>
                 <Button
                   variant="destructive"
-                  onClick={() => deleteSkill.mutate()}
-                  disabled={deleteSkill.isPending || !deleteTargetSkillId}
+                  onClick={() => deleteSkill.mutate(deleteTargetSourceLocator ?? undefined)}
+                  disabled={deleteSkill.isPending || (!deleteTargetSkillId && !deleteTargetSourceLocator)}
                 >
-                  {deleteSkill.isPending ? "Removing..." : "Remove skill"}
+                  {deleteSkill.isPending ? "Removing..." : deleteTargetSourceLocator ? "Remove all from source" : "Remove skill"}
                 </Button>
               </>
             )}
@@ -1220,6 +1366,18 @@ export function CompanySkills() {
                 {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Add"}
               </Button>
             </div>
+            {source.trim().length > 0 && /github\.com|^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+/.test(source.trim()) && (
+              <div className="mt-1 flex items-center gap-2 border-b border-border pb-2">
+                <input
+                  type="password"
+                  value={importAuthToken}
+                  onChange={(event) => setImportAuthToken(event.target.value)}
+                  placeholder="GitHub PAT (optional, for private repos)"
+                  className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                  autoComplete="off"
+                />
+              </div>
+            )}
             {scanStatusMessage && (
               <p className="mt-3 text-xs text-muted-foreground">
                 {scanStatusMessage}
@@ -1284,7 +1442,7 @@ export function CompanySkills() {
             checkUpdatesPending={updateStatusQuery.isFetching}
             onInstallUpdate={() => installUpdate.mutate()}
             installUpdatePending={installUpdate.isPending}
-            onDelete={openDeleteDialog}
+            onDelete={handleDeleteSkill}
             deletePending={deleteSkill.isPending}
             onSave={() => saveFile.mutate()}
             savePending={saveFile.isPending}

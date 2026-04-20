@@ -646,6 +646,7 @@ export {
   companySkillDetailSchema,
   companySkillUpdateStatusSchema,
   companySkillImportSchema,
+  companySkillUpdateAuthSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectScanSkippedSchema,
   companySkillProjectScanConflictSchema,

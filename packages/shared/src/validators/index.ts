@@ -49,6 +49,7 @@ export {
   companySkillDetailSchema,
   companySkillUpdateStatusSchema,
   companySkillImportSchema,
+  companySkillUpdateAuthSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectScanSkippedSchema,
   companySkillProjectScanConflictSchema,
@@ -60,6 +61,7 @@ export {
   type CompanySkillProjectScan,
   type CompanySkillCreate,
   type CompanySkillFileUpdate,
+  type CompanySkillUpdateAuth,
 } from "./company-skill.js";
 export {
   agentSkillStateSchema,

@@ -30,7 +30,7 @@ import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { findActiveServerAdapter } from "../adapters/index.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import { ghFetch, gitHubApiBase, isGitHubDotCom, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
@@ -515,20 +515,20 @@ function parseFrontmatterMarkdown(raw: string): { frontmatter: Record<string, un
   };
 }
 
-async function fetchText(url: string) {
-  const response = await ghFetch(url);
+async function fetchText(url: string, authToken?: string, trustedGheHostname?: string) {
+  const response = await ghFetch(url, undefined, authToken, trustedGheHostname);
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
   return response.text();
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
+async function fetchJson<T>(url: string, authToken?: string, trustedGheHostname?: string): Promise<T> {
   const response = await ghFetch(url, {
     headers: {
       accept: "application/vnd.github+json",
     },
-  });
+  }, authToken, trustedGheHostname);
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
@@ -536,16 +536,20 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 
-async function resolveGitHubDefaultBranch(owner: string, repo: string, apiBase: string) {
+async function resolveGitHubDefaultBranch(owner: string, repo: string, apiBase: string, authToken?: string, trustedGheHostname?: string) {
   const response = await fetchJson<{ default_branch?: string }>(
     `${apiBase}/repos/${owner}/${repo}`,
+    authToken,
+    trustedGheHostname,
   );
   return asString(response.default_branch) ?? "main";
 }
 
-async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, apiBase: string) {
+async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, apiBase: string, authToken?: string, trustedGheHostname?: string) {
   const response = await fetchJson<{ sha?: string }>(
     `${apiBase}/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
+    authToken,
+    trustedGheHostname,
   );
   const sha = asString(response.sha);
   if (!sha) {
@@ -582,8 +586,9 @@ function parseGitHubSourceUrl(rawUrl: string) {
   return { hostname: url.hostname, owner, repo, ref, basePath, filePath, explicitRef };
 }
 
-async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
+async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>, authToken?: string) {
   const apiBase = gitHubApiBase(parsed.hostname);
+  const gheHost = isGitHubDotCom(parsed.hostname) ? undefined : parsed.hostname;
   if (/^[0-9a-f]{40}$/i.test(parsed.ref.trim())) {
     return {
       pinnedRef: parsed.ref,
@@ -593,8 +598,8 @@ async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourc
 
   const trackingRef = parsed.explicitRef
     ? parsed.ref
-    : await resolveGitHubDefaultBranch(parsed.owner, parsed.repo, apiBase);
-  const pinnedRef = await resolveGitHubCommitSha(parsed.owner, parsed.repo, trackingRef, apiBase);
+    : await resolveGitHubDefaultBranch(parsed.owner, parsed.repo, apiBase, authToken, gheHost);
+  const pinnedRef = await resolveGitHubCommitSha(parsed.owner, parsed.repo, trackingRef, apiBase, authToken, gheHost);
   return { pinnedRef, trackingRef };
 }
 
@@ -1025,6 +1030,7 @@ async function readUrlSkillImports(
   companyId: string,
   sourceUrl: string,
   requestedSkillSlug: string | null = null,
+  authToken?: string,
 ): Promise<{ skills: ImportedSkill[]; warnings: string[] }> {
   const url = sourceUrl.trim();
   const warnings: string[] = [];
@@ -1039,10 +1045,13 @@ async function readUrlSkillImports(
   if (looksLikeRepoUrl) {
     const parsed = parseGitHubSourceUrl(url);
     const apiBase = gitHubApiBase(parsed.hostname);
-    const { pinnedRef, trackingRef } = await resolveGitHubPinnedRef(parsed);
+    const { pinnedRef, trackingRef } = await resolveGitHubPinnedRef(parsed, authToken);
     let ref = pinnedRef;
+    const gheHost = isGitHubDotCom(parsed.hostname) ? undefined : parsed.hostname;
     const tree = await fetchJson<{ tree?: Array<{ path: string; type: string }> }>(
       `${apiBase}/repos/${parsed.owner}/${parsed.repo}/git/trees/${ref}?recursive=1`,
+      authToken,
+      gheHost,
     ).catch(() => {
       throw unprocessable(`Failed to read GitHub tree for ${url}`);
     });
@@ -1069,7 +1078,7 @@ async function readUrlSkillImports(
     const skills: ImportedSkill[] = [];
     for (const relativeSkillPath of skillPaths) {
       const repoSkillPath = basePrefix ? `${basePrefix}${relativeSkillPath}` : relativeSkillPath;
-      const markdown = await fetchText(resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoSkillPath));
+      const markdown = await fetchText(resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoSkillPath), authToken, gheHost);
       const parsedMarkdown = parseFrontmatterMarkdown(markdown);
       const skillDir = path.posix.dirname(relativeSkillPath);
       const slug = deriveImportedSkillSlug(parsedMarkdown.frontmatter, path.posix.basename(skillDir));
@@ -1131,7 +1140,7 @@ async function readUrlSkillImports(
   }
 
   if (url.startsWith("http://") || url.startsWith("https://")) {
-    const markdown = await fetchText(url);
+    const markdown = await fetchText(url, authToken);
     const parsedMarkdown = parseFrontmatterMarkdown(markdown);
     const urlObj = new URL(url);
     const fileName = path.posix.basename(urlObj.pathname);
@@ -1525,6 +1534,22 @@ export function companySkillService(db: Db) {
   const projects = projectService(db);
   const secretsSvc = secretService(db);
 
+  /** Resolve the GitHub auth token from a skill's metadata, if stored. */
+  async function resolveSkillAuthToken(
+    companyId: string,
+    skill: { metadata: Record<string, unknown> | null },
+  ): Promise<string | undefined> {
+    const meta = skill.metadata;
+    if (!meta) return undefined;
+    const secretId = typeof meta.sourceAuthSecretId === "string" ? meta.sourceAuthSecretId.trim() : "";
+    if (!secretId) return undefined;
+    try {
+      return await secretsSvc.resolveSecretValue(companyId, secretId, "latest");
+    } catch {
+      return undefined;
+    }
+  }
+
   async function ensureBundledSkills(companyId: string) {
     for (const skillsRoot of resolveBundledSkillsRoot()) {
       const stats = await fs.stat(skillsRoot).catch(() => null);
@@ -1744,7 +1769,9 @@ export function companySkillService(db: Db) {
 
     const hostname = asString(metadata.hostname) || "github.com";
     const apiBase = gitHubApiBase(hostname);
-    const latestRef = await resolveGitHubCommitSha(owner, repo, trackingRef, apiBase);
+    const authToken = await resolveSkillAuthToken(companyId, skill);
+    const gheHost = isGitHubDotCom(hostname) ? undefined : hostname;
+    const latestRef = await resolveGitHubCommitSha(owner, repo, trackingRef, apiBase, authToken, gheHost);
     return {
       supported: true,
       reason: null,
@@ -1788,8 +1815,10 @@ export function companySkillService(db: Db) {
       if (!owner || !repo) {
         throw unprocessable("Skill source metadata is incomplete.");
       }
+      const authToken = await resolveSkillAuthToken(companyId, skill);
       const repoPath = normalizePortablePath(path.posix.join(repoSkillDir, normalizedPath));
-      content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath));
+      const gheHost = isGitHubDotCom(hostname) ? undefined : hostname;
+      content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath), authToken, gheHost);
     } else if (skill.sourceType === "url") {
       if (normalizedPath !== "SKILL.md") {
         throw notFound("This skill source only exposes SKILL.md");
@@ -1906,7 +1935,8 @@ export function companySkillService(db: Db) {
       throw unprocessable("Skill source locator is missing.");
     }
 
-    const result = await readUrlSkillImports(companyId, skill.sourceLocator, skill.slug);
+    const authToken = await resolveSkillAuthToken(companyId, skill);
+    const result = await readUrlSkillImports(companyId, skill.sourceLocator, skill.slug, authToken);
     const matching = result.skills.find((entry) => entry.key === skill.key) ?? result.skills[0] ?? null;
     if (!matching) {
       throw unprocessable(`Skill ${skill.key} could not be re-imported from its source.`);
@@ -2318,6 +2348,10 @@ export function companySkillService(db: Db) {
       const metadata = {
         ...(skill.metadata ?? {}),
         skillKey: skill.key,
+        // Preserve auth secret reference across re-imports/updates
+        ...(existing?.metadata && typeof (existing.metadata as Record<string, unknown>).sourceAuthSecretId === "string"
+          ? { sourceAuthSecretId: (existing.metadata as Record<string, unknown>).sourceAuthSecretId }
+          : {}),
       };
       const values = {
         companyId,
@@ -2353,7 +2387,7 @@ export function companySkillService(db: Db) {
     return out;
   }
 
-  async function importFromSource(companyId: string, source: string): Promise<CompanySkillImportResult> {
+  async function importFromSource(companyId: string, source: string, authToken?: string): Promise<CompanySkillImportResult> {
     await ensureSkillInventoryCurrent(companyId);
     const parsed = parseSkillImportSourceInput(source);
     const local = !/^https?:\/\//i.test(parsed.resolvedSource);
@@ -2363,7 +2397,7 @@ export function companySkillService(db: Db) {
           .filter((skill) => !parsed.requestedSkillSlug || skill.slug === parsed.requestedSkillSlug),
         warnings: parsed.warnings,
       }
-      : await readUrlSkillImports(companyId, parsed.resolvedSource, parsed.requestedSkillSlug)
+      : await readUrlSkillImports(companyId, parsed.resolvedSource, parsed.requestedSkillSlug, authToken)
         .then((result) => ({
           skills: result.skills,
           warnings: [...parsed.warnings, ...result.warnings],
@@ -2390,6 +2424,35 @@ export function companySkillService(db: Db) {
       }
     }
     const imported = await upsertImportedSkills(companyId, filteredSkills);
+
+    // Store the auth token as an encrypted company secret and link to imported skills
+    if (authToken && imported.length > 0) {
+      for (const skill of imported) {
+        const secretName = `skill-pat:${skill.id}`;
+        let secretId: string;
+        const existing = await secretsSvc.getByName(companyId, secretName);
+        if (existing) {
+          await secretsSvc.rotate(existing.id, { value: authToken });
+          secretId = existing.id;
+        } else {
+          const created = await secretsSvc.create(companyId, {
+            name: secretName,
+            provider: "local_encrypted",
+            value: authToken,
+            description: `GitHub PAT for skill ${skill.slug}`,
+          });
+          secretId = created.id;
+        }
+        // Store the secret ID in skill metadata
+        const meta = (skill.metadata ?? {}) as Record<string, unknown>;
+        meta.sourceAuthSecretId = secretId;
+        await db
+          .update(companySkills)
+          .set({ metadata: meta, updatedAt: new Date() })
+          .where(and(eq(companySkills.id, skill.id), eq(companySkills.companyId, companyId)));
+      }
+    }
+
     return { imported, warnings };
   }
 
@@ -2429,7 +2492,108 @@ export function companySkillService(db: Db) {
     // Clean up materialized runtime files
     await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
 
+    // Delete associated PAT secret if present
+    const meta = skill.metadata as Record<string, unknown> | null;
+    const secretId = typeof meta?.sourceAuthSecretId === "string" ? meta.sourceAuthSecretId : null;
+    if (secretId) {
+      try {
+        await secretsSvc.remove(secretId);
+      } catch {
+        // Best-effort: don't fail the skill deletion if secret cleanup fails
+      }
+    }
+
     return skill;
+  }
+
+  async function updateSkillAuth(
+    companyId: string,
+    skillId: string,
+    authToken: string | null,
+  ): Promise<CompanySkill | null> {
+    const skill = await getById(skillId);
+    if (!skill || skill.companyId !== companyId) return null;
+
+    const meta = (skill.metadata ?? {}) as Record<string, unknown>;
+    const existingSecretId = typeof meta.sourceAuthSecretId === "string" ? meta.sourceAuthSecretId : null;
+
+    if (authToken) {
+      // Set or update the PAT
+      const secretName = `skill-pat:${skill.id}`;
+      let secretId: string;
+      // Check metadata reference first, then fall back to name lookup
+      // (metadata ref may have been lost during a skill update/re-import)
+      const existingSecret = existingSecretId
+        ? await secretsSvc.getById(existingSecretId)
+        : await secretsSvc.getByName(companyId, secretName);
+      if (existingSecret) {
+        await secretsSvc.rotate(existingSecret.id, { value: authToken });
+        secretId = existingSecret.id;
+      } else {
+        const created = await secretsSvc.create(companyId, {
+          name: secretName,
+          provider: "local_encrypted",
+          value: authToken,
+          description: `GitHub PAT for skill ${skill.slug}`,
+        });
+        secretId = created.id;
+      }
+      meta.sourceAuthSecretId = secretId;
+    } else {
+      // Clear the PAT — delete the secret row to avoid orphaned secrets
+      if (existingSecretId) {
+        try {
+          await secretsSvc.remove(existingSecretId);
+        } catch {
+          // Best-effort: don't fail the metadata update if secret deletion fails
+        }
+      }
+      delete meta.sourceAuthSecretId;
+    }
+
+    const [updated] = await db
+      .update(companySkills)
+      .set({ metadata: meta, updatedAt: new Date() })
+      .where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)))
+      .returning();
+    return updated ? toCompanySkill(updated) : null;
+  }
+
+  async function deleteBySource(companyId: string, sourceLocator: string): Promise<CompanySkill[]> {
+    const rows = await db
+      .select()
+      .from(companySkills)
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.sourceLocator, sourceLocator)));
+    if (rows.length === 0) return [];
+
+    // Pre-check all skills for agent usage before deleting any (atomicity)
+    const skills = rows.map(toCompanySkill);
+    for (const skill of skills) {
+      const usedByAgents = await usage(companyId, skill.key);
+      if (usedByAgents.length > 0) {
+        const agentNames = usedByAgents.map((agent) => agent.name).sort((left, right) => left.localeCompare(right));
+        throw unprocessable(
+          `Cannot delete skills from "${sourceLocator}" because skill "${skill.name}" is still used by ${agentNames.join(", ")}. Detach it from those agents first.`,
+          {
+            skillId: skill.id,
+            skillKey: skill.key,
+            usedByAgents: usedByAgents.map((agent) => ({
+              id: agent.id,
+              name: agent.name,
+              urlKey: agent.urlKey,
+              adapterType: agent.adapterType,
+            })),
+          },
+        );
+      }
+    }
+
+    const deleted: CompanySkill[] = [];
+    for (const row of rows) {
+      const result = await deleteSkill(companyId, row.id);
+      if (result) deleted.push(result);
+    }
+    return deleted;
   }
 
   return {
@@ -2447,7 +2611,9 @@ export function companySkillService(db: Db) {
     updateFile,
     createLocalSkill,
     deleteSkill,
+    deleteBySource,
     importFromSource,
+    updateSkillAuth,
     scanProjectWorkspaces,
     importPackageFiles,
     installUpdate,
