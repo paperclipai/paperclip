@@ -460,6 +460,19 @@ export function buildHostServices(
   const assets = assetService(db);
   const scopedBus = eventBus.forPlugin(pluginKey);
 
+  // Deduplicate onEvent deliveries to the worker. A plugin may register
+  // multiple ctx.events.on() handlers for the same event pattern (e.g. one
+  // for notifications and one for watch-storage). Each subscription creates a
+  // server-side handler that calls notifyWorker("onEvent"). Without
+  // deduplication the worker receives N copies of the same event (one per
+  // matching subscription) and dispatches all its registered callbacks each
+  // time, resulting in N×M invocations instead of M.
+  //
+  // Fix: track recently-sent eventIds and skip duplicate notifyWorker calls
+  // within a 10-second window. The worker still dispatches to all its locally
+  // registered handlers on the single delivery it receives.
+  const recentEventIds = new Map<string, number>(); // eventId -> sentAt (ms)
+
   // Track active session event subscriptions for cleanup
   const activeSubscriptions = new Set<{ unsubscribe: () => void; timer: ReturnType<typeof setTimeout> }>();
   let disposed = false;
@@ -563,6 +576,17 @@ export function buildHostServices(
       async subscribe(params: { eventPattern: string; filter?: Record<string, unknown> | null }) {
         const handler = async (event: import("@paperclipai/plugin-sdk").PluginEvent) => {
           if (notifyWorker) {
+            const now = Date.now();
+            if (event.eventId && recentEventIds.has(event.eventId)) {
+              return; // Already delivered this event to the worker via another subscription.
+            }
+            if (event.eventId) {
+              recentEventIds.set(event.eventId, now);
+              // Prune stale entries to prevent unbounded growth.
+              for (const [id, ts] of recentEventIds) {
+                if (now - ts > 10_000) recentEventIds.delete(id);
+              }
+            }
             notifyWorker("onEvent", { event });
           }
         };
