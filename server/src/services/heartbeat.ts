@@ -3352,6 +3352,12 @@ export function heartbeatService(db: Db) {
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      // When a detached run shows no liveness signal (no `reportRunActivity` call,
+      // which would bump `updatedAt` and clear the detached errorCode) for longer
+      // than `max(agent.heartbeatIntervalSec * 2, 600s)`, treat it as stuck and
+      // reap even if the recorded pid is still "alive" — under PID recycling that
+      // pid likely belongs to an unrelated process now (GEA-857).
+      let stuckDetachedReason: { thresholdMs: number; staleMs: number } | null = null;
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
@@ -3370,12 +3376,21 @@ export function heartbeatService(db: Db) {
               },
             });
           }
+          continue;
         }
-        continue;
+        const detachedAgent = await getAgent(run.agentId);
+        const intervalSec = detachedAgent ? parseHeartbeatPolicy(detachedAgent).intervalSec : 0;
+        const detachedStuckMs = Math.max(intervalSec * 2 * 1000, 600_000);
+        const detachedRefMs = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        const detachedStaleMs = now.getTime() - detachedRefMs;
+        if (detachedStaleMs < detachedStuckMs) continue;
+        stuckDetachedReason = { thresholdMs: detachedStuckMs, staleMs: detachedStaleMs };
+        // Fall through to reap, but do NOT call terminateHeartbeatRunProcess —
+        // the recorded pid may belong to an unrelated process (PID recycling).
       }
 
       let descendantOnlyCleanup = false;
-      if (processGroupAlive) {
+      if (!stuckDetachedReason && processGroupAlive) {
         descendantOnlyCleanup = true;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
@@ -3383,12 +3398,20 @@ export function heartbeatService(db: Db) {
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const shouldRetry =
+        !stuckDetachedReason &&
+        tracksLocalChild &&
+        (!!run.processPid || !!run.processGroupId) &&
+        (run.processLossRetryCount ?? 0) < 1;
+      const baseMessage = stuckDetachedReason
+        ? `Detached worker showed no activity for ${Math.round(stuckDetachedReason.staleMs / 1000)}s ` +
+          `(threshold ${Math.round(stuckDetachedReason.thresholdMs / 1000)}s); ` +
+          `reaping as stuck. pid ${run.processPid} may belong to an unrelated process (PID recycling).`
+        : buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-        errorCode: "process_lost",
+        errorCode: stuckDetachedReason ? "process_stuck" : "process_lost",
         finishedAt: now,
         resultJson: mergeRunStopMetadataForAgent(
           { adapterType, adapterConfig },
@@ -3430,6 +3453,13 @@ export function heartbeatService(db: Db) {
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          ...(stuckDetachedReason
+            ? {
+                stuckDetached: true,
+                staleMs: stuckDetachedReason.staleMs,
+                thresholdMs: stuckDetachedReason.thresholdMs,
+              }
+            : {}),
         },
       });
 
