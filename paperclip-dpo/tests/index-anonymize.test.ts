@@ -88,6 +88,32 @@ describe("createDpo().anonymize", () => {
     dpo.close();
   });
 
+  it("respektiert rules.detect.pii allow-list — disabled detectors triggern nicht", async () => {
+    mockClassifier([]);
+    const dpo = createDpo({
+      mappingDbPath: join(dir, "m.db"),
+      mappingKey: randomBytes(32),
+      auditDir: join(dir, "audit"),
+      classifier: { url: "http://x", model: "g", timeoutMs: 1000 },
+      rules: {
+        tenant: "test",
+        detect: { pii: ["email"], llm: [] }, // nur email, KEIN url
+        block: { art_9_categories: false },
+        confidenceThreshold: { block: "high", anonymize: "medium" },
+        mapping: { ttlSeconds: 60 },
+      },
+    });
+    const result = await dpo.anonymize({
+      text: "Siehe https://whitestag.de und max@whitestag.de",
+      targetLlm: "claude",
+      agent: "ceo",
+    });
+    if ("blocked" in result) throw new Error("unexpected block");
+    expect(result.anonymizedText).not.toContain("max@whitestag.de"); // email anonymisiert
+    expect(result.anonymizedText).toContain("https://whitestag.de"); // url NICHT anonymisiert
+    dpo.close();
+  });
+
   it("antwortet mit blocked: dpo_unavailable wenn LM Studio offline", async () => {
     vi.spyOn(global, "fetch").mockRejectedValue(new Error("ECONNREFUSED"));
     const dpo = createDpo({

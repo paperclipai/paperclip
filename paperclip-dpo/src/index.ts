@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { detectPii } from "./pii-detector.js";
+import { detectPii, type DetectorKey } from "./pii-detector.js";
 import { classifyEntities, DpoUnavailableError, type ClassifierConfig } from "./entity-classifier.js";
 import { anonymizeText } from "./anonymizer.js";
 import { deanonymizeText } from "./deanonymizer.js";
@@ -77,7 +77,7 @@ export function createDpo(opts: DpoOptions): Dpo {
         }
       }
 
-      const piiFindings = detectPii(req.text);
+      const piiFindings = detectPii(req.text, { only: rules.detect.pii as DetectorKey[] });
       const all = [...piiFindings, ...llmFindings];
 
       // Regex-Treffer werden immer anonymisiert (deterministisch, definitorisch sensibel).

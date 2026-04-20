@@ -8,7 +8,7 @@ import { detectSteuernummern } from "./detectors/steuernummer.js";
 import { detectPlzDe } from "./detectors/plz-de.js";
 import { detectUrls } from "./detectors/url.js";
 
-type DetectorKey =
+export type DetectorKey =
   | "email"
   | "phone_de"
   | "iban"
