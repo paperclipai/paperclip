@@ -149,6 +149,7 @@ Practical rules:
 - If you are waiting on another ticket, use `blocked`, not `in_progress`, and set `blockedByIssueIds` instead of relying on `parentId` or a free-text comment alone.
 - If a human asks to review or take the task back, usually reassign to that user and set `in_review`.
 - `parentId` is structural only. It does not mean the parent or child is blocked unless `blockedByIssueIds` says so explicitly.
+- Direct transitions to `done` from `in_progress`, `todo`, `blocked`, or `cancelled` are rejected at the DB (`Status transition blocked: X -> done is not allowed`). Always pass through `in_review` first unless the execution policy or an emergency `paperclip.bypass_status_guard` is in effect. The server returns HTTP 422 with `error: status_transition_blocked` for these cases.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 

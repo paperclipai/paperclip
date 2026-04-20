@@ -61,6 +61,23 @@ export function errorHandler(
     return;
   }
 
+  // postgres.js raises with err.code === 'P0403' for the status-transition guard.
+  // Translate to 422 so clients receive an actionable error instead of an opaque 500.
+  if (
+    err &&
+    typeof err === "object" &&
+    (err as any).code === "P0403" &&
+    typeof (err as any).message === "string" &&
+    (err as any).message.startsWith("Status transition blocked:")
+  ) {
+    res.status(422).json({
+      error: "status_transition_blocked",
+      message: (err as any).message,
+      allowedNextStatuses: ["in_review", "blocked", "cancelled"],
+    });
+    return;
+  }
+
   const rootError = err instanceof Error ? err : new Error(String(err));
   attachErrorContext(
     req,
