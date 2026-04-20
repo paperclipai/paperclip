@@ -74,6 +74,25 @@ describe("LlmClientError classification", () => {
     ).rejects.toMatchObject({ kind: "unknown" });
   });
 
+  it("classifies plain HTTP 404 without model body as 'unknown'", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      text: async () => "route not found",
+    }));
+
+    await expect(
+      callChatCompletion({
+        url: "http://localhost:1234",
+        model: "foo",
+        messages: [],
+        tools: [],
+        timeoutMs: 1000,
+      }),
+    ).rejects.toMatchObject({ kind: "unknown" });
+  });
+
   it("exposes LlmClientError with message including reason", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(
       Object.assign(new Error("refused"), { cause: { code: "ECONNREFUSED" } }),

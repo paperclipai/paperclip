@@ -47,9 +47,6 @@ export class LlmClientError extends Error {
 function classifyFetchError(err: unknown): LlmClientError {
   if (err instanceof LlmClientError) return err;
   if (err instanceof Error) {
-    if (err.name === "AbortError" || /aborted|timeout/i.test(err.message)) {
-      return new LlmClientError("timeout", `LLM call timed out: ${err.message}`, err);
-    }
     const cause = (err as { cause?: { code?: string } }).cause;
     const code = cause?.code ?? "";
     if (
@@ -61,12 +58,15 @@ function classifyFetchError(err: unknown): LlmClientError {
     ) {
       return new LlmClientError("network", `LLM network error: ${code} (${err.message})`, err);
     }
+    if (err.name === "AbortError" || /aborted|timeout/i.test(err.message)) {
+      return new LlmClientError("timeout", `LLM call timed out: ${err.message}`, err);
+    }
   }
   return new LlmClientError("unknown", `LLM call failed: ${String(err)}`, err);
 }
 
 function classifyHttpError(status: number, body: string): LlmClientError {
-  if (status === 404 || /model.*not.*found|no.*model.*loaded/i.test(body)) {
+  if (/model.*not.*found|no.*model.*loaded/i.test(body)) {
     return new LlmClientError(
       "model",
       `LM Studio model error ${status}: ${body || "model not found"}`,
