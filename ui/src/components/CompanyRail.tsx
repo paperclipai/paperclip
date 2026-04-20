@@ -340,22 +340,16 @@ function OrgSwitcherChip() {
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <Tooltip delayDuration={300}>
-        <TooltipTrigger asChild>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              className="flex items-center justify-center w-9 h-9 rounded-lg border border-border bg-muted/30 text-[11px] font-semibold text-foreground hover:bg-muted/60 transition-colors"
-              aria-label={selectedOrg ? `Switch organization (current: ${selectedOrg.name})` : "Select organization"}
-            >
-              {initials}
-            </button>
-          </PopoverTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="right" sideOffset={8}>
-          <p>{selectedOrg ? `Org: ${selectedOrg.name}` : "Organizations"}</p>
-        </TooltipContent>
-      </Tooltip>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          title={selectedOrg ? `Org: ${selectedOrg.name}` : "Organizations"}
+          className="flex items-center justify-center w-9 h-9 rounded-lg border border-border bg-muted/30 text-[11px] font-semibold text-foreground hover:bg-muted/60 transition-colors"
+          aria-label={selectedOrg ? `Switch organization (current: ${selectedOrg.name})` : "Select organization"}
+        >
+          {initials}
+        </button>
+      </PopoverTrigger>
       <PopoverContent align="start" side="right" sideOffset={8} className="w-64 p-0">
         <Command>
           <CommandInput placeholder="Search organizations..." />
