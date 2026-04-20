@@ -131,10 +131,15 @@ async function installSkillsForTarget(
       await fs.symlink(source, target);
       summary.linked.push(entry.name);
     } catch (err) {
-      summary.failed.push({
-        name: entry.name,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      try {
+        await fs.cp(source, target, { recursive: true, force: true });
+        summary.linked.push(entry.name);
+      } catch (copyErr) {
+        summary.failed.push({
+          name: entry.name,
+          error: `symlink: ${err instanceof Error ? err.message : String(err)}; copy: ${copyErr instanceof Error ? copyErr.message : String(copyErr)}`,
+        });
+      }
     }
   }
 

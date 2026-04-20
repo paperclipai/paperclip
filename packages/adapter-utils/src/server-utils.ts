@@ -1094,6 +1094,11 @@ export async function runChildProcess(
     }
 
     const mergedEnv = ensurePathInEnv(rawMerged);
+    if (process.platform === "win32") {
+      mergedEnv.LANG = "en_US.UTF-8";
+      mergedEnv.LC_ALL = "en_US.UTF-8";
+      mergedEnv.PYTHONIOENCODING = "utf-8";
+    }
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
       .then((target) => {
         const child = spawn(target.command, target.args, {
