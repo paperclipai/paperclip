@@ -828,6 +828,12 @@ function didAutomaticRecoveryFail(
   );
 }
 
+function shouldEscalateContinuationRetry(
+  latestRun: Pick<typeof heartbeatRuns.$inferSelect, "status" | "contextSnapshot"> | null,
+) {
+  return didAutomaticRecoveryFail(latestRun, "issue_continuation_needed");
+}
+
 function normalizeLedgerBillingType(value: unknown): BillingType {
   const raw = readNonEmptyString(value);
   switch (raw) {
@@ -3723,7 +3729,7 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+      if (shouldEscalateContinuationRetry(latestRun)) {
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);
         const updated = await escalateStrandedAssignedIssue({
           issue,
