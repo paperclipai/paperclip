@@ -2,6 +2,7 @@ import type { BindMode, DeploymentExposure, DeploymentMode } from "./constants.j
 
 export const LOOPBACK_BIND_HOST = "127.0.0.1";
 export const ALL_INTERFACES_BIND_HOST = "0.0.0.0";
+export const ALL_INTERFACES_BIND_HOST_IPV6 = "::";
 
 function normalizeHost(host: string | null | undefined): string | undefined {
   const trimmed = host?.trim();
@@ -82,8 +83,14 @@ export function resolveRuntimeBind(input: {
   switch (bind) {
     case "loopback":
       return { bind, host: LOOPBACK_BIND_HOST, customBindHost, errors: [] };
-    case "lan":
-      return { bind, host: ALL_INTERFACES_BIND_HOST, customBindHost, errors: [] };
+    case "lan": {
+      // Honor an explicit IPv6 all-interfaces host so IPv6-only deployments
+      // can bind to :: instead of the IPv4-only 0.0.0.0.
+      const lanHost = legacyHost === ALL_INTERFACES_BIND_HOST_IPV6
+        ? ALL_INTERFACES_BIND_HOST_IPV6
+        : ALL_INTERFACES_BIND_HOST;
+      return { bind, host: lanHost, customBindHost, errors: [] };
+    }
     case "custom":
       return customBindHost
         ? { bind, host: customBindHost, customBindHost, errors: [] }
