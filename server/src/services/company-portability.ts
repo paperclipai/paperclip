@@ -793,6 +793,20 @@ function derivePortableProjectWorkspaceKey(
   return uniqueSlug(baseKey, usedKeys);
 }
 
+function sanitizeRepoUrl(repoUrl: string) {
+  try {
+    const url = new URL(repoUrl);
+    if (url.username || url.password) {
+      url.username = "";
+      url.password = "";
+      return url.toString();
+    }
+    return repoUrl;
+  } catch {
+    return repoUrl;
+  }
+}
+
 function exportPortableProjectExecutionWorkspacePolicy(
   projectSlug: string,
   policy: unknown,
@@ -916,7 +930,8 @@ async function buildPortableProjectWorkspaces(
       !asString(workspace.repoUrl) || !asString(workspace.repoRef) || !asString(workspace.defaultRef)
         ? await inferPortableWorkspaceGitMetadata(workspace)
         : { repoUrl: null, repoRef: null, defaultRef: null };
-    const repoUrl = asString(workspace.repoUrl) ?? inferredGitMetadata.repoUrl;
+    const rawRepoUrl = asString(workspace.repoUrl) ?? inferredGitMetadata.repoUrl;
+    const repoUrl = rawRepoUrl ? sanitizeRepoUrl(rawRepoUrl) : null;
     if (!repoUrl) {
       warnings.push(`Project ${projectSlug} workspace ${workspace.name} was omitted from export because it does not have a portable repoUrl.`);
       continue;
