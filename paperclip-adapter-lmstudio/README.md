@@ -44,11 +44,36 @@ Paperclip-Server neu starten.
 
 | Feld | Typ | Default | Beschreibung |
 |------|-----|---------|-------------|
-| `url` | text | `http://localhost:1234` | LM Studio Server-URL |
-| `defaultModel` | select | — | Modell (Dropdown mit geladenen Modellen) |
-| `timeoutMs` | number | `120000` | Timeout für einzelne LLM-Calls (ms) |
-| `streamingEnabled` | boolean | `true` | Token-Streaming aktivieren |
+| `url` | text | `http://localhost:1234` | Primary LM-Studio-URL |
+| `defaultModel` | select | — | Primary-Modell |
+| `fallbackUrl` | text | leer | Fallback LM-Studio-URL (z.B. Mac). Leer = kein Fallback |
+| `fallbackModel` | text | leer | Fallback-Modellname. Leer = identisch mit `defaultModel` |
+| `probeTimeoutMs` | number | `2000` | Timeout für Health-Probe vor jedem Heartbeat |
+| `timeoutMs` | number | `120000` | Voller Call-Timeout |
+| `streamingEnabled` | boolean | `true` | Token-Streaming |
 | `maxIterations` | number | `25` | Max. Tool-Aufrufe pro Heartbeat |
+
+## Fallback-Endpoint
+
+Wenn ein zweiter LM-Studio-Host verfügbar ist (z.B. Mac als Backup für den Windows-PC), kann er als Fallback konfiguriert werden:
+
+```json
+{
+  "url": "http://192.168.1.50:1234",
+  "defaultModel": "gemma-4-31b-it",
+  "fallbackUrl": "http://localhost:1234",
+  "fallbackModel": "gemma-4-27b-it"
+}
+```
+
+Ablauf pro Heartbeat:
+
+1. Adapter ruft `GET {primaryUrl}/v1/models` mit `probeTimeoutMs` auf.
+2. Probe OK → Primary wird für den Heartbeat verwendet.
+3. Probe fehlt (Verbindung abgelehnt / DNS / Timeout) → Fallback wird geprüft und verwendet. Ein Meta-Event im Run-Transcript markiert den Wechsel.
+4. Auch Fallback nicht erreichbar → Run schlägt fehl mit `errorCode: "llm_unreachable"`.
+
+Wechselt der Adapter mitten im Heartbeat (z.B. weil der Primary während eines Calls abstürzt), bleibt er sticky auf dem Fallback bis zum Heartbeat-Ende. Der nächste Heartbeat probiert wieder Primary zuerst.
 
 ## Verfügbare Tools
 
@@ -79,3 +104,5 @@ Modelle ohne Function Calling Support produzieren oft Kauderwelsch — vorher mi
 - **Agent antwortet nicht / hängt:** Timeout prüfen, bei 70B+ Modellen auf 300s+ erhöhen
 - **Tool-Calls werden ignoriert:** Modell-Kompatibilität prüfen (muss Function Calling können)
 - **Max iterations reached:** `maxIterations` erhöhen oder Aufgaben kleiner machen
+- **Fallback greift nicht:** `fallbackUrl` und Erreichbarkeit des Fallback-Hosts prüfen. Logs zeigen `llm_unreachable`-Error mit beiden Probe-Reasons.
+- **Fallback wird zu langsam erkannt:** `probeTimeoutMs` verringern (z.B. auf 1000ms).
