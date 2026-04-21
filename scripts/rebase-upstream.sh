@@ -523,7 +523,7 @@ if ! $DRY_RUN; then
     info "Pushing master..."
     git push origin master --force-with-lease
 
-    for branch in "${SUCCEEDED[@]}"; do
+    for branch in "${SUCCEEDED[@]+"${SUCCEEDED[@]}"}"; do
       info "Pushing $branch..."
       git push origin "$branch" --force-with-lease
     done
