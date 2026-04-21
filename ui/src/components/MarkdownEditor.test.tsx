@@ -363,12 +363,16 @@ describe("MarkdownEditor", () => {
     await flush();
     const link = container.querySelector<HTMLAnchorElement>(`a[href="${href}"]`);
     expect(link).not.toBeNull();
+    const pointerDownEvent = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 });
+    const clickEvent = new MouseEvent("click", { bubbles: true, cancelable: true });
 
     act(() => {
-      link?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 }));
-      link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      link?.dispatchEvent(pointerDownEvent);
+      link?.dispatchEvent(clickEvent);
     });
 
+    expect(pointerDownEvent.defaultPrevented).toBe(true);
+    expect(clickEvent.defaultPrevented).toBe(true);
     expect(openSpy).toHaveBeenCalledTimes(1);
     expect(openSpy).toHaveBeenCalledWith(href, "_blank", "noopener,noreferrer");
 
@@ -429,12 +433,15 @@ describe("MarkdownEditor", () => {
     expect(link).not.toBeNull();
     link?.classList.add("paperclip-mention-chip");
     link?.setAttribute("data-mention-kind", "project");
+    const clickEvent = new MouseEvent("click", { bubbles: true, cancelable: true });
+    const pointerDownEvent = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 });
 
     act(() => {
-      link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-      link?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 }));
+      link?.dispatchEvent(clickEvent);
+      link?.dispatchEvent(pointerDownEvent);
     });
 
+    expect(clickEvent.defaultPrevented).toBe(true);
     expect(openSpy).not.toHaveBeenCalled();
 
     await act(async () => {

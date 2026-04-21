@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CompanySkillListItem, ContextSource, ContextSourceStatus, ProjectContextOverview } from "@paperclipai/shared";
-import { AlertCircle, Database, FileText, FolderOpen, Link2, Loader2, Plus, Puzzle, RefreshCw, Save, Search, Target, Trash2, Upload } from "lucide-react";
+import type { CompanySkillListItem, ContextSource, ContextSourceStatus, ProjectContextOverview, ProjectContextProfileUpdateRequest } from "@paperclipai/shared";
+import { AlertCircle, Database, FileText, FolderOpen, Link2, Loader2, Plus, Puzzle, RefreshCw, Search, Target, Trash2, Upload } from "lucide-react";
 import { companySkillsApi } from "../api/companySkills";
 import { projectContextApi } from "../api/projectContext";
 import { useToast } from "../context/ToastContext";
+import { useAutosaveIndicator, type AutosaveState } from "../hooks/useAutosaveIndicator";
 import { queryKeys } from "../lib/queryKeys";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
@@ -39,6 +40,7 @@ function bySkillName(a: CompanySkillListItem, b: CompanySkillListItem) {
 
 const LEGACY_CODESM_IMPORT_KEY = "codesm-client-import";
 const LEGACY_CODESM_IMPORT_RE = /<!--\s*codesm-client-import:start\s*-->([\s\S]*?)<!--\s*codesm-client-import:end\s*-->/i;
+const PROJECT_CONTEXT_PROFILE_AUTOSAVE_DEBOUNCE_MS = 900;
 
 export function extractLegacyCodesmClientImport(markdown: string) {
   const match = markdown.match(LEGACY_CODESM_IMPORT_RE);
@@ -67,6 +69,146 @@ function hasMigratedCodesmSource(sources: ContextSource[]) {
       && metadata.migrationKey === LEGACY_CODESM_IMPORT_KEY
     );
   });
+}
+
+function autosaveErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Project context autosave failed.";
+}
+
+function useProjectContextProfileFieldAutosave({
+  profileValue,
+  save,
+}: {
+  profileValue?: string;
+  save: (value: string) => Promise<void>;
+}) {
+  const [draft, setDraftState] = useState(profileValue ?? "");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastServerValueRef = useRef(profileValue ?? "");
+  const saveRequestIdRef = useRef(0);
+  const inFlightValueRef = useRef<string | null>(null);
+  const {
+    state,
+    markDirty,
+    reset,
+    runSave,
+  } = useAutosaveIndicator();
+
+  const isReady = profileValue !== undefined;
+  const hasUnsavedChanges = isReady && draft !== lastServerValueRef.current;
+
+  const clearDebounce = useCallback(() => {
+    if (!debounceRef.current) return;
+    clearTimeout(debounceRef.current);
+    debounceRef.current = null;
+  }, []);
+
+  useEffect(() => clearDebounce, [clearDebounce]);
+
+  useEffect(() => {
+    if (profileValue === undefined) return;
+    const previousServerValue = lastServerValueRef.current;
+    lastServerValueRef.current = profileValue;
+    setDraftState((currentDraft) => {
+      if (currentDraft !== previousServerValue) return currentDraft;
+      return profileValue;
+    });
+  }, [profileValue]);
+
+  const setDraft = useCallback((value: string) => {
+    setDraftState(value);
+    setErrorMessage(null);
+  }, []);
+
+  const saveDraft = useCallback(async (value: string) => {
+    if (!isReady || value === lastServerValueRef.current || inFlightValueRef.current === value) return;
+
+    const requestId = saveRequestIdRef.current + 1;
+    saveRequestIdRef.current = requestId;
+    inFlightValueRef.current = value;
+
+    try {
+      await runSave(async () => {
+        await save(value);
+        if (saveRequestIdRef.current !== requestId) return;
+        lastServerValueRef.current = value;
+        setErrorMessage(null);
+      });
+    } catch (error) {
+      if (saveRequestIdRef.current === requestId) {
+        setErrorMessage(autosaveErrorMessage(error));
+      }
+    } finally {
+      if (inFlightValueRef.current === value) {
+        inFlightValueRef.current = null;
+      }
+    }
+  }, [isReady, runSave, save]);
+
+  const flush = useCallback(() => {
+    clearDebounce();
+    void saveDraft(draft);
+  }, [clearDebounce, draft, saveDraft]);
+
+  useEffect(() => {
+    if (!isReady) return;
+    clearDebounce();
+    if (draft === lastServerValueRef.current) {
+      reset();
+      return;
+    }
+
+    markDirty();
+    debounceRef.current = setTimeout(() => {
+      void saveDraft(draft);
+    }, PROJECT_CONTEXT_PROFILE_AUTOSAVE_DEBOUNCE_MS);
+
+    return clearDebounce;
+  }, [clearDebounce, draft, isReady, markDirty, reset, saveDraft]);
+
+  return {
+    draft,
+    setDraft,
+    flush,
+    state,
+    hasUnsavedChanges,
+    errorMessage,
+  };
+}
+
+function ProfileAutosaveStatus({
+  state,
+  hasUnsavedChanges,
+  errorMessage,
+}: {
+  state: AutosaveState;
+  hasUnsavedChanges: boolean;
+  errorMessage: string | null;
+}) {
+  const label = (() => {
+    if (state === "saving") return "Autosaving...";
+    if (state === "error") return "Could not save";
+    if (hasUnsavedChanges) return "Unsaved changes";
+    if (state === "saved") return "Saved";
+    return "";
+  })();
+  const tone = state === "error"
+    ? "text-destructive"
+    : hasUnsavedChanges && state !== "saving"
+      ? "text-amber-300"
+      : "text-muted-foreground";
+
+  return (
+    <div className="min-h-5 text-right">
+      <span
+        className={`text-xs transition-opacity duration-150 ${tone} ${label ? "opacity-100" : "opacity-0"}`}
+        title={errorMessage ?? undefined}
+      >
+        {label || "Saved"}
+      </span>
+    </div>
+  );
 }
 
 function useLegacyCodesmImportMigration({
@@ -154,9 +296,7 @@ export function ProjectContextContent({
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const contextKey = queryKeys.projects.context(companyId, projectId);
-  const [goalDraft, setGoalDraft] = useState("");
-  const [instructionsDraft, setInstructionsDraft] = useState("");
+  const contextKey = useMemo(() => queryKeys.projects.context(companyId, projectId), [companyId, projectId]);
   const [skillFilter, setSkillFilter] = useState("");
 
   const overviewQuery = useQuery({
@@ -175,26 +315,46 @@ export function ProjectContextContent({
     queryFn: () => companySkillsApi.list(companyId),
   });
 
-  useEffect(() => {
-    const next = overviewQuery.data?.profile.instructionsMarkdown;
-    if (next === undefined) return;
-    setInstructionsDraft(next);
-  }, [overviewQuery.data?.profile.instructionsMarkdown]);
+  const syncProfileCache = useCallback((profile: ProjectContextOverview["profile"]) => {
+    queryClient.setQueryData<ProjectContextOverview | undefined>(contextKey, (current) => {
+      if (!current) return current;
+      return { ...current, profile };
+    });
+  }, [contextKey, queryClient]);
 
-  useEffect(() => {
-    const next = overviewQuery.data?.profile.goalMarkdown;
-    if (next === undefined) return;
-    setGoalDraft(next);
-  }, [overviewQuery.data?.profile.goalMarkdown]);
-
-  const invalidateContext = async () => {
+  const invalidateContext = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: contextKey });
-  };
+  }, [contextKey, queryClient]);
+
+  const saveProfilePatch = useCallback(async (payload: ProjectContextProfileUpdateRequest) => {
+    const profile = await projectContextApi.updateProfile(companyId, projectId, payload);
+    syncProfileCache(profile);
+    void invalidateContext();
+  }, [companyId, invalidateContext, projectId, syncProfileCache]);
+  const saveGoalProfile = useCallback((value: string) => saveProfilePatch({ goalMarkdown: value }), [saveProfilePatch]);
+  const saveInstructionsProfile = useCallback(
+    (value: string) => saveProfilePatch({ instructionsMarkdown: value }),
+    [saveProfilePatch],
+  );
+
+  const goalAutosave = useProjectContextProfileFieldAutosave({
+    profileValue: overviewQuery.data?.profile.goalMarkdown,
+    save: saveGoalProfile,
+  });
+
+  const instructionsAutosave = useProjectContextProfileFieldAutosave({
+    profileValue: overviewQuery.data?.profile.instructionsMarkdown,
+    save: saveInstructionsProfile,
+  });
 
   const updateProfile = useMutation({
-    mutationFn: projectContextApi.updateProfile.bind(null, companyId, projectId),
+    mutationFn: async (payload: ProjectContextProfileUpdateRequest) => {
+      const profile = await projectContextApi.updateProfile(companyId, projectId, payload);
+      syncProfileCache(profile);
+      return profile;
+    },
     onSuccess: () => {
-      invalidateContext();
+      void invalidateContext();
       pushToast({ title: "Project context saved", tone: "success" });
     },
     onError: (error) => {
@@ -236,14 +396,6 @@ export function ProjectContextContent({
 
   if (!profile) return null;
 
-  const saveGoal = () => {
-    updateProfile.mutate({ goalMarkdown: goalDraft });
-  };
-
-  const saveInstructions = () => {
-    updateProfile.mutate({ instructionsMarkdown: instructionsDraft });
-  };
-
   const toggleSkill = (skillKey: string) => {
     const next = new Set(profile.defaultSkillKeys);
     if (next.has(skillKey)) next.delete(skillKey);
@@ -259,22 +411,19 @@ export function ProjectContextContent({
           <h3 className="text-sm font-semibold">Project Goal</h3>
         </div>
         <Textarea
-          value={goalDraft}
-          onChange={(event) => setGoalDraft(event.target.value)}
+          value={goalAutosave.draft}
+          onChange={(event) => goalAutosave.setDraft(event.target.value)}
+          onBlur={goalAutosave.flush}
           placeholder="Project goal..."
           className="min-h-[120px] resize-y font-mono text-sm leading-6"
         />
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs text-muted-foreground">{goalDraft.length.toLocaleString()} / 20,000 chars</div>
-          <Button
-            size="sm"
-            className="gap-1.5"
-            onClick={saveGoal}
-            disabled={updateProfile.isPending || goalDraft === profile.goalMarkdown}
-          >
-            {updateProfile.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-            Save
-          </Button>
+          <div className="text-xs text-muted-foreground">{goalAutosave.draft.length.toLocaleString()} / 20,000 chars</div>
+          <ProfileAutosaveStatus
+            state={goalAutosave.state}
+            hasUnsavedChanges={goalAutosave.hasUnsavedChanges}
+            errorMessage={goalAutosave.errorMessage}
+          />
         </div>
       </section>
 
@@ -285,24 +434,21 @@ export function ProjectContextContent({
             <h3 className="text-sm font-semibold">Custom instructions</h3>
           </div>
           <Textarea
-            value={instructionsDraft}
-            onChange={(event) => setInstructionsDraft(event.target.value)}
+            value={instructionsAutosave.draft}
+            onChange={(event) => instructionsAutosave.setDraft(event.target.value)}
+            onBlur={instructionsAutosave.flush}
             placeholder="Custom instructions..."
             className="min-h-[220px] resize-y font-mono text-sm leading-6"
           />
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
             <div className="text-xs text-muted-foreground">
-              {instructionsDraft.length.toLocaleString()} / 100,000 chars
+              {instructionsAutosave.draft.length.toLocaleString()} / 100,000 chars
             </div>
-            <Button
-              size="sm"
-              className="gap-1.5"
-              onClick={saveInstructions}
-              disabled={updateProfile.isPending || instructionsDraft === profile.instructionsMarkdown}
-            >
-              {updateProfile.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-              Save
-            </Button>
+            <ProfileAutosaveStatus
+              state={instructionsAutosave.state}
+              hasUnsavedChanges={instructionsAutosave.hasUnsavedChanges}
+              errorMessage={instructionsAutosave.errorMessage}
+            />
           </div>
         </section>
 
