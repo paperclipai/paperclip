@@ -3,8 +3,10 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   authUsers,
+  companies,
   companyMemberships,
   instanceUserRoles,
+  orgMemberships,
   principalPermissionGrants,
   projectAgents,
   projectMembers,
@@ -279,6 +281,29 @@ export function accessService(db: Db) {
       .orderBy(sql`${companyMemberships.createdAt} desc`);
   }
 
+  // Make sure the user is a member of the company's parent organization so
+  // that the company is visible in the switcher. Without this, the UI hides
+  // companies whose org the user isn't in.
+  async function ensureOrgMembershipForCompany(userId: string, companyId: string) {
+    const [row] = await db
+      .select({ organizationId: companies.organizationId })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .limit(1);
+    const orgId = row?.organizationId;
+    if (!orgId) return;
+    const [existing] = await db
+      .select({ id: orgMemberships.id })
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.organizationId, orgId), eq(orgMemberships.userId, userId)))
+      .limit(1);
+    if (existing) return;
+    await db
+      .insert(orgMemberships)
+      .values({ organizationId: orgId, userId, role: "member" })
+      .onConflictDoNothing();
+  }
+
   async function setUserCompanyAccess(userId: string, companyIds: string[]) {
     const existing = await listUserCompanyAccess(userId);
     const existingByCompany = new Map(existing.map((row) => [row.companyId, row]));
@@ -302,6 +327,11 @@ export function accessService(db: Db) {
       }
     });
 
+    for (const companyId of target) {
+      if (existingByCompany.has(companyId)) continue;
+      await ensureOrgMembershipForCompany(userId, companyId);
+    }
+
     return listUserCompanyAccess(userId);
   }
 
@@ -323,10 +353,13 @@ export function accessService(db: Db) {
           .then((rows) => rows[0] ?? null);
         return updated ?? existing;
       }
+      if (principalType === "user") {
+        await ensureOrgMembershipForCompany(principalId, companyId);
+      }
       return existing;
     }
 
-    return db
+    const inserted = await db
       .insert(companyMemberships)
       .values({
         companyId,
@@ -337,6 +370,12 @@ export function accessService(db: Db) {
       })
       .returning()
       .then((rows) => rows[0]);
+
+    if (principalType === "user") {
+      await ensureOrgMembershipForCompany(principalId, companyId);
+    }
+
+    return inserted;
   }
 
   async function setPrincipalGrants(
