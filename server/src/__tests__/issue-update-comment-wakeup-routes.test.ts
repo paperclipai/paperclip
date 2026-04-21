@@ -104,7 +104,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(actorOverrides: Record<string, unknown> = {}) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -118,6 +118,7 @@ async function createApp() {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actorOverrides,
     };
     next();
   });
@@ -251,5 +252,67 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  });
+
+  it("does not self-wake on issue updates when a local implicit run comments on its own task", async () => {
+    const runId = "run-self-comment";
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+      executionRunId: runId,
+    });
+    const updated = {
+      ...existing,
+      status: "done",
+      executionRunId: null,
+      checkoutRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-3",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "wrapped",
+    });
+
+    const res = await request(await createApp({ runId }))
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "done",
+        comment: "wrapped",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not self-wake on direct comments when a local implicit run comments on its own task", async () => {
+    const runId = "run-self-comment-direct";
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+      executionRunId: runId,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-4",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "still working",
+    });
+
+    const res = await request(await createApp({ runId }))
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({
+        body: "still working",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });
