@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Dpo } from "paperclip-dpo";
+import { MappingNotFoundError } from "paperclip-dpo";
 
 const Body = z.object({
   mappingId: z.string().min(1),
@@ -21,8 +22,7 @@ export function registerDeanonymizeRoute(app: FastifyInstance, opts: Deanonymize
       const result = opts.dpo.deanonymize(parsed.data);
       return { text: result.text };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("mapping not found") || msg.includes("not found")) {
+      if (err instanceof MappingNotFoundError) {
         return reply.code(404).send({ error: "mapping_not_found" });
       }
       throw err;

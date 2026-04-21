@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { registerAuth } from "../../src/auth.js";
 import { registerDeanonymizeRoute } from "../../src/routes/deanonymize.js";
 import type { Dpo } from "paperclip-dpo";
+import { MappingNotFoundError } from "paperclip-dpo";
 
 const KEY = "test-key-32-bytes-xxxxxxxxxxxxxxx";
 
@@ -39,7 +40,7 @@ describe("POST /deanonymize", () => {
     const dpo = {
       anonymize: vi.fn(),
       deanonymize: vi.fn().mockImplementation(() => {
-        throw new Error("mapping not found: m-x");
+        throw new MappingNotFoundError("m-x");
       }),
       close: vi.fn(),
     };
