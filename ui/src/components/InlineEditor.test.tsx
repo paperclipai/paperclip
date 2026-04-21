@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./MarkdownEditor", () => ({
   MarkdownEditor: forwardRef<
     { focus: () => void },
-    { value: string; onChange: (value: string) => void }
+    { value: string; onChange: (value: string) => void; openLinksOnClick?: boolean }
   >(function MarkdownEditorMock(props, ref) {
     const taRef = useRef<HTMLTextAreaElement>(null);
     useImperativeHandle(ref, () => ({
@@ -17,6 +17,7 @@ vi.mock("./MarkdownEditor", () => ({
       <textarea
         ref={taRef}
         data-testid="multiline-md-mock"
+        data-open-links-on-click={props.openLinksOnClick ? "true" : "false"}
         value={props.value}
         onChange={(e) => props.onChange(e.target.value)}
       />
@@ -215,6 +216,29 @@ describe("InlineEditor", () => {
     });
 
     expect(textarea?.value).toBe("Local draft");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps multiline link opening enabled after focus", () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<InlineEditor value="[Doc](https://example.com)" multiline onSave={onSave} />);
+    });
+
+    const textarea = container.querySelector<HTMLTextAreaElement>('[data-testid="multiline-md-mock"]');
+    expect(textarea).not.toBeNull();
+    expect(textarea?.dataset.openLinksOnClick).toBe("true");
+
+    act(() => {
+      textarea!.focus();
+    });
+
+    expect(textarea?.dataset.openLinksOnClick).toBe("true");
 
     act(() => {
       root.unmount();

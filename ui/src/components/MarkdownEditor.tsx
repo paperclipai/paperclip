@@ -71,6 +71,8 @@ interface MarkdownEditorProps {
   bordered?: boolean;
   /** List of mentionable entities. Enables @-mention autocomplete. */
   mentions?: MentionOption[];
+  /** Opens safe, non-mention links in a new tab when clicked. */
+  openLinksOnClick?: boolean;
   /** Called on Cmd/Ctrl+Enter */
   onSubmit?: () => void;
   /** Render the rich editor without allowing edits. */
@@ -155,6 +157,37 @@ function isSafeMarkdownLinkUrl(url: string): boolean {
   const trimmed = url.trim();
   if (!trimmed) return true;
   return !/^(javascript|data|vbscript):/i.test(trimmed);
+}
+
+function findMarkdownLink(target: EventTarget | null, container: HTMLElement): HTMLAnchorElement | null {
+  if (!(target instanceof Node)) return null;
+
+  const element = target instanceof Element ? target : target.parentElement;
+  const link = element?.closest("a[href]");
+  if (!(link instanceof HTMLAnchorElement) || !container.contains(link)) return null;
+  return link;
+}
+
+function isMentionMarkdownLink(link: HTMLAnchorElement) {
+  if (link.dataset.mentionKind || link.classList.contains("paperclip-mention-chip")) {
+    return true;
+  }
+
+  const href = link.getAttribute("href")?.trim();
+  return Boolean(href && parseMentionChipHref(href));
+}
+
+function getOpenableMarkdownLinkHref(link: HTMLAnchorElement) {
+  const href = link.getAttribute("href")?.trim();
+  if (!href || isMentionMarkdownLink(link) || !isSafeMarkdownLinkUrl(href)) return null;
+  return href;
+}
+
+function openMarkdownLinkInNewTab(link: HTMLAnchorElement) {
+  const href = getOpenableMarkdownLinkHref(link);
+  if (!href) return false;
+  window.open(href, "_blank", "noopener,noreferrer");
+  return true;
 }
 
 /* ---- Mention detection helpers ---- */
@@ -493,6 +526,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   onDropFile,
   bordered = true,
   mentions,
+  openLinksOnClick = false,
   onSubmit,
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
@@ -515,6 +549,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const [isDragOver, setIsDragOver] = useState(false);
   const [richEditorError, setRichEditorError] = useState<string | null>(null);
   const dragDepthRef = useRef(0);
+  const pointerOpenedLinkRef = useRef<{ href: string; at: number } | null>(null);
 
   // Stable ref for imageUploadHandler so plugins don't recreate on every render
   const imageUploadHandlerRef = useRef(imageUploadHandler);
@@ -899,6 +934,48 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
   const canDropImage = Boolean(imageUploadHandler);
   const canDropFile = Boolean(imageUploadHandler || onDropFile);
+  const handleOpenLinkOnPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!openLinksOnClick || event.button !== 0) return;
+    const link = findMarkdownLink(event.target, event.currentTarget);
+    if (!link || isMentionMarkdownLink(link)) return;
+    if (!openMarkdownLinkInNewTab(link)) return;
+
+    const href = link.getAttribute("href")?.trim();
+    if (href) {
+      pointerOpenedLinkRef.current = { href, at: Date.now() };
+      window.setTimeout(() => {
+        if (pointerOpenedLinkRef.current?.href === href) {
+          pointerOpenedLinkRef.current = null;
+        }
+      }, 1000);
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  }, [openLinksOnClick]);
+  const handleOpenLinkOnClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!openLinksOnClick) return;
+    const link = findMarkdownLink(event.target, event.currentTarget);
+    if (!link) return;
+    if (isMentionMarkdownLink(link)) {
+      event.preventDefault();
+      return;
+    }
+
+    const href = link.getAttribute("href")?.trim();
+    const pointerOpenedLink = pointerOpenedLinkRef.current;
+    const alreadyOpenedFromPointer =
+      Boolean(href && pointerOpenedLink?.href === href && Date.now() - pointerOpenedLink.at < 1000);
+    if (alreadyOpenedFromPointer) {
+      pointerOpenedLinkRef.current = null;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (!openMarkdownLinkInNewTab(link)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, [openLinksOnClick]);
   const handlePasteCapture = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     const clipboard = event.clipboardData;
     if (!clipboard || !ref.current) return;
@@ -1077,6 +1154,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           void onDropFile(file);
         }
       }}
+      onPointerDownCapture={handleOpenLinkOnPointerDown}
+      onClickCapture={handleOpenLinkOnClick}
       onPasteCapture={handlePasteCapture}
     >
       <MDXEditor

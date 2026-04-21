@@ -200,6 +200,115 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
+describe("ProjectContextContent autosave", () => {
+  it("autosaves project goal edits after a short idle delay", async () => {
+    await renderComponent(<ProjectContextContent companyId="company-1" projectId="project-1" />);
+
+    const goalTextarea = container?.querySelectorAll("textarea")[0] as HTMLTextAreaElement;
+    expect(goalTextarea).not.toBeNull();
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        setInputValue(goalTextarea, "Ship reliable project context");
+      });
+      expect(projectContextApiMock.updateProfile).not.toHaveBeenCalled();
+
+      await act(async () => {
+        vi.advanceTimersByTime(901);
+        await Promise.resolve();
+      });
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+
+    await waitForExpectation(() => {
+      expect(projectContextApiMock.updateProfile).toHaveBeenCalledWith("company-1", "project-1", {
+        goalMarkdown: "Ship reliable project context",
+      });
+    });
+  });
+
+  it("flushes custom instruction edits on blur", async () => {
+    await renderComponent(<ProjectContextContent companyId="company-1" projectId="project-1" />);
+
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    const instructionsTextarea = container?.querySelectorAll("textarea")[1] as HTMLTextAreaElement;
+    expect(instructionsTextarea).not.toBeNull();
+
+    await act(async () => {
+      instructionsTextarea.focus();
+    });
+    await act(async () => {
+      setInputValue(instructionsTextarea, "Use durable context when waking agents.");
+    });
+    await act(async () => {
+      outside.focus();
+    });
+
+    await waitForExpectation(() => {
+      expect(projectContextApiMock.updateProfile).toHaveBeenCalledWith("company-1", "project-1", {
+        instructionsMarkdown: "Use durable context when waking agents.",
+      });
+    });
+
+    outside.remove();
+  });
+
+  it("keeps newer local edits when an older autosave response updates the cache", async () => {
+    await renderComponent(<ProjectContextContent companyId="company-1" projectId="project-1" />);
+
+    const instructionsTextarea = container?.querySelectorAll("textarea")[1] as HTMLTextAreaElement;
+    expect(instructionsTextarea).not.toBeNull();
+
+    let resolveFirstSave: (() => void) | null = null;
+    projectContextApiMock.updateProfile.mockImplementationOnce(async (
+      _companyId: string,
+      _projectId: string,
+      payload: Record<string, unknown>,
+    ) => new Promise((resolve) => {
+      resolveFirstSave = () => {
+        currentOverview = {
+          ...currentOverview,
+          profile: {
+            ...currentOverview.profile,
+            ...payload,
+            updatedAt: new Date("2026-04-20T12:10:00Z"),
+          },
+        };
+        resolve(currentOverview.profile);
+      };
+    }));
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        setInputValue(instructionsTextarea, "First autosaved version");
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(901);
+        await Promise.resolve();
+      });
+      expect(projectContextApiMock.updateProfile).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        setInputValue(instructionsTextarea, "Newer local draft");
+      });
+      await act(async () => {
+        resolveFirstSave?.();
+        await Promise.resolve();
+      });
+
+      expect(instructionsTextarea.value).toBe("Newer local draft");
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("Project context source migration", () => {
   it("extracts a marked CodeSM import block without marker comments", () => {
     const extracted = extractLegacyCodesmClientImport([

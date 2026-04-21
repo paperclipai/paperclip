@@ -35,6 +35,31 @@ vi.mock("@mdxeditor/editor", async () => {
     }
   }
 
+  function renderMockMarkdown(value: string): React.ReactNode {
+    const nodes: React.ReactNode[] = [];
+    const linkPattern = /(?<!!)\[([^\]]+)\]\(([^)]+)\)/g;
+    let lastIndex = 0;
+
+    for (const match of value.matchAll(linkPattern)) {
+      const index = match.index ?? 0;
+      if (index > lastIndex) {
+        nodes.push(value.slice(lastIndex, index));
+      }
+      nodes.push(
+        <a key={`${index}:${match[2]}`} href={match[2]}>
+          {match[1]}
+        </a>,
+      );
+      lastIndex = index + match[0].length;
+    }
+
+    if (lastIndex < value.length) {
+      nodes.push(value.slice(lastIndex));
+    }
+
+    return nodes.length > 0 ? nodes : value;
+  }
+
   const MDXEditor = React.forwardRef(function MockMDXEditor(
     {
       markdown,
@@ -104,10 +129,10 @@ vi.mock("@mdxeditor/editor", async () => {
         ref={editableRef}
         data-testid="mdx-editor"
         className={className}
-        contentEditable
-        suppressContentEditableWarning
-      >
-        {content || placeholder || ""}
+      contentEditable
+      suppressContentEditableWarning
+    >
+        {renderMockMarkdown(content || placeholder || "")}
       </div>
     );
   });
@@ -319,6 +344,112 @@ describe("MarkdownEditor", () => {
       root.unmount();
     });
   });
+
+  it("opens safe markdown links in a new tab when enabled", async () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    const root = createRoot(container);
+    const href = "https://docs.google.com/document/d/example";
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value={`Read [the doc](${href})`}
+          onChange={() => {}}
+          openLinksOnClick
+        />,
+      );
+    });
+
+    await flush();
+    const link = container.querySelector<HTMLAnchorElement>(`a[href="${href}"]`);
+    expect(link).not.toBeNull();
+    const pointerDownEvent = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 });
+    const clickEvent = new MouseEvent("click", { bubbles: true, cancelable: true });
+
+    act(() => {
+      link?.dispatchEvent(pointerDownEvent);
+      link?.dispatchEvent(clickEvent);
+    });
+
+    expect(pointerDownEvent.defaultPrevented).toBe(true);
+    expect(clickEvent.defaultPrevented).toBe(true);
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    expect(openSpy).toHaveBeenCalledWith(href, "_blank", "noopener,noreferrer");
+
+    await act(async () => {
+      root.unmount();
+    });
+    openSpy.mockRestore();
+  });
+
+  it("does not open markdown links when click opening is disabled", async () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    const root = createRoot(container);
+    const href = "https://docs.google.com/document/d/example";
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value={`Read [the doc](${href})`}
+          onChange={() => {}}
+        />,
+      );
+    });
+
+    await flush();
+    const link = container.querySelector<HTMLAnchorElement>(`a[href="${href}"]`);
+    expect(link).not.toBeNull();
+    link?.addEventListener("click", (event) => event.preventDefault());
+
+    act(() => {
+      link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    expect(openSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+    openSpy.mockRestore();
+  });
+
+  it("does not open custom mention links when click opening is enabled", async () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    const root = createRoot(container);
+    const href = "https://paperclip.local/projects/project-123";
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value={`Discuss [@Paperclip App](${href})`}
+          onChange={() => {}}
+          openLinksOnClick
+        />,
+      );
+    });
+
+    await flush();
+    const link = container.querySelector<HTMLAnchorElement>("a");
+    expect(link).not.toBeNull();
+    link?.classList.add("paperclip-mention-chip");
+    link?.setAttribute("data-mention-kind", "project");
+    const clickEvent = new MouseEvent("click", { bubbles: true, cancelable: true });
+    const pointerDownEvent = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 });
+
+    act(() => {
+      link?.dispatchEvent(clickEvent);
+      link?.dispatchEvent(pointerDownEvent);
+    });
+
+    expect(clickEvent.defaultPrevented).toBe(true);
+    expect(openSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+    openSpy.mockRestore();
+  });
+
   it("anchors the mention menu inside the visual viewport when mobile offsets are present", () => {
     expect(
       computeMentionMenuPosition(
