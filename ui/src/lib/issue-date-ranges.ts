@@ -85,9 +85,9 @@ export function monthGrid(monthDate: string, today: string = formatDateOnly()): 
   const monthStart = parseDateOnly(firstOfMonth(monthDate));
   const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0);
   const gridStart = new Date(monthStart);
-  gridStart.setDate(gridStart.getDate() - gridStart.getDay());
+  gridStart.setDate(gridStart.getDate() - ((gridStart.getDay() + 6) % 7));
   const gridEnd = new Date(monthEnd);
-  gridEnd.setDate(gridEnd.getDate() + (6 - gridEnd.getDay()));
+  gridEnd.setDate(gridEnd.getDate() + ((7 - gridEnd.getDay()) % 7));
 
   const days: MonthGridDay[] = [];
   const cursor = new Date(gridStart);
