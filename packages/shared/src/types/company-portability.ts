@@ -1,3 +1,6 @@
+import type { AgentEnvConfig } from "./secrets.js";
+import type { RoutineVariable } from "./routine.js";
+
 export interface CompanyPortabilityInclude {
   company: boolean;
   agents: boolean;
@@ -10,6 +13,7 @@ export interface CompanyPortabilityEnvInput {
   key: string;
   description: string | null;
   agentSlug: string | null;
+  projectSlug: string | null;
   kind: "secret" | "plain";
   requirement: "required" | "optional";
   defaultValue: string | null;
@@ -31,6 +35,15 @@ export interface CompanyPortabilityCompanyManifestEntry {
   brandColor: string | null;
   logoPath: string | null;
   requireBoardApprovalForNewAgents: boolean;
+  feedbackDataSharingEnabled: boolean;
+  feedbackDataSharingConsentAt: string | null;
+  feedbackDataSharingConsentByUserId: string | null;
+  feedbackDataSharingTermsVersion: string | null;
+}
+
+export interface CompanyPortabilitySidebarOrder {
+  agents: string[];
+  projects: string[];
 }
 
 export interface CompanyPortabilityProjectManifestEntry {
@@ -43,8 +56,41 @@ export interface CompanyPortabilityProjectManifestEntry {
   targetDate: string | null;
   color: string | null;
   status: string | null;
+  env: AgentEnvConfig | null;
   executionWorkspacePolicy: Record<string, unknown> | null;
+  workspaces: CompanyPortabilityProjectWorkspaceManifestEntry[];
   metadata: Record<string, unknown> | null;
+}
+
+export interface CompanyPortabilityProjectWorkspaceManifestEntry {
+  key: string;
+  name: string;
+  sourceType: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+  defaultRef: string | null;
+  visibility: string | null;
+  setupCommand: string | null;
+  cleanupCommand: string | null;
+  metadata: Record<string, unknown> | null;
+  isPrimary: boolean;
+}
+
+export interface CompanyPortabilityIssueRoutineTriggerManifestEntry {
+  kind: string;
+  label: string | null;
+  enabled: boolean;
+  cronExpression: string | null;
+  timezone: string | null;
+  signingMode: string | null;
+  replayWindowSec: number | null;
+}
+
+export interface CompanyPortabilityIssueRoutineManifestEntry {
+  concurrencyPolicy: string | null;
+  catchUpPolicy: string | null;
+  variables?: RoutineVariable[] | null;
+  triggers: CompanyPortabilityIssueRoutineTriggerManifestEntry[];
 }
 
 export interface CompanyPortabilityIssueManifestEntry {
@@ -53,9 +99,12 @@ export interface CompanyPortabilityIssueManifestEntry {
   title: string;
   path: string;
   projectSlug: string | null;
+  projectWorkspaceKey: string | null;
   assigneeAgentSlug: string | null;
   description: string | null;
-  recurrence: Record<string, unknown> | null;
+  recurring: boolean;
+  routine: CompanyPortabilityIssueRoutineManifestEntry | null;
+  legacyRecurrence: Record<string, unknown> | null;
   status: string | null;
   priority: string | null;
   labelIds: string[];
@@ -110,6 +159,7 @@ export interface CompanyPortabilityManifest {
   } | null;
   includes: CompanyPortabilityInclude;
   company: CompanyPortabilityCompanyManifestEntry | null;
+  sidebar: CompanyPortabilitySidebarOrder | null;
   agents: CompanyPortabilityAgentManifestEntry[];
   skills: CompanyPortabilitySkillManifestEntry[];
   projects: CompanyPortabilityProjectManifestEntry[];
@@ -245,6 +295,13 @@ export interface CompanyPortabilityImportResult {
     name: string;
     reason: string | null;
   }[];
+  projects: {
+    slug: string;
+    id: string | null;
+    action: "created" | "updated" | "skipped";
+    name: string;
+    reason: string | null;
+  }[];
   envInputs: CompanyPortabilityEnvInput[];
   warnings: string[];
 }
@@ -258,4 +315,5 @@ export interface CompanyPortabilityExportRequest {
   projectIssues?: string[];
   selectedFiles?: string[];
   expandReferencedSkills?: boolean;
+  sidebarOrder?: Partial<CompanyPortabilitySidebarOrder>;
 }

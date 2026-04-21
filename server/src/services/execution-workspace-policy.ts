@@ -132,6 +132,21 @@ export function defaultIssueExecutionWorkspaceSettingsForProject(
   };
 }
 
+export function issueExecutionWorkspaceModeForPersistedWorkspace(
+  mode: string | null | undefined,
+): IssueExecutionWorkspaceSettings["mode"] {
+  if (mode === null || mode === undefined) {
+    return "agent_default";
+  }
+  if (mode === "isolated_workspace" || mode === "operator_branch" || mode === "shared_workspace") {
+    return mode;
+  }
+  if (mode === "adapter_managed" || mode === "cloud_sandbox") {
+    return "agent_default";
+  }
+  return "shared_workspace";
+}
+
 export function resolveExecutionWorkspaceMode(input: {
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
   issueSettings: IssueExecutionWorkspaceSettings | null;

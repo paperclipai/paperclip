@@ -214,6 +214,8 @@ export function buildWorktreeConfig(input: {
     server: {
       deploymentMode: source?.server.deploymentMode ?? "local_trusted",
       exposure: source?.server.exposure ?? "private",
+      ...(source?.server.bind ? { bind: source.server.bind } : {}),
+      ...(source?.server.customBindHost ? { customBindHost: source.server.customBindHost } : {}),
       host: source?.server.host ?? "127.0.0.1",
       port: serverPort,
       allowedHostnames: source?.server.allowedHostnames ?? [],
@@ -223,6 +225,9 @@ export function buildWorktreeConfig(input: {
       baseUrlMode: source?.auth.baseUrlMode ?? "auto",
       ...(authPublicBaseUrl ? { publicBaseUrl: authPublicBaseUrl } : {}),
       disableSignUp: source?.auth.disableSignUp ?? false,
+    },
+    telemetry: {
+      enabled: source?.telemetry?.enabled ?? true,
     },
     storage: {
       provider: source?.storage.provider ?? "local_disk",

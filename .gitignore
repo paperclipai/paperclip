@@ -1,4 +1,7 @@
+node_modules
 node_modules/
+**/node_modules
+**/node_modules/
 dist/
 .env
 *.tsbuildinfo
@@ -31,6 +34,8 @@ server/src/**/*.js.map
 server/src/**/*.d.ts
 server/src/**/*.d.ts.map
 tmp/
+feedback-export-*
+diagnostics/
 
 # Editor / tool temp files
 *.tmp

@@ -253,17 +253,7 @@ owner: cto
 name: Monday Review
 assignee: ceo
 project: q2-launch
-schedule:
-  timezone: America/Chicago
-  startsAt: 2026-03-16T09:00:00-05:00
-  recurrence:
-    frequency: weekly
-    interval: 1
-    weekdays:
-      - monday
-    time:
-      hour: 9
-      minute: 0
+recurring: true
 ```
 
 ### Semantics
@@ -271,58 +261,30 @@ schedule:
 - body content is the canonical markdown task description
 - `assignee` should reference an agent slug inside the package
 - `project` should reference a project slug when the task belongs to a `PROJECT.md`
-- tasks are intentionally basic seed work: title, markdown body, assignee, and optional recurrence
+- `recurring: true` marks the task as ongoing recurring work instead of a one-time starter task
+- tasks are intentionally basic seed work: title, markdown body, assignee, project linkage, and optional `recurring: true`
 - tools may also support optional fields like `priority`, `labels`, or `metadata`, but they should not require them in the base package
 
-### Scheduling
+### Recurring Tasks
 
-The scheduling model is intentionally lightweight. It should cover common recurring patterns such as:
+- the base package only needs to say whether a task is recurring
+- vendors may attach the actual schedule / trigger / runtime fidelity in a vendor extension such as `.paperclip.yaml`
+- this keeps `TASK.md` portable while still allowing richer runtime systems to round-trip their own automation details
+- legacy packages may still use `schedule.recurrence` during transition, but exporters should prefer `recurring: true`
 
-- every 6 hours
-- every weekday at 9:00
-- every Monday morning
-- every month on the 1st
-- every first Monday of the month
-- every year on January 1
-
-Suggested shape:
+Example Paperclip extension:
 
 ```yaml
-schedule:
-  timezone: America/Chicago
-  startsAt: 2026-03-14T09:00:00-05:00
-  recurrence:
-    frequency: hourly | daily | weekly | monthly | yearly
-    interval: 1
-    weekdays:
-      - monday
-      - wednesday
-    monthDays:
-      - 1
-      - 15
-    ordinalWeekdays:
-      - weekday: monday
-        ordinal: 1
-    months:
-      - 1
-      - 6
-    time:
-      hour: 9
-      minute: 0
-    until: 2026-12-31T23:59:59-06:00
-    count: 10
+routines:
+  monday-review:
+    triggers:
+      - kind: schedule
+        cronExpression: "0 9 * * 1"
+        timezone: America/Chicago
 ```
 
-Rules:
-
-- `timezone` should use an IANA timezone like `America/Chicago`
-- `startsAt` anchors the first occurrence
-- `frequency` and `interval` are the only required recurrence fields
-- `weekdays`, `monthDays`, `ordinalWeekdays`, and `months` are optional narrowing rules
-- `ordinalWeekdays` uses `ordinal` values like `1`, `2`, `3`, `4`, or `-1` for “last”
-- `time.hour` and `time.minute` keep common “morning / 9:00 / end of day” scheduling human-readable
-- `until` and `count` are optional recurrence end bounds
-- tools may accept richer calendar syntaxes such as RFC5545 `RRULE`, but exporters should prefer the structured form above
+- vendors should ignore unknown recurring-task extensions they do not understand
+- vendors importing legacy `schedule.recurrence` data may translate it into their own runtime trigger model, but new exports should prefer the simpler `recurring: true` base field
 
 ## 11. SKILL.md Compatibility
 
@@ -449,7 +411,7 @@ Suggested import UI behavior:
 - selecting an agent auto-selects required docs and referenced skills
 - selecting a team auto-selects its subtree
 - selecting a project auto-selects its included tasks
-- selecting a recurring task should surface its schedule before import
+- selecting a recurring task should make it clear that the import target is a routine / automation, not a one-time task
 - selecting referenced third-party content shows attribution, license, and fetch policy
 
 ## 15. Vendor Extensions
@@ -502,6 +464,12 @@ agents:
           kind: plain
           requirement: optional
           default: claude
+routines:
+  monday-review:
+    triggers:
+      - kind: schedule
+        cronExpression: "0 9 * * 1"
+        timezone: America/Chicago
 ```
 
 Additional rules for Paperclip exporters:
@@ -520,7 +488,7 @@ A compliant exporter should:
 - omit machine-local ids and timestamps
 - omit secret values
 - omit machine-specific paths
-- preserve task descriptions and recurrence definitions when exporting tasks
+- preserve task descriptions and recurring-task declarations when exporting tasks
 - omit empty/default fields
 - default to the vendor-neutral base package
 - Paperclip exporters should emit `.paperclip.yaml` as a sidecar by default
@@ -569,11 +537,11 @@ Paperclip can map this spec to its runtime model like this:
   - `TEAM.md` -> importable org subtree
   - `AGENTS.md` -> agent identity and instructions
   - `PROJECT.md` -> starter project definition
-  - `TASK.md` -> starter issue/task definition, or automation template when recurrence is present
+  - `TASK.md` -> starter issue/task definition, or recurring task template when `recurring: true`
   - `SKILL.md` -> imported skill package
   - `sources[]` -> provenance and pinned upstream refs
 - Paperclip extension:
-  - `.paperclip.yaml` -> adapter config, runtime config, env input declarations, permissions, budgets, and other Paperclip-specific fidelity
+  - `.paperclip.yaml` -> adapter config, runtime config, env input declarations, permissions, budgets, routine triggers, and other Paperclip-specific fidelity
 
 Inline Paperclip-only metadata that must live inside a shared markdown file should use:
 

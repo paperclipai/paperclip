@@ -4,7 +4,7 @@ import { patchInstanceExperimentalSettingsSchema, patchInstanceGeneralSettingsSc
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService, logActivity } from "../services/index.js";
-import { getActorInfo } from "./authz.js";
+import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 
 function assertCanManageInstanceSettings(req: Request) {
   if (req.actor.type !== "board") {
@@ -21,7 +21,9 @@ export function instanceSettingsRoutes(db: Db) {
   const svc = instanceSettingsService(db);
 
   router.get("/instance/settings/general", async (req, res) => {
-    assertCanManageInstanceSettings(req);
+    // General settings (e.g. keyboardShortcuts) are readable by any
+    // authenticated org member or instance admin. Only PATCH requires instance-admin.
+    assertBoardOrgAccess(req);
     res.json(await svc.getGeneral());
   });
 
@@ -56,7 +58,9 @@ export function instanceSettingsRoutes(db: Db) {
   );
 
   router.get("/instance/settings/experimental", async (req, res) => {
-    assertCanManageInstanceSettings(req);
+    // Experimental settings are readable by any authenticated org member
+    // or instance admin. Only PATCH requires instance-admin.
+    assertBoardOrgAccess(req);
     res.json(await svc.getExperimental());
   });
 

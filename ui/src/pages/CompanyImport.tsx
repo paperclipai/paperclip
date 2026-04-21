@@ -9,10 +9,13 @@ import type {
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
+import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
 import { agentsApi } from "../api/agents";
+import { sidebarPreferencesApi } from "../api/sidebarPreferences";
 import { queryKeys } from "../lib/queryKeys";
+import { getAgentOrderStorageKey, writeAgentOrder } from "../lib/agent-order";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
@@ -28,6 +31,7 @@ import {
   Upload,
 } from "lucide-react";
 import { Field, adapterLabels } from "../components/agent-config-primitives";
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "../components/agent-config-defaults";
 import { getUIAdapter, listUIAdapters } from "../adapters";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
@@ -237,10 +241,10 @@ function ImportPreviewPane({
         {parsed ? (
           <>
             <FrontmatterCard data={parsed.data} />
-            {parsed.body.trim() && <MarkdownBody resolveImageSrc={resolveImageSrc}>{parsed.body}</MarkdownBody>}
+            {parsed.body.trim() && <MarkdownBody resolveImageSrc={resolveImageSrc} softBreaks={false} linkIssueReferences={false}>{parsed.body}</MarkdownBody>}
           </>
         ) : isMarkdown ? (
-          <MarkdownBody resolveImageSrc={resolveImageSrc}>{textContent ?? ""}</MarkdownBody>
+          <MarkdownBody resolveImageSrc={resolveImageSrc} softBreaks={false} linkIssueReferences={false}>{textContent ?? ""}</MarkdownBody>
         ) : imageSrc ? (
           <div className="flex min-h-[520px] items-center justify-center rounded-lg border border-border bg-accent/10 p-6">
             <img src={imageSrc} alt={selectedFile} className="max-h-[480px] max-w-full object-contain" />
@@ -340,6 +344,45 @@ function deriveSourcePrefix(
 function prefixedName(prefix: string | null, originalName: string): string {
   if (!prefix) return originalName;
   return `${prefix}-${originalName}`;
+}
+
+async function applyImportedSidebarOrder(
+  preview: CompanyPortabilityPreviewResult | null,
+  result: {
+    company: { id: string };
+    agents: Array<{ slug: string; id: string | null }>;
+    projects: Array<{ slug: string; id: string | null }>;
+  },
+  userId: string | null | undefined,
+) {
+  const sidebar = preview?.manifest.sidebar;
+  if (!sidebar) return;
+  if (!userId?.trim()) return;
+
+  const agentIdBySlug = new Map(
+    result.agents
+      .filter((agent): agent is { slug: string; id: string } => typeof agent.id === "string" && agent.id.length > 0)
+      .map((agent) => [agent.slug, agent.id]),
+  );
+  const projectIdBySlug = new Map(
+    result.projects
+      .filter((project): project is { slug: string; id: string } => typeof project.id === "string" && project.id.length > 0)
+      .map((project) => [project.slug, project.id]),
+  );
+
+  const orderedAgentIds = sidebar.agents
+    .map((slug) => agentIdBySlug.get(slug))
+    .filter((id): id is string => Boolean(id));
+  const orderedProjectIds = sidebar.projects
+    .map((slug) => projectIdBySlug.get(slug))
+    .filter((id): id is string => Boolean(id));
+
+  if (orderedAgentIds.length > 0) {
+    writeAgentOrder(getAgentOrderStorageKey(result.company.id, userId), orderedAgentIds);
+  }
+  if (orderedProjectIds.length > 0) {
+    await sidebarPreferencesApi.updateProjectOrder(result.company.id, { orderedIds: orderedProjectIds });
+  }
 }
 
 // ── Conflict resolution UI ───────────────────────────────────────────
@@ -472,7 +515,7 @@ function ConflictResolutionList({
 
 const IMPORT_ADAPTER_OPTIONS: { value: string; label: string }[] = listUIAdapters().map((adapter) => ({
   value: adapter.type,
-  label: adapterLabels[adapter.type] ?? adapter.label,
+  label: adapterLabels[adapter.type] ?? getAdapterLabel(adapter.type),
 }));
 
 // ── Adapter picker for imported agents ───────────────────────────────
@@ -608,9 +651,14 @@ export function CompanyImport() {
     setSelectedCompanyId,
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const packageInputRef = useRef<HTMLInputElement | null>(null);
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
 
   // Source state
   const [sourceMode, setSourceMode] = useState<"github" | "local">("github");
@@ -800,6 +848,18 @@ export function CompanyImport() {
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       const importedCompany = await companiesApi.get(result.company.id);
+      const refreshedSession = currentUserId
+        ? null
+        : await queryClient.fetchQuery({
+          queryKey: queryKeys.auth.session,
+          queryFn: () => authApi.getSession(),
+        });
+      const sidebarOrderUserId =
+        currentUserId
+        ?? refreshedSession?.user?.id
+        ?? refreshedSession?.session?.userId
+        ?? null;
+      await applyImportedSidebarOrder(importPreview, result, sidebarOrderUserId);
       setSelectedCompanyId(importedCompany.id);
       pushToast({
         tone: "success",

@@ -1,24 +1,38 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Issue, IssueDocument } from "@paperclipai/shared";
+import type {
+  DocumentRevision,
+  FeedbackDataSharingPreference,
+  FeedbackVote,
+  FeedbackVoteValue,
+  Issue,
+  IssueDocument,
+} from "@paperclipai/shared";
+import { isSystemIssueDocumentKey } from "@paperclipai/shared";
 import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
+import { deriveDocumentRevisionState } from "../lib/document-revisions";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption } from "./MarkdownEditor";
+import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Check, ChevronDown, ChevronRight, Copy, Download, FileText, MoreHorizontal, Plus, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, Diff, Download, FilePenLine, FileText, MoreHorizontal, Plus, Trash2, X } from "lucide-react";
+import { DocumentDiffModal } from "./DocumentDiffModal";
 
 type DraftState = {
   key: string;
@@ -57,7 +71,7 @@ function saveFoldedDocumentKeys(issueId: string, keys: string[]) {
 }
 
 function renderBody(body: string, className?: string) {
-  return <MarkdownBody className={className}>{body}</MarkdownBody>;
+  return <MarkdownBody className={className} softBreaks={false}>{body}</MarkdownBody>;
 }
 
 function isPlanKey(key: string) {
@@ -84,17 +98,59 @@ function downloadDocumentFile(key: string, body: string) {
   URL.revokeObjectURL(url);
 }
 
+function getRevisionActorLabel(revision: DocumentRevision) {
+  if (revision.createdByUserId) return "board";
+  if (revision.createdByAgentId) return "agent";
+  return "system";
+}
+
+function documentHasUnsavedChanges(doc: IssueDocument, draft: DraftState | null) {
+  if (!draft || draft.isNew || draft.key !== doc.key) return false;
+  return draft.body !== doc.body || (doc.title ?? "") !== draft.title;
+}
+
+function toDocumentSummary(document: IssueDocument) {
+  return {
+    id: document.id,
+    companyId: document.companyId,
+    issueId: document.issueId,
+    key: document.key,
+    title: document.title,
+    format: document.format,
+    latestRevisionId: document.latestRevisionId,
+    latestRevisionNumber: document.latestRevisionNumber,
+    createdByAgentId: document.createdByAgentId,
+    createdByUserId: document.createdByUserId,
+    updatedByAgentId: document.updatedByAgentId,
+    updatedByUserId: document.updatedByUserId,
+    createdAt: document.createdAt,
+    updatedAt: document.updatedAt,
+  };
+}
+
 export function IssueDocumentsSection({
   issue,
   canDeleteDocuments,
+  feedbackVotes = [],
+  feedbackDataSharingPreference = "prompt",
+  feedbackTermsUrl = null,
   mentions,
   imageUploadHandler,
+  onVote,
   extraActions,
 }: {
   issue: Issue;
   canDeleteDocuments: boolean;
+  feedbackVotes?: FeedbackVote[];
+  feedbackDataSharingPreference?: FeedbackDataSharingPreference;
+  feedbackTermsUrl?: string | null;
   mentions?: MentionOption[];
   imageUploadHandler?: (file: File) => Promise<string>;
+  onVote?: (
+    revisionId: string,
+    vote: FeedbackVoteValue,
+    options?: { allowSharing?: boolean; reason?: string },
+  ) => Promise<void>;
   extraActions?: ReactNode;
 }) {
   const queryClient = useQueryClient();
@@ -107,6 +163,9 @@ export function IssueDocumentsSection({
   const [autosaveDocumentKey, setAutosaveDocumentKey] = useState<string | null>(null);
   const [copiedDocumentKey, setCopiedDocumentKey] = useState<string | null>(null);
   const [highlightDocumentKey, setHighlightDocumentKey] = useState<string | null>(null);
+  const [revisionMenuOpenKey, setRevisionMenuOpenKey] = useState<string | null>(null);
+  const [selectedRevisionIds, setSelectedRevisionIds] = useState<Record<string, string | null>>({});
+  const [diffViewKey, setDiffViewKey] = useState<string | null>(null);
   const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copiedDocumentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasScrolledToHashRef = useRef(false);
@@ -122,10 +181,59 @@ export function IssueDocumentsSection({
     queryFn: () => issuesApi.listDocuments(issue.id),
   });
 
-  const invalidateIssueDocuments = () => {
+  const { data: activeDocumentRevisions, isFetching: isFetchingDocumentRevisions } = useQuery({
+    queryKey: revisionMenuOpenKey
+      ? queryKeys.issues.documentRevisions(issue.id, revisionMenuOpenKey)
+      : ["issues", "document-revisions", issue.id, "__idle__"],
+    queryFn: async () => {
+      if (!revisionMenuOpenKey) return [];
+      return issuesApi.listDocumentRevisions(issue.id, revisionMenuOpenKey);
+    },
+    enabled: Boolean(revisionMenuOpenKey),
+  });
+
+  const invalidateIssueDocuments = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issue.id) });
-  };
+    queryClient.invalidateQueries({
+      predicate: (query) =>
+        Array.isArray(query.queryKey)
+        && query.queryKey[0] === "issues"
+        && query.queryKey[1] === "document-revisions"
+        && query.queryKey[2] === issue.id,
+    });
+  }, [issue.id, queryClient]);
+
+  const syncDocumentCaches = useCallback((document: IssueDocument) => {
+    if (isSystemIssueDocumentKey(document.key)) return;
+    queryClient.setQueryData<IssueDocument[] | undefined>(
+      queryKeys.issues.documents(issue.id),
+      (current) => {
+        if (!current) return [document];
+        const existingIndex = current.findIndex((entry) => entry.key === document.key);
+        if (existingIndex === -1) return [...current, document];
+        return current.map((entry, index) => index === existingIndex ? document : entry);
+      },
+    );
+    queryClient.setQueryData<Issue | undefined>(
+      queryKeys.issues.detail(issue.id),
+      (current) => {
+        if (!current) return current;
+        const nextSummaries = (() => {
+          const summary = toDocumentSummary(document);
+          const existingIndex = (current.documentSummaries ?? []).findIndex((entry) => entry.key === document.key);
+          if (existingIndex === -1) return [...(current.documentSummaries ?? []), summary];
+          return (current.documentSummaries ?? []).map((entry, index) => index === existingIndex ? summary : entry);
+        })();
+        return {
+          ...current,
+          planDocument: document.key === "plan" ? document : current.planDocument ?? null,
+          documentSummaries: nextSummaries,
+          legacyPlanDocument: document.key === "plan" ? null : current.legacyPlanDocument ?? null,
+        };
+      },
+    );
+  }, [issue.id, queryClient]);
 
   const upsertDocument = useMutation({
     mutationFn: async (nextDraft: DraftState) =>
@@ -149,13 +257,39 @@ export function IssueDocumentsSection({
     },
   });
 
+  const restoreDocumentRevision = useMutation({
+    mutationFn: ({ key, revisionId }: { key: string; revisionId: string }) =>
+      issuesApi.restoreDocumentRevision(issue.id, key, revisionId),
+    onSuccess: (document, variables) => {
+      syncDocumentCaches(document);
+      setSelectedRevisionIds((current) => ({ ...current, [variables.key]: null }));
+      setDraft((current) => current?.key === variables.key ? null : current);
+      setDocumentConflict((current) => current?.key === variables.key ? null : current);
+      resetAutosaveState();
+      setError(null);
+      invalidateIssueDocuments();
+    },
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : "Failed to restore document revision");
+    },
+  });
+
   const sortedDocuments = useMemo(() => {
-    return [...(documents ?? [])].sort((a, b) => {
+    return (documents ?? []).filter((doc) => !isSystemIssueDocumentKey(doc.key)).sort((a, b) => {
       if (a.key === "plan" && b.key !== "plan") return -1;
       if (a.key !== "plan" && b.key === "plan") return 1;
       return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
     });
   }, [documents]);
+
+  const feedbackVoteByTargetId = useMemo(() => {
+    const map = new Map<string, FeedbackVoteValue>();
+    for (const feedbackVote of feedbackVotes) {
+      if (feedbackVote.targetType !== "issue_document_revision") continue;
+      map.set(feedbackVote.targetId, feedbackVote.vote);
+    }
+    return map;
+  }, [feedbackVotes]);
 
   const hasRealPlan = sortedDocuments.some((doc) => doc.key === "plan");
   const isEmpty = sortedDocuments.length === 0 && !issue.legacyPlanDocument;
@@ -290,6 +424,7 @@ export function IssueDocumentsSection({
           isNew: false,
         };
       });
+      syncDocumentCaches(saved);
       invalidateIssueDocuments();
     };
 
@@ -329,7 +464,7 @@ export function IssueDocumentsSection({
       setError(err instanceof Error ? err.message : "Failed to save document");
       return false;
     }
-  }, [documentConflict, invalidateIssueDocuments, issue.id, resetAutosaveState, runSave, sortedDocuments, upsertDocument]);
+  }, [documentConflict, invalidateIssueDocuments, issue.id, resetAutosaveState, runSave, sortedDocuments, syncDocumentCaches, upsertDocument]);
 
   const reloadDocumentFromServer = useCallback((key: string) => {
     if (documentConflict?.key !== key) return;
@@ -390,6 +525,38 @@ export function IssueDocumentsSection({
       setError("Could not copy document");
     }
   }, []);
+
+  const getDocumentRevisions = useCallback((key: string) => {
+    const cached = queryClient.getQueryData<DocumentRevision[]>(queryKeys.issues.documentRevisions(issue.id, key));
+    if (cached) return cached;
+    if (revisionMenuOpenKey === key) return activeDocumentRevisions ?? [];
+    return [];
+  }, [activeDocumentRevisions, issue.id, queryClient, revisionMenuOpenKey]);
+
+  const returnToLatestRevision = useCallback((key: string) => {
+    setSelectedRevisionIds((current) => ({ ...current, [key]: null }));
+    setError(null);
+  }, []);
+
+  const previewRevision = useCallback((doc: IssueDocument, revisionId: string) => {
+    const revisionState = deriveDocumentRevisionState(doc, getDocumentRevisions(doc.key));
+    const selectedRevision = revisionState.revisions.find((revision) => revision.id === revisionId);
+    if (!selectedRevision) return;
+    if (selectedRevision.id === revisionState.currentRevision.id) {
+      returnToLatestRevision(doc.key);
+      return;
+    }
+    if (documentConflict?.key === doc.key || documentHasUnsavedChanges(doc, draft)) {
+      setError("Save or cancel your local changes before viewing an older revision.");
+      return;
+    }
+    resetAutosaveState();
+    setDraft((current) => current?.key === doc.key ? null : current);
+    setDocumentConflict((current) => current?.key === doc.key ? null : current);
+    setFoldedDocumentKeys((current) => current.filter((entry) => entry !== doc.key));
+    setSelectedRevisionIds((current) => ({ ...current, [doc.key]: selectedRevision.id }));
+    setError(null);
+  }, [documentConflict, draft, getDocumentRevisions, resetAutosaveState, returnToLatestRevision]);
 
   const handleDraftBlur = async (event: React.FocusEvent<HTMLDivElement>) => {
     if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
@@ -519,21 +686,23 @@ export function IssueDocumentsSection({
   return (
     <div className="space-y-3">
       {isEmpty && !draft?.isNew ? (
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
           {extraActions}
-          <Button variant="outline" size="sm" onClick={beginNewDocument}>
+          <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            New document
+            <span className="hidden sm:inline">New document</span>
+            <span className="sm:hidden">New</span>
           </Button>
         </div>
       ) : (
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Documents</h3>
-          <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
+          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">Documents</h3>
+          <div className="flex flex-wrap items-center gap-2 min-w-0 sm:ml-auto">
             {extraActions}
-            <Button variant="outline" size="sm" onClick={beginNewDocument}>
+            <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
-              New document
+              <span className="hidden sm:inline">New document</span>
+              <span className="sm:hidden">New</span>
             </Button>
           </div>
         </div>
@@ -621,7 +790,23 @@ export function IssueDocumentsSection({
           const activeDraft = draft?.key === doc.key && !draft.isNew ? draft : null;
           const activeConflict = documentConflict?.key === doc.key ? documentConflict : null;
           const isFolded = foldedDocumentKeys.includes(doc.key);
-          const showTitle = !isPlanKey(doc.key) && !!doc.title?.trim() && !titlesMatchKey(doc.title, doc.key);
+          const rawRevisionHistory = getDocumentRevisions(doc.key);
+          const revisionState = deriveDocumentRevisionState(doc, rawRevisionHistory);
+          const revisionHistory = revisionState.revisions;
+          const currentRevision = revisionState.currentRevision;
+          const selectedRevisionId = selectedRevisionIds[doc.key] ?? null;
+          const selectedHistoricalRevision = selectedRevisionId
+            ? revisionHistory.find((revision) => revision.id === selectedRevisionId) ?? null
+            : null;
+          const isHistoricalPreview = Boolean(selectedHistoricalRevision);
+          const displayedTitle = selectedHistoricalRevision
+            ? selectedHistoricalRevision.title ?? ""
+            : activeDraft?.title ?? currentRevision.title ?? "";
+          const displayedBody = selectedHistoricalRevision?.body ?? activeDraft?.body ?? currentRevision.body;
+          const displayedRevisionNumber = selectedHistoricalRevision?.revisionNumber ?? currentRevision.revisionNumber;
+          const displayedUpdatedAt = selectedHistoricalRevision?.createdAt ?? currentRevision.createdAt;
+          const showTitle = !isPlanKey(doc.key) && !!displayedTitle.trim() && !titlesMatchKey(displayedTitle, doc.key);
+          const canVoteOnDocument = Boolean(doc.latestRevisionId && doc.updatedByAgentId && !doc.updatedByUserId && onVote);
 
           return (
             <div
@@ -634,29 +819,83 @@ export function IssueDocumentsSection({
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
                     <button
                       type="button"
-                      className="inline-flex h-5 w-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
                       onClick={() => toggleFoldedDocument(doc.key)}
                       aria-label={isFolded ? `Expand ${doc.key} document` : `Collapse ${doc.key} document`}
                       aria-expanded={!isFolded}
                     >
                       {isFolded ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                     </button>
-                    <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                    <span className="shrink-0 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
                       {doc.key}
                     </span>
+                    <DropdownMenu
+                      open={revisionMenuOpenKey === doc.key}
+                      onOpenChange={(open) => setRevisionMenuOpenKey(open ? doc.key : null)}
+                    >
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className={cn(
+                            "h-auto px-1.5 py-0 text-[11px] font-normal text-muted-foreground hover:text-foreground",
+                            isHistoricalPreview && "text-amber-300 hover:text-amber-200",
+                          )}
+                        >
+                          rev {displayedRevisionNumber}
+                          <ChevronDown className="h-3 w-3" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="w-72">
+                        <DropdownMenuLabel>Revision history</DropdownMenuLabel>
+                        {revisionMenuOpenKey === doc.key && isFetchingDocumentRevisions && rawRevisionHistory.length === 0 ? (
+                          <DropdownMenuItem disabled>Loading revisions...</DropdownMenuItem>
+                        ) : revisionHistory.length > 0 ? (
+                          <DropdownMenuRadioGroup value={selectedRevisionId ?? currentRevision.id ?? ""}>
+                            {revisionHistory.map((revision) => {
+                              const isCurrentRevision = revision.id === currentRevision.id;
+                              return (
+                                <DropdownMenuRadioItem
+                                  key={revision.id}
+                                  value={revision.id}
+                                  onSelect={() => previewRevision(doc, revision.id)}
+                                  className="items-start"
+                                >
+                                  <div className="flex min-w-0 flex-col">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-medium">rev {revision.revisionNumber}</span>
+                                      {isCurrentRevision ? (
+                                        <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                                          Current
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <span className="text-xs text-muted-foreground">
+                                      {relativeTime(revision.createdAt)} • {getRevisionActorLabel(revision)}
+                                    </span>
+                                  </div>
+                                </DropdownMenuRadioItem>
+                              );
+                            })}
+                          </DropdownMenuRadioGroup>
+                        ) : (
+                          <DropdownMenuItem disabled>No revisions yet</DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                     <a
                       href={`#document-${encodeURIComponent(doc.key)}`}
-                      className="text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
+                      className="truncate text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
                     >
-                      rev {doc.latestRevisionNumber} • updated {relativeTime(doc.updatedAt)}
+                      updated {relativeTime(displayedUpdatedAt)}
                     </a>
                   </div>
-                  {showTitle && <p className="mt-2 text-sm font-medium">{doc.title}</p>}
+                  {showTitle && <p className="mt-2 text-sm font-medium">{displayedTitle}</p>}
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 shrink-0">
                   <Button
                     variant="ghost"
                     size="icon-xs"
@@ -665,7 +904,7 @@ export function IssueDocumentsSection({
                       copiedDocumentKey === doc.key && "text-foreground",
                     )}
                     title={copiedDocumentKey === doc.key ? "Copied" : "Copy document"}
-                    onClick={() => void copyDocumentBody(doc.key, activeDraft?.body ?? doc.body)}
+                    onClick={() => void copyDocumentBody(doc.key, displayedBody)}
                   >
                     {copiedDocumentKey === doc.key ? (
                       <Check className="h-3.5 w-3.5" />
@@ -684,13 +923,26 @@ export function IssueDocumentsSection({
                         <MoreHorizontal className="h-3.5 w-3.5" />
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
+                      <DropdownMenuContent align="end">
+                      {!isHistoricalPreview ? (
+                        <DropdownMenuItem onClick={() => beginEdit(doc.key)}>
+                          <FilePenLine className="h-3.5 w-3.5" />
+                          Edit document
+                        </DropdownMenuItem>
+                      ) : null}
+                      {!isHistoricalPreview ? <DropdownMenuSeparator /> : null}
                       <DropdownMenuItem
-                        onClick={() => downloadDocumentFile(doc.key, activeDraft?.body ?? doc.body)}
+                        onClick={() => downloadDocumentFile(doc.key, displayedBody)}
                       >
                         <Download className="h-3.5 w-3.5" />
                         Download document
                       </DropdownMenuItem>
+                      {doc.latestRevisionNumber > 1 ? (
+                        <DropdownMenuItem onClick={() => setDiffViewKey(doc.key)}>
+                          <Diff className="h-3.5 w-3.5" />
+                          View diff
+                        </DropdownMenuItem>
+                      ) : null}
                       {canDeleteDocuments ? <DropdownMenuSeparator /> : null}
                       {canDeleteDocuments ? (
                         <DropdownMenuItem
@@ -709,23 +961,57 @@ export function IssueDocumentsSection({
               {!isFolded ? (
                 <div
                   className="mt-3 space-y-3"
-                  onFocusCapture={() => {
-                    if (!activeDraft) {
-                      beginEdit(doc.key);
-                    }
-                  }}
-                  onBlurCapture={async (event) => {
-                    if (activeDraft) {
-                      await handleDraftBlur(event);
-                    }
-                  }}
-                  onKeyDown={async (event) => {
-                    if (activeDraft) {
-                      await handleDraftKeyDown(event);
-                    }
-                  }}
+                  onBlurCapture={!isHistoricalPreview
+                    ? async (event) => {
+                        if (activeDraft) {
+                          await handleDraftBlur(event);
+                        }
+                      }
+                    : undefined}
+                  onKeyDown={!isHistoricalPreview
+                    ? async (event) => {
+                        if (activeDraft) {
+                          await handleDraftKeyDown(event);
+                        }
+                      }
+                    : undefined}
                 >
-                  {activeConflict && (
+                  {isHistoricalPreview && selectedHistoricalRevision && (
+                    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium text-amber-200">
+                            Viewing revision {selectedHistoricalRevision.revisionNumber}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            This is a historical preview. Restoring it creates a new latest revision and keeps history append-only.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => returnToLatestRevision(doc.key)}
+                          >
+                            Return to latest
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => restoreDocumentRevision.mutate({
+                              key: doc.key,
+                              revisionId: selectedHistoricalRevision.id,
+                            })}
+                            disabled={restoreDocumentRevision.isPending}
+                          >
+                            {restoreDocumentRevision.isPending && restoreDocumentRevision.variables?.key === doc.key
+                              ? "Restoring..."
+                              : "Restore this revision"}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {activeConflict && !isHistoricalPreview && (
                     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
@@ -786,7 +1072,7 @@ export function IssueDocumentsSection({
                       )}
                     </div>
                   )}
-                  {activeDraft && !isPlanKey(doc.key) && (
+                  {activeDraft && !isPlanKey(doc.key) && !isHistoricalPreview && (
                     <Input
                       value={activeDraft.title}
                       onChange={(event) => {
@@ -798,47 +1084,55 @@ export function IssueDocumentsSection({
                   )}
                   <div
                     className={`${documentBodyShellClassName} ${documentBodyPaddingClassName} ${
-                      activeDraft ? "" : "hover:bg-accent/10"
+                      activeDraft || isHistoricalPreview ? "" : "hover:bg-accent/10"
                     }`}
                   >
-                    <MarkdownEditor
-                      value={activeDraft?.body ?? doc.body}
-                      onChange={(body) => {
-                        markDocumentDirty(doc.key);
-                        setDraft((current) => {
-                          if (current && current.key === doc.key && !current.isNew) {
-                            return { ...current, body };
-                          }
-                          return {
-                            key: doc.key,
-                            title: doc.title ?? "",
-                            body,
-                            baseRevisionId: doc.latestRevisionId,
-                            isNew: false,
-                          };
-                        });
-                      }}
-                      placeholder="Markdown body"
-                      bordered={false}
-                      className="bg-transparent"
-                      contentClassName={documentBodyContentClassName}
-                      mentions={mentions}
-                      imageUploadHandler={imageUploadHandler}
-                      onSubmit={() => void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })}
-                    />
+                    {isHistoricalPreview ? (
+                      <div className="rounded-md border border-amber-500/20 bg-background/50 p-3">
+                        {renderBody(displayedBody, documentBodyContentClassName)}
+                      </div>
+                    ) : activeDraft ? (
+                      <MarkdownEditor
+                        value={displayedBody}
+                        onChange={(body) => {
+                          markDocumentDirty(doc.key);
+                          setDraft((current) => {
+                            if (current && current.key === doc.key && !current.isNew) {
+                              return { ...current, body };
+                            }
+                            return current;
+                          });
+                        }}
+                        placeholder="Markdown body"
+                        bordered={false}
+                        className="bg-transparent"
+                        contentClassName={documentBodyContentClassName}
+                        mentions={mentions}
+                        imageUploadHandler={imageUploadHandler}
+                        onSubmit={() => void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })}
+                      />
+                    ) : (
+                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
+                        {renderBody(displayedBody, documentBodyContentClassName)}
+                      </div>
+                    )}
                   </div>
                   <div className="flex min-h-4 items-center justify-end px-1">
                     <span
                       className={`text-[11px] transition-opacity duration-150 ${
-                        activeConflict
+                        isHistoricalPreview
+                          ? "text-amber-300"
+                          : activeConflict
                           ? "text-amber-300"
                           : autosaveState === "error"
                             ? "text-destructive"
                             : "text-muted-foreground"
-                      } ${activeDraft ? "opacity-100" : "opacity-0"}`}
+                      } ${activeDraft || isHistoricalPreview ? "opacity-100" : "opacity-0"}`}
                     >
-                      {activeDraft
-                        ? activeConflict
+                      {isHistoricalPreview
+                        ? "Viewing historical revision"
+                        : activeDraft
+                          ? activeConflict
                           ? "Out of date"
                           : autosaveDocumentKey === doc.key
                             ? autosaveState === "saving"
@@ -849,9 +1143,19 @@ export function IssueDocumentsSection({
                                   ? "Could not save"
                                   : ""
                             : ""
-                        : ""}
+                          : ""}
                     </span>
                   </div>
+                  {canVoteOnDocument && doc.latestRevisionId ? (
+                    <OutputFeedbackButtons
+                      activeVote={feedbackVoteByTargetId.get(doc.latestRevisionId) ?? null}
+                      sharingPreference={feedbackDataSharingPreference}
+                      termsUrl={feedbackTermsUrl}
+                      onVote={(vote: FeedbackVoteValue, options?: { allowSharing?: boolean; reason?: string }) =>
+                        onVote?.(doc.latestRevisionId!, vote, options) ?? Promise.resolve()
+                      }
+                    />
+                  ) : null}
                 </div>
               ) : null}
 
@@ -884,6 +1188,20 @@ export function IssueDocumentsSection({
           );
         })}
       </div>
+
+      {diffViewKey && (() => {
+        const diffDoc = sortedDocuments.find((d) => d.key === diffViewKey);
+        if (!diffDoc) return null;
+        return (
+          <DocumentDiffModal
+            issueId={issue.id}
+            documentKey={diffDoc.key}
+            latestRevisionNumber={diffDoc.latestRevisionNumber}
+            open
+            onOpenChange={(open) => { if (!open) setDiffViewKey(null); }}
+          />
+        );
+      })()}
     </div>
   );
 }

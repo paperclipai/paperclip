@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +28,13 @@ console.log(JSON.stringify({
 }
 
 describe("cursor environment diagnostics", () => {
+  beforeEach(() => {
+    vi.stubEnv("CURSOR_API_KEY", "");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("creates a missing working directory when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),
@@ -115,5 +122,74 @@ describe("cursor environment diagnostics", () => {
     expect(args).toContain("--yolo");
     expect(args).not.toContain("--trust");
     await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("emits cursor_native_auth_present when cli-config.json has authInfo and CURSOR_API_KEY is unset", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-cursor-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const cursorHome = path.join(root, ".cursor");
+    const cwd = path.join(root, "workspace");
+
+    try {
+      await fs.mkdir(cursorHome, { recursive: true });
+      await fs.writeFile(
+        path.join(cursorHome, "cli-config.json"),
+        JSON.stringify({
+          authInfo: {
+            email: "test@example.com",
+            displayName: "Test User",
+            userId: 12345,
+          },
+        }),
+      );
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "cursor",
+        config: {
+          command: process.execPath,
+          cwd,
+          env: { CURSOR_HOME: cursorHome },
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "cursor_native_auth_present")).toBe(true);
+      expect(result.checks.some((check) => check.code === "cursor_api_key_missing")).toBe(false);
+      const authCheck = result.checks.find((check) => check.code === "cursor_native_auth_present");
+      expect(authCheck?.detail).toContain("test@example.com");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("emits cursor_api_key_missing when neither env var nor native auth exists", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-cursor-noauth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const cursorHome = path.join(root, ".cursor");
+    const cwd = path.join(root, "workspace");
+
+    try {
+      await fs.mkdir(cursorHome, { recursive: true });
+      // No cli-config.json written
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "cursor",
+        config: {
+          command: process.execPath,
+          cwd,
+          env: { CURSOR_HOME: cursorHome },
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "cursor_api_key_missing")).toBe(true);
+      expect(result.checks.some((check) => check.code === "cursor_native_auth_present")).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

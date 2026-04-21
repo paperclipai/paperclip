@@ -118,10 +118,13 @@ Subscribe in `setup` with `ctx.events.on(name, handler)` or `ctx.events.on(name,
 | `project.created`, `project.updated` | project |
 | `project.workspace_created`, `project.workspace_updated`, `project.workspace_deleted` | project_workspace |
 | `issue.created`, `issue.updated`, `issue.comment.created` | issue |
+| `issue.document.created`, `issue.document.updated`, `issue.document.deleted` | issue |
+| `issue.relations.updated`, `issue.checked_out`, `issue.released`, `issue.assignment_wakeup_requested` | issue |
 | `agent.created`, `agent.updated`, `agent.status_changed` | agent |
 | `agent.run.started`, `agent.run.finished`, `agent.run.failed`, `agent.run.cancelled` | run |
 | `goal.created`, `goal.updated` | goal |
 | `approval.created`, `approval.decided` | approval |
+| `budget.incident.opened`, `budget.incident.resolved` | budget_incident |
 | `cost_event.created` | cost |
 | `activity.logged` | activity |
 
@@ -301,17 +304,29 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `project.workspaces.read` |
 | | `issues.read` |
 | | `issue.comments.read` |
+| | `issue.documents.read` |
+| | `issue.relations.read` |
+| | `issue.subtree.read` |
 | | `agents.read` |
 | | `goals.read` |
 | | `goals.create` |
 | | `goals.update` |
 | | `activity.read` |
 | | `costs.read` |
+| | `issues.orchestration.read` |
+| | `database.namespace.read` |
 | | `issues.create` |
 | | `issues.update` |
+| | `issues.checkout` |
+| | `issues.wakeup` |
 | | `issue.comments.create` |
+| | `issue.documents.write` |
+| | `issue.relations.write` |
 | | `activity.log.write` |
 | | `metrics.write` |
+| | `telemetry.track` |
+| | `database.namespace.migrate` |
+| | `database.namespace.write` |
 | **Instance** | `instance.settings.register` |
 | | `plugin.state.read` |
 | | `plugin.state.write` |
@@ -319,6 +334,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `events.emit` |
 | | `jobs.schedule` |
 | | `webhooks.receive` |
+| | `api.routes.register` |
 | | `http.outbound` |
 | | `secrets.read-ref` |
 | **Agent** | `agent.tools.register` |
@@ -335,6 +351,144 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `ui.action.register` |
 
 Full list in code: import `PLUGIN_CAPABILITIES` from `@paperclipai/plugin-sdk`.
+
+### Restricted Database Namespace
+
+Trusted orchestration plugins can declare a host-owned PostgreSQL namespace:
+
+```ts
+database: {
+  migrationsDir: "migrations",
+  coreReadTables: ["issues"],
+}
+```
+
+Declare `database.namespace.migrate` and `database.namespace.read`; add
+`database.namespace.write` when the worker needs runtime writes. Migrations run
+before worker startup, are checksum-recorded, and may create or alter objects
+only inside the plugin namespace. Runtime `ctx.db.query()` allows `SELECT` from
+`ctx.db.namespace` plus manifest-whitelisted `public` core tables. Runtime
+`ctx.db.execute()` allows `INSERT`, `UPDATE`, and `DELETE` only against the
+plugin namespace.
+
+### Scoped API Routes
+
+Manifest-declared `apiRoutes` expose JSON routes under
+`/api/plugins/:pluginId/api/*` without letting a plugin claim core paths:
+
+```ts
+apiRoutes: [
+  {
+    routeKey: "initialize",
+    method: "POST",
+    path: "/issues/:issueId/smoke",
+    auth: "board-or-agent",
+    capability: "api.routes.register",
+    checkoutPolicy: "required-for-agent-in-progress",
+    companyResolution: { from: "issue", param: "issueId" },
+  },
+]
+```
+
+Implement `onApiRequest(input)` in the worker to handle the route. The host
+performs auth, company access, capability, route matching, and checkout policy
+before dispatch. The worker receives route params, query, parsed JSON body,
+sanitized headers, actor context, and `companyId`; responses are JSON `{ status?,
+headers?, body? }`.
+
+## Issue Orchestration APIs
+
+Workflow plugins can use `ctx.issues` for orchestration-grade issue operations without importing host server internals.
+
+Expanded create/update fields include blockers, billing code, board or agent assignees, labels, namespaced plugin origins, request depth, and safe execution workspace fields:
+
+```ts
+const child = await ctx.issues.create({
+  companyId,
+  parentId: missionIssueId,
+  inheritExecutionWorkspaceFromIssueId: missionIssueId,
+  title: "Implement feature slice",
+  status: "todo",
+  assigneeAgentId: workerAgentId,
+  billingCode: "mission:alpha",
+  originKind: "plugin:paperclip.missions:feature",
+  originId: "mission-alpha:feature-1",
+  blockedByIssueIds: [planningIssueId],
+});
+```
+
+If `originKind` is omitted, the host stores `plugin:<pluginKey>`. Plugins may use sub-kinds such as `plugin:<pluginKey>:feature`, but the host rejects attempts to set another plugin's namespace.
+
+Blocker relationships are also exposed as first-class helpers:
+
+```ts
+const relations = await ctx.issues.relations.get(child.id, companyId);
+await ctx.issues.relations.setBlockedBy(child.id, [planningIssueId], companyId);
+await ctx.issues.relations.addBlockers(child.id, [validationIssueId], companyId);
+await ctx.issues.relations.removeBlockers(child.id, [planningIssueId], companyId);
+```
+
+Subtree reads can include just the issue tree, or compact related data for orchestration dashboards:
+
+```ts
+const subtree = await ctx.issues.getSubtree(missionIssueId, companyId, {
+  includeRoot: true,
+  includeRelations: true,
+  includeDocuments: true,
+  includeActiveRuns: true,
+  includeAssignees: true,
+});
+```
+
+Agent-run actions can assert checkout ownership before mutating in-progress work:
+
+```ts
+await ctx.issues.assertCheckoutOwner({
+  issueId,
+  companyId,
+  actorAgentId: runCtx.agentId,
+  actorRunId: runCtx.runId,
+});
+```
+
+Plugins can request assignment wakeups through the host so budget stops, execution locks, blocker checks, and heartbeat policy still apply:
+
+```ts
+await ctx.issues.requestWakeup(child.id, companyId, {
+  reason: "mission_advance",
+  contextSource: "missions.advance",
+});
+
+await ctx.issues.requestWakeups([featureIssueId, validationIssueId], companyId, {
+  reason: "mission_advance",
+  contextSource: "missions.advance",
+  idempotencyKeyPrefix: `mission:${missionIssueId}:advance`,
+});
+```
+
+Use `ctx.issues.summaries.getOrchestration()` when a workflow needs compact reads across a root issue or subtree:
+
+```ts
+const summary = await ctx.issues.summaries.getOrchestration({
+  issueId: missionIssueId,
+  companyId,
+  includeSubtree: true,
+  billingCode: "mission:alpha",
+});
+```
+
+Required capabilities:
+
+| API | Capability |
+|-----|------------|
+| `ctx.issues.relations.get` | `issue.relations.read` |
+| `ctx.issues.relations.setBlockedBy` / `addBlockers` / `removeBlockers` | `issue.relations.write` |
+| `ctx.issues.getSubtree` | `issue.subtree.read` |
+| `ctx.issues.assertCheckoutOwner` | `issues.checkout` |
+| `ctx.issues.requestWakeup` / `requestWakeups` | `issues.wakeup` |
+| `ctx.issues.summaries.getOrchestration` | `issues.orchestration.read` |
+
+Plugin-originated mutations are logged with `actorType: "plugin"` and details fields `sourcePluginId`, `sourcePluginKey`, `initiatingActorType`, `initiatingActorId`, and `initiatingRunId` when a user or agent run initiated the plugin work.
 
 ## UI quick start
 
