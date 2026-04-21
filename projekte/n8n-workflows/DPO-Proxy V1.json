@@ -1,0 +1,120 @@
+{
+  "name": "DPO-Proxy V1",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [260, 300],
+      "id": "trigger-1",
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://192.168.2.10:4711/anonymize",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"{{ $json.prompt }}\",\n  \"targetLlm\": \"{{ $json.targetLlm }}\",\n  \"agent\": \"{{ $json.agent }}\"\n}",
+        "options": { "timeout": 60000 }
+      },
+      "name": "Anonymize",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [500, 300],
+      "id": "anon-1",
+      "typeVersion": 4.2,
+      "credentials": { "httpHeaderAuth": { "id": "DPO_SHARED_KEY_CRED_ID", "name": "DPO Shared Key" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            { "leftValue": "={{ $json.blocked }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "name": "Blocked?",
+      "type": "n8n-nodes-base.if",
+      "position": [740, 300],
+      "id": "if-1",
+      "typeVersion": 2.1
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $('When Executed by Another Workflow').item.json.model }}\",\n  \"messages\": [\n    {\"role\": \"user\", \"content\": \"{{ $json.anonymizedText }}\"}\n  ]\n}",
+        "options": { "timeout": 120000 }
+      },
+      "name": "OpenAI Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [980, 400],
+      "id": "openai-1",
+      "typeVersion": 4.2,
+      "credentials": { "openAiApi": { "id": "OPENAI_CRED_ID", "name": "OpenAI API" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://192.168.2.10:4711/deanonymize",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"mappingId\": \"{{ $('Anonymize').item.json.mappingId }}\",\n  \"text\": \"{{ $json.choices[0].message.content }}\"\n}",
+        "options": { "timeout": 60000 }
+      },
+      "name": "Deanonymize",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1220, 400],
+      "id": "deanon-1",
+      "typeVersion": 4.2,
+      "credentials": { "httpHeaderAuth": { "id": "DPO_SHARED_KEY_CRED_ID", "name": "DPO Shared Key" } }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ blocked: false, text: $input.first().json.text }];"
+      },
+      "name": "Format Success",
+      "type": "n8n-nodes-base.code",
+      "position": [1460, 400],
+      "id": "fmt-success",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ blocked: true, reason: $input.first().json.reason }];"
+      },
+      "name": "Format Blocked",
+      "type": "n8n-nodes-base.code",
+      "position": [980, 200],
+      "id": "fmt-blocked",
+      "typeVersion": 2
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": { "main": [[{ "node": "Anonymize", "type": "main", "index": 0 }]] },
+    "Anonymize": { "main": [[{ "node": "Blocked?", "type": "main", "index": 0 }]] },
+    "Blocked?": {
+      "main": [
+        [{ "node": "Format Blocked", "type": "main", "index": 0 }],
+        [{ "node": "OpenAI Call", "type": "main", "index": 0 }]
+      ]
+    },
+    "OpenAI Call": { "main": [[{ "node": "Deanonymize", "type": "main", "index": 0 }]] },
+    "Deanonymize": { "main": [[{ "node": "Format Success", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}
