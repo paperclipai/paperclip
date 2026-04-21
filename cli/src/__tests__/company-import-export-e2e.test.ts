@@ -269,6 +269,8 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     });
 
     await waitForServer(apiBase, child, output);
+  // 120s: spawning a real pnpm server + embedded Postgres + schema migrations reliably takes 60-90s
+  // on cold CI runners; the original 60s caused intermittent timeouts in CI.
   }, 120_000);
 
   afterAll(async () => {
@@ -498,5 +500,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
 
     expect(importedFromZip.company.action).toBe("created");
     expect(importedFromZip.agents.some((agent) => agent.action === "created")).toBe(true);
+  // 120s: full export+import round-trip includes real HTTP calls against the spawned server
+  // and embedded Postgres; 60s was not sufficient on slow CI runners.
   }, 120_000);
 });

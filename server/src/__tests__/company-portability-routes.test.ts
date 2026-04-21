@@ -39,16 +39,8 @@ const mockFeedbackService = vi.hoisted(() => ({
   saveIssueVote: vi.fn(),
 }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  budgetService: () => mockBudgetService,
-  companyPortabilityService: () => mockCompanyPortabilityService,
-  companyService: () => mockCompanyService,
-  feedbackService: () => mockFeedbackService,
-  logActivity: mockLogActivity,
-}));
-
+// vi.doMock inside registerModuleMocks() re-registers after each vi.resetModules() call,
+// which is the actual effective registration. The top-level vi.mock is not needed.
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
