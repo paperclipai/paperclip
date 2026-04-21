@@ -38,6 +38,8 @@
 
 -
 
+> For core feature work, check [`ROADMAP.md`](ROADMAP.md) first and discuss it in `#dev` before opening the PR. Feature PRs that overlap with planned core work may need to be redirected — check the roadmap first. See `CONTRIBUTING.md`.
+
 ## Model Used
 
 <!--
@@ -57,6 +59,7 @@
 
 - [ ] I have included a thinking path that traces from project context to this change
 - [ ] I have specified the model used (with version and capability details)
+- [ ] I have checked ROADMAP.md and confirmed this PR does not duplicate planned core work
 - [ ] I have run tests locally and they pass
 - [ ] I have added or updated tests where applicable
 - [ ] If this change affects the UI, I have included before/after screenshots

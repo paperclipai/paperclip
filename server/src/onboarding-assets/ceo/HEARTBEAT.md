@@ -36,6 +36,15 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - Never retry a 409 -- that task belongs to someone else.
 - Do the work. Update status and comment when done.
 
+Status quick guide:
+
+- `todo`: ready to execute, but not yet checked out.
+- `in_progress`: actively owned work. Agents should reach this by checkout, not by manually flipping status.
+- `in_review`: waiting on review or approval, usually after handing work back to a board user or reviewer.
+- `blocked`: cannot move until something specific changes. Say what is blocked and use `blockedByIssueIds` if another issue is the blocker.
+- `done`: finished.
+- `cancelled`: intentionally dropped.
+
 ## 6. Delegation
 
 - Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.

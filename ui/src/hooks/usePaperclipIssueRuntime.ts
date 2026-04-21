@@ -1,4 +1,10 @@
-import { useExternalStoreRuntime, type ThreadMessage, type AppendMessage } from "@assistant-ui/react";
+import { useEffect, useMemo, useRef } from "react";
+import {
+  useExternalStoreRuntime,
+  type ThreadMessage,
+  type AppendMessage,
+  type ExternalStoreAdapter,
+} from "@assistant-ui/react";
 
 export interface PaperclipIssueRuntimeReassignment {
   assigneeAgentId: string | null;
@@ -37,7 +43,18 @@ export function usePaperclipIssueRuntime({
   onSend,
   onCancel,
 }: UsePaperclipIssueRuntimeOptions) {
-  return useExternalStoreRuntime({
+  const onSendRef = useRef(onSend);
+  const onCancelRef = useRef(onCancel);
+
+  useEffect(() => {
+    onSendRef.current = onSend;
+  }, [onSend]);
+
+  useEffect(() => {
+    onCancelRef.current = onCancel;
+  }, [onCancel]);
+
+  const adapter = useMemo<ExternalStoreAdapter<ThreadMessage>>(() => ({
     messages,
     isRunning,
     onNew: async (message) => {
@@ -57,12 +74,18 @@ export function usePaperclipIssueRuntime({
             }
           : undefined;
 
-      await onSend({
+      await onSendRef.current({
         body,
         reopen: custom?.reopen === true ? true : undefined,
         reassignment,
       });
     },
-    ...(onCancel ? { onCancel } : {}),
-  });
+    ...(onCancel ? {
+      onCancel: async () => {
+        await onCancelRef.current?.();
+      },
+    } : {}),
+  }), [messages, isRunning, !!onCancel]);
+
+  return useExternalStoreRuntime(adapter);
 }
