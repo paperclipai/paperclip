@@ -1,8 +1,9 @@
-import { and, desc, eq, gte, inArray, lt, not } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, not, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, companies, heartbeatRuns } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, issues } from "@paperclipai/db";
 import type {
   AgentServiceHealth,
+  AgentServiceHealthBoardIssueWarning,
   AgentServiceHealthFailureExample,
   AgentServiceHealthReason,
 } from "@paperclipai/shared";
@@ -12,8 +13,10 @@ const LIVE_RUN_STATUSES = ["queued", "running"];
 const RECENT_HEALTHY_RUN_STATUSES = ["succeeded", "running"];
 const RECENT_RUNTIME_FAILURE_STATUSES = ["failed", "timed_out"];
 const STUCK_QUEUED_RUN_MS = 5 * 60 * 1000;
+const STALE_IN_REVIEW_ISSUE_MS = 15 * 60 * 1000;
 const RECENT_RUNTIME_WINDOW_MS = 30 * 60 * 1000;
 const FAILURE_EXAMPLE_LIMIT = 3;
+const BOARD_ISSUE_WARNING_LIMIT = 5;
 
 const RUNTIME_ERROR_CODES = new Set([
   "adapter_failed",
@@ -112,6 +115,8 @@ function buildMessage(reason: AgentServiceHealthReason | null) {
       return "AI agent service is down: queued agent runs have not started for over 5 minutes.";
     case "recent_runtime_failures":
       return "AI agent service is down: recent agent runtime failures are preventing scheduled agents from progressing.";
+    case "stale_in_review_issues":
+      return "Board health needs attention: in-review issues have no execution state or pending wakeup after 15 minutes.";
     default:
       return "AI agent service is healthy.";
   }
@@ -130,8 +135,10 @@ function buildHealth(input: {
   stuckQueuedRunCount: number;
   recentHealthyRunCount: number;
   recentRuntimeFailureAgentCount: number;
+  staleInReviewIssueCount: number;
   latestHeartbeatAt: string | null;
   failureExamples: AgentServiceHealthFailureExample[];
+  boardIssueWarnings: AgentServiceHealthBoardIssueWarning[];
 }): AgentServiceHealth {
   return {
     status: input.status,
@@ -150,9 +157,11 @@ function buildHealth(input: {
       stuckQueuedRunCount: input.stuckQueuedRunCount,
       recentHealthyRunCount: input.recentHealthyRunCount,
       recentRuntimeFailureAgentCount: input.recentRuntimeFailureAgentCount,
+      staleInReviewIssueCount: input.staleInReviewIssueCount,
     },
     latestHeartbeatAt: input.latestHeartbeatAt,
     failureExamples: input.failureExamples,
+    boardIssueWarnings: input.boardIssueWarnings,
   };
 }
 
@@ -165,6 +174,7 @@ export function agentServiceHealthService(db: Db) {
     }): Promise<AgentServiceHealth> => {
       const now = input.now ?? new Date();
       const stuckQueuedBefore = new Date(now.getTime() - STUCK_QUEUED_RUN_MS);
+      const staleInReviewBefore = new Date(now.getTime() - STALE_IN_REVIEW_ISSUE_MS);
       const recentWindowStart = new Date(now.getTime() - RECENT_RUNTIME_WINDOW_MS);
 
       const activeCompanyRows = await db
@@ -241,6 +251,57 @@ export function agentServiceHealthService(db: Db) {
       let recentHealthyRunCount = 0;
       let recentRuntimeFailureAgentCount = 0;
       let failureExamples: AgentServiceHealthFailureExample[] = [];
+      const staleInReviewIssuePredicate = and(
+        eq(companies.status, "active"),
+        eq(issues.status, "in_review"),
+        isNull(issues.hiddenAt),
+        isNull(issues.executionPolicy),
+        isNull(issues.executionState),
+        lt(issues.updatedAt, staleInReviewBefore),
+        sql`not exists (
+          select 1
+          from ${agentWakeupRequests}
+          where ${agentWakeupRequests.companyId} = ${issues.companyId}
+            and ${agentWakeupRequests.status} in ('queued', 'claimed', 'deferred_issue_execution')
+            and ${agentWakeupRequests.payload}->>'issueId' = ${issues.id}::text
+        )`,
+      );
+      const [staleInReviewIssueCountRow] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issues)
+        .innerJoin(companies, eq(issues.companyId, companies.id))
+        .where(staleInReviewIssuePredicate);
+      const staleInReviewIssueCount = staleInReviewIssueCountRow?.count ?? 0;
+      const staleInReviewIssueRows = await db
+        .select({
+          issueId: issues.id,
+          companyId: issues.companyId,
+          companyName: companies.name,
+          companyIssuePrefix: companies.issuePrefix,
+          identifier: issues.identifier,
+          title: issues.title,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeAgentName: agents.name,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .innerJoin(companies, eq(issues.companyId, companies.id))
+        .leftJoin(agents, eq(issues.assigneeAgentId, agents.id))
+        .where(staleInReviewIssuePredicate)
+        .orderBy(issues.updatedAt)
+        .limit(BOARD_ISSUE_WARNING_LIMIT);
+      const boardIssueWarnings: AgentServiceHealthBoardIssueWarning[] = staleInReviewIssueRows.map((row) => ({
+        issueId: row.issueId,
+        companyId: row.companyId,
+        companyName: row.companyName,
+        companyIssuePrefix: row.companyIssuePrefix,
+        identifier: row.identifier,
+        title: row.title,
+        assigneeAgentId: row.assigneeAgentId,
+        assigneeAgentName: row.assigneeAgentName,
+        updatedAt: toIsoString(row.updatedAt) ?? now.toISOString(),
+        message: "manual review or status correction needed",
+      }));
 
       if (schedulerActiveAgentIds.length > 0) {
         const recentRunRows = await db
@@ -306,8 +367,10 @@ export function agentServiceHealthService(db: Db) {
         stuckQueuedRunCount: stuckQueuedRunRows.length,
         recentHealthyRunCount,
         recentRuntimeFailureAgentCount,
+        staleInReviewIssueCount,
         latestHeartbeatAt,
         failureExamples,
+        boardIssueWarnings,
       };
 
       if (!input.heartbeatSchedulerEnabled && eligibleAgentRows.length > 0) {
@@ -329,6 +392,10 @@ export function agentServiceHealthService(db: Db) {
         recentRuntimeFailureAgentCount >= runtimeFailureThreshold
       ) {
         return buildHealth({ ...base, status: "down", reason: "recent_runtime_failures" });
+      }
+
+      if (staleInReviewIssueCount > 0) {
+        return buildHealth({ ...base, status: "down", reason: "stale_in_review_issues" });
       }
 
       return buildHealth({ ...base, status: "healthy", reason: null });

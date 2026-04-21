@@ -47,9 +47,11 @@ function health(overrides: Partial<AgentServiceHealth> = {}): AgentServiceHealth
       stuckQueuedRunCount: 0,
       recentHealthyRunCount: 1,
       recentRuntimeFailureAgentCount: 0,
+      staleInReviewIssueCount: 0,
     },
     latestHeartbeatAt: "2026-04-19T11:59:00.000Z",
     failureExamples: [],
+    boardIssueWarnings: [],
     ...overrides,
   };
 }
@@ -114,6 +116,7 @@ describe("AgentServiceHealthBanner", () => {
         stuckQueuedRunCount: 0,
         recentHealthyRunCount: 0,
         recentRuntimeFailureAgentCount: 0,
+        staleInReviewIssueCount: 0,
       },
     }));
 
@@ -148,6 +151,44 @@ describe("AgentServiceHealthBanner", () => {
     await renderBanner();
 
     expect(container?.textContent).toContain('Latest failure: CEO: Command not found in PATH: "codex"');
+  });
+
+  it("renders stale in-review board health warnings with a board link", async () => {
+    agentServiceHealthApiMock.get.mockResolvedValue(health({
+      status: "down",
+      reason: "stale_in_review_issues",
+      message: "Board health needs attention: in-review issues have no execution state or pending wakeup after 15 minutes.",
+      counts: {
+        activeCompanyCount: 1,
+        eligibleAgentCount: 1,
+        schedulerActiveAgentCount: 1,
+        liveRunCount: 0,
+        stuckQueuedRunCount: 0,
+        recentHealthyRunCount: 1,
+        recentRuntimeFailureAgentCount: 0,
+        staleInReviewIssueCount: 1,
+      },
+      boardIssueWarnings: [{
+        issueId: "issue-1",
+        companyId: "company-1",
+        companyName: "Paperclip",
+        companyIssuePrefix: "PAPA",
+        identifier: "PAPA-18",
+        title: "Implement nested project hierarchy",
+        assigneeAgentId: "agent-1",
+        assigneeAgentName: "Engineer",
+        updatedAt: "2026-04-19T11:30:00.000Z",
+        message: "manual review or status correction needed",
+      }],
+    }));
+
+    await renderBanner();
+
+    expect(container?.textContent).toContain("Board Review Needed");
+    expect(container?.textContent).toContain("PAPA-18: manual review or status correction needed");
+    expect(container?.textContent).toContain("1 manual review needed");
+    const link = container?.querySelector("a") as HTMLAnchorElement | null;
+    expect(link?.getAttribute("href")).toBe("/PAPA/issues");
   });
 
   it("hides silently when the admin-only endpoint returns 403", async () => {

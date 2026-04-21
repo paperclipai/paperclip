@@ -1,14 +1,12 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { agentRoutes } from "../routes/agents.js";
-import { errorHandler } from "../middleware/index.js";
 import { agentServiceHealthService } from "../services/agent-service-health.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -93,11 +91,75 @@ async function insertRun(
   });
 }
 
-function createRouteApp(
+async function insertReviewIssue(
+  db: ReturnType<typeof createDb>,
+  input: {
+    companyId: string;
+    agentId?: string | null;
+    updatedAt?: Date;
+    executionPolicy?: Record<string, unknown> | null;
+    executionState?: Record<string, unknown> | null;
+    identifier?: string;
+  },
+) {
+  const issueId = randomUUID();
+  await db.insert(issues).values({
+    id: issueId,
+    companyId: input.companyId,
+    title: "Review implementation handoff",
+    status: "in_review",
+    boardPosition: 0,
+    priority: "medium",
+    assigneeAgentId: input.agentId ?? null,
+    executionPolicy: input.executionPolicy ?? null,
+    executionState: input.executionState ?? null,
+    identifier: input.identifier ?? `HEALTH-${issueId.slice(0, 8)}`,
+    issueNumber: 1,
+    createdAt: input.updatedAt ?? NOW,
+    updatedAt: input.updatedAt ?? NOW,
+  });
+  return issueId;
+}
+
+async function insertWakeupRequest(
+  db: ReturnType<typeof createDb>,
+  input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    status?: string;
+  },
+) {
+  await db.insert(agentWakeupRequests).values({
+    id: randomUUID(),
+    companyId: input.companyId,
+    agentId: input.agentId,
+    source: "automation",
+    reason: "issue_commented",
+    payload: { issueId: input.issueId },
+    status: input.status ?? "queued",
+    requestedAt: NOW,
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+}
+
+async function createRouteApp(
   db: ReturnType<typeof createDb>,
   actor: Record<string, unknown>,
   opts: { heartbeatSchedulerEnabled?: boolean; heartbeatSchedulerIntervalMs?: number } = {},
 ) {
+  vi.resetModules();
+  vi.doUnmock("../routes/agents.js");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../services/agent-service-health.js");
+  vi.doUnmock("../services/index.js");
+  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/agents.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -119,7 +181,9 @@ describeEmbeddedPostgres("agent service health", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -332,8 +396,76 @@ describeEmbeddedPostgres("agent service health", () => {
     expect(health.counts.recentHealthyRunCount).toBe(1);
   });
 
+  it("flags stale in-review issues without execution state or pending wakeups", async () => {
+    const { companyId, agentId } = await insertCompanyAgent(db);
+    await insertRun(db, { companyId, agentId, status: "succeeded" });
+    const issueId = await insertReviewIssue(db, {
+      companyId,
+      agentId,
+      updatedAt: new Date(NOW.getTime() - 16 * 60 * 1000),
+      identifier: "HEALTH-1",
+    });
+
+    const health = await agentServiceHealthService(db).get({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30_000,
+      now: NOW,
+    });
+
+    expect(health.status).toBe("down");
+    expect(health.reason).toBe("stale_in_review_issues");
+    expect(health.counts.staleInReviewIssueCount).toBe(1);
+    expect(health.boardIssueWarnings).toEqual([
+      expect.objectContaining({
+        issueId,
+        identifier: "HEALTH-1",
+        message: "manual review or status correction needed",
+      }),
+    ]);
+  });
+
+  it("does not flag recent, execution-managed, or wakeup-backed in-review issues", async () => {
+    const { companyId, agentId } = await insertCompanyAgent(db);
+    await insertRun(db, { companyId, agentId, status: "succeeded" });
+    await insertReviewIssue(db, {
+      companyId,
+      agentId,
+      updatedAt: new Date(NOW.getTime() - 14 * 60 * 1000),
+      identifier: "RECENT-1",
+    });
+    await insertReviewIssue(db, {
+      companyId,
+      agentId,
+      updatedAt: new Date(NOW.getTime() - 16 * 60 * 1000),
+      executionState: { status: "pending" },
+      identifier: "EXEC-1",
+    });
+    const wakeupBackedIssueId = await insertReviewIssue(db, {
+      companyId,
+      agentId,
+      updatedAt: new Date(NOW.getTime() - 16 * 60 * 1000),
+      identifier: "WAKE-1",
+    });
+    await insertWakeupRequest(db, {
+      companyId,
+      agentId,
+      issueId: wakeupBackedIssueId,
+    });
+
+    const health = await agentServiceHealthService(db).get({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30_000,
+      now: NOW,
+    });
+
+    expect(health.status).toBe("healthy");
+    expect(health.reason).toBeNull();
+    expect(health.counts.staleInReviewIssueCount).toBe(0);
+    expect(health.boardIssueWarnings).toEqual([]);
+  });
+
   it("requires instance admin access on the route", async () => {
-    const app = createRouteApp(db, {
+    const app = await createRouteApp(db, {
       type: "board",
       userId: "user-1",
       source: "session",
@@ -348,7 +480,7 @@ describeEmbeddedPostgres("agent service health", () => {
 
   it("returns the typed route summary for instance admins", async () => {
     await insertCompanyAgent(db, { heartbeatEnabled: false, intervalSec: 0 });
-    const app = createRouteApp(db, {
+    const app = await createRouteApp(db, {
       type: "board",
       userId: "local-board",
       source: "local_implicit",

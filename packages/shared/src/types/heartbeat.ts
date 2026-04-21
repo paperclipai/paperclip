@@ -148,7 +148,8 @@ export type AgentServiceHealthReason =
   | "scheduler_disabled"
   | "no_scheduler_active_agents"
   | "queued_runs_stuck"
-  | "recent_runtime_failures";
+  | "recent_runtime_failures"
+  | "stale_in_review_issues";
 
 export interface AgentServiceHealthFailureExample {
   runId: string;
@@ -162,6 +163,19 @@ export interface AgentServiceHealthFailureExample {
   errorCode: string | null;
   createdAt: string;
   finishedAt: string | null;
+}
+
+export interface AgentServiceHealthBoardIssueWarning {
+  issueId: string;
+  companyId: string;
+  companyName: string;
+  companyIssuePrefix: string;
+  identifier: string | null;
+  title: string;
+  assigneeAgentId: string | null;
+  assigneeAgentName: string | null;
+  updatedAt: string;
+  message: "manual review or status correction needed";
 }
 
 export interface AgentServiceHealth {
@@ -181,7 +195,9 @@ export interface AgentServiceHealth {
     stuckQueuedRunCount: number;
     recentHealthyRunCount: number;
     recentRuntimeFailureAgentCount: number;
+    staleInReviewIssueCount: number;
   };
   latestHeartbeatAt: string | null;
   failureExamples: AgentServiceHealthFailureExample[];
+  boardIssueWarnings: AgentServiceHealthBoardIssueWarning[];
 }

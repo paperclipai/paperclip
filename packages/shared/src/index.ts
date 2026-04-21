@@ -358,6 +358,7 @@ export type {
   AgentServiceHealthStatus,
   AgentServiceHealthReason,
   AgentServiceHealthFailureExample,
+  AgentServiceHealthBoardIssueWarning,
   LiveEvent,
   DashboardCodexProjectsEstimate,
   DashboardSummary,

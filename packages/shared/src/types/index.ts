@@ -218,6 +218,7 @@ export type {
   AgentServiceHealthStatus,
   AgentServiceHealthReason,
   AgentServiceHealthFailureExample,
+  AgentServiceHealthBoardIssueWarning,
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
 export type { DashboardCodexProjectsEstimate, DashboardSummary } from "./dashboard.js";
