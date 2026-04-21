@@ -304,6 +304,7 @@ describe("board API key routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ revoked: true, keyId: "key-1" });
+      expect(mockBoardAuthService.revokeBoardApiKey).toHaveBeenCalledWith("key-1", "user-1");
       expect(mockLogActivity).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -313,25 +314,19 @@ describe("board API key routes", () => {
       );
     });
 
-    it("returns 404 when key not found or belongs to another user", async () => {
-      mockBoardAuthService.revokeBoardApiKey.mockResolvedValue({
-        id: "key-other",
-        userId: "user-2",
-      });
-
-      const app = await createApp(SESSION_BOARD_ACTOR);
-      const res = await request(app).delete("/api/board-api-keys/key-other");
-
-      expect(res.status).toBe(404);
-    });
-
-    it("returns 404 when revoke returns null (already revoked or missing)", async () => {
+    it("returns 404 when key belongs to another user (SQL ownership guard)", async () => {
+      // Service enforces ownership in WHERE clause — null result = not owned or not found.
       mockBoardAuthService.revokeBoardApiKey.mockResolvedValue(null);
 
       const app = await createApp(SESSION_BOARD_ACTOR);
-      const res = await request(app).delete("/api/board-api-keys/key-gone");
+      const res = await request(app).delete("/api/board-api-keys/key-belonging-to-other-user");
 
       expect(res.status).toBe(404);
+      expect(mockBoardAuthService.revokeBoardApiKey).toHaveBeenCalledWith(
+        "key-belonging-to-other-user",
+        "user-1",
+      );
+      expect(mockLogActivity).not.toHaveBeenCalled();
     });
 
     it("rejects when called with a board API key", async () => {

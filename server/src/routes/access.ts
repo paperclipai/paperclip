@@ -2624,7 +2624,7 @@ export function accessRoutes(
       req.actor.keyId,
       req.actor.userId,
     );
-    await boardAuth.revokeBoardApiKey(key.id);
+    await boardAuth.revokeBoardApiKey(key.id, key.userId);
     const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
       userId: key.userId,
       boardApiKeyId: key.id,
@@ -2710,8 +2710,8 @@ export function accessRoutes(
     assertSessionBoard(req);
     const userId = req.actor.userId!;
     const keyId = req.params.id as string;
-    const revoked = await boardAuth.revokeBoardApiKey(keyId);
-    if (!revoked || revoked.userId !== userId) {
+    const revoked = await boardAuth.revokeBoardApiKey(keyId, userId);
+    if (!revoked) {
       throw notFound("Board API key not found");
     }
     const actor = getActorInfo(req);

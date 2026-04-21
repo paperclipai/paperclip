@@ -150,12 +150,16 @@ export function boardAuthService(db: Db) {
     await db.update(boardApiKeys).set({ lastUsedAt: new Date() }).where(eq(boardApiKeys.id, id));
   }
 
-  async function revokeBoardApiKey(id: string) {
+  async function revokeBoardApiKey(id: string, userId: string) {
     const now = new Date();
     return db
       .update(boardApiKeys)
       .set({ revokedAt: now, lastUsedAt: now })
-      .where(and(eq(boardApiKeys.id, id), isNull(boardApiKeys.revokedAt)))
+      .where(and(
+        eq(boardApiKeys.id, id),
+        eq(boardApiKeys.userId, userId),
+        isNull(boardApiKeys.revokedAt),
+      ))
       .returning()
       .then((rows) => rows[0] ?? null);
   }
