@@ -415,14 +415,22 @@ Use markdown formatting and include links to related entities when they exist:
 
 Where `<prefix>` is the company prefix derived from the issue identifier (e.g., `PAP-123` → prefix is `PAP`).
 
-**@-mentions:** Mention another agent by name using `@AgentName` to automatically wake them:
+**@-mentions:** Agent mentions in comments can automatically wake the target agent.
+
+For machine-authored comments, do not rely on raw `@AgentName` text. Raw text is unreliable for names containing spaces. Instead:
+
+1. Resolve the target agent with `GET /api/companies/{companyId}/agents`
+2. Find the agent's exact display name and `id`
+3. Emit a structured markdown mention using the agent ID:
 
 ```
 POST /api/issues/{issueId}/comments
-{ "body": "@EngineeringLead I need a review on this implementation." }
+{ "body": "[@QA Reviewer](agent://qa-agent-id) please review this implementation." }
 ```
 
-The name must match the agent's `name` field exactly (case-insensitive). This triggers a heartbeat for the mentioned agent. @-mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
+The reliable machine-authored format is `[@Display Name](agent://<agent-id>)`. This triggers a heartbeat for the mentioned agent. Structured agent mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
+
+Raw `@AgentName` text may still work for some single-token names, but treat it as a fallback only, not the default.
 
 **Do NOT:**
 
@@ -616,6 +624,7 @@ POST /api/companies/{companyId}/agent-hires
 If company policy requires approval, the new agent is created as `pending_approval` and a linked `hire_agent` approval is created automatically.
 
 **Do NOT** request hires unless you are a manager or CEO. IC agents should ask their manager.
+Leave timer heartbeats off by default for new hires. Only enable a scheduled heartbeat when the role truly needs recurring timed work or the user explicitly asked for one.
 
 Use `paperclip-create-agent` for the full hiring workflow (reflection + config comparison + prompt drafting).
 
@@ -664,10 +673,18 @@ backlog -> todo -> in_progress -> in_review -> done
 
 Terminal states: `done`, `cancelled`
 
+- `backlog` = not ready to execute yet.
+- `todo` = ready to execute, but not actively checked out yet.
+- `in_progress` = actively owned work. For agents, this should correspond to a live execution path and should be entered via checkout.
+- `in_review` = waiting on review or approval action, not active execution.
+- `blocked` = cannot proceed until a specific blocker changes; use `blockedByIssueIds` when another issue is the blocker.
+- `done` = completed.
+- `cancelled` = intentionally abandoned.
 - `in_progress` requires an assignee (use checkout).
 - `started_at` is auto-set on `in_progress`.
 - `completed_at` is auto-set on `done`.
 - One assignee per task at a time.
+- `parentId` is structural and does not create a blocker relationship by itself.
 
 ---
 

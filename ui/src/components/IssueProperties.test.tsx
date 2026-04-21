@@ -3,7 +3,13 @@
 import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
+import type {
+  ExecutionWorkspace,
+  IssueExecutionPolicy,
+  IssueExecutionState,
+  Project,
+  WorkspaceRuntimeService,
+} from "@paperclipai/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,6 +24,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 }));
 
 const mockIssuesApi = vi.hoisted(() => ({
+  list: vi.fn(),
   listLabels: vi.fn(),
 }));
 
@@ -55,8 +62,10 @@ vi.mock("../hooks/useProjectOrder", () => ({
 
 vi.mock("../lib/recent-assignees", () => ({
   getRecentAssigneeIds: () => [],
+  getRecentAssigneeSelectionIds: () => [],
   sortAgentsByRecency: (agents: unknown[]) => agents,
   trackRecentAssignee: vi.fn(),
+  trackRecentAssigneeUser: vi.fn(),
 }));
 
 vi.mock("../lib/assignees", () => ({
@@ -144,6 +153,132 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
   };
 }
 
+function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}): WorkspaceRuntimeService {
+  return {
+    id: "service-1",
+    companyId: "company-1",
+    projectId: "project-1",
+    projectWorkspaceId: "workspace-main",
+    executionWorkspaceId: "workspace-1",
+    issueId: "issue-1",
+    scopeType: "execution_workspace",
+    scopeId: "workspace-1",
+    serviceName: "web",
+    status: "running",
+    lifecycle: "shared",
+    reuseKey: null,
+    command: "pnpm dev",
+    cwd: "/tmp/paperclip",
+    port: 62475,
+    url: "http://127.0.0.1:62475",
+    provider: "local_process",
+    providerRef: null,
+    ownerAgentId: null,
+    startedByRunId: null,
+    lastUsedAt: new Date("2026-04-06T12:03:00.000Z"),
+    startedAt: new Date("2026-04-06T12:02:00.000Z"),
+    stoppedAt: null,
+    stopPolicy: null,
+    healthStatus: "healthy",
+    createdAt: new Date("2026-04-06T12:02:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:03:00.000Z"),
+    ...overrides,
+  };
+}
+
+function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): ExecutionWorkspace {
+  return {
+    id: "workspace-1",
+    companyId: "company-1",
+    projectId: "project-1",
+    projectWorkspaceId: "workspace-main",
+    sourceIssueId: "issue-1",
+    mode: "isolated_workspace",
+    strategyType: "git_worktree",
+    name: "PAP-1 workspace",
+    status: "active",
+    cwd: "/tmp/paperclip/PAP-1",
+    repoUrl: null,
+    baseRef: "master",
+    branchName: "pap-1-workspace",
+    providerType: "git_worktree",
+    providerRef: "/tmp/paperclip/PAP-1",
+    derivedFromExecutionWorkspaceId: null,
+    lastUsedAt: new Date("2026-04-06T12:04:00.000Z"),
+    openedAt: new Date("2026-04-06T12:01:00.000Z"),
+    closedAt: null,
+    cleanupEligibleAt: null,
+    cleanupReason: null,
+    config: null,
+    metadata: null,
+    runtimeServices: [createRuntimeService()],
+    createdAt: new Date("2026-04-06T12:01:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:04:00.000Z"),
+    ...overrides,
+  };
+}
+
+function createProject(overrides: Partial<Project> = {}): Project {
+  const primaryWorkspace = {
+    id: "workspace-main",
+    companyId: "company-1",
+    projectId: "project-1",
+    name: "Main",
+    sourceType: "local_path" as const,
+    cwd: "/tmp/paperclip",
+    repoUrl: null,
+    repoRef: null,
+    defaultRef: "master",
+    visibility: "default" as const,
+    setupCommand: null,
+    cleanupCommand: null,
+    remoteProvider: null,
+    remoteWorkspaceRef: null,
+    sharedWorkspaceKey: null,
+    metadata: null,
+    runtimeConfig: null,
+    isPrimary: true,
+    runtimeServices: [],
+    createdAt: new Date("2026-04-06T12:00:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+  };
+  return {
+    id: "project-1",
+    companyId: "company-1",
+    urlKey: "project-1",
+    goalId: null,
+    goalIds: [],
+    goals: [],
+    name: "Project",
+    description: null,
+    status: "in_progress",
+    leadAgentId: null,
+    targetDate: null,
+    color: "#6366f1",
+    env: null,
+    pauseReason: null,
+    pausedAt: null,
+    executionWorkspacePolicy: null,
+    codebase: {
+      workspaceId: "workspace-main",
+      repoUrl: null,
+      repoRef: null,
+      defaultRef: "master",
+      repoName: null,
+      localFolder: "/tmp/paperclip",
+      managedFolder: "/tmp/paperclip",
+      effectiveLocalFolder: "/tmp/paperclip",
+      origin: "local_folder",
+    },
+    workspaces: [primaryWorkspace],
+    primaryWorkspace,
+    archivedAt: null,
+    createdAt: new Date("2026-04-06T12:00:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+    ...overrides,
+  };
+}
+
 function createExecutionPolicy(overrides: Partial<IssueExecutionPolicy> = {}): IssueExecutionPolicy {
   return {
     mode: "normal",
@@ -193,6 +328,7 @@ describe("IssueProperties", () => {
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
+    mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
   });
@@ -225,6 +361,175 @@ describe("IssueProperties", () => {
     expect(onAddSubIssue).toHaveBeenCalledTimes(1);
 
     act(() => root.unmount());
+  });
+
+  it("shows a green service link above the workspace row for a live non-main workspace", async () => {
+    mockProjectsApi.list.mockResolvedValue([createProject()]);
+    const serviceUrl = "http://127.0.0.1:62475";
+    const root = renderProperties(container, {
+      issue: createIssue({
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-main",
+        executionWorkspaceId: "workspace-1",
+        currentExecutionWorkspace: createExecutionWorkspace({
+          mode: "isolated_workspace",
+          runtimeServices: [createRuntimeService({ url: serviceUrl, status: "running" })],
+        }),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    const serviceLink = container.querySelector(`a[href="${serviceUrl}"]`);
+    expect(serviceLink).not.toBeNull();
+    expect(serviceLink?.getAttribute("target")).toBe("_blank");
+    expect(serviceLink?.className).toContain("text-emerald");
+    expect((container.textContent ?? "").indexOf("Service")).toBeLessThan(
+      (container.textContent ?? "").indexOf("Workspace"),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("does not show a service link for the main shared workspace", async () => {
+    mockProjectsApi.list.mockResolvedValue([createProject()]);
+    const serviceUrl = "http://127.0.0.1:62475";
+    const root = renderProperties(container, {
+      issue: createIssue({
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-main",
+        executionWorkspaceId: "workspace-1",
+        currentExecutionWorkspace: createExecutionWorkspace({
+          mode: "shared_workspace",
+          projectWorkspaceId: "workspace-main",
+          runtimeServices: [createRuntimeService({ url: serviceUrl, status: "running" })],
+        }),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.querySelector(`a[href="${serviceUrl}"]`)).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("shows an add-label button when labels already exist and opens the picker", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        labels: [{ id: "label-1", companyId: "company-1", name: "Bug", color: "#ef4444", createdAt: new Date("2026-04-06T12:00:00.000Z"), updatedAt: new Date("2026-04-06T12:00:00.000Z") }],
+        labelIds: ["label-1"],
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    const addLabelButton = container.querySelector('button[aria-label="Add label"]');
+    expect(addLabelButton).not.toBeNull();
+    expect(container.querySelector('input[placeholder="Search labels..."]')).toBeNull();
+
+    await act(async () => {
+      addLabelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('input[placeholder="Search labels..."]')).not.toBeNull();
+    expect(container.querySelector('button[title="Delete Bug"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("allows setting and clearing a parent issue from the properties pane", async () => {
+    const onUpdate = vi.fn();
+    mockIssuesApi.list.mockResolvedValue([
+      createIssue({ id: "issue-2", identifier: "PAP-2", title: "Candidate parent", status: "in_progress" }),
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const parentTrigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("No parent"));
+    expect(parentTrigger).not.toBeUndefined();
+
+    await act(async () => {
+      parentTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const candidateButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("PAP-2 Candidate parent"));
+    expect(candidateButton).not.toBeUndefined();
+
+    await act(async () => {
+      candidateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ parentId: "issue-2" });
+
+    onUpdate.mockClear();
+    const rerenderedIssue = createIssue({
+      parentId: "issue-2",
+      ancestors: [
+        {
+          id: "issue-2",
+          identifier: "PAP-2",
+          title: "Candidate parent",
+          description: null,
+          status: "in_progress",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+          projectId: null,
+          goalId: null,
+          project: null,
+          goal: null,
+        },
+      ],
+    });
+
+    act(() => root.unmount());
+
+    const rerenderedRoot = renderProperties(container, {
+      issue: rerenderedIssue,
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const selectedParentTrigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("PAP-2 Candidate parent"));
+    expect(selectedParentTrigger).not.toBeUndefined();
+    const parentLink = container.querySelector('a[href="/issues/PAP-2"]');
+    expect(parentLink).not.toBeNull();
+    expect(selectedParentTrigger!.contains(parentLink)).toBe(false);
+
+    await act(async () => {
+      selectedParentTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const clearParentButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("No parent"));
+    expect(clearParentButton).not.toBeUndefined();
+
+    await act(async () => {
+      clearParentButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ parentId: null });
+
+    act(() => rerenderedRoot.unmount());
   });
 
   it("shows a run review action after reviewers are configured and starts execution explicitly when clicked", async () => {

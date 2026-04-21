@@ -395,6 +395,8 @@ Side effects:
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
 
+Detailed ownership, execution, blocker, and crash-recovery semantics are documented in `doc/execution-semantics.md`.
+
 ## 8.3 Approval Status
 
 - `pending -> approved | rejected | cancelled`
@@ -617,7 +619,7 @@ Per-agent schedule fields in `adapter_config`:
 
 - `enabled` boolean
 - `intervalSec` integer (minimum 30)
-- `maxConcurrentRuns` fixed at `1` for V1
+- `maxConcurrentRuns` integer; new agents default to `5`
 
 Scheduler must skip invocation when:
 

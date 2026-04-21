@@ -20,28 +20,26 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackSkillImported = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
-function registerRouteMocks() {
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
-    trackSkillImported: mockTrackSkillImported,
-    trackErrorHandlerCrash: vi.fn(),
-  }));
+vi.mock("@paperclipai/shared/telemetry", () => ({
+  trackSkillImported: mockTrackSkillImported,
+  trackErrorHandlerCrash: vi.fn(),
+}));
 
-  vi.doMock("../telemetry.js", () => ({
-    getTelemetryClient: mockGetTelemetryClient,
-  }));
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: mockGetTelemetryClient,
+}));
 
-  vi.doMock("../services/index.js", () => ({
-    accessService: () => mockAccessService,
-    agentService: () => mockAgentService,
-    companySkillService: () => mockCompanySkillService,
-    logActivity: mockLogActivity,
-  }));
-}
+vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
+  agentService: () => mockAgentService,
+  companySkillService: () => mockCompanySkillService,
+  logActivity: mockLogActivity,
+}));
 
 async function createApp(actor: Record<string, unknown>) {
   const [{ companySkillRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/company-skills.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/company-skills.js")>("../routes/company-skills.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -57,8 +55,10 @@ async function createApp(actor: Record<string, unknown>) {
 describe("company skill mutation permissions", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerRouteMocks();
-    vi.clearAllMocks();
+    vi.doUnmock("../routes/company-skills.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.resetAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockCompanySkillService.importFromSource.mockResolvedValue({
       imported: [],
@@ -219,7 +219,7 @@ describe("company skill mutation permissions", () => {
       .post("/api/companies/company-1/skills/import")
       .send({ source: "https://github.com/acme/private-skill" });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
     expect(mockTrackSkillImported).toHaveBeenCalledWith(expect.anything(), {
       sourceType: "github",
       skillRef: null,

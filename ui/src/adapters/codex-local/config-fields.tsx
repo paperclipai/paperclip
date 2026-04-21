@@ -7,6 +7,10 @@ import {
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
+import {
+  CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
+  isCodexLocalFastModeSupported,
+} from "@paperclipai/adapter-codex-local";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -27,6 +31,14 @@ export function CodexLocalConfigFields({
 }: AdapterConfigFieldsProps) {
   const bypassEnabled =
     config.dangerouslyBypassApprovalsAndSandbox === true || config.dangerouslyBypassSandbox === true;
+  const fastModeEnabled = isCreate
+    ? Boolean(values!.fastMode)
+    : eff("adapterConfig", "fastMode", Boolean(config.fastMode));
+  const currentModel = isCreate
+    ? String(values!.model ?? "")
+    : eff("adapterConfig", "model", String(config.model ?? ""));
+  const fastModeSupported = isCodexLocalFastModeSupported(currentModel);
+  const supportedModelsLabel = CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ");
 
   return (
     <>
@@ -88,6 +100,23 @@ export function CodexLocalConfigFields({
             : mark("adapterConfig", "search", v)
         }
       />
+      <ToggleField
+        label="Fast mode"
+        hint={help.fastMode}
+        checked={fastModeEnabled}
+        onChange={(v) =>
+          isCreate
+            ? set!({ fastMode: v })
+            : mark("adapterConfig", "fastMode", v)
+        }
+      />
+      {fastModeEnabled && (
+        <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+          {fastModeSupported
+            ? "Fast mode consumes credits/tokens much faster than standard Codex runs."
+            : `Fast mode currently only works on ${supportedModelsLabel}. Paperclip will ignore this toggle until the model is switched.`}
+        </div>
+      )}
       <LocalWorkspaceRuntimeFields
         isCreate={isCreate}
         values={values}

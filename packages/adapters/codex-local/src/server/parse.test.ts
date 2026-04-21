@@ -27,6 +27,39 @@ describe("parseCodexJsonl", () => {
       errorMessage: "resume failed",
     });
   });
+
+  it("uses the last agent message as the summary when commentary updates precede the final answer", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "reasoning", text: "Checking the heartbeat procedure" },
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: "I’m checking out the issue and reading the docs now." },
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: "Fixed the issue and verified the targeted tests pass." },
+      }),
+      JSON.stringify({
+        type: "turn.completed",
+        usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 4 },
+      }),
+    ].join("\n");
+
+    expect(parseCodexJsonl(stdout)).toEqual({
+      sessionId: "thread_123",
+      summary: "Fixed the issue and verified the targeted tests pass.",
+      usage: {
+        inputTokens: 10,
+        cachedInputTokens: 2,
+        outputTokens: 4,
+      },
+      errorMessage: null,
+    });
+  });
 });
 
 describe("isCodexUnknownSessionError", () => {

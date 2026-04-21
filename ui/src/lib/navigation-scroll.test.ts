@@ -39,6 +39,46 @@ describe("navigation-scroll", () => {
     ).toBe(false);
   });
 
+  it("resets scroll when navigating directly between issue detail routes", () => {
+    expect(
+      shouldResetScrollOnNavigation({
+        previousPathname: "/issues/PAP-1389",
+        pathname: "/issues/PAP-1346",
+        navigationType: "PUSH",
+        state: null,
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldResetScrollOnNavigation({
+        previousPathname: "/PAP/issues/PAP-1389",
+        pathname: "/PAP/issues/PAP-1346",
+        navigationType: "REPLACE",
+        state: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not treat non-detail issue routes as issue-to-issue navigation", () => {
+    expect(
+      shouldResetScrollOnNavigation({
+        previousPathname: "/projects/project-1/issues/all",
+        pathname: "/issues/PAP-1346",
+        navigationType: "PUSH",
+        state: null,
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldResetScrollOnNavigation({
+        previousPathname: "/issues/PAP-1389",
+        pathname: "/projects/project-1/issues/all",
+        navigationType: "PUSH",
+        state: null,
+      }),
+    ).toBe(false);
+  });
+
   it("does not reset scroll on the initial render or when the pathname is unchanged", () => {
     expect(
       shouldResetScrollOnNavigation({

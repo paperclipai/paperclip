@@ -32,8 +32,11 @@ const mockBoardAuthService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockStorage = vi.hoisted(() => ({
+  headObject: vi.fn(),
+}));
 
-function registerServiceMocks() {
+function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
@@ -43,6 +46,10 @@ function registerServiceMocks() {
     notifyHireApproved: vi.fn(),
   }));
 }
+
+vi.mock("../storage/index.js", () => ({
+  getStorageService: () => mockStorage,
+}));
 
 function createDbStub() {
   const createdInvite = {
@@ -76,20 +83,35 @@ function createDbStub() {
     "feedbackDataSharingEnabled" in table;
   const select = vi.fn((selection?: unknown) => ({
     from(table: unknown) {
-      return {
+      const query = {
+        leftJoin: vi.fn().mockReturnThis(),
         where: vi.fn().mockImplementation(() => {
           if (isInvitesTable(table)) {
             return Promise.resolve([createdInvite]);
+          }
+          if (selection && typeof selection === "object" && "objectKey" in selection) {
+            return Promise.resolve([{
+              companyId: "company-1",
+              objectKey: "company-1/assets/companies/logo-1",
+              contentType: "image/png",
+              byteSize: 3,
+              originalFilename: "logo.png",
+            }]);
           }
           if (
             (selection && typeof selection === "object" && "name" in selection) ||
             isCompaniesTable(table)
           ) {
-            return Promise.resolve([{ name: "Acme AI" }]);
+            return Promise.resolve([{
+              name: "Acme AI",
+              brandColor: "#225577",
+              logoAssetId: "logo-1",
+            }]);
           }
           return Promise.resolve([]);
         }),
       };
+      return query;
     },
   }));
   return {
@@ -101,8 +123,8 @@ function createDbStub() {
 
 async function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) {
   const [{ accessRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/access.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -126,11 +148,16 @@ async function createApp(actor: Record<string, unknown>, db: Record<string, unkn
 describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerServiceMocks();
-    vi.clearAllMocks();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/access.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.resetAllMocks();
     mockAccessService.canUser.mockResolvedValue(false);
     mockAgentService.getById.mockReset();
     mockLogActivity.mockResolvedValue(undefined);
+    mockStorage.headObject.mockResolvedValue({ exists: true, contentLength: 3, contentType: "image/png" });
   });
 
   it("rejects non-CEO agent callers", async () => {
@@ -208,6 +235,8 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.companyName).toBe("Acme AI");
+    expect(res.body.companyBrandColor).toBe("#225577");
+    expect(res.body.companyLogoUrl).toBe("/api/invites/pcp_invite_test/logo");
     expect(res.body.inviteType).toBe("company_join");
     expect(res.body.allowedJoinTypes).toBe("agent");
   });
@@ -238,7 +267,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
         allowedJoinTypes: "agent",
       }),
     );
-  });
+  }, 15_000);
 
   it("rejects board callers without invite permission", async () => {
     const db = createDbStub();

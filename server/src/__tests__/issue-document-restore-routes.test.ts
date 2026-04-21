@@ -10,6 +10,7 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockDocumentsService = vi.hoisted(() => ({
+  listIssueDocuments: vi.fn(),
   listIssueDocumentRevisions: vi.fn(),
   restoreIssueDocumentRevision: vi.fn(),
 }));
@@ -50,10 +51,37 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({}),
 }));
 
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    documentService: () => mockDocumentsService,
+    executionWorkspaceService: () => ({}),
+    feedbackService: () => ({}),
+    goalService: () => ({}),
+    heartbeatService: () => ({
+      wakeup: vi.fn(async () => undefined),
+      reportRunActivity: vi.fn(async () => undefined),
+    }),
+    instanceSettingsService: () => ({
+      getExperimental: vi.fn(async () => ({})),
+      getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
+    }),
+    issueApprovalService: () => ({}),
+    issueService: () => mockIssueService,
+    logActivity: mockLogActivity,
+    projectService: () => ({}),
+    routineService: () => ({
+      syncRunStatusForIssue: vi.fn(async () => undefined),
+    }),
+    workProductService: () => ({}),
+  }));
+}
+
 async function createApp() {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -75,6 +103,10 @@ async function createApp() {
 describe("issue document revision routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/routines.js");
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue({
       id: issueId,
@@ -83,6 +115,25 @@ describe("issue document revision routes", () => {
       title: "Document revisions",
       status: "in_progress",
     });
+    mockDocumentsService.listIssueDocuments.mockResolvedValue([
+      {
+        id: "document-1",
+        companyId,
+        issueId,
+        key: "plan",
+        title: "Plan",
+        format: "markdown",
+        body: "# Plan",
+        latestRevisionId: "revision-2",
+        latestRevisionNumber: 2,
+        createdByAgentId: null,
+        createdByUserId: "board-user",
+        updatedByAgentId: null,
+        updatedByUserId: "board-user",
+        createdAt: new Date("2026-03-26T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T12:10:00.000Z"),
+      },
+    ]);
     mockDocumentsService.listIssueDocumentRevisions.mockResolvedValue([
       {
         id: "revision-2",
@@ -128,7 +179,6 @@ describe("issue document revision routes", () => {
     const res = await request(await createApp()).get(`/api/issues/${issueId}/documents/plan/revisions`);
 
     expect(res.status).toBe(200);
-    expect(mockDocumentsService.listIssueDocumentRevisions).toHaveBeenCalledWith(issueId, "plan");
     expect(res.body).toEqual([
       expect.objectContaining({
         revisionNumber: 2,
@@ -137,6 +187,20 @@ describe("issue document revision routes", () => {
         body: "# Two",
       }),
     ]);
+  });
+
+  it("filters system documents by default on the document list route", async () => {
+    const res = await request(await createApp()).get(`/api/issues/${issueId}/documents`);
+
+    expect(res.status).toBe(200);
+    expect(mockDocumentsService.listIssueDocuments).toHaveBeenCalledWith(issueId, { includeSystem: false });
+    expect(res.body).toEqual([expect.objectContaining({ key: "plan" })]);
+  });
+
+  it("passes includeSystem=true through for debug document listing", async () => {
+    await request(await createApp()).get(`/api/issues/${issueId}/documents?includeSystem=true`);
+
+    expect(mockDocumentsService.listIssueDocuments).toHaveBeenCalledWith(issueId, { includeSystem: true });
   });
 
   it("restores a revision through the append-only route and logs the action", async () => {

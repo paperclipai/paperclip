@@ -1,16 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
+import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap } from "../lib/company-members";
 import { useProjectOrder } from "../hooks/useProjectOrder";
-import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import {
+  getRecentAssigneeIds,
+  getRecentAssigneeSelectionIds,
+  sortAgentsByRecency,
+  trackRecentAssignee,
+  trackRecentAssigneeUser,
+} from "../lib/recent-assignees";
+import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
+import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
 import { StatusIcon } from "./StatusIcon";
@@ -20,7 +30,7 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, GitBranch, FolderOpen, Copy, Check } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
@@ -39,17 +49,15 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.C
   return (
     <div className="flex items-start gap-1.5 min-w-0 flex-1">
       <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
-      <span className="text-sm font-mono min-w-0 break-all">
-        {value}
-      </span>
       <button
         type="button"
-        className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+        className="text-sm font-mono min-w-0 break-all text-left cursor-pointer hover:text-foreground transition-colors"
         onClick={handleCopy}
-        title={copied ? "Copied!" : "Copy"}
+        title={copied ? "Copied!" : "Click to copy"}
       >
-        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+        {value}
       </button>
+      {copied && <Check className="h-3 w-3 text-green-500 shrink-0 mt-0.5" />}
     </div>
   );
 }
@@ -72,6 +80,35 @@ function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePo
   return "shared_workspace";
 }
 
+function primaryWorkspaceIdForProject(project: Pick<Project, "primaryWorkspace" | "workspaces"> | null | undefined) {
+  return project?.primaryWorkspace?.id
+    ?? project?.workspaces.find((workspace) => workspace.isPrimary)?.id
+    ?? project?.workspaces[0]?.id
+    ?? null;
+}
+
+function isMainIssueWorkspace(input: {
+  issue: Pick<Issue, "projectWorkspaceId" | "currentExecutionWorkspace">;
+  project: Pick<Project, "primaryWorkspace" | "workspaces"> | null | undefined;
+}) {
+  const workspace = input.issue.currentExecutionWorkspace ?? null;
+  const primaryWorkspaceId = primaryWorkspaceIdForProject(input.project);
+  const linkedProjectWorkspaceId = workspace?.projectWorkspaceId ?? input.issue.projectWorkspaceId ?? null;
+  if (workspace) {
+    if (workspace.mode !== "shared_workspace") return false;
+    if (!linkedProjectWorkspaceId || !primaryWorkspaceId) return true;
+    return workspace.mode === "shared_workspace" && linkedProjectWorkspaceId === primaryWorkspaceId;
+  }
+  if (!linkedProjectWorkspaceId || !primaryWorkspaceId) return true;
+  return linkedProjectWorkspaceId === primaryWorkspaceId;
+}
+
+function runningRuntimeServiceWithUrl(
+  runtimeServices: WorkspaceRuntimeService[] | null | undefined,
+) {
+  return runtimeServices?.find((service) => service.status === "running" && service.url?.trim()) ?? null;
+}
+
 interface IssuePropertiesProps {
   issue: Issue;
   childIssues?: Issue[];
@@ -82,9 +119,9 @@ interface IssuePropertiesProps {
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-3 py-1.5">
-      <span className="text-xs text-muted-foreground shrink-0 w-20">{label}</span>
-      <div className="flex items-center gap-1.5 min-w-0 flex-1">{children}</div>
+    <div className="flex items-start gap-3 py-1.5">
+      <span className="text-xs text-muted-foreground shrink-0 w-20 mt-0.5">{label}</span>
+      <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">{children}</div>
     </div>
   );
 }
@@ -114,7 +151,7 @@ function PropertyPicker({
   children: React.ReactNode;
 }) {
   const btnCn = cn(
-    "inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors",
+    "inline-flex items-start gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors min-w-0 max-w-full text-left",
     triggerClassName,
   );
 
@@ -167,6 +204,8 @@ export function IssueProperties({
   const [projectSearch, setProjectSearch] = useState("");
   const [blockedByOpen, setBlockedByOpen] = useState(false);
   const [blockedBySearch, setBlockedBySearch] = useState("");
+  const [parentOpen, setParentOpen] = useState(false);
+  const [parentSearch, setParentSearch] = useState("");
   const [reviewersOpen, setReviewersOpen] = useState(false);
   const [reviewerSearch, setReviewerSearch] = useState("");
   const [approversOpen, setApproversOpen] = useState(false);
@@ -185,6 +224,11 @@ export function IssueProperties({
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId!),
     queryFn: () => agentsApi.list(companyId!),
+    enabled: !!companyId,
+  });
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(companyId!),
+    queryFn: () => accessApi.listUserDirectory(companyId!),
     enabled: !!companyId,
   });
 
@@ -212,7 +256,7 @@ export function IssueProperties({
   const { data: allIssues } = useQuery({
     queryKey: queryKeys.issues.list(companyId!),
     queryFn: () => issuesApi.list(companyId!),
-    enabled: !!companyId && blockedByOpen,
+    enabled: !!companyId && (blockedByOpen || parentOpen),
   });
 
   const createLabel = useMutation({
@@ -221,15 +265,6 @@ export function IssueProperties({
       await queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
       onUpdate({ labelIds: [...(issue.labelIds ?? []), created.id] });
       setNewLabelName("");
-    },
-  });
-
-  const deleteLabel = useMutation({
-    mutationFn: (labelId: string) => issuesApi.deleteLabel(labelId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
     },
   });
 
@@ -255,6 +290,11 @@ export function IssueProperties({
   const currentProject = issue.projectId
     ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
     : null;
+  const issueProject = issue.project ?? currentProject;
+  const liveWorkspaceService = useMemo(() => {
+    if (isMainIssueWorkspace({ issue, project: issueProject })) return null;
+    return runningRuntimeServiceWithUrl(issue.currentExecutionWorkspace?.runtimeServices);
+  }, [issue, issueProject]);
   const projectLink = (id: string | null) => {
     if (!id) return null;
     const project = projects?.find((p) => p.id === id) ?? null;
@@ -262,9 +302,23 @@ export function IssueProperties({
   };
 
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [assigneeOpen]);
+  const recentAssigneeSelectionIds = useMemo(() => getRecentAssigneeSelectionIds(), [assigneeOpen]);
   const sortedAgents = useMemo(
     () => sortAgentsByRecency((agents ?? []).filter((a) => a.status !== "terminated"), recentAssigneeIds),
     [agents, recentAssigneeIds],
+  );
+  const recentAssigneeValues = useMemo(
+    () => recentAssigneeSelectionIds,
+    [recentAssigneeSelectionIds],
+  );
+  const recentProjectIds = useMemo(() => getRecentProjectIds(), [projectOpen]);
+  const userLabelMap = useMemo(
+    () => buildCompanyUserLabelMap(companyMembers?.users),
+    [companyMembers?.users],
+  );
+  const otherUserOptions = useMemo(
+    () => buildCompanyUserInlineOptions(companyMembers?.users, { excludeUserIds: [currentUserId, issue.createdByUserId] }),
+    [companyMembers?.users, currentUserId, issue.createdByUserId],
   );
 
   const assignee = issue.assigneeAgentId
@@ -272,9 +326,14 @@ export function IssueProperties({
     : null;
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
-  const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId);
+  const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
+  const selectedAssigneeValue = issue.assigneeAgentId
+    ? `agent:${issue.assigneeAgentId}`
+    : issue.assigneeUserId
+      ? `user:${issue.assigneeUserId}`
+      : "";
   const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
     onUpdate({
       executionPolicy: buildExecutionPolicy({
@@ -304,10 +363,10 @@ export function IssueProperties({
     return value;
   };
   const reviewerTrigger = reviewerValues.length > 0
-    ? <span className="text-sm truncate">{reviewerValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
+    ? <span className="text-sm break-words min-w-0">{reviewerValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
     : <span className="text-sm text-muted-foreground">None</span>;
   const approverTrigger = approverValues.length > 0
-    ? <span className="text-sm truncate">{approverValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
+    ? <span className="text-sm break-words min-w-0">{approverValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
     : <span className="text-sm text-muted-foreground">None</span>;
   const nextRunnableExecutionStage = (() => {
     if (issue.executionState?.status === "changes_requested" && issue.executionState.currentStageType) {
@@ -369,6 +428,17 @@ export function IssueProperties({
       <span className="text-sm text-muted-foreground">No labels</span>
     </>
   );
+  const labelsExtra = (issue.labelIds ?? []).length > 0 ? (
+    <button
+      type="button"
+      className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+      onClick={() => setLabelsOpen(true)}
+      aria-label="Add label"
+      title="Add label"
+    >
+      <Plus className="h-3 w-3" />
+    </button>
+  ) : undefined;
 
   const labelsContent = (
     <>
@@ -388,26 +458,17 @@ export function IssueProperties({
           .map((label) => {
             const selected = (issue.labelIds ?? []).includes(label.id);
             return (
-              <div key={label.id} className="flex items-center gap-1">
-                <button
-                  className={cn(
-                    "flex items-center gap-2 flex-1 px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
-                    selected && "bg-accent"
-                  )}
-                  onClick={() => toggleLabel(label.id)}
-                >
-                  <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: label.color }} />
-                  <span className="truncate">{label.name}</span>
-                </button>
-                <button
-                  type="button"
-                  className="p-1 text-muted-foreground hover:text-destructive rounded"
-                  onClick={() => deleteLabel.mutate(label.id)}
-                  title={`Delete ${label.name}`}
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </div>
+              <button
+                key={label.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
+                  selected && "bg-accent"
+                )}
+                onClick={() => toggleLabel(label.id)}
+              >
+                <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: label.color }} />
+                <span className="truncate">{label.name}</span>
+              </button>
             );
           })}
       </div>
@@ -457,6 +518,46 @@ export function IssueProperties({
     </>
   );
 
+  const assigneePickerOptions = orderItemsBySelectedAndRecent(
+    [
+      { id: "", kind: "none" as const, label: "No assignee", searchText: "" },
+      ...(currentUserId
+        ? [{
+            id: `user:${currentUserId}`,
+            kind: "user" as const,
+            userId: currentUserId,
+            label: "Assign to me",
+            searchText: userLabel(currentUserId) ?? "",
+          }]
+        : []),
+      ...(issue.createdByUserId && issue.createdByUserId !== currentUserId
+        ? [{
+            id: `user:${issue.createdByUserId}`,
+            kind: "user" as const,
+            userId: issue.createdByUserId,
+            label: creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester",
+            searchText: creatorUserLabel ?? "requester",
+          }]
+        : []),
+      ...otherUserOptions.map((option) => ({
+        id: option.id,
+        kind: "user" as const,
+        userId: option.id.slice("user:".length),
+        label: option.label,
+        searchText: option.searchText ?? "",
+      })),
+      ...sortedAgents.map((agent) => ({
+        id: `agent:${agent.id}`,
+        kind: "agent" as const,
+        agent,
+        label: agent.name,
+        searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+      })),
+    ],
+    selectedAssigneeValue,
+    recentAssigneeValues,
+  );
+
   const assigneeContent = (
     <>
       <input
@@ -467,64 +568,40 @@ export function IssueProperties({
         autoFocus={!inline}
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
-        <button
-          className={cn(
-            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-            !issue.assigneeAgentId && !issue.assigneeUserId && "bg-accent"
-          )}
-          onClick={() => { onUpdate({ assigneeAgentId: null, assigneeUserId: null }); setAssigneeOpen(false); }}
-        >
-          No assignee
-        </button>
-        {currentUserId && (
-          <button
-            className={cn(
-              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-              issue.assigneeUserId === currentUserId && "bg-accent",
-            )}
-            onClick={() => {
-              onUpdate({ assigneeAgentId: null, assigneeUserId: currentUserId });
-              setAssigneeOpen(false);
-            }}
-          >
-            <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            Assign to me
-          </button>
-        )}
-        {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
-          <button
-            className={cn(
-              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-              issue.assigneeUserId === issue.createdByUserId && "bg-accent",
-            )}
-            onClick={() => {
-              onUpdate({ assigneeAgentId: null, assigneeUserId: issue.createdByUserId });
-              setAssigneeOpen(false);
-            }}
-          >
-            <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            {creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester"}
-          </button>
-        )}
-        {sortedAgents
-          .filter((a) => {
+        {assigneePickerOptions
+          .filter((option) => {
             if (!assigneeSearch.trim()) return true;
             const q = assigneeSearch.toLowerCase();
-            return a.name.toLowerCase().includes(q);
+            return `${option.label} ${option.searchText}`.toLowerCase().includes(q);
           })
-          .map((a) => (
-          <button
-            key={a.id}
-            className={cn(
-              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-              a.id === issue.assigneeAgentId && "bg-accent"
-            )}
-            onClick={() => { trackRecentAssignee(a.id); onUpdate({ assigneeAgentId: a.id, assigneeUserId: null }); setAssigneeOpen(false); }}
-          >
-            <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
-            {a.name}
-          </button>
-        ))}
+          .map((option) => (
+            <button
+              key={option.id || "__none__"}
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                option.id === selectedAssigneeValue && "bg-accent",
+              )}
+              onClick={() => {
+                if (option.kind === "agent") {
+                  trackRecentAssignee(option.agent.id);
+                  onUpdate({ assigneeAgentId: option.agent.id, assigneeUserId: null });
+                } else if (option.kind === "user") {
+                  trackRecentAssigneeUser(option.userId);
+                  onUpdate({ assigneeAgentId: null, assigneeUserId: option.userId });
+                } else {
+                  onUpdate({ assigneeAgentId: null, assigneeUserId: null });
+                }
+                setAssigneeOpen(false);
+              }}
+            >
+              {option.kind === "agent" ? (
+                <AgentIcon icon={option.agent.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+              ) : option.kind === "user" ? (
+                <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+              ) : null}
+              {option.label}
+            </button>
+          ))}
       </div>
     </>
   );
@@ -578,6 +655,24 @@ export function IssueProperties({
             {creatorUserLabel ? creatorUserLabel : "Requester"}
           </button>
         )}
+        {otherUserOptions
+          .filter((option) => {
+            if (!search.trim()) return true;
+            return `${option.label} ${option.searchText ?? ""}`.toLowerCase().includes(search.toLowerCase());
+          })
+          .map((option) => (
+            <button
+              key={`${stageType}:${option.id}`}
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                values.includes(option.id) && "bg-accent",
+              )}
+              onClick={() => toggleExecutionParticipant(stageType, option.id)}
+            >
+              <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+              {option.label}
+            </button>
+          ))}
         {sortedAgents
           .filter((agent) => {
             if (!search.trim()) return true;
@@ -609,13 +704,27 @@ export function IssueProperties({
         className="shrink-0 h-3 w-3 rounded-sm"
         style={{ backgroundColor: orderedProjects.find((p) => p.id === issue.projectId)?.color ?? "#6366f1" }}
       />
-      <span className="text-sm truncate">{projectName(issue.projectId)}</span>
+      <span className="text-sm break-words min-w-0">{projectName(issue.projectId)}</span>
     </>
   ) : (
     <>
       <Hexagon className="h-3.5 w-3.5 text-muted-foreground" />
       <span className="text-sm text-muted-foreground">No project</span>
     </>
+  );
+  const projectPickerOptions = orderItemsBySelectedAndRecent(
+    [
+      { id: "", kind: "none" as const, name: "No project", color: null as string | null },
+      ...orderedProjects.map((project) => ({
+        id: project.id,
+        kind: "project" as const,
+        project,
+        name: project.name,
+        color: project.color ?? null,
+      })),
+    ],
+    issue.projectId ?? "",
+    recentProjectIds,
   );
 
   const projectContent = (
@@ -628,63 +737,161 @@ export function IssueProperties({
         autoFocus={!inline}
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
-        <button
-          className={cn(
-            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 whitespace-nowrap",
-            !issue.projectId && "bg-accent"
-          )}
-          onClick={() => {
-            onUpdate({
-              projectId: null,
-              projectWorkspaceId: null,
-              executionWorkspaceId: null,
-              executionWorkspacePreference: null,
-              executionWorkspaceSettings: null,
-            });
-            setProjectOpen(false);
-          }}
-        >
-          No project
-        </button>
-        {orderedProjects
-          .filter((p) => {
+        {projectPickerOptions
+          .filter((option) => {
             if (!projectSearch.trim()) return true;
             const q = projectSearch.toLowerCase();
-            return p.name.toLowerCase().includes(q);
+            return option.name.toLowerCase().includes(q);
           })
-          .map((p) => (
-          <button
-            key={p.id}
-            className={cn(
-              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 whitespace-nowrap",
-              p.id === issue.projectId && "bg-accent"
-            )}
-            onClick={() => {
-              const defaultMode = defaultExecutionWorkspaceModeForProject(p);
-              onUpdate({
-                projectId: p.id,
-                projectWorkspaceId: defaultProjectWorkspaceIdForProject(p),
-                executionWorkspaceId: null,
-                executionWorkspacePreference: defaultMode,
-                executionWorkspaceSettings: p.executionWorkspacePolicy?.enabled
-                  ? { mode: defaultMode }
-                  : null,
-              });
-              setProjectOpen(false);
-            }}
-          >
-            <span
-              className="shrink-0 h-3 w-3 rounded-sm"
-              style={{ backgroundColor: p.color ?? "#6366f1" }}
-            />
-            {p.name}
-          </button>
-        ))}
+          .map((option) => (
+            <button
+              key={option.id || "__none__"}
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 whitespace-nowrap",
+                option.id === (issue.projectId ?? "") && "bg-accent",
+              )}
+              onClick={() => {
+                if (option.kind === "project") {
+                  const defaultMode = defaultExecutionWorkspaceModeForProject(option.project);
+                  trackRecentProject(option.project.id);
+                  onUpdate({
+                    projectId: option.project.id,
+                    projectWorkspaceId: defaultProjectWorkspaceIdForProject(option.project),
+                    executionWorkspaceId: null,
+                    executionWorkspacePreference: defaultMode,
+                    executionWorkspaceSettings: option.project.executionWorkspacePolicy?.enabled
+                      ? { mode: defaultMode }
+                      : null,
+                  });
+                } else {
+                  onUpdate({
+                    projectId: null,
+                    projectWorkspaceId: null,
+                    executionWorkspaceId: null,
+                    executionWorkspacePreference: null,
+                    executionWorkspaceSettings: null,
+                  });
+                }
+                setProjectOpen(false);
+              }}
+            >
+              {option.kind === "project" ? (
+                <span
+                  className="shrink-0 h-3 w-3 rounded-sm"
+                  style={{ backgroundColor: option.color ?? "#6366f1" }}
+                />
+              ) : null}
+              {option.name}
+            </button>
+          ))}
       </div>
     </>
   );
 
   const blockedByIds = issue.blockedBy?.map((relation) => relation.id) ?? [];
+  const descendantIssueIds = useMemo(() => {
+    if (!allIssues?.length) return new Set<string>();
+    const childrenByParentId = new Map<string, string[]>();
+    for (const candidate of allIssues) {
+      if (!candidate.parentId) continue;
+      const children = childrenByParentId.get(candidate.parentId) ?? [];
+      children.push(candidate.id);
+      childrenByParentId.set(candidate.parentId, children);
+    }
+
+    const descendants = new Set<string>();
+    const stack = [...(childrenByParentId.get(issue.id) ?? [])];
+    while (stack.length > 0) {
+      const candidateId = stack.pop();
+      if (!candidateId || descendants.has(candidateId)) continue;
+      descendants.add(candidateId);
+      stack.push(...(childrenByParentId.get(candidateId) ?? []));
+    }
+    return descendants;
+  }, [allIssues, issue.id]);
+  const currentParentIssue = useMemo(() => {
+    if (!issue.parentId) return null;
+    return allIssues?.find((candidate) => candidate.id === issue.parentId) ?? null;
+  }, [allIssues, issue.parentId]);
+  const parentIdentifier = issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier;
+  const parentTitle = issue.ancestors?.[0]?.title ?? currentParentIssue?.title ?? issue.parentId?.slice(0, 8);
+  const parentTrigger = issue.parentId ? (
+    <span className="text-sm break-words min-w-0 inline">
+      {parentIdentifier ? `${parentIdentifier} ` : ""}
+      {parentTitle}
+    </span>
+  ) : (
+    <span className="text-sm text-muted-foreground">No parent</span>
+  );
+  const parentLink = issue.parentId ? (
+    <Link
+      to={`/issues/${parentIdentifier ?? issue.parentId}`}
+      className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <ArrowUpRight className="h-3 w-3" />
+    </Link>
+  ) : undefined;
+  const parentOptions = (allIssues ?? [])
+    .filter((candidate) => candidate.id !== issue.id)
+    .filter((candidate) => !descendantIssueIds.has(candidate.id))
+    .filter((candidate) => {
+      if (!parentSearch.trim()) return true;
+      const query = parentSearch.toLowerCase();
+      return (
+        (candidate.identifier ?? "").toLowerCase().includes(query) ||
+        candidate.title.toLowerCase().includes(query)
+      );
+    })
+    .sort((a, b) => {
+      const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
+      const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
+      return aLabel.localeCompare(bLabel);
+    });
+  const parentContent = (
+    <>
+      <input
+        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+        placeholder="Search issues..."
+        value={parentSearch}
+        onChange={(e) => setParentSearch(e.target.value)}
+        autoFocus={!inline}
+      />
+      <div className="max-h-48 overflow-y-auto overscroll-contain">
+        <button
+          className={cn(
+            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+            !issue.parentId && "bg-accent",
+          )}
+          onClick={() => {
+            onUpdate({ parentId: null });
+            setParentOpen(false);
+          }}
+        >
+          No parent
+        </button>
+        {parentOptions.map((candidate) => (
+          <button
+            key={candidate.id}
+            className={cn(
+              "flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs rounded hover:bg-accent/50",
+              candidate.id === issue.parentId && "bg-accent",
+            )}
+            onClick={() => {
+              onUpdate({ parentId: candidate.id });
+              setParentOpen(false);
+            }}
+          >
+            <StatusIcon status={candidate.status} />
+            <span className="truncate">
+              {candidate.identifier ? `${candidate.identifier} ` : ""}
+              {candidate.title}
+            </span>
+          </button>
+        ))}
+      </div>
+    </>
+  );
   const blockedByTrigger = blockedByIds.length > 0 ? (
     <div className="flex items-center gap-1 flex-wrap min-w-0">
       {(issue.blockedBy ?? []).slice(0, 2).map((relation) => (
@@ -793,6 +1000,7 @@ export function IssueProperties({
           triggerContent={labelsTrigger}
           triggerClassName="min-w-0 max-w-full"
           popoverClassName="w-64"
+          extra={labelsExtra}
         >
           {labelsContent}
         </PropertyPicker>
@@ -836,6 +1044,22 @@ export function IssueProperties({
           ) : undefined}
         >
           {projectContent}
+        </PropertyPicker>
+
+        <PropertyPicker
+          inline={inline}
+          label="Parent"
+          open={parentOpen}
+          onOpenChange={(open) => {
+            setParentOpen(open);
+            if (!open) setParentSearch("");
+          }}
+          triggerContent={parentTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-72"
+          extra={parentLink}
+        >
+          {parentContent}
         </PropertyPicker>
 
         <PropertyPicker
@@ -939,16 +1163,6 @@ export function IssueProperties({
           </PropertyRow>
         )}
 
-        {issue.parentId && (
-          <PropertyRow label="Parent">
-            <Link
-              to={`/issues/${issue.ancestors?.[0]?.identifier ?? issue.parentId}`}
-              className="text-sm hover:underline"
-            >
-              {issue.ancestors?.[0]?.title ?? issue.parentId.slice(0, 8)}
-            </Link>
-          </PropertyRow>
-        )}
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
             <span className="text-sm font-mono">{issue.requestDepth}</span>
@@ -956,10 +1170,34 @@ export function IssueProperties({
         )}
       </div>
 
-      {issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd ? (
+      {liveWorkspaceService || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
         <>
           <Separator />
           <div className="space-y-1">
+            {liveWorkspaceService?.url && (
+              <PropertyRow label="Service">
+                <a
+                  href={liveWorkspaceService.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex min-w-0 items-start gap-1 text-sm font-mono text-emerald-700 hover:text-emerald-800 hover:underline dark:text-emerald-300 dark:hover:text-emerald-200"
+                >
+                  <span className="min-w-0 break-all">{liveWorkspaceService.url}</span>
+                  <ExternalLink className="mt-1 h-3 w-3 shrink-0" />
+                </a>
+              </PropertyRow>
+            )}
+            {issue.executionWorkspaceId && (
+              <PropertyRow label="Workspace">
+                <Link
+                  to={`/execution-workspaces/${issue.executionWorkspaceId}`}
+                  className="text-sm text-primary hover:underline inline-flex items-center gap-1"
+                >
+                  View workspace
+                  <ExternalLink className="h-3 w-3" />
+                </Link>
+              </PropertyRow>
+            )}
             {issue.currentExecutionWorkspace?.branchName && (
               <PropertyRow label="Branch">
                 <TruncatedCopyable

@@ -3,6 +3,7 @@ import type { Agent } from "@paperclipai/shared";
 import {
   buildAssistantPartsFromTranscript,
   buildIssueChatMessages,
+  stabilizeThreadMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
 } from "./issue-chat-messages";
@@ -233,6 +234,27 @@ describe("buildAssistantPartsFromTranscript", () => {
 });
 
 describe("buildIssueChatMessages", () => {
+  it("uses the company user label for current-user comments instead of collapsing to You", () => {
+    const messages = buildIssueChatMessages({
+      comments: [createComment({ authorUserId: "user-1" })],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+      userLabelMap: new Map([["user-1", "Dotta"]]),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "user",
+      metadata: {
+        custom: {
+          authorName: "Dotta",
+          authorUserId: "user-1",
+        },
+      },
+    });
+  });
+
   it("orders events before comments and appends active live runs as running assistant messages", () => {
     const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "CodexCoder")]]);
     const comments = [
@@ -525,5 +547,71 @@ describe("buildIssueChatMessages", () => {
         },
       },
     });
+  });
+});
+
+describe("stabilizeThreadMessages", () => {
+  it("reuses unchanged message objects across rebuilds", () => {
+    const firstPass = buildIssueChatMessages({
+      comments: [createComment()],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+    });
+
+    const firstStable = stabilizeThreadMessages(firstPass, [], new Map());
+    const secondPass = buildIssueChatMessages({
+      comments: [
+        createComment(),
+        createComment({
+          id: "comment-2",
+          body: "New message",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+    });
+
+    const secondStable = stabilizeThreadMessages(
+      secondPass,
+      firstStable.messages,
+      firstStable.cache,
+    );
+
+    expect(secondStable.messages).toHaveLength(2);
+    expect(secondStable.messages[0]).toBe(firstStable.messages[0]);
+    expect(secondStable.messages[1]?.id).toBe("comment-2");
+  });
+
+  it("reuses the previous array when nothing semantically changed", () => {
+    const firstPass = buildIssueChatMessages({
+      comments: [createComment()],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+    });
+
+    const firstStable = stabilizeThreadMessages(firstPass, [], new Map());
+    const secondPass = buildIssueChatMessages({
+      comments: [createComment()],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+    });
+
+    const secondStable = stabilizeThreadMessages(
+      secondPass,
+      firstStable.messages,
+      firstStable.cache,
+    );
+
+    expect(secondStable.messages).toBe(firstStable.messages);
   });
 });
