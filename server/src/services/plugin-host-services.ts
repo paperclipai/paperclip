@@ -774,6 +774,21 @@ export function buildHostServices(
           namespace: params.namespace,
         });
       },
+      async list(params) {
+        const rows = await stateStore.list(pluginId, {
+          scopeKind: params.scopeKind as any,
+          scopeId: params.scopeId,
+          namespace: params.namespace,
+        });
+        return rows.map((r) => ({
+          scopeKind: r.scopeKind,
+          scopeId: r.scopeId,
+          namespace: r.namespace,
+          stateKey: r.stateKey,
+          value: r.valueJson,
+          updatedAt: r.updatedAt instanceof Date ? r.updatedAt.toISOString() : String(r.updatedAt),
+        }));
+      },
     },
 
     db: {
