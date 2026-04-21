@@ -235,6 +235,7 @@ function createIssue(): Issue {
     cancelledAt: null,
     hiddenAt: null,
     visibility: "company",
+    dueDate: null,
     labels: [],
     labelIds: [],
     planDocument: createIssueDocument(),

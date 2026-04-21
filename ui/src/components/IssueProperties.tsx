@@ -31,7 +31,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, Lock, Globe, X as XIcon } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, Lock, Globe, X as XIcon, Calendar } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
@@ -96,6 +96,22 @@ function PropertyRow({ label, children }: { label: string; children: React.React
       <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">{children}</div>
     </div>
   );
+}
+
+function formatDueDateRelative(date: Date | string): string {
+  const now = new Date();
+  const due = new Date(date);
+  const diffDays = Math.round((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays < -1) return `Overdue by ${Math.abs(diffDays)} days`;
+  if (diffDays === -1) return "Overdue by 1 day";
+  if (diffDays === 0) return "Due today";
+  if (diffDays === 1) return "Due tomorrow";
+  if (diffDays <= 7) return `Due in ${diffDays} days`;
+  return formatDate(due);
+}
+
+function dueDateInputValue(date: Date | string): string {
+  return new Date(date).toISOString().split("T")[0]!;
 }
 
 /** Renders a Popover on desktop, or an inline collapsible section on mobile (inline mode). */
@@ -1167,6 +1183,72 @@ export function IssueProperties({
         >
           {projectContent}
         </PropertyPicker>
+
+        <PropertyRow label="Due date">
+          {issue.dueDate ? (
+            <>
+              {(() => {
+                const isClosed = issue.status === "done" || issue.status === "cancelled";
+                const isOverdue = !isClosed && new Date(issue.dueDate) < new Date();
+                return (
+                  <>
+                    <Calendar
+                      className={cn(
+                        "h-3.5 w-3.5 shrink-0",
+                        isOverdue ? "text-red-500" : "text-muted-foreground",
+                      )}
+                    />
+                    <label
+                      className={cn(
+                        "inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors",
+                        isOverdue && "text-red-500 font-medium",
+                      )}
+                      title="Change due date"
+                    >
+                      <span className="text-sm">{formatDueDateRelative(issue.dueDate)}</span>
+                      <input
+                        type="date"
+                        className="sr-only"
+                        value={dueDateInputValue(issue.dueDate)}
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            onUpdate({
+                              dueDate: new Date(e.target.value + "T23:59:59.999Z").toISOString(),
+                            });
+                          }
+                        }}
+                      />
+                    </label>
+                  </>
+                );
+              })()}
+              <button
+                type="button"
+                onClick={() => onUpdate({ dueDate: null })}
+                className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+                title="Remove due date"
+              >
+                <XIcon className="h-3 w-3" />
+              </button>
+            </>
+          ) : (
+            <label className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
+              <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-sm text-muted-foreground">No due date</span>
+              <input
+                type="date"
+                className="sr-only"
+                onChange={(e) => {
+                  if (e.target.value) {
+                    onUpdate({
+                      dueDate: new Date(e.target.value + "T23:59:59.999Z").toISOString(),
+                    });
+                  }
+                }}
+              />
+            </label>
+          )}
+        </PropertyRow>
 
         <PropertyPicker
           inline={inline}

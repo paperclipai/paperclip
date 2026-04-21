@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Lock, X } from "lucide-react";
+import { Calendar, Lock, X } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -53,6 +53,39 @@ export function IssueRow({
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
   const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
   const detailState = withIssueDetailHeaderSeed(issueLinkState, issue);
+  const dueBadge = (() => {
+    if (!issue.dueDate) return null;
+    const due = new Date(issue.dueDate);
+    const now = new Date();
+    const diffDays = Math.round((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    const isClosed = issue.status === "done" || issue.status === "cancelled";
+    const isOverdue = diffDays < 0 && !isClosed;
+    const isSoon = diffDays >= 0 && diffDays <= 3 && !isClosed;
+    const label =
+      diffDays === 0
+        ? "Today"
+        : diffDays === 1
+          ? "Tomorrow"
+          : diffDays === -1
+            ? "1d overdue"
+            : diffDays < -1
+              ? `${Math.abs(diffDays)}d overdue`
+              : `${diffDays}d`;
+    const tone = isOverdue
+      ? "text-red-500"
+      : isSoon
+        ? "text-orange-500"
+        : "text-muted-foreground";
+    return (
+      <span
+        className={cn("hidden md:inline-flex items-center gap-1 shrink-0 text-[10px] font-medium", tone)}
+        title={`Due ${due.toLocaleDateString()}`}
+      >
+        <Calendar className="h-3 w-3" />
+        {label}
+      </span>
+    );
+  })();
 
   return (
     <Link
@@ -105,8 +138,9 @@ export function IssueRow({
           ) : null}
         </span>
       </span>
-      {(desktopTrailing || trailingMeta) ? (
+      {(desktopTrailing || trailingMeta || dueBadge) ? (
         <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-3 sm:flex sm:gap-3">
+          {dueBadge}
           {desktopTrailing}
           {trailingMeta ? (
             <span className="text-xs text-muted-foreground">{trailingMeta}</span>

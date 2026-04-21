@@ -135,6 +135,7 @@ export const createIssueSchema = z.object({
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
   visibility: z.enum(["private", "company"]).optional(),
+  dueDate: z.string().datetime().nullable().optional(),
 });
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;

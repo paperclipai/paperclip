@@ -70,6 +70,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     cancelledAt: null,
     hiddenAt: null,
     visibility: "company",
+    dueDate: null,
     createdAt: new Date("2026-04-08T00:00:00.000Z"),
     updatedAt: new Date("2026-04-08T00:00:00.000Z"),
     ...overrides,

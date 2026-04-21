@@ -1404,8 +1404,10 @@ export function issueRoutes(
     }
     const resolvedVisibility: "private" | "company" =
       req.body.visibility ?? (req.body.projectId ? "company" : "private");
+    const { dueDate: dueDateRaw, ...createBody } = req.body;
     const issue = await svc.create(companyId, {
-      ...req.body,
+      ...createBody,
+      ...(dueDateRaw !== undefined ? { dueDate: dueDateRaw ? new Date(dueDateRaw) : null } : {}),
       visibility: resolvedVisibility,
       executionPolicy,
       createdByAgentId: actor.agentId,
@@ -1534,6 +1536,7 @@ export function issueRoutes(
       reopen: reopenRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      dueDate: dueDateRaw,
       ...updateFields
     } = req.body;
     const requestedAssigneeAgentId =
@@ -1588,6 +1591,9 @@ export function issueRoutes(
 
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
+    }
+    if (dueDateRaw !== undefined) {
+      updateFields.dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
     }
     if (commentBody && effectiveReopenRequested && isClosed && updateFields.status === undefined) {
       updateFields.status = "todo";
