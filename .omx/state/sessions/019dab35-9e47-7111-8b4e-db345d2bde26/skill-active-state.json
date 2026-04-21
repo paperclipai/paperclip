@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "active": true,
+  "skill": "cancel",
+  "keyword": "Stop",
+  "phase": "planning",
+  "activated_at": "2026-04-20T14:05:20.283Z",
+  "updated_at": "2026-04-20T14:05:20.283Z",
+  "source": "keyword-detector",
+  "session_id": "019dab35-9e47-7111-8b4e-db345d2bde26",
+  "thread_id": "",
+  "turn_id": "019dab35-a7e8-7973-ad65-55cbcd511fa3",
+  "active_skills": [
+    {
+      "skill": "cancel",
+      "phase": "planning",
+      "active": true,
+      "activated_at": "2026-04-20T14:05:20.283Z",
+      "updated_at": "2026-04-20T14:05:20.283Z",
+      "session_id": "019dab35-9e47-7111-8b4e-db345d2bde26",
+      "thread_id": "",
+      "turn_id": "019dab35-a7e8-7973-ad65-55cbcd511fa3"
+    }
+  ]
+}
