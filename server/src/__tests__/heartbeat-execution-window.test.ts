@@ -8,8 +8,11 @@ import {
   companySkills,
   companies,
   createDb,
+  documentRevisions,
+  documents,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueDocuments,
   issues,
 } from "@paperclipai/db";
 import {
@@ -63,6 +66,9 @@ describeEmbeddedPostgres("heartbeat execution window policy", () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
     await db.delete(issues);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
