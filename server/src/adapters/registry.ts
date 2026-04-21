@@ -86,6 +86,37 @@ import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
+function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(ctx: T): T {
+  const config =
+    ctx && typeof ctx === "object" && "config" in ctx && ctx.config && typeof ctx.config === "object"
+      ? (ctx.config as Record<string, unknown>)
+      : null;
+  const agent =
+    ctx && typeof ctx === "object" && "agent" in ctx && ctx.agent && typeof ctx.agent === "object"
+      ? (ctx.agent as Record<string, unknown>)
+      : null;
+  const agentAdapterConfig =
+    agent?.adapterConfig && typeof agent.adapterConfig === "object"
+      ? (agent.adapterConfig as Record<string, unknown>)
+      : null;
+
+  const configCommand =
+    typeof config?.command === "string" && config.command.length > 0 ? config.command : undefined;
+  const agentCommand =
+    typeof agentAdapterConfig?.command === "string" && agentAdapterConfig.command.length > 0
+      ? agentAdapterConfig.command
+      : undefined;
+
+  if (config && !config.hermesCommand && configCommand) {
+    config.hermesCommand = configCommand;
+  }
+  if (agentAdapterConfig && !agentAdapterConfig.hermesCommand && agentCommand) {
+    agentAdapterConfig.hermesCommand = agentCommand;
+  }
+
+  return ctx;
+}
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
   execute: claudeExecute,
@@ -202,15 +233,14 @@ const piLocalAdapter: ServerAdapterModule = {
 
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
-  execute: hermesExecute,
-  testEnvironment: hermesTestEnvironment,
+  execute: (ctx) => hermesExecute(normalizeHermesConfig(ctx) as never),
+  testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
   sessionCodec: hermesSessionCodec,
   listSkills: hermesListSkills,
   syncSkills: hermesSyncSkills,
   models: hermesModels,
   supportsLocalAgentJwt: true,
-  supportsInstructionsBundle: true,
-  instructionsPathKey: "instructionsFilePath",
+  supportsInstructionsBundle: false,
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: hermesAgentConfigurationDoc,
   detectModel: () => detectModelFromHermes(),

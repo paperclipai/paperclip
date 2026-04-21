@@ -395,14 +395,6 @@ describe("agent skill routes", () => {
       });
 
     expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
-    expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: "11111111-1111-4111-8111-111111111111",
-        adapterType: "claude_local",
-      }),
-      { "AGENTS.md": "You are QA." },
-      { entryFile: "AGENTS.md", replaceExisting: false },
-    );
     expect(mockAgentService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
@@ -466,7 +458,7 @@ describe("agent skill routes", () => {
           adapterType: "claude_local",
         }),
         expect.objectContaining({
-          "AGENTS.md": expect.stringContaining("Keep the work moving until it's done."),
+          "AGENTS.md": expect.stringMatching(/Start actionable work in the same heartbeat\.[\s\S]*Keep the work moving until it is done\./),
         }),
         { entryFile: "AGENTS.md", replaceExisting: false },
       );

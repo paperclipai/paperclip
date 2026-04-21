@@ -30,8 +30,8 @@ export const projectExecutionWorkspacePolicySchema = z
 
 export const projectWorkspaceRuntimeConfigSchema = z.object({
   workspaceRuntime: z.record(z.unknown()).optional().nullable(),
-  desiredState: z.enum(["running", "stopped"]).optional().nullable(),
-  serviceStates: z.record(z.enum(["running", "stopped"])).optional().nullable(),
+  desiredState: z.enum(["running", "stopped", "manual"]).optional().nullable(),
+  serviceStates: z.record(z.enum(["running", "stopped", "manual"])).optional().nullable(),
 }).strict();
 
 const projectWorkspaceSourceTypeSchema = z.enum(["local_path", "git_repo", "remote_managed", "non_git_path"]);

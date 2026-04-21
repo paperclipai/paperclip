@@ -46,6 +46,7 @@ import {
   saveInboxIssueColumns,
   saveInboxWorkItemGroupBy,
   saveLastInboxTab,
+  shouldShowCompanyAlerts,
   shouldResetInboxWorkspaceGrouping,
   shouldShowInboxSection,
   type InboxWorkItem,
@@ -153,6 +154,11 @@ function makeRun(id: string, status: HeartbeatRun["status"], createdAt: string, 
     processStartedAt: null,
     retryOfRunId: null,
     processLossRetryCount: 0,
+    livenessState: null,
+    livenessReason: null,
+    continuationAttempt: 0,
+    lastUsefulActionAt: null,
+    nextAction: null,
     stdoutExcerpt: null,
     stderrExcerpt: null,
     contextSnapshot: null,
@@ -289,6 +295,7 @@ const dashboard: DashboardSummary = {
     pausedAgents: 0,
     pausedProjects: 0,
   },
+  runActivity: [],
 };
 
 describe("inbox helpers", () => {
@@ -298,7 +305,10 @@ describe("inbox helpers", () => {
 
   it("counts the same inbox sources the badge uses", () => {
     const result = computeInboxBadgeData({
-      approvals: [makeApproval("pending"), makeApproval("approved")],
+      approvals: [
+        { ...makeApproval("pending"), requestedByUserId: "user-1" },
+        { ...makeApproval("approved"), requestedByUserId: "user-2" },
+      ],
       joinRequests: [makeJoinRequest("join-1")],
       dashboard,
       heartbeatRuns: [
@@ -309,10 +319,11 @@ describe("inbox helpers", () => {
       mineIssues: [makeIssue("1", true)],
       dismissedAlerts: new Set<string>(),
       dismissedAtByKey: new Map<string, number>(),
+      currentUserId: "user-1",
     });
 
     expect(result).toEqual({
-      inbox: 6,
+      inbox: 5,
       approvals: 1,
       failedRuns: 2,
       joinRequests: 1,
@@ -330,6 +341,7 @@ describe("inbox helpers", () => {
       mineIssues: [],
       dismissedAlerts: new Set<string>(["alert:budget", "alert:agent-errors"]),
       dismissedAtByKey: new Map<string, number>([["run:run-1", new Date("2026-03-11T00:00:00.000Z").getTime()]]),
+      currentUserId: "user-1",
     });
 
     expect(result).toEqual({
@@ -351,10 +363,12 @@ describe("inbox helpers", () => {
       mineIssues: [makeIssue("1", false), makeIssue("2", false), makeIssue("3", true)],
       dismissedAlerts: new Set<string>(),
       dismissedAtByKey: new Map(),
+      currentUserId: "user-1",
     });
 
     expect(result.mineIssues).toBe(1);
-    expect(result.inbox).toBe(3);
+    expect(result.inbox).toBe(1);
+    expect(result.alerts).toBe(2);
   });
 
   it("resurfaces non-issue items when they change after dismissal", () => {
@@ -393,18 +407,23 @@ describe("inbox helpers", () => {
     expect(issues).toHaveLength(2);
   });
 
-  it("shows recent approvals in updated order and unread approvals as actionable only", () => {
+  it("shows actionable approvals on mine, while recent and unread stay company-wide", () => {
     const approvals = [
-      makeApprovalWithTimestamps("approval-approved", "approved", "2026-03-11T02:00:00.000Z"),
-      makeApprovalWithTimestamps("approval-pending", "pending", "2026-03-11T01:00:00.000Z"),
-      makeApprovalWithTimestamps(
-        "approval-revision",
-        "revision_requested",
-        "2026-03-11T03:00:00.000Z",
-      ),
+      {
+        ...makeApprovalWithTimestamps("approval-approved", "approved", "2026-03-11T02:00:00.000Z"),
+        requestedByUserId: "user-1",
+      },
+      {
+        ...makeApprovalWithTimestamps("approval-pending", "pending", "2026-03-11T01:00:00.000Z"),
+        requestedByUserId: "user-2",
+      },
+      {
+        ...makeApprovalWithTimestamps("approval-revision", "revision_requested", "2026-03-11T03:00:00.000Z"),
+        decidedByUserId: "user-1",
+      },
     ];
 
-    expect(getApprovalsForTab(approvals, "mine", "all").map((approval) => approval.id)).toEqual([
+    expect(getApprovalsForTab(approvals, "mine", "all", "user-1").map((approval) => approval.id)).toEqual([
       "approval-revision",
       "approval-approved",
       "approval-pending",
@@ -421,6 +440,52 @@ describe("inbox helpers", () => {
     expect(getApprovalsForTab(approvals, "all", "resolved").map((approval) => approval.id)).toEqual([
       "approval-approved",
     ]);
+  });
+
+  it("surfaces agent-requested actionable approvals in mine and the badge", () => {
+    const approvals = [
+      {
+        ...makeApprovalWithTimestamps("approval-agent-requested", "pending", "2026-03-11T02:00:00.000Z"),
+        requestedByUserId: null,
+      },
+      {
+        ...makeApprovalWithTimestamps("approval-unrelated-resolved", "approved", "2026-03-11T03:00:00.000Z"),
+        requestedByUserId: "user-2",
+      },
+    ];
+
+    expect(getApprovalsForTab(approvals, "mine", "all", "user-1").map((approval) => approval.id)).toEqual([
+      "approval-agent-requested",
+    ]);
+
+    const result = computeInboxBadgeData({
+      approvals,
+      joinRequests: [],
+      dashboard,
+      heartbeatRuns: [],
+      mineIssues: [],
+      dismissedAlerts: new Set<string>(),
+      dismissedAtByKey: new Map(),
+      currentUserId: "user-1",
+    });
+
+    expect(result.approvals).toBe(1);
+  });
+
+  it("does not count company-wide alerts in the personal inbox badge", () => {
+    const result = computeInboxBadgeData({
+      approvals: [],
+      joinRequests: [],
+      dashboard,
+      heartbeatRuns: [],
+      mineIssues: [],
+      dismissedAlerts: new Set<string>(),
+      dismissedAtByKey: new Map(),
+      currentUserId: "user-1",
+    });
+
+    expect(result.alerts).toBe(2);
+    expect(result.inbox).toBe(0);
   });
 
   it("mixes approvals into the inbox feed by most recent activity", () => {
@@ -612,6 +677,13 @@ describe("inbox helpers", () => {
         showOnAll: false,
       }),
     ).toBe(false);
+  });
+
+  it("shows company alerts only on the all tab", () => {
+    expect(shouldShowCompanyAlerts("mine")).toBe(false);
+    expect(shouldShowCompanyAlerts("recent")).toBe(false);
+    expect(shouldShowCompanyAlerts("unread")).toBe(false);
+    expect(shouldShowCompanyAlerts("all")).toBe(true);
   });
 
   it("limits recent touched issues before unread badge counting", () => {

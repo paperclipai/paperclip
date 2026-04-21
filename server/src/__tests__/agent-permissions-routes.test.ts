@@ -34,6 +34,7 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
+  activatePendingApproval: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
@@ -108,6 +109,7 @@ function registerModuleMocks() {
     companySkillService: () => mockCompanySkillService,
     budgetService: () => mockBudgetService,
     heartbeatService: () => mockHeartbeatService,
+    ISSUE_LIST_DEFAULT_LIMIT: 500,
     issueApprovalService: () => mockIssueApprovalService,
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
@@ -117,23 +119,25 @@ function registerModuleMocks() {
   }));
 }
 
-function createDbStub() {
+function createDbStub(options: { requireBoardApprovalForNewAgents?: boolean } = {}) {
   return {
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          then: vi.fn().mockResolvedValue([{
-            id: companyId,
-            name: "Paperclip",
-            requireBoardApprovalForNewAgents: false,
-          }]),
+          then: vi.fn((resolve) =>
+            Promise.resolve(resolve([{
+              id: companyId,
+              name: "Paperclip",
+              requireBoardApprovalForNewAgents: options.requireBoardApprovalForNewAgents ?? false,
+            }])),
+          ),
         }),
       }),
     }),
   };
 }
 
-async function createApp(actor: Record<string, unknown>) {
+async function createApp(actor: Record<string, unknown>, dbOptions: { requireBoardApprovalForNewAgents?: boolean } = {}) {
   const [{ errorHandler }, { agentRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
@@ -144,7 +148,7 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", agentRoutes(createDbStub() as any));
+  app.use("/api", agentRoutes(createDbStub(dbOptions) as any));
   app.use(errorHandler);
   return app;
 }
@@ -166,6 +170,7 @@ describe("agent permission routes", () => {
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
     mockAgentService.create.mockResolvedValue(baseAgent);
+    mockAgentService.activatePendingApproval.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
     mockAccessService.getMembership.mockResolvedValue({
       id: "membership-1",
@@ -395,6 +400,97 @@ describe("agent permission routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it("blocks direct agent creation for authenticated company members without agent create permission", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "board",
+      userId: "member-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Backdoor",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("agents:create");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("allows direct agent creation for authenticated board users with agent create permission when approval is not required", async () => {
+    mockAccessService.canUser.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        status: "idle",
+      }),
+    );
+    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "tasks:assign",
+      true,
+      "agent-admin-user",
+    );
+  });
+
+  it("rejects direct agent creation when new agents require board approval", async () => {
+    const app = await createApp(
+      {
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      },
+      { requireBoardApprovalForNewAgents: true },
+    );
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("/agent-hires");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("grants tasks:assign by default when board creates a new agent", async () => {
     const app = await createApp({
       type: "board",
@@ -480,6 +576,7 @@ describe("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
+            maxConcurrentRuns: 5,
           },
         },
       }),
@@ -517,10 +614,71 @@ describe("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
+            maxConcurrentRuns: 5,
           },
         },
       }),
     );
+  });
+
+  it("allows board users to directly approve pending agents", async () => {
+    const pendingAgent = {
+      ...baseAgent,
+      status: "pending_approval",
+    };
+    const approvedAgent = {
+      ...baseAgent,
+      status: "idle",
+    };
+    mockAgentService.getById.mockResolvedValue(pendingAgent);
+    mockAgentService.activatePendingApproval.mockResolvedValue({
+      agent: approvedAgent,
+      activated: true,
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/agents/${agentId}/approve`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith(agentId);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId,
+      actorType: "user",
+      actorId: "board-user",
+      action: "agent.approved",
+      entityType: "agent",
+      entityId: agentId,
+      details: { source: "agent_detail" },
+    }));
+  });
+
+  it("rejects direct approval for agents that are not pending approval", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/agents/${agentId}/approve`)
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "agent.approved",
+    }));
   });
 
   it("exposes explicit task assignment access on agent detail", async () => {
@@ -615,6 +773,12 @@ describe("agent permission routes", () => {
         status: "todo",
       },
     ]);
+    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
+      touchedByUserId: "board-user",
+      inboxArchivedByUserId: "board-user",
+      status: "backlog,todo,in_progress,in_review,blocked,done",
+      limit: 500,
+    });
   });
 
   it("rejects heartbeat cancellation outside the caller company scope", async () => {

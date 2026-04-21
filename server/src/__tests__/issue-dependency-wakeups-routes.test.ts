@@ -39,6 +39,7 @@ vi.mock("../services/index.js", () => ({
     wakeup: mockWakeup,
     reportRunActivity: vi.fn(async () => undefined),
   }),
+  getIssueContinuationSummaryDocument: vi.fn(async () => null),
   instanceSettingsService: () => ({
     get: vi.fn(),
     listCompanyIds: vi.fn(),
@@ -197,6 +198,31 @@ describe("issue dependency wakeups in issue routes", () => {
       id: "parent-1",
       assigneeAgentId: "agent-9",
       childIssueIds: ["child-0", "child-1"],
+      childIssueSummaries: [
+        {
+          id: "child-0",
+          identifier: "PAP-100",
+          title: "First child",
+          status: "done",
+          priority: "medium",
+          assigneeAgentId: "agent-1",
+          assigneeUserId: null,
+          updatedAt: new Date("2026-04-18T12:00:00.000Z"),
+          summary: "First child finished.",
+        },
+        {
+          id: "child-1",
+          identifier: "PAP-101",
+          title: "Last child",
+          status: "done",
+          priority: "medium",
+          assigneeAgentId: "agent-1",
+          assigneeUserId: null,
+          updatedAt: new Date("2026-04-18T12:05:00.000Z"),
+          summary: "Last child finished.",
+        },
+      ],
+      childIssueSummaryTruncated: false,
     });
 
     const res = await request(await createApp()).patch("/api/issues/child-1").send({ status: "done" });
@@ -209,6 +235,14 @@ describe("issue dependency wakeups in issue routes", () => {
           payload: expect.objectContaining({
             issueId: "parent-1",
             completedChildIssueId: "child-1",
+            childIssueSummaries: expect.arrayContaining([
+              expect.objectContaining({ identifier: "PAP-101", summary: "Last child finished." }),
+            ]),
+          }),
+          contextSnapshot: expect.objectContaining({
+            childIssueSummaries: expect.arrayContaining([
+              expect.objectContaining({ identifier: "PAP-100", summary: "First child finished." }),
+            ]),
           }),
         }),
       );
