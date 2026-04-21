@@ -1,35 +1,37 @@
 import { z } from "zod";
+import {
+  deriveExternalLinkTitle,
+  isAllowedStoredLinkUrl,
+  isHttpUrl,
+  STORED_LINK_URL_MAX_LENGTH,
+} from "../link-url.js";
 
 const MAX_POSITION = 1_000_000;
 const MAX_TITLE_LENGTH = 160;
 const MAX_SITE_NAME_LENGTH = 160;
 const MAX_DESCRIPTION_LENGTH = 500;
 
-function isHttpQuickLinkUrl(value: string) {
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 export function deriveProjectQuickLinkTitle(input: { title?: string | null; url: string }) {
   const explicitTitle = input.title?.trim();
   if (explicitTitle) return explicitTitle;
-  try {
-    const parsed = new URL(input.url);
-    return parsed.hostname.replace(/^www\./i, "") || input.url;
-  } catch {
-    return input.url;
-  }
+  return deriveExternalLinkTitle(input.url);
 }
 
 export const projectQuickLinkUrlSchema = z
   .string()
   .trim()
+  .min(1)
+  .max(STORED_LINK_URL_MAX_LENGTH)
+  .refine(
+    isAllowedStoredLinkUrl,
+    "Quick link URL must use http(s), an iCloud Notes link, or an Apple Notes app link.",
+  );
+
+const previewableProjectQuickLinkUrlSchema = z
+  .string()
+  .trim()
   .url()
-  .refine(isHttpQuickLinkUrl, "Quick link URL must use http or https.");
+  .refine(isHttpUrl, "Quick link preview URL must use http or https.");
 
 function emptyStringToNull(value: unknown) {
   if (typeof value === "string" && value.trim().length === 0) return null;
@@ -42,7 +44,7 @@ const projectQuickLinkMetadataTextSchema = (max: number) =>
   z.preprocess(emptyStringToNull, z.string().trim().min(1).max(max).nullable().optional());
 const projectQuickLinkMetadataUrlSchema = z.preprocess(
   emptyStringToNull,
-  projectQuickLinkUrlSchema.nullable().optional(),
+  previewableProjectQuickLinkUrlSchema.nullable().optional(),
 );
 
 export const projectQuickLinkMetadataSchema = z.object({
@@ -53,7 +55,7 @@ export const projectQuickLinkMetadataSchema = z.object({
 });
 
 export const previewProjectQuickLinkSchema = z.object({
-  url: projectQuickLinkUrlSchema,
+  url: previewableProjectQuickLinkUrlSchema,
 }).strict();
 
 export const createProjectQuickLinkSchema = z.object({

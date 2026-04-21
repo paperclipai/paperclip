@@ -168,6 +168,16 @@ export {
   normalizeProjectCode,
 } from "./project-code.js";
 
+export {
+  STORED_LINK_URL_MAX_LENGTH,
+  deriveExternalLinkTitle,
+  isAllowedStoredLinkUrl,
+  isAppleNotesDeepLinkUrl,
+  isAppleNotesICloudUrl,
+  isAppleNotesLinkUrl,
+  isHttpUrl,
+} from "./link-url.js";
+
 export type {
   Company,
   FeedbackVote,

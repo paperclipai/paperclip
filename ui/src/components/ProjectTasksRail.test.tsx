@@ -254,6 +254,54 @@ describe("ProjectTasksRail", () => {
     expect(toastMock.pushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Quick link added" }));
   });
 
+  it("adds Apple Note quick links without fetching web preview metadata", async () => {
+    quickLinksApiMock.list.mockResolvedValue([]);
+    await renderRail();
+
+    const openButton = container?.querySelector('button[aria-label="Add Apple Note"]') as HTMLButtonElement | null;
+    await act(async () => {
+      openButton?.click();
+    });
+
+    const nameInput = container?.querySelector('input[aria-label="Quick link name"]') as HTMLInputElement | null;
+    const urlInput = container?.querySelector('input[aria-label="Quick link URL"]') as HTMLInputElement | null;
+    expect(nameInput?.value).toBe("Apple Note");
+
+    await act(async () => {
+      setInputValue(nameInput!, "Design note");
+      setInputValue(urlInput!, "applenotes://showNote?identifier=ABCDEF");
+      blurInput(urlInput!);
+    });
+    await flush();
+
+    const addButton = Array.from(container?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Add",
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      addButton?.click();
+    });
+    await flush();
+
+    expect(quickLinksApiMock.preview).not.toHaveBeenCalled();
+    expect(quickLinksApiMock.create).toHaveBeenCalledWith("company-1", "project-1", {
+      title: "Design note",
+      url: "applenotes://showNote?identifier=ABCDEF",
+    });
+  });
+
+  it("shows Apple Note labels for saved Notes quick links", async () => {
+    quickLinksApiMock.list.mockResolvedValue([
+      buildQuickLink({
+        title: "Design note",
+        url: "https://www.icloud.com/notes/0123456789#SharedNote",
+      }),
+    ]);
+    await renderRail();
+
+    expect(container?.textContent).toContain("Design note");
+    expect(container?.textContent).toContain("Apple Note");
+  });
+
   it("previews URL details before adding and submits saved metadata", async () => {
     quickLinksApiMock.list.mockResolvedValue([]);
     await renderRail();

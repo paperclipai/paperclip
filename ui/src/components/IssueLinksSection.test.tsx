@@ -176,6 +176,70 @@ describe("IssueLinksSection", () => {
     act(() => root.unmount());
   });
 
+  it("adds an Apple Note link with a title and Notes label", async () => {
+    mockIssuesApi.listLinks
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([
+        createLink({
+          id: "apple-note-link",
+          url: "applenotes://showNote?identifier=ABCDEF",
+          title: "Client note",
+        }),
+      ]);
+    mockIssuesApi.createLink.mockImplementation(async (_issueId: string, data: { url: string; title?: string }) =>
+      createLink({ id: "apple-note-link", url: data.url, title: data.title ?? null }),
+    );
+    const root = renderSection(container, createIssue());
+    await flush();
+
+    const appleButton = container.querySelector('button[aria-label="Add Apple Note"]') as HTMLButtonElement;
+    await act(async () => {
+      appleButton.click();
+    });
+
+    const titleInput = container.querySelector('input[aria-label="Apple Note title"]') as HTMLInputElement;
+    const urlInput = container.querySelector('input[aria-label="Apple Note URL"]') as HTMLInputElement;
+    act(() => {
+      changeInputValue(titleInput, "Client note");
+      changeInputValue(urlInput, "applenotes://showNote?identifier=ABCDEF");
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Add")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    await flush();
+
+    expect(mockIssuesApi.createLink).toHaveBeenCalledWith("issue-1", {
+      url: "applenotes://showNote?identifier=ABCDEF",
+      title: "Client note",
+    });
+    expect(container.textContent).toContain("Client note");
+    expect(container.textContent).toContain("Apple Note");
+
+    act(() => root.unmount());
+  });
+
+  it("shows an inline error for malformed link URLs", async () => {
+    const root = renderSection(container, createIssue());
+    await flush();
+
+    const input = container.querySelector('input[aria-label="New link URL"]') as HTMLInputElement;
+    act(() => {
+      changeInputValue(input, "javascript:alert(1)");
+    });
+    await act(async () => {
+      container.querySelector('[aria-label="Add link"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockIssuesApi.createLink).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Paste a valid http(s)");
+
+    act(() => root.unmount());
+  });
+
   it("restores a deleted link when delete fails", async () => {
     const link = createLink();
     mockIssuesApi.listLinks.mockResolvedValue([link]);

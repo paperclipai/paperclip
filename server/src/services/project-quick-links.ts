@@ -185,14 +185,12 @@ export function projectQuickLinkService(db: Db, options: ProjectQuickLinkService
           ),
         )
         .returning()
-        .then((rows) => rows[0]!);
-      return toProjectQuickLink(row);
+        .then((rows) => rows[0] ?? null);
+      return row ? toProjectQuickLink(row) : null;
     },
 
     remove: async (companyId: string, projectId: string, linkId: string): Promise<ProjectQuickLink | null> => {
-      const existing = await getLink(companyId, projectId, linkId);
-      if (!existing) return null;
-      await db
+      const row = await db
         .delete(projectQuickLinks)
         .where(
           and(
@@ -200,8 +198,10 @@ export function projectQuickLinkService(db: Db, options: ProjectQuickLinkService
             eq(projectQuickLinks.projectId, projectId),
             eq(projectQuickLinks.id, linkId),
           ),
-        );
-      return toProjectQuickLink(existing);
+        )
+        .returning()
+        .then((rows) => rows[0]);
+      return row ? toProjectQuickLink(row) : null;
     },
   };
 }

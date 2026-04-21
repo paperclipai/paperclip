@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -15,7 +15,41 @@ const mockIssueService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
+  vi.doMock("../routes/issues.js", async () =>
+    vi.importActual<typeof import("../routes/issues.ts")>("../routes/issues.ts"),
+  );
+  vi.doMock("../routes/issues.ts", async () =>
+    vi.importActual<typeof import("../routes/issues.ts")>("../routes/issues.ts"),
+  );
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.js", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.ts", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/issues-checkout-wakeup.js", async () =>
+    vi.importActual<typeof import("../routes/issues-checkout-wakeup.ts")>("../routes/issues-checkout-wakeup.ts"),
+  );
+  vi.doMock("../routes/issues-checkout-wakeup.ts", async () =>
+    vi.importActual<typeof import("../routes/issues-checkout-wakeup.ts")>("../routes/issues-checkout-wakeup.ts"),
+  );
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackAgentTaskCompleted: vi.fn(),
+    trackErrorHandlerCrash: vi.fn(),
+  }));
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+  vi.doMock("../telemetry.ts", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+  const servicesIndexMock = () => ({
     accessService: () => ({
       canUser: vi.fn(async () => true),
       hasPermission: vi.fn(async () => true),
@@ -57,14 +91,81 @@ function registerModuleMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
-  }));
-  vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
+  vi.doMock("../services/issue-assignment-wakeup.js", async () =>
+    vi.importActual<typeof import("../services/issue-assignment-wakeup.ts")>(
+      "../services/issue-assignment-wakeup.ts",
+    ),
+  );
+  vi.doMock("../services/issue-assignment-wakeup.ts", async () =>
+    vi.importActual<typeof import("../services/issue-assignment-wakeup.ts")>(
+      "../services/issue-assignment-wakeup.ts",
+    ),
+  );
+  vi.doMock("../services/issue-execution-policy.js", async () =>
+    vi.importActual<typeof import("../services/issue-execution-policy.ts")>("../services/issue-execution-policy.ts"),
+  );
+  vi.doMock("../services/issue-execution-policy.ts", async () =>
+    vi.importActual<typeof import("../services/issue-execution-policy.ts")>("../services/issue-execution-policy.ts"),
   );
   vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../attachment-types.js", async () =>
+    vi.importActual<typeof import("../attachment-types.ts")>("../attachment-types.ts"),
+  );
+  vi.doMock("../attachment-types.ts", async () =>
+    vi.importActual<typeof import("../attachment-types.ts")>("../attachment-types.ts"),
   );
 }
+
+function resetIssueRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/issue-assignment-wakeup.js");
+  vi.doUnmock("../services/issue-assignment-wakeup.ts");
+  vi.doUnmock("../services/issue-execution-policy.js");
+  vi.doUnmock("../services/issue-execution-policy.ts");
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../routes/issues.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../routes/issues-checkout-wakeup.js");
+  vi.doUnmock("../routes/issues-checkout-wakeup.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../attachment-types.js");
+  vi.doUnmock("../attachment-types.ts");
+}
+
+let issueRouteImportSeq = 0;
 
 async function createApp(actor: Record<string, unknown> = {
   type: "board",
@@ -73,11 +174,13 @@ async function createApp(actor: Record<string, unknown> = {
   source: "local_implicit",
   isInstanceAdmin: false,
 }) {
-  vi.resetModules();
+  resetIssueRouteModules();
   registerModuleMocks();
+  issueRouteImportSeq += 1;
+  const routeModulePath = `../routes/issues.ts?issue-links-routes-${issueRouteImportSeq}`;
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/issues.ts")>,
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -133,6 +236,11 @@ describe("issue link routes", () => {
     mockIssueService.deleteLink.mockResolvedValue(makeLink());
   });
 
+  afterEach(() => {
+    resetIssueRouteModules();
+    vi.resetAllMocks();
+  });
+
   it("lists links for an accessible issue", async () => {
     const res = await request(await createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111/links");
 
@@ -163,6 +271,28 @@ describe("issue link routes", () => {
         details: expect.objectContaining({ url: "https://example.com/spec" }),
       }),
     );
+  });
+
+  it("creates Apple Notes issue links through the same company-scoped route", async () => {
+    const res = await request(await createApp())
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/links")
+      .send({ url: "applenotes://showNote?identifier=ABCDEF", title: "Apple Note" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.createLink).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }),
+      { url: "applenotes://showNote?identifier=ABCDEF", title: "Apple Note" },
+      { agentId: null, userId: "local-board", runId: null },
+    );
+  });
+
+  it("rejects unsafe issue link URL schemes before mutation", async () => {
+    const res = await request(await createApp())
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/links")
+      .send({ url: "javascript:alert(1)", title: "Bad" });
+
+    expect(res.status).toBe(400);
+    expect(mockIssueService.createLink).not.toHaveBeenCalled();
   });
 
   it("uses checkout ownership for assigned in-progress agent mutations", async () => {

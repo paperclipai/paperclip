@@ -57,6 +57,27 @@ describe("issue validators", () => {
     expect(() => updateIssueLinkSchema.parse({})).toThrow();
   });
 
+  it("accepts Apple Notes issue link URLs without allowing unsafe schemes", () => {
+    expect(createIssueLinkSchema.parse({
+      url: "https://www.icloud.com/notes/0123456789#SharedNote",
+    })).toMatchObject({
+      url: "https://www.icloud.com/notes/0123456789#SharedNote",
+    });
+    expect(createIssueLinkSchema.parse({
+      url: "applenotes://showNote?identifier=ABCDEF",
+    })).toMatchObject({
+      url: "applenotes://showNote?identifier=ABCDEF",
+    });
+    expect(updateIssueLinkSchema.parse({
+      url: "notes://showNote?identifier=ABCDEF",
+    })).toMatchObject({
+      url: "notes://showNote?identifier=ABCDEF",
+    });
+
+    expect(() => createIssueLinkSchema.parse({ url: "javascript:alert(1)" })).toThrow(/Apple Notes/);
+    expect(() => createIssueLinkSchema.parse({ url: "file:///tmp/note.txt" })).toThrow(/Apple Notes/);
+  });
+
   it("validates issue reorder payloads", () => {
     expect(reorderIssueSchema.parse({
       status: "todo",
