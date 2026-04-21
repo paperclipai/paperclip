@@ -38,6 +38,7 @@ const candidates = await db
   .select({
     workspaceId: executionWorkspaces.id,
     issueId: executionWorkspaces.sourceIssueId,
+    issueIdentifier: issues.identifier,
     branchName: executionWorkspaces.branchName,
     cwd: executionWorkspaces.cwd,
     providerType: executionWorkspaces.providerType,
@@ -61,7 +62,7 @@ if (candidates.length === 0) {
 }
 
 for (const candidate of candidates) {
-  const label = `ws:${candidate.workspaceId.slice(0, 8)} issue:${candidate.issueId?.slice(0, 8)} branch:${candidate.branchName ?? "n/a"} cwd:${candidate.cwd ?? "n/a"}`;
+  const label = `ws:${candidate.workspaceId.slice(0, 8)} issue:${candidate.issueIdentifier ?? candidate.issueId?.slice(0, 8)} branch:${candidate.branchName ?? "n/a"} cwd:${candidate.cwd ?? "n/a"}`;
   console.log(`\n[${isApply ? "APPLY" : "DRY-RUN"}] ${label}`);
 
   if (!isApply) {
@@ -73,7 +74,7 @@ for (const candidate of candidates) {
     await runPostDoneCleanup({
       db,
       issueId: candidate.issueId!,
-      issueIdentifier: candidate.issueId!,
+      issueIdentifier: candidate.issueIdentifier ?? candidate.issueId!,
       allowedRoots,
     });
     console.log("  → Done");
