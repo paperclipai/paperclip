@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   agentWakeupRequests,
+  agentRuntimeState,
   companies,
   createDb,
   heartbeatRunEvents,
@@ -55,6 +56,7 @@ describeEmbeddedPostgres("heartbeat execution window policy", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -94,6 +96,7 @@ describeEmbeddedPostgres("heartbeat execution window policy", () => {
         heartbeat: {
           enabled: true,
           intervalSec: 60,
+          maxConcurrentRuns: 1,
           executionWindow,
         },
       },
