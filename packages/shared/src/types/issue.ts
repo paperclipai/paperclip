@@ -209,6 +209,7 @@ export interface Issue {
   startedAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;
+  visibility: "private" | "company";
   hiddenAt: Date | null;
   labelIds?: string[];
   labels?: IssueLabel[];
@@ -239,6 +240,17 @@ export interface IssueComment {
   body: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface IssueCollaborator {
+  id: string;
+  issueId: string;
+  principalType: "user" | "agent";
+  principalId: string;
+  reason: "creator" | "explicit" | "assignment" | "mention";
+  displayName: string | null;
+  email?: string | null;
+  createdAt: Date;
 }
 
 export interface IssueAttachment {

@@ -426,8 +426,12 @@ export const PERMISSION_KEYS = [
   "company:export",
   "approvals:review",
   "issues:manage",
+  "issues:see_private",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+export const ISSUE_VISIBILITY = ["private", "company"] as const;
+export type IssueVisibility = (typeof ISSUE_VISIBILITY)[number];
 
 export const PROJECT_PERMISSION_KEYS = [
   "project:view",

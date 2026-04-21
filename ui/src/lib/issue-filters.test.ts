@@ -36,6 +36,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     completedAt: null,
     cancelledAt: null,
     hiddenAt: null,
+    visibility: "company",
     labels: [],
     labelIds: [],
     createdAt: new Date("2026-04-15T00:00:00.000Z"),

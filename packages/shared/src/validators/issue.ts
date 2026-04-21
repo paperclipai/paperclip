@@ -134,9 +134,24 @@ export const createIssueSchema = z.object({
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
+  visibility: z.enum(["private", "company"]).optional(),
 });
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
+
+export const updateIssueVisibilitySchema = z.object({
+  visibility: z.enum(["private", "company"]),
+  confirmed: z.boolean().optional(),
+});
+
+export type UpdateIssueVisibility = z.infer<typeof updateIssueVisibilitySchema>;
+
+export const upsertIssueCollaboratorSchema = z.object({
+  principalType: z.enum(["user", "agent"]),
+  principalId: z.string().min(1),
+});
+
+export type UpsertIssueCollaborator = z.infer<typeof upsertIssueCollaboratorSchema>;
 
 export const createIssueLabelSchema = z.object({
   name: z.string().trim().min(1).max(48),

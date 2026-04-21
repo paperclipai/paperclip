@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { X } from "lucide-react";
+import { Lock, X } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -73,6 +73,12 @@ export function IssueRow({
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span className="line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none">
+          {issue.visibility === "private" ? (
+            <Lock
+              className="mr-1 inline h-3 w-3 shrink-0 text-muted-foreground align-[-1px]"
+              aria-label="Private"
+            />
+          ) : null}
           {issue.title}{titleSuffix}
         </span>
         <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">

@@ -19,6 +19,8 @@ import {
   issueDocumentKeySchema,
   restoreIssueDocumentRevisionSchema,
   updateIssueWorkProductSchema,
+  updateIssueVisibilitySchema,
+  upsertIssueCollaboratorSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
@@ -39,11 +41,13 @@ import {
   instanceSettingsService,
   issueApprovalService,
   issueService,
+  issueVisibilityService,
   documentService,
   logActivity,
   projectService,
   routineService,
   workProductService,
+  type VisibilityPrincipal,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
@@ -299,6 +303,7 @@ export function issueRoutes(
   const router = Router();
   const svc = issueService(db);
   const access = accessService(db);
+  const visibility = issueVisibilityService(db);
   const heartbeat = heartbeatService(db);
   const feedback = feedbackService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -367,6 +372,40 @@ export function issueRoutes(
     if (req.actor.type === "agent") return req.actor.companyId === companyId;
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
     return (req.actor.companyIds ?? []).includes(companyId);
+  }
+
+  function getVisibilityPrincipal(req: Request): VisibilityPrincipal {
+    if (req.actor.type === "agent") {
+      return { kind: "agent", agentId: req.actor.agentId ?? "" };
+    }
+    if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit") return { kind: "system" };
+      return {
+        kind: "user",
+        userId: req.actor.userId ?? "",
+        isInstanceAdmin: Boolean(req.actor.isInstanceAdmin),
+      };
+    }
+    return { kind: "user", userId: "" };
+  }
+
+  async function gateIssueVisibility(req: Request, res: Response, issue: {
+    id: string;
+    companyId: string;
+    visibility: string;
+    createdByUserId: string | null;
+    createdByAgentId: string | null;
+    assigneeUserId: string | null;
+    assigneeAgentId: string | null;
+  }): Promise<boolean> {
+    if (issue.visibility !== "private") return true;
+    const principal = getVisibilityPrincipal(req);
+    const allowed = await visibility.canSeeIssue(principal, issue);
+    if (!allowed) {
+      res.status(404).json({ error: "Issue not found" });
+      return false;
+    }
+    return true;
   }
 
   function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
@@ -673,7 +712,9 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
       limit,
     });
-    res.json(result);
+    const principal = getVisibilityPrincipal(req);
+    const filtered = await visibility.filterVisibleIssues(principal, result);
+    res.json(filtered);
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -742,6 +783,7 @@ export function issueRoutes(
     } else {
       assertCompanyAccess(req, issue.companyId);
     }
+    if (!(await gateIssueVisibility(req, res, issue))) return;
     const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload, relations] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -1360,12 +1402,70 @@ export function issueRoutes(
     ) {
       req.body.status = "todo";
     }
+    const resolvedVisibility: "private" | "company" =
+      req.body.visibility ?? (req.body.projectId ? "company" : "private");
     const issue = await svc.create(companyId, {
       ...req.body,
+      visibility: resolvedVisibility,
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
+
+    if (actor.actorType === "user" && actor.actorId) {
+      await visibility.ensureCollaborator({
+        companyId,
+        issueId: issue.id,
+        principalType: "user",
+        principalId: actor.actorId,
+        reason: "creator",
+        addedByUserId: actor.actorId,
+      });
+    } else if (actor.actorType === "agent" && actor.agentId) {
+      await visibility.ensureCollaborator({
+        companyId,
+        issueId: issue.id,
+        principalType: "agent",
+        principalId: actor.agentId,
+        reason: "creator",
+        addedByAgentId: actor.agentId,
+      });
+    }
+    if (issue.assigneeUserId) {
+      await visibility.ensureCollaborator({
+        companyId,
+        issueId: issue.id,
+        principalType: "user",
+        principalId: issue.assigneeUserId,
+        reason: "assignment",
+        addedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        addedByAgentId: actor.agentId,
+      });
+    }
+    if (issue.assigneeAgentId) {
+      await visibility.ensureCollaborator({
+        companyId,
+        issueId: issue.id,
+        principalType: "agent",
+        principalId: issue.assigneeAgentId,
+        reason: "assignment",
+        addedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        addedByAgentId: actor.agentId,
+      });
+    }
+    if (issue.description) {
+      await visibility
+        .resolveMentionsToCollaborators({
+          companyId,
+          issueId: issue.id,
+          body: issue.description,
+          addedByUserId: actor.actorType === "user" ? actor.actorId : null,
+          addedByAgentId: actor.agentId,
+        })
+        .catch((err) =>
+          logger.warn({ err, issueId: issue.id }, "failed to resolve description mentions to collaborators"),
+        );
+    }
 
     await logActivity(db, {
       companyId,
@@ -1617,6 +1717,28 @@ export function issueRoutes(
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
+    }
+    if (issue.assigneeUserId && issue.assigneeUserId !== existing.assigneeUserId) {
+      await visibility.ensureCollaborator({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        principalType: "user",
+        principalId: issue.assigneeUserId,
+        reason: "assignment",
+        addedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        addedByAgentId: actor.agentId,
+      });
+    }
+    if (issue.assigneeAgentId && issue.assigneeAgentId !== existing.assigneeAgentId) {
+      await visibility.ensureCollaborator({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        principalType: "agent",
+        principalId: issue.assigneeAgentId,
+        reason: "assignment",
+        addedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        addedByAgentId: actor.agentId,
+      });
     }
     let issueResponse: typeof issue & { blockedBy?: unknown; blocks?: unknown } = issue;
     let updatedRelations: Awaited<ReturnType<typeof svc.getRelationSummaries>> | null = null;
@@ -2029,6 +2151,133 @@ export function issueRoutes(
     res.json({ ...issueResponse, comment });
   });
 
+  router.post(
+    "/issues/:id/visibility",
+    validate(updateIssueVisibilitySchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, existing.companyId);
+      if (!(await gateIssueVisibility(req, res, existing))) return;
+
+      const { visibility: nextVisibility, confirmed } = req.body as {
+        visibility: "private" | "company";
+        confirmed?: boolean;
+      };
+
+      if (existing.visibility === "private" && nextVisibility === "company" && confirmed !== true) {
+        res.status(400).json({
+          error: "Confirmation required to make a private issue company-visible",
+          requiresConfirmation: true,
+        });
+        return;
+      }
+
+      if (existing.visibility === nextVisibility) {
+        res.json(existing);
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const updated = await svc.update(id, { visibility: nextVisibility } as Partial<typeof existing>);
+      if (!updated) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+
+      await logActivity(db, {
+        companyId: updated.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.visibility_changed",
+        entityType: "issue",
+        entityId: updated.id,
+        details: {
+          from: existing.visibility,
+          to: nextVisibility,
+          identifier: updated.identifier,
+        },
+      });
+
+      res.json(updated);
+    },
+  );
+
+  router.get("/issues/:id/collaborators", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await gateIssueVisibility(req, res, issue))) return;
+    const rows = await visibility.listCollaborators(issue.id);
+    res.json(rows);
+  });
+
+  router.post(
+    "/issues/:id/collaborators",
+    validate(upsertIssueCollaboratorSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await gateIssueVisibility(req, res, issue))) return;
+      const actor = getActorInfo(req);
+      const { principalType, principalId } = req.body as {
+        principalType: "user" | "agent";
+        principalId: string;
+      };
+      await visibility.ensureCollaborator({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        principalType,
+        principalId,
+        reason: "explicit",
+        addedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        addedByAgentId: actor.agentId,
+      });
+      const rows = await visibility.listCollaborators(issue.id);
+      res.status(201).json(rows);
+    },
+  );
+
+  router.delete("/issues/:id/collaborators/:principalType/:principalId", async (req, res) => {
+    const id = req.params.id as string;
+    const { principalType, principalId } = req.params as {
+      principalType: string;
+      principalId: string;
+    };
+    if (principalType !== "user" && principalType !== "agent") {
+      res.status(400).json({ error: "principalType must be 'user' or 'agent'" });
+      return;
+    }
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await gateIssueVisibility(req, res, issue))) return;
+    await visibility.removeCollaborator({
+      issueId: issue.id,
+      principalType,
+      principalId,
+    });
+    res.status(204).end();
+  });
+
   router.delete("/issues/:id", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
@@ -2105,6 +2354,16 @@ export function issueRoutes(
     if (req.actor.type === "agent" && !checkoutRunId) return;
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
+
+    await visibility.ensureCollaborator({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      principalType: "agent",
+      principalId: req.body.agentId,
+      reason: "assignment",
+      addedByUserId: actor.actorType === "user" ? actor.actorId : null,
+      addedByAgentId: actor.agentId,
+    });
 
     await logActivity(db, {
       companyId: issue.companyId,
@@ -2187,6 +2446,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await gateIssueVisibility(req, res, issue))) return;
     const afterCommentId =
       typeof req.query.after === "string" && req.query.after.trim().length > 0
         ? req.query.after.trim()
@@ -2384,6 +2644,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await gateIssueVisibility(req, res, issue))) return;
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
@@ -2468,6 +2729,38 @@ export function issueRoutes(
       userId: actor.actorType === "user" ? actor.actorId : undefined,
       runId: actor.runId,
     });
+
+    if (actor.actorType === "user" && actor.actorId) {
+      await visibility.ensureCollaborator({
+        companyId: currentIssue.companyId,
+        issueId: currentIssue.id,
+        principalType: "user",
+        principalId: actor.actorId,
+        reason: "explicit",
+        addedByUserId: actor.actorId,
+      });
+    } else if (actor.actorType === "agent" && actor.agentId) {
+      await visibility.ensureCollaborator({
+        companyId: currentIssue.companyId,
+        issueId: currentIssue.id,
+        principalType: "agent",
+        principalId: actor.agentId,
+        reason: "explicit",
+        addedByAgentId: actor.agentId,
+      });
+    }
+
+    await visibility
+      .resolveMentionsToCollaborators({
+        companyId: currentIssue.companyId,
+        issueId: currentIssue.id,
+        body: comment.body,
+        addedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        addedByAgentId: actor.agentId,
+      })
+      .catch((err) =>
+        logger.warn({ err, issueId: currentIssue.id }, "failed to resolve comment mentions to collaborators"),
+      );
 
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
@@ -2697,6 +2990,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await gateIssueVisibility(req, res, issue))) return;
     const attachments = await svc.listAttachments(issueId);
     res.json(attachments.map(withContentPath));
   });

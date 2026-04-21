@@ -51,6 +51,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     completedAt: null,
     cancelledAt: null,
     hiddenAt: null,
+    visibility: "company",
     createdAt: now,
     updatedAt: now,
     ...overrides,

@@ -470,6 +470,13 @@
       "when": 1777939380000,
       "tag": "0066_org_archived_at",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1777939440000,
+      "tag": "0067_issue_privacy",
+      "breakpoints": true
     }
   ]
 }

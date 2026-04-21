@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueCollaborator } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
@@ -22,7 +22,16 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, Lock, Globe, X as XIcon } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
@@ -151,6 +160,135 @@ function PropertyPicker({
   );
 }
 
+function CollaboratorPill({
+  collaborator,
+  agentName,
+  userLabel,
+  onRemove,
+}: {
+  collaborator: IssueCollaborator;
+  agentName: (id: string | null) => string | null;
+  userLabel: (id: string | null | undefined) => string | null;
+  onRemove: () => void;
+}) {
+  const label = collaborator.principalType === "agent"
+    ? (agentName(collaborator.principalId) ?? collaborator.displayName ?? collaborator.principalId.slice(0, 8))
+    : (userLabel(collaborator.principalId) ?? collaborator.displayName ?? collaborator.email ?? "User");
+  const reasonLabel = collaborator.reason === "creator"
+    ? "creator"
+    : collaborator.reason === "assignment"
+      ? "assignee"
+      : collaborator.reason === "mention"
+        ? "mentioned"
+        : null;
+  return (
+    <div className="flex items-center gap-1.5 min-w-0">
+      {collaborator.principalType === "agent" ? (
+        <Hexagon className="h-3 w-3 text-muted-foreground shrink-0" />
+      ) : (
+        <User className="h-3 w-3 text-muted-foreground shrink-0" />
+      )}
+      <span className="text-sm min-w-0 truncate">{label}</span>
+      {reasonLabel && (
+        <span className="text-[10px] text-muted-foreground shrink-0">({reasonLabel})</span>
+      )}
+      <button
+        type="button"
+        onClick={onRemove}
+        className="ml-auto opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-accent/50 rounded p-0.5 transition-opacity shrink-0"
+        title="Remove collaborator"
+      >
+        <XIcon className="h-3 w-3 text-muted-foreground" />
+      </button>
+    </div>
+  );
+}
+
+interface UserDirectoryLike {
+  principalId: string;
+  user: { id: string; email: string | null; name: string | null; image: string | null } | null;
+}
+
+function CollaboratorCandidates({
+  search,
+  agents,
+  users,
+  existing,
+  onSelect,
+}: {
+  search: string;
+  agents: Array<{ id: string; name: string; icon?: string | null; status?: string }>;
+  users: UserDirectoryLike[];
+  existing: IssueCollaborator[];
+  onSelect: (type: "user" | "agent", id: string) => void;
+}) {
+  const existingKeys = useMemo(
+    () => new Set(existing.map((c) => `${c.principalType}:${c.principalId}`)),
+    [existing],
+  );
+  const q = search.trim().toLowerCase();
+
+  const agentMatches = agents
+    .filter((a) => a.status !== "terminated")
+    .filter((a) => !existingKeys.has(`agent:${a.id}`))
+    .filter((a) => !q || a.name.toLowerCase().includes(q))
+    .slice(0, 8);
+
+  const userMatches = users
+    .map((u) => ({
+      userId: u.user?.id ?? u.principalId,
+      name: u.user?.name ?? null,
+      email: u.user?.email ?? null,
+    }))
+    .filter((u) => !existingKeys.has(`user:${u.userId}`))
+    .filter((u) => {
+      if (!q) return true;
+      const n = (u.name ?? "").toLowerCase();
+      const e = (u.email ?? "").toLowerCase();
+      return n.includes(q) || e.includes(q);
+    })
+    .slice(0, 8);
+
+  if (agentMatches.length === 0 && userMatches.length === 0) {
+    return <div className="px-2 py-2 text-xs text-muted-foreground">No matches</div>;
+  }
+
+  return (
+    <div className="max-h-72 overflow-auto">
+      {userMatches.length > 0 && (
+        <div className="py-1">
+          <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">Users</div>
+          {userMatches.map((u) => (
+            <button
+              key={`user:${u.userId}`}
+              className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs rounded hover:bg-accent/50"
+              onClick={() => onSelect("user", u.userId)}
+            >
+              <User className="h-3 w-3 text-muted-foreground shrink-0" />
+              <span className="truncate">{u.name ?? u.email ?? u.userId.slice(0, 8)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {agentMatches.length > 0 && (
+        <div className="py-1">
+          <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">Agents</div>
+          {agentMatches.map((a) => (
+            <button
+              key={`agent:${a.id}`}
+              className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs rounded hover:bg-accent/50"
+              onClick={() => onSelect("agent", a.id)}
+            >
+              <Hexagon className="h-3 w-3 text-muted-foreground shrink-0" />
+              <span className="truncate">{a.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function IssueProperties({
   issue,
   childIssues = [],
@@ -177,6 +315,9 @@ export function IssueProperties({
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
+  const [addCollaboratorOpen, setAddCollaboratorOpen] = useState(false);
+  const [collaboratorSearch, setCollaboratorSearch] = useState("");
+  const [confirmMakeCompanyOpen, setConfirmMakeCompanyOpen] = useState(false);
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -220,6 +361,40 @@ export function IssueProperties({
     queryKey: queryKeys.issues.list(companyId!),
     queryFn: () => issuesApi.list(companyId!),
     enabled: !!companyId && (blockedByOpen || parentOpen),
+  });
+
+  const { data: collaborators } = useQuery({
+    queryKey: queryKeys.issues.collaborators(issue.id),
+    queryFn: () => issuesApi.listCollaborators(issue.id),
+    enabled: !!issue.id,
+  });
+
+  const invalidateCollaborators = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: queryKeys.issues.collaborators(issue.id) }),
+    [queryClient, issue.id],
+  );
+
+  const addCollaborator = useMutation({
+    mutationFn: (data: { principalType: "user" | "agent"; principalId: string }) =>
+      issuesApi.addCollaborator(issue.id, data.principalType, data.principalId),
+    onSuccess: () => invalidateCollaborators(),
+  });
+
+  const removeCollaborator = useMutation({
+    mutationFn: (data: { principalType: "user" | "agent"; principalId: string }) =>
+      issuesApi.removeCollaborator(issue.id, data.principalType, data.principalId),
+    onSuccess: () => invalidateCollaborators(),
+  });
+
+  const updateVisibility = useMutation({
+    mutationFn: (data: { visibility: "private" | "company"; confirmed?: boolean }) =>
+      issuesApi.updateVisibility(issue.id, data.visibility, data.confirmed),
+    onSuccess: () => {
+      if (companyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+      }
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+    },
   });
 
   const createLabel = useMutation({
@@ -1116,6 +1291,125 @@ export function IssueProperties({
           </PropertyRow>
         )}
       </div>
+
+      <Separator />
+
+      <div className="space-y-1">
+        <PropertyRow label="Visibility">
+          {issue.visibility === "private" ? (
+            <button
+              type="button"
+              onClick={() => setConfirmMakeCompanyOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 text-sm hover:bg-accent/50 transition-colors cursor-pointer"
+              title="Make visible to the whole company"
+            >
+              <Lock className="h-3.5 w-3.5 text-muted-foreground" />
+              <span>Private</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() =>
+                updateVisibility.mutate({ visibility: "private" })
+              }
+              className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 text-sm hover:bg-accent/50 transition-colors cursor-pointer"
+              title="Make private"
+            >
+              <Globe className="h-3.5 w-3.5 text-muted-foreground" />
+              <span>Company</span>
+            </button>
+          )}
+        </PropertyRow>
+
+        <PropertyRow label="Collaborators">
+          <div className="flex flex-col gap-1 min-w-0 flex-1">
+            {(collaborators ?? []).length === 0 ? (
+              <span className="text-sm text-muted-foreground">No collaborators</span>
+            ) : (
+              (collaborators ?? []).map((c) => (
+                <CollaboratorPill
+                  key={c.id}
+                  collaborator={c}
+                  agentName={agentName}
+                  userLabel={userLabel}
+                  onRemove={() =>
+                    removeCollaborator.mutate({
+                      principalType: c.principalType,
+                      principalId: c.principalId,
+                    })
+                  }
+                />
+              ))
+            )}
+            <Popover
+              open={addCollaboratorOpen}
+              onOpenChange={(open) => {
+                setAddCollaboratorOpen(open);
+                if (!open) setCollaboratorSearch("");
+              }}
+            >
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 self-start rounded px-1 -mx-1 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors"
+                >
+                  <Plus className="h-3 w-3" />
+                  Add
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-64 p-1" align="end" collisionPadding={16}>
+                <div className="px-2 py-1.5">
+                  <input
+                    type="text"
+                    value={collaboratorSearch}
+                    onChange={(e) => setCollaboratorSearch(e.target.value)}
+                    placeholder="Search users or agents..."
+                    className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs focus:outline-none focus:border-primary"
+                  />
+                </div>
+                <CollaboratorCandidates
+                  search={collaboratorSearch}
+                  agents={agents ?? []}
+                  users={companyMembers?.users ?? []}
+                  existing={collaborators ?? []}
+                  onSelect={(principalType, principalId) => {
+                    addCollaborator.mutate({ principalType, principalId });
+                    setAddCollaboratorOpen(false);
+                    setCollaboratorSearch("");
+                  }}
+                />
+              </PopoverContent>
+            </Popover>
+          </div>
+        </PropertyRow>
+      </div>
+
+      <Dialog open={confirmMakeCompanyOpen} onOpenChange={setConfirmMakeCompanyOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Make this issue visible to the whole company?</DialogTitle>
+            <DialogDescription>
+              Anyone in the company will be able to see this issue, its comments, documents, and attachments.
+              You can switch it back to private later.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirmMakeCompanyOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                updateVisibility.mutate(
+                  { visibility: "company", confirmed: true },
+                  { onSuccess: () => setConfirmMakeCompanyOpen(false) },
+                );
+              }}
+            >
+              Make company-visible
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
         <>

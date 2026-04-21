@@ -36,6 +36,7 @@ const permissionLabels: Record<PermissionKey, string> = {
   "company:export": "Export company data",
   "approvals:review": "Review approvals",
   "issues:manage": "Manage issues",
+  "issues:see_private": "See private issues",
 };
 
 function formatGrantSummary(member: CompanyMember) {
@@ -44,8 +45,8 @@ function formatGrantSummary(member: CompanyMember) {
 }
 
 const implicitRoleGrantMap: Record<NonNullable<CompanyMember["membershipRole"]>, PermissionKey[]> = {
-  owner: ["agents:create", "users:invite", "users:manage_permissions", "tasks:assign", "joins:approve"],
-  admin: ["agents:create", "users:invite", "tasks:assign", "joins:approve"],
+  owner: ["agents:create", "users:invite", "users:manage_permissions", "tasks:assign", "joins:approve", "issues:see_private"],
+  admin: ["agents:create", "users:invite", "tasks:assign", "joins:approve", "issues:see_private"],
   operator: ["tasks:assign"],
   viewer: [],
 };

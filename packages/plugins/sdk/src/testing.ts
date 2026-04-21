@@ -381,6 +381,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           startedAt: null,
           completedAt: null,
           cancelledAt: null,
+          visibility: "company",
           hiddenAt: null,
           createdAt: now,
           updatedAt: now,

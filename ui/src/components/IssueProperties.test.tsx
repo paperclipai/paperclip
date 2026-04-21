@@ -20,6 +20,10 @@ const mockProjectsApi = vi.hoisted(() => ({
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
   listLabels: vi.fn(),
+  listCollaborators: vi.fn(() => Promise.resolve([])),
+  addCollaborator: vi.fn(),
+  removeCollaborator: vi.fn(),
+  updateVisibility: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -135,6 +139,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     completedAt: null,
     cancelledAt: null,
     hiddenAt: null,
+    visibility: "company",
     labels: [],
     labelIds: [],
     blockedBy: [],

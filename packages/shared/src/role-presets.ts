@@ -28,6 +28,7 @@ export const ROLE_PRESETS: RolePreset[] = [
       "company:export",
       "approvals:review",
       "issues:manage",
+      "issues:see_private",
     ],
   },
   {
@@ -44,6 +45,7 @@ export const ROLE_PRESETS: RolePreset[] = [
       "goals:manage",
       "approvals:review",
       "issues:manage",
+      "issues:see_private",
     ],
   },
   {

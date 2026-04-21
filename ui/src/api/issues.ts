@@ -6,6 +6,7 @@ import type {
   FeedbackVote,
   Issue,
   IssueAttachment,
+  IssueCollaborator,
   IssueComment,
   IssueDocument,
   IssueLabel,
@@ -166,4 +167,17 @@ export const issuesApi = {
   updateWorkProduct: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueWorkProduct>(`/work-products/${id}`, data),
   deleteWorkProduct: (id: string) => api.delete<IssueWorkProduct>(`/work-products/${id}`),
+  listCollaborators: (id: string) =>
+    api.get<IssueCollaborator[]>(`/issues/${id}/collaborators`),
+  addCollaborator: (id: string, principalType: "user" | "agent", principalId: string) =>
+    api.post<IssueCollaborator[]>(`/issues/${id}/collaborators`, { principalType, principalId }),
+  removeCollaborator: (id: string, principalType: "user" | "agent", principalId: string) =>
+    api.delete<{ ok: true }>(
+      `/issues/${id}/collaborators/${principalType}/${encodeURIComponent(principalId)}`,
+    ),
+  updateVisibility: (id: string, visibility: "private" | "company", confirmed?: boolean) =>
+    api.post<Issue>(`/issues/${id}/visibility`, {
+      visibility,
+      ...(confirmed === undefined ? {} : { confirmed }),
+    }),
 };

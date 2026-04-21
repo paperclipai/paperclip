@@ -91,6 +91,7 @@ import {
   Copy,
   EyeOff,
   Hexagon,
+  Lock,
   MessageSquare,
   MoreHorizontal,
   MoreVertical,
@@ -2231,6 +2232,16 @@ export function IssueDetail() {
             onChange={(priority) => updateIssue.mutate({ priority })}
           />
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+
+          {issue.visibility === "private" && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[10px] font-medium text-muted-foreground shrink-0"
+              title="Only the creator and explicit collaborators can see this issue"
+            >
+              <Lock className="h-3 w-3" />
+              Private
+            </span>
+          )}
 
           {hasLiveRuns && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
