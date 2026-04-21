@@ -23,7 +23,7 @@ import {
   countActiveIssueFilters,
   type IssueFilterState,
 } from "../lib/issue-filters";
-import { formatAssigneeUserLabel } from "../lib/assignees";
+import { formatAssigneeUserLabel, isIssueAssignedToCurrentActor } from "../lib/assignees";
 import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
@@ -789,6 +789,7 @@ export function Inbox() {
     refetchInterval: 5000,
   });
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
+  const currentActorAgentIds = useMemo(() => agents?.map((agent) => agent.id) ?? [], [agents]);
 
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
@@ -2072,6 +2073,10 @@ export function Inbox() {
                       issueLinkState={issueLinkState}
                       selected={selected}
                       assigneeIcon={<IssueAssigneeIcon issue={issue} agents={agents} currentUserId={currentUserId} />}
+                      assignedToCurrentUser={isIssueAssignedToCurrentActor(issue, {
+                        currentUserId,
+                        currentAgentIds: currentActorAgentIds,
+                      })}
                       className={
                         isArchiving
                           ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"

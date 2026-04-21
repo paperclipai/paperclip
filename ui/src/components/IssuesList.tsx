@@ -13,7 +13,7 @@ import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
 } from "../lib/keyboardShortcuts";
-import { formatAssigneeUserLabel } from "../lib/assignees";
+import { formatAssigneeUserLabel, isIssueAssignedToCurrentActor } from "../lib/assignees";
 import { groupBy } from "../lib/groupBy";
 import {
   applyIssueFilters,
@@ -201,7 +201,7 @@ type CreatorOption = {
   searchText?: string;
 };
 
-type ProjectOption = Pick<Project, "id" | "name"> & Partial<Pick<Project, "color" | "workspaces" | "executionWorkspacePolicy" | "primaryWorkspace">>;
+type ProjectOption = Pick<Project, "id" | "name"> & Partial<Pick<Project, "code" | "color" | "workspaces" | "executionWorkspacePolicy" | "primaryWorkspace">>;
 type IssueListRequestFilters = NonNullable<Parameters<typeof issuesApi.list>[1]>;
 
 interface IssuesListProps {
@@ -342,6 +342,7 @@ export function IssuesList({
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const currentActorAgentIds = useMemo(() => agents?.map((agent) => agent.id) ?? [], [agents]);
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
 
   // Scope the storage key per company so folding/view state is independent across companies.
@@ -975,7 +976,9 @@ export function IssuesList({
         <KanbanBoard
           issues={boardIssues}
           agents={agents}
+          projects={projects}
           liveIssueIds={liveIssueIds}
+          currentUserId={currentUserId}
           issueLinkState={issueLinkState}
           onUpdateIssue={onUpdateIssue}
           onReorderIssue={onReorderIssue}
@@ -1066,6 +1069,10 @@ export function IssuesList({
                         issue={issue}
                         issueLinkState={issueLinkState}
                         assigneeIcon={<IssueAssigneeIcon issue={issue} agents={agents} currentUserId={currentUserId} />}
+                        assignedToCurrentUser={isIssueAssignedToCurrentActor(issue, {
+                          currentUserId,
+                          currentAgentIds: currentActorAgentIds,
+                        })}
                         rowAction={askAgentsRowAction(issue)}
                         titleSuffix={hasChildren && !isExpanded ? (
                           <span className="ml-1.5 text-xs text-muted-foreground">

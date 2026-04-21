@@ -9,6 +9,12 @@ export interface AssigneeOption {
   searchText?: string;
 }
 
+export interface CurrentActorAssigneeContext {
+  currentUserId?: string | null;
+  currentAgentId?: string | null;
+  currentAgentIds?: Iterable<string | null | undefined> | null;
+}
+
 interface CommentAssigneeSuggestionInput {
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
@@ -69,6 +75,42 @@ export function currentUserAssigneeOption(currentUserId: string | null | undefin
     label: "Me",
     searchText: currentUserId === "local-board" ? "me board human local-board" : `me human ${currentUserId}`,
   }];
+}
+
+export function isIssueAssignedToCurrentUser(
+  issue: Pick<AssigneeSelection, "assigneeUserId">,
+  currentUserId: string | null | undefined,
+): boolean {
+  return Boolean(currentUserId && issue.assigneeUserId === currentUserId);
+}
+
+export function isIssueAssignedToCurrentActor(
+  issue: Pick<AssigneeSelection, "assigneeAgentId" | "assigneeUserId">,
+  context: CurrentActorAssigneeContext,
+): boolean {
+  if (isIssueAssignedToCurrentUser(issue, context.currentUserId)) {
+    return true;
+  }
+
+  if (!issue.assigneeAgentId) {
+    return false;
+  }
+
+  if (context.currentAgentId && issue.assigneeAgentId === context.currentAgentId) {
+    return true;
+  }
+
+  if (!context.currentAgentIds) {
+    return false;
+  }
+
+  for (const agentId of context.currentAgentIds) {
+    if (agentId && issue.assigneeAgentId === agentId) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export function formatAssigneeUserLabel(

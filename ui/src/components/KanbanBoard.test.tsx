@@ -229,6 +229,141 @@ describe("KanbanBoard", () => {
     expect(container.querySelector('button[aria-label="Set due date to today"]')).toBeNull();
   });
 
+  it("renders compact project indicators for board cards with known projects", () => {
+    act(() => {
+      root.render(
+        <KanbanBoard
+          issues={[
+            createIssue({ id: "issue-code-project", identifier: "PAP-10", title: "Coded project", projectId: "project-papa" }),
+            createIssue({ id: "issue-name-project", identifier: "PAP-11", title: "Named project", projectId: "project-ops" }),
+          ]}
+          agents={[]}
+          projects={[
+            { id: "project-papa", name: "PC - Trello board", code: "PAPA", color: "#0ea5e9" },
+            { id: "project-ops", name: "Operations", color: null },
+          ]}
+          liveIssueIds={new Set()}
+          onUpdateIssue={() => undefined}
+        />,
+      );
+    });
+
+    const indicators = Array.from(container.querySelectorAll('[data-testid="kanban-project-indicator"]'));
+    expect(indicators).toHaveLength(2);
+    expect(indicators[0]?.textContent).toBe("PAPA");
+    expect(indicators[0]?.getAttribute("title")).toBe("Project: PC - Trello board (PAPA)");
+    expect(indicators[1]?.textContent).toBe("Operations");
+  });
+
+  it("omits the project indicator for board cards without a project", () => {
+    act(() => {
+      root.render(
+        <KanbanBoard
+          issues={[createIssue({ id: "issue-no-project", identifier: "PAP-12", title: "No project", projectId: null })]}
+          agents={[]}
+          projects={[{ id: "project-papa", name: "PC - Trello board", code: "PAPA", color: "#0ea5e9" }]}
+          liveIssueIds={new Set()}
+          onUpdateIssue={() => undefined}
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="kanban-project-indicator"]')).toBeNull();
+  });
+
+  it("renders compact issue labels with overflow on board cards", () => {
+    act(() => {
+      root.render(
+        <KanbanBoard
+          issues={[createIssue({
+            labels: [
+              {
+                id: "label-bug",
+                companyId: "company-1",
+                name: "Bug",
+                color: "#ef4444",
+                createdAt: new Date("2026-04-07T00:00:00.000Z"),
+                updatedAt: new Date("2026-04-07T00:00:00.000Z"),
+              },
+              {
+                id: "label-growth",
+                companyId: "company-1",
+                name: "Growth",
+                color: "#22c55e",
+                createdAt: new Date("2026-04-07T00:00:00.000Z"),
+                updatedAt: new Date("2026-04-07T00:00:00.000Z"),
+              },
+              {
+                id: "label-copy",
+                companyId: "company-1",
+                name: "Copy",
+                color: "#3b82f6",
+                createdAt: new Date("2026-04-07T00:00:00.000Z"),
+                updatedAt: new Date("2026-04-07T00:00:00.000Z"),
+              },
+            ],
+            labelIds: ["label-bug", "label-growth", "label-copy"],
+          })]}
+          agents={[]}
+          liveIssueIds={new Set()}
+          onUpdateIssue={() => undefined}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Bug");
+    expect(container.textContent).toContain("Growth");
+    expect(container.textContent).toContain("+1");
+    expect(container.textContent).not.toContain("Copy");
+  });
+
+  it("highlights board cards assigned to the current user", () => {
+    act(() => {
+      root.render(
+        <KanbanBoard
+          issues={[
+            createIssue({ id: "issue-mine", identifier: "PAP-6", title: "Mine", assigneeUserId: "board-user" }),
+            createIssue({ id: "issue-other", identifier: "PAP-7", title: "Other", assigneeUserId: "other-user" }),
+          ]}
+          agents={[]}
+          liveIssueIds={new Set()}
+          currentUserId="board-user"
+          onUpdateIssue={() => undefined}
+        />,
+      );
+    });
+
+    const highlightedCards = Array.from(container.querySelectorAll('[data-assigned-to-current-user="true"]'));
+    expect(highlightedCards).toHaveLength(1);
+    expect(highlightedCards[0]?.textContent).toContain("Mine");
+    expect(highlightedCards[0]?.className).toContain("border-l-4");
+    expect(highlightedCards[0]?.className).toContain("bg-cyan-500");
+    expect(container.querySelector('[aria-label="Assigned to You"]')).not.toBeNull();
+  });
+
+  it("highlights board cards assigned to visible company agents", () => {
+    act(() => {
+      root.render(
+        <KanbanBoard
+          issues={[
+            createIssue({ id: "issue-agent", identifier: "PAP-8", title: "Agent work", assigneeAgentId: "agent-steward" }),
+            createIssue({ id: "issue-other", identifier: "PAP-9", title: "Other work", assigneeAgentId: "agent-other" }),
+          ]}
+          agents={[{ id: "agent-steward", name: "Paperclip Steward" }]}
+          liveIssueIds={new Set()}
+          currentUserId="board-user"
+          onUpdateIssue={() => undefined}
+        />,
+      );
+    });
+
+    const highlightedCards = Array.from(container.querySelectorAll('[data-assigned-to-current-user="true"]'));
+    expect(highlightedCards).toHaveLength(1);
+    expect(highlightedCards[0]?.textContent).toContain("Agent work");
+    expect(highlightedCards[0]?.className).toContain("border-l-4");
+    expect(container.querySelector('[aria-label="Assigned to Paperclip Steward"]')).not.toBeNull();
+  });
+
   it("resolves same-column reorder targets from sortable card positions", () => {
     const issues = [
       createIssue({ id: "issue-a", title: "A", boardPosition: 0 }),

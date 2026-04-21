@@ -18,7 +18,10 @@ const routerState = vi.hoisted(() => ({
 }));
 
 const kanbanBoardState = vi.hoisted(() => ({
-  latestProps: null as null | { issueLinkState?: unknown },
+  latestProps: null as null | {
+    issueLinkState?: unknown;
+    projects?: Array<{ id: string; name: string; code?: string | null }>;
+  },
 }));
 
 const dialogState = vi.hoisted(() => ({
@@ -74,16 +77,18 @@ vi.mock("../api/instanceSettings", () => ({
 vi.mock("./IssueRow", () => ({
   IssueRow: ({
     issue,
+    assignedToCurrentUser,
     desktopMetaLeading,
     desktopTrailing,
     rowAction,
   }: {
     issue: Issue;
+    assignedToCurrentUser?: boolean;
     desktopMetaLeading?: ReactNode;
     desktopTrailing?: ReactNode;
     rowAction?: ReactNode;
   }) => (
-    <div data-testid="issue-row">
+    <div data-testid="issue-row" data-assigned-to-current-user={assignedToCurrentUser ? "true" : undefined}>
       <span>{issue.title}</span>
       {desktopMetaLeading}
       {desktopTrailing}
@@ -93,7 +98,12 @@ vi.mock("./IssueRow", () => ({
 }));
 
 vi.mock("./KanbanBoard", () => ({
-  KanbanBoard: (props: { issues: Issue[]; issueLinkState?: unknown; onAddIssue?: (status: string) => void }) => {
+  KanbanBoard: (props: {
+    issues: Issue[];
+    issueLinkState?: unknown;
+    projects?: Array<{ id: string; name: string; code?: string | null }>;
+    onAddIssue?: (status: string) => void;
+  }) => {
     kanbanBoardState.latestProps = props;
     return (
       <div data-testid="kanban-board">
@@ -319,6 +329,29 @@ describe("IssuesList", () => {
     });
   });
 
+  it("forwards project metadata to the Kanban board", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ title: "Project board task", projectId: "project-papa" })]}
+        agents={[]}
+        projects={[{ id: "project-papa", name: "PC - Trello board", code: "PAPA" }]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(kanbanBoardState.latestProps?.projects).toEqual([
+        { id: "project-papa", name: "PC - Trello board", code: "PAPA" },
+      ]);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("orders board tasks by manual board position", async () => {
     const laterActivity = createIssue({
       id: "issue-later-activity",
@@ -372,6 +405,40 @@ describe("IssuesList", () => {
       expect(container.querySelector('[data-testid="issue-row"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="kanban-board"]')).toBeNull();
       expect(container.textContent).toContain("Saved list issue");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("marks list rows assigned to the current board user", async () => {
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-1", userId: "board-user" },
+      user: { id: "board-user", email: null, name: null },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "mine", title: "Mine", assigneeUserId: "board-user" }),
+          createIssue({ id: "theirs", title: "Theirs", assigneeUserId: "other-user" }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultViewMode="list"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const rows = Array.from(container.querySelectorAll('[data-testid="issue-row"]'));
+      const mine = rows.find((row) => row.textContent?.includes("Mine"));
+      const theirs = rows.find((row) => row.textContent?.includes("Theirs"));
+      expect(mine?.getAttribute("data-assigned-to-current-user")).toBe("true");
+      expect(theirs?.hasAttribute("data-assigned-to-current-user")).toBe(false);
     });
 
     act(() => {
@@ -580,7 +647,7 @@ describe("IssuesList", () => {
         participantAgentId: "agent-1",
       });
       expect(container.textContent).toContain("Blocked server result");
-    });
+    }, 80);
 
     act(() => {
       root.unmount();
@@ -1109,6 +1176,40 @@ describe("IssuesList", () => {
     });
 
     expect(container.querySelector('button[title="Ask agents"]')).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("marks list rows assigned to visible company agents", async () => {
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-1", userId: "board-user" },
+      user: { id: "board-user", email: null, name: null },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "agent-work", title: "Agent work", assigneeAgentId: "agent-steward" }),
+          createIssue({ id: "other-work", title: "Other work", assigneeAgentId: "agent-other" }),
+        ]}
+        agents={[{ id: "agent-steward", name: "Paperclip Steward" }]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultViewMode="list"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const rows = Array.from(container.querySelectorAll('[data-testid="issue-row"]'));
+      const agentWork = rows.find((row) => row.textContent?.includes("Agent work"));
+      const otherWork = rows.find((row) => row.textContent?.includes("Other work"));
+      expect(agentWork?.getAttribute("data-assigned-to-current-user")).toBe("true");
+      expect(otherWork?.hasAttribute("data-assigned-to-current-user")).toBe(false);
+    });
 
     act(() => {
       root.unmount();

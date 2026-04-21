@@ -3,6 +3,8 @@ import {
   assigneeValueFromSelection,
   currentUserAssigneeOption,
   formatAssigneeUserLabel,
+  isIssueAssignedToCurrentActor,
+  isIssueAssignedToCurrentUser,
   parseAssigneeValue,
   suggestedCommentAssigneeValue,
 } from "./assignees";
@@ -50,6 +52,34 @@ describe("assignee selection helpers", () => {
     expect(formatAssigneeUserLabel("user-1", "user-1")).toBe("You");
     expect(formatAssigneeUserLabel("local-board", "someone-else")).toBe("Board");
     expect(formatAssigneeUserLabel("user-abcdef", "someone-else")).toBe("user-");
+  });
+
+  it("detects tasks assigned to the current board user", () => {
+    expect(isIssueAssignedToCurrentUser({ assigneeUserId: "board-user" }, "board-user")).toBe(true);
+    expect(isIssueAssignedToCurrentUser({ assigneeUserId: "other-user" }, "board-user")).toBe(false);
+    expect(isIssueAssignedToCurrentUser({ assigneeUserId: null }, "board-user")).toBe(false);
+    expect(isIssueAssignedToCurrentUser({ assigneeUserId: "board-user" }, null)).toBe(false);
+  });
+
+  it("detects tasks assigned to the visible Paperclip actor", () => {
+    expect(
+      isIssueAssignedToCurrentActor(
+        { assigneeAgentId: "agent-steward", assigneeUserId: null },
+        { currentUserId: "board-user", currentAgentIds: ["agent-steward"] },
+      ),
+    ).toBe(true);
+    expect(
+      isIssueAssignedToCurrentActor(
+        { assigneeAgentId: "agent-other", assigneeUserId: null },
+        { currentUserId: "board-user", currentAgentIds: ["agent-steward"] },
+      ),
+    ).toBe(false);
+    expect(
+      isIssueAssignedToCurrentActor(
+        { assigneeAgentId: null, assigneeUserId: "board-user" },
+        { currentUserId: "board-user", currentAgentIds: ["agent-steward"] },
+      ),
+    ).toBe(true);
   });
 
   it("suggests the last non-me commenter without changing the actual assignee encoding", () => {
