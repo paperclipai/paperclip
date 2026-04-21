@@ -8,6 +8,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { OWNED_HEARTBEAT_RUN_QUIET_THRESHOLD_MS } from "./heartbeat-run-activity.js";
 
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
 const TERMINAL_HEARTBEAT_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
@@ -73,6 +74,19 @@ type BrokenIssueClassification = {
   }>;
 };
 
+function isLiveRunCandidate(row: {
+  status: string;
+  lastActivityAt: Date | null;
+  updatedAt: Date | null;
+  startedAt: Date | null;
+  createdAt: Date;
+}, nowMs = Date.now()) {
+  if (row.status === "queued") return true;
+  if (row.status !== "running") return false;
+  const referenceTime = row.lastActivityAt ?? row.updatedAt ?? row.startedAt ?? row.createdAt;
+  return Math.max(0, nowMs - referenceTime.getTime()) <= OWNED_HEARTBEAT_RUN_QUIET_THRESHOLD_MS;
+}
+
 function normalizeAgentNameKey(value: string | null | undefined) {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
@@ -91,15 +105,21 @@ function toRunCandidate(
         id: string;
         agentId: string;
         status: string;
+        lastActivityAt: Date | null;
+        updatedAt: Date | null;
         startedAt: Date | null;
         createdAt: Date;
         agentName: string | null;
       }
     | null
     | undefined,
+  nowMs = Date.now(),
 ): LiveRunCandidate | null {
   if (!row) return null;
   if (!LIVE_HEARTBEAT_RUN_STATUSES.includes(row.status as (typeof LIVE_HEARTBEAT_RUN_STATUSES)[number])) {
+    return null;
+  }
+  if (!isLiveRunCandidate(row, nowMs)) {
     return null;
   }
   return {
@@ -148,12 +168,14 @@ export function runtimeIntegrityService(db: Db) {
       );
   }
 
-  async function getLiveRunCandidateById(runId: string) {
+  async function getLiveRunCandidateById(runId: string, nowMs = Date.now()) {
     return db
       .select({
         id: heartbeatRuns.id,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
+        lastActivityAt: heartbeatRuns.lastActivityAt,
+        updatedAt: heartbeatRuns.updatedAt,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
         agentName: agents.name,
@@ -166,15 +188,17 @@ export function runtimeIntegrityService(db: Db) {
           inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
         ),
       )
-      .then((rows) => toRunCandidate(rows[0] ?? null));
+      .then((rows) => toRunCandidate(rows[0] ?? null, nowMs));
   }
 
-  async function listLiveRunCandidatesForIssue(issueId: string, companyId: string) {
+  async function listLiveRunCandidatesForIssue(issueId: string, companyId: string, nowMs = Date.now()) {
     return db
       .select({
         id: heartbeatRuns.id,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
+        lastActivityAt: heartbeatRuns.lastActivityAt,
+        updatedAt: heartbeatRuns.updatedAt,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
         agentName: agents.name,
@@ -192,10 +216,10 @@ export function runtimeIntegrityService(db: Db) {
         sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
         asc(heartbeatRuns.createdAt),
       )
-      .then((rows) => rows.map((row) => toRunCandidate(row)).filter((row): row is LiveRunCandidate => Boolean(row)));
+      .then((rows) => rows.map((row) => toRunCandidate(row, nowMs)).filter((row): row is LiveRunCandidate => Boolean(row)));
   }
 
-  async function classifyBrokenInProgressIssues(): Promise<BrokenIssueClassification> {
+  async function classifyBrokenInProgressIssues(nowMs = Date.now()): Promise<BrokenIssueClassification> {
     const openIssues = await db
       .select({
         id: issues.id,
@@ -216,16 +240,16 @@ export function runtimeIntegrityService(db: Db) {
       const candidateById = new Map<string, LiveRunCandidate>();
 
       if (issue.checkoutRunId) {
-        const candidate = await getLiveRunCandidateById(issue.checkoutRunId);
+        const candidate = await getLiveRunCandidateById(issue.checkoutRunId, nowMs);
         if (candidate) candidateById.set(candidate.id, candidate);
       }
 
       if (issue.executionRunId) {
-        const candidate = await getLiveRunCandidateById(issue.executionRunId);
+        const candidate = await getLiveRunCandidateById(issue.executionRunId, nowMs);
         if (candidate) candidateById.set(candidate.id, candidate);
       }
 
-      for (const candidate of await listLiveRunCandidatesForIssue(issue.id, issue.companyId)) {
+      for (const candidate of await listLiveRunCandidatesForIssue(issue.id, issue.companyId, nowMs)) {
         candidateById.set(candidate.id, candidate);
       }
 
@@ -363,7 +387,7 @@ export function runtimeIntegrityService(db: Db) {
   }
 
   async function repairInProgressIssues(now: Date) {
-    const inspection = await classifyBrokenInProgressIssues();
+    const inspection = await classifyBrokenInProgressIssues(now.getTime());
     let issuesNormalized = 0;
     let issuesRebound = 0;
 

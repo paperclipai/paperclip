@@ -155,7 +155,16 @@ If the connection drops, the UI reconnects automatically.
 
 ## 7.4 Leaving issue-level truth for COO recovery
 
-Operations heartbeats only suppress cross-agent recovery when an assignee leaves explicit issue-level truth.
+Operations heartbeats suppress cross-agent recovery in two cases:
+
+- durable wait-state truth is already present on the issue
+- very recent real progress exists, so COO should not immediately pile on another recovery wake
+
+The short progress cooldown is `15 minutes` and covers:
+
+- a recent successful/completed assignee run
+- a recent meaningful assignee-lane issue comment
+- a fresh valid release-gate QA verdict on a non-workflow `in_review` issue
 
 Use structured line-start markers or headings such as:
 
@@ -173,7 +182,9 @@ Use structured line-start markers or headings such as:
 - `Missing permission: ...`
 - `Board action required.`
 
-Free-form transcript narration does not count. Mentioning phrases like `QA gate`, `missing permission`, or `before entering in_review` inside ordinary prose should not suppress COO recovery on its own, and markers pasted only inside fenced code blocks or blockquotes are ignored. Once explicit truth is present, newer ordinary chatter does not clear it by itself.
+Free-form transcript narration does not count as durable truth. Mentioning phrases like `QA gate`, `missing permission`, or `before entering in_review` inside ordinary prose should not suppress COO recovery on its own, and markers pasted only inside fenced code blocks or blockquotes are ignored. Once explicit truth is present, newer ordinary chatter does not clear it by itself.
+
+COO recovery wakes are also single-flight per issue/assignee while a queued, claimed, or deferred cross-agent recovery wake already exists. Repeated sweeps should not stack duplicate `operations_cross_agent_recovery` wakeups for the same stuck issue.
 
 ## 7.5 Truthful WIP and same-issue ownership correction
 
@@ -193,6 +204,7 @@ That means COO may correct the same issue without creating a successor issue:
 - `in_progress` without a live execution run or fresh structured wait/handoff truth can be demoted back to `todo`
 - assigned `todo` is valid queued ownership and does not consume a slot
 - wakes should only be issued when the selected owner has a real free heartbeat slot
+- specialist-only lanes that cannot currently be staffed, such as a security lane with no eligible security specialist, must surface operator attention instead of being silently skipped or rerouted to the wrong role
 - `coalesce_if_active` and `skip_if_active` routines keep one canonical open issue even when no heartbeat run is currently live
 - paused `routine_execution` issues are inert history/work objects and must not be re-woken by COO
 - queued heartbeat runs for paused `routine_execution` issues must be cancelled before claim-time recovery can start them
@@ -207,12 +219,13 @@ The heartbeat runtime should prefer same-issue recovery over operator cleanup:
 - active runs are judged by fresh runtime activity, not only by `status = running`
 - trusted liveness should come from `lastActivityAt` and runtime signals such as log streaming, adapter metadata, process spawn metadata, and explicit activity reports; ordinary status bookkeeping must not refresh that lease by itself
 - a quiet run should become `suspect` before it is declared lost
-- a quiet run that is still owned by an in-memory execution or live child process should remain occupancy truth for scheduling, but it should be surfaced separately from fresh live work so the UI does not imply the agent is idle
+- a quiet run that is still owned by an in-memory execution or live child process should remain occupancy truth for scheduling inside the owned-run quiet window, but it should be surfaced separately from fresh live work so the UI does not imply the agent is idle
 - the default balanced policy is:
   - suspect after roughly 90 seconds without trusted activity
   - declare loss after roughly 150 seconds without trusted activity
-  - if a run is still owned but has gone quiet for much longer, mark it `suspect` without weakening the live-run limit
+- if a run is still owned but has gone quiet for much longer, mark it `suspect` first and then stop treating it as slot-blocking once it crosses the owned-run quiet threshold so same-issue recovery can proceed
   - recover on the same issue inside 5 minutes when possible
+- the same owned-run quiet threshold must also be honored by queue-resume admission, timer-heartbeat outstanding checks, and runtime-integrity rebind logic so stale `running` rows do not suppress fresh work or get resurrected as live ownership
 - process loss should retry the same agent on the same issue once, including adapters without a local child pid when the lease has clearly expired
 - the queued recovery run may reserve the issue execution lock so another worker does not steal the same execution while recovery is in flight
 - if that retry is already used, the run should become terminal from a recovery perspective (`exhausted`, `blocked`, or `non_retriable`)

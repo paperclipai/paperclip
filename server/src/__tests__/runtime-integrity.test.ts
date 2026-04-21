@@ -208,6 +208,7 @@ describeEmbeddedPostgres("runtime integrity service", () => {
     const issueId = randomUUID();
     const wakeupRequestId = randomUUID();
     const runId = randomUUID();
+    const liveAt = new Date(Date.now() - 60_000);
 
     await db.insert(agentWakeupRequests).values({
       id: wakeupRequestId,
@@ -230,8 +231,9 @@ describeEmbeddedPostgres("runtime integrity service", () => {
       status: "running",
       wakeupRequestId,
       contextSnapshot: { issueId, wakeReason: "issue_assigned" },
-      startedAt: new Date("2026-04-18T10:00:00.000Z"),
-      updatedAt: new Date("2026-04-18T10:00:10.000Z"),
+      startedAt: liveAt,
+      lastActivityAt: liveAt,
+      updatedAt: liveAt,
     });
 
     await db.insert(issues).values({
@@ -260,5 +262,67 @@ describeEmbeddedPostgres("runtime integrity service", () => {
     expect(issue?.status).toBe("in_progress");
     expect(issue?.checkoutRunId).toBe(runId);
     expect(issue?.executionRunId).toBe(runId);
+  });
+
+  it("does not rebind an in-progress issue to a long-quiet running row", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompany();
+    const issueId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+    const quietAt = new Date(Date.now() - 11 * 60_000);
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "claimed",
+      runId,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId,
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      startedAt: quietAt,
+      lastActivityAt: quietAt,
+      updatedAt: quietAt,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Quiet stale run should not be rebound",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      issueNumber: 3,
+      identifier: `${issuePrefix}-3`,
+    });
+
+    const result = await runtimeIntegrityService(db).reconcileAll();
+
+    expect(result.issuesRebound).toBe(0);
+    expect(result.issuesNormalized).toBe(1);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    expect(issue?.status).toBe("todo");
+    expect(issue?.checkoutRunId).toBeNull();
+    expect(issue?.executionRunId).toBeNull();
   });
 });

@@ -2367,6 +2367,299 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     ).toBe(false);
   });
 
+  it("keeps cross-agent recovery single-flight when the issue already has a queued recovery wake", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const workerAgentId = randomUUID();
+    const issueId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const completedRunId = randomUUID();
+    const existingWakeId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Recovery Single Flight Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: workerAgentId,
+        companyId,
+        name: "Product Engineer - App",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values({
+      id: completedRunId,
+      companyId,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Upstream blocker",
+        status: "todo",
+        priority: "critical",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: issueId,
+        companyId,
+        title: "Blocked assigned issue with an existing queued recovery wake",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: completedRunId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: existingWakeId,
+      companyId,
+      agentId: workerAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "operations_cross_agent_recovery",
+      payload: {
+        issueId,
+        mutation: "operations_cross_agent_recovery",
+      },
+      status: "queued",
+      idempotencyKey: `operations_cross_agent_recovery:${workerAgentId}:${issueId}`,
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    const comments = await db
+      .select({
+        body: issueComments.body,
+      })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt));
+    const recoveryWakeups = await db
+      .select({
+        id: agentWakeupRequests.id,
+        agentId: agentWakeupRequests.agentId,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, workerAgentId)))
+      .orderBy(asc(agentWakeupRequests.createdAt));
+
+    expect(comments.some((comment) => comment.body?.includes("[operations-heartbeat-recovery]"))).toBe(false);
+    expect(
+      recoveryWakeups.filter((wakeup) => wakeup.reason === "operations_cross_agent_recovery"),
+    ).toHaveLength(1);
+    expect(recoveryWakeups[0]?.id).toBe(existingWakeId);
+  });
+
+  it("ignores quiet issue-scoped runs when queuing cross-agent recovery", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const workerAgentId = randomUUID();
+    const issueId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const completedRunId = randomUUID();
+    const quietRunningRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+    const quietAt = new Date(Date.now() - 11 * 60_000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Quiet Recovery Guard Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: workerAgentId,
+        companyId,
+        name: "Product Engineer - App",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            maxConcurrentRuns: 1,
+          },
+        },
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: quietRunningRunId,
+        companyId,
+        agentId: workerAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        errorCode: "process_detached",
+        error: "Lost in-memory process handle, but child pid 123 is still alive",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-04-01T00:00:00.000Z"),
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        lastActivityAt: quietAt,
+        updatedAt: quietAt,
+      },
+      {
+        id: completedRunId,
+        companyId,
+        agentId: workerAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "completed",
+        startedAt: new Date("2026-04-01T01:00:00.000Z"),
+        finishedAt: new Date("2026-04-01T01:10:00.000Z"),
+        contextSnapshot: { issueId },
+        createdAt: new Date("2026-04-01T01:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T01:10:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Upstream blocker",
+        status: "todo",
+        priority: "critical",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: issueId,
+        companyId,
+        title: "Blocked assigned issue with only a quiet stale issue-scoped run",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: completedRunId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    const comments = await db
+      .select({
+        body: issueComments.body,
+      })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt));
+    const recoveryWakeups = await db
+      .select({
+        id: agentWakeupRequests.id,
+        agentId: agentWakeupRequests.agentId,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, workerAgentId)))
+      .orderBy(asc(agentWakeupRequests.createdAt));
+
+    expect(comments.some((comment) => comment.body?.includes("[operations-heartbeat-recovery]"))).toBe(true);
+    expect(
+      recoveryWakeups.filter((wakeup) => wakeup.reason === "operations_cross_agent_recovery"),
+    ).toHaveLength(1);
+  });
+
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();

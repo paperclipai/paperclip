@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -313,6 +313,55 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("fails a detached local run after it stays quiet past the quiet threshold", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId, wakeupRequestId, issueId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      runErrorCode: "process_detached",
+      runError: `Lost in-memory process handle, but child pid ${child.pid} is still alive`,
+    });
+    const quietAt = new Date(Date.now() - 11 * 60_000);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        lastActivityAt: quietAt,
+        updatedAt: quietAt,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns({
+      staleThresholdMs: 150_000,
+    });
+
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_detached");
+    expect(run?.error).toContain("stayed quiet");
+    expect(run?.retryState).toBe("non_retriable");
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("failed");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(runId);
   });
 
   it("marks a still-owned quiet run as suspect before it disappears from the UI", async () => {
@@ -685,6 +734,172 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(execute).not.toHaveBeenCalled();
     const storedRun = queued ? await heartbeat.getRun(queued.id) : null;
     expect(storedRun?.status).toBe("queued");
+  });
+
+  it("starts new queued work even when another running row has gone quiet past the owned-run window", async () => {
+    const execute = vi.fn().mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+    });
+    registerTestAdapter({
+      type: "external_quiet_slot_test",
+      execute,
+      testEnvironment: async () => ({
+        adapterType: "external_quiet_slot_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      models: [],
+      supportsLocalAgentJwt: false,
+    });
+
+    const { companyId, agentId } = await seedAgentFixture({
+      adapterType: "external_quiet_slot_test",
+      agentStatus: "idle",
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 60,
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+    });
+    const quietRunId = randomUUID();
+    const quietWakeupId = randomUUID();
+    const quietAt = new Date(Date.now() - 11 * 60_000);
+
+    await db.insert(agentWakeupRequests).values({
+      id: quietWakeupId,
+      companyId,
+      agentId,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "heartbeat_manual",
+      payload: {},
+      status: "claimed",
+      runId: quietRunId,
+      requestedAt: quietAt,
+      claimedAt: quietAt,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: quietRunId,
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      status: "running",
+      wakeupRequestId: quietWakeupId,
+      contextSnapshot: {},
+      startedAt: quietAt,
+      lastActivityAt: quietAt,
+      updatedAt: quietAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(queued?.status).toBe("queued");
+
+    await waitFor(() => execute.mock.calls.length === 1, 2_000);
+
+    const storedQueuedRun = queued ? await heartbeat.getRun(queued.id) : null;
+    expect(storedQueuedRun?.status).toBe("succeeded");
+
+    const agent = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(agent?.status).toBe("idle");
+  });
+
+  it("does not let a long-quiet timer run suppress the next scheduler wake", async () => {
+    const execute = vi.fn().mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+    });
+    registerTestAdapter({
+      type: "external_quiet_timer_test",
+      execute,
+      testEnvironment: async () => ({
+        adapterType: "external_quiet_timer_test",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+      models: [],
+      supportsLocalAgentJwt: false,
+    });
+
+    const { companyId, agentId } = await seedAgentFixture({
+      adapterType: "external_quiet_timer_test",
+      agentStatus: "idle",
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 60,
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+    });
+    const quietRunId = randomUUID();
+    const quietWakeupId = randomUUID();
+    const quietAt = new Date(Date.now() - 11 * 60_000);
+
+    await db
+      .update(agents)
+      .set({
+        lastHeartbeatAt: quietAt,
+        updatedAt: quietAt,
+      })
+      .where(eq(agents.id, agentId));
+
+    await db.insert(agentWakeupRequests).values({
+      id: quietWakeupId,
+      companyId,
+      agentId,
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      payload: {},
+      status: "claimed",
+      runId: quietRunId,
+      requestedAt: quietAt,
+      claimedAt: quietAt,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: quietRunId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: quietWakeupId,
+      contextSnapshot: { source: "scheduler", reason: "interval_elapsed" },
+      startedAt: quietAt,
+      lastActivityAt: quietAt,
+      updatedAt: quietAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.tickTimers(new Date(Date.now() + 120_000));
+
+    expect(result.enqueued).toBe(1);
+    expect(result.skipped).toBe(0);
+
+    await waitFor(() => execute.mock.calls.length === 1, 2_000);
+
+    const timerWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.reason, "heartbeat_timer")));
+    expect(timerWakeups).toHaveLength(2);
   });
 
   it("clears issue execution locks that still point at terminal runs", async () => {

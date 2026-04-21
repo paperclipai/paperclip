@@ -315,6 +315,60 @@ describeEmbeddedPostgres("boardBriefService", () => {
     );
   });
 
+  it("surfaces unassigned security lanes when no security specialist is available", async () => {
+    const now = new Date("2026-04-15T12:00:00.000Z");
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const issueId = randomUUID();
+    const identifier = `SEC${companyId.replace(/-/g, "").slice(0, 5).toUpperCase()}-1`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Security Visibility Co",
+      issuePrefix: "SEC",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: operationsAgentId,
+      companyId,
+      name: "Ops COO",
+      role: "coo",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 600 } },
+      permissions: {},
+      lastHeartbeatAt: new Date("2026-04-15T11:40:00.000Z"),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Security lane is waiting for a real owner",
+      identifier,
+      issueNumber: 1,
+      status: "todo",
+      priority: "high",
+      workflowTemplateKey: "engineering_delivery_v1",
+      workflowLaneRole: "security",
+      updatedAt: new Date("2026-04-15T11:55:00.000Z"),
+      createdAt: new Date("2026-04-15T11:55:00.000Z"),
+    });
+
+    const summary = await boardBriefService(db).buildDashboardSummary(companyId, now);
+    const attentionItem = summary.brief.needsAttention.find((item) => item.entityId === issueId);
+
+    expect(attentionItem).toMatchObject({
+      kind: "issue",
+      entityId: issueId,
+      reason: "No security specialist available",
+      severity: "high",
+      ctaLabel: "Open issue",
+    });
+    expect(attentionItem?.title).toContain(identifier);
+  });
+
   it("keeps the full canonical action queue even when more than seven actions are pending", async () => {
     const now = new Date("2026-04-15T12:00:00.000Z");
     const companyId = randomUUID();

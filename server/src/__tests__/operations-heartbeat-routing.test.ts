@@ -693,6 +693,250 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     });
   });
 
+  it("suppresses cross-agent recovery when assigned work shows very recent progress", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const assignedIssueId = randomUUID();
+    const assignedRunId = randomUUID();
+    const backlogIssueId = randomUUID();
+    const recentRunFinishedAt = new Date(Date.now() - 5 * 60 * 1000);
+    const recentCommentAt = new Date(Date.now() - 3 * 60 * 1000);
+
+    await db.insert(heartbeatRuns).values({
+      id: assignedRunId,
+      companyId,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      startedAt: new Date(recentRunFinishedAt.getTime() - 2 * 60 * 1000),
+      finishedAt: recentRunFinishedAt,
+      contextSnapshot: { issueId: assignedIssueId },
+    });
+
+    await db.insert(issues).values([
+      {
+        id: assignedIssueId,
+        companyId,
+        title: "Recently active assigned issue should not be recovery-spammed",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: assignedRunId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: backlogIssueId,
+        companyId,
+        title: "Ready backlog work remains available",
+        status: "backlog",
+        priority: "medium",
+        assigneeAgentId: null,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: assignedIssueId,
+      authorAgentId: workerAgentId,
+      body: "I am validating the last run output and will post the next issue-level truth shortly.",
+      createdAt: recentCommentAt,
+      updatedAt: recentCommentAt,
+    });
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: backlogIssueId,
+      mode: "ready_unassigned",
+      reason: "no recovery target found; selected ready unassigned issue",
+      autoReissueEligible: false,
+    });
+  });
+
+  it("does not suppress cross-agent recovery when the recent comment came from someone other than the assignee", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const qaAgentId = randomUUID();
+    const assignedIssueId = randomUUID();
+    const assignedRunId = randomUUID();
+    const recentCommentAt = new Date(Date.now() - 3 * 60 * 1000);
+
+    await db.insert(agents).values({
+      id: qaAgentId,
+      companyId,
+      name: "QA Specialist",
+      role: "qa",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: assignedRunId,
+      companyId,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+      contextSnapshot: { issueId: assignedIssueId },
+    });
+
+    await db.insert(issues).values({
+      id: assignedIssueId,
+      companyId,
+      title: "Recent off-lane comment should not hide a real recovery candidate",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: workerAgentId,
+      executionRunId: assignedRunId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: assignedIssueId,
+      authorAgentId: qaAgentId,
+      body: "QA left a note, but the assigned engineer has not resumed yet.",
+      createdAt: recentCommentAt,
+      updatedAt: recentCommentAt,
+    });
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: assignedIssueId,
+      mode: "cross_agent_recovery",
+    });
+    expect(target?.reason).toContain("latest run ended failed");
+  });
+
+  it("suppresses cross-agent recovery when in-review work has a fresh valid QA verdict", async () => {
+    const { companyId, opsAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const qaAgentId = randomUUID();
+    const reviewIssueId = randomUUID();
+    const backlogIssueId = randomUUID();
+    const recentQaVerdictAt = new Date(Date.now() - 4 * 60 * 1000);
+
+    await db.insert(agents).values({
+      id: qaAgentId,
+      companyId,
+      name: "QA and Release Engineer",
+      role: "qa",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values([
+      {
+        id: reviewIssueId,
+        companyId,
+        title: "Fresh QA-approved work should wait for close, not recovery churn",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: qaAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: backlogIssueId,
+        companyId,
+        title: "Ready backlog work remains available",
+        status: "backlog",
+        priority: "medium",
+        assigneeAgentId: null,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: reviewIssueId,
+      authorAgentId: qaAgentId,
+      body: [
+        "DONE: Checkout release gate validation is complete.",
+        "[QA PASS]",
+        "[RELEASE CONFIRMED]",
+        "Tests: 8/8 checks passing.",
+        "Verification: typecheck, targeted Vitest, build, and manual smoke on the checkout path all passed.",
+      ].join("\n"),
+      createdAt: recentQaVerdictAt,
+      updatedAt: recentQaVerdictAt,
+    });
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: backlogIssueId,
+      mode: "ready_unassigned",
+      reason: "no recovery target found; selected ready unassigned issue",
+      autoReissueEligible: false,
+    });
+  });
+
+  it("does not suppress recovery from a fresh QA verdict when the issue is still assigned to a non-QA agent", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const qaAgentId = randomUUID();
+    const reviewIssueId = randomUUID();
+    const recentQaVerdictAt = new Date(Date.now() - 4 * 60 * 1000);
+
+    await db.insert(agents).values({
+      id: qaAgentId,
+      companyId,
+      name: "QA and Release Engineer",
+      role: "qa",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: reviewIssueId,
+      companyId,
+      title: "QA verdict should not hide ownership correction work",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: workerAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: reviewIssueId,
+      authorAgentId: qaAgentId,
+      body: [
+        "DONE: Checkout release gate validation is complete.",
+        "[QA PASS]",
+        "[RELEASE CONFIRMED]",
+        "Tests: 8/8 checks passing.",
+        "Verification: typecheck, targeted Vitest, build, and manual smoke on the checkout path all passed.",
+      ].join("\n"),
+      createdAt: recentQaVerdictAt,
+      updatedAt: recentQaVerdictAt,
+    });
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target).toMatchObject({
+      issueId: reviewIssueId,
+      mode: "cross_agent_recovery",
+    });
+    expect(target?.reason).toContain("completion truth on non-completed status");
+  });
+
   it("keeps an urgent operations-owned watchdog ahead when it has the stronger recovery score", async () => {
     const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
     const watchdogIssueId = randomUUID();

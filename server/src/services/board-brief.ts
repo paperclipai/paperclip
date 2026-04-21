@@ -37,6 +37,7 @@ import type {
 } from "@paperclipai/shared";
 import { boardBriefSnapshotSchema } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
+import { isAgentAssignableStatus } from "./agent-assignment-status.js";
 import { budgetService } from "./budgets.js";
 import { parseSchedulerHeartbeatPolicy } from "./scheduler-heartbeat-policy.js";
 
@@ -72,6 +73,7 @@ type CompanyRow = {
 type AgentRow = {
   id: string;
   name: string;
+  role: string;
   status: string;
   runtimeConfig: unknown;
   lastHeartbeatAt: Date | null;
@@ -87,6 +89,7 @@ type IssueRow = {
   identifier: string | null;
   status: string;
   priority: string;
+  workflowLaneRole: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   updatedAt: Date;
@@ -499,6 +502,7 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
       .select({
         id: agents.id,
         name: agents.name,
+        role: agents.role,
         status: agents.status,
         runtimeConfig: agents.runtimeConfig,
         lastHeartbeatAt: agents.lastHeartbeatAt,
@@ -557,6 +561,7 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
         identifier: issues.identifier,
         status: issues.status,
         priority: issues.priority,
+        workflowLaneRole: issues.workflowLaneRole,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         updatedAt: issues.updatedAt,
@@ -742,6 +747,9 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
 
   const allIssueRows = issueRows as IssueRow[];
   const openIssueRows = allIssueRows.filter((issue) => isOpenIssueStatus(issue.status));
+  const hasAssignableSecuritySpecialist = (agentRows as AgentRow[]).some((agent) => (
+    agent.role === "security" && isAgentAssignableStatus(agent.status)
+  ));
   const issueById = new Map(openIssueRows.map((issue) => [issue.id, issue]));
   const issueActivityById = new Map<string, Date>();
   const workProductMovementByIssueId = new Map<string, Date>();
@@ -986,6 +994,23 @@ async function buildContext(companyId: string, now: Date, database: Db | any): P
         entityId: issue.id,
         title: issueLabel,
         reason: "Waiting on board action",
+        severity: "high",
+        timestamp: movementAt,
+        href: `/issues/${issue.identifier ?? issue.id}`,
+        ctaLabel: "Open issue",
+      };
+    } else if (
+      !issue.assigneeAgentId
+      && !issue.assigneeUserId
+      && issue.workflowLaneRole === "security"
+      && !hasAssignableSecuritySpecialist
+    ) {
+      issueActionItem = {
+        key: `issue:missing-security:${issue.id}`,
+        kind: "issue",
+        entityId: issue.id,
+        title: issueLabel,
+        reason: "No security specialist available",
         severity: "high",
         timestamp: movementAt,
         href: `/issues/${issue.identifier ?? issue.id}`,

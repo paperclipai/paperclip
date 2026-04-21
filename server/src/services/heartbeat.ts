@@ -10,6 +10,8 @@ import {
   type BillingType,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
+  type IssueExecutionDecisionOutcome,
+  type IssueStatus,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -50,6 +52,7 @@ import {
   isSuccessfulHeartbeatRunStatus,
   selectReadyUnassignedCandidate,
 } from "./operations-heartbeat-target.js";
+import { isAgentAssignableStatus } from "./agent-assignment-status.js";
 import {
   pickOperationsAssignmentCandidate,
   resolveEligibleOperationsAssignmentCandidates,
@@ -60,12 +63,17 @@ import {
   heartbeatRunActivityAgeMs,
   heartbeatRunActivityReferenceTime,
   classifyHeartbeatRunFreshness,
+  isHeartbeatRunFresh,
   isHeartbeatRunActivityWarningRecoverable,
   OWNED_HEARTBEAT_RUN_QUIET_THRESHOLD_MS,
 } from "./heartbeat-run-activity.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
-import { buildHeartbeatRunIssueComment, summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
+import {
+  buildHeartbeatRunIssueComment,
+  normalizeRunLinkedIssueCommentBody,
+  summarizeHeartbeatRunResultJson,
+} from "./heartbeat-run-summary.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -91,7 +99,7 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
-import { isDeliveryScopedAssigneeRole } from "./qa-gate.js";
+import { buildIssueQaGate, isDeliveryScopedAssigneeRole, selectLatestRelevantQaComment } from "./qa-gate.js";
 import { finalizeQaValidatedIssueFromComment } from "./issue-qa-finalization.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { roadmapEpicService } from "./roadmap-epics.js";
@@ -120,6 +128,8 @@ const WATCHDOG_RECOVERY_COOLDOWN_HOURS = 12;
 const WATCHDOG_RECOVERY_REPEAT_THRESHOLD = 1;
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const READY_UNASSIGNED_STATUSES = ["backlog", "todo"] as const;
+const OPERATIONS_RECOVERY_RECENT_PROGRESS_COOLDOWN_MS = 15 * 60 * 1000;
+const PENDING_OPERATIONS_RECOVERY_WAKEUP_STATUSES = ["queued", "claimed", "deferred_issue_execution"] as const;
 const OPERATIONS_IDLE_WAKE_MARKER = "[operations-heartbeat-wakeup]";
 const OPERATIONS_RECOVERY_WAKE_MARKER = "[operations-heartbeat-recovery]";
 const OPERATIONS_OPERATOR_RECOVERY_MARKER = "[operations-heartbeat-operator-recovery]";
@@ -237,11 +247,26 @@ export function resolveOperationsTruthComment<T extends { body: string | null | 
 }
 
 type OperationsTruthCommentRow = {
+  id: string;
   issueId: string;
   body: string | null | undefined;
   createdAt: Date;
   authorAgentId?: string | null;
+  createdByRunId?: string | null;
 };
+
+const RECOVERY_ACTIVITY_TRANSCRIPT_NOISE_PATTERNS = [
+  /(^|\n)\s*↻\s*Resumed session\b/i,
+  /\bDANGEROUS COMMAND\b/i,
+  /(^|\n)\s*Choice \[[^\]]+\]:/i,
+  /(^|\n)\s*╭─\s*⚕ Hermes\b/i,
+] as const;
+const RECOVERY_ACTIVITY_INLINE_TRANSCRIPT_PATTERNS = [
+  /\bissue\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i,
+  /\bstale execution lock\b/i,
+  /\bmissing permission error\b/i,
+  /\bfrom a prior session\b/i,
+] as const;
 
 function normalizeIssueTruthCommentBody(body: string | null | undefined): string {
   if (!body) return "";
@@ -324,15 +349,76 @@ export function shouldSuppressOperationsRecoveryTarget(input: {
   latestCommentBody: string | null | undefined;
   latestCommentAgeHours: number;
   hasBlockers: boolean;
+  latestAssigneeCommentAgeMs?: number | null;
+  latestRunStatus?: string | null | undefined;
+  latestRunFinishedAt?: Date | null;
+  hasRecentValidQaVerdict?: boolean;
+  nowMs?: number;
 }): boolean {
+  return getOperationsRecoverySuppressionReason(input) !== null;
+}
+
+export function getOperationsRecoverySuppressionReason(input: {
+  status: string;
+  latestCommentBody: string | null | undefined;
+  latestCommentAgeHours: number;
+  hasBlockers: boolean;
+  latestAssigneeCommentAgeMs?: number | null;
+  latestRunStatus?: string | null | undefined;
+  latestRunFinishedAt?: Date | null;
+  hasRecentValidQaVerdict?: boolean;
+  nowMs?: number;
+}): string | null {
+  if (input.hasRecentValidQaVerdict) {
+    return "fresh valid QA verdict exists";
+  }
+
+  const nowMs = input.nowMs ?? Date.now();
+  const hasRecentSuccessfulRun =
+    Boolean(
+      input.latestRunFinishedAt
+      && isSuccessfulHeartbeatRunStatus(input.latestRunStatus)
+      && nowMs - input.latestRunFinishedAt.getTime() < OPERATIONS_RECOVERY_RECENT_PROGRESS_COOLDOWN_MS,
+    );
+  if (hasRecentSuccessfulRun) {
+    return "recent successful run still within recovery cooldown";
+  }
+
+  const hasRecentMeaningfulAssigneeComment =
+    typeof input.latestAssigneeCommentAgeMs === "number"
+    && input.latestAssigneeCommentAgeMs >= 0
+    && input.latestAssigneeCommentAgeMs < OPERATIONS_RECOVERY_RECENT_PROGRESS_COOLDOWN_MS;
+  if (hasRecentMeaningfulAssigneeComment) {
+    return "recent assignee issue activity still within recovery cooldown";
+  }
+
   const truthType = classifyIssueTruthFromCommentBody(input.latestCommentBody);
   const hasFreshWaitStateTruth =
     hasWaitStateTruthFromCommentBody(input.latestCommentBody) && input.latestCommentAgeHours < 6;
   const hasFreshTruth = (truthType === "blocker" || truthType === "handoff") && input.latestCommentAgeHours < 6;
-  if (hasFreshWaitStateTruth) return true;
-  if (!hasFreshTruth) return false;
-  if (truthType === "handoff") return true;
-  return input.status === "blocked" && input.hasBlockers;
+  if (hasFreshWaitStateTruth) return "fresh blocker/handoff truth already covers the current wait state";
+  if (!hasFreshTruth) return null;
+  if (truthType === "handoff") return "fresh blocker/handoff truth already covers the current wait state";
+  return input.status === "blocked" && input.hasBlockers
+    ? "fresh blocker/handoff truth already covers the current wait state"
+    : null;
+}
+
+export function isMeaningfulRecoveryActivityComment(comment: Pick<OperationsTruthCommentRow, "body" | "authorAgentId" | "createdByRunId">) {
+  const normalized = normalizeRunLinkedIssueCommentBody({
+    body: comment.body ?? "",
+    authorAgentId: comment.authorAgentId ?? null,
+    createdByRunId: comment.createdByRunId ?? null,
+  }).trim();
+  if (normalized.length === 0) return false;
+  if (classifyIssueTruthFromCommentBody(normalized) || hasWaitStateTruthFromCommentBody(normalized)) {
+    return true;
+  }
+  const inlineTranscriptSignalCount = RECOVERY_ACTIVITY_INLINE_TRANSCRIPT_PATTERNS.filter((pattern) => pattern.test(normalized)).length;
+  if (inlineTranscriptSignalCount >= 2) {
+    return false;
+  }
+  return !RECOVERY_ACTIVITY_TRANSCRIPT_NOISE_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function hasWaitStateTruthFromCommentBody(body: string | null | undefined): boolean {
@@ -384,6 +470,13 @@ function buildOperationsRecoveryWakeComment(input: {
     `Detected signal: ${input.reason}.`,
     "Please resume work now, or leave issue-level truth (status/outcome with blocker, handoff, completion, or wait-state).",
   ].join("\n");
+}
+
+function buildOperationsCrossAgentRecoveryIdempotencyKey(input: {
+  agentId: string;
+  issueId: string;
+}) {
+  return `operations_cross_agent_recovery:${input.agentId}:${input.issueId}`;
 }
 
 function buildOperationsOperatorRecoveryComment(input: {
@@ -596,6 +689,7 @@ async function repairRoutineExecutionLocksForOrigins(db: Db, companyId: string, 
     );
 
   const now = new Date();
+  const nowMs = now.getTime();
   for (const lockedIssue of lockedRoutineIssues) {
     await db.transaction(async (tx) => {
       await tx.execute(
@@ -621,12 +715,18 @@ async function repairRoutineExecutionLocksForOrigins(db: Db, companyId: string, 
         .where(eq(heartbeatRuns.id, current.executionRunId))
         .then((rows) => rows[0] ?? null);
 
-      if (activeExecutionRun && !LIVE_HEARTBEAT_RUN_STATUSES.includes(activeExecutionRun.status as "queued" | "running")) {
+      if (
+        activeExecutionRun
+        && (
+          !LIVE_HEARTBEAT_RUN_STATUSES.includes(activeExecutionRun.status as "queued" | "running")
+          || !isHeartbeatRunBlockingForWakeup(activeExecutionRun, nowMs)
+        )
+      ) {
         activeExecutionRun = null;
       }
 
       if (!activeExecutionRun) {
-        const legacyRun = await tx
+        const legacyRunRows = await tx
           .select()
           .from(heartbeatRuns)
           .where(
@@ -639,9 +739,8 @@ async function repairRoutineExecutionLocksForOrigins(db: Db, companyId: string, 
           .orderBy(
             sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
             asc(heartbeatRuns.createdAt),
-          )
-          .limit(1)
-          .then((rows) => rows[0] ?? null);
+          );
+        const legacyRun = legacyRunRows.find((candidate) => isHeartbeatRunBlockingForWakeup(candidate, nowMs)) ?? null;
 
         if (legacyRun) {
           const legacyAgent = await tx
@@ -683,22 +782,29 @@ async function resolveOperationsHeartbeatTargets(
   input: { companyId: string; operationsAgentId: string },
 ): Promise<OperationsHeartbeatTarget[]> {
   const now = Date.now();
+  const qaResolution = await resolveCompanyReleaseGateQaAgent(db, input.companyId);
+  const releaseGateQaAgentId = qaResolution.releaseGateQaAgent?.id ?? null;
 
   let openAssignedIssues = await db
     .select({
       id: issues.id,
       identifier: issues.identifier,
       title: issues.title,
+      description: issues.description,
       status: issues.status,
       priority: issues.priority,
       updatedAt: issues.updatedAt,
       executionRunId: issues.executionRunId,
       assigneeAgentId: issues.assigneeAgentId,
+      assigneeRole: agents.role,
       executionState: issues.executionState,
       originKind: issues.originKind,
       originId: issues.originId,
+      workflowTemplateKey: issues.workflowTemplateKey,
+      workflowLaneRole: issues.workflowLaneRole,
     })
     .from(issues)
+    .leftJoin(agents, and(eq(agents.id, issues.assigneeAgentId), eq(agents.companyId, issues.companyId)))
     .where(
       and(
         eq(issues.companyId, input.companyId),
@@ -747,9 +853,11 @@ async function resolveOperationsHeartbeatTargets(
       issueIds.length > 0
         ? await db
             .select({
+              id: issueComments.id,
               issueId: issueComments.issueId,
               createdAt: issueComments.createdAt,
               authorAgentId: issueComments.authorAgentId,
+              createdByRunId: issueComments.createdByRunId,
               body: issueComments.body,
             })
             .from(issueComments)
@@ -842,9 +950,18 @@ async function resolveOperationsHeartbeatTargets(
       .map((issue) => {
         const run = issue.executionRunId ? runById.get(issue.executionRunId) : undefined;
         const latestNonOperationsComment = nonOperationsCommentsByIssueId.get(issue.id)?.[0] ?? null;
+        const latestAssigneeActivityComment = (nonOperationsCommentsByIssueId.get(issue.id) ?? []).find((comment) => (
+          comment.authorAgentId === issue.assigneeAgentId && isMeaningfulRecoveryActivityComment(comment)
+        )) ?? null;
+        const latestAssigneeCommentAgeMs = latestAssigneeActivityComment
+          ? now - latestAssigneeActivityComment.createdAt.getTime()
+          : null;
         const latestTruthComment = latestStructuredTruthCommentByIssueId.get(issue.id);
+        const latestAssigneeTruthComment = latestTruthComment?.authorAgentId === issue.assigneeAgentId
+          ? latestTruthComment
+          : null;
         const issueAgeHours = Math.floor((now - issue.updatedAt.getTime()) / (60 * 60 * 1000));
-        const latestCommentAgeHours = latestTruthComment
+        const latestStructuredTruthAgeHours = latestTruthComment
           ? Math.floor((now - latestTruthComment.createdAt.getTime()) / (60 * 60 * 1000))
           : Number.POSITIVE_INFINITY;
         const truthType = classifyIssueTruthFromCommentBody(latestTruthComment?.body);
@@ -855,12 +972,45 @@ async function resolveOperationsHeartbeatTargets(
         const isOperationsOwned = issue.assigneeAgentId === input.operationsAgentId;
         const watchdogLabel = `${issue.identifier ?? ""} ${issue.title}`.toLowerCase();
         const isWatchdogIssue = isWatchdogIssueLabel(watchdogLabel);
+        const isWorkflowIssue = Boolean(issue.workflowTemplateKey || issue.workflowLaneRole);
+        const qaComments = releaseGateQaAgentId
+          ? (nonOperationsCommentsByIssueId.get(issue.id) ?? []).filter(
+              (comment) => comment.authorAgentId === releaseGateQaAgentId,
+            )
+          : [];
+        const normalizedQaComments = qaComments.map((comment) => ({
+          id: comment.id,
+          body: comment.body ?? "",
+          createdAt: comment.createdAt,
+        }));
+        const latestQaComment = normalizedQaComments.length > 0
+          ? selectLatestRelevantQaComment(normalizedQaComments)
+          : null;
+        const latestDecisionOutcome =
+          issue.executionState && typeof issue.executionState === "object"
+            ? ((issue.executionState as { lastDecisionOutcome?: IssueExecutionDecisionOutcome | null }).lastDecisionOutcome ?? null)
+            : null;
+        const hasRecentValidQaVerdict =
+          Boolean(
+            !isWorkflowIssue
+            && issue.assigneeRole === "qa"
+            && latestQaComment
+            && now - latestQaComment.createdAt.getTime() < OPERATIONS_RECOVERY_RECENT_PROGRESS_COOLDOWN_MS
+            && buildIssueQaGate({
+              issue: { status: issue.status as IssueStatus },
+              assigneeRole: issue.assigneeRole,
+              issueText: [issue.title, issue.description].filter(Boolean).join("\n\n"),
+              qaComments: normalizedQaComments,
+              latestDecisionOutcome,
+              now: new Date(now),
+            }).canShip,
+          );
 
         let score = 0;
         const reasons: string[] = [];
 
         const hasFreshBlockerOrHandoffTruth =
-          (truthType === "blocker" || truthType === "handoff") && latestCommentAgeHours < 6;
+          (truthType === "blocker" || truthType === "handoff") && latestStructuredTruthAgeHours < 6;
         const hasStuckAssignedSignals =
           (issue.status === "in_progress" && !issue.executionRunId)
           || hasDependencyBlockedState
@@ -872,18 +1022,27 @@ async function resolveOperationsHeartbeatTargets(
         const hasContradictoryTruthSignals =
           (truthType === "completion" && issue.status !== "in_review")
           || ((truthType === "blocker" || truthType === "handoff") && issue.status === "backlog");
-        const suppressRecovery = shouldSuppressOperationsRecoveryTarget({
-          status: issue.status,
-          latestCommentBody: latestTruthComment?.body,
-          latestCommentAgeHours,
-          hasBlockers,
-        });
+        const suppressRecoveryReason = !isOperationsOwned
+          ? getOperationsRecoverySuppressionReason({
+              status: issue.status,
+              latestCommentBody: latestAssigneeTruthComment?.body ?? latestAssigneeActivityComment?.body,
+              latestCommentAgeHours: latestAssigneeTruthComment
+                ? Math.floor((now - latestAssigneeTruthComment.createdAt.getTime()) / (60 * 60 * 1000))
+                : Number.POSITIVE_INFINITY,
+              latestAssigneeCommentAgeMs,
+              hasBlockers,
+              latestRunStatus: run?.status,
+              latestRunFinishedAt: run?.finishedAt ? new Date(run.finishedAt) : null,
+              hasRecentValidQaVerdict,
+              nowMs: now,
+            })
+          : null;
 
-        if (suppressRecovery) {
+        if (suppressRecoveryReason) {
           return {
             issue,
             score: -200,
-            reasons: ["fresh blocker/handoff truth already covers the current wait state"],
+            reasons: [suppressRecoveryReason],
             issueAgeHours,
             isOperationsOwned,
             isWatchdogIssue,
@@ -893,7 +1052,7 @@ async function resolveOperationsHeartbeatTargets(
           };
         }
 
-        if (hasInvalidBlockedState && !isWatchdogIssue) {
+        if (hasInvalidBlockedState && !isWatchdogIssue && !hasStuckAssignedSignals && !hasFalseCompleteSignals && !hasContradictoryTruthSignals) {
           return {
             issue,
             score: -200,
@@ -925,7 +1084,7 @@ async function resolveOperationsHeartbeatTargets(
           reasons.push("incomplete/false-complete assigned work: run completed without completion/blocker/handoff truth");
         }
 
-        if (truthType === "completion" && issue.status !== "in_review") {
+        if (truthType === "completion" && (issue.status !== "in_review" || issue.assigneeRole !== "qa")) {
           score += 240;
           reasons.push("contradictory issue truth: completion truth on non-completed status");
         }
@@ -1043,10 +1202,7 @@ async function resolveOperationsHeartbeatTargets(
     .from(agents)
     .where(and(eq(agents.companyId, input.companyId), eq(agents.role, "security")));
   const hasAssignableSecuritySpecialist = securityAgentRows.some((agent) => (
-    agent.status !== "paused"
-    && agent.status !== "terminated"
-    && agent.status !== "pending_approval"
-    && agent.status !== "error"
+    isAgentAssignableStatus(agent.status)
   ));
   const assignableReadyUnassignedRows = readyUnassignedRows.filter((issue) => (
     issue.workflowLaneRole !== "security" || hasAssignableSecuritySpecialist
@@ -2133,6 +2289,20 @@ function isProcessAlive(pid: number | null | undefined) {
     if (code === "ESRCH") return false;
     return false;
   }
+}
+
+type BlockingHeartbeatRun = Pick<
+  typeof heartbeatRuns.$inferSelect,
+  "status" | "lastActivityAt" | "updatedAt" | "startedAt" | "createdAt"
+>;
+
+function isRunningHeartbeatRunBlocking(run: BlockingHeartbeatRun, nowMs = Date.now()) {
+  return run.status === "running"
+    && isHeartbeatRunFresh(run, nowMs, OWNED_HEARTBEAT_RUN_QUIET_THRESHOLD_MS);
+}
+
+function isHeartbeatRunBlockingForWakeup(run: BlockingHeartbeatRun, nowMs = Date.now()) {
+  return run.status === "queued" || isRunningHeartbeatRunBlocking(run, nowMs);
 }
 
 function truncateDisplayId(value: string | null | undefined, max = 128) {
@@ -3749,6 +3919,7 @@ export function heartbeatService(db: Db) {
     },
     now = new Date(),
   ) {
+    const nowMs = now.getTime();
     let activeExecutionRun = issue.executionRunId
       ? await tx
           .select()
@@ -3757,7 +3928,13 @@ export function heartbeatService(db: Db) {
           .then((rows) => rows[0] ?? null)
       : null;
 
-    if (activeExecutionRun && !LIVE_HEARTBEAT_RUN_STATUSES.includes(activeExecutionRun.status as "queued" | "running")) {
+    if (
+      activeExecutionRun
+      && (
+        !LIVE_HEARTBEAT_RUN_STATUSES.includes(activeExecutionRun.status as "queued" | "running")
+        || !isHeartbeatRunBlockingForWakeup(activeExecutionRun, nowMs)
+      )
+    ) {
       activeExecutionRun = null;
     }
 
@@ -3775,7 +3952,7 @@ export function heartbeatService(db: Db) {
 
     if (activeExecutionRun) return activeExecutionRun;
 
-    const legacyRun = await tx
+    const legacyRunRows = await tx
       .select()
       .from(heartbeatRuns)
       .where(
@@ -3788,9 +3965,8 @@ export function heartbeatService(db: Db) {
       .orderBy(
         sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
         asc(heartbeatRuns.createdAt),
-      )
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+      );
+    const legacyRun = legacyRunRows.find((candidate) => isHeartbeatRunBlockingForWakeup(candidate, nowMs)) ?? null;
 
     if (!legacyRun) return null;
 
@@ -4174,16 +4350,28 @@ export function heartbeatService(db: Db) {
   }
 
   async function countRunningRunsForAgent(agentId: string) {
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)` })
+    const runningRuns = await db
+      .select({
+        status: heartbeatRuns.status,
+        lastActivityAt: heartbeatRuns.lastActivityAt,
+        updatedAt: heartbeatRuns.updatedAt,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
+      })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
-    return Number(count ?? 0);
+    return countLiveRunLimitRelevantRuns(runningRuns);
   }
 
-  async function hasLiveTimerRun(agentId: string) {
+  async function hasLiveTimerRun(agentId: string, nowMs = Date.now()) {
     const existing = await db
-      .select({ id: heartbeatRuns.id })
+      .select({
+        status: heartbeatRuns.status,
+        lastActivityAt: heartbeatRuns.lastActivityAt,
+        updatedAt: heartbeatRuns.updatedAt,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
+      })
       .from(heartbeatRuns)
       .where(
         and(
@@ -4192,10 +4380,9 @@ export function heartbeatService(db: Db) {
           inArray(heartbeatRuns.status, ["queued", "running"]),
         ),
       )
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows.some((row) => isHeartbeatRunBlockingForWakeup(row, nowMs)));
 
-    return Boolean(existing);
+    return existing;
   }
 
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
@@ -4471,7 +4658,12 @@ export function heartbeatService(db: Db) {
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      if (tracksLocalChild && run.processPid && isProcessAlive(run.processPid)) {
+      const detachedProcessStillAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
+      const detachedRunExpired =
+        detachedProcessStillAlive
+        && staleThresholdMs > 0
+        && activityAgeMs >= Math.max(staleThresholdMs, OWNED_HEARTBEAT_RUN_QUIET_THRESHOLD_MS);
+      if (detachedProcessStillAlive && !detachedRunExpired) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
@@ -4494,13 +4686,15 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      const baseMessage = run.processPid
-        ? `Process lost -- child pid ${run.processPid} is no longer running`
+      const baseMessage = detachedRunExpired
+        ? `Lost in-memory process handle, and child pid ${run.processPid} stayed quiet for ${Math.floor(activityAgeMs / 1000)}s`
+        : run.processPid
+          ? `Process lost -- child pid ${run.processPid} is no longer running`
         : "Process lost -- server may have restarted";
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: baseMessage,
-        errorCode: "process_lost",
+        errorCode: detachedRunExpired ? DETACHED_PROCESS_ERROR_CODE : "process_lost",
         finishedAt: now,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
@@ -4749,6 +4943,9 @@ export function heartbeatService(db: Db) {
   }) {
     const companyId = input.agent.companyId;
     const nowMs = Date.now();
+    const blockingRunActivityCutoffIso = new Date(
+      nowMs - OWNED_HEARTBEAT_RUN_QUIET_THRESHOLD_MS,
+    ).toISOString();
 
     const [targets, boardRows, rawOpenAssignedIssues, rawOpenUnassignedIssues] = await Promise.all([
       resolveOperationsHeartbeatTargets(db, {
@@ -4891,6 +5088,7 @@ export function heartbeatService(db: Db) {
       issueIds.length > 0
         ? db
             .select({
+              id: issueComments.id,
               issueId: issueComments.issueId,
               body: issueComments.body,
               createdAt: issueComments.createdAt,
@@ -5004,6 +5202,7 @@ export function heartbeatService(db: Db) {
               eq(heartbeatRuns.companyId, companyId),
               inArray(heartbeatRuns.agentId, assignmentCandidateIds),
               eq(heartbeatRuns.status, "running"),
+              sql`coalesce(${heartbeatRuns.lastActivityAt}, ${heartbeatRuns.updatedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${blockingRunActivityCutoffIso}::timestamptz`,
             ),
           )
           .groupBy(heartbeatRuns.agentId)
@@ -5619,6 +5818,48 @@ export function heartbeatService(db: Db) {
       if (!targetIssue.assigneeAgentId) return;
       if (!isAgentInvokableStatus(targetIssue.assigneeStatus)) return;
       if (!hasFreeSlot(targetIssue.assigneeAgentId)) return;
+      const recoveryIdempotencyKey = buildOperationsCrossAgentRecoveryIdempotencyKey({
+        agentId: targetIssue.assigneeAgentId,
+        issueId: targetIssue.id,
+      });
+      const existingPendingRecoveryWake = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, targetIssue.assigneeAgentId),
+            eq(agentWakeupRequests.reason, "operations_cross_agent_recovery"),
+            inArray(
+              agentWakeupRequests.status,
+              PENDING_OPERATIONS_RECOVERY_WAKEUP_STATUSES as unknown as string[],
+            ),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${targetIssue.id}`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingPendingRecoveryWake) return;
+      const existingIssueScopedRecoveryRun = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          lastActivityAt: heartbeatRuns.lastActivityAt,
+          updatedAt: heartbeatRuns.updatedAt,
+          startedAt: heartbeatRuns.startedAt,
+          createdAt: heartbeatRuns.createdAt,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, targetIssue.assigneeAgentId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${targetIssue.id}`,
+          ),
+        )
+        .then((rows) => rows.find((row) => isHeartbeatRunBlockingForWakeup(row, nowMs)) ?? null);
+      if (existingIssueScopedRecoveryRun) return;
       const assigneeAgent = await getAgent(targetIssue.assigneeAgentId);
       if (!assigneeAgent) return;
       if (await isRetryCircuitOpen(assigneeAgent.companyId, assigneeAgent.adapterType, new Date())) return;
@@ -5659,6 +5900,7 @@ export function heartbeatService(db: Db) {
             source: "operations.heartbeat",
             wakeReason: "operations_cross_agent_recovery",
           },
+          idempotencyKey: recoveryIdempotencyKey,
         });
         consumeFreeSlot(targetIssue.assigneeAgentId);
         recoveryWakeupCount += 1;
@@ -6947,6 +7189,8 @@ export function heartbeatService(db: Db) {
                     update: async (commentIssueId, patch) => await issuesSvc.update(commentIssueId, patch),
                     addComment: async (commentIssueId, body, actor) =>
                       await issuesSvc.addComment(commentIssueId, body, actor),
+                    listComments: async (commentIssueId) =>
+                      await issuesSvc.listComments(commentIssueId, { order: "desc", limit: 500 }),
                   },
                   issueMerge,
                   projects: {
@@ -7559,12 +7803,19 @@ export function heartbeatService(db: Db) {
           return { kind: "deferred" as const };
         }
 
-        const [{ liveRunCount }] = await tx
-          .select({ liveRunCount: sql<number>`count(*)` })
+        const activeRuns = await tx
+          .select({
+            status: heartbeatRuns.status,
+            lastActivityAt: heartbeatRuns.lastActivityAt,
+            updatedAt: heartbeatRuns.updatedAt,
+            startedAt: heartbeatRuns.startedAt,
+            createdAt: heartbeatRuns.createdAt,
+          })
           .from(heartbeatRuns)
           .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
+        const liveRunCount = countLiveRunLimitRelevantRuns(activeRuns);
 
-        if (Number(liveRunCount ?? 0) >= policy.maxLiveRuns) {
+        if (liveRunCount >= policy.maxLiveRuns) {
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
@@ -7580,7 +7831,7 @@ export function heartbeatService(db: Db) {
           });
           return {
             kind: "live_run_limit_reached" as const,
-            liveRunCount: Number(liveRunCount ?? 0),
+            liveRunCount,
           };
         }
 
@@ -7708,7 +7959,7 @@ export function heartbeatService(db: Db) {
       (candidate) => candidate.status === "queued" && isSameTaskScope(runTaskKey(candidate), taskKey),
     );
     const sameScopeRunningRun = activeRuns.find(
-      (candidate) => candidate.status === "running" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) => isRunningHeartbeatRunBlocking(candidate) && isSameTaskScope(runTaskKey(candidate), taskKey),
     );
     const shouldQueueFollowupForCommentWake =
       Boolean(wakeCommentId) && Boolean(sameScopeRunningRun) && !sameScopeQueuedRun;
@@ -8284,7 +8535,7 @@ export function heartbeatService(db: Db) {
         // Timer heartbeats are periodic nudges, not catch-up jobs. Keep at most
         // one outstanding timer run per agent so downtime or long executions do
         // not accumulate an unbounded queued backlog.
-        if (await hasLiveTimerRun(agent.id)) {
+        if (await hasLiveTimerRun(agent.id, now.getTime())) {
           skipped += 1;
           continue;
         }
