@@ -29,12 +29,22 @@ import { queryKeys } from "@/lib/queryKeys";
 
 const permissionLabels: Record<PermissionKey, string> = {
   "agents:create": "Create agents",
+  "agents:manage": "Manage agents",
   "users:invite": "Invite humans and agents",
   "users:manage_permissions": "Manage members and grants",
   "tasks:assign": "Assign tasks",
   "tasks:assign_scope": "Assign scoped tasks",
   "tasks:manage_active_checkouts": "Manage active task checkouts",
   "joins:approve": "Approve join requests",
+  "projects:create": "Create projects",
+  "projects:manage": "Manage projects",
+  "goals:create": "Create goals",
+  "goals:manage": "Manage goals",
+  "webhooks:manage": "Manage webhooks",
+  "secrets:manage": "Manage secrets",
+  "plugins:manage": "Manage plugins",
+  "company:settings": "Company settings",
+  "activity:view": "View activity",
 };
 
 function formatGrantSummary(member: CompanyMember) {

@@ -29,6 +29,7 @@ import {
   issueWorkProducts,
   projects,
   projectWorkspaces,
+  runTodos,
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
@@ -1753,6 +1754,45 @@ export function heartbeatService(db: Db) {
       .from(agents)
       .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function upsertTodosForRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    todos: Array<{ label: string; status: "pending" | "in_progress" | "completed"; seq: number }>,
+    issueId: string | null,
+  ) {
+    if (todos.length === 0) return;
+    await db.delete(runTodos).where(eq(runTodos.runId, run.id));
+    const inserted = await db
+      .insert(runTodos)
+      .values(
+        todos.map((t) => ({
+          companyId: run.companyId,
+          runId: run.id,
+          agentId: run.agentId,
+          issueId: issueId ?? null,
+          label: t.label,
+          status: t.status,
+          seq: t.seq,
+          updatedAt: new Date(),
+        })),
+      )
+      .returning();
+    publishLiveEvent({
+      companyId: run.companyId,
+      type: "heartbeat.run.todos",
+      payload: {
+        runId: run.id,
+        agentId: run.agentId,
+        todos: inserted.map((t) => ({
+          id: t.id,
+          label: t.label,
+          status: t.status,
+          seq: t.seq,
+        })),
+      },
+    });
+    return inserted;
   }
 
   async function getRun(runId: string, opts?: { unsafeFullResultJson?: boolean }) {
@@ -6032,6 +6072,30 @@ export function heartbeatService(db: Db) {
     getRun,
 
     getRunLogAccess,
+
+    listTodos: async (runId: string) => {
+      return db
+        .select()
+        .from(runTodos)
+        .where(eq(runTodos.runId, runId))
+        .orderBy(asc(runTodos.seq));
+    },
+
+    upsertTodos: async (
+      run: typeof heartbeatRuns.$inferSelect,
+      todos: Array<{ label: string; status: "pending" | "in_progress" | "completed"; seq: number }>,
+      issueId: string | null,
+    ) => {
+      return upsertTodosForRun(run, todos, issueId);
+    },
+
+    listTodosForIssue: async (issueId: string) => {
+      return db
+        .select()
+        .from(runTodos)
+        .where(eq(runTodos.issueId, issueId))
+        .orderBy(asc(runTodos.seq));
+    },
 
     getRuntimeState: async (agentId: string) => {
       const state = await getRuntimeState(agentId);

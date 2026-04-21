@@ -104,8 +104,11 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => mockAgentInstructionsService,
+    assetService: () => ({}),
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
+    chatService: () => ({}),
+    chatProcessService: () => ({}),
     companySkillService: () => mockCompanySkillService,
     budgetService: () => mockBudgetService,
     heartbeatService: () => mockHeartbeatService,
