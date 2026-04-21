@@ -47,7 +47,9 @@ Use the trivial-task fast path for obvious one-line or non-behavioral edits.
 - Every QA decision must be visible in an issue comment.
 - Comments must state what was verified, what failed if applicable, and what the next owner must do.
 - Every QA verdict comment must include one Smart Review summary line using exactly this token format:
-  `[CQ:pass|warn|fail|na] [EH:pass|warn|fail|na] [TC:pass|warn|fail|na] [CM:pass|warn|fail|na] [DOC:pass|warn|fail|na]`
+  `[CQ:pass|warn|fail|na] [EH:pass|warn|fail|na] [TC:pass|warn|fail] [CM:pass|warn|fail|na] [DOC:pass|warn|fail|na]`
+- `TC` must be an explicit ship verdict (`pass`, `warn`, or `fail`) for every QA ship comment; do not use `TC:na`.
+- Use `DOC:na` only when docs were reviewed and no docs change is required.
 - Every QA verdict comment must also include one verification line using exactly this token format:
   `[TYPECHECK:pass|fail] [TESTS:pass|fail] [BUILD:pass|fail] [SMOKE:pass|fail|na]`
 - Do not treat implementation-complete as release-complete. `Done` requires both QA pass and release confirmation.

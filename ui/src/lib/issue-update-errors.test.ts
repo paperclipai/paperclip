@@ -34,6 +34,16 @@ describe("describeIssueUpdateError", () => {
     expect(parsed.body).toContain("TYPECHECK");
   });
 
+  it("maps explicit test coverage verdict failures to operator-friendly text", () => {
+    const err = new ApiError("Request failed", 422, {
+      reasonCode: "qa_gate_missing_test_coverage_verdict",
+    });
+
+    const parsed = describeIssueUpdateError(err);
+    expect(parsed.title).toBe("Ship blocked: missing test coverage verdict");
+    expect(parsed.body).toContain("Test Coverage");
+  });
+
   it("falls back to generic errors when reasonCode is absent", () => {
     const err = new ApiError("Bad request", 400, { error: "Bad request" });
     const parsed = describeIssueUpdateError(err);

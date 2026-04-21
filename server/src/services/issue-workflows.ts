@@ -13,6 +13,7 @@ import type {
   IssueWorkProductType,
 } from "@paperclipai/shared";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { isAgentAssignableStatus } from "./agent-assignment-status.js";
 import { pickOperationsAssignmentCandidate, type OpenAssignedIssueForRouting, type OperationsAssignmentCandidate } from "./issue-routing-heuristics.js";
 import { evaluateWorkflowQaLaneGate, resolveAuthorizedWorkflowQaOwnerAgentId } from "./workflow-qa-lane-gate.js";
 import { conflict, unprocessable } from "../errors.js";
@@ -1064,6 +1065,25 @@ function resolveWorkflowLaneAssigneeId(
   return candidate.id;
 }
 
+function isReadyWorkflowSpecialistCandidate(candidate: Pick<OperationsAssignmentCandidate, "status">) {
+  return isAgentAssignableStatus(candidate.status);
+}
+
+function assertWorkflowTemplateCanBeApplied(
+  template: WorkflowTemplateDefinition,
+  candidatePool: OperationsAssignmentCandidate[],
+) {
+  const requiresSecurityLane = template.lanes.some((lane) => lane.role === "security");
+  if (!requiresSecurityLane) return;
+
+  const hasReadySecuritySpecialist = candidatePool.some((candidate) => (
+    candidate.role === "security" && isReadyWorkflowSpecialistCandidate(candidate)
+  ));
+  if (!hasReadySecuritySpecialist) {
+    throw unprocessable("Engineering delivery requires an available security specialist before it can be applied");
+  }
+}
+
 function updateOpenAssignmentLoad(
   openAssignedIssues: OpenAssignedIssueForRouting[],
   candidatePool: OperationsAssignmentCandidate[],
@@ -1139,6 +1159,7 @@ export function issueWorkflowService(db: Db) {
     actorUserId?: string | null;
     createIssue: WorkflowTemplateApplyCreateIssue;
     updateIssue: WorkflowTemplateApplyUpdateIssue;
+    dbOrTx?: any;
   }) {
     const template = resolveWorkflowTemplate(input.templateKey);
     if (!template) {
@@ -1151,88 +1172,96 @@ export function issueWorkflowService(db: Db) {
       throw conflict("Workflow template already applied to this issue");
     }
 
-    const candidatePool = await listWorkflowAssignmentCandidates(db, input.companyId);
-    const openAssignedIssues = await listWorkflowOpenAssignedIssues(db, input.companyId);
-    const workflowQaAssigneeAgentId = await resolveAuthorizedWorkflowQaOwnerAgentId(db, input.companyId);
+    const scopeDb = input.dbOrTx ?? db;
+    const candidatePool = await listWorkflowAssignmentCandidates(scopeDb, input.companyId);
+    const openAssignedIssues = await listWorkflowOpenAssignedIssues(scopeDb, input.companyId);
+    const workflowQaAssigneeAgentId = await resolveAuthorizedWorkflowQaOwnerAgentId(scopeDb, input.companyId);
+    const runApply = async (tx: any) => {
+      const persistedParent = await tx
+        .select({
+          id: issues.id,
+          parentId: issues.parentId,
+          workflowTemplateKey: issues.workflowTemplateKey,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, input.parentIssue.id), eq(issues.companyId, input.companyId)))
+        .then((rows: Array<{
+          id: string;
+          parentId: string | null;
+          workflowTemplateKey: string | null;
+        }>) => rows[0] ?? null);
+      if (!persistedParent) {
+        throw unprocessable("Parent issue not found");
+      }
+      if (persistedParent.parentId) {
+        throw unprocessable("Workflow templates can only be applied to root issues");
+      }
+      if (persistedParent.workflowTemplateKey) {
+        throw conflict("Workflow template already applied to this issue");
+      }
+
+      const existingWorkflowChildren = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, input.companyId),
+            eq(issues.parentId, input.parentIssue.id),
+            inArray(issues.workflowLaneRole, template.lanes.map((lane) => lane.role)),
+          ),
+        )
+        .then((rows: Array<{ id: string }>) => rows.length);
+      if (existingWorkflowChildren > 0) {
+        throw conflict("Workflow lane issues already exist for this parent issue");
+      }
+
+      assertWorkflowTemplateCanBeApplied(template, candidatePool);
+
+      const updatedParent = await input.updateIssue(input.parentIssue.id, {
+        workflowTemplateKey: template.key,
+      }, tx);
+      if (!updatedParent) {
+        throw unprocessable("Unable to persist workflow template on parent issue");
+      }
+
+      const createdChildren: WorkflowCreatedIssue[] = [];
+      const childIssueIdByRole = new Map<IssueWorkflowLaneRole, string>();
+      for (const lane of template.lanes) {
+        const candidate = pickOperationsAssignmentCandidate({
+          issue: buildRoutingIssue(input.parentIssue, lane),
+          openAssignedIssues,
+          availableCandidates: candidatePool,
+          pausedFallbackCandidates: candidatePool,
+          allowPausedFallback: false,
+        });
+        const assigneeAgentId = resolveWorkflowLaneAssigneeId(lane, candidate, workflowQaAssigneeAgentId);
+        const blockedByIssueIds = lane.dependsOnRoles
+          .map((role) => childIssueIdByRole.get(role))
+          .filter((issueId): issueId is string => typeof issueId === "string");
+        const created = await input.createIssue(
+          buildWorkflowChildInput(
+            input.parentIssue,
+            lane,
+            assigneeAgentId,
+            blockedByIssueIds,
+            { agentId: input.actorAgentId ?? null, userId: input.actorUserId ?? null },
+          ),
+          tx,
+        );
+        createdChildren.push(created);
+        childIssueIdByRole.set(lane.role, created.id);
+        if (assigneeAgentId) {
+          updateOpenAssignmentLoad(openAssignedIssues, candidatePool, input.parentIssue, assigneeAgentId);
+        }
+      }
+
+      return {
+        parentIssue: updatedParent,
+        createdChildren,
+      };
+    };
     try {
-      return await db.transaction(async (tx) => {
-        const persistedParent = await tx
-          .select({
-            id: issues.id,
-            parentId: issues.parentId,
-            workflowTemplateKey: issues.workflowTemplateKey,
-          })
-          .from(issues)
-          .where(and(eq(issues.id, input.parentIssue.id), eq(issues.companyId, input.companyId)))
-          .then((rows) => rows[0] ?? null);
-        if (!persistedParent) {
-          throw unprocessable("Parent issue not found");
-        }
-        if (persistedParent.parentId) {
-          throw unprocessable("Workflow templates can only be applied to root issues");
-        }
-        if (persistedParent.workflowTemplateKey) {
-          throw conflict("Workflow template already applied to this issue");
-        }
-
-        const existingWorkflowChildren = await tx
-          .select({ id: issues.id })
-          .from(issues)
-          .where(
-            and(
-              eq(issues.companyId, input.companyId),
-              eq(issues.parentId, input.parentIssue.id),
-              inArray(issues.workflowLaneRole, template.lanes.map((lane) => lane.role)),
-            ),
-          )
-          .then((rows) => rows.length);
-        if (existingWorkflowChildren > 0) {
-          throw conflict("Workflow lane issues already exist for this parent issue");
-        }
-
-        const updatedParent = await input.updateIssue(input.parentIssue.id, {
-          workflowTemplateKey: template.key,
-        }, tx);
-        if (!updatedParent) {
-          throw unprocessable("Unable to persist workflow template on parent issue");
-        }
-
-        const createdChildren: WorkflowCreatedIssue[] = [];
-        const childIssueIdByRole = new Map<IssueWorkflowLaneRole, string>();
-        for (const lane of template.lanes) {
-          const candidate = pickOperationsAssignmentCandidate({
-            issue: buildRoutingIssue(input.parentIssue, lane),
-            openAssignedIssues,
-            availableCandidates: candidatePool,
-            pausedFallbackCandidates: candidatePool,
-            allowPausedFallback: false,
-          });
-          const assigneeAgentId = resolveWorkflowLaneAssigneeId(lane, candidate, workflowQaAssigneeAgentId);
-          const blockedByIssueIds = lane.dependsOnRoles
-            .map((role) => childIssueIdByRole.get(role))
-            .filter((issueId): issueId is string => typeof issueId === "string");
-          const created = await input.createIssue(
-            buildWorkflowChildInput(
-              input.parentIssue,
-              lane,
-              assigneeAgentId,
-              blockedByIssueIds,
-              { agentId: input.actorAgentId ?? null, userId: input.actorUserId ?? null },
-            ),
-            tx,
-          );
-          createdChildren.push(created);
-          childIssueIdByRole.set(lane.role, created.id);
-          if (assigneeAgentId) {
-            updateOpenAssignmentLoad(openAssignedIssues, candidatePool, input.parentIssue, assigneeAgentId);
-          }
-        }
-
-        return {
-          parentIssue: updatedParent,
-          createdChildren,
-        };
-      });
+      return input.dbOrTx ? await runApply(input.dbOrTx) : await db.transaction(runApply);
     } catch (error) {
       if (isUniqueViolation(error)) {
         throw conflict("Workflow lane issues already exist for this parent issue");

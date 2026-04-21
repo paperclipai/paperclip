@@ -62,7 +62,6 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
-const ENGINEERING_WORKFLOW_TEMPLATE_KEY = "engineering_delivery_v1";
 
 
 interface IssueDraft {
@@ -81,7 +80,6 @@ interface IssueDraft {
   assigneeChrome: boolean;
   executionWorkspaceMode?: string;
   selectedExecutionWorkspaceId?: string;
-  workflowTemplateKey?: string;
   useIsolatedExecutionWorkspace?: boolean;
 }
 
@@ -302,14 +300,12 @@ export function NewIssueDialog() {
   const [assigneeChrome, setAssigneeChrome] = useState(false);
   const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
-  const [workflowTemplateKey, setWorkflowTemplateKey] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
-  const workflowTemplateTouchedRef = useRef(false);
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
@@ -515,7 +511,6 @@ export function NewIssueDialog() {
       assigneeChrome,
       executionWorkspaceMode,
       selectedExecutionWorkspaceId,
-      workflowTemplateKey,
     });
   }, [
     title,
@@ -532,14 +527,9 @@ export function NewIssueDialog() {
     assigneeChrome,
     executionWorkspaceMode,
     selectedExecutionWorkspaceId,
-    workflowTemplateKey,
     newIssueOpen,
     scheduleSave,
   ]);
-
-  useEffect(() => {
-    workflowTemplateTouchedRef.current = false;
-  }, [newIssueOpen]);
 
   // Restore draft or apply defaults when dialog opens
   useEffect(() => {
@@ -568,9 +558,6 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceMode);
       setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
-      if (!workflowTemplateTouchedRef.current) {
-        setWorkflowTemplateKey("");
-      }
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     } else if (newIssueDefaults.title) {
       setTitle(newIssueDefaults.title);
@@ -591,9 +578,6 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
-      if (!workflowTemplateTouchedRef.current) {
-        setWorkflowTemplateKey("");
-      }
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     } else if (draft && draft.title.trim()) {
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
@@ -621,9 +605,6 @@ export function NewIssueDialog() {
           ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : defaultExecutionWorkspaceModeForProject(restoredProject)),
       );
       setSelectedExecutionWorkspaceId(draft.selectedExecutionWorkspaceId ?? "");
-      if (!workflowTemplateTouchedRef.current) {
-        setWorkflowTemplateKey(draft.workflowTemplateKey ?? "");
-      }
       executionWorkspaceDefaultProjectId.current = restoredProjectId || null;
     } else {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
@@ -642,9 +623,6 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
-      if (!workflowTemplateTouchedRef.current) {
-        setWorkflowTemplateKey("");
-      }
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     }
   }, [newIssueOpen, newIssueDefaults, orderedProjects]);
@@ -699,7 +677,6 @@ export function NewIssueDialog() {
     setStagedFiles([]);
     setIsFileDragOver(false);
     setCompanyOpen(false);
-    workflowTemplateTouchedRef.current = false;
     executionWorkspaceDefaultProjectId.current = null;
   }
 
@@ -719,8 +696,6 @@ export function NewIssueDialog() {
     setAssigneeChrome(false);
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
-    workflowTemplateTouchedRef.current = false;
-    setWorkflowTemplateKey("");
   }
 
   function discardDraft() {
@@ -776,7 +751,6 @@ export function NewIssueDialog() {
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
       ...(executionPolicy ? { executionPolicy } : {}),
-      ...(!isSubIssueMode && workflowTemplateKey ? { workflowTemplateKey } : {}),
     });
   }
 
@@ -1644,29 +1618,6 @@ export function NewIssueDialog() {
               ))}
             </PopoverContent>
           </Popover>
-
-          {!isSubIssueMode ? (
-            <button
-              type="button"
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
-                workflowTemplateKey
-                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300"
-                  : "border-border hover:bg-accent/50",
-              )}
-              onClick={() => {
-                workflowTemplateTouchedRef.current = true;
-                setWorkflowTemplateKey((current) => (
-                  current ? "" : ENGINEERING_WORKFLOW_TEMPLATE_KEY
-                ));
-              }}
-              disabled={createIssue.isPending}
-              title="Toggle the built-in engineering workflow template"
-            >
-              <ShieldCheck className="h-3 w-3" />
-              {workflowTemplateKey ? "Engineering workflow" : "No workflow"}
-            </button>
-          ) : null}
 
           {/* Labels chip — disabled, not wired up yet */}
           {/* <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">

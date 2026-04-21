@@ -70,7 +70,7 @@ describe("IssueWorkflowPanel", () => {
     container.remove();
   });
 
-  it("renders the apply button for root issues without a workflow", () => {
+  it("renders the delivery start button for root issues without a workflow", () => {
     const root = createRoot(container);
     const onApply = vi.fn();
 
@@ -79,7 +79,7 @@ describe("IssueWorkflowPanel", () => {
     });
 
     const applyButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Apply engineering workflow"));
+      .find((button) => button.textContent?.includes("Start engineering delivery"));
     expect(applyButton).toBeTruthy();
 
     act(() => {

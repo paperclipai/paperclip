@@ -230,6 +230,12 @@ export type IssueRecoveryDisposition = (typeof ISSUE_RECOVERY_DISPOSITIONS)[numb
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
 
+export const ROOT_ISSUE_DELIVERY_MODES = ["simple", "engineering"] as const;
+export type RootIssueDeliveryMode = (typeof ROOT_ISSUE_DELIVERY_MODES)[number];
+
+export const PROJECT_ROOT_ISSUE_DELIVERY_MODES = ["inherit", ...ROOT_ISSUE_DELIVERY_MODES] as const;
+export type ProjectRootIssueDeliveryMode = (typeof PROJECT_ROOT_ISSUE_DELIVERY_MODES)[number];
+
 export const ISSUE_WORKFLOW_TEMPLATE_KEYS = ["engineering_delivery_v1"] as const;
 export type IssueWorkflowTemplateKey = (typeof ISSUE_WORKFLOW_TEMPLATE_KEYS)[number];
 

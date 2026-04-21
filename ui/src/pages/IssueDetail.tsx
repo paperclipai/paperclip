@@ -27,6 +27,7 @@ import {
   shouldArmIssueDetailInboxQuickArchive,
 } from "../lib/issueDetailBreadcrumb";
 import { hasBlockingShortcutDialog, resolveInboxQuickArchiveKeyAction } from "../lib/keyboardShortcuts";
+import { SMART_REVIEW_SECTION_ID } from "../lib/issue-board-state-presentation";
 import {
   applyOptimisticIssueCommentUpdate,
   createOptimisticIssueComment,
@@ -40,6 +41,7 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { describeIssueUpdateError } from "../lib/issue-update-errors";
 import { getSmartReviewPresentation } from "../lib/qa-gate-presentation";
+import { formatQaDimensionState, formatQaState } from "../lib/qa-dimension-format";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueBoardStatePanel } from "../components/IssueBoardStatePanel";
@@ -137,6 +139,7 @@ const QA_GATE_REASON_LABELS: Record<string, string> = {
   qa_gate_missing_qa_comment: "No QA comment yet.",
   qa_gate_missing_qa_pass: "Latest QA comment is missing [QA PASS].",
   qa_gate_missing_release_confirmation: "Latest QA comment is missing [RELEASE CONFIRMED].",
+  qa_gate_missing_test_coverage_verdict: "Latest QA comment must set Test Coverage to PASS, WARN, or FAIL.",
 };
 
 function qaStateBadgeClass(value: string) {
@@ -145,12 +148,6 @@ function qaStateBadgeClass(value: string) {
   if (value === "fail") return "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400";
   if (value === "na") return "border-slate-500/40 bg-slate-500/10 text-slate-500";
   return "border-muted bg-muted/40 text-muted-foreground";
-}
-
-function formatQaState(value: string) {
-  if (value === "na") return "N/A";
-  if (value === "unknown") return "Unknown";
-  return value.toUpperCase();
 }
 
 function mergeStateBadgeClass(value: string) {
@@ -372,6 +369,7 @@ export function IssueDetail() {
   const [optimisticComments, setOptimisticComments] = useState<OptimisticIssueComment[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
+  const hasScrolledToHashRef = useRef(false);
 
   const { data: issue, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.detail(issueId!),
@@ -774,15 +772,15 @@ export function IssueDetail() {
     onSuccess: () => {
       invalidateIssue();
       pushToast({
-        title: "Workflow applied",
-        body: "Specialist child lanes were created for this issue.",
+        title: "Engineering delivery started",
+        body: "Specialist delivery lanes were created for this issue.",
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Workflow apply failed",
-        body: err instanceof Error ? err.message : "Unable to apply workflow template",
+        title: "Could not start engineering delivery",
+        body: err instanceof Error ? err.message : "Unable to start engineering delivery",
         tone: "error",
       });
     },
@@ -1169,6 +1167,19 @@ export function IssueDetail() {
     lastMarkedReadIssueIdRef.current = issue.id;
     markIssueRead.mutate(issue.id);
   }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    hasScrolledToHashRef.current = false;
+  }, [issue?.id, location.hash]);
+
+  useEffect(() => {
+    if (location.hash !== `#${SMART_REVIEW_SECTION_ID}`) return;
+    if (!issue?.qaGate?.isDeliveryScoped || hasScrolledToHashRef.current) return;
+    const element = document.getElementById(SMART_REVIEW_SECTION_ID);
+    if (!element) return;
+    hasScrolledToHashRef.current = true;
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [issue?.qaGate?.isDeliveryScoped, location.hash]);
 
   useEffect(() => {
     if (!issue) {
@@ -1566,7 +1577,7 @@ export function IssueDetail() {
       />
 
       {qaGate && qaGate.isDeliveryScoped && (
-        <div className="space-y-3 rounded-lg border border-border bg-card px-3 py-3">
+        <div id={SMART_REVIEW_SECTION_ID} className="space-y-3 rounded-lg border border-border bg-card px-3 py-3">
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold">Smart Review</h3>
             <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium", qaStateBadgeClass(qaGate.review.overall))}>
@@ -1589,7 +1600,7 @@ export function IssueDetail() {
               <div key={dimension.key} className="flex items-center justify-between rounded-md border border-border px-2 py-1.5 text-xs">
                 <span className="text-muted-foreground">{dimension.label}</span>
                 <span className={cn("rounded-full border px-1.5 py-0.5 text-[10px] font-medium", qaStateBadgeClass(dimension.value))}>
-                  {formatQaState(dimension.value)}
+                  {formatQaDimensionState(dimension.key, dimension.value)}
                 </span>
               </div>
             ))}

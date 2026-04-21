@@ -45,6 +45,7 @@ export function companyService(db: Db) {
     issuePrefix: companies.issuePrefix,
     issueCounter: companies.issueCounter,
     roadmapPath: companies.roadmapPath,
+    defaultRootIssueDeliveryMode: companies.defaultRootIssueDeliveryMode,
     budgetMonthlyCents: companies.budgetMonthlyCents,
     spentMonthlyCents: companies.spentMonthlyCents,
     releaseGateQaAgentId: companies.releaseGateQaAgentId,

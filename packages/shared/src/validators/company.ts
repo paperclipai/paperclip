@@ -1,15 +1,17 @@
 import { z } from "zod";
-import { COMPANY_STATUSES } from "../constants.js";
+import { COMPANY_STATUSES, ROOT_ISSUE_DELIVERY_MODES } from "../constants.js";
 
 const logoAssetIdSchema = z.string().uuid().nullable().optional();
 const brandColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional();
 const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optional();
+const rootIssueDeliveryModeSchema = z.enum(ROOT_ISSUE_DELIVERY_MODES);
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   roadmapPath: z.string().min(1).optional().nullable(),
+  defaultRootIssueDeliveryMode: rootIssueDeliveryModeSchema.optional(),
 });
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;
@@ -19,6 +21,7 @@ export const updateCompanySchema = createCompanySchema
   .extend({
     status: z.enum(COMPANY_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
+    defaultRootIssueDeliveryMode: rootIssueDeliveryModeSchema.optional(),
     releaseGateQaAgentId: z.string().uuid().nullable().optional(),
     requireBoardApprovalForNewAgents: z.boolean().optional(),
     feedbackDataSharingEnabled: z.boolean().optional(),

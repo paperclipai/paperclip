@@ -1,3 +1,5 @@
+import { isAgentAssignableStatus } from "./agent-assignment-status.js";
+
 const QA_LIKE_ISSUE_PATTERN = /\bqa|release|audit|verify|test\b/;
 const LEAD_LIKE_ISSUE_PATTERN = /\blead|restaurant|prospect|sheet\b/;
 const ONBOARDING_LIKE_ISSUE_PATTERN = /\bonboard|onboarding|go[- ]?live|activation|rollout|intake|implementation\b/;
@@ -261,10 +263,7 @@ export function pickOperationsAssignmentCandidate(input: {
   }
 
   const isReadyCandidate = (candidate: Pick<OperationsAssignmentCandidate, "status">) => (
-    candidate.status !== "error"
-    && candidate.status !== "paused"
-    && candidate.status !== "terminated"
-    && candidate.status !== "pending_approval"
+    isAgentAssignableStatus(candidate.status)
   );
   const specializationSourcePool = input.allowPausedFallback
     ? input.pausedFallbackCandidates

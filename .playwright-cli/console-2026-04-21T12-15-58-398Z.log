@@ -1,0 +1,242 @@
+[ 2767537ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:3102/@vite/client:963
+[ 2767556ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2768015ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/comments?order=desc&limit=60:0
+[ 2768334ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/copilot/threads?limit=50:0
+[ 2768343ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/activity:0
+[ 2768543ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[ 2768560ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2768824ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/health:0
+[ 2769711ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2770549ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[ 2770718ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2771730ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2772738ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2773784ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2774623ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[ 2774884ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2776107ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2777580ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2779066ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2781572ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2785865ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2785979ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[ 2789277ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2792521ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[ 2799142ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3102/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102
+[14203510ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:3102/@vite/client:963
+[14203526ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[14204408ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/health:0
+[14204528ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[14204528ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[14205533ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[14206534ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[14206536ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[14207547ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[14208565ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[14209603ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[14210563ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[14210730ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[14212009ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[14217626ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3102/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102
+[15491230ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:3102/@vite/client:963
+[15491240ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/live-runs:0
+[15491241ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/copilot/threads?limit=50:0
+[15491241ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/active-run:0
+[15491242ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/active-run:0
+[15491242ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/live-runs:0
+[15491242ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/health:0
+[15491581ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[15492234ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[15492586ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[15493590ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[15494240ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[15494599ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[15495609ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[15496623ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[15497661ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[15498293ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[15498808ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[15499961ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[15501413ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[15502936ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[15507551ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3102/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102
+[17694609ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:3102/@vite/client:963
+[17694619ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/comments?order=desc&limit=60:0
+[17694620ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/live-runs:0
+[17694620ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/live-runs:0
+[17694620ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/health:0
+[17694623ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/activity:0
+[17694623ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/companies/rail-state:0
+[17694929ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17695630ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[17695934ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17696942ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17697638ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[17697948ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17698969ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17699993ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17701054ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17701672ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[17702172ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17703421ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17704748ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17706217ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17708790ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17712247ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17712437ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[17715044ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[17722583ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3102/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102
+[18930076ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:3102/@vite/client:963
+[18930084ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/runs:0
+[18930085ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/activity:0
+[18930085ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/runs:0
+[18930086ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/health:0
+[18930087ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/comments?order=desc&limit=60:0
+[18930088ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/copilot/threads?limit=50:0
+[18930310ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[18931155ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[18931315ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[18932329ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[18933649ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[18933649ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[18934666ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[18935688ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[18936723ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[18937727ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[18937853ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[18939162ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[18940655ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[18942292ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[18943817ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[18949727ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3102/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102
+[20679942ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:3102/api/issues/COMA-1275/live-runs:0
+[20679943ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/live-runs:0
+[20679947ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/active-run:0
+[20679947ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:3102/api/issues/COMA-1275/active-run:0
+[20681482ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:3102/@vite/client:963
+[20681493ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/active-run:0
+[20681494ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/active-run:0
+[20681494ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/live-runs:0
+[20681494ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/live-runs:0
+[20681501ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[20681566ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/health:0
+[20682514ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[20682514ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[20683522ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[20684526ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[20684528ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[20685541ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[20686562ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[20687604ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[20688603ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[20688727ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[20689813ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[20691080ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[20692923ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[20696354ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[20698234ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[20702976ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3102/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102
+[23554951ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:3102/@vite/client:963
+[23554960ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/live-runs:0
+[23554961ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/copilot/threads?limit=50:0
+[23554961ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/activity:0
+[23554961ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/companies/rail-state:0
+[23554961ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/active-run:0
+[23554961ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/active-run:0
+[23554962ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/comments?order=desc&limit=60:0
+[23554962ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/live-runs:0
+[23554962ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/health:0
+[23554964ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/live-runs:0
+[23555339ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[23555955ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[23556344ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[23557355ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[23557962ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[23558369ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[23559386ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[23560406ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[23561466ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[23562025ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[23562612ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[23563713ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[23565324ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[23566882ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[23568718ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[23572143ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[23572372ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[23576638ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3102/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102
+[25853163ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:3102/@vite/client:963
+[25853173ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/comments?order=desc&limit=60:0
+[25853175ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/live-runs:0
+[25853175ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/active-run:0
+[25853176ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/active-run:0
+[25853176ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/health:0
+[25853179ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/live-runs:0
+[25853586ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[25854178ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[25854591ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[25855601ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[25856189ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[25856619ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[25857641ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[25858655ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[25859696ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[25860216ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[25860766ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[25862089ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[25863534ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[25865159ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[25867286ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[25869840ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[25869912ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[25875672ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3102/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102
+[28961853ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:3102/@vite/client:963
+[28961865ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/live-runs:0
+[28961866ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/active-run:0
+[28961866ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/live-runs:0
+[28961866ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/activity:0
+[28961867ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/copilot/threads?limit=50:0
+[28961867ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/active-run:0
+[28961867ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/health:0
+[28962294ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[28962872ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[28963300ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[28964315ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[28964883ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[28965323ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[28966339ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[28967350ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[28968392ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[28968953ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[28969480ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[28970676ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[28972230ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[28974419ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[28977246ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[28978654ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[28985564ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3102/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102
+[29810939ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:3102/@vite/client:963
+[29810955ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/live-runs:0
+[29810958ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/health:0
+[29810962ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/active-run:0
+[29810962ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/runs:0
+[29810962ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/live-runs:0
+[29810962ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/COMA-1275/active-run:0
+[29810962ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/api/issues/48d95114-e641-4f2f-a7c9-941a701ceed0/runs:0
+[29811411ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[29811961ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[29812417ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[29813427ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[29813974ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[29814441ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[29815460ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[29816475ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[29817524ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[29818024ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[29818621ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[29819813ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[29821415ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[29823503ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[29826103ms] [ERROR] WebSocket connection to 'ws://0.0.0.0:13102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/@vite/client:1034
+[29829124ms] [ERROR] WebSocket connection to 'ws://localhost:3102/api/companies/07ea2295-23ec-42c3-b319-281d904ac1ce/events/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:3102/src/context/LiveUpdatesProvider.tsx:584
+[29832967ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3102/node_modules/.vite/deps/react-dom_client.js?v=71c0456a:20102

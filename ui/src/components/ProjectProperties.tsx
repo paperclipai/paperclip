@@ -44,6 +44,7 @@ export type ProjectConfigFieldKey =
   | "name"
   | "description"
   | "status"
+  | "delivery_mode"
   | "goals"
   | "env"
   | "execution_workspace_enabled"
@@ -532,6 +533,38 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             />
           ) : (
             <StatusBadge status={project.status} />
+          )}
+        </PropertyRow>
+        <PropertyRow
+          label={<FieldLabel label="Delivery" state={fieldState("delivery_mode")} />}
+          alignStart
+          valueClassName="space-y-1"
+        >
+          {onUpdate || onFieldUpdate ? (
+            <>
+              <select
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                value={project.defaultRootIssueDeliveryMode ?? "inherit"}
+                onChange={(event) => commitField("delivery_mode", {
+                  defaultRootIssueDeliveryMode: event.target.value,
+                })}
+              >
+                <option value="inherit">Inherit company default</option>
+                <option value="engineering">Engineering delivery</option>
+                <option value="simple">Simple issue</option>
+              </select>
+              <p className="text-[11px] text-muted-foreground">
+                Controls how new root issues in this project start by default.
+              </p>
+            </>
+          ) : (
+            <span className="text-sm">
+              {project.defaultRootIssueDeliveryMode === "engineering"
+                ? "Engineering delivery"
+                : project.defaultRootIssueDeliveryMode === "simple"
+                  ? "Simple issue"
+                  : "Inherit company default"}
+            </span>
           )}
         </PropertyRow>
         {project.leadAgentId && (

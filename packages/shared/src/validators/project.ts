@@ -1,6 +1,8 @@
 import { z } from "zod";
-import { PROJECT_STATUSES } from "../constants.js";
+import { PROJECT_ROOT_ISSUE_DELIVERY_MODES, PROJECT_STATUSES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
+
+const projectRootIssueDeliveryModeSchema = z.enum(PROJECT_ROOT_ISSUE_DELIVERY_MODES);
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -117,6 +119,7 @@ const projectFields = {
   targetDate: z.string().optional().nullable(),
   color: z.string().optional().nullable(),
   env: envConfigSchema.optional().nullable(),
+  defaultRootIssueDeliveryMode: projectRootIssueDeliveryModeSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
 };

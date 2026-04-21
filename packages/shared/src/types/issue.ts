@@ -234,6 +234,7 @@ export type IssueQaGateReasonCode =
   | "qa_gate_requires_in_review"
   | "qa_gate_missing_qa_comment"
   | "qa_gate_missing_qa_summary"
+  | "qa_gate_missing_test_coverage_verdict"
   | "qa_gate_missing_qa_pass"
   | "qa_gate_missing_release_confirmation"
   | "qa_gate_missing_verification"

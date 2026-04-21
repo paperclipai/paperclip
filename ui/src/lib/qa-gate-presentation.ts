@@ -55,6 +55,7 @@ const INCOMPLETE_VERDICT_LABELS: Array<[IssueQaGateReasonCode, string]> = [
   ["qa_gate_missing_qa_pass", "[QA PASS]"],
   ["qa_gate_missing_release_confirmation", "[RELEASE CONFIRMED]"],
   ["qa_gate_missing_qa_summary", "Smart Review summary"],
+  ["qa_gate_missing_test_coverage_verdict", "explicit Test Coverage verdict"],
   ["qa_gate_missing_verification", "verification evidence"],
 ];
 
@@ -65,6 +66,7 @@ const FALLBACK_REASON_LABELS: Record<IssueQaGateReasonCode, string> = {
   qa_gate_requires_in_review: "Move the issue into QA before shipping.",
   qa_gate_missing_qa_comment: "Latest QA verdict is missing.",
   qa_gate_missing_qa_summary: "Latest QA verdict is missing the Smart Review summary.",
+  qa_gate_missing_test_coverage_verdict: "Latest QA verdict must set Test Coverage to pass, warn, or fail.",
   qa_gate_missing_qa_pass: "Latest QA verdict is missing [QA PASS].",
   qa_gate_missing_release_confirmation: "Latest QA verdict is missing [RELEASE CONFIRMED].",
   qa_gate_missing_verification: "Latest QA verdict is missing verification evidence.",

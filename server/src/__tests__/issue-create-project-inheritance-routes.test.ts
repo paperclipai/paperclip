@@ -23,6 +23,13 @@ const mockExecutionGateService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockCompanyService = vi.hoisted(() => ({
+  getById: vi.fn(async () => null),
+}));
+const mockProjectService = vi.hoisted(() => ({
+  getById: vi.fn(async () => null),
+  listByIds: vi.fn(async () => []),
+}));
 const mockIssueWorkflowService = vi.hoisted(() => ({
   decorateIssue: vi.fn(async (issue: unknown) => issue),
   evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [], artifactStatuses: [] })),
@@ -45,6 +52,7 @@ vi.mock("../services/index.js", () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
     listIssueDocuments: vi.fn(async () => []),
   }),
+  companyService: () => mockCompanyService,
   executionGateService: () => mockExecutionGateService,
   executionWorkspaceService: () => ({
     getById: vi.fn(async () => null),
@@ -72,10 +80,7 @@ vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   issueWorkflowService: () => mockIssueWorkflowService,
   logActivity: mockLogActivity,
-  projectService: () => ({
-    getById: vi.fn(async () => null),
-    listByIds: vi.fn(async () => []),
-  }),
+  projectService: () => mockProjectService,
   routineService: () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
@@ -93,6 +98,7 @@ vi.mock("../services/issue-merge.js", () => ({
 
 let issueRoutesFactory: typeof import("../routes/issues.js").issueRoutes;
 let errorHandlerMiddleware: typeof import("../middleware/index.js").errorHandler;
+let unprocessableError: typeof import("../errors.js").unprocessable;
 
 const sourceProjectId = "11111111-1111-4111-8111-111111111111";
 const runProjectId = "22222222-2222-4222-8222-222222222222";
@@ -123,17 +129,29 @@ describe("issue create project inheritance routes", () => {
     vi.resetModules();
     ({ issueRoutes: issueRoutesFactory } = await import("../routes/issues.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
+    ({ unprocessable: unprocessableError } = await import("../errors.js"));
   }, 20_000);
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      defaultRootIssueDeliveryMode: "simple",
+    });
+    mockProjectService.getById.mockResolvedValue(null);
+    mockProjectService.listByIds.mockResolvedValue([]);
     mockIssueWorkflowService.decorateIssue.mockImplementation(async (issue: unknown) => issue);
     mockIssueWorkflowService.evaluateLaneCompletion.mockResolvedValue({
       canComplete: true,
       blockingReasons: [],
       artifactStatuses: [],
     });
-    mockIssueWorkflowService.applyTemplate.mockReset();
+    mockIssueWorkflowService.applyTemplate.mockResolvedValue({
+      parentIssue: {
+        id: "new-issue-1",
+      },
+      createdChildren: [],
+    });
     mockExecutionGateService.getExecutionBlock.mockResolvedValue(null);
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "run-1",
@@ -336,5 +354,166 @@ describe("issue create project inheritance routes", () => {
         projectId: null,
       }),
     );
+  });
+
+  it("does not auto-apply the engineering workflow when company delivery settings cannot be resolved", async () => {
+    mockCompanyService.getById.mockResolvedValue(null);
+
+    const res = await request(
+      createApp({
+        type: "board",
+        source: "local_implicit",
+        userId: "board-user-1",
+      }),
+    )
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Legacy root issue",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueWorkflowService.applyTemplate).not.toHaveBeenCalled();
+  });
+
+  it("automatically applies the engineering workflow for root issues when the company default delivery mode is engineering", async () => {
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      defaultRootIssueDeliveryMode: "engineering",
+    });
+
+    const res = await request(
+      createApp({
+        type: "board",
+        source: "local_implicit",
+        userId: "board-user-1",
+      }),
+    )
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Automatic workflow root",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueWorkflowService.applyTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "company-1",
+        templateKey: "engineering_delivery_v1",
+        parentIssue: expect.objectContaining({
+          id: "new-issue-1",
+          title: "Automatic workflow root",
+        }),
+      }),
+    );
+  });
+
+  it("does not auto-apply the engineering workflow for sub-issues", async () => {
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      defaultRootIssueDeliveryMode: "engineering",
+    });
+
+    const res = await request(
+      createApp({
+        type: "board",
+        source: "local_implicit",
+        userId: "board-user-1",
+      }),
+    )
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Child issue",
+        parentId: "44444444-4444-4444-8444-444444444444",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueWorkflowService.applyTemplate).not.toHaveBeenCalled();
+  });
+
+  it("lets a project simple delivery override suppress the company engineering default", async () => {
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      defaultRootIssueDeliveryMode: "engineering",
+    });
+    mockProjectService.getById.mockResolvedValue({
+      id: explicitProjectId,
+      companyId: "company-1",
+      defaultRootIssueDeliveryMode: "simple",
+    });
+
+    const res = await request(
+      createApp({
+        type: "board",
+        source: "local_implicit",
+        userId: "board-user-1",
+      }),
+    )
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Simple project root",
+        projectId: explicitProjectId,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueWorkflowService.applyTemplate).not.toHaveBeenCalled();
+  });
+
+  it("lets a project engineering delivery override enable the workflow when the company default is simple", async () => {
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      defaultRootIssueDeliveryMode: "simple",
+    });
+    mockProjectService.getById.mockResolvedValue({
+      id: explicitProjectId,
+      companyId: "company-1",
+      defaultRootIssueDeliveryMode: "engineering",
+    });
+
+    const res = await request(
+      createApp({
+        type: "board",
+        source: "local_implicit",
+        userId: "board-user-1",
+      }),
+    )
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Engineering project root",
+        projectId: explicitProjectId,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueWorkflowService.applyTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        templateKey: "engineering_delivery_v1",
+      }),
+    );
+  });
+
+  it("returns 422 and skips issue activity logging when automatic engineering workflow apply has no security specialist", async () => {
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      defaultRootIssueDeliveryMode: "engineering",
+    });
+    mockIssueWorkflowService.applyTemplate.mockRejectedValue(
+      unprocessableError("Engineering delivery requires an available security specialist before it can be applied"),
+    );
+
+    const res = await request(
+      createApp({
+        type: "board",
+        source: "local_implicit",
+        userId: "board-user-1",
+      }),
+    )
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Automatic workflow root",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toEqual({
+      error: "Engineering delivery requires an available security specialist before it can be applied",
+    });
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 });

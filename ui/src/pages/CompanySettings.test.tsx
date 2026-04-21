@@ -31,6 +31,7 @@ const defaultCompany = vi.hoisted((): Company => ({
   dailyExecutiveSummaryLastSentAt: null,
   dailyExecutiveSummaryLastStatus: null,
   dailyExecutiveSummaryLastError: null,
+  defaultRootIssueDeliveryMode: "engineering",
   releaseGateQaAgentId: null,
   resolvedReleaseGateQaAgentId: null,
   releaseGateQaResolutionSource: "none",
@@ -348,6 +349,42 @@ describe("CompanySettings roadmap path", () => {
         "company-1",
         expect.objectContaining({
           releaseGateQaAgentId: "agent-qa-runner",
+        }),
+      );
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("saves the company default delivery mode", async () => {
+    const { root } = renderSettings(container);
+
+    const select = container.querySelector(
+      '[data-testid="company-settings-delivery-mode-select"]',
+    ) as HTMLSelectElement | null;
+    expect(select).toBeTruthy();
+
+    act(() => {
+      if (!select) return;
+      setNativeSelectValue(select, "simple");
+    });
+
+    const saveButton = container.querySelector(
+      '[data-testid="company-settings-delivery-mode-save"]',
+    ) as HTMLButtonElement | null;
+    expect(saveButton).toBeTruthy();
+
+    act(() => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockCompaniesApi.update).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({
+          defaultRootIssueDeliveryMode: "simple",
         }),
       );
     });

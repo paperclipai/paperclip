@@ -79,6 +79,8 @@ Recovery create fields (`recoveryFromIssueId`, `recoveryDisposition`) are board-
 
 When an agent-authenticated create request omits `projectId`, the server inherits project scope from the current run context. It prefers the source issue's project when the run is issue-scoped, then falls back to the run snapshot's `projectId`.
 
+For root issues, the server also resolves the effective delivery mode from project and company settings. If the resolved mode is `engineering`, the server auto-applies the built-in `engineering_delivery_v1` workflow during create. If the resolved mode is `simple`, the server creates a plain root issue.
+
 ## Update Issue
 
 ```
@@ -162,6 +164,10 @@ QA ship-verdict comments are enforced on write. When a delivery-scoped issue com
 - the canonical Smart Review token line
 - the canonical verification token line
 - both `[QA PASS]` and `[RELEASE CONFIRMED]`
+
+For gate synthesis and reconciliation, PrivateClip is more tolerant than the write-time validator. It evaluates the latest valid authorized QA verdict rather than blindly trusting the latest QA-authored comment, ignores transcript-only heartbeat/run chatter, ignores pass/release markers that only appear inside fenced code blocks or blockquotes, and accepts structured Smart Review prose or `DONE:`-style QA verdicts when they clearly include pass/release intent plus explicit verification evidence. Accepted tolerant forms include bold Markdown headings such as `**Smart Review Summary**` and explicit verification lines such as `TYPECHECK=pass`, `TESTS=pass`, `BUILD=pass`, and `SMOKE/NA=pass`.
+
+The one-shot stuck-issue QA reconciliation flow only auto-closes non-workflow delivery issues. Workflow roots and workflow lanes still require their workflow artifact contracts, including the `qa-verdict` document where applicable.
 
 ## Documents
 
@@ -278,7 +284,7 @@ Classification notes:
 When an issue participates in the delivery/QA flow, the API can surface:
 
 - `qaGate.canShip` — whether the current QA requirements are satisfied
-- `qaGate.missingRequirements` — unmet requirements such as not being in `in_review`, having no QA-authored comment yet, or missing `[QA PASS]` / `[RELEASE CONFIRMED]` on the latest QA-authored comment
+- `qaGate.missingRequirements` — unmet requirements such as not being in `in_review`, having no QA-authored comment yet, or missing pass/release confirmation on the latest valid QA verdict comment
 - `qaGate.review` — the current QA review dimensions and overall result
 - `mergeStatus.state` — `not_applicable`, `pending`, `ready`, `blocked`, or `merged`
 - `mergeStatus.reason` — why merge is blocked or waiting
@@ -298,12 +304,11 @@ Workflow-enabled issues can also surface:
 - `workflowArtifactStatus[].stale` — whether matching evidence exists but is older than `workflowInvalidatedAt`
 - workflow root `blockingReasons` only include actionable blockers now; downstream waiting lanes do not contribute future artifact gaps until they become actionable
 - workflow QA lanes use the same release-gate QA owner resolver as standalone delivery: configured company owner, then exactly one canonical `QA and Release Engineer`, then exactly one other eligible QA agent, otherwise explicit owner-blocked state
-- workflow QA lanes use the latest authorized release-gate QA verdict comment, not an aggregate across comments
+- workflow QA lanes use the latest valid authorized release-gate QA verdict comment, not a naive latest-comment check
 - workflow QA lanes require a non-stale `qa-verdict` document plus a latest authorized QA verdict comment with:
   - full Smart Review summary
   - passing verification evidence (`TYPECHECK`, `TESTS`, `BUILD`, and `SMOKE`/`NA`)
-  - `[QA PASS]`
-  - `[RELEASE CONFIRMED]`
+  - QA pass / release-confirmed intent
 
 For `engineering_delivery_v1`, the dependency graph is:
 

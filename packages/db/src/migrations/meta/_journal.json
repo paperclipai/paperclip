@@ -463,6 +463,13 @@
       "when": 1776675600000,
       "tag": "0065_release_gate_qa_owner",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1776715523290,
+      "tag": "0066_perfect_carnage",
+      "breakpoints": true
     }
   ]
 }

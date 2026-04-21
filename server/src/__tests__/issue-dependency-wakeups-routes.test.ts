@@ -542,4 +542,40 @@ describe("issue dependency wakeups in issue routes", () => {
       }),
     );
   });
+
+  it("returns 422 and skips side effects when workflow application is missing a security specialist", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "root-1",
+      companyId: "company-1",
+      identifier: "PAP-120",
+      title: "Ship checkout",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-pm",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueWorkflowService.applyTemplate.mockRejectedValue(Object.assign(
+      new Error("Engineering delivery requires an available security specialist before it can be applied"),
+      { status: 422 },
+    ));
+
+    const res = await request(createApp())
+      .post("/api/issues/root-1/apply-workflow-template")
+      .send({ workflowTemplateKey: "engineering_delivery_v1" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(res.status).toBe(422);
+    expect(res.body).toEqual({
+      error: "Engineering delivery requires an available security specialist before it can be applied",
+    });
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
 });

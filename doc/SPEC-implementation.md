@@ -890,6 +890,13 @@ Export/import behavior in V1:
 
 V1 now supports one built-in workflow template on root issues: `engineering_delivery_v1`.
 
+Root issue creation now resolves delivery mode from configuration instead of a per-issue composer toggle:
+- company setting: `defaultRootIssueDeliveryMode = simple | engineering`
+- project setting: `defaultRootIssueDeliveryMode = inherit | simple | engineering`
+- effective mode for a new root issue: project override when present, otherwise company default
+- effective `engineering` mode auto-applies `engineering_delivery_v1` on create
+- effective `simple` mode leaves the issue as a plain root issue unless a board actor later applies the workflow manually
+
 Contract:
 - template application creates deterministic child issues, not hidden internal stages
 - child issues are labeled with lane role metadata and required artifact contracts
@@ -912,7 +919,11 @@ Dependency graph for `engineering_delivery_v1`:
 - `engineer -> qa`
 
 Execution rules:
-- template application creates all child lanes eagerly
+- template application requires at least one eligible security specialist; otherwise the request is rejected and no parent or child workflow rows are persisted
+- if legacy or drifted workflow state leaves a security lane unassigned while no eligible security specialist exists, COO must leave it unassigned and surface board-visible operator attention instead of silently skipping it or routing it to a non-security owner
+- long-quiet `running` heartbeat rows must stop counting as live occupancy for queue resume, timer-heartbeat suppression, and runtime-integrity issue rebinds once they pass the owned-run quiet threshold
+- new root issue creation in effective `engineering` mode is atomic with workflow application; if the workflow apply fails, the root issue creation rolls back too
+- template application creates all child lanes eagerly after validation succeeds
 - only dependency-free lanes start in `todo` and receive an assignment wake
 - dependency lanes start in `blocked`
 - workflow QA lane assignment uses the shared release-gate QA resolver in this order: configured company owner, then exactly one canonical `QA and Release Engineer`, then exactly one other eligible QA agent, otherwise explicit owner-blocked state
@@ -924,7 +935,8 @@ Artifact contracts:
 - `designer`: `design` document or design work product
 - `engineer`: `implementation-summary` document or implementation work product
 - `security`: `threat-review` document
-- `qa`: a non-stale `qa-verdict` document plus the latest authorized release-gate QA verdict comment, which must include a full Smart Review summary, passing verification tokens (`[TYPECHECK] [TESTS] [BUILD] [SMOKE]`), `[QA PASS]`, and `[RELEASE CONFIRMED]`
+- `qa`: a non-stale `qa-verdict` document plus the latest valid authorized release-gate QA verdict comment. Write-time QA ship comments still require canonical markers, but workflow/read-time reconciliation may also accept structured Smart Review prose or `DONE:`-style verdicts when they clearly carry QA pass/release intent plus explicit verification evidence, including bold Markdown `**Smart Review Summary**` headings and equality-style verification lines such as `TYPECHECK=pass` and `SMOKE/NA=pass`.
+  For canonical Smart Review tokens, `TC` must be an explicit ship verdict (`pass`, `warn`, or `fail`) and `DOC:na` means docs were reviewed with no docs change required.
 
 Completion rules:
 - a root workflow issue cannot transition to `done` while any specialist lane remains non-`done`; board actors must use `forceDone` to override that state deliberately

@@ -26,6 +26,10 @@ const REASON_TEXT: Record<IssueQaGateReasonCode, { title: string; body: string }
     title: "Ship blocked: missing Smart Review summary",
     body: "The latest QA-authored comment must include the Smart Review summary line.",
   },
+  qa_gate_missing_test_coverage_verdict: {
+    title: "Ship blocked: missing test coverage verdict",
+    body: "The latest QA-authored comment must set Test Coverage to PASS, WARN, or FAIL before shipping.",
+  },
   qa_gate_missing_qa_pass: {
     title: "Ship blocked: missing QA PASS",
     body: "The latest QA-authored comment must include [QA PASS].",

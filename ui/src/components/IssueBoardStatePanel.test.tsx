@@ -214,4 +214,54 @@ describe("IssueBoardStatePanel", () => {
       root.unmount();
     });
   });
+
+  it("points QA review actions at the Smart Review section instead of a no-op self-link", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueBoardStatePanel
+          issue={createIssue({
+            status: "in_review",
+            boardState: {
+              kind: "waiting",
+              headline: "Waiting on QA",
+              reasonCode: "review",
+              actorType: "agent",
+              actorId: "agent-qa",
+              primaryAction: {
+                type: "open_issue",
+                label: "Review QA state",
+                targetEntity: "issue",
+                targetId: "issue-1",
+              },
+            },
+            qaGate: {
+              canShip: false,
+              isDeliveryScoped: true,
+              missingRequirements: ["qa_gate_missing_qa_summary"],
+              lastQaSummaryAt: null,
+              review: {
+                overall: "warn",
+                codeQuality: "pass",
+                errorHandling: "pass",
+                testCoverage: "warn",
+                commentQuality: "warn",
+                docsImpact: "unknown",
+                stale: false,
+                latestDecisionOutcome: null,
+              },
+            },
+          })}
+        />,
+      );
+    });
+
+    const actionLink = Array.from(container.querySelectorAll("a")).find((node) => node.textContent === "Review QA state");
+    expect(actionLink?.getAttribute("href")).toBe("/issues/COMA-1118#smart-review");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });

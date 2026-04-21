@@ -302,7 +302,7 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
     expect(refreshedStatuses).toEqual(["blocked", "blocked", "blocked", "blocked"]);
   });
 
-  it("surfaces unresolved security ownership when no security specialist exists", async () => {
+  it("rejects template application when no security specialist exists", async () => {
     const companyId = await seedCompany("NoSecCo");
     const projectId = await seedProject(companyId);
     await settings.updateExperimental({ enableIsolatedWorkspaces: true });
@@ -321,25 +321,59 @@ describeEmbeddedPostgres("issueWorkflowService", () => {
       createdByUserId: "user-1",
     });
 
-    const applied = await workflows.applyTemplate({
+    await expect(workflows.applyTemplate({
       companyId,
       templateKey: "engineering_delivery_v1",
       parentIssue: rootIssue,
       actorUserId: "user-1",
       createIssue: (data, dbOrTx) => svc.create(companyId, data, dbOrTx),
       updateIssue: (id, data, dbOrTx) => svc.update(id, data, dbOrTx),
-    });
+    })).rejects.toThrow("requires an available security specialist");
 
-    const securityLane = applied.createdChildren.find((issue) => issue.workflowLaneRole === "security");
-    expect(securityLane?.assigneeAgentId ?? null).toBeNull();
+    const reloadedParent = await svc.getById(rootIssue.id);
+    expect(reloadedParent?.workflowTemplateKey ?? null).toBeNull();
 
-    const decoratedParent = await workflows.decorateIssue(applied.parentIssue);
-    const securitySummary = decoratedParent.workflowSummary?.lanes.find((lane) => lane.role === "security");
-    expect(securitySummary?.unresolvedOwnership).toBe(true);
-    expect(securitySummary?.phase).toBe("waiting");
-    expect(securitySummary?.blockingReasons).toEqual([]);
-    expect(decoratedParent.workflowSummary?.waitingRoles).toContain("security");
-    expect(decoratedParent.workflowSummary?.ownerNeededRoles).not.toContain("security");
+    const persistedChildren = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.parentId, rootIssue.id));
+    expect(persistedChildren).toHaveLength(0);
+  });
+
+  it("rolls back root issue creation when a workflow template cannot be applied inside the same transaction", async () => {
+    const companyId = await seedCompany("NoSecAtomicCo");
+    const projectId = await seedProject(companyId);
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    await seedAgent(companyId, "pm", "PM Agent");
+    await seedAgent(companyId, "designer", "Designer Agent");
+    await seedAgent(companyId, "engineer", "Engineer Agent");
+    await seedAgent(companyId, "qa", "QA Agent");
+
+    await expect(db.transaction(async (tx) => {
+      const rootIssue = await svc.create(companyId, {
+        title: "Atomic workflow create",
+        projectId,
+        priority: "medium",
+        status: "todo",
+        createdByUserId: "user-1",
+      }, tx);
+
+      await workflows.applyTemplate({
+        companyId,
+        templateKey: "engineering_delivery_v1",
+        parentIssue: rootIssue,
+        actorUserId: "user-1",
+        createIssue: (data, dbOrTx) => svc.create(companyId, data, dbOrTx),
+        updateIssue: (id, data, dbOrTx) => svc.update(id, data, dbOrTx),
+        dbOrTx: tx,
+      });
+    })).rejects.toThrow("requires an available security specialist");
+
+    const persistedIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(persistedIssues).toHaveLength(0);
   });
 
   it("assigns the canonical release-gate QA owner to workflow QA lanes instead of generic operations routing", async () => {

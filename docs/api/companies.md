@@ -190,6 +190,7 @@ Paused roadmap epics hold issue-linked execution wakeups and queued runs for tho
 | `name` | string | Company name |
 | `description` | string | Company description |
 | `status` | string | `active`, `paused`, `archived` |
+| `defaultRootIssueDeliveryMode` | string | Default mode for new root issues: `engineering` auto-applies the specialist workflow, `simple` creates a plain issue |
 | `releaseGateQaAgentId` | string | Optional board-configured release-gate QA owner |
 | `resolvedReleaseGateQaAgentId` | string | Effective release-gate QA owner after applying the shared resolver |
 | `releaseGateQaResolutionSource` | string | Why the current release-gate QA owner was chosen: `configured`, `canonical`, `single_fallback`, `configured_unavailable`, `none`, or `ambiguous` |

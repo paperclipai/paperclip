@@ -2,69 +2,100 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockCompanyService = vi.hoisted(() => ({
-  list: vi.fn(),
-  stats: vi.fn(),
-  getById: vi.fn(),
-  create: vi.fn(),
-  update: vi.fn(),
-  archive: vi.fn(),
-  pause: vi.fn(),
-  resume: vi.fn(),
-  remove: vi.fn(),
-}));
+function createMockCompanyService() {
+  return {
+    list: vi.fn(),
+    stats: vi.fn(),
+    getById: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    archive: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    remove: vi.fn(),
+  };
+}
 
-const mockAgentService = vi.hoisted(() => ({
-  getById: vi.fn(),
-  list: vi.fn(),
-}));
+function createMockAgentService() {
+  return {
+    getById: vi.fn(),
+    list: vi.fn(),
+  };
+}
 
-const mockAccessService = vi.hoisted(() => ({
-  ensureMembership: vi.fn(),
-}));
+function createMockAccessService() {
+  return {
+    ensureMembership: vi.fn(),
+  };
+}
 
-const mockBudgetService = vi.hoisted(() => ({
-  upsertPolicy: vi.fn(),
-}));
+function createMockBudgetService() {
+  return {
+    upsertPolicy: vi.fn(),
+  };
+}
 
-const mockHeartbeatService = vi.hoisted(() => ({
-  cancelActiveForCompany: vi.fn(),
-  cancelExecutionScopeWork: vi.fn(),
-  stopRunningForCompany: vi.fn(),
-  invoke: vi.fn(),
-  resumeQueuedRuns: vi.fn(),
-}));
+function createMockHeartbeatService() {
+  return {
+    cancelActiveForCompany: vi.fn(),
+    cancelExecutionScopeWork: vi.fn(),
+    stopRunningForCompany: vi.fn(),
+    invoke: vi.fn(),
+    resumeQueuedRuns: vi.fn(),
+  };
+}
 
-const mockAgentHeartbeatModelService = vi.hoisted(() => ({
-  ensureCompanyHasCooCoordinator: vi.fn(),
-}));
+function createMockAgentHeartbeatModelService() {
+  return {
+    ensureCompanyHasCooCoordinator: vi.fn(),
+  };
+}
 
-const mockCompanyPortabilityService = vi.hoisted(() => ({
-  exportBundle: vi.fn(),
-  previewExport: vi.fn(),
-  previewImport: vi.fn(),
-  importBundle: vi.fn(),
-}));
+function createMockCompanyPortabilityService() {
+  return {
+    exportBundle: vi.fn(),
+    previewExport: vi.fn(),
+    previewImport: vi.fn(),
+    importBundle: vi.fn(),
+  };
+}
 
-const mockFeedbackService = vi.hoisted(() => ({
-  listIssueVotesForUser: vi.fn(),
-  listFeedbackTraces: vi.fn(),
-  getFeedbackTraceById: vi.fn(),
-  saveIssueVote: vi.fn(),
-}));
+function createMockFeedbackService() {
+  return {
+    listIssueVotesForUser: vi.fn(),
+    listFeedbackTraces: vi.fn(),
+    getFeedbackTraceById: vi.fn(),
+    saveIssueVote: vi.fn(),
+  };
+}
 
-const mockExecutiveSummaryService = vi.hoisted(() => ({
-  listKpis: vi.fn(),
-  replaceKpis: vi.fn(),
-  buildExecutiveSummary: vi.fn(),
-  tickDaily: vi.fn(),
-}));
+function createMockExecutiveSummaryService() {
+  return {
+    listKpis: vi.fn(),
+    replaceKpis: vi.fn(),
+    buildExecutiveSummary: vi.fn(),
+    tickDaily: vi.fn(),
+  };
+}
 
-const mockRoadmapEpicService = vi.hoisted(() => ({
-  listPausedEpicIds: vi.fn(),
-  pauseEpic: vi.fn(),
-  resumeEpic: vi.fn(),
-}));
+function createMockRoadmapEpicService() {
+  return {
+    listPausedEpicIds: vi.fn(),
+    pauseEpic: vi.fn(),
+    resumeEpic: vi.fn(),
+  };
+}
+
+let mockCompanyService = vi.hoisted(() => createMockCompanyService());
+let mockAgentService = vi.hoisted(() => createMockAgentService());
+let mockAccessService = vi.hoisted(() => createMockAccessService());
+let mockBudgetService = vi.hoisted(() => createMockBudgetService());
+let mockHeartbeatService = vi.hoisted(() => createMockHeartbeatService());
+let mockAgentHeartbeatModelService = vi.hoisted(() => createMockAgentHeartbeatModelService());
+let mockCompanyPortabilityService = vi.hoisted(() => createMockCompanyPortabilityService());
+let mockFeedbackService = vi.hoisted(() => createMockFeedbackService());
+let mockExecutiveSummaryService = vi.hoisted(() => createMockExecutiveSummaryService());
+let mockRoadmapEpicService = vi.hoisted(() => createMockRoadmapEpicService());
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
@@ -135,40 +166,16 @@ describe("company pause/resume routes", () => {
     ({ companyRoutes: companyRoutesFactory } = await import("../routes/companies.js"));
     ({ errorHandler: errorHandlerMiddleware } = await import("../middleware/index.js"));
     ({ conflict: conflictFactory } = await import("../errors.js"));
-    mockCompanyService.list.mockReset();
-    mockCompanyService.stats.mockReset();
-    mockCompanyService.getById.mockReset();
-    mockCompanyService.create.mockReset();
-    mockCompanyService.update.mockReset();
-    mockCompanyService.archive.mockReset();
-    mockCompanyService.pause.mockReset();
-    mockCompanyService.resume.mockReset();
-    mockCompanyService.remove.mockReset();
-    mockAgentService.getById.mockReset();
-    mockAgentService.list.mockReset();
-    mockAccessService.ensureMembership.mockReset();
-    mockBudgetService.upsertPolicy.mockReset();
-    mockHeartbeatService.cancelActiveForCompany.mockReset();
-    mockHeartbeatService.cancelExecutionScopeWork.mockReset();
-    mockHeartbeatService.stopRunningForCompany.mockReset();
-    mockHeartbeatService.invoke.mockReset();
-    mockHeartbeatService.resumeQueuedRuns.mockReset();
-    mockAgentHeartbeatModelService.ensureCompanyHasCooCoordinator.mockReset();
-    mockCompanyPortabilityService.exportBundle.mockReset();
-    mockCompanyPortabilityService.previewExport.mockReset();
-    mockCompanyPortabilityService.previewImport.mockReset();
-    mockCompanyPortabilityService.importBundle.mockReset();
-    mockFeedbackService.listIssueVotesForUser.mockReset();
-    mockFeedbackService.listFeedbackTraces.mockReset();
-    mockFeedbackService.getFeedbackTraceById.mockReset();
-    mockFeedbackService.saveIssueVote.mockReset();
-    mockExecutiveSummaryService.listKpis.mockReset();
-    mockExecutiveSummaryService.replaceKpis.mockReset();
-    mockExecutiveSummaryService.buildExecutiveSummary.mockReset();
-    mockExecutiveSummaryService.tickDaily.mockReset();
-    mockRoadmapEpicService.listPausedEpicIds.mockReset();
-    mockRoadmapEpicService.pauseEpic.mockReset();
-    mockRoadmapEpicService.resumeEpic.mockReset();
+    mockCompanyService = createMockCompanyService();
+    mockAgentService = createMockAgentService();
+    mockAccessService = createMockAccessService();
+    mockBudgetService = createMockBudgetService();
+    mockHeartbeatService = createMockHeartbeatService();
+    mockAgentHeartbeatModelService = createMockAgentHeartbeatModelService();
+    mockCompanyPortabilityService = createMockCompanyPortabilityService();
+    mockFeedbackService = createMockFeedbackService();
+    mockExecutiveSummaryService = createMockExecutiveSummaryService();
+    mockRoadmapEpicService = createMockRoadmapEpicService();
     mockLogActivity.mockReset();
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockBudgetService.upsertPolicy.mockResolvedValue(undefined);

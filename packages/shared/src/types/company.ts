@@ -1,4 +1,4 @@
-import type { CompanyStatus, ExecutiveSummarySendStatus, PauseReason } from "../constants.js";
+import type { CompanyStatus, ExecutiveSummarySendStatus, PauseReason, RootIssueDeliveryMode } from "../constants.js";
 import type { ReleaseGateQaResolutionSource } from "../release-gate-qa.js";
 
 export interface Company {
@@ -13,6 +13,7 @@ export interface Company {
   roadmapPath: string | null;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
+  defaultRootIssueDeliveryMode?: RootIssueDeliveryMode | null;
   requireBoardApprovalForNewAgents: boolean;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: Date | null;

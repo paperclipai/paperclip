@@ -96,7 +96,7 @@ export function IssueWorkflowPanel({
             onClick={onApplyEngineeringDeliveryWorkflow}
             disabled={isApplyingTemplate}
           >
-            {isApplyingTemplate ? "Applying..." : "Apply engineering workflow"}
+            {isApplyingTemplate ? "Starting..." : "Start engineering delivery"}
           </Button>
         ) : null}
       </div>

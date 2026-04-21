@@ -1,4 +1,4 @@
-import type { PauseReason, ProjectStatus } from "../constants.js";
+import type { PauseReason, ProjectRootIssueDeliveryMode, ProjectStatus } from "../constants.js";
 import type { AgentEnvConfig } from "./secrets.js";
 import type {
   ProjectExecutionWorkspacePolicy,
@@ -67,6 +67,7 @@ export interface Project {
   targetDate: string | null;
   color: string | null;
   env: AgentEnvConfig | null;
+  defaultRootIssueDeliveryMode?: ProjectRootIssueDeliveryMode | null;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;

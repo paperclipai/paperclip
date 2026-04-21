@@ -22,6 +22,8 @@ import {
   issueRelations,
   issues,
 } from "@paperclipai/db";
+import type { ServerAdapterModule } from "../adapters/index.js";
+import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { heartbeatService, resolveOperationsHeartbeatTarget } from "../services/heartbeat.ts";
 import { logger } from "../middleware/logger.js";
 
@@ -234,6 +236,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
   let db!: ReturnType<typeof createDb>;
   let instance: EmbeddedPostgresInstance | null = null;
   let dataDir = "";
+  const registeredAdapterTypes = new Set<string>();
 
   beforeAll(async () => {
     const started = await startTempDatabase();
@@ -244,6 +247,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    for (const adapterType of registeredAdapterTypes) {
+      unregisterServerAdapter(adapterType);
+    }
+    registeredAdapterTypes.clear();
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const activeRuns = await db
         .select({ id: heartbeatRuns.id })
@@ -278,6 +285,13 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   }, 45_000);
+
+  function registerTestAdapter(adapter: ServerAdapterModule) {
+    unregisterServerAdapter(adapter.type);
+    registerServerAdapter(adapter);
+    registeredAdapterTypes.add(adapter.type);
+    return adapter;
+  }
 
   it("does not count queued backlog against the live run limit", async () => {
     const companyId = randomUUID();
@@ -1773,6 +1787,639 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       )),
     ).toHaveLength(1);
   });
+
+  it("wakes in_review QA work with handoff truth when spare concurrency exists", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const qaAgentId = randomUUID();
+    const issueId = randomUUID();
+    const busyRunId = randomUUID();
+    const handoffCommentId = randomUUID();
+    const qaAdapterType = "qa_refill_test";
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      registerTestAdapter({
+        type: qaAdapterType,
+        execute: async () => ({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+        }),
+        testEnvironment: async () => ({
+          adapterType: qaAdapterType,
+          status: "pass",
+          checks: [],
+          testedAt: new Date(0).toISOString(),
+        }),
+        supportsLocalAgentJwt: false,
+      });
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "QA Refill Co",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values([
+        {
+          id: operationsAgentId,
+          companyId,
+          name: "Operations",
+          role: "coo",
+          status: "idle",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {
+            executionBoundary: "orchestrator_only",
+          },
+          permissions: {},
+        },
+        {
+          id: qaAgentId,
+          companyId,
+          name: "QA and Release Engineer",
+          role: "qa",
+          status: "idle",
+          adapterType: qaAdapterType,
+          adapterConfig: {},
+          runtimeConfig: {
+            heartbeat: {
+              maxConcurrentRuns: 2,
+            },
+          },
+          permissions: {},
+        },
+      ]);
+
+      await db.insert(heartbeatRuns).values({
+        id: busyRunId,
+        companyId,
+        agentId: qaAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        startedAt: new Date("2026-04-16T10:00:00.000Z"),
+        contextSnapshot: { issueId: randomUUID() },
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Feature in_review should refill spare QA slots",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: qaAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      await db.insert(issueComments).values({
+        id: handoffCommentId,
+        companyId,
+        issueId,
+        authorAgentId: qaAgentId,
+        body: "[READY FOR QA]\nScoped validation requested.",
+      });
+
+      const run = await heartbeat.wakeup(operationsAgentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "manual_probe",
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(run).not.toBeNull();
+      await waitFor(async () => {
+        const currentRun = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, run!.id))
+          .then((rows) => rows[0] ?? null);
+        return currentRun?.status === "succeeded";
+      }, 20_000);
+
+      await waitFor(async () => {
+        const qaRefillRun = await db
+          .select({
+            id: heartbeatRuns.id,
+            status: heartbeatRuns.status,
+          })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              eq(heartbeatRuns.agentId, qaAgentId),
+            ),
+          )
+          .orderBy(asc(heartbeatRuns.createdAt))
+          .then((rows) => rows.find((row) => row.id !== busyRunId) ?? null);
+        return qaRefillRun?.status === "succeeded";
+      }, 20_000);
+
+      const comments = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId))
+        .orderBy(asc(issueComments.createdAt));
+      const wakeups = await db
+        .select({
+          agentId: agentWakeupRequests.agentId,
+          reason: agentWakeupRequests.reason,
+        })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId))
+        .orderBy(asc(agentWakeupRequests.createdAt));
+
+      expect(comments.some((comment) => comment.body?.includes("[operations-heartbeat-wakeup]"))).toBe(true);
+      expect(
+        wakeups.some((wakeup) => (
+          wakeup.agentId === qaAgentId && wakeup.reason === "operations_idle_assignment_wakeup"
+        )),
+      ).toBe(true);
+      const qaRuns = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, qaAgentId),
+          ),
+        )
+        .orderBy(asc(heartbeatRuns.createdAt));
+      expect(qaRuns.filter((run) => run.id !== busyRunId && run.status === "succeeded")).toHaveLength(1);
+    } finally {
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, busyRunId));
+    }
+  });
+
+  it("retries a skipped in_review QA wake once spare concurrency reopens", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const qaAgentId = randomUUID();
+    const issueId = randomUUID();
+    const handoffCommentId = randomUUID();
+    const priorOpsCommentId = randomUUID();
+    const priorWakeupId = randomUUID();
+    const qaAdapterType = "qa_refill_retry_test";
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    registerTestAdapter({
+      type: qaAdapterType,
+      execute: async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      }),
+      testEnvironment: async () => ({
+        adapterType: qaAdapterType,
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      supportsLocalAgentJwt: false,
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "QA Refill Retry Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: qaAgentId,
+        companyId,
+        name: "QA Runner",
+        role: "qa",
+        status: "idle",
+        adapterType: qaAdapterType,
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            maxConcurrentRuns: 2,
+          },
+        },
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Skipped QA wake should refill once capacity reopens",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: qaAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(issueComments).values([
+      {
+        id: handoffCommentId,
+        companyId,
+        issueId,
+        authorAgentId: qaAgentId,
+        body: "[READY FOR QA]\nScoped validation requested.",
+      },
+      {
+        id: priorOpsCommentId,
+        companyId,
+        issueId,
+        authorAgentId: operationsAgentId,
+        body: "[operations-heartbeat-wakeup] [@QA Runner](agent://test) spare QA slot available. Please resume work on this assigned issue now.",
+      },
+    ]);
+
+    await db.insert(agentWakeupRequests).values({
+      id: priorWakeupId,
+      companyId,
+      agentId: qaAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "heartbeat.live_run_limit_reached",
+      payload: { issueId },
+      status: "skipped",
+      finishedAt: new Date("2026-04-21T18:00:01.000Z"),
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    await waitFor(async () => {
+      const qaRun = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, qaAgentId),
+          ),
+        )
+        .orderBy(asc(heartbeatRuns.createdAt))
+        .then((rows) => rows[0] ?? null);
+      return qaRun?.status === "succeeded";
+    }, 20_000);
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt));
+    const wakeups = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+        status: agentWakeupRequests.status,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId))
+      .orderBy(asc(agentWakeupRequests.createdAt));
+
+    expect(comments.filter((comment) => comment.body?.includes("[operations-heartbeat-wakeup]"))).toHaveLength(2);
+    expect(
+      wakeups.filter((wakeup) => (
+        wakeup.reason === "heartbeat.live_run_limit_reached" && wakeup.status === "skipped"
+      )),
+    ).toHaveLength(1);
+    expect(
+      wakeups.filter((wakeup) => (
+        wakeup.reason === "operations_idle_assignment_wakeup" && wakeup.status === "completed"
+      )),
+    ).toHaveLength(1);
+  }, 20_000);
+
+  it("wakes in_review QA work when completion truth was left behind by a skipped wake", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const qaAgentId = randomUUID();
+    const issueId = randomUUID();
+    const completionCommentId = randomUUID();
+    const priorWakeupId = randomUUID();
+    const qaAdapterType = "qa_refill_completion_test";
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    registerTestAdapter({
+      type: qaAdapterType,
+      execute: async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      }),
+      testEnvironment: async () => ({
+        adapterType: qaAdapterType,
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      supportsLocalAgentJwt: false,
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "QA Completion Refill Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: qaAgentId,
+        companyId,
+        name: "QA Runner",
+        role: "qa",
+        status: "idle",
+        adapterType: qaAdapterType,
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            maxConcurrentRuns: 2,
+          },
+        },
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Completion truth should not leave review work idle",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: qaAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(issueComments).values({
+      id: completionCommentId,
+      companyId,
+      issueId,
+      authorAgentId: qaAgentId,
+      body: "DONE: Validation complete, but the issue still needs follow-up.",
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: priorWakeupId,
+      companyId,
+      agentId: qaAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "heartbeat.live_run_limit_reached",
+      payload: { issueId },
+      status: "skipped",
+      finishedAt: new Date("2026-04-21T18:05:01.000Z"),
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    await waitFor(async () => {
+      const qaRun = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, qaAgentId),
+          ),
+        )
+        .orderBy(asc(heartbeatRuns.createdAt))
+        .then((rows) => rows[0] ?? null);
+      return qaRun?.status === "succeeded";
+    }, 20_000);
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt));
+    const wakeups = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+        status: agentWakeupRequests.status,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId))
+      .orderBy(asc(agentWakeupRequests.createdAt));
+
+    expect(comments.some((comment) => comment.body?.includes("[operations-heartbeat-wakeup]"))).toBe(true);
+    expect(
+      wakeups.some((wakeup) => (
+        wakeup.reason === "operations_idle_assignment_wakeup" && wakeup.status === "completed"
+      )),
+    ).toBe(true);
+  }, 20_000);
+
+  it("wakes in_review QA work from completion truth even without a prior skipped wake", async () => {
+    const companyId = randomUUID();
+    const operationsAgentId = randomUUID();
+    const qaAgentId = randomUUID();
+    const issueId = randomUUID();
+    const completionCommentId = randomUUID();
+    const qaAdapterType = "qa_refill_completion_no_skip_test";
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    registerTestAdapter({
+      type: qaAdapterType,
+      execute: async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      }),
+      testEnvironment: async () => ({
+        adapterType: qaAdapterType,
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      supportsLocalAgentJwt: false,
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "QA Completion No Skip Refill Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: operationsAgentId,
+        companyId,
+        name: "Operations",
+        role: "coo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          executionBoundary: "orchestrator_only",
+        },
+        permissions: {},
+      },
+      {
+        id: qaAgentId,
+        companyId,
+        name: "QA Runner",
+        role: "qa",
+        status: "idle",
+        adapterType: qaAdapterType,
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            maxConcurrentRuns: 2,
+          },
+        },
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Completion truth should keep review work refillable",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: qaAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(issueComments).values({
+      id: completionCommentId,
+      companyId,
+      issueId,
+      authorAgentId: qaAgentId,
+      body: "[QA PASS]\n[RELEASE CONFIRMED]\nVerification complete, but the issue is still open.",
+    });
+
+    const run = await heartbeat.wakeup(operationsAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_probe",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+
+    expect(run).not.toBeNull();
+    await waitFor(async () => {
+      const currentRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      return currentRun?.status === "succeeded";
+    }, 20_000);
+
+    await waitFor(async () => {
+      const qaRun = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, qaAgentId),
+          ),
+        )
+        .orderBy(asc(heartbeatRuns.createdAt))
+        .then((rows) => rows[0] ?? null);
+      return qaRun?.status === "succeeded";
+    }, 20_000);
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt));
+    const wakeups = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+        status: agentWakeupRequests.status,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId))
+      .orderBy(asc(agentWakeupRequests.createdAt));
+
+    expect(comments.some((comment) => comment.body?.includes("[operations-heartbeat-wakeup]"))).toBe(true);
+    expect(
+      wakeups.some((wakeup) => (
+        wakeup.reason === "operations_idle_assignment_wakeup" && wakeup.status === "completed"
+      )),
+    ).toBe(true);
+  }, 20_000);
 
   it("does not wake a stale routine execution issue when a sibling routine issue is already live", async () => {
     const companyId = randomUUID();

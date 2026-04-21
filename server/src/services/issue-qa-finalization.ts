@@ -7,12 +7,15 @@ import type {
   IssueQaGateReasonCode,
   IssueStatus,
 } from "@paperclipai/shared";
-import { buildIssueQaGate } from "./qa-gate.js";
+import {
+  buildIssueQaGate,
+  qaCommentHasQaPassMarker,
+  qaCommentHasReleaseConfirmedMarker,
+  selectLatestRelevantQaComment,
+} from "./qa-gate.js";
 import type { LogActivityInput } from "./activity-log.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 
-const QA_PASS_MARKER_REGEX = /\[QA PASS\]/i;
-const RELEASE_CONFIRMED_MARKER_REGEX = /\[RELEASE CONFIRMED\]/i;
 const QA_MERGE_BLOCKED_MARKER = "[merge-blocked]";
 
 type CommentActor = {
@@ -70,9 +73,9 @@ function ensureQaOwnershipRequirement(
   };
 }
 
-function buildCurrentCommentQaGate(input: {
+function buildQaCommentHistoryGate(input: {
   issue: QaIssueLike;
-  comment: QaCommentLike;
+  comments: QaCommentLike[];
   qaAgentId: string;
 }) {
   const latestDecisionOutcome =
@@ -82,11 +85,11 @@ function buildCurrentCommentQaGate(input: {
   const qaGate = buildIssueQaGate({
     issue: { status: input.issue.status as IssueStatus },
     assigneeRole: "qa",
-    qaComments: [{
-      id: input.comment.id,
-      body: input.comment.body,
-      createdAt: input.comment.createdAt ?? new Date(),
-    }],
+    qaComments: input.comments.map((comment) => ({
+      id: comment.id,
+      body: comment.body,
+      createdAt: comment.createdAt ?? new Date(),
+    })),
     latestDecisionOutcome,
   });
   const ownership = ensureQaOwnershipRequirement(
@@ -123,6 +126,7 @@ export async function finalizeQaValidatedIssueFromComment<TIssue extends QaIssue
       body: string,
       actor: { agentId?: string; userId?: string; runId?: string | null },
     ) => Promise<unknown>;
+    listComments?: (issueId: string) => Promise<QaCommentLike[]>;
   };
   issueMerge: {
     attemptQaPassAutoMerge: (input: {
@@ -152,13 +156,33 @@ export async function finalizeQaValidatedIssueFromComment<TIssue extends QaIssue
   if (!qaResolution.releaseGateQaAgent || input.comment.authorAgentId !== qaResolution.releaseGateQaAgent.id) {
     return { issue: input.issue, mergeStatus: null };
   }
-  if (!QA_PASS_MARKER_REGEX.test(input.comment.body) || !RELEASE_CONFIRMED_MARKER_REGEX.test(input.comment.body)) {
+  const currentCommentHasMarkers =
+    qaCommentHasQaPassMarker(input.comment.body)
+    && qaCommentHasReleaseConfirmedMarker(input.comment.body);
+  if (!currentCommentHasMarkers && !input.actor.runId) {
     return { issue: input.issue, mergeStatus: null };
   }
 
-  const qaGate = buildCurrentCommentQaGate({
+  const historicalComments = input.issues.listComments
+    ? await input.issues.listComments(input.issue.id)
+    : [];
+  const qaComments = [
+    input.comment,
+    ...historicalComments,
+  ]
+    .filter((comment) => comment.authorAgentId === qaResolution.releaseGateQaAgent?.id)
+    .filter((comment, index, comments) => comments.findIndex((candidate) => candidate.id === comment.id) === index);
+  const selectedComment = selectLatestRelevantQaComment(qaComments);
+  if (!selectedComment) {
+    return { issue: input.issue, mergeStatus: null };
+  }
+  if (!qaCommentHasQaPassMarker(selectedComment.body) || !qaCommentHasReleaseConfirmedMarker(selectedComment.body)) {
+    return { issue: input.issue, mergeStatus: null };
+  }
+
+  const qaGate = buildQaCommentHistoryGate({
     issue: input.issue,
-    comment: input.comment,
+    comments: qaComments,
     qaAgentId: qaResolution.releaseGateQaAgent.id,
   });
   if (!qaGate.canShip) {
@@ -204,6 +228,7 @@ export async function finalizeQaValidatedIssueFromComment<TIssue extends QaIssue
         targetBranch: mergeResult.status.targetBranch,
         sourceBranch: mergeResult.status.sourceBranch,
         reason: mergeResult.status.reason,
+        commentId: selectedComment.id,
       },
     });
     return { issue: input.issue, mergeStatus: mergeResult.status };
@@ -229,7 +254,7 @@ export async function finalizeQaValidatedIssueFromComment<TIssue extends QaIssue
     entityId: closedIssue.id,
     details: {
       identifier: closedIssue.identifier,
-      commentId: input.comment.id,
+      commentId: selectedComment.id,
       targetBranch: mergeResult.status?.targetBranch ?? null,
       sourceBranch: mergeResult.status?.sourceBranch ?? null,
       mergedCommit: mergeResult.status?.mergedCommit ?? null,

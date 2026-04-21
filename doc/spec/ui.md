@@ -382,6 +382,7 @@ Clicking an issue opens the detail view. The main content area splits into two z
 
 **Delivery / QA issues:**
 - Delivery-scoped issues show a Smart Review card summarizing QA state.
+- When the board-state panel says `Review QA state`, that CTA should jump to the Smart Review card instead of self-linking back to the issue header.
 - Before an issue enters `in_review`, the primary CTA is `Start QA`.
 - Once an issue is in `in_review`, the primary CTA becomes `QA Ship`.
 - `Start QA` must preserve an existing eligible QA assignee; only auto-route when there is exactly one healthy eligible QA agent, otherwise the UI should surface that the board must pick QA first.

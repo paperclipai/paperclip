@@ -5050,8 +5050,9 @@ export function heartbeatService(db: Db) {
     const assigneeAgentIds = Array.from(
       new Set(openAssignedIssues.map((issue) => issue.assigneeAgentId).filter((id): id is string => Boolean(id))),
     );
+    const wakeIssueId = sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`;
 
-    const [liveRunRows, latestAssigneeRunRows, latestNonOperationsCommentRows, latestOpsCommentRows, issueExecutionRunRows] = await Promise.all([
+    const [liveRunRows, latestAssigneeRunRows, latestNonOperationsCommentRows, latestOpsCommentRows, latestIssueWakeupRows, issueExecutionRunRows] = await Promise.all([
       assigneeAgentIds.length > 0
         ? db
             .select({ agentId: heartbeatRuns.agentId })
@@ -5125,6 +5126,29 @@ export function heartbeatService(db: Db) {
             )
             .orderBy(issueComments.issueId, desc(issueComments.createdAt))
         : Promise.resolve([]),
+      issueIds.length > 0
+        ? db
+            .selectDistinctOn([wakeIssueId], {
+              issueId: wakeIssueId.as("issueId"),
+              agentId: agentWakeupRequests.agentId,
+              status: agentWakeupRequests.status,
+              reason: agentWakeupRequests.reason,
+              requestedAt: agentWakeupRequests.requestedAt,
+            })
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.companyId, companyId),
+                inArray(wakeIssueId, issueIds),
+              ),
+            )
+            .orderBy(
+              wakeIssueId,
+              desc(agentWakeupRequests.requestedAt),
+              desc(agentWakeupRequests.createdAt),
+              desc(agentWakeupRequests.id),
+            )
+        : Promise.resolve([]),
       issueExecutionRunIds.length > 0
         ? db
             .select({
@@ -5160,6 +5184,11 @@ export function heartbeatService(db: Db) {
       ]),
     );
     const latestOpsCommentByIssueId = new Map(latestOpsCommentRows.map((row) => [row.issueId, row]));
+    const latestIssueWakeupByIssueId = new Map(
+      latestIssueWakeupRows
+        .filter((row) => row.issueId)
+        .map((row) => [row.issueId, row] as const),
+    );
     const autoReissueTargetIssueIds = new Set(
       targets
         .filter((target) => target.mode === "cross_agent_recovery" && target.autoReissueEligible)
@@ -5229,22 +5258,28 @@ export function heartbeatService(db: Db) {
       const currentFreeSlots = freeSlotCountByAgentId.get(agentId) ?? 0;
       freeSlotCountByAgentId.set(agentId, Math.max(0, currentFreeSlots - 1));
     };
+    const isWakeableOwnedIssue = (issue: {
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeRole?: string | null;
+    }) => (
+      Boolean(issue.assigneeAgentId) &&
+      (
+        issue.status === "todo" ||
+        issue.status === "backlog" ||
+        (issue.status === "in_review" && isDeliveryScopedAssigneeRole(issue.assigneeRole))
+      )
+    );
     const shouldWakeReadyOwnedIssue = (issue: {
       status: string;
       assigneeAgentId: string | null;
-    }) => (
-      Boolean(issue.assigneeAgentId) &&
-      (issue.status === "todo" || issue.status === "backlog") &&
-      hasFreeSlot(issue.assigneeAgentId)
-    );
+      assigneeRole?: string | null;
+    }) => isWakeableOwnedIssue(issue) && hasFreeSlot(issue.assigneeAgentId);
     const shouldDeferReadyOwnedIssueWake = (issue: {
       status: string;
       assigneeAgentId: string | null;
-    }) => (
-      Boolean(issue.assigneeAgentId) &&
-      (issue.status === "todo" || issue.status === "backlog") &&
-      !hasFreeSlot(issue.assigneeAgentId)
-    );
+      assigneeRole?: string | null;
+    }) => isWakeableOwnedIssue(issue) && !hasFreeSlot(issue.assigneeAgentId);
     const buildRoutingIssueInput = (issue: {
       id: string;
       identifier: string | null;
@@ -5740,9 +5775,24 @@ export function heartbeatService(db: Db) {
         issue.assigneeStatus === "pending_approval";
       if (assigneeUnavailable) return false;
 
-      if (latestStructuredTruthCommentByIssueId.get(issue.id)) return false;
+      const latestStructuredTruthComment = latestStructuredTruthCommentByIssueId.get(issue.id);
+      const latestStructuredTruthType = classifyIssueTruthFromCommentBody(latestStructuredTruthComment?.body);
+      const latestIssueWakeup = latestIssueWakeupByIssueId.get(issue.id);
+      const latestWakeWasSkippedForLiveLimit =
+        latestIssueWakeup?.agentId === assigneeAgentId &&
+        latestIssueWakeup.status === "skipped" &&
+        latestIssueWakeup.reason === "heartbeat.live_run_limit_reached";
+      const allowReviewRefillFromStructuredTruth =
+        issue.status === "in_review" &&
+        isDeliveryScopedAssigneeRole(issue.assigneeRole) &&
+        (
+          latestStructuredTruthType === "handoff" ||
+          latestStructuredTruthType === "completion"
+        );
+      if (latestStructuredTruthComment && !allowReviewRefillFromStructuredTruth) return false;
 
       const latestOpsComment = latestOpsCommentByIssueId.get(issue.id);
+      if (latestWakeWasSkippedForLiveLimit) return true;
       if (!latestOpsComment?.body.includes(OPERATIONS_IDLE_WAKE_MARKER)) return true;
       const latestAssigneeRun = latestRunByAssigneeId.get(assigneeAgentId);
       const latestOpsWakeAtMs = latestOpsComment.createdAt.getTime();

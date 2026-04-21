@@ -2,67 +2,92 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockIssueService = vi.hoisted(() => ({
-  getById: vi.fn(),
-  list: vi.fn(),
-  update: vi.fn(),
-  hasCommentContaining: vi.fn(),
-  assertCheckoutOwner: vi.fn(),
-  listComments: vi.fn(),
-  listAttachments: vi.fn(),
-  getAncestors: vi.fn(),
-  findMentionedProjectIds: vi.fn(),
-  getRelationSummaries: vi.fn(),
-  listWakeableBlockedDependents: vi.fn(),
-  getWakeableParentAfterChildCompletion: vi.fn(),
-  addComment: vi.fn(),
-  findMentionedAgents: vi.fn(),
-}));
+function createMockIssueService() {
+  return {
+    getById: vi.fn(),
+    list: vi.fn(),
+    update: vi.fn(),
+    hasCommentContaining: vi.fn(),
+    assertCheckoutOwner: vi.fn(),
+    listComments: vi.fn(),
+    listAttachments: vi.fn(),
+    getAncestors: vi.fn(),
+    findMentionedProjectIds: vi.fn(),
+    getRelationSummaries: vi.fn(),
+    listWakeableBlockedDependents: vi.fn(),
+    getWakeableParentAfterChildCompletion: vi.fn(),
+    addComment: vi.fn(),
+    findMentionedAgents: vi.fn(),
+  };
+}
 
-const mockAgentService = vi.hoisted(() => ({
-  getById: vi.fn(),
-  list: vi.fn(),
-}));
+function createMockAgentService() {
+  return {
+    getById: vi.fn(),
+    list: vi.fn(),
+  };
+}
 
-const mockCompanyService = vi.hoisted(() => ({
-  getById: vi.fn(),
-}));
+function createMockCompanyService() {
+  return {
+    getById: vi.fn(),
+  };
+}
 
-const mockHeartbeatService = vi.hoisted(() => ({
-  wakeup: vi.fn(async () => undefined),
-  reportRunActivity: vi.fn(async () => undefined),
-  getRun: vi.fn(async () => null),
-  getActiveRunForAgent: vi.fn(async () => null),
-  cancelRun: vi.fn(async () => null),
-}));
+function createMockHeartbeatService() {
+  return {
+    wakeup: vi.fn(async () => undefined),
+    reportRunActivity: vi.fn(async () => undefined),
+    getRun: vi.fn(async () => null),
+    getActiveRunForAgent: vi.fn(async () => null),
+    cancelRun: vi.fn(async () => null),
+  };
+}
 
-const mockExecutionGateService = vi.hoisted(() => ({
-  getExecutionBlock: vi.fn(),
-}));
+function createMockExecutionGateService() {
+  return {
+    getExecutionBlock: vi.fn(),
+  };
+}
 
-const mockIssueMergeService = vi.hoisted(() => ({
-  getIssueMergeStatus: vi.fn(async () => null),
-  attemptQaPassAutoMerge: vi.fn(async () => ({ outcome: "not_applicable" as const, status: null })),
-}));
+function createMockIssueMergeService() {
+  return {
+    getIssueMergeStatus: vi.fn(async () => null),
+    attemptQaPassAutoMerge: vi.fn(async () => ({ outcome: "not_applicable" as const, status: null })),
+  };
+}
 
-const mockIssueWorkflowService = vi.hoisted(() => ({
-  decorateIssue: vi.fn(async (issue: unknown) => issue),
-  evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [] })),
-  applyTemplate: vi.fn(async () => {
-    throw new Error("not implemented in test");
-  }),
-  advanceWorkflowDependents: vi.fn(async () => []),
-  invalidateWorkflowDescendants: vi.fn(async () => ({ invalidatedSelf: null, invalidatedDescendants: [] })),
-  handbackWorkflowLane: vi.fn(async () => null),
-}));
+function createMockIssueWorkflowService() {
+  return {
+    decorateIssue: vi.fn(async (issue: unknown) => issue),
+    evaluateLaneCompletion: vi.fn(async () => ({ canComplete: true, blockingReasons: [] })),
+    applyTemplate: vi.fn(async () => {
+      throw new Error("not implemented in test");
+    }),
+    advanceWorkflowDependents: vi.fn(async () => []),
+    invalidateWorkflowDescendants: vi.fn(async () => ({ invalidatedSelf: null, invalidatedDescendants: [] })),
+    handbackWorkflowLane: vi.fn(async () => null),
+  };
+}
 
+function createMockLogger() {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  };
+}
+
+let mockIssueService = vi.hoisted(() => createMockIssueService());
+let mockAgentService = vi.hoisted(() => createMockAgentService());
+let mockCompanyService = vi.hoisted(() => createMockCompanyService());
+let mockHeartbeatService = vi.hoisted(() => createMockHeartbeatService());
+let mockExecutionGateService = vi.hoisted(() => createMockExecutionGateService());
+let mockIssueMergeService = vi.hoisted(() => createMockIssueMergeService());
+let mockIssueWorkflowService = vi.hoisted(() => createMockIssueWorkflowService());
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
-const mockLogger = vi.hoisted(() => ({
-  debug: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-}));
+const mockLogger = vi.hoisted(() => createMockLogger());
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
@@ -182,6 +207,42 @@ function makeIssue(status: string) {
   };
 }
 
+function makeCompany(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "company-1",
+    name: "PrivateClip",
+    description: null,
+    status: "active",
+    pauseReason: null,
+    pausedAt: null,
+    issuePrefix: "PAP",
+    issueCounter: 1,
+    roadmapPath: null,
+    budgetMonthlyCents: 0,
+    spentMonthlyCents: 0,
+    releaseGateQaAgentId: null,
+    resolvedReleaseGateQaAgentId: null,
+    releaseGateQaResolutionSource: "none",
+    releaseGateQaBlockingReason: null,
+    requireBoardApprovalForNewAgents: false,
+    feedbackDataSharingEnabled: false,
+    feedbackDataSharingConsentAt: null,
+    feedbackDataSharingConsentByUserId: null,
+    feedbackDataSharingTermsVersion: null,
+    dailyExecutiveSummaryEnabled: false,
+    criticalBoardAlertsEmailEnabled: true,
+    dailyExecutiveSummaryLastSentAt: null,
+    dailyExecutiveSummaryLastStatus: null,
+    dailyExecutiveSummaryLastError: null,
+    brandColor: null,
+    logoAssetId: null,
+    logoUrl: null,
+    createdAt: new Date("2026-04-01T00:00:00Z"),
+    updatedAt: new Date("2026-04-01T00:00:00Z"),
+    ...overrides,
+  };
+}
+
 function qaComment(body: string, authorAgentId = "agent-qa") {
   return {
     id: "comment-qa",
@@ -204,38 +265,14 @@ describe("issue QA gate routes", () => {
   }, 60_000);
 
   beforeEach(() => {
-    vi.resetAllMocks();
-    mockIssueService.getById.mockReset();
-    mockIssueService.list.mockReset();
-    mockIssueService.update.mockReset();
-    mockIssueService.hasCommentContaining.mockReset();
-    mockIssueService.assertCheckoutOwner.mockReset();
-    mockIssueService.listComments.mockReset();
-    mockIssueService.listAttachments.mockReset();
-    mockIssueService.getAncestors.mockReset();
-    mockIssueService.findMentionedProjectIds.mockReset();
-    mockIssueService.getRelationSummaries.mockReset();
-    mockIssueService.listWakeableBlockedDependents.mockReset();
-    mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
-    mockIssueService.addComment.mockReset();
-    mockIssueService.findMentionedAgents.mockReset();
-    mockAgentService.getById.mockReset();
-    mockAgentService.list.mockReset();
-    mockCompanyService.getById.mockReset();
-    mockHeartbeatService.wakeup.mockReset();
-    mockHeartbeatService.reportRunActivity.mockReset();
-    mockHeartbeatService.getRun.mockReset();
-    mockHeartbeatService.getActiveRunForAgent.mockReset();
-    mockHeartbeatService.cancelRun.mockReset();
-    mockExecutionGateService.getExecutionBlock.mockReset();
-    mockIssueMergeService.getIssueMergeStatus.mockReset();
-    mockIssueMergeService.attemptQaPassAutoMerge.mockReset();
-    mockIssueWorkflowService.decorateIssue.mockReset();
-    mockIssueWorkflowService.evaluateLaneCompletion.mockReset();
-    mockIssueWorkflowService.applyTemplate.mockReset();
-    mockIssueWorkflowService.advanceWorkflowDependents.mockReset();
-    mockIssueWorkflowService.invalidateWorkflowDescendants.mockReset();
-    mockIssueWorkflowService.handbackWorkflowLane.mockReset();
+    vi.clearAllMocks();
+    mockIssueService = createMockIssueService();
+    mockAgentService = createMockAgentService();
+    mockCompanyService = createMockCompanyService();
+    mockHeartbeatService = createMockHeartbeatService();
+    mockExecutionGateService = createMockExecutionGateService();
+    mockIssueMergeService = createMockIssueMergeService();
+    mockIssueWorkflowService = createMockIssueWorkflowService();
     mockLogActivity.mockReset();
     mockLogger.debug.mockReset();
     mockLogger.info.mockReset();
@@ -264,38 +301,7 @@ describe("issue QA gate routes", () => {
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
-    mockCompanyService.getById.mockResolvedValue({
-      id: "company-1",
-      name: "PrivateClip",
-      description: null,
-      status: "active",
-      pauseReason: null,
-      pausedAt: null,
-      issuePrefix: "PAP",
-      issueCounter: 1,
-      roadmapPath: null,
-      budgetMonthlyCents: 0,
-      spentMonthlyCents: 0,
-      releaseGateQaAgentId: null,
-      resolvedReleaseGateQaAgentId: null,
-      releaseGateQaResolutionSource: "none",
-      releaseGateQaBlockingReason: null,
-      requireBoardApprovalForNewAgents: false,
-      feedbackDataSharingEnabled: false,
-      feedbackDataSharingConsentAt: null,
-      feedbackDataSharingConsentByUserId: null,
-      feedbackDataSharingTermsVersion: null,
-      dailyExecutiveSummaryEnabled: false,
-      criticalBoardAlertsEmailEnabled: true,
-      dailyExecutiveSummaryLastSentAt: null,
-      dailyExecutiveSummaryLastStatus: null,
-      dailyExecutiveSummaryLastError: null,
-      brandColor: null,
-      logoAssetId: null,
-      logoUrl: null,
-      createdAt: new Date("2026-04-01T00:00:00Z"),
-      updatedAt: new Date("2026-04-01T00:00:00Z"),
-    });
+    mockCompanyService.getById.mockResolvedValue(makeCompany());
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
@@ -329,7 +335,7 @@ describe("issue QA gate routes", () => {
     // hooks after sending the response. Give those tasks time to settle before
     // the next case resets shared mocks, or later tests can observe leaked
     // background work from the previous request.
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await new Promise((resolve) => setTimeout(resolve, 2000));
   });
 
   it("rejects delivery issue done transition when current status is not in_review", async () => {
@@ -438,6 +444,28 @@ describe("issue QA gate routes", () => {
     expect(res.status).toBe(422);
     expect(res.body).toMatchObject({
       reasonCode: "qa_gate_failing_review",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects delivery issue done transition when the latest QA verdict uses TC:na", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("in_review"),
+      assigneeAgentId: "agent-qa",
+    });
+    mockIssueService.listComments.mockResolvedValue([
+      qaComment(
+        "[CQ:pass] [EH:pass] [TC:na] [CM:pass] [DOC:na]\n[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]\n[QA PASS]\n[RELEASE CONFIRMED]",
+      ),
+    ]);
+
+    const res = await request(createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      reasonCode: "qa_gate_missing_test_coverage_verdict",
     });
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
@@ -778,12 +806,81 @@ describe("issue QA gate routes", () => {
     );
   });
 
+  it("allows delivery issue done transition when the canonical QA verdict uses a bold summary heading and equality verification tokens", async () => {
+    const existing = {
+      ...makeIssue("in_review"),
+      assigneeAgentId: QA_RELEASE_AGENT_ID,
+    };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockCompanyService.getById.mockResolvedValue(
+      makeCompany({
+        releaseGateQaAgentId: QA_RELEASE_AGENT_ID,
+        resolvedReleaseGateQaAgentId: QA_RELEASE_AGENT_ID,
+        releaseGateQaResolutionSource: "configured",
+      }),
+    );
+    mockIssueService.listComments.mockResolvedValue([
+      qaComment(
+        [
+          "[QA PASS]",
+          "[RELEASE CONFIRMED]",
+          "",
+          "**Smart Review Summary**",
+          "Root cause: the QA parser only recognized bracketed verification tokens.",
+          "Fix: accept equality tokens without loosening prose-only verification.",
+          "Files: server/src/services/qa-gate.ts",
+          "",
+          "TYPECHECK=pass",
+          "TESTS=pass",
+          "BUILD=pass",
+          "SMOKE/NA=pass",
+        ].join("\n"),
+        QA_RELEASE_AGENT_ID,
+      ),
+    ]);
+    mockIssueService.update.mockResolvedValue({
+      ...existing,
+      status: "done",
+      completedAt: new Date("2026-04-10T11:00:00Z"),
+    });
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === "agent-engineer") return { id, companyId: "company-1", role: "engineer", name: "Eng" };
+      if (id === QA_RELEASE_AGENT_ID) {
+        return { id, companyId: "company-1", role: "qa", name: "QA and Release Engineer" };
+      }
+      if (id === QA_RUNNER_AGENT_ID) return { id, companyId: "company-1", role: "qa", name: "QA Runner" };
+      return null;
+    });
+    mockAgentService.list.mockResolvedValue([
+      { id: "agent-engineer", companyId: "company-1", role: "engineer", name: "Eng", status: "idle" },
+      { id: QA_RELEASE_AGENT_ID, companyId: "company-1", role: "qa", name: "QA and Release Engineer", status: "idle" },
+      { id: QA_RUNNER_AGENT_ID, companyId: "company-1", role: "qa", name: "QA Runner", status: "idle" },
+    ]);
+
+    const res = await request(createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "done" }),
+    );
+  });
+
   it("rejects delivery issue done transition when another QA agent is assigned but the canonical QA owner exists", async () => {
     const existing = {
       ...makeIssue("in_review"),
       assigneeAgentId: QA_RUNNER_AGENT_ID,
     };
     mockIssueService.getById.mockResolvedValue(existing);
+    mockCompanyService.getById.mockResolvedValue(
+      makeCompany({
+        releaseGateQaAgentId: QA_RELEASE_AGENT_ID,
+        resolvedReleaseGateQaAgentId: QA_RELEASE_AGENT_ID,
+        releaseGateQaResolutionSource: "configured",
+      }),
+    );
     mockIssueService.listComments.mockResolvedValue([
       qaComment(
         "[CQ:pass] [EH:pass] [TC:pass] [CM:pass] [DOC:pass]\n[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]\n[QA PASS]\n[RELEASE CONFIRMED]",
@@ -980,6 +1077,13 @@ describe("issue QA gate routes", () => {
   it("rejects in_review transition when another QA agent is requested but the canonical QA owner exists", async () => {
     const existing = makeIssue("in_progress");
     mockIssueService.getById.mockResolvedValue(existing);
+    mockCompanyService.getById.mockResolvedValue(
+      makeCompany({
+        releaseGateQaAgentId: QA_RELEASE_AGENT_ID,
+        resolvedReleaseGateQaAgentId: QA_RELEASE_AGENT_ID,
+        releaseGateQaResolutionSource: "configured",
+      }),
+    );
     mockAgentService.getById.mockImplementation(async (id: string) => {
       if (id === "agent-engineer") return { id, companyId: "company-1", role: "engineer", name: "Eng" };
       if (id === QA_RELEASE_AGENT_ID) {
@@ -1025,6 +1129,91 @@ describe("issue QA gate routes", () => {
       reasonCode: "qa_gate_requires_qa_assignee",
     });
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not reuse a stale cached role for an assignee across requests", async () => {
+    const reassignedAgentId = "22222222-2222-4222-8222-222222222222";
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      name: "PrivateClip",
+      description: null,
+      status: "active",
+      pauseReason: null,
+      pausedAt: null,
+      issuePrefix: "PAP",
+      issueCounter: 1,
+      roadmapPath: null,
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      releaseGateQaAgentId: reassignedAgentId,
+      resolvedReleaseGateQaAgentId: reassignedAgentId,
+      releaseGateQaResolutionSource: "configured",
+      releaseGateQaBlockingReason: null,
+      requireBoardApprovalForNewAgents: false,
+      feedbackDataSharingEnabled: false,
+      feedbackDataSharingConsentAt: null,
+      feedbackDataSharingConsentByUserId: null,
+      feedbackDataSharingTermsVersion: null,
+      dailyExecutiveSummaryEnabled: false,
+      criticalBoardAlertsEmailEnabled: true,
+      dailyExecutiveSummaryLastSentAt: null,
+      dailyExecutiveSummaryLastStatus: null,
+      dailyExecutiveSummaryLastError: null,
+      brandColor: null,
+      logoAssetId: null,
+      logoUrl: null,
+      createdAt: new Date("2026-04-01T00:00:00Z"),
+      updatedAt: new Date("2026-04-01T00:00:00Z"),
+    });
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockIssueService.update.mockResolvedValue({
+      ...makeIssue("in_progress"),
+      status: "in_review",
+      assigneeAgentId: reassignedAgentId,
+      assigneeUserId: null,
+    });
+    mockAgentService.list.mockResolvedValue([
+      { id: "agent-engineer", companyId: "company-1", role: "engineer", name: "Eng", status: "idle" },
+      { id: reassignedAgentId, companyId: "company-1", role: "qa", name: "QA Owner", status: "idle" },
+    ]);
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === reassignedAgentId) {
+        return { id, companyId: "company-1", role: "qa", name: "QA Owner" };
+      }
+      if (id === "agent-engineer") return { id, companyId: "company-1", role: "engineer", name: "Eng" };
+      if (id === "agent-qa") return { id, companyId: "company-1", role: "qa", name: "QA" };
+      return null;
+    });
+
+    const firstRes = await request(createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "in_review", assigneeAgentId: reassignedAgentId });
+
+    expect(firstRes.status).toBe(200);
+
+    mockIssueService.update.mockReset();
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockAgentService.list.mockResolvedValue([
+      { id: "agent-engineer", companyId: "company-1", role: "engineer", name: "Eng", status: "idle" },
+      { id: reassignedAgentId, companyId: "company-1", role: "engineer", name: "Eng", status: "idle" },
+    ]);
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === reassignedAgentId) {
+        return { id, companyId: "company-1", role: "engineer", name: "Eng" };
+      }
+      if (id === "agent-engineer") return { id, companyId: "company-1", role: "engineer", name: "Eng" };
+      if (id === "agent-qa") return { id, companyId: "company-1", role: "qa", name: "QA" };
+      return null;
+    });
+
+    const secondRes = await request(createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "in_review", assigneeAgentId: reassignedAgentId });
+
+    expect(secondRes.status).toBe(422);
+    expect(secondRes.body).toMatchObject({
+      reasonCode: "qa_gate_requires_qa_assignee",
+    });
   });
 
   it("supports board-only forceDone override with overrideReason", async () => {
@@ -2303,11 +2492,22 @@ describe("issue QA gate routes", () => {
     );
   });
 
-  it("rejects a canonical QA verdict comment that uses prose Smart Review output instead of the required token lines", async () => {
+  it("rejects a ship-marker QA verdict comment that only uses structured prose Smart Review output", async () => {
     const existing = { ...makeIssue("in_review"), assigneeAgentId: QA_RELEASE_AGENT_ID };
     mockIssueService.getById.mockResolvedValue(existing);
+    const verdictBody = [
+      "[QA PASS]",
+      "[RELEASE CONFIRMED]",
+      "",
+      "Smart Review Summary",
+      "Root cause: cart mode label keys were nested under the wrong locale path.",
+      "Fix: moved the keys under cart.modeStatus and verified the component wiring.",
+      "Tests: 12/12 passing in cart mode coverage.",
+      "Files: app/assets/js/pages/cart/page.tsx, app/assets/js/locales/es.json",
+      "Verification: build verified and release readiness confirmed.",
+    ].join("\n");
     mockIssueService.addComment.mockResolvedValue({
-      ...qaComment("[QA PASS]\n[RELEASE CONFIRMED]", QA_RELEASE_AGENT_ID),
+      ...qaComment(verdictBody, QA_RELEASE_AGENT_ID),
       createdByRunId: null,
     });
     mockAgentService.getById.mockImplementation(async (id: string) => {
@@ -2333,22 +2533,63 @@ describe("issue QA gate routes", () => {
     }))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({
-        body: [
-          "[QA PASS][RELEASE CONFIRMED]",
-          "",
-          "Smart Review Summary",
-          "Category\tStatus",
-          "Code Quality\tPASS — fix confirmed",
-          "Error Handling\tPASS — no syntax errors",
-          "Test Coverage\tN/A — P0 hotfix",
-          "Docs Impact\tNone",
-          "Overall\tPASS — /cart route unblocked",
-        ].join("\n"),
+        body: verdictBody,
       });
 
     expect(res.status).toBe(422);
     expect(res.body).toMatchObject({
       reasonCode: "qa_gate_missing_qa_summary",
+    });
+    expect(mockIssueMergeService.attemptQaPassAutoMerge).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects ship-marker QA verdict comments that use equality verification tokens instead of the canonical token line", async () => {
+    const existing = { ...makeIssue("in_review"), assigneeAgentId: QA_RELEASE_AGENT_ID };
+    mockIssueService.getById.mockResolvedValue(existing);
+    const verdictBody = [
+      "[CQ:pass] [EH:pass] [TC:pass] [CM:pass] [DOC:pass]",
+      "TYPECHECK=pass",
+      "TESTS=pass",
+      "BUILD=pass",
+      "SMOKE/NA=pass",
+      "[QA PASS]",
+      "[RELEASE CONFIRMED]",
+    ].join("\n");
+    mockIssueService.addComment.mockResolvedValue({
+      ...qaComment(verdictBody, QA_RELEASE_AGENT_ID),
+      createdByRunId: null,
+    });
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === QA_RELEASE_AGENT_ID) {
+        return { id, companyId: "company-1", role: "qa", name: "QA and Release Engineer" };
+      }
+      if (id === QA_RUNNER_AGENT_ID) return { id, companyId: "company-1", role: "qa", name: "QA Runner" };
+      if (id === "agent-engineer") return { id, companyId: "company-1", role: "engineer", name: "Eng" };
+      return null;
+    });
+    mockAgentService.list.mockResolvedValue([
+      { id: "agent-engineer", companyId: "company-1", role: "engineer", name: "Eng", status: "idle" },
+      { id: QA_RELEASE_AGENT_ID, companyId: "company-1", role: "qa", name: "QA and Release Engineer", status: "idle" },
+      { id: QA_RUNNER_AGENT_ID, companyId: "company-1", role: "qa", name: "QA Runner", status: "idle" },
+    ]);
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: QA_RELEASE_AGENT_ID,
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: verdictBody,
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      reasonCode: "qa_gate_missing_verification",
     });
     expect(mockIssueMergeService.attemptQaPassAutoMerge).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
@@ -2395,6 +2636,91 @@ describe("issue QA gate routes", () => {
 
     expect(res.status).toBe(422);
     expect(res.body.error).toContain("authorized release-gate QA agent");
+    expect(mockIssueMergeService.attemptQaPassAutoMerge).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects ship-marker verdict comments when Smart Review uses TC:na even if DOC:na is present", async () => {
+    const existing = { ...makeIssue("in_review"), assigneeAgentId: QA_RELEASE_AGENT_ID };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === QA_RELEASE_AGENT_ID) {
+        return { id, companyId: "company-1", role: "qa", name: "QA and Release Engineer" };
+      }
+      if (id === "agent-engineer") return { id, companyId: "company-1", role: "engineer", name: "Eng" };
+      return null;
+    });
+    mockAgentService.list.mockResolvedValue([
+      { id: "agent-engineer", companyId: "company-1", role: "engineer", name: "Eng", status: "idle" },
+      { id: QA_RELEASE_AGENT_ID, companyId: "company-1", role: "qa", name: "QA and Release Engineer", status: "idle" },
+    ]);
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: QA_RELEASE_AGENT_ID,
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: [
+          "[CQ:pass] [EH:pass] [TC:na] [CM:pass] [DOC:na]",
+          "[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]",
+          "[QA PASS]",
+          "[RELEASE CONFIRMED]",
+        ].join("\n"),
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      reasonCode: "qa_gate_missing_test_coverage_verdict",
+    });
+    expect(mockIssueMergeService.attemptQaPassAutoMerge).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects phrase-only QA verdict comments that omit the explicit [QA PASS] marker", async () => {
+    const existing = { ...makeIssue("in_review"), assigneeAgentId: QA_RELEASE_AGENT_ID };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === QA_RELEASE_AGENT_ID) {
+        return { id, companyId: "company-1", role: "qa", name: "QA and Release Engineer" };
+      }
+      if (id === "agent-engineer") return { id, companyId: "company-1", role: "engineer", name: "Eng" };
+      return null;
+    });
+    mockAgentService.list.mockResolvedValue([
+      { id: "agent-engineer", companyId: "company-1", role: "engineer", name: "Eng", status: "idle" },
+      { id: QA_RELEASE_AGENT_ID, companyId: "company-1", role: "qa", name: "QA and Release Engineer", status: "idle" },
+    ]);
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: QA_RELEASE_AGENT_ID,
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: [
+          "Smart Review Summary",
+          "Root cause: cart mode label keys were nested under the wrong locale path.",
+          "Fix: moved the keys under cart.modeStatus and verified the component wiring.",
+          "[CQ:pass] [EH:pass] [TC:pass] [CM:pass] [DOC:na]",
+          "[TYPECHECK:pass] [TESTS:pass] [BUILD:pass] [SMOKE:pass]",
+          "Verification: build verified and release readiness confirmed.",
+          "Final verdict: QA PASS.",
+        ].join("\n"),
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      reasonCode: "qa_gate_missing_qa_pass",
+    });
     expect(mockIssueMergeService.attemptQaPassAutoMerge).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();

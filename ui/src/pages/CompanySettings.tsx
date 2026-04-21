@@ -86,6 +86,7 @@ export function CompanySettings() {
   const [roadmapPath, setRoadmapPath] = useState("");
   const [brandColor, setBrandColor] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
+  const [defaultRootIssueDeliveryMode, setDefaultRootIssueDeliveryMode] = useState("engineering");
   const [releaseGateQaAgentId, setReleaseGateQaAgentId] = useState("__auto__");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
   const snippetCopyTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -98,6 +99,7 @@ export function CompanySettings() {
     setRoadmapPath(selectedCompany.roadmapPath ?? "");
     setBrandColor(selectedCompany.brandColor ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
+    setDefaultRootIssueDeliveryMode(selectedCompany.defaultRootIssueDeliveryMode ?? "engineering");
     setReleaseGateQaAgentId(selectedCompany.releaseGateQaAgentId ?? "__auto__");
   }, [selectedCompany]);
 
@@ -116,6 +118,9 @@ export function CompanySettings() {
   const releaseGateQaDirty =
     !!selectedCompany
     && releaseGateQaAgentId !== (selectedCompany.releaseGateQaAgentId ?? "__auto__");
+  const deliveryModeDirty =
+    !!selectedCompany
+    && defaultRootIssueDeliveryMode !== (selectedCompany.defaultRootIssueDeliveryMode ?? "engineering");
 
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId ?? ""),
@@ -154,6 +159,16 @@ export function CompanySettings() {
     mutationFn: (nextAgentId: string | null) =>
       companiesApi.update(selectedCompanyId!, {
         releaseGateQaAgentId: nextAgentId,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
+  });
+
+  const deliveryModeMutation = useMutation({
+    mutationFn: (nextMode: "simple" | "engineering") =>
+      companiesApi.update(selectedCompanyId!, {
+        defaultRootIssueDeliveryMode: nextMode,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -547,6 +562,51 @@ export function CompanySettings() {
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
           />
+        </div>
+      </div>
+
+      <div className="space-y-4" data-testid="company-settings-delivery-mode-section">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Delivery
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <p className="text-xs text-muted-foreground">
+            Choose how new root issues behave by default. Engineering mode creates the specialist delivery lanes automatically; simple mode creates a plain issue.
+          </p>
+          <Field
+            label="Default delivery mode"
+            hint="Projects can inherit this default or override it with their own delivery mode."
+          >
+            <select
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              value={defaultRootIssueDeliveryMode}
+              onChange={(event) => setDefaultRootIssueDeliveryMode(event.target.value)}
+              disabled={deliveryModeMutation.isPending}
+              data-testid="company-settings-delivery-mode-select"
+            >
+              <option value="engineering">Engineering delivery</option>
+              <option value="simple">Simple issue</option>
+            </select>
+          </Field>
+          {deliveryModeDirty ? (
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                onClick={() => deliveryModeMutation.mutate(defaultRootIssueDeliveryMode as "simple" | "engineering")}
+                disabled={deliveryModeMutation.isPending}
+                data-testid="company-settings-delivery-mode-save"
+              >
+                {deliveryModeMutation.isPending ? "Saving..." : "Save delivery mode"}
+              </Button>
+              {deliveryModeMutation.isError ? (
+                <span className="text-xs text-destructive">
+                  {deliveryModeMutation.error instanceof Error
+                    ? deliveryModeMutation.error.message
+                    : "Failed to save delivery mode"}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
 

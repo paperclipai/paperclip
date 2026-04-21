@@ -12,6 +12,7 @@ export const companies = pgTable(
     issuePrefix: text("issue_prefix").notNull().default("PAP"),
     issueCounter: integer("issue_counter").notNull().default(0),
     roadmapPath: text("roadmap_path"),
+    defaultRootIssueDeliveryMode: text("default_root_issue_delivery_mode").notNull().default("engineering"),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")

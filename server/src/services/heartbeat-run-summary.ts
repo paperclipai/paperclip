@@ -13,6 +13,42 @@ function readCommentText(value: unknown) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+const TRANSCRIPT_NOISE_PATTERNS = [
+  /(^|\n)\s*↻\s*Resumed session\b/i,
+  /\bDANGEROUS COMMAND\b/i,
+  /(^|\n)\s*Choice \[[^\]]+\]:/i,
+  /(^|\n)\s*╭─\s*⚕ Hermes\b/i,
+] as const;
+
+const TRANSCRIPT_VERDICT_ANCHORS = [
+  /(^|\n)\s*DONE:/i,
+  /(^|\n)\s*(?:#+\s*)?Smart Review Summary\b/i,
+  /(^|\n)\s*(?:#+\s*)?Summary\b/i,
+  /(^|\n)\s*(?:#+\s*)?Resolution Summary\b/i,
+  /(^|\n)\s*Root cause:/i,
+  /(^|\n)\s*\[QA PASS\]/i,
+  /(^|\n)\s*\[RELEASE CONFIRMED\]/i,
+] as const;
+
+function looksLikeTranscriptNoise(value: string) {
+  return TRANSCRIPT_NOISE_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+function extractStructuredCommentTail(value: string) {
+  if (!looksLikeTranscriptNoise(value)) return value;
+
+  const anchorIndexes = TRANSCRIPT_VERDICT_ANCHORS
+    .map((pattern) => value.search(pattern))
+    .filter((index) => index >= 0);
+  if (anchorIndexes.length === 0) {
+    return null;
+  }
+
+  const earliestAnchor = Math.min(...anchorIndexes);
+  const tail = value.slice(earliestAnchor).trim();
+  return tail.length > 0 ? tail : null;
+}
+
 function cleanIssueCommentText(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const filtered = value
@@ -27,7 +63,10 @@ function cleanIssueCommentText(value: unknown): string | null {
       );
     })
     .join("\n");
-  return readCommentText(filtered);
+  const normalized = readCommentText(filtered);
+  if (!normalized) return null;
+  const extracted = extractStructuredCommentTail(normalized);
+  return extracted ? readCommentText(extracted) : null;
 }
 
 function stripTrailingSessionIdLine(value: string) {

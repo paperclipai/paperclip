@@ -1,6 +1,8 @@
 import type { Issue, IssueBoardState } from "@paperclipai/shared";
 import { createIssueDetailPath } from "./issueDetailBreadcrumb";
 
+export const SMART_REVIEW_SECTION_ID = "smart-review";
+
 type Tone = {
   panelClassName: string;
   eyebrow: string;
@@ -70,6 +72,9 @@ export function describeIssueBoardState(issue: Issue): string | null {
     case "waiting":
       switch (boardState.reasonCode) {
         case "review":
+          if (issue.qaGate?.isDeliveryScoped) {
+            return "QA is the next gate on this issue. Jump to Smart Review to inspect the verdict and any missing release checks.";
+          }
           return "Review is the next gate on this issue. Open the issue state to see the latest QA or review context.";
         case "board_decision":
           return "A board decision is the next unblocker for this issue.";
@@ -99,6 +104,9 @@ export function resolveIssueBoardStateActionHref(issue: Issue): string | null {
   }
   if (action.targetId !== issue.id) {
     return createIssueDetailPath(action.targetId);
+  }
+  if (issue.boardState?.reasonCode === "review" && issue.qaGate?.isDeliveryScoped) {
+    return `${createIssueDetailPath(issue.identifier ?? action.targetId)}#${SMART_REVIEW_SECTION_ID}`;
   }
   return createIssueDetailPath(issue.identifier ?? action.targetId);
 }

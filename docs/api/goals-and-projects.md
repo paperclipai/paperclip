@@ -49,6 +49,8 @@ Valid status values: `planned`, `active`, `achieved`, `cancelled`.
 
 Projects group related issues toward a deliverable. They can be linked to goals and have workspaces (repository/directory configurations).
 
+Projects also control root-issue delivery defaults. Each project can inherit the company default or override it with `engineering` or `simple`.
+
 ### List Projects
 
 ```
@@ -72,6 +74,7 @@ POST /api/companies/{companyId}/projects
   "description": "End-to-end authentication",
   "goalIds": ["{goalId}"],
   "status": "planned",
+  "defaultRootIssueDeliveryMode": "inherit",
   "workspace": {
     "name": "auth-repo",
     "cwd": "/path/to/workspace",
@@ -93,7 +96,8 @@ Notes:
 ```
 PATCH /api/projects/{projectId}
 {
-  "status": "in_progress"
+  "status": "in_progress",
+  "defaultRootIssueDeliveryMode": "engineering"
 }
 ```
 

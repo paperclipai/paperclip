@@ -21,6 +21,7 @@ const companyState = vi.hoisted(() => ({
       status: "active",
       brandColor: "#123456",
       issuePrefix: "PAP",
+      defaultRootIssueDeliveryMode: "engineering",
     },
   ],
   selectedCompanyId: "company-1",
@@ -30,6 +31,7 @@ const companyState = vi.hoisted(() => ({
     status: "active",
     brandColor: "#123456",
     issuePrefix: "PAP",
+    defaultRootIssueDeliveryMode: "engineering",
   },
 }));
 
@@ -569,7 +571,7 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  it("submits the engineering workflow template for root issues when selected", async () => {
+  it("does not render a workflow toggle in the root issue composer", async () => {
     dialogState.newIssueDefaults = {
       title: "Workflow root issue",
     };
@@ -577,81 +579,19 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const workflowToggle = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("No workflow"));
-    expect(workflowToggle).toBeTruthy();
-
-    await act(async () => {
-      workflowToggle!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await waitForCondition(() =>
-      Array.from(container.querySelectorAll("button"))
-        .some((button) => button.textContent?.includes("Engineering workflow") ?? false),
-    );
-
-    const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Create Issue"));
-    expect(submitButton).toBeTruthy();
-
-    await act(async () => {
-      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flush();
-
-    expect(mockIssuesApi.create).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({
-        title: "Workflow root issue",
-        workflowTemplateKey: "engineering_delivery_v1",
-      }),
-    );
+    expect(container.textContent).not.toContain("No workflow");
+    expect(container.textContent).not.toContain("Engineering workflow");
 
     act(() => root.unmount());
   }, 15_000);
 
-  it("preserves a selected workflow template when projects finish loading afterwards", async () => {
-    let resolveProjects: ((projects: Array<Record<string, unknown>>) => void) | null = null;
-    mockProjectsApi.list.mockReturnValue(
-      new Promise<Array<Record<string, unknown>>>((resolve) => {
-        resolveProjects = resolve;
-      }),
-    );
+  it("submits root issues without explicit workflow template metadata", async () => {
     dialogState.newIssueDefaults = {
       title: "Workflow root issue",
     };
 
     const { root } = renderDialog(container);
     await flush();
-
-    const workflowToggle = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("No workflow"));
-    expect(workflowToggle).toBeTruthy();
-
-    await act(async () => {
-      workflowToggle!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await waitForCondition(() =>
-      Array.from(container.querySelectorAll("button"))
-        .some((button) => button.textContent?.includes("Engineering workflow") ?? false),
-    );
-
-    await act(async () => {
-      resolveProjects?.([
-        {
-          id: "project-1",
-          name: "Alpha",
-          description: null,
-          archivedAt: null,
-          color: "#445566",
-        },
-      ]);
-      await flush();
-    });
-
-    await waitForCondition(() =>
-      Array.from(container.querySelectorAll("button"))
-        .some((button) => button.textContent?.includes("Engineering workflow") ?? false),
-    );
 
     const submitButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Create Issue"));
@@ -662,13 +602,14 @@ describe("NewIssueDialog", () => {
     });
     await flush();
 
-    expect(mockIssuesApi.create).toHaveBeenCalledWith(
-      "company-1",
+    const lastCall = mockIssuesApi.create.mock.calls.at(-1);
+    expect(lastCall?.[0]).toBe("company-1");
+    expect(lastCall?.[1]).toEqual(
       expect.objectContaining({
         title: "Workflow root issue",
-        workflowTemplateKey: "engineering_delivery_v1",
       }),
     );
+    expect(lastCall?.[1]).not.toHaveProperty("workflowTemplateKey");
 
     act(() => root.unmount());
   }, 15_000);

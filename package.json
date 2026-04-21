@@ -20,6 +20,7 @@
     "branch:audit": "pnpm --filter @paperclipai/server exec tsx ../scripts/branch-audit.ts",
     "runtime-integrity:reconcile": "pnpm --filter @paperclipai/server exec tsx scripts/reconcile-heartbeat-runtime-state.ts",
     "workflow-integrity:reconcile": "pnpm --filter @paperclipai/server exec tsx scripts/reconcile-workflow-integrity.ts",
+    "qa-gate:reconcile": "pnpm --filter @paperclipai/server exec tsx scripts/reconcile-qa-gate-stuck-issues.ts",
     "routine-execution:reconcile": "pnpm --filter @paperclipai/server exec tsx scripts/reconcile-routine-execution-state.ts",
     "execution-workspaces:dedupe-shared": "pnpm --filter @paperclipai/server exec tsx scripts/dedupe-shared-execution-workspaces.ts",
     "agents:migrate-operations-to-coo": "tsx scripts/migrate-operations-role-to-coo.ts",

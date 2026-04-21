@@ -107,6 +107,51 @@ describe("buildHeartbeatRunIssueComment", () => {
   it("returns null when there is no usable final text", () => {
     expect(buildHeartbeatRunIssueComment({ costUsd: 1.2 })).toBeNull();
   });
+
+  it("returns null for transcript-only resumed-session chatter", () => {
+    const comment = buildHeartbeatRunIssueComment({
+      result: [
+        "↻ Resumed session 20260421_000731_c4b4df (1 user message, 58 total messages)",
+        "",
+        "╭─ ⚕ Hermes ───────────────────────────────────────────────────────────────────╮",
+        "Let me inspect the current issue state before posting the final verdict.",
+        "╰──────────────────────────────────────────────────────────────────────────────╯",
+        "",
+        "⚠️  DANGEROUS COMMAND: Security scan — [HIGH] Pipe to interpreter",
+        "Choice [o/s/D]:       ✗ Denied",
+      ].join("\n"),
+    });
+
+    expect(comment).toBeNull();
+  });
+
+  it("extracts the final verdict tail from transcript-heavy run output", () => {
+    const comment = buildHeartbeatRunIssueComment({
+      result: [
+        "↻ Resumed session 20260421_000731_c4b4df (1 user message, 58 total messages)",
+        "",
+        "╭─ ⚕ Hermes ───────────────────────────────────────────────────────────────────╮",
+        "Let me inspect the current issue state before posting the final verdict.",
+        "╰──────────────────────────────────────────────────────────────────────────────╯",
+        "",
+        "Smart Review Summary",
+        "Root cause: locale key mismatch under cart.modeStatus.",
+        "Fix: moved the keys into the cart namespace.",
+        "Tests: 12/12 passing.",
+        "[QA PASS]",
+        "[RELEASE CONFIRMED]",
+      ].join("\n"),
+    });
+
+    expect(comment).toBe([
+      "Smart Review Summary",
+      "Root cause: locale key mismatch under cart.modeStatus.",
+      "Fix: moved the keys into the cart namespace.",
+      "Tests: 12/12 passing.",
+      "[QA PASS]",
+      "[RELEASE CONFIRMED]",
+    ].join("\n"));
+  });
 });
 
 describe("normalizeRunLinkedIssueCommentBody", () => {

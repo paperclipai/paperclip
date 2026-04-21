@@ -11,10 +11,49 @@ import { isLikelyTechnicalIssueText } from "./issue-routing-heuristics.js";
 
 const DELIVERY_SCOPED_ASSIGNEE_ROLES = new Set(["engineer", "qa", "devops", "cto"]);
 const QA_SUMMARY_TOKEN_REGEX = /\[(CQ|EH|TC|CM|DOC)\s*:\s*(pass|warn|fail|na)\]/gi;
-const QA_VERIFICATION_TOKEN_REGEX = /\[(TYPECHECK|TESTS|BUILD|SMOKE)\s*:\s*(pass|warn|fail|na)\]/gi;
-const QA_PASS_REGEX = /\[QA PASS\]/i;
-const RELEASE_CONFIRMED_REGEX = /\[RELEASE CONFIRMED\]/i;
+const QA_CANONICAL_VERIFICATION_TOKEN_REGEX =
+  /\[(TYPECHECK|TESTS|BUILD|SMOKE)\s*:\s*(pass|warn|fail|na)\]/gi;
+const QA_TOLERANT_VERIFICATION_TOKEN_REGEX =
+  /(?:^|[\s[])(TYPECHECK|TESTS|BUILD|SMOKE(?:\/NA)?)\s*(?::|=)\s*(pass|warn|fail|na)(?=\]|\s|$)\]?/gim;
+const QA_PASS_MARKER_REGEX = /\[QA PASS\]/i;
+const QA_PASS_VERDICT_LINE_REGEX =
+  /(^|\n)\s*(?:final verdict|verdict|decision)\s*:\s*qa pass\b/i;
+const QA_PASS_STANDALONE_LINE_REGEX = /(^|\n)\s*qa pass(?:\s*[-:]\s*.*)?$/i;
+const RELEASE_CONFIRMED_MARKER_REGEX = /\[RELEASE CONFIRMED\]/i;
+const RELEASE_READY_VERDICT_LINE_REGEX =
+  /(^|\n)\s*(?:verification|final verdict|verdict|decision)\s*:\s*.*\b(?:release readiness confirmed|release ready)\b/i;
+const RELEASE_READY_STANDALONE_LINE_REGEX =
+  /(^|\n)\s*(?:release readiness confirmed|release ready)(?:\s*[-:]\s*.*)?$/i;
+const QA_PASS_RELEASE_READY_COMBINED_LINE_REGEX =
+  /(^|\n)\s*qa pass\s*[-:]\s*(?:release readiness confirmed|release ready)\b/i;
 const REVIEW_STALE_MS = 24 * 60 * 60 * 1000;
+const DONE_VERDICT_REGEX = /(?:^|\n)\s*DONE:/i;
+const SMART_REVIEW_SUMMARY_REGEX = /(?:^|\n)\s*(?:\*\*|__)?(?:#+\s*)?smart review summary\b(?:\*\*|__)?/i;
+const RESOLUTION_SUMMARY_REGEX = /(?:^|\n)\s*(?:#+\s*)?resolution summary\b/i;
+const ROOT_CAUSE_REGEX = /\broot cause\s*:/i;
+const FIX_REGEX = /\bfix\s*:/i;
+const FIX_CONFIRMED_REGEX = /\bfix confirmed\s*:/i;
+const FILES_REGEX = /\bfiles?\s*:/i;
+const TESTS_REGEX = /\btests?\s*:/i;
+const VERIFICATION_REGEX = /\bverification\s*:/i;
+const VERIFIED_REGEX = /\bverified\b/i;
+const RELEASE_READINESS_REGEX = /\brelease readiness confirmed\b/i;
+const PASSING_TESTS_REGEX = /\b\d+\s*\/\s*\d+\s+(?:tests?|checks?)\s+pass(?:ing)?\b/i;
+const CHECKMARK_ROW_REGEX = /(^|\n)\s*\|.*[✅☑]/;
+const QA_TRANSCRIPT_NOISE_PATTERNS = [
+  /(^|\n)\s*↻\s*Resumed session\b/i,
+  /\bDANGEROUS COMMAND\b/i,
+  /(^|\n)\s*Choice \[[^\]]+\]:/i,
+  /(^|\n)\s*╭─\s*⚕ Hermes\b/i,
+] as const;
+const QA_TRANSCRIPT_VERDICT_ANCHORS = [
+  DONE_VERDICT_REGEX,
+  SMART_REVIEW_SUMMARY_REGEX,
+  RESOLUTION_SUMMARY_REGEX,
+  ROOT_CAUSE_REGEX,
+  /(^|\n)\s*\[QA PASS\]/i,
+  /(^|\n)\s*\[RELEASE CONFIRMED\]/i,
+] as const;
 
 type QaDimensionMap = {
   codeQuality: IssueQaReviewDimension;
@@ -67,6 +106,139 @@ function summaryIsComplete(dimensions: QaDimensionMap) {
   return Object.values(dimensions).every((value) => value !== "unknown");
 }
 
+function normalizeQaCommentBody(body: string | null | undefined) {
+  const lines = String(body ?? "").replace(/\r\n?/g, "\n").split("\n");
+  const normalized: string[] = [];
+  let inFence = false;
+
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    if (/^(?:```|~~~)/.test(trimmed)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    if (trimmed.startsWith(">")) continue;
+    normalized.push(line);
+  }
+
+  return normalized.join("\n").trim();
+}
+
+function hasTranscriptNoise(body: string) {
+  return QA_TRANSCRIPT_NOISE_PATTERNS.some((pattern) => pattern.test(body));
+}
+
+function extractTranscriptVerdictTail(body: string) {
+  if (!hasTranscriptNoise(body)) return body;
+  const anchorIndexes = QA_TRANSCRIPT_VERDICT_ANCHORS
+    .map((pattern) => body.search(pattern))
+    .filter((index) => index >= 0);
+  if (anchorIndexes.length === 0) {
+    return null;
+  }
+  const earliestAnchor = Math.min(...anchorIndexes);
+  const tail = body.slice(earliestAnchor).trim();
+  return tail.length > 0 ? tail : null;
+}
+
+function normalizeQaEvidenceText(body: string | null | undefined) {
+  const normalized = normalizeQaCommentBody(body);
+  if (normalized.length === 0) return normalized;
+  if (!hasTranscriptNoise(normalized)) return normalized;
+  return extractTranscriptVerdictTail(normalized) ?? "";
+}
+
+function countCheckmarkRows(body: string) {
+  return body.match(new RegExp(CHECKMARK_ROW_REGEX, "g"))?.length ?? 0;
+}
+
+function hasCompleteReleaseMarkers(body: string) {
+  return qaCommentHasQaPassMarker(body) && qaCommentHasReleaseConfirmedMarker(body);
+}
+
+function countStructuredVerdictSignals(body: string) {
+  return [
+    DONE_VERDICT_REGEX.test(body),
+    SMART_REVIEW_SUMMARY_REGEX.test(body),
+    RESOLUTION_SUMMARY_REGEX.test(body),
+    ROOT_CAUSE_REGEX.test(body),
+    FIX_REGEX.test(body),
+    FIX_CONFIRMED_REGEX.test(body),
+    FILES_REGEX.test(body),
+    TESTS_REGEX.test(body),
+    VERIFICATION_REGEX.test(body),
+    VERIFIED_REGEX.test(body),
+    RELEASE_READINESS_REGEX.test(body),
+    countCheckmarkRows(body) > 0,
+  ].filter(Boolean).length;
+}
+
+function hasStructuredQaSummary(body: string) {
+  if (!hasCompleteReleaseMarkers(body)) return false;
+  const signalCount = countStructuredVerdictSignals(body);
+  return signalCount >= 2 || (signalCount >= 1 && body.length >= 250);
+}
+
+function hasStructuredQaVerification(body: string) {
+  if (!hasCompleteReleaseMarkers(body)) return false;
+  const hasTestsEvidence = TESTS_REGEX.test(body) || PASSING_TESTS_REGEX.test(body);
+  const hasVerificationEvidence =
+    VERIFICATION_REGEX.test(body)
+    || VERIFIED_REGEX.test(body)
+    || RELEASE_READINESS_REGEX.test(body);
+  return (hasTestsEvidence && hasVerificationEvidence) || countStructuredVerdictSignals(body) >= 3;
+}
+
+function isTranscriptOnlyQaComment(body: string) {
+  const normalized = normalizeQaCommentBody(body);
+  if (normalized.length === 0) return false;
+  if (!hasTranscriptNoise(normalized)) {
+    return false;
+  }
+  return extractTranscriptVerdictTail(normalized) === null;
+}
+
+function hasVerdictLead(body: string) {
+  return DONE_VERDICT_REGEX.test(body) || SMART_REVIEW_SUMMARY_REGEX.test(body) || RESOLUTION_SUMMARY_REGEX.test(body);
+}
+
+function hasStandaloneQaPassPhrase(body: string) {
+  return QA_PASS_VERDICT_LINE_REGEX.test(body) || QA_PASS_STANDALONE_LINE_REGEX.test(body);
+}
+
+function hasStandaloneReleaseConfirmedPhrase(body: string) {
+  return (
+    RELEASE_READY_VERDICT_LINE_REGEX.test(body)
+    || RELEASE_READY_STANDALONE_LINE_REGEX.test(body)
+    || QA_PASS_RELEASE_READY_COMBINED_LINE_REGEX.test(body)
+  );
+}
+
+function isLikelyQaVerdictComment(body: string | null | undefined) {
+  const normalized = normalizeQaEvidenceText(body);
+  if (normalized.length === 0) return false;
+  if (qaCommentHasQaPassMarker(normalized) || qaCommentHasReleaseConfirmedMarker(normalized)) {
+    return true;
+  }
+  if (
+    new RegExp(QA_SUMMARY_TOKEN_REGEX).test(normalized)
+    || new RegExp(QA_TOLERANT_VERIFICATION_TOKEN_REGEX).test(normalized)
+  ) {
+    return true;
+  }
+  return hasStructuredQaSummary(normalized);
+}
+
+export function selectLatestRelevantQaComment<TComment extends Pick<IssueComment, "id" | "body" | "createdAt">>(
+  comments: TComment[],
+) {
+  const sorted = [...comments].sort(sortCommentsDesc);
+  const latestVerdict = sorted.find((comment) => isLikelyQaVerdictComment(comment.body));
+  if (latestVerdict) return latestVerdict;
+  return sorted.find((comment) => !isTranscriptOnlyQaComment(comment.body)) ?? sorted[0] ?? null;
+}
+
 export function qaSummaryOverall(dimensions: QaDimensionMap): IssueQaReviewOverall {
   const values = Object.values(dimensions);
   if (values.includes("fail")) return "fail";
@@ -78,7 +250,31 @@ export function qaSummaryOverall(dimensions: QaDimensionMap): IssueQaReviewOvera
 function parseSummaryDimensions(body: string | null | undefined) {
   const dimensions = defaultDimensions();
   if (!body) return { dimensions, hasSummary: false };
-  const normalized = String(body);
+  const normalized = normalizeQaEvidenceText(body);
+  const summaryRegex = new RegExp(QA_SUMMARY_TOKEN_REGEX);
+  for (const match of normalized.matchAll(summaryRegex)) {
+    const token = match[1]?.toUpperCase();
+    const state = (match[2]?.toLowerCase() ?? "unknown") as IssueQaReviewDimension;
+    if (token === "CQ") dimensions.codeQuality = state;
+    else if (token === "EH") dimensions.errorHandling = state;
+    else if (token === "TC") dimensions.testCoverage = state;
+    else if (token === "CM") dimensions.commentQuality = state;
+    else if (token === "DOC") dimensions.docsImpact = state;
+  }
+  if (!summaryIsComplete(dimensions) && hasStructuredQaSummary(normalized)) {
+    dimensions.codeQuality = "pass";
+    dimensions.errorHandling = "pass";
+    dimensions.testCoverage = "pass";
+    dimensions.commentQuality = FILES_REGEX.test(normalized) ? "pass" : "na";
+    dimensions.docsImpact = "na";
+  }
+  return { dimensions, hasSummary: summaryIsComplete(dimensions) };
+}
+
+function parseExplicitSummaryDimensions(body: string | null | undefined) {
+  const dimensions = defaultDimensions();
+  if (!body) return { dimensions, hasSummary: false };
+  const normalized = normalizeQaEvidenceText(body);
   const summaryRegex = new RegExp(QA_SUMMARY_TOKEN_REGEX);
   for (const match of normalized.matchAll(summaryRegex)) {
     const token = match[1]?.toUpperCase();
@@ -100,15 +296,53 @@ export function parseQaSummary(body: string | null | undefined): QaSummaryParseR
   };
 }
 
+export function qaSummaryNeedsExplicitTestCoverageVerdict(summary: Pick<QaSummaryParseResult, "hasSummary" | "dimensions">) {
+  return summary.hasSummary && summary.dimensions.testCoverage === "na";
+}
+
+export function qaCommentHasExplicitSummaryTokens(body: string | null | undefined) {
+  return parseExplicitSummaryDimensions(body).hasSummary;
+}
+
+export function qaCommentHasExplicitTestCoverageVerdict(body: string | null | undefined) {
+  const parsed = parseExplicitSummaryDimensions(body);
+  return parsed.hasSummary && parsed.dimensions.testCoverage !== "na";
+}
+
 function parseVerificationDimensions(body: string | null | undefined) {
   const verification = defaultVerification();
   let hasVerification = false;
   if (!body) return { verification, hasVerification };
-  const normalized = String(body);
-  const verificationRegex = new RegExp(QA_VERIFICATION_TOKEN_REGEX);
+  const normalized = normalizeQaEvidenceText(body);
+  const verificationRegex = new RegExp(QA_TOLERANT_VERIFICATION_TOKEN_REGEX);
   for (const match of normalized.matchAll(verificationRegex)) {
     hasVerification = true;
-    const token = match[1]?.toUpperCase();
+    const token = match[1]?.toUpperCase().replace("/NA", "");
+    const state = (match[2]?.toLowerCase() ?? "unknown") as IssueQaReviewDimension;
+    if (token === "TYPECHECK") verification.typecheck = state;
+    else if (token === "TESTS") verification.tests = state;
+    else if (token === "BUILD") verification.build = state;
+    else if (token === "SMOKE") verification.smoke = state;
+  }
+  if (!qaVerificationIsComplete(verification) && hasStructuredQaVerification(normalized)) {
+    hasVerification = true;
+    verification.typecheck = "pass";
+    verification.tests = "pass";
+    verification.build = "pass";
+    verification.smoke = PASSING_TESTS_REGEX.test(normalized) || VERIFICATION_REGEX.test(normalized) ? "pass" : "na";
+  }
+  return { verification, hasVerification };
+}
+
+function parseExplicitVerificationDimensions(body: string | null | undefined) {
+  const verification = defaultVerification();
+  let hasVerification = false;
+  if (!body) return { verification, hasVerification };
+  const normalized = normalizeQaEvidenceText(body);
+  const verificationRegex = new RegExp(QA_CANONICAL_VERIFICATION_TOKEN_REGEX);
+  for (const match of normalized.matchAll(verificationRegex)) {
+    hasVerification = true;
+    const token = match[1]?.toUpperCase().replace("/NA", "");
     const state = (match[2]?.toLowerCase() ?? "unknown") as IssueQaReviewDimension;
     if (token === "TYPECHECK") verification.typecheck = state;
     else if (token === "TESTS") verification.tests = state;
@@ -141,12 +375,23 @@ export function parseQaVerification(body: string | null | undefined): QaVerifica
   };
 }
 
+export function qaCommentHasExplicitVerificationTokens(body: string | null | undefined) {
+  return qaVerificationIsComplete(parseExplicitVerificationDimensions(body).verification);
+}
+
 export function qaCommentHasQaPassMarker(body: string | null | undefined) {
-  return QA_PASS_REGEX.test(body ?? "");
+  const normalized = normalizeQaEvidenceText(body);
+  if (normalized.length === 0) return false;
+  return QA_PASS_MARKER_REGEX.test(normalized) || (hasVerdictLead(normalized) && hasStandaloneQaPassPhrase(normalized));
 }
 
 export function qaCommentHasReleaseConfirmedMarker(body: string | null | undefined) {
-  return RELEASE_CONFIRMED_REGEX.test(body ?? "");
+  const normalized = normalizeQaEvidenceText(body);
+  if (normalized.length === 0) return false;
+  return (
+    RELEASE_CONFIRMED_MARKER_REGEX.test(normalized)
+    || (hasVerdictLead(normalized) && hasStandaloneReleaseConfirmedPhrase(normalized))
+  );
 }
 
 export function sortIssueCommentsDesc(a: Pick<IssueComment, "createdAt" | "id">, b: Pick<IssueComment, "createdAt" | "id">) {
@@ -189,6 +434,8 @@ export function issueQaGateReasonMessage(reasonCode: IssueQaGateReasonCode): str
       return "No QA-authored comment exists yet for this issue";
     case "qa_gate_missing_qa_summary":
       return "Latest QA-authored comment must include the Smart Review summary before moving to done";
+    case "qa_gate_missing_test_coverage_verdict":
+      return "Latest QA-authored comment must set Test Coverage to pass, warn, or fail before moving to done";
     case "qa_gate_missing_qa_pass":
       return "Latest QA-authored comment must include [QA PASS] before moving to done";
     case "qa_gate_missing_release_confirmation":
@@ -216,7 +463,7 @@ export function buildIssueQaGate(input: {
   const isDeliveryScoped =
     isDeliveryScopedAssigneeRole(input.assigneeRole) || isLikelyTechnicalIssueText(input.issueText);
   const qaComments = [...input.qaComments].sort(sortCommentsDesc);
-  const latestQaComment = qaComments[0] ?? null;
+  const latestQaComment = selectLatestRelevantQaComment(qaComments);
   const latestBody = latestQaComment?.body ?? "";
   const latestSummary = parseQaSummary(latestBody);
   const latestVerification = parseQaVerification(latestBody);
@@ -224,12 +471,15 @@ export function buildIssueQaGate(input: {
   const hasSummary = latestSummary.hasSummary;
   const lastQaSummaryAt = latestQaComment && hasSummary ? new Date(latestQaComment.createdAt) : null;
   const verificationStatus = latestVerification.verification;
+  const missingExplicitTestCoverageVerdict = qaSummaryNeedsExplicitTestCoverageVerdict(latestSummary);
 
   let overall = latestSummary.overall;
   const latestDecisionOutcome = input.latestDecisionOutcome ?? null;
   if (latestDecisionOutcome === "changes_requested") {
     overall = "fail";
   } else if (latestDecisionOutcome === "approved" && !hasSummary && overall === "unknown") {
+    overall = "warn";
+  } else if (missingExplicitTestCoverageVerdict && overall === "pass") {
     overall = "warn";
   }
 
@@ -253,6 +503,8 @@ export function buildIssueQaGate(input: {
       }
       if (!hasSummary) {
         missingRequirements.push("qa_gate_missing_qa_summary");
+      } else if (missingExplicitTestCoverageVerdict) {
+        missingRequirements.push("qa_gate_missing_test_coverage_verdict");
       } else if (overall === "fail") {
         missingRequirements.push("qa_gate_failing_review");
       }

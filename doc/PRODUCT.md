@@ -149,6 +149,8 @@ Orchestrero’s core identity is a **control plane for autonomous AI companies**
 
 Paperclip now includes one built-in specialist workflow template: `engineering_delivery_v1`.
 
+Operators do not need to choose this per issue in the composer anymore. Each company now has a default root-issue delivery mode (`engineering` or `simple`), and each project can inherit that default or override it. In engineering mode, new root issues automatically enter the specialist workflow. In simple mode, they remain plain issues until an operator explicitly applies the workflow later.
+
 When applied to a root issue, the template creates real child issues for:
 - PM
 - Designer
@@ -161,12 +163,15 @@ The parent issue remains the coordination hub. Child lanes carry explicit role m
 - Designer: `design` document or design work product
 - Engineer: `implementation-summary` document or implementation work product
 - Security: `threat-review` document
-- QA: a non-stale `qa-verdict` document plus the latest authorized release-gate QA verdict comment, which must include a full Smart Review summary, passing verification tokens (`[TYPECHECK] [TESTS] [BUILD] [SMOKE]`), and `[QA PASS]` / `[RELEASE CONFIRMED]`
+- QA: a non-stale `qa-verdict` document plus the latest valid authorized release-gate QA verdict comment. Canonical ship-marker comments still require the strict Smart Review + verification format on write, but workflow/read-time reconciliation also tolerates structured prose or `DONE:`-style verdicts when they clearly express QA pass/release confirmation with explicit verification evidence, including bold Markdown `**Smart Review Summary**` headings and equality-style verification lines such as `TYPECHECK=pass` and `SMOKE/NA=pass`.
+  For canonical Smart Review tokens, `TC` must be an explicit ship verdict (`pass`, `warn`, or `fail`) and `DOC:na` means docs were reviewed with no docs change required.
 
 The lane graph is explicit and operator-visible: `PM -> Design -> Build`, then `Security` and `QA` run in parallel after Build completes. Only dependency-free lanes wake at template creation time; downstream lanes stay blocked until their upstream lane reaches a terminal state.
 
-Security is a first-class blocking lane. If no security specialist is available, the lane remains unresolved instead of silently falling back into QA.
+Security is a first-class blocking lane. Applying the engineering workflow requires an available security specialist; if none is available, Paperclip rejects the workflow apply instead of creating an unowned Security lane or silently falling back into QA. In engineering-mode root issue creation, that rejection aborts the whole create so no half-created root issue is left behind.
 
 Workflow QA ownership is also explicit. The QA lane uses the same release-gate QA resolver as standalone delivery: a board-configured company QA owner if one is set and eligible, otherwise one canonical `QA and Release Engineer`, otherwise one other eligible QA specialist, otherwise an explicit owner-needed blocker.
+
+Review-stage refill is also explicit. When delivery work is already in `in_review`, the COO should continue filling any spare release-gate QA heartbeat slots from that waiting review queue; a visible `[READY FOR QA]`, later QA completion truth on an issue that is still open, or a prior wake that was skipped only because the live-run limit was full are routing and recovery signals, not reasons to leave review work idle once capacity opens up.
 
 Review remediation is also workflow-native. A failing Security lane hands work back to Build. A failing QA lane also hands work back to Build. That handback reopens the upstream lane, blocks downstream lanes again, and marks their earlier artifacts as stale until they are refreshed. Paperclip treats this as visible control-plane state, not hidden recursive thinking inside one heartbeat run.
