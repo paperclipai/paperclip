@@ -8,15 +8,15 @@
 import type { ComponentType } from "react";
 import {
   Bot,
-  Code,
-  Gem,
-  MousePointer2,
-  Sparkles,
-  Terminal,
   Cpu,
 } from "lucide-react";
 import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
 import { HermesIcon } from "@/components/HermesIcon";
+import { ClaudeCodeLogoIcon } from "@/components/ClaudeCodeLogoIcon";
+import { CodexLogoIcon } from "@/components/CodexLogoIcon";
+import { GeminiCliLogoIcon } from "@/components/GeminiCliLogoIcon";
+import { CursorLogoIcon } from "@/components/CursorLogoIcon";
+import { PiLogoIcon } from "@/components/PiLogoIcon";
 
 // ---------------------------------------------------------------------------
 // Type suffix parsing
@@ -55,19 +55,19 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   claude_local: {
     label: "Claude Code",
     description: "Local Claude agent",
-    icon: Sparkles,
+    icon: ClaudeCodeLogoIcon,
     recommended: true,
   },
   codex_local: {
     label: "Codex",
     description: "Local Codex agent",
-    icon: Code,
+    icon: CodexLogoIcon,
     recommended: true,
   },
   gemini_local: {
     label: "Gemini CLI",
     description: "Local Gemini agent",
-    icon: Gem,
+    icon: GeminiCliLogoIcon,
   },
   opencode_local: {
     label: "OpenCode",
@@ -82,12 +82,12 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   pi_local: {
     label: "Pi",
     description: "Local Pi agent",
-    icon: Terminal,
+    icon: PiLogoIcon,
   },
   cursor: {
     label: "Cursor",
     description: "Local Cursor agent",
-    icon: MousePointer2,
+    icon: CursorLogoIcon,
   },
   openclaw_gateway: {
     label: "OpenClaw Gateway",
