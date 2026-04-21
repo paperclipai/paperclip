@@ -5025,7 +5025,7 @@ export function heartbeatService(db: Db) {
           workspace: existingExecutionWorkspace,
         })
       : null;
-    const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
+    let executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
           base: executionWorkspaceBase,
           config: runtimeConfig,
           issue: issueRef,
@@ -5510,6 +5510,27 @@ export function heartbeatService(db: Db) {
           payload: meta as unknown as Record<string, unknown>,
         });
       };
+
+      const prepResult = await workspacePreparationService.prepareWorkspace({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        runId: run.id,
+        instanceRoot: resolvePaperclipInstanceRoot(),
+        executionWorkspaceCwd: executionWorkspace.cwd,
+      });
+
+      if (prepResult.fatalError) {
+        throw new Error(`Workspace preparation failed: ${prepResult.fatalError}`);
+      }
+
+      if (prepResult.errors && prepResult.errors.length > 0) {
+        for (const err of prepResult.errors) {
+          await onLog("stdout", `[paperclip] Workspace preparation warning: ${err}\n`);
+        }
+      }
+
+      // Ensure the adapter is executed in the verified workspace path
+      executionWorkspace.cwd = prepResult.workspacePath;
 
       const adapter = getServerAdapter(agent.adapterType);
       const authToken = adapter.supportsLocalAgentJwt

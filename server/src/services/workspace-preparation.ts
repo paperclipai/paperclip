@@ -15,12 +15,13 @@ class WorkspacePreparationService {
   /**
    * Sanitizes a path segment to be alphanumeric + dash/underscore, lowercase.
    */
-  private sanitizeSlugPart(part: string): string {
-    return part
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]/g, "-")
-      .replace(/^-+|-+$/g, "");
-  }
+    private sanitizeSlugPart(part: string | null | undefined): string {
+      const normalized = part ?? "";
+      return normalized
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, "-")
+        .replace(/^-+|-+$/g, "");
+    }
 
   /**
    * Prepares the execution workspace directory.
@@ -35,9 +36,9 @@ class WorkspacePreparationService {
   }): Promise<WorkspacePreparationResult> {
     const { companyId, agentId, runId, instanceRoot, executionWorkspaceCwd } = params;
 
-    const safeCompanyId = this.sanitizeSlugPart(asString(companyId));
-    const safeAgentId = this.sanitizeSlugPart(asString(agentId));
-    const safeRunId = asString(runId); // runId (ULID/UUID) is already safe
+    const safeCompanyId = this.sanitizeSlugPart(companyId);
+    const safeAgentId = this.sanitizeSlugPart(agentId);
+    const safeRunId = runId; // runId (ULID/UUID) is already safe
 
     const expectedPath = path.resolve(
       instanceRoot,
