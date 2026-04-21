@@ -37,19 +37,24 @@ export function AuthPage() {
   }, [session, navigate, nextPath]);
 
   const mutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (): Promise<{ twoFactorRequired: boolean }> => {
       if (mode === "sign_in") {
-        await authApi.signInEmail({ email: email.trim(), password });
-        return;
+        return authApi.signInEmail({ email: email.trim(), password });
       }
       await authApi.signUpEmail({
         name: name.trim(),
         email: email.trim(),
         password,
       });
+      return { twoFactorRequired: false };
     },
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setError(null);
+      if (result.twoFactorRequired) {
+        const nextQuery = nextPath && nextPath !== "/" ? `?next=${encodeURIComponent(nextPath)}` : "";
+        navigate(`/2fa${nextQuery}`, { replace: true });
+        return;
+      }
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       navigate(nextPath, { replace: true });

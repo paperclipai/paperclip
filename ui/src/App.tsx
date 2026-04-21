@@ -36,6 +36,8 @@ import { InstanceAccess } from "./pages/InstanceAccess";
 import { InstanceSettings } from "./pages/InstanceSettings";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { ProfileSettings } from "./pages/ProfileSettings";
+import { UserSecuritySettings } from "./pages/UserSecuritySettings";
+import { TwoFactorVerify } from "./pages/TwoFactorVerify";
 import { PluginManager } from "./pages/PluginManager";
 import { PluginSettings } from "./pages/PluginSettings";
 import { AdapterManager } from "./pages/AdapterManager";
@@ -251,6 +253,7 @@ export function App() {
     <>
       <Routes>
         <Route path="auth" element={<AuthPage />} />
+        <Route path="2fa" element={<TwoFactorVerify />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
@@ -262,6 +265,7 @@ export function App() {
           <Route path="instance/settings" element={<Layout />}>
             <Route index element={<Navigate to="general" replace />} />
             <Route path="profile" element={<ProfileSettings />} />
+            <Route path="security" element={<UserSecuritySettings />} />
             <Route path="general" element={<InstanceGeneralSettings />} />
             <Route path="access" element={<InstanceAccess />} />
             <Route path="heartbeats" element={<InstanceSettings />} />

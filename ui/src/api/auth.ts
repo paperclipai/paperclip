@@ -105,8 +105,11 @@ export const authApi = {
     return nested;
   },
 
-  signInEmail: async (input: { email: string; password: string }) => {
-    await authPost("/sign-in/email", input);
+  signInEmail: async (input: { email: string; password: string }): Promise<{ twoFactorRequired: boolean }> => {
+    const payload = await authPost("/sign-in/email", input);
+    const data = (payload as { data?: { twoFactorRedirect?: boolean } } | null)?.data ?? payload;
+    const twoFactorRequired = Boolean((data as { twoFactorRedirect?: boolean } | null)?.twoFactorRedirect);
+    return { twoFactorRequired };
   },
 
   signUpEmail: async (input: { name: string; email: string; password: string }) => {
@@ -130,5 +133,50 @@ export const authApi = {
 
   signOut: async () => {
     await authPost("/sign-out", {});
+  },
+
+  twoFactor: {
+    enable: async (input: { password: string }): Promise<{ totpURI: string; backupCodes: string[] }> => {
+      const payload = await authPost("/two-factor/enable", input);
+      const data = (payload as { data?: { totpURI?: string; backupCodes?: string[] } } | null)?.data ?? payload;
+      const totpURI = (data as { totpURI?: string } | null)?.totpURI;
+      const backupCodes = (data as { backupCodes?: string[] } | null)?.backupCodes;
+      if (typeof totpURI !== "string" || !Array.isArray(backupCodes)) {
+        throw new Error("Unexpected response from /two-factor/enable");
+      }
+      return { totpURI, backupCodes };
+    },
+
+    disable: async (input: { password: string }): Promise<void> => {
+      await authPost("/two-factor/disable", input);
+    },
+
+    verifyTotp: async (input: { code: string; trustDevice?: boolean }): Promise<void> => {
+      await authPost("/two-factor/verify-totp", input);
+    },
+
+    verifyBackupCode: async (input: { code: string; trustDevice?: boolean }): Promise<void> => {
+      await authPost("/two-factor/verify-backup-code", input);
+    },
+
+    generateBackupCodes: async (input: { password: string }): Promise<{ backupCodes: string[] }> => {
+      const payload = await authPost("/two-factor/generate-backup-codes", input);
+      const data = (payload as { data?: { backupCodes?: string[] } } | null)?.data ?? payload;
+      const backupCodes = (data as { backupCodes?: string[] } | null)?.backupCodes;
+      if (!Array.isArray(backupCodes)) {
+        throw new Error("Unexpected response from /two-factor/generate-backup-codes");
+      }
+      return { backupCodes };
+    },
+
+    getTotpUri: async (input: { password: string }): Promise<{ totpURI: string }> => {
+      const payload = await authPost("/two-factor/get-totp-uri", input);
+      const data = (payload as { data?: { totpURI?: string } } | null)?.data ?? payload;
+      const totpURI = (data as { totpURI?: string } | null)?.totpURI;
+      if (typeof totpURI !== "string") {
+        throw new Error("Unexpected response from /two-factor/get-totp-uri");
+      }
+      return { totpURI };
+    },
   },
 };
