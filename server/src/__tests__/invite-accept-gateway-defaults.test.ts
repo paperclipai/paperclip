@@ -116,4 +116,54 @@ describe("normalizeAgentDefaultsForJoin (openclaw_gateway)", () => {
     expect(normalized.normalized?.disableDeviceAuth).toBe(true);
     expect(normalized.normalized?.devicePrivateKeyPem).toBeUndefined();
   });
+
+  it("preserves enabled blocked-issue escalation config including reusable statuses", () => {
+    const normalized = normalizeAgentDefaultsForJoin({
+      adapterType: "openclaw_gateway",
+      defaultsPayload: {
+        url: "ws://127.0.0.1:18789",
+        headers: {
+          "x-openclaw-token": "gateway-token-1234567890",
+        },
+        issueBlockEscalation: {
+          enabled: true,
+          targetRole: "cto",
+          openStatuses: ["todo", "in_progress"],
+        },
+      },
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      bindHost: "127.0.0.1",
+      allowedHostnames: [],
+    });
+
+    expect(normalized.normalized?.issueBlockEscalation).toEqual({
+      enabled: true,
+      targetRole: "cto",
+      openStatuses: ["todo", "in_progress"],
+    });
+  });
+
+  it("drops blocked-issue escalation config when the opt-in toggle is disabled", () => {
+    const normalized = normalizeAgentDefaultsForJoin({
+      adapterType: "openclaw_gateway",
+      defaultsPayload: {
+        url: "ws://127.0.0.1:18789",
+        headers: {
+          "x-openclaw-token": "gateway-token-1234567890",
+        },
+        issueBlockEscalation: {
+          enabled: false,
+          targetRole: "cto",
+          openStatuses: ["todo", "in_progress"],
+        },
+      },
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      bindHost: "127.0.0.1",
+      allowedHostnames: [],
+    });
+
+    expect(normalized.normalized?.issueBlockEscalation).toBeUndefined();
+  });
 });

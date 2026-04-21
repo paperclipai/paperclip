@@ -43,6 +43,22 @@ The adapter supports the same session routing model as HTTP OpenClaw mode:
 
 Resolved session key is sent as `agent.sessionKey`.
 
+## Opt-in blocked-issue escalation
+
+You can require explicit unblocker tickets before an OpenClaw-backed agent leaves work in `blocked`.
+
+- set `issueBlockEscalation.enabled=true`
+- set `issueBlockEscalation.targetRole=<role>` such as `cto`
+- optional `issueBlockEscalation.openStatuses=["backlog","todo","in_progress","in_review","blocked"]`
+
+When enabled, a `PATCH /api/issues/:id` transition to `blocked` by that agent will:
+
+- create or reuse a child escalation issue assigned to `targetRole`
+- log the escalation on the parent issue activity stream
+- reject the block transition with `422` if the config is incomplete or the target role does not exist
+
+If the policy is not enabled, blocked transitions behave exactly as before.
+
 ## Payload Mapping
 
 The agent request is built as:
