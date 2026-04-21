@@ -218,7 +218,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const billingType = resolveQwenBillingType(effectiveEnv);
-  const runtimeEnv = ensurePathInEnv(effectiveEnv);
+  const runtimeEnv: Record<string, string> = Object.fromEntries(
+    Object.entries(ensurePathInEnv(effectiveEnv)).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
   await ensureCommandResolvable(command, cwd, runtimeEnv);
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
@@ -356,7 +360,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const proc = await runChildProcess(runId, command, args, {
       cwd,
-      env,
+      env: runtimeEnv,
       timeoutSec,
       graceSec,
       onSpawn,

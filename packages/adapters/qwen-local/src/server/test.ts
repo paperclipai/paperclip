@@ -71,7 +71,11 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const runtimeEnv: Record<string, string> = Object.fromEntries(
+    Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);
     checks.push({
@@ -151,7 +155,7 @@ export async function testEnvironment(
         args,
         {
           cwd,
-          env,
+          env: runtimeEnv,
           timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
           onLog: async () => { },
