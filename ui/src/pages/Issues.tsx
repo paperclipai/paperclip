@@ -13,6 +13,20 @@ import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { CircleDot } from "lucide-react";
 
+export function buildIssuesSearchUrl(currentHref: string, search: string): string | null {
+  const url = new URL(currentHref);
+  const currentSearch = url.searchParams.get("q") ?? "";
+  if (currentSearch === search) return null;
+
+  if (search.length > 0) {
+    url.searchParams.set("q", search);
+  } else {
+    url.searchParams.delete("q");
+  }
+
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 export function Issues() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -23,18 +37,8 @@ export function Issues() {
   const initialSearch = searchParams.get("q") ?? "";
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const handleSearchChange = useCallback((search: string) => {
-    const trimmedSearch = search.trim();
-    const currentSearch = new URLSearchParams(window.location.search).get("q") ?? "";
-    if (currentSearch === trimmedSearch) return;
-
-    const url = new URL(window.location.href);
-    if (trimmedSearch) {
-      url.searchParams.set("q", trimmedSearch);
-    } else {
-      url.searchParams.delete("q");
-    }
-
-    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    const nextUrl = buildIssuesSearchUrl(window.location.href, search);
+    if (!nextUrl) return;
     window.history.replaceState(window.history.state, "", nextUrl);
   }, []);
 
@@ -80,8 +84,13 @@ export function Issues() {
   }, [setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({
-    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "participant-agent", participantAgentId ?? "__all__"],
-    queryFn: () => issuesApi.list(selectedCompanyId!, { participantAgentId }),
+    queryKey: [
+      ...queryKeys.issues.list(selectedCompanyId!),
+      "participant-agent",
+      participantAgentId ?? "__all__",
+      "with-routine-executions",
+    ],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { participantAgentId, includeRoutineExecutions: true }),
     enabled: !!selectedCompanyId,
   });
 
@@ -110,6 +119,7 @@ export function Issues() {
       initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
       initialSearch={initialSearch}
       onSearchChange={handleSearchChange}
+      enableRoutineVisibilityFilter
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
       searchFilters={participantAgentId ? { participantAgentId } : undefined}
     />

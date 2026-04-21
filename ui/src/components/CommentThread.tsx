@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "re
 import { Link, useLocation } from "react-router-dom";
 import type {
   Agent,
+  Approval,
   FeedbackDataSharingPreference,
   FeedbackVote,
   FeedbackVoteValue,
@@ -15,7 +16,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
-import { StatusBadge } from "./StatusBadge";
+import { ApprovalCard } from "./ApprovalCard";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
@@ -50,6 +51,7 @@ interface CommentReassignment {
 interface CommentThreadProps {
   comments: CommentWithRunMeta[];
   queuedComments?: CommentWithRunMeta[];
+  linkedApprovals?: Approval[];
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -57,6 +59,12 @@ interface CommentThreadProps {
   timelineEvents?: IssueTimelineEvent[];
   companyId?: string | null;
   projectId?: string | null;
+  onApproveApproval?: (approvalId: string) => Promise<void>;
+  onRejectApproval?: (approvalId: string) => Promise<void>;
+  pendingApprovalAction?: {
+    approvalId: string;
+    action: "approve" | "reject";
+  } | null;
   onVote?: (
     commentId: string,
     vote: FeedbackVoteValue,
@@ -78,6 +86,7 @@ interface CommentThreadProps {
   mentions?: MentionOption[];
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
+  composerDisabledReason?: string | null;
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -123,6 +132,11 @@ function parseReassignment(target: string): CommentReassignment | null {
     return assigneeUserId ? { assigneeAgentId: null, assigneeUserId } : null;
   }
   return null;
+}
+
+function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
+  const isClosed = issueStatus === "done" || issueStatus === "cancelled";
+  return isClosed && assigneeValue.startsWith("agent:");
 }
 
 function humanizeValue(value: string | null): string {
@@ -201,21 +215,71 @@ function runStatusClass(status: string) {
   }
 }
 
+async function copyTextWithFallback(text: string) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+
+  try {
+    textarea.select();
+    const success = document.execCommand("copy");
+    if (!success) throw new Error("execCommand copy failed");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 function CopyMarkdownButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+  }, []);
+
+  const label = status === "copied" ? "Copied" : status === "failed" ? "Copy failed" : "Copy";
+
   return (
     <button
       type="button"
-      className="text-muted-foreground hover:text-foreground transition-colors"
-      title="Copy as markdown"
+      className={cn(
+        "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors",
+        status === "copied"
+          ? "bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300"
+          : status === "failed"
+            ? "bg-destructive/10 text-destructive"
+            : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+      )}
+      title={label}
+      aria-label="Copy comment as markdown"
       onClick={() => {
-        navigator.clipboard.writeText(text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        });
+        void copyTextWithFallback(text)
+          .then(() => setStatus("copied"))
+          .catch(() => setStatus("failed"));
+
+        if (timeoutRef.current) {
+          clearTimeout(timeoutRef.current);
+        }
+        timeoutRef.current = setTimeout(() => {
+          setStatus("idle");
+          timeoutRef.current = null;
+        }, 1500);
       }}
     >
-      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+      {status === "copied" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      <span className="sm:hidden">{label}</span>
+      <span className="sr-only" aria-live="polite">
+        {label}
+      </span>
     </button>
   );
 }
@@ -310,7 +374,7 @@ function CommentCard({
           <CopyMarkdownButton text={comment.body} />
         </span>
       </div>
-      <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+      <MarkdownBody className="text-sm" softBreaks>{comment.body}</MarkdownBody>
       {companyId && !isPending ? (
         <div className="mt-2 space-y-2">
           <PluginSlotOutlet
@@ -374,6 +438,7 @@ function CommentCard({
 
 type TimelineItem =
   | { kind: "comment"; id: string; createdAtMs: number; comment: CommentWithRunMeta }
+  | { kind: "approval"; id: string; createdAtMs: number; approval: Approval }
   | { kind: "event"; id: string; createdAtMs: number; event: IssueTimelineEvent }
   | { kind: "run"; id: string; createdAtMs: number; run: LinkedRunItem };
 
@@ -446,6 +511,9 @@ const TimelineList = memo(function TimelineList({
   currentUserId,
   companyId,
   projectId,
+  onApproveApproval,
+  onRejectApproval,
+  pendingApprovalAction,
   feedbackVoteByTargetId,
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
@@ -458,6 +526,12 @@ const TimelineList = memo(function TimelineList({
   currentUserId?: string | null;
   companyId?: string | null;
   projectId?: string | null;
+  onApproveApproval?: (approvalId: string) => Promise<void>;
+  onRejectApproval?: (approvalId: string) => Promise<void>;
+  pendingApprovalAction?: {
+    approvalId: string;
+    action: "approve" | "reject";
+  } | null;
   feedbackVoteByTargetId?: Map<string, FeedbackVoteValue>;
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -484,6 +558,24 @@ const TimelineList = memo(function TimelineList({
               agentMap={agentMap}
               currentUserId={currentUserId}
             />
+          );
+        }
+
+        if (item.kind === "approval") {
+          const approval = item.approval;
+          const isPending = pendingApprovalAction?.approvalId === approval.id;
+          return (
+            <div id={`approval-${approval.id}`} key={`approval:${approval.id}`} className="py-1.5">
+              <ApprovalCard
+                approval={approval}
+                requesterAgent={approval.requestedByAgentId ? agentMap?.get(approval.requestedByAgentId) ?? null : null}
+                onApprove={onApproveApproval ? () => void onApproveApproval(approval.id) : undefined}
+                onReject={onRejectApproval ? () => void onRejectApproval(approval.id) : undefined}
+                detailLink={`/approvals/${approval.id}`}
+                isPending={isPending}
+                pendingAction={isPending ? pendingApprovalAction?.action ?? null : null}
+              />
+            </div>
           );
         }
 
@@ -547,6 +639,7 @@ const TimelineList = memo(function TimelineList({
 export function CommentThread({
   comments,
   queuedComments = [],
+  linkedApprovals = [],
   feedbackVotes = [],
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
@@ -554,8 +647,12 @@ export function CommentThread({
   timelineEvents = [],
   companyId,
   projectId,
+  onApproveApproval,
+  onRejectApproval,
+  pendingApprovalAction = null,
   onVote,
   onAdd,
+  issueStatus,
   agentMap,
   currentUserId,
   imageUploadHandler,
@@ -569,9 +666,9 @@ export function CommentThread({
   mentions: providedMentions,
   onInterruptQueued,
   interruptingQueuedRunId = null,
+  composerDisabledReason = null,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
-  const [reopen, setReopen] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
@@ -591,6 +688,12 @@ export function CommentThread({
       createdAtMs: new Date(comment.createdAt).getTime(),
       comment,
     }));
+    const approvalItems: TimelineItem[] = linkedApprovals.map((approval) => ({
+      kind: "approval",
+      id: approval.id,
+      createdAtMs: new Date(approval.createdAt).getTime(),
+      approval,
+    }));
     const eventItems: TimelineItem[] = timelineEvents.map((event) => ({
       kind: "event",
       id: event.id,
@@ -603,17 +706,18 @@ export function CommentThread({
       createdAtMs: new Date(runTimestamp(run)).getTime(),
       run,
     }));
-    return [...commentItems, ...eventItems, ...runItems].sort((a, b) => {
+    return [...commentItems, ...approvalItems, ...eventItems, ...runItems].sort((a, b) => {
       if (a.createdAtMs !== b.createdAtMs) return a.createdAtMs - b.createdAtMs;
       if (a.kind === b.kind) return a.id.localeCompare(b.id);
       const kindOrder = {
         event: 0,
-        comment: 1,
-        run: 2,
+        approval: 1,
+        comment: 2,
+        run: 3,
       } as const;
       return kindOrder[a.kind] - kindOrder[b.kind];
     });
-  }, [comments, timelineEvents, linkedRuns]);
+  }, [comments, linkedApprovals, timelineEvents, linkedRuns]);
 
   const feedbackVoteByTargetId = useMemo(() => {
     const map = new Map<string, FeedbackVoteValue>();
@@ -685,14 +789,17 @@ export function CommentThread({
     if (!trimmed) return;
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : null;
+    const reopen = shouldImplicitlyReopenComment(
+      issueStatus,
+      hasReassignment ? reassignTarget : currentAssigneeValue,
+    ) ? true : undefined;
     const submittedBody = trimmed;
 
     setSubmitting(true);
     setBody("");
     try {
-      await onAdd(submittedBody, reopen ? true : undefined, reassignment ?? undefined);
+      await onAdd(submittedBody, reopen, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
-      setReopen(true);
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch {
       setBody((current) =>
@@ -752,6 +859,9 @@ export function CommentThread({
         currentUserId={currentUserId}
         companyId={companyId}
         projectId={projectId}
+        onApproveApproval={onApproveApproval}
+        onRejectApproval={onRejectApproval}
+        pendingApprovalAction={pendingApprovalAction}
         feedbackVoteByTargetId={feedbackVoteByTargetId}
         feedbackDataSharingPreference={feedbackDataSharingPreference}
         onVote={onVote ? handleFeedbackVote : undefined}
@@ -796,90 +906,87 @@ export function CommentThread({
         </div>
       )}
 
-      <div className="space-y-2">
-        <MarkdownEditor
-          ref={editorRef}
-          value={body}
-          onChange={setBody}
-          placeholder="Leave a comment..."
-          mentions={mentions}
-          onSubmit={handleSubmit}
-          imageUploadHandler={imageUploadHandler}
-          contentClassName="min-h-[60px] text-sm"
-        />
-        <div className="flex items-center justify-end gap-3">
-          {(imageUploadHandler || onAttachImage) && (
-            <div className="mr-auto flex items-center gap-3">
-              <input
-                ref={attachInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
-                className="hidden"
-                onChange={handleAttachFile}
-              />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => attachInputRef.current?.click()}
-                disabled={attaching}
-                title="Attach image"
-              >
-                <Paperclip className="h-4 w-4" />
-              </Button>
-            </div>
-          )}
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={reopen}
-              onChange={(e) => setReopen(e.target.checked)}
-              className="rounded border-border"
-            />
-            Re-open
-          </label>
-          {enableReassign && reassignOptions.length > 0 && (
-            <InlineEntitySelector
-              value={reassignTarget}
-              options={reassignOptions}
-              placeholder="Assignee"
-              noneLabel="No assignee"
-              searchPlaceholder="Search assignees..."
-              emptyMessage="No assignees found."
-              onChange={setReassignTarget}
-              className="text-xs h-8"
-              renderTriggerValue={(option) => {
-                if (!option) return <span className="text-muted-foreground">Assignee</span>;
-                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
-                const agent = agentId ? agentMap?.get(agentId) : null;
-                return (
-                  <>
-                    {agent ? (
-                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    ) : null}
-                    <span className="truncate">{option.label}</span>
-                  </>
-                );
-              }}
-              renderOption={(option) => {
-                if (!option.id) return <span className="truncate">{option.label}</span>;
-                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
-                const agent = agentId ? agentMap?.get(agentId) : null;
-                return (
-                  <>
-                    {agent ? (
-                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    ) : null}
-                    <span className="truncate">{option.label}</span>
-                  </>
-                );
-              }}
-            />
-          )}
-          <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
-            {submitting ? "Posting..." : "Comment"}
-          </Button>
+      {composerDisabledReason ? (
+        <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+          {composerDisabledReason}
         </div>
-      </div>
+      ) : (
+        <div className="space-y-2">
+          <MarkdownEditor
+            ref={editorRef}
+            value={body}
+            onChange={setBody}
+            placeholder="Leave a comment..."
+            mentions={mentions}
+            onSubmit={handleSubmit}
+            imageUploadHandler={imageUploadHandler}
+            contentClassName="min-h-[60px] text-sm"
+          />
+          <div className="flex items-center justify-end gap-3">
+            {(imageUploadHandler || onAttachImage) && (
+              <div className="mr-auto flex items-center gap-3">
+                <input
+                  ref={attachInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  className="hidden"
+                  onChange={handleAttachFile}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => attachInputRef.current?.click()}
+                  disabled={attaching}
+                  title="Attach image"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
+            {enableReassign && reassignOptions.length > 0 && (
+              <InlineEntitySelector
+                value={reassignTarget}
+                options={reassignOptions}
+                placeholder="Assignee"
+                noneLabel="No assignee"
+                searchPlaceholder="Search assignees..."
+                emptyMessage="No assignees found."
+                onChange={setReassignTarget}
+                className="text-xs h-8"
+                renderTriggerValue={(option) => {
+                  if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                  const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                  const agent = agentId ? agentMap?.get(agentId) : null;
+                  return (
+                    <>
+                      {agent ? (
+                        <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      ) : null}
+                      <span className="truncate">{option.label}</span>
+                    </>
+                  );
+                }}
+                renderOption={(option) => {
+                  if (!option.id) return <span className="truncate">{option.label}</span>;
+                  const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                  const agent = agentId ? agentMap?.get(agentId) : null;
+                  return (
+                    <>
+                      {agent ? (
+                        <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      ) : null}
+                      <span className="truncate">{option.label}</span>
+                    </>
+                  );
+                }}
+              />
+            )}
+            <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
+              {submitting ? "Posting..." : "Comment"}
+            </Button>
+          </div>
+        </div>
+      )}
 
     </div>
   );

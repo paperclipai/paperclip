@@ -1,18 +1,23 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
-import { issuesApi } from "../api/issues";
 import type { TranscriptEntry } from "../adapters";
+import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { ExternalLink } from "lucide-react";
 import { Identity } from "./Identity";
-import { RunTranscriptView } from "./transcript/RunTranscriptView";
+import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 
 const MIN_DASHBOARD_RUNS = 4;
+const DASHBOARD_RUN_CARD_LIMIT = 4;
+const DASHBOARD_LOG_POLL_INTERVAL_MS = 15_000;
+const DASHBOARD_LOG_READ_LIMIT_BYTES = 64_000;
+const DASHBOARD_MAX_CHUNKS_PER_RUN = 40;
+const EMPTY_TRANSCRIPT: TranscriptEntry[] = [];
 
 function isRunActive(run: LiveRunForIssue): boolean {
   return run.status === "queued" || run.status === "running";
@@ -29,10 +34,12 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
   });
 
   const runs = liveRuns ?? [];
+  const visibleRuns = useMemo(() => runs.slice(0, DASHBOARD_RUN_CARD_LIMIT), [runs]);
+  const hiddenRunCount = Math.max(0, runs.length - visibleRuns.length);
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(companyId),
-    queryFn: () => issuesApi.list(companyId),
-    enabled: runs.length > 0,
+    queryKey: [...queryKeys.issues.list(companyId), "with-routine-executions"],
+    queryFn: () => issuesApi.list(companyId, { includeRoutineExecutions: true }),
+    enabled: visibleRuns.length > 0,
   });
 
   const issueById = useMemo(() => {
@@ -44,9 +51,12 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
   }, [issues]);
 
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
-    runs,
+    runs: visibleRuns,
     companyId,
-    maxChunksPerRun: 120,
+    maxChunksPerRun: DASHBOARD_MAX_CHUNKS_PER_RUN,
+    logPollIntervalMs: DASHBOARD_LOG_POLL_INTERVAL_MS,
+    logReadLimitBytes: DASHBOARD_LOG_READ_LIMIT_BYTES,
+    enableRealtimeUpdates: false,
   });
 
   return (
@@ -60,29 +70,39 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
-          {runs.map((run) => (
+          {visibleRuns.map((run) => (
             <AgentRunCard
               key={run.id}
+              companyId={companyId}
               run={run}
               issue={run.issueId ? issueById.get(run.issueId) : undefined}
-              transcript={transcriptByRun.get(run.id) ?? []}
+              transcript={transcriptByRun.get(run.id) ?? EMPTY_TRANSCRIPT}
               hasOutput={hasOutputForRun(run.id)}
               isActive={isRunActive(run)}
             />
           ))}
         </div>
       )}
+      {hiddenRunCount > 0 && (
+        <div className="mt-3 flex justify-end text-xs text-muted-foreground">
+          <Link to="/agents" className="hover:text-foreground hover:underline">
+            {hiddenRunCount} more active/recent run{hiddenRunCount === 1 ? "" : "s"}
+          </Link>
+        </div>
+      )}
     </div>
   );
 }
 
-function AgentRunCard({
+const AgentRunCard = memo(function AgentRunCard({
+  companyId,
   run,
   issue,
   transcript,
   hasOutput,
   isActive,
 }: {
+  companyId: string;
   run: LiveRunForIssue;
   issue?: Issue;
   transcript: TranscriptEntry[];
@@ -141,16 +161,13 @@ function AgentRunCard({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        <RunTranscriptView
-          entries={transcript}
-          density="compact"
-          limit={5}
-          streaming={isActive}
-          collapseStdout
-          thinkingClassName="!text-[10px] !leading-4"
-          emptyMessage={hasOutput ? "Waiting for transcript parsing..." : isActive ? "Waiting for output..." : "No transcript captured."}
+        <RunChatSurface
+          run={run}
+          transcript={transcript}
+          hasOutput={hasOutput}
+          companyId={companyId}
         />
       </div>
     </div>
   );
-}
+});

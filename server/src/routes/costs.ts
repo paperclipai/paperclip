@@ -21,6 +21,26 @@ import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 
+export function parseCostDateRange(query: Record<string, unknown>) {
+  const fromRaw = query.from as string | undefined;
+  const toRaw = query.to as string | undefined;
+  const from = fromRaw ? new Date(fromRaw) : undefined;
+  const to = toRaw ? new Date(toRaw) : undefined;
+  if (from && isNaN(from.getTime())) throw badRequest("invalid 'from' date");
+  if (to && isNaN(to.getTime())) throw badRequest("invalid 'to' date");
+  return (from || to) ? { from, to } : undefined;
+}
+
+export function parseCostLimit(query: Record<string, unknown>) {
+  const raw = Array.isArray(query.limit) ? query.limit[0] : query.limit;
+  if (raw == null || raw === "") return 100;
+  const limit = typeof raw === "number" ? raw : Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(limit) || limit <= 0 || limit > 500) {
+    throw badRequest("invalid 'limit' value");
+  }
+  return limit;
+}
+
 export function costRoutes(db: Db) {
   const router = Router();
   const heartbeat = heartbeatService(db);
@@ -92,30 +112,10 @@ export function costRoutes(db: Db) {
     res.status(201).json(event);
   });
 
-  function parseDateRange(query: Record<string, unknown>) {
-    const fromRaw = query.from as string | undefined;
-    const toRaw = query.to as string | undefined;
-    const from = fromRaw ? new Date(fromRaw) : undefined;
-    const to = toRaw ? new Date(toRaw) : undefined;
-    if (from && isNaN(from.getTime())) throw badRequest("invalid 'from' date");
-    if (to && isNaN(to.getTime())) throw badRequest("invalid 'to' date");
-    return (from || to) ? { from, to } : undefined;
-  }
-
-  function parseLimit(query: Record<string, unknown>) {
-    const raw = Array.isArray(query.limit) ? query.limit[0] : query.limit;
-    if (raw == null || raw === "") return 100;
-    const limit = typeof raw === "number" ? raw : Number.parseInt(String(raw), 10);
-    if (!Number.isFinite(limit) || limit <= 0 || limit > 500) {
-      throw badRequest("invalid 'limit' value");
-    }
-    return limit;
-  }
-
   router.get("/companies/:companyId/costs/summary", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const range = parseDateRange(req.query);
+    const range = parseCostDateRange(req.query);
     const summary = await costs.summary(companyId, range);
     res.json(summary);
   });
@@ -123,7 +123,7 @@ export function costRoutes(db: Db) {
   router.get("/companies/:companyId/costs/by-agent", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const range = parseDateRange(req.query);
+    const range = parseCostDateRange(req.query);
     const rows = await costs.byAgent(companyId, range);
     res.json(rows);
   });
@@ -131,7 +131,7 @@ export function costRoutes(db: Db) {
   router.get("/companies/:companyId/costs/by-agent-model", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const range = parseDateRange(req.query);
+    const range = parseCostDateRange(req.query);
     const rows = await costs.byAgentModel(companyId, range);
     res.json(rows);
   });
@@ -139,7 +139,7 @@ export function costRoutes(db: Db) {
   router.get("/companies/:companyId/costs/by-provider", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const range = parseDateRange(req.query);
+    const range = parseCostDateRange(req.query);
     const rows = await costs.byProvider(companyId, range);
     res.json(rows);
   });
@@ -147,7 +147,7 @@ export function costRoutes(db: Db) {
   router.get("/companies/:companyId/costs/by-biller", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const range = parseDateRange(req.query);
+    const range = parseCostDateRange(req.query);
     const rows = await costs.byBiller(companyId, range);
     res.json(rows);
   });
@@ -155,7 +155,7 @@ export function costRoutes(db: Db) {
   router.get("/companies/:companyId/costs/finance-summary", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const range = parseDateRange(req.query);
+    const range = parseCostDateRange(req.query);
     const summary = await finance.summary(companyId, range);
     res.json(summary);
   });
@@ -163,7 +163,7 @@ export function costRoutes(db: Db) {
   router.get("/companies/:companyId/costs/finance-by-biller", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const range = parseDateRange(req.query);
+    const range = parseCostDateRange(req.query);
     const rows = await finance.byBiller(companyId, range);
     res.json(rows);
   });
@@ -171,7 +171,7 @@ export function costRoutes(db: Db) {
   router.get("/companies/:companyId/costs/finance-by-kind", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const range = parseDateRange(req.query);
+    const range = parseCostDateRange(req.query);
     const rows = await finance.byKind(companyId, range);
     res.json(rows);
   });
@@ -179,8 +179,8 @@ export function costRoutes(db: Db) {
   router.get("/companies/:companyId/costs/finance-events", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const range = parseDateRange(req.query);
-    const limit = parseLimit(req.query);
+    const range = parseCostDateRange(req.query);
+    const limit = parseCostLimit(req.query);
     const rows = await finance.list(companyId, range, limit);
     res.json(rows);
   });
@@ -242,7 +242,7 @@ export function costRoutes(db: Db) {
   router.get("/companies/:companyId/costs/by-project", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const range = parseDateRange(req.query);
+    const range = parseCostDateRange(req.query);
     const rows = await costs.byProject(companyId, range);
     res.json(rows);
   });
@@ -290,13 +290,7 @@ export function costRoutes(db: Db) {
     }
 
     assertCompanyAccess(req, agent.companyId);
-
-    if (req.actor.type === "agent") {
-      if (req.actor.agentId !== agentId) {
-        res.status(403).json({ error: "Agent can only change its own budget" });
-        return;
-      }
-    }
+    assertBoard(req);
 
     const updated = await agents.update(agentId, { budgetMonthlyCents: req.body.budgetMonthlyCents });
     if (!updated) {

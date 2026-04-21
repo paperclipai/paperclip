@@ -38,19 +38,26 @@ This does:
 2. Runs `paperclipai doctor` with repair enabled
 3. Starts the server when checks pass
 
-## Tailscale/Private Auth Dev Mode
+## Bind Presets In Dev
 
-To run in `authenticated/private` mode for network access:
+Default `pnpm dev` stays in `local_trusted` with loopback-only binding.
+
+To open Paperclip to a private network with login enabled:
+
+```sh
+pnpm dev --bind lan
+```
+
+For Tailscale-only binding on a detected tailnet address:
+
+```sh
+pnpm dev --bind tailnet
+```
+
+Legacy aliases still work and map to the older broad private-network behavior:
 
 ```sh
 pnpm dev --tailscale-auth
-```
-
-This binds the server to `0.0.0.0` for private-network access.
-
-Alias:
-
-```sh
 pnpm dev --authenticated-private
 ```
 

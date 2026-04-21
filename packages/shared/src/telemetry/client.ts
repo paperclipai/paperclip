@@ -6,7 +6,10 @@ import type {
   TelemetryState,
 } from "./types.js";
 
-const DEFAULT_ENDPOINT = "https://telemetry.paperclip.ing/ingest";
+const DEFAULT_ENDPOINTS = [
+  "https://telemetry.paperclip.ing/ingest",
+  "https://rusqrrg391.execute-api.us-east-1.amazonaws.com/ingest",
+] as const;
 const BATCH_SIZE = 50;
 const SEND_TIMEOUT_MS = 5_000;
 
@@ -44,29 +47,35 @@ export class TelemetryClient {
 
     const events = this.queue.splice(0);
     const state = this.getState();
-    const endpoint = this.config.endpoint ?? DEFAULT_ENDPOINT;
+    const endpoints = this.resolveEndpoints();
     const app = this.config.app ?? "paperclip";
     const schemaVersion = this.config.schemaVersion ?? "1";
+    const body = JSON.stringify({
+      app,
+      schemaVersion,
+      installId: state.installId,
+      version: this.version,
+      events,
+    });
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
-    try {
-      await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          app,
-          schemaVersion,
-          installId: state.installId,
-          version: this.version,
-          events,
-        }),
-        signal: controller.signal,
-      });
-    } catch {
-      // Fire-and-forget: silent failure, no retries
-    } finally {
-      clearTimeout(timer);
+    for (const endpoint of endpoints) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+          signal: controller.signal,
+        });
+        if (response.ok) {
+          return;
+        }
+      } catch {
+        // Try the next built-in endpoint before dropping the batch.
+      } finally {
+        clearTimeout(timer);
+      }
     }
   }
 
@@ -101,5 +110,10 @@ export class TelemetryClient {
       this.state = this.stateFactory();
     }
     return this.state;
+  }
+
+  private resolveEndpoints(): readonly string[] {
+    const configured = this.config.endpoint?.trim();
+    return configured ? [configured] : DEFAULT_ENDPOINTS;
   }
 }

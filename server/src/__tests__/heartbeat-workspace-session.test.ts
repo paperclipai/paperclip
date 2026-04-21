@@ -7,7 +7,9 @@ import {
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
+  extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
@@ -199,44 +201,6 @@ describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
     expect(result.branchName).toBe("PAP-880-thumbs-capture-for-evals-feature");
     expect(result.source).toBe("task_session");
   });
-
-  it("falls back to realization when the persisted workspace has no local path yet", () => {
-    const result = buildRealizedExecutionWorkspaceFromPersisted({
-      base: buildResolvedWorkspace({
-        cwd: "/tmp/project-primary",
-        repoRef: "main",
-      }),
-      workspace: {
-        id: "execution-workspace-2",
-        companyId: "company-1",
-        projectId: "project-1",
-        projectWorkspaceId: "workspace-1",
-        sourceIssueId: "issue-2",
-        mode: "isolated_workspace",
-        strategyType: "git_worktree",
-        name: "PAP-999-missing-provider-ref",
-        status: "active",
-        cwd: null,
-        repoUrl: "https://example.com/paperclip.git",
-        baseRef: "main",
-        branchName: "feature/PAP-999-missing-provider-ref",
-        providerType: "git_worktree",
-        providerRef: null,
-        derivedFromExecutionWorkspaceId: null,
-        lastUsedAt: new Date(),
-        openedAt: new Date(),
-        closedAt: null,
-        cleanupEligibleAt: null,
-        cleanupReason: null,
-        config: null,
-        metadata: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    });
-
-    expect(result).toBeNull();
-  });
 });
 
 describe("stripWorkspaceRuntimeFromExecutionRunConfig", () => {
@@ -268,6 +232,18 @@ describe("stripWorkspaceRuntimeFromExecutionRunConfig", () => {
 describe("shouldResetTaskSessionForWake", () => {
   it("resets session context on assignment wake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
+  });
+
+  it("resets session context on execution review wakes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "execution_review_requested" })).toBe(true);
+  });
+
+  it("resets session context on execution approval wakes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "execution_approval_requested" })).toBe(true);
+  });
+
+  it("resets session context on execution changes-requested wakes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "execution_changes_requested" })).toBe(true);
   });
 
   it("preserves session context on timer heartbeats", () => {
@@ -354,6 +330,32 @@ describe("deriveTaskKeyWithHeartbeatFallback", () => {
 
   it("returns null for empty context", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({}, null)).toBeNull();
+  });
+});
+
+describe("comment wake batching", () => {
+  it("preserves ordered wake comment ids when coalescing queued follow-up wakes", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        wakeReason: "issue_commented",
+        wakeCommentId: "comment-1",
+        wakeCommentIds: ["comment-1"],
+        paperclipWake: {
+          latestCommentId: "comment-1",
+        },
+      },
+      {
+        issueId: "issue-1",
+        wakeReason: "issue_commented",
+        wakeCommentId: "comment-2",
+      },
+    );
+
+    expect(extractWakeCommentIds(merged)).toEqual(["comment-1", "comment-2"]);
+    expect(merged.commentId).toBe("comment-2");
+    expect(merged.wakeCommentId).toBe("comment-2");
+    expect(merged.paperclipWake).toBeUndefined();
   });
 });
 
