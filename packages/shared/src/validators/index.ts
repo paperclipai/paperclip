@@ -193,6 +193,13 @@ export {
 } from "./goal.js";
 
 export {
+  upsertAgentMemorySchema,
+  deleteAgentMemorySchema,
+  type UpsertAgentMemory,
+  type DeleteAgentMemory,
+} from "./agent-memory.js";
+
+export {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
