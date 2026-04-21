@@ -7,6 +7,7 @@ export type HeartbeatRunStopReason =
   | "budget_paused"
   | "paused"
   | "process_lost"
+  | "adapter_quarantined"
   | "adapter_failed";
 
 export interface HeartbeatRunTimeoutPolicy {
@@ -78,6 +79,9 @@ export function inferHeartbeatRunStopReason(input: {
   if (input.outcome === "succeeded") return "completed";
   if (input.outcome === "timed_out") return "timeout";
   if (input.outcome === "failed" && input.errorCode === "process_lost") return "process_lost";
+  // CLI-156: adapter_quarantined must NOT collapse back into adapter_failed
+  // in dashboards / run summaries — it is a distinct breaker state.
+  if (input.outcome === "failed" && input.errorCode === "adapter_quarantined") return "adapter_quarantined";
   if (input.outcome === "cancelled") {
     const message = (input.errorMessage ?? "").toLowerCase();
     if (message.includes("budget")) return "budget_paused";

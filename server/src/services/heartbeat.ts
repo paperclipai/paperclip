@@ -38,6 +38,7 @@ import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
+import { classifyAdapterFailure } from "../adapters/adapter-failure-reasons.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
@@ -5147,11 +5148,19 @@ export function heartbeatService(db: Db) {
           : null;
 
       const persistedResultJson = mergeHeartbeatRunResultJson(
-        mergeRunStopMetadataForAgent(agent, outcome, {
-          resultJson: adapterResult.resultJson ?? null,
-          errorCode: runErrorCode,
-          errorMessage: runErrorMessage,
-        }),
+        {
+          ...mergeRunStopMetadataForAgent(agent, outcome, {
+            resultJson: adapterResult.resultJson ?? null,
+            errorCode: runErrorCode,
+            errorMessage: runErrorMessage,
+          }),
+          // CLI-156: surface adapter-provided classification in the persisted
+          // run result so dashboards/breaker counters can read it from the run
+          // record. Only populated when the adapter returned a classification.
+          ...(adapterResult.adapterFailureReason
+            ? { adapterFailureReason: adapterResult.adapterFailureReason }
+            : {}),
+        },
         adapterResult.summary ?? null,
       );
 
@@ -5240,11 +5249,16 @@ export function heartbeatService(db: Db) {
       }
       await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
-      const message = redactCurrentUserText(
-        err instanceof Error ? err.message : "Unknown adapter failure",
-        await getCurrentUserRedactionOptions(),
-      );
+      const rawMessage = err instanceof Error ? err.message : "Unknown adapter failure";
+      const message = redactCurrentUserText(rawMessage, await getCurrentUserRedactionOptions());
       logger.error({ err, runId }, "heartbeat execution failed");
+
+      // CLI-156: classify the thrown failure so the breaker can distinguish
+      // process_adapter_missing_command from other errors. errorCode remains
+      // the operator/UI surface (preserves claude_auth_required CTA).
+      const classification = classifyAdapterFailure(err, agent.adapterType);
+      const surfaceErrorCode = classification.surfaceErrorCode;
+      const adapterFailureReason = classification.adapterFailureReason;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
@@ -5257,12 +5271,15 @@ export function heartbeatService(db: Db) {
 
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
-        errorCode: "adapter_failed",
+        errorCode: surfaceErrorCode,
         finishedAt: new Date(),
-        resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
-          errorCode: "adapter_failed",
-          errorMessage: message,
-        }),
+        resultJson: {
+          ...mergeRunStopMetadataForAgent(agent, "failed", {
+            errorCode: surfaceErrorCode,
+            errorMessage: message,
+          }),
+          adapterFailureReason,
+        },
         stdoutExcerpt,
         stderrExcerpt,
         logBytes: logSummary?.bytes,
@@ -5317,15 +5334,27 @@ export function heartbeatService(db: Db) {
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
+          // CLI-156: classify setup-time throws (missing command, missing url,
+          // ENOENT spawn, etc.) so the breaker counts them. errorCode remains
+          // the operator/UI surface.
+          const outerClassification = classifyAdapterFailure(
+            outerErr,
+            setupFailureAgent?.adapterType ?? null,
+          );
+          const outerSurfaceErrorCode = outerClassification.surfaceErrorCode;
+          const outerAdapterFailureReason = outerClassification.adapterFailureReason;
           await setRunStatus(runId, "failed", {
             error: message,
-            errorCode: "adapter_failed",
+            errorCode: outerSurfaceErrorCode,
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
-              resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "adapter_failed",
-                errorMessage: message,
-              }),
+              resultJson: {
+                ...mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
+                  errorCode: outerSurfaceErrorCode,
+                  errorMessage: message,
+                }),
+                adapterFailureReason: outerAdapterFailureReason,
+              },
             } : {}),
           }).catch(() => undefined);
           await setWakeupStatus(run.wakeupRequestId, "failed", {

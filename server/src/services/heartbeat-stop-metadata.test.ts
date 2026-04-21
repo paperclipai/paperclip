@@ -83,4 +83,28 @@ describe("heartbeat stop metadata", () => {
       timeoutFired: false,
     });
   });
+
+  it("keeps adapter_quarantined stop reason distinct from adapter_failed (CLI-156)", () => {
+    // CLI-156 acceptance criterion: dashboards must NOT collapse the quarantine
+    // state back into plain adapter_failed.
+    const metadata = buildHeartbeatRunStopMetadata({
+      adapterType: "copilot_local",
+      adapterConfig: {},
+      outcome: "failed",
+      errorCode: "adapter_quarantined",
+      errorMessage: "adapter copilot_local is quarantined",
+    });
+    expect(metadata.stopReason).toBe("adapter_quarantined");
+
+    // Other failed runs still classify as adapter_failed.
+    expect(
+      buildHeartbeatRunStopMetadata({
+        adapterType: "copilot_local",
+        adapterConfig: {},
+        outcome: "failed",
+        errorCode: "adapter_failed",
+        errorMessage: "boom",
+      }).stopReason,
+    ).toBe("adapter_failed");
+  });
 });

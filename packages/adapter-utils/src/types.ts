@@ -68,6 +68,15 @@ export interface AdapterExecutionResult {
   errorMessage?: string | null;
   errorCode?: string | null;
   errorMeta?: Record<string, unknown>;
+  /**
+   * Circuit-breaker failure classification (CLI-121 / CLI-156).
+   *
+   * This is the breaker-only counter input — kept separate from `errorCode`
+   * which remains the operator/UI surface. Populated either by adapters that
+   * return classified results directly, or by `classifyAdapterFailure` in the
+   * heartbeat catch paths for thrown startup/config failures.
+   */
+  adapterFailureReason?: string | null;
   usage?: UsageSummary;
   /**
    * Legacy single session id output. Prefer `sessionParams` + `sessionDisplayId`.
