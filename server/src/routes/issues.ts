@@ -1404,10 +1404,11 @@ export function issueRoutes(
     }
     const resolvedVisibility: "private" | "company" =
       req.body.visibility ?? (req.body.projectId ? "company" : "private");
-    const { dueDate: dueDateRaw, ...createBody } = req.body;
+    const { dueDate: dueDateRaw, workLeadDays: workLeadDaysRaw, ...createBody } = req.body;
     const issue = await svc.create(companyId, {
       ...createBody,
       ...(dueDateRaw !== undefined ? { dueDate: dueDateRaw ? new Date(dueDateRaw) : null } : {}),
+      ...(workLeadDaysRaw !== undefined ? { workLeadDays: workLeadDaysRaw } : {}),
       visibility: resolvedVisibility,
       executionPolicy,
       createdByAgentId: actor.agentId,

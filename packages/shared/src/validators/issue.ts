@@ -136,6 +136,7 @@ export const createIssueSchema = z.object({
   labelIds: z.array(z.string().uuid()).optional(),
   visibility: z.enum(["private", "company"]).optional(),
   dueDate: z.string().datetime().nullable().optional(),
+  workLeadDays: z.number().int().min(0).max(365).nullable().optional(),
 });
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;

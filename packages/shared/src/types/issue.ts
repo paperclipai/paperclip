@@ -207,6 +207,7 @@ export interface Issue {
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   dueDate: Date | null;
+  workLeadDays: number | null;
   startedAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;

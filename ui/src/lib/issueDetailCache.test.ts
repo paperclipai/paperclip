@@ -50,6 +50,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     hiddenAt: null,
     visibility: "company",
     dueDate: null,
+    workLeadDays: null,
     createdAt: new Date("2026-04-11T00:00:00.000Z"),
     updatedAt: new Date("2026-04-11T00:00:00.000Z"),
     labels: [],

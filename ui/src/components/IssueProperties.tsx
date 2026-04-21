@@ -31,7 +31,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, Lock, Globe, X as XIcon, Calendar } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, Lock, Globe, X as XIcon, Calendar, Play } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
@@ -112,6 +112,26 @@ function formatDueDateRelative(date: Date | string): string {
 
 function dueDateInputValue(date: Date | string): string {
   return new Date(date).toISOString().split("T")[0]!;
+}
+
+const LEAD_DAYS_PRESETS = [0, 1, 3, 7, 14] as const;
+
+function computeStartDate(dueDate: Date | string, leadDays: number): Date {
+  const due = new Date(dueDate);
+  const dueDayStart = Date.UTC(due.getUTCFullYear(), due.getUTCMonth(), due.getUTCDate());
+  return new Date(dueDayStart - Math.max(0, Math.floor(leadDays)) * 86_400_000);
+}
+
+function formatStartRelative(dueDate: Date | string, leadDays: number): string {
+  const start = computeStartDate(dueDate, leadDays);
+  const now = new Date();
+  const diffDays = Math.round((start.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+  const leadLabel = leadDays === 0 ? "on due date" : leadDays === 1 ? "1d before" : `${leadDays}d before`;
+  if (diffDays < 0) return `Started ${Math.abs(diffDays)}d ago (${leadLabel})`;
+  if (diffDays === 0) return `Starts today (${leadLabel})`;
+  if (diffDays === 1) return `Starts tomorrow (${leadLabel})`;
+  if (diffDays <= 30) return `Starts in ${diffDays}d (${leadLabel})`;
+  return `Starts ${start.toLocaleDateString()}`;
 }
 
 /** Renders a Popover on desktop, or an inline collapsible section on mobile (inline mode). */
@@ -334,6 +354,7 @@ export function IssueProperties({
   const [addCollaboratorOpen, setAddCollaboratorOpen] = useState(false);
   const [collaboratorSearch, setCollaboratorSearch] = useState("");
   const [confirmMakeCompanyOpen, setConfirmMakeCompanyOpen] = useState(false);
+  const [startOpen, setStartOpen] = useState(false);
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -1249,6 +1270,61 @@ export function IssueProperties({
             </label>
           )}
         </PropertyRow>
+
+        {issue.dueDate ? (
+          <PropertyRow label="Start">
+            <Play className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <Popover open={startOpen} onOpenChange={setStartOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors text-left"
+                  title="Change lead time"
+                >
+                  <span className="text-sm">
+                    {issue.workLeadDays != null
+                      ? formatStartRelative(issue.dueDate, issue.workLeadDays)
+                      : "Start when ready"}
+                  </span>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="p-1 w-56" align="end" collisionPadding={16}>
+                <div className="flex flex-col">
+                  {LEAD_DAYS_PRESETS.map((days) => {
+                    const selected = issue.workLeadDays === days;
+                    return (
+                      <button
+                        key={days}
+                        type="button"
+                        className={cn(
+                          "flex items-center justify-between gap-2 px-2 py-1.5 text-sm rounded hover:bg-accent/50 text-left",
+                          selected && "bg-accent/50",
+                        )}
+                        onClick={() => {
+                          onUpdate({ workLeadDays: days });
+                          setStartOpen(false);
+                        }}
+                      >
+                        <span>{days === 0 ? "On due date" : days === 1 ? "1 day before" : `${days} days before`}</span>
+                        {selected ? <Check className="h-3.5 w-3.5" /> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </PopoverContent>
+            </Popover>
+            {issue.workLeadDays != null ? (
+              <button
+                type="button"
+                onClick={() => onUpdate({ workLeadDays: null })}
+                className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+                title="Clear lead time"
+              >
+                <XIcon className="h-3 w-3" />
+              </button>
+            ) : null}
+          </PropertyRow>
+        ) : null}
 
         <PropertyPicker
           inline={inline}

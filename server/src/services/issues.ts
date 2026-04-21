@@ -568,6 +568,7 @@ const issueListSelect = {
   executionWorkspaceSettings: sql<null>`null`,
   visibility: issues.visibility,
   dueDate: issues.dueDate,
+  workLeadDays: issues.workLeadDays,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,

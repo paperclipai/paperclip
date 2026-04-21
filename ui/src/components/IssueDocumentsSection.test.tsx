@@ -236,6 +236,7 @@ function createIssue(): Issue {
     hiddenAt: null,
     visibility: "company",
     dueDate: null,
+    workLeadDays: null,
     labels: [],
     labelIds: [],
     planDocument: createIssueDocument(),

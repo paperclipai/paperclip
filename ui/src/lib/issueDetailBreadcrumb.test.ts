@@ -71,6 +71,7 @@ describe("issueDetailBreadcrumb", () => {
       hiddenAt: null,
       visibility: "company",
       dueDate: null,
+      workLeadDays: null,
       project: {
         id: "project-1",
         companyId: "company-1",

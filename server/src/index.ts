@@ -31,6 +31,7 @@ import { checkSchemaIntegrity } from "./routes/health.js";
 import { initTelegramNotifications, notifyOps } from "./services/telegram.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
+  deadlineWardenService,
   feedbackService,
   heartbeatService,
   instanceSettingsService,
@@ -606,6 +607,7 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
     const routines = routineService(db as any);
+    const deadlineWarden = deadlineWardenService(db as any, { heartbeat });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
@@ -646,6 +648,17 @@ export async function startServer(): Promise<StartedServer> {
         })
         .catch((err) => {
           logger.error({ err }, "routine scheduler tick failed");
+        });
+
+      void deadlineWarden
+        .tick(new Date())
+        .then((result) => {
+          if (result.promoted > 0) {
+            logger.info({ ...result }, "deadline warden promoted backlog issues");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "deadline warden tick failed");
         });
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure

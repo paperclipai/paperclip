@@ -53,6 +53,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     hiddenAt: null,
     visibility: "company",
     dueDate: null,
+    workLeadDays: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,

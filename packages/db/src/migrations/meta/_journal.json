@@ -477,6 +477,13 @@
       "when": 1777939440000,
       "tag": "0067_issue_privacy",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1777939500000,
+      "tag": "0068_issue_work_lead_days",
+      "breakpoints": true
     }
   ]
 }

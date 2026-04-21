@@ -16,6 +16,7 @@ export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { credentialService, resolveCredentialEnv } from "./credentials.js";
 export { routineService } from "./routines.js";
+export { deadlineWardenService, shouldStartWork } from "./deadline-warden.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";

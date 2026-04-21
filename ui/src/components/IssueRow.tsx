@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Calendar, Lock, X } from "lucide-react";
+import { Calendar, Lock, Play, X } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -86,6 +86,30 @@ export function IssueRow({
       </span>
     );
   })();
+  const startBadge = (() => {
+    if (issue.status !== "backlog") return null;
+    if (!issue.dueDate || issue.workLeadDays == null) return null;
+    const due = new Date(issue.dueDate);
+    const dueDayStart = Date.UTC(due.getUTCFullYear(), due.getUTCMonth(), due.getUTCDate());
+    const start = new Date(dueDayStart - Math.max(0, Math.floor(issue.workLeadDays)) * 86_400_000);
+    const now = new Date();
+    const diffDays = Math.round((start.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    const label =
+      diffDays <= 0
+        ? "starting"
+        : diffDays === 1
+          ? "starts 1d"
+          : `starts ${diffDays}d`;
+    return (
+      <span
+        className="hidden md:inline-flex items-center gap-1 shrink-0 text-[10px] font-medium text-muted-foreground/70"
+        title={`Work starts ${start.toLocaleDateString()}`}
+      >
+        <Play className="h-2.5 w-2.5" />
+        {label}
+      </span>
+    );
+  })();
 
   return (
     <Link
@@ -138,8 +162,9 @@ export function IssueRow({
           ) : null}
         </span>
       </span>
-      {(desktopTrailing || trailingMeta || dueBadge) ? (
+      {(desktopTrailing || trailingMeta || dueBadge || startBadge) ? (
         <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-3 sm:flex sm:gap-3">
+          {startBadge}
           {dueBadge}
           {desktopTrailing}
           {trailingMeta ? (

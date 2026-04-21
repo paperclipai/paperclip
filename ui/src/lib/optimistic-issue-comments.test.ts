@@ -360,6 +360,7 @@ describe("optimistic issue comments", () => {
         hiddenAt: null,
         visibility: "company",
         dueDate: null,
+        workLeadDays: null,
         createdAt: new Date("2026-03-28T14:00:00.000Z"),
         updatedAt: new Date("2026-03-28T14:00:00.000Z"),
       },
@@ -431,6 +432,7 @@ describe("optimistic issue comments", () => {
         hiddenAt: null,
         visibility: "company",
         dueDate: null,
+        workLeadDays: null,
         labelIds: ["label-1", "label-2"],
         labels: [
           {
@@ -605,6 +607,7 @@ describe("optimistic issue comments", () => {
         hiddenAt: null,
         visibility: "company",
         dueDate: null,
+        workLeadDays: null,
         labelIds: [],
         labels: [],
         blockedBy: [],
@@ -648,6 +651,7 @@ describe("optimistic issue comments", () => {
         hiddenAt: null,
         visibility: "company",
         dueDate: null,
+        workLeadDays: null,
         labelIds: [],
         labels: [],
         blockedBy: [],
