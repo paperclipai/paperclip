@@ -22,7 +22,9 @@ export function registerAuth(app: FastifyInstance, opts: AuthOptions): void {
       return reply;
     }
     const given = Buffer.from(provided, "utf8");
-    if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+    const candidate = given.length === expected.length ? given : expected;
+    const ok = timingSafeEqual(candidate, expected) && given.length === expected.length;
+    if (!ok) {
       reply.code(401).send({ error: "invalid X-DPO-Key" });
       return reply;
     }

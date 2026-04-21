@@ -40,4 +40,22 @@ describe("auth", () => {
     const res = await app.inject({ method: "GET", url: "/health" });
     expect(res.statusCode).toBe(200);
   });
+
+  it("401 when header is empty string", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/protected",
+      headers: { "x-dpo-key": "" },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("401 when header is sent multiple times (array)", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/protected",
+      headers: { "x-dpo-key": ["wrong", "correct-secret-32-bytes-xxxxxxxxxxx"] },
+    });
+    expect(res.statusCode).toBe(401);
+  });
 });
