@@ -22,20 +22,20 @@ describe("issue date ranges", () => {
     expect(firstOfMonth("2026-04-19")).toBe("2026-04-01");
   });
 
-  it("starts month grids on Sunday and includes trailing days", () => {
+  it("starts month grids on Monday and includes trailing days", () => {
     const grid = monthGrid("2026-04-01", "2026-04-19");
 
-    expect(grid[0]?.date).toBe("2026-03-29");
+    expect(grid[0]?.date).toBe("2026-03-30");
     expect(grid[0]?.inCurrentMonth).toBe(false);
-    expect(grid[3]?.date).toBe("2026-04-01");
-    expect(grid.at(-1)?.date).toBe("2026-05-02");
+    expect(grid[2]?.date).toBe("2026-04-01");
+    expect(grid.at(-1)?.date).toBe("2026-05-03");
     expect(grid.find((day) => day.date === "2026-04-19")?.isToday).toBe(true);
   });
 
   it("reports the visible query range for a month", () => {
     expect(visibleMonthRange("2026-04-19", "2026-04-19")).toEqual({
-      from: "2026-03-29",
-      to: "2026-05-02",
+      from: "2026-03-30",
+      to: "2026-05-03",
     });
   });
 });
