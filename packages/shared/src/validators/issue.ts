@@ -10,6 +10,7 @@ import {
   ISSUE_THREAD_INTERACTION_KINDS,
   ISSUE_THREAD_INTERACTION_STATUSES,
 } from "../constants.js";
+import { isAllowedStoredLinkUrl, STORED_LINK_URL_MAX_LENGTH } from "../link-url.js";
 
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -460,15 +461,12 @@ export type RespondIssueThreadInteraction = z.infer<typeof respondIssueThreadInt
 const issueLinkUrlSchema = z
   .string()
   .trim()
-  .url()
-  .max(2048)
-  .refine((value) => {
-    try {
-      return ["http:", "https:"].includes(new URL(value).protocol);
-    } catch {
-      return false;
-    }
-  }, "Link URL must start with http:// or https://");
+  .min(1)
+  .max(STORED_LINK_URL_MAX_LENGTH)
+  .refine(
+    isAllowedStoredLinkUrl,
+    "Link URL must use http(s), an iCloud Notes link, or an Apple Notes app link.",
+  );
 
 export const createIssueLinkSchema = z.object({
   url: issueLinkUrlSchema,

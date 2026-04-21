@@ -1,10 +1,19 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ContextSourceStatus, ProjectQuickLink, ProjectQuickLinkPreview } from "@paperclipai/shared";
-import { Check, ExternalLink, FileText, ImageIcon, Link2, Loader2, Pencil, Plus, Target, Trash2, X } from "lucide-react";
+import {
+  deriveExternalLinkTitle,
+  isAllowedStoredLinkUrl,
+  isAppleNotesLinkUrl,
+  isHttpUrl,
+  type ContextSourceStatus,
+  type ProjectQuickLink,
+  type ProjectQuickLinkPreview,
+} from "@paperclipai/shared";
+import { Check, ExternalLink, FileText, ImageIcon, Link2, Loader2, Pencil, Plus, StickyNote, Target, Trash2, X } from "lucide-react";
 import { projectContextApi } from "../api/projectContext";
 import { projectQuickLinksApi } from "../api/projectQuickLinks";
+import { AppleNotesLinkHelp } from "./AppleNotesLinkHelp";
 import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
@@ -48,6 +57,9 @@ function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
+const QUICK_LINK_URL_ERROR = "Paste a valid http(s), iCloud Notes, or Apple Notes app link.";
+const APPLE_NOTES_URL_ERROR = "Paste an iCloud Notes link or Apple Notes app deep link.";
+
 type QuickLinkFormInput = {
   title?: string;
   url: string;
@@ -56,6 +68,8 @@ type QuickLinkFormInput = {
   imageUrl?: string | null;
   faviconUrl?: string | null;
 };
+
+type QuickLinkFormMode = "generic" | "apple-note";
 
 function previewMetadata(preview: ProjectQuickLinkPreview | null) {
   if (!preview) return {};
@@ -76,6 +90,7 @@ function QuickLinkForm({
   onPreview,
   onSubmit,
   onCancel,
+  mode = "generic",
 }: {
   initialTitle?: string;
   initialUrl?: string;
@@ -85,21 +100,31 @@ function QuickLinkForm({
   onPreview: (url: string) => Promise<ProjectQuickLinkPreview>;
   onSubmit: (input: QuickLinkFormInput) => void;
   onCancel?: () => void;
+  mode?: QuickLinkFormMode;
 }) {
-  const [title, setTitle] = useState(initialTitle);
+  const [title, setTitle] = useState(initialTitle || (mode === "apple-note" ? "Apple Note" : ""));
   const [url, setUrl] = useState(initialUrl);
   const [titleTouched, setTitleTouched] = useState(false);
   const [preview, setPreview] = useState<ProjectQuickLinkPreview | null>(initialPreview);
   const [previewUrl, setPreviewUrl] = useState(initialPreview?.url ?? initialUrl);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [previewPending, setPreviewPending] = useState(false);
   const previewRequestId = useRef(0);
   const trimmedUrl = url.trim();
   const previewHost = preview?.siteName ?? (preview ? hostFromUrl(preview.url) : null);
+  const namePlaceholder = mode === "apple-note" ? "Apple Note" : "Name";
+  const urlPlaceholder = mode === "apple-note" ? "Paste iCloud Notes or app link..." : "https://...";
 
   const runPreview = useCallback(async (candidateUrl = url) => {
     const nextUrl = candidateUrl.trim();
     if (!nextUrl || previewPending || previewUrl === nextUrl) return;
+    if (!isHttpUrl(nextUrl) || isAppleNotesLinkUrl(nextUrl)) {
+      setPreview(null);
+      setPreviewUrl("");
+      setPreviewError(null);
+      return;
+    }
     const requestId = previewRequestId.current + 1;
     previewRequestId.current = requestId;
     setPreviewPending(true);
@@ -122,6 +147,20 @@ function QuickLinkForm({
     }
   }, [onPreview, previewPending, previewUrl, title, titleTouched, url]);
 
+  const submit = () => {
+    if (!trimmedUrl) return;
+    if (mode === "apple-note" ? !isAppleNotesLinkUrl(trimmedUrl) : !isAllowedStoredLinkUrl(trimmedUrl)) {
+      setFormError(mode === "apple-note" ? APPLE_NOTES_URL_ERROR : QUICK_LINK_URL_ERROR);
+      return;
+    }
+    const trimmedTitle = title.trim();
+    onSubmit({
+      title: trimmedTitle || (mode === "apple-note" ? deriveExternalLinkTitle(trimmedUrl) : undefined),
+      url: trimmedUrl,
+      ...previewMetadata(preview),
+    });
+  };
+
   return (
     <div className="space-y-2 rounded-md border border-border/70 bg-muted/20 p-2">
       <Input
@@ -130,7 +169,7 @@ function QuickLinkForm({
           setTitleTouched(true);
           setTitle(event.target.value);
         }}
-        placeholder="Name"
+        placeholder={namePlaceholder}
         className="h-8 text-xs"
         aria-label="Quick link name"
       />
@@ -142,6 +181,7 @@ function QuickLinkForm({
             setPreview(null);
           }
           setPreviewError(null);
+          setFormError(null);
         }}
         onBlur={() => {
           void runPreview();
@@ -152,10 +192,17 @@ function QuickLinkForm({
             void runPreview(input.value);
           }, 0);
         }}
-        placeholder="https://..."
+        placeholder={urlPlaceholder}
         className="h-8 text-xs"
         aria-label="Quick link URL"
+        aria-invalid={Boolean(formError)}
       />
+      {mode === "apple-note" ? (
+        <div className="flex items-center gap-1 px-1 text-[11px] text-muted-foreground">
+          <StickyNote className="h-3 w-3 shrink-0 text-amber-500" />
+          Apple Note
+        </div>
+      ) : null}
       {previewPending ? (
         <p className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
           <Loader2 className="h-3 w-3 animate-spin" />
@@ -179,6 +226,7 @@ function QuickLinkForm({
           </div>
         </div>
       ) : null}
+      {formError ? <p className="px-1 text-xs text-destructive">{formError}</p> : null}
       <div className="flex items-center justify-end gap-1.5">
         {onCancel ? (
           <Button type="button" variant="ghost" size="xs" className="h-7 px-2" onClick={onCancel}>
@@ -191,7 +239,7 @@ function QuickLinkForm({
           size="xs"
           className="h-7 px-2"
           disabled={!trimmedUrl || isPending || previewPending}
-          onClick={() => onSubmit({ title: title.trim() || undefined, url: trimmedUrl, ...previewMetadata(preview) })}
+          onClick={submit}
         >
           {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
           {submitLabel}
@@ -218,6 +266,7 @@ function QuickLinkRow({
   onSave: (input: QuickLinkFormInput) => void;
   onRemove: () => void;
 }) {
+  const isAppleNote = isAppleNotesLinkUrl(link.url);
   const preview = useMemo<ProjectQuickLinkPreview | null>(() => {
     if (!link.siteName && !link.description && !link.imageUrl && !link.faviconUrl) return null;
     return {
@@ -254,7 +303,9 @@ function QuickLinkRow({
         className="flex min-w-0 flex-1 gap-2 text-sm text-foreground no-underline"
       >
         <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background">
-          {link.faviconUrl ? (
+          {isAppleNote ? (
+            <StickyNote className="h-3.5 w-3.5 text-amber-500" />
+          ) : link.faviconUrl ? (
             <img src={link.faviconUrl} alt="" className="h-4 w-4 rounded-sm" />
           ) : (
             <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
@@ -263,7 +314,9 @@ function QuickLinkRow({
         <span className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] gap-2">
           <span className="min-w-0">
             <span className="block truncate">{link.title}</span>
-            <span className="block truncate text-xs text-muted-foreground">{link.siteName ?? hostFromUrl(link.url)}</span>
+            <span className="block truncate text-xs text-muted-foreground">
+              {isAppleNote ? "Apple Note" : link.siteName ?? hostFromUrl(link.url)}
+            </span>
             {link.description ? (
               <span className="mt-0.5 block line-clamp-2 text-xs leading-4 text-muted-foreground">{link.description}</span>
             ) : null}
@@ -314,7 +367,7 @@ export function ProjectTasksRail({
   const { pushToast } = useToast();
   const quickLinksKey = queryKeys.projects.quickLinks(companyId, projectId);
   const contextKey = queryKeys.projects.context(companyId, projectId);
-  const [adding, setAdding] = useState(false);
+  const [addingMode, setAddingMode] = useState<QuickLinkFormMode | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const quickLinksQuery = useQuery({
@@ -333,7 +386,7 @@ export function ProjectTasksRail({
     mutationFn: (input: QuickLinkFormInput) =>
       projectQuickLinksApi.create(companyId, projectId, input),
     onSuccess: () => {
-      setAdding(false);
+      setAddingMode(null);
       invalidateQuickLinks();
       pushToast({ title: "Quick link added", tone: "success" });
     },
@@ -400,16 +453,31 @@ export function ProjectTasksRail({
             <Link2 className="h-4 w-4 shrink-0 text-muted-foreground" />
             <h3 className="truncate text-sm font-semibold">Quick Links</h3>
           </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-xs"
-            className="h-7 w-7 shrink-0"
-            onClick={() => setAdding((value) => !value)}
-            aria-label="Add quick link"
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
+          <div className="flex shrink-0 items-center gap-1">
+            <AppleNotesLinkHelp />
+            <Button
+              type="button"
+              variant={addingMode === "apple-note" ? "secondary" : "outline"}
+              size="xs"
+              className="h-7 px-2"
+              onClick={() => setAddingMode((value) => value === "apple-note" ? null : "apple-note")}
+              aria-label="Add Apple Note"
+              title="Add Apple Note"
+            >
+              <StickyNote className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Apple Note</span>
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              className="h-7 w-7 shrink-0"
+              onClick={() => setAddingMode((value) => value === "generic" ? null : "generic")}
+              aria-label="Add quick link"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
 
         <div className="space-y-1.5">
@@ -434,20 +502,21 @@ export function ProjectTasksRail({
             <button
               type="button"
               className="flex w-full items-center gap-2 rounded-md border border-dashed border-border px-3 py-3 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/20 hover:text-foreground"
-              onClick={() => setAdding(true)}
+              onClick={() => setAddingMode("generic")}
             >
               <Plus className="h-3.5 w-3.5 shrink-0" />
               Add link
             </button>
           )}
 
-          {adding ? (
+          {addingMode ? (
             <QuickLinkForm
+              mode={addingMode}
               submitLabel="Add"
               isPending={createQuickLink.isPending}
               onPreview={(url) => projectQuickLinksApi.preview(companyId, projectId, { url })}
               onSubmit={(input) => createQuickLink.mutate(input)}
-              onCancel={() => setAdding(false)}
+              onCancel={() => setAddingMode(null)}
             />
           ) : null}
         </div>

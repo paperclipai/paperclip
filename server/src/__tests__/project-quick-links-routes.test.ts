@@ -8,9 +8,9 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import type { ProjectQuickLinkPreviewFetcherOptions } from "../services/project-quick-link-preview.ts";
-import { projectQuickLinkRoutes } from "../routes/project-quick-links.js";
-import { errorHandler } from "../middleware/index.js";
-import { createProjectQuickLinkPreviewFetcher } from "../services/project-quick-link-preview.js";
+
+vi.unmock("../services/index.js");
+vi.unmock("../services/index.ts");
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -22,6 +22,63 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 type ActorMode = "local" | "company-1-only";
+
+function resetProjectQuickLinkRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
+  vi.doUnmock("../routes/project-quick-links.js");
+  vi.doUnmock("../routes/project-quick-links.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/project-quick-links.js");
+  vi.doUnmock("../services/project-quick-links.ts");
+  vi.doUnmock("../services/project-quick-link-preview.js");
+  vi.doUnmock("../services/project-quick-link-preview.ts");
+}
+
+function registerRouteActuals() {
+  const authzActual = async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts");
+  const middlewareActual = async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts");
+  const validateActual = async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts");
+  const loggerActual = async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts");
+  const servicesIndexActual = async () =>
+    vi.importActual<typeof import("../services/index.ts")>("../services/index.ts");
+  const quickLinksServiceActual = async () =>
+    vi.importActual<typeof import("../services/project-quick-links.ts")>("../services/project-quick-links.ts");
+  const quickLinkPreviewActual = async () =>
+    vi.importActual<typeof import("../services/project-quick-link-preview.ts")>(
+      "../services/project-quick-link-preview.ts",
+    );
+  vi.doMock("../routes/authz.js", authzActual);
+  vi.doMock("../routes/authz.ts", authzActual);
+  vi.doMock("../middleware/index.js", middlewareActual);
+  vi.doMock("../middleware/index.ts", middlewareActual);
+  vi.doMock("../middleware/validate.js", validateActual);
+  vi.doMock("../middleware/validate.ts", validateActual);
+  vi.doMock("../middleware/logger.js", loggerActual);
+  vi.doMock("../middleware/logger.ts", loggerActual);
+  vi.doMock("../services/index.js", servicesIndexActual);
+  vi.doMock("../services/index.ts", servicesIndexActual);
+  vi.doMock("../services/project-quick-links.js", quickLinksServiceActual);
+  vi.doMock("../services/project-quick-links.ts", quickLinksServiceActual);
+  vi.doMock("../services/project-quick-link-preview.js", quickLinkPreviewActual);
+  vi.doMock("../services/project-quick-link-preview.ts", quickLinkPreviewActual);
+}
 
 function publicLookup() {
   return Promise.resolve([{ address: "93.184.216.34", family: 4 }]);
@@ -37,6 +94,7 @@ function htmlResponse(html: string, init?: ResponseInit) {
 describeEmbeddedPostgres("project quick link routes", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let routeImportSeq = 0;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-project-quick-links-");
@@ -48,6 +106,8 @@ describeEmbeddedPostgres("project quick link routes", () => {
     await db.delete(projectQuickLinks);
     await db.delete(projects);
     await db.delete(companies);
+    resetProjectQuickLinkRouteModules();
+    vi.resetAllMocks();
   });
 
   afterAll(async () => {
@@ -58,6 +118,15 @@ describeEmbeddedPostgres("project quick link routes", () => {
     actorMode: ActorMode = "local",
     previewFetcherOptions?: ProjectQuickLinkPreviewFetcherOptions,
   ) {
+    resetProjectQuickLinkRouteModules();
+    registerRouteActuals();
+    routeImportSeq += 1;
+    const routeModulePath = `../routes/project-quick-links.ts?project-quick-links-routes-${routeImportSeq}`;
+    const [{ projectQuickLinkRoutes }, { errorHandler }] = await Promise.all([
+      import(routeModulePath) as Promise<typeof import("../routes/project-quick-links.ts")>,
+      import("../middleware/index.ts"),
+    ]);
+    const { createProjectQuickLinkPreviewFetcher } = await import("../services/project-quick-link-preview.ts");
     const previewFetcher = previewFetcherOptions
       ? createProjectQuickLinkPreviewFetcher(previewFetcherOptions)
       : undefined;
@@ -236,6 +305,25 @@ describeEmbeddedPostgres("project quick link routes", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Validation error");
+  });
+
+  it("stores Apple Notes quick links without preview metadata", async () => {
+    const { companyId, projectId } = await seedProject();
+    const res = await request(await createApp())
+      .post(`/api/companies/${companyId}/projects/${projectId}/quick-links`)
+      .send({ url: "applenotes://showNote?identifier=ABCDEF" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body).toMatchObject({
+      companyId,
+      projectId,
+      title: "Apple Note",
+      url: "applenotes://showNote?identifier=ABCDEF",
+      siteName: null,
+      description: null,
+      imageUrl: null,
+      faviconUrl: null,
+    });
   });
 
   it("persists rich metadata and clears stale metadata when URLs change without preview data", async () => {
