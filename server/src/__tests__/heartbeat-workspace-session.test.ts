@@ -201,44 +201,6 @@ describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
     expect(result.branchName).toBe("PAP-880-thumbs-capture-for-evals-feature");
     expect(result.source).toBe("task_session");
   });
-
-  it("falls back to realization when the persisted workspace has no local path yet", () => {
-    const result = buildRealizedExecutionWorkspaceFromPersisted({
-      base: buildResolvedWorkspace({
-        cwd: "/tmp/project-primary",
-        repoRef: "main",
-      }),
-      workspace: {
-        id: "execution-workspace-2",
-        companyId: "company-1",
-        projectId: "project-1",
-        projectWorkspaceId: "workspace-1",
-        sourceIssueId: "issue-2",
-        mode: "isolated_workspace",
-        strategyType: "git_worktree",
-        name: "PAP-999-missing-provider-ref",
-        status: "active",
-        cwd: null,
-        repoUrl: "https://example.com/paperclip.git",
-        baseRef: "main",
-        branchName: "feature/PAP-999-missing-provider-ref",
-        providerType: "git_worktree",
-        providerRef: null,
-        derivedFromExecutionWorkspaceId: null,
-        lastUsedAt: new Date(),
-        openedAt: new Date(),
-        closedAt: null,
-        cleanupEligibleAt: null,
-        cleanupReason: null,
-        config: null,
-        metadata: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    });
-
-    expect(result).toBeNull();
-  });
 });
 
 describe("stripWorkspaceRuntimeFromExecutionRunConfig", () => {

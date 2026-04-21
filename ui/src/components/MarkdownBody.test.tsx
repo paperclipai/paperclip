@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { buildAgentMentionHref, buildProjectMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
+import { buildAgentMentionHref, buildProjectMentionHref, buildSkillMentionHref, buildUserMentionHref } from "@paperclipai/shared";
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
 import { queryKeys } from "../lib/queryKeys";
@@ -75,17 +75,19 @@ describe("MarkdownBody", () => {
     expect(html).toContain('alt="Org chart"');
   });
 
-  it("renders agent, project, and skill mentions as chips", () => {
+  it("renders user, agent, project, and skill mentions as chips", () => {
     const html = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
         <ThemeProvider>
           <MarkdownBody>
-            {`[@CodexCoder](${buildAgentMentionHref("agent-123", "code")}) [@Paperclip App](${buildProjectMentionHref("project-456", "#336699")}) [/release-changelog](${buildSkillMentionHref("skill-789", "release-changelog")})`}
+            {`[@Taylor](${buildUserMentionHref("user-123")}) [@CodexCoder](${buildAgentMentionHref("agent-123", "code")}) [@Paperclip App](${buildProjectMentionHref("project-456", "#336699")}) [/release-changelog](${buildSkillMentionHref("skill-789", "release-changelog")})`}
           </MarkdownBody>
         </ThemeProvider>
       </QueryClientProvider>,
     );
 
+    expect(html).toContain('href="/company/settings/access"');
+    expect(html).toContain('data-mention-kind="user"');
     expect(html).toContain('href="/agents/agent-123"');
     expect(html).toContain('data-mention-kind="agent"');
     expect(html).toContain("--paperclip-mention-icon-mask");
@@ -94,6 +96,14 @@ describe("MarkdownBody", () => {
     expect(html).toContain("--paperclip-mention-project-color:#336699");
     expect(html).toContain('href="/skills/skill-789"');
     expect(html).toContain('data-mention-kind="skill"');
+  });
+
+  it("sanitizes unsafe javascript markdown links", () => {
+    const html = renderMarkdown("[click me](javascript:alert(document.cookie))");
+
+    expect(html).toContain('<a href="" rel="noreferrer"');
+    expect(html).toContain(">click me</a>");
+    expect(html).not.toContain("javascript:");
   });
 
   it("uses soft-break styling by default", () => {
@@ -146,13 +156,27 @@ describe("MarkdownBody", () => {
     expect(html).toContain(">http://localhost:3100/PAP/issues/PAP-1179<");
   });
 
+  it("rewrites issue scheme links to internal issue links", () => {
+    const html = renderMarkdown("See issue://PAP-1310 and issue://:PAP-1311.", [
+      { identifier: "PAP-1310", status: "done" },
+      { identifier: "PAP-1311", status: "blocked" },
+    ]);
+
+    expect(html).toContain('href="/issues/PAP-1310"');
+    expect(html).toContain('href="/issues/PAP-1311"');
+    expect(html).toContain(">issue://PAP-1310<");
+    expect(html).toContain(">issue://:PAP-1311<");
+    expect(html).toContain("text-green-600");
+    expect(html).toContain("text-red-600");
+  });
+
   it("linkifies issue identifiers inside inline code spans", () => {
     const html = renderMarkdown("Reference `PAP-1271` here.", [
       { identifier: "PAP-1271", status: "done" },
     ]);
 
     expect(html).toContain('href="/issues/PAP-1271"');
-    expect(html).toContain("<code>PAP-1271</code>");
+    expect(html).toContain('<code style="overflow-wrap:anywhere;word-break:break-word">PAP-1271</code>');
     expect(html).toContain("text-green-600");
   });
 
@@ -170,5 +194,27 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain('href="/issues/PAP-1271"');
     expect(html).toContain("Depends on PAP-1271");
     expect(html).toContain('href="PAP-1271"');
+  });
+
+  it("applies wrap-friendly styles to long inline content", () => {
+    const html = renderMarkdown("averyveryveryveryveryveryveryveryveryverylongtoken");
+
+    expect(html).toContain('class="paperclip-markdown prose prose-sm min-w-0 max-w-full break-words overflow-hidden');
+    expect(html).toContain('style="overflow-wrap:anywhere;word-break:break-word"');
+    expect(html).toContain("<p");
+  });
+
+  it("applies wrap-friendly styles to long links", () => {
+    const html = renderMarkdown("[link](https://example.com/reallyreallyreallyreallyreallyreallyreallyreallylong)");
+
+    expect(html).toContain('<a href="https://example.com/reallyreallyreallyreallyreallyreallyreallyreallylong"');
+    expect(html).toContain('style="overflow-wrap:anywhere;word-break:break-word"');
+  });
+
+  it("keeps fenced code blocks width-bounded and horizontally scrollable", () => {
+    const html = renderMarkdown("```text\nGET /heartbeat-runs/ca5d23fc-c15b-4826-8ff1-2b6dd11be096/log?offset=2062357&limitBytes=256000\n```");
+
+    expect(html).toContain("<pre");
+    expect(html).toContain('style="max-width:100%;overflow-x:auto"');
   });
 });

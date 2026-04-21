@@ -328,6 +328,36 @@ export interface ServerAdapterModule {
    * resolved inside this method — the caller receives a fully hydrated schema.
    */
   getConfigSchema?: () => Promise<AdapterConfigSchema> | AdapterConfigSchema;
+
+  // ---------------------------------------------------------------------------
+  // Adapter capability flags
+  //
+  // These allow adapter plugins to declare what "local" capabilities they
+  // support, replacing hardcoded type lists in the server and UI.
+  // All flags are optional — when undefined, the server falls back to
+  // legacy hardcoded lists for built-in adapters.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Adapter supports managed instructions bundle (AGENTS.md files).
+   * When true, the server uses instructionsPathKey (default "instructionsFilePath")
+   * to resolve the instructions config key, and the UI shows the bundle editor.
+   * Built-in local adapters default to true; external plugins must opt in.
+   */
+  supportsInstructionsBundle?: boolean;
+
+  /**
+   * The adapterConfig key that holds the instructions file path.
+   * Defaults to "instructionsFilePath" when supportsInstructionsBundle is true.
+   */
+  instructionsPathKey?: string;
+
+  /**
+   * Adapter needs runtime skill entries materialized (written to disk)
+   * before being passed via config. Used by adapters that scan a directory
+   * rather than reading config.paperclipRuntimeSkills.
+   */
+  requiresMaterializedRuntimeSkills?: boolean;
 }
 
 // ---------------------------------------------------------------------------

@@ -76,7 +76,11 @@ function SortableProjectItem({
         <NavLink
           to={`/projects/${routeRef}/issues`}
           state={SIDEBAR_SCROLL_RESET_STATE}
-          onClick={() => {
+          onClick={(e) => {
+            if (isDragging) {
+              e.preventDefault();
+              return;
+            }
             if (isMobile) setSidebarOpen(false);
           }}
           className={cn(

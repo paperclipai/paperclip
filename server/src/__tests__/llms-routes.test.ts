@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { llmRoutes } from "../routes/llms.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -10,7 +8,7 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockListServerAdapters = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
+vi.mock("../services/agents.js", () => ({
   agentService: () => mockAgentService,
 }));
 
@@ -18,7 +16,21 @@ vi.mock("../adapters/index.js", () => ({
   listServerAdapters: mockListServerAdapters,
 }));
 
-function createApp(actor: Record<string, unknown>) {
+function registerModuleMocks() {
+  vi.doMock("../services/agents.js", () => ({
+    agentService: () => mockAgentService,
+  }));
+
+  vi.doMock("../adapters/index.js", () => ({
+    listServerAdapters: mockListServerAdapters,
+  }));
+}
+
+async function createApp(actor: Record<string, unknown>) {
+  const [{ llmRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/llms.js")>("../routes/llms.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -32,14 +44,18 @@ function createApp(actor: Record<string, unknown>) {
 
 describe("llm routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doUnmock("../routes/llms.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.resetAllMocks();
     mockListServerAdapters.mockReturnValue([
       { type: "codex_local", agentConfigurationDoc: "# codex_local agent configuration" },
     ]);
   });
 
   it("documents timer heartbeats as opt-in for new hires", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "board-user",
       companyIds: ["company-1"],

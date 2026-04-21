@@ -355,9 +355,16 @@
   --accentBgActive: color-mix(in oklab, var(--accent) 72%, var(--background));
   --accentText: var(--accent-foreground);
   font-family: inherit;
-  font-size: 0.875rem;
+  font-size: 1rem;
   line-height: 1.5;
   color: var(--foreground);
+}
+
+@media (min-width: 768px) {
+  .paperclip-mdxeditor-scope,
+  .paperclip-mdxeditor {
+    font-size: 0.875rem;
+  }
 }
 
 .paperclip-mdxeditor-scope [class*="_iconButton_"],
@@ -385,7 +392,7 @@
 }
 
 .paperclip-mdxeditor [class*="_placeholder_"] {
-  font-size: 0.875rem;
+  font-size: inherit;
   line-height: 1.5;
   color: var(--muted-foreground);
 }
