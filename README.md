@@ -256,10 +256,10 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ✅ Scheduled Routines
 - ✅ Better Budgeting
 - ✅ Agent Reviews and Approvals
-- ⚪ Multiple Human Users
+- ✅ Multiple Human Users
 - ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
 - ⚪ Artifacts & Work Products
-- ⚪ Memory & Knowledge
+- ⚪ Memory / Knowledge
 - ⚪ Enforced Outcomes
 - ⚪ MAXIMIZER MODE
 - ⚪ Deep Planning
@@ -269,6 +269,8 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ⚪ CEO Chat
 - ⚪ Cloud deployments
 - ⚪ Desktop App
+
+This is the short roadmap preview. See the full roadmap in [ROADMAP.md](ROADMAP.md).
 
 <br/>
 

@@ -1,22 +1,32 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
-import { PLUGIN_EVENT_TYPES, WEBHOOK_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
+import { activityLog } from "@paperclipai/db";
+import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { sanitizeRecord } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
-import { dispatchWebhookEvent, type WebhookEvent } from "./webhooks.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
-const WEBHOOK_EVENT_SET: ReadonlySet<string> = new Set(WEBHOOK_EVENT_TYPES);
+const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
+  issue_comment_added: "issue.comment.created",
+  issue_comment_created: "issue.comment.created",
+  issue_document_created: "issue.document.created",
+  issue_document_updated: "issue.document.updated",
+  issue_document_deleted: "issue.document.deleted",
+  issue_blockers_updated: "issue.relations.updated",
+  approval_approved: "approval.decided",
+  approval_rejected: "approval.decided",
+  approval_revision_requested: "approval.decided",
+  budget_soft_threshold_crossed: "budget.incident.opened",
+  budget_hard_threshold_crossed: "budget.incident.opened",
+  budget_incident_resolved: "budget.incident.resolved",
+};
 
 let _pluginEventBus: PluginEventBus | null = null;
-let _webhookDb: Db | null = null;
 
 /** Wire the plugin event bus so domain events are forwarded to plugins. */
 export function setPluginEventBus(bus: PluginEventBus): void {
@@ -26,14 +36,23 @@ export function setPluginEventBus(bus: PluginEventBus): void {
   _pluginEventBus = bus;
 }
 
-/** Wire the webhook dispatcher so domain events are forwarded to outbound webhooks. */
-export function setWebhookDb(db: Db): void {
-  _webhookDb = db;
+function eventTypeForActivityAction(action: string): PluginEventType | null {
+  if (PLUGIN_EVENT_SET.has(action)) return action as PluginEventType;
+  return ACTIVITY_ACTION_TO_PLUGIN_EVENT[action.replaceAll(".", "_")] ?? null;
+}
+
+export function publishPluginDomainEvent(event: PluginEvent): void {
+  if (!_pluginEventBus) return;
+  void _pluginEventBus.emit(event).then(({ errors }) => {
+    for (const { pluginId, error } of errors) {
+      logger.warn({ pluginId, eventType: event.eventType, err: error }, "plugin event handler failed");
+    }
+  }).catch(() => {});
 }
 
 export interface LogActivityInput {
   companyId: string;
-  actorType: "agent" | "user" | "system";
+  actorType: "agent" | "user" | "system" | "plugin";
   actorId: string;
   action: string;
   entityType: string;
@@ -51,21 +70,6 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
-
-  // Validate runId exists in heartbeat_runs to avoid FK constraint violations
-  // (e.g. chat processes use a chatId that is not a heartbeat run)
-  let resolvedRunId: string | null = input.runId ?? null;
-  if (resolvedRunId) {
-    const runExists = await db
-      .select({ id: heartbeatRuns.id })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, resolvedRunId))
-      .then((rows) => rows.length > 0);
-    if (!runExists) {
-      resolvedRunId = null;
-    }
-  }
-
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -74,7 +78,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: resolvedRunId,
+    runId: input.runId ?? null,
     details: redactedDetails,
   });
 
@@ -88,15 +92,16 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityType: input.entityType,
       entityId: input.entityId,
       agentId: input.agentId ?? null,
-      runId: resolvedRunId,
+      runId: input.runId ?? null,
       details: redactedDetails,
     },
   });
 
-  if (_pluginEventBus && PLUGIN_EVENT_SET.has(input.action)) {
+  const pluginEventType = eventTypeForActivityAction(input.action);
+  if (pluginEventType) {
     const event: PluginEvent = {
       eventId: randomUUID(),
-      eventType: input.action as PluginEventType,
+      eventType: pluginEventType,
       occurredAt: new Date().toISOString(),
       actorId: input.actorId,
       actorType: input.actorType,
@@ -106,38 +111,9 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       payload: {
         ...redactedDetails,
         agentId: input.agentId ?? null,
-        runId: resolvedRunId,
+        runId: input.runId ?? null,
       },
     };
-    void _pluginEventBus
-      .emit(event)
-      .then(({ errors }) => {
-        for (const { pluginId, error } of errors) {
-          logger.warn({ pluginId, eventType: event.eventType, err: error }, "plugin event handler failed");
-        }
-      })
-      .catch(() => {});
-  }
-
-  // Dispatch to outbound webhooks
-  if (_webhookDb && WEBHOOK_EVENT_SET.has(input.action)) {
-    const webhookEvent: WebhookEvent = {
-      eventId: randomUUID(),
-      eventType: input.action,
-      companyId: input.companyId,
-      entityType: input.entityType,
-      entityId: input.entityId,
-      actorType: input.actorType,
-      actorId: input.actorId,
-      occurredAt: new Date().toISOString(),
-      payload: {
-        ...redactedDetails,
-        agentId: input.agentId ?? null,
-        runId: resolvedRunId,
-      },
-    };
-    void dispatchWebhookEvent(_webhookDb, webhookEvent).catch((err) => {
-      logger.warn({ err, eventType: webhookEvent.eventType }, "webhook dispatch failed");
-    });
+    publishPluginDomainEvent(event);
   }
 }

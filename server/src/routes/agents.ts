@@ -7,6 +7,7 @@ import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
@@ -45,6 +46,7 @@ import {
   chatService,
   chatProcessService,
   heartbeatService,
+  ISSUE_LIST_DEFAULT_LIMIT,
   issueApprovalService,
   issueService,
   logActivity,
@@ -88,6 +90,15 @@ import {
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
 import { getTelemetryClient } from "../telemetry.js";
+
+const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
+const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+
+function readRunLogLimitBytes(value: unknown) {
+  const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
+  if (!Number.isFinite(parsed)) return RUN_LOG_DEFAULT_LIMIT_BYTES;
+  return Math.max(1, Math.min(RUN_LOG_MAX_LIMIT_BYTES, Math.trunc(parsed)));
+}
 
 export function agentRoutes(db: Db) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
@@ -524,6 +535,9 @@ export function agentRoutes(db: Db) {
 
     if (parseBooleanLike(heartbeat.enabled) == null) {
       heartbeat.enabled = false;
+    }
+    if (parseNumberLike(heartbeat.maxConcurrentRuns) == null) {
+      heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
     }
 
     normalizedRuntimeConfig.heartbeat = heartbeat;
@@ -1160,7 +1174,12 @@ export function agentRoutes(db: Db) {
       assigneeAgentId: req.actor.agentId,
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
+      limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
+    const dependencyReadiness = await issuesSvc.listDependencyReadiness(
+      req.actor.companyId,
+      rows.map((issue) => issue.id),
+    );
 
     res.json(
       rows.map((issue) => ({
@@ -1174,6 +1193,9 @@ export function agentRoutes(db: Db) {
         parentId: issue.parentId,
         updatedAt: issue.updatedAt,
         activeRun: issue.activeRun,
+        dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
+        unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
+        unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
       })),
     );
   });
@@ -1190,6 +1212,7 @@ export function agentRoutes(db: Db) {
       touchedByUserId: query.userId,
       inboxArchivedByUserId: query.userId,
       status: query.status,
+      limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
 
     res.json(rows);
@@ -1504,14 +1527,33 @@ export function agentRoutes(db: Db) {
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCanCreateAgentsForCompany(req, companyId);
 
-    if (req.actor.type === "agent") {
-      assertBoard(req);
+    const company = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    if (company.requireBoardApprovalForNewAgents) {
+      throw conflict(
+        "Direct agent creation requires board approval. Use POST /api/companies/:companyId/agent-hires to create a pending hire approval.",
+      );
     }
 
     const { desiredSkills: requestedDesiredSkills, ...createInput } = req.body;
     createInput.adapterType = assertKnownAdapterType(createInput.adapterType);
+    assertNoAgentHostWorkspaceCommandMutation(
+      req,
+      collectAgentAdapterWorkspaceCommandPaths(createInput.adapterConfig),
+    );
+    assertNoAgentInstructionsConfigMutation(
+      req,
+      (createInput.adapterConfig ?? {}) as Record<string, unknown>,
+    );
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       createInput.adapterType,
       (createInput.adapterConfig ?? {}) as Record<string, unknown>,
@@ -1662,6 +1704,10 @@ export function agentRoutes(db: Db) {
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
+    if (req.actor.type !== "board") {
+      throw forbidden("Only board-authenticated callers can manage instructions path or bundle configuration");
+    }
+
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -2115,6 +2161,42 @@ export function agentRoutes(db: Db) {
     res.json(agent);
   });
 
+  router.post("/agents/:id/approve", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await getAccessibleAgent(req, res, id);
+    if (!existing) {
+      return;
+    }
+    if (existing.status !== "pending_approval") {
+      res.status(409).json({ error: "Only pending approval agents can be approved" });
+      return;
+    }
+
+    const approval = await svc.activatePendingApproval(id);
+    if (!approval) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    if (!approval.activated) {
+      res.status(409).json({ error: "Only pending approval agents can be approved" });
+      return;
+    }
+    const { agent } = approval;
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.approved",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { source: "agent_detail" },
+    });
+
+    res.json(agent);
+  });
+
   router.post("/agents/:id/terminate", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
@@ -2399,6 +2481,11 @@ export function agentRoutes(db: Db) {
       agentId: heartbeatRuns.agentId,
       agentName: agentsTable.name,
       adapterType: agentsTable.adapterType,
+      livenessState: heartbeatRuns.livenessState,
+      livenessReason: heartbeatRuns.livenessReason,
+      continuationAttempt: heartbeatRuns.continuationAttempt,
+      lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
+      nextAction: heartbeatRuns.nextAction,
       issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
     };
 
@@ -2557,10 +2644,10 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, run.companyId);
 
     const offset = Number(req.query.offset ?? 0);
-    const limitBytes = Number(req.query.limitBytes ?? 256000);
+    const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
     const result = await heartbeat.readLog(run, {
       offset: Number.isFinite(offset) ? offset : 0,
-      limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
+      limitBytes,
     });
 
     res.set("Cache-Control", "no-cache, no-store");
@@ -2592,10 +2679,10 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, operation.companyId);
 
     const offset = Number(req.query.offset ?? 0);
-    const limitBytes = Number(req.query.limitBytes ?? 256000);
+    const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
     const result = await workspaceOperations.readLog(operationId, {
       offset: Number.isFinite(offset) ? offset : 0,
-      limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
+      limitBytes,
     });
 
     res.set("Cache-Control", "no-cache, no-store");
@@ -2625,6 +2712,11 @@ export function agentRoutes(db: Db) {
         agentId: heartbeatRuns.agentId,
         agentName: agentsTable.name,
         adapterType: agentsTable.adapterType,
+        livenessState: heartbeatRuns.livenessState,
+        livenessReason: heartbeatRuns.livenessReason,
+        continuationAttempt: heartbeatRuns.continuationAttempt,
+        lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
+        nextAction: heartbeatRuns.nextAction,
       })
       .from(heartbeatRuns)
       .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))

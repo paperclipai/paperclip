@@ -22,7 +22,13 @@ const SILENCED_SUCCESS_STATIC_PREFIXES = [
   "/src/",
 ];
 
-const SILENCED_SUCCESS_STATIC_PATHS = new Set(["/favicon.ico", "/site.webmanifest", "/sw.js"]);
+const SILENCED_SUCCESS_STATIC_PATHS = new Set([
+  "/",
+  "/index.html",
+  "/favicon.ico",
+  "/site.webmanifest",
+  "/sw.js",
+]);
 
 function normalizePath(url: string): string {
   const trimmed = url.trim();
@@ -31,11 +37,7 @@ function normalizePath(url: string): string {
   return pathname.length > 0 ? pathname : "/";
 }
 
-export function shouldSilenceHttpSuccessLog(
-  method: string | undefined,
-  url: string | undefined,
-  statusCode: number,
-): boolean {
+export function shouldSilenceHttpSuccessLog(method: string | undefined, url: string | undefined, statusCode: number): boolean {
   if (statusCode >= 400) return false;
   if (statusCode === 304) return true;
   if (!method || !url) return false;

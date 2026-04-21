@@ -11,7 +11,9 @@ import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
-import { summarizeNotice } from "./transcriptPresentation";
+import {
+  summarizeNotice,
+} from "./transcriptPresentation";
 
 type JsonValue = null | string | number | boolean | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };
@@ -107,7 +109,10 @@ export function stabilizeThreadMessages(
   const stabilizedMessages = messages.map((message, index) => {
     const fingerprint = fingerprintThreadMessage(message);
     const cached = previousById.get(message.id);
-    const stableMessage = cached && cached.fingerprint === fingerprint ? cached.message : message;
+    const stableMessage =
+      cached && cached.fingerprint === fingerprint
+        ? cached.message
+        : message;
     nextById.set(message.id, {
       fingerprint,
       message: stableMessage,
@@ -133,7 +138,12 @@ function sortByCreated<T extends { createdAt: Date | string; id: string }>(items
 }
 
 function normalizeJsonValue(input: unknown): JsonValue {
-  if (input === null || typeof input === "string" || typeof input === "number" || typeof input === "boolean") {
+  if (
+    input === null ||
+    typeof input === "string" ||
+    typeof input === "number" ||
+    typeof input === "boolean"
+  ) {
     return input;
   }
   if (Array.isArray(input)) {
@@ -167,18 +177,23 @@ function stringifyUnknown(value: unknown) {
   }
 }
 
-function mergePartText(previous: TextMessagePart | ReasoningMessagePart, next: TextMessagePart | ReasoningMessagePart) {
+function mergePartText(
+  previous: TextMessagePart | ReasoningMessagePart,
+  next: TextMessagePart | ReasoningMessagePart,
+) {
   if (!previous.text) return next.text;
   if (!next.text) return previous.text;
   if (
-    previous.text.endsWith("\n") ||
-    next.text.startsWith("\n") ||
-    previous.text.endsWith(" ") ||
-    next.text.startsWith(" ")
+    previous.text.endsWith("\n")
+    || next.text.startsWith("\n")
+    || previous.text.endsWith(" ")
+    || next.text.startsWith(" ")
   ) {
     return `${previous.text}${next.text}`;
   }
-  return previous.type === "text" ? `${previous.text} ${next.text}` : `${previous.text}\n${next.text}`;
+  return previous.type === "text"
+    ? `${previous.text} ${next.text}`
+    : `${previous.text}\n${next.text}`;
 }
 
 function formatDiffBlock(lines: string[]) {
@@ -186,7 +201,10 @@ function formatDiffBlock(lines: string[]) {
 }
 
 function isIssueChatRenderableTranscriptEntry(entry: IssueChatTranscriptEntry) {
-  return entry.kind !== "init" && entry.kind !== "stderr" && entry.kind !== "stdout" && entry.kind !== "system";
+  return entry.kind !== "init"
+    && entry.kind !== "stderr"
+    && entry.kind !== "stdout"
+    && entry.kind !== "system";
 }
 
 function compactIssueChatTranscript(
@@ -203,9 +221,9 @@ function compactIssueChatTranscript(
 
   let startPos = Math.max(0, renderable.length - maxVisibleEntries);
   while (
-    startPos > 0 &&
-    renderable[startPos]?.entry.kind === "diff" &&
-    renderable[startPos - 1]?.entry.kind === "diff"
+    startPos > 0
+    && renderable[startPos]?.entry.kind === "diff"
+    && renderable[startPos - 1]?.entry.kind === "diff"
   ) {
     startPos -= 1;
   }
@@ -248,11 +266,20 @@ function createAssistantMetadata(custom: Record<string, unknown>) {
   } as const;
 }
 
-function authorNameForComment(comment: IssueChatComment, agentMap?: Map<string, Agent>, currentUserId?: string | null) {
+function authorNameForComment(
+  comment: IssueChatComment,
+  agentMap?: Map<string, Agent>,
+  currentUserId?: string | null,
+  userLabelMap?: ReadonlyMap<string, string> | null,
+) {
   if (comment.authorAgentId) {
     return agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8);
   }
-  return formatAssigneeUserLabel(comment.authorUserId ?? null, currentUserId) ?? "You";
+  const authorUserId = comment.authorUserId ?? null;
+  if (!authorUserId) return "You";
+  const userLabel = userLabelMap?.get(authorUserId)?.trim();
+  if (userLabel) return userLabel;
+  return formatAssigneeUserLabel(authorUserId, currentUserId, userLabelMap) ?? "You";
 }
 
 function formatStatusLabel(status: string) {
@@ -263,12 +290,13 @@ function createCommentMessage(args: {
   comment: IssueChatComment;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  userLabelMap?: ReadonlyMap<string, string> | null;
   companyId?: string | null;
   projectId?: string | null;
 }): ThreadMessage {
-  const { comment, agentMap, currentUserId, companyId, projectId } = args;
+  const { comment, agentMap, currentUserId, userLabelMap, companyId, projectId } = args;
   const createdAt = toDate(comment.createdAt);
-  const authorName = authorNameForComment(comment, agentMap, currentUserId);
+  const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap);
   const custom = {
     kind: "comment",
     commentId: comment.id,
@@ -313,26 +341,28 @@ function createTimelineEventMessage(args: {
   event: IssueTimelineEvent;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  userLabelMap?: ReadonlyMap<string, string> | null;
 }) {
-  const { event, agentMap, currentUserId } = args;
-  const actorName =
-    event.actorType === "agent"
-      ? (agentMap?.get(event.actorId)?.name ?? event.actorId.slice(0, 8))
-      : event.actorType === "system"
-        ? "System"
-        : (formatAssigneeUserLabel(event.actorId, currentUserId) ?? "Board");
+  const { event, agentMap, currentUserId, userLabelMap } = args;
+  const actorName = event.actorType === "agent"
+    ? (agentMap?.get(event.actorId)?.name ?? event.actorId.slice(0, 8))
+    : event.actorType === "system"
+      ? "System"
+      : (formatAssigneeUserLabel(event.actorId, currentUserId, userLabelMap) ?? "Board");
 
   const lines: string[] = [`${actorName} updated this issue`];
   if (event.statusChange) {
-    lines.push(`Status: ${event.statusChange.from ?? "none"} -> ${event.statusChange.to ?? "none"}`);
+    lines.push(
+      `Status: ${event.statusChange.from ?? "none"} -> ${event.statusChange.to ?? "none"}`,
+    );
   }
   if (event.assigneeChange) {
     const from = event.assigneeChange.from.agentId
       ? (agentMap?.get(event.assigneeChange.from.agentId)?.name ?? event.assigneeChange.from.agentId.slice(0, 8))
-      : (formatAssigneeUserLabel(event.assigneeChange.from.userId, currentUserId) ?? "Unassigned");
+      : (formatAssigneeUserLabel(event.assigneeChange.from.userId, currentUserId, userLabelMap) ?? "Unassigned");
     const to = event.assigneeChange.to.agentId
       ? (agentMap?.get(event.assigneeChange.to.agentId)?.name ?? event.assigneeChange.to.agentId.slice(0, 8))
-      : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId) ?? "Unassigned");
+      : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId, userLabelMap) ?? "Unassigned");
     lines.push(`Assignee: ${from} -> ${to}`);
   }
 
@@ -481,8 +511,11 @@ function createHistoricalTranscriptMessage(args: {
   const compactedTranscript = compactIssueChatTranscript(transcript);
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText = hasOutput ? "" : "Run finished";
-  const content =
-    parts.length > 0 ? parts : waitingText ? [{ type: "text", text: waitingText } satisfies TextMessagePart] : [];
+  const content = parts.length > 0
+    ? parts
+    : waitingText
+      ? [{ type: "text", text: waitingText } satisfies TextMessagePart]
+      : [];
 
   const message: ThreadAssistantMessage = {
     id: `run-assistant:${run.runId}`,
@@ -603,7 +636,9 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
       } else if (entry.text) {
         orderedParts.push({
           type: "reasoning",
-          text: entry.isError ? `Run error: ${summarizeNotice(entry.text)}` : summarizeNotice(entry.text),
+          text: entry.isError
+            ? `Run error: ${summarizeNotice(entry.text)}`
+            : summarizeNotice(entry.text),
         });
       }
       continue;
@@ -663,11 +698,19 @@ function normalizeLiveRuns(
   return [...deduped.values()].sort((a, b) => toTimestamp(a.createdAt) - toTimestamp(b.createdAt));
 }
 
-function createLiveRunMessage(args: { run: LiveRunForIssue; transcript: readonly IssueChatTranscriptEntry[] }) {
+function createLiveRunMessage(args: {
+  run: LiveRunForIssue;
+  transcript: readonly IssueChatTranscriptEntry[];
+}) {
   const { run, transcript } = args;
   const compactedTranscript = compactIssueChatTranscript(transcript);
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
-  const waitingText = run.status === "queued" ? "Queued..." : parts.length > 0 ? "" : "Working...";
+  const waitingText =
+    run.status === "queued"
+      ? "Queued..."
+      : parts.length > 0
+        ? ""
+        : "Working...";
 
   const content = parts;
 
@@ -707,6 +750,7 @@ export function buildIssueChatMessages(args: {
   projectId?: string | null;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
+  userLabelMap?: ReadonlyMap<string, string> | null;
 }) {
   const {
     comments,
@@ -722,6 +766,7 @@ export function buildIssueChatMessages(args: {
     projectId,
     agentMap,
     currentUserId,
+    userLabelMap,
   } = args;
 
   const orderedMessages: MessageWithOrder[] = [];
@@ -730,7 +775,7 @@ export function buildIssueChatMessages(args: {
     orderedMessages.push({
       createdAtMs: toTimestamp(comment.createdAt),
       order: 1,
-      message: createCommentMessage({ comment, agentMap, currentUserId, companyId, projectId }),
+      message: createCommentMessage({ comment, agentMap, currentUserId, userLabelMap, companyId, projectId }),
     });
   }
 
@@ -738,7 +783,7 @@ export function buildIssueChatMessages(args: {
     orderedMessages.push({
       createdAtMs: toTimestamp(event.createdAt),
       order: 0,
-      message: createTimelineEventMessage({ event, agentMap, currentUserId }),
+      message: createTimelineEventMessage({ event, agentMap, currentUserId, userLabelMap }),
     });
   }
 

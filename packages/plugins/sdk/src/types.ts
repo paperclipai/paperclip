@@ -21,6 +21,8 @@ import type {
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
+  IssueRelationIssueSummary,
+  PluginIssueOriginKind,
   Agent,
   Goal,
 } from "@paperclipai/shared";
@@ -40,7 +42,12 @@ export type {
   PluginLauncherRenderDeclaration,
   PluginLauncherDeclaration,
   PluginMinimumHostVersion,
+  PluginDatabaseDeclaration,
+  PluginApiRouteDeclaration,
+  PluginApiRouteCompanyResolution,
   PluginRecord,
+  PluginDatabaseNamespaceRecord,
+  PluginMigrationRecord,
   PluginConfig,
   JsonSchema,
   PluginStatus,
@@ -57,6 +64,13 @@ export type {
   PluginJobRunStatus,
   PluginJobRunTrigger,
   PluginWebhookDeliveryStatus,
+  PluginDatabaseCoreReadTable,
+  PluginDatabaseMigrationStatus,
+  PluginDatabaseNamespaceMode,
+  PluginDatabaseNamespaceStatus,
+  PluginApiRouteAuthMode,
+  PluginApiRouteCheckoutPolicy,
+  PluginApiRouteMethod,
   PluginEventType,
   PluginBridgeErrorCode,
   Company,
@@ -65,6 +79,8 @@ export type {
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
+  IssueRelationIssueSummary,
+  PluginIssueOriginKind,
   Agent,
   Goal,
 } from "@paperclipai/shared";
@@ -347,11 +363,7 @@ export interface PluginEventsClient {
    * @param fn - Async event handler
    * @returns An unsubscribe function that removes the handler
    */
-  on(
-    name: PluginEventType | `plugin.${string}`,
-    filter: EventFilter,
-    fn: (event: PluginEvent) => Promise<void>,
-  ): () => void;
+  on(name: PluginEventType | `plugin.${string}`, filter: EventFilter, fn: (event: PluginEvent) => Promise<void>): () => void;
 
   /**
    * Emit a plugin-namespaced event. Other plugins with `events.subscribe` can
@@ -409,6 +421,17 @@ export interface PluginLaunchersClient {
    * declaration replaces the previous one.
    */
   register(launcher: PluginLauncherRegistration): void;
+}
+
+export interface PluginDatabaseClient {
+  /** Host-derived PostgreSQL schema name for this plugin's namespace. */
+  namespace: string;
+
+  /** Run a restricted SELECT against the plugin namespace and whitelisted core tables. */
+  query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+
+  /** Run a restricted INSERT, UPDATE, or DELETE against the plugin namespace. */
+  execute(sql: string, params?: unknown[]): Promise<{ rowCount: number }>;
 }
 
 /**
@@ -781,7 +804,10 @@ export interface PluginTelemetryClient {
    * @param eventName - Bare plugin event slug (for example `"sync_completed"`)
    * @param dimensions - Optional structured dimensions
    */
-  track(eventName: string, dimensions?: Record<string, string | number | boolean>): Promise<void>;
+  track(
+    eventName: string,
+    dimensions?: Record<string, string | number | boolean>,
+  ): Promise<void>;
 }
 
 /**
@@ -868,6 +894,178 @@ export interface PluginIssueDocumentsClient {
   delete(issueId: string, key: string, companyId: string): Promise<void>;
 }
 
+export interface PluginIssueMutationActor {
+  /** Agent that initiated the plugin operation, when the plugin is acting from an agent run. */
+  actorAgentId?: string | null;
+  /** Board/user that initiated the plugin operation, when known. */
+  actorUserId?: string | null;
+  /** Heartbeat run that initiated the operation. Required for checkout-aware agent actions. */
+  actorRunId?: string | null;
+}
+
+export interface PluginIssueRelationSummary {
+  blockedBy: IssueRelationIssueSummary[];
+  blocks: IssueRelationIssueSummary[];
+}
+
+export interface PluginIssueRelationsClient {
+  /** Read blocker relationships for an issue. Requires `issue.relations.read`. */
+  get(issueId: string, companyId: string): Promise<PluginIssueRelationSummary>;
+  /** Replace the issue's blocked-by relation set. Requires `issue.relations.write`. */
+  setBlockedBy(
+    issueId: string,
+    blockedByIssueIds: string[],
+    companyId: string,
+    actor?: PluginIssueMutationActor,
+  ): Promise<PluginIssueRelationSummary>;
+  /** Add one or more blockers while preserving existing blockers. Requires `issue.relations.write`. */
+  addBlockers(
+    issueId: string,
+    blockerIssueIds: string[],
+    companyId: string,
+    actor?: PluginIssueMutationActor,
+  ): Promise<PluginIssueRelationSummary>;
+  /** Remove one or more blockers while preserving all other blockers. Requires `issue.relations.write`. */
+  removeBlockers(
+    issueId: string,
+    blockerIssueIds: string[],
+    companyId: string,
+    actor?: PluginIssueMutationActor,
+  ): Promise<PluginIssueRelationSummary>;
+}
+
+export interface PluginIssueCheckoutOwnership {
+  issueId: string;
+  status: Issue["status"];
+  assigneeAgentId: string | null;
+  checkoutRunId: string | null;
+  adoptedFromRunId: string | null;
+}
+
+export interface PluginIssueWakeupResult {
+  queued: boolean;
+  runId: string | null;
+}
+
+export interface PluginIssueWakeupBatchResult {
+  issueId: string;
+  queued: boolean;
+  runId: string | null;
+}
+
+export interface PluginIssueRunSummary {
+  id: string;
+  issueId: string | null;
+  agentId: string;
+  status: string;
+  invocationSource: string;
+  triggerDetail: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  createdAt: string;
+}
+
+export interface PluginIssueApprovalSummary {
+  issueId: string;
+  id: string;
+  type: string;
+  status: string;
+  requestedByAgentId: string | null;
+  requestedByUserId: string | null;
+  decidedByUserId: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+}
+
+export interface PluginIssueCostSummary {
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  billingCode: string | null;
+}
+
+export interface PluginBudgetIncidentSummary {
+  id: string;
+  scopeType: string;
+  scopeId: string;
+  metric: string;
+  windowKind: string;
+  thresholdType: string;
+  amountLimit: number;
+  amountObserved: number;
+  status: string;
+  approvalId: string | null;
+  createdAt: string;
+}
+
+export interface PluginIssueInvocationBlockSummary {
+  issueId: string;
+  agentId: string;
+  scopeType: "company" | "agent" | "project";
+  scopeId: string;
+  scopeName: string;
+  reason: string;
+}
+
+export interface PluginIssueOrchestrationSummary {
+  issueId: string;
+  companyId: string;
+  subtreeIssueIds: string[];
+  relations: Record<string, PluginIssueRelationSummary>;
+  approvals: PluginIssueApprovalSummary[];
+  runs: PluginIssueRunSummary[];
+  costs: PluginIssueCostSummary;
+  openBudgetIncidents: PluginBudgetIncidentSummary[];
+  invocationBlocks: PluginIssueInvocationBlockSummary[];
+}
+
+export interface PluginIssueSubtreeOptions {
+  /** Include the root issue in the result. Defaults to true. */
+  includeRoot?: boolean;
+  /** Include blocker relationship summaries keyed by issue ID. */
+  includeRelations?: boolean;
+  /** Include issue document summaries keyed by issue ID. */
+  includeDocuments?: boolean;
+  /** Include queued/running heartbeat runs keyed by issue ID. */
+  includeActiveRuns?: boolean;
+  /** Include assignee summaries keyed by agent ID. */
+  includeAssignees?: boolean;
+}
+
+export interface PluginIssueAssigneeSummary {
+  id: string;
+  name: string;
+  role: string;
+  title: string | null;
+  status: Agent["status"];
+}
+
+export interface PluginIssueSubtree {
+  rootIssueId: string;
+  companyId: string;
+  issueIds: string[];
+  issues: Issue[];
+  relations?: Record<string, PluginIssueRelationSummary>;
+  documents?: Record<string, IssueDocumentSummary[]>;
+  activeRuns?: Record<string, PluginIssueRunSummary[]>;
+  assignees?: Record<string, PluginIssueAssigneeSummary>;
+}
+
+export interface PluginIssueSummariesClient {
+  /**
+   * Read the compact orchestration inputs a workflow plugin needs for an
+   * issue or issue subtree. Requires `issues.orchestration.read`.
+   */
+  getOrchestration(input: {
+    issueId: string;
+    companyId: string;
+    includeSubtree?: boolean;
+    billingCode?: string | null;
+  }): Promise<PluginIssueOrchestrationSummary>;
+}
+
 /**
  * `ctx.issues` — read and mutate issues plus comments.
  *
@@ -875,6 +1073,9 @@ export interface PluginIssueDocumentsClient {
  * - `issues.read` for read operations
  * - `issues.create` for create
  * - `issues.update` for update
+ * - `issues.checkout` for checkout ownership assertions
+ * - `issues.wakeup` for assignment wakeup requests
+ * - `issues.orchestration.read` for orchestration summaries
  * - `issue.comments.read` for `listComments`
  * - `issue.comments.create` for `createComment`
  * - `issue.documents.read` for `documents.list` and `documents.get`
@@ -885,6 +1086,8 @@ export interface PluginIssuesClient {
     companyId: string;
     projectId?: string;
     assigneeAgentId?: string;
+    originKind?: PluginIssueOriginKind;
+    originId?: string;
     status?: Issue["status"];
     limit?: number;
     offset?: number;
@@ -898,14 +1101,80 @@ export interface PluginIssuesClient {
     inheritExecutionWorkspaceFromIssueId?: string;
     title: string;
     description?: string;
+    status?: Issue["status"];
     priority?: Issue["priority"];
     assigneeAgentId?: string;
+    assigneeUserId?: string | null;
+    requestDepth?: number;
+    billingCode?: string | null;
+    originKind?: PluginIssueOriginKind;
+    originId?: string | null;
+    originRunId?: string | null;
+    blockedByIssueIds?: string[];
+    labelIds?: string[];
+    executionWorkspaceId?: string | null;
+    executionWorkspacePreference?: string | null;
+    executionWorkspaceSettings?: Record<string, unknown> | null;
+    actor?: PluginIssueMutationActor;
   }): Promise<Issue>;
   update(
     issueId: string,
-    patch: Partial<Pick<Issue, "title" | "description" | "status" | "priority" | "assigneeAgentId">>,
+    patch: Partial<Pick<
+      Issue,
+      | "title"
+      | "description"
+      | "status"
+      | "priority"
+      | "assigneeAgentId"
+      | "assigneeUserId"
+      | "billingCode"
+      | "originKind"
+      | "originId"
+      | "originRunId"
+      | "requestDepth"
+      | "executionWorkspaceId"
+      | "executionWorkspacePreference"
+    >> & {
+      blockedByIssueIds?: string[];
+      labelIds?: string[];
+      executionWorkspaceSettings?: Record<string, unknown> | null;
+    },
     companyId: string,
+    actor?: PluginIssueMutationActor,
   ): Promise<Issue>;
+  assertCheckoutOwner(input: {
+    issueId: string;
+    companyId: string;
+    actorAgentId: string;
+    actorRunId: string;
+  }): Promise<PluginIssueCheckoutOwnership>;
+  /**
+   * Read a root issue's descendants with optional relation/document/run/assignee
+   * summaries. Requires `issue.subtree.read`.
+   */
+  getSubtree(
+    issueId: string,
+    companyId: string,
+    options?: PluginIssueSubtreeOptions,
+  ): Promise<PluginIssueSubtree>;
+  requestWakeup(
+    issueId: string,
+    companyId: string,
+    options?: {
+      reason?: string;
+      contextSource?: string;
+      idempotencyKey?: string | null;
+    } & PluginIssueMutationActor,
+  ): Promise<PluginIssueWakeupResult>;
+  requestWakeups(
+    issueIds: string[],
+    companyId: string,
+    options?: {
+      reason?: string;
+      contextSource?: string;
+      idempotencyKeyPrefix?: string | null;
+    } & PluginIssueMutationActor,
+  ): Promise<PluginIssueWakeupBatchResult[]>;
   listComments(issueId: string, companyId: string): Promise<IssueComment[]>;
   createComment(
     issueId: string,
@@ -915,6 +1184,10 @@ export interface PluginIssuesClient {
   ): Promise<IssueComment>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
+  /** Read and write blocker relationships. */
+  relations: PluginIssueRelationsClient;
+  /** Read compact orchestration summaries. */
+  summaries: PluginIssueSummariesClient;
 }
 
 /**
@@ -982,14 +1255,10 @@ export interface AgentSessionSendResult {
  */
 export interface PluginAgentSessionsClient {
   /** Create a new conversational session with an agent. Requires `agent.sessions.create`. */
-  create(
-    agentId: string,
-    companyId: string,
-    opts?: {
-      taskKey?: string;
-      reason?: string;
-    },
-  ): Promise<AgentSession>;
+  create(agentId: string, companyId: string, opts?: {
+    taskKey?: string;
+    reason?: string;
+  }): Promise<AgentSession>;
 
   /** List active sessions for an agent owned by this plugin. Requires `agent.sessions.list`. */
   list(agentId: string, companyId: string): Promise<AgentSession[]>;
@@ -999,15 +1268,11 @@ export interface PluginAgentSessionsClient {
    * Returns immediately with `{ runId }`. Events are delivered asynchronously.
    * Requires `agent.sessions.send`.
    */
-  sendMessage(
-    sessionId: string,
-    companyId: string,
-    opts: {
-      prompt: string;
-      reason?: string;
-      onEvent?: (event: AgentSessionEvent) => void;
-    },
-  ): Promise<AgentSessionSendResult>;
+  sendMessage(sessionId: string, companyId: string, opts: {
+    prompt: string;
+    reason?: string;
+    onEvent?: (event: AgentSessionEvent) => void;
+  }): Promise<AgentSessionSendResult>;
 
   /** Close a session, releasing resources. Requires `agent.sessions.close`. */
   close(sessionId: string, companyId: string): Promise<void>;
@@ -1041,7 +1306,10 @@ export interface PluginGoalsClient {
   }): Promise<Goal>;
   update(
     goalId: string,
-    patch: Partial<Pick<Goal, "title" | "description" | "level" | "status" | "parentId" | "ownerAgentId">>,
+    patch: Partial<Pick<
+      Goal,
+      "title" | "description" | "level" | "status" | "parentId" | "ownerAgentId"
+    >>,
     companyId: string,
   ): Promise<Goal>;
 }
@@ -1140,6 +1408,9 @@ export interface PluginContext {
 
   /** Register launcher metadata that the host can surface in plugin UI entry points. */
   launchers: PluginLaunchersClient;
+
+  /** Restricted plugin-owned database namespace. Requires database namespace capabilities. */
+  db: PluginDatabaseClient;
 
   /** Make outbound HTTP requests. Requires `http.outbound`. */
   http: PluginHttpClient;

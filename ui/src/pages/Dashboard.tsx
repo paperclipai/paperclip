@@ -3,10 +3,11 @@ import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
+import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
-import { heartbeatsApi } from "../api/heartbeats";
+import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -14,29 +15,21 @@ import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
 import { StatusIcon } from "../components/StatusIcon";
-import { PriorityIcon } from "../components/PriorityIcon";
 
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
-import { formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, HelpCircle } from "lucide-react";
+import { cn, formatCents } from "../lib/utils";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
-import {
-  ChartCard,
-  RunActivityChart,
-  PriorityChart,
-  IssueStatusChart,
-  SuccessRateChart,
-} from "../components/ActivityCharts";
+import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
-const DASHBOARD_HEARTBEAT_RUN_LIMIT = 100;
-
 function getRecentIssues(issues: Issue[]): Issue[] {
-  return [...issues].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  return [...issues]
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
 
 export function Dashboard() {
@@ -82,18 +75,16 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: runs } = useQuery({
-    queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", DASHBOARD_HEARTBEAT_RUN_LIMIT],
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, DASHBOARD_HEARTBEAT_RUN_LIMIT),
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
-  const { data: waitingIssues } = useQuery({
-    queryKey: queryKeys.issues.listWaitingForHuman(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!, { status: "waiting_for_human" }),
-    enabled: !!selectedCompanyId,
-    refetchInterval: 15_000,
-  });
+  const userProfileMap = useMemo(
+    () => buildCompanyUserProfileMap(companyMembers?.users),
+    [companyMembers?.users],
+  );
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
@@ -105,7 +96,6 @@ export function Dashboard() {
     activityAnimationTimersRef.current = [];
     seenActivityIdsRef.current = new Set();
     hydratedActivityRef.current = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAnimatedActivityIds(new Set());
   }, [selectedCompanyId]);
 
@@ -190,7 +180,9 @@ export function Dashboard() {
         />
       );
     }
-    return <EmptyState icon={LayoutDashboard} message="Create or select a company to view the dashboard." />;
+    return (
+      <EmptyState icon={LayoutDashboard} message="Create or select a company to view the dashboard." />
+    );
   }
 
   if (isLoading) {
@@ -207,7 +199,9 @@ export function Dashboard() {
         <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
           <div className="flex items-center gap-2.5">
             <Bot className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
-            <p className="text-sm text-amber-900 dark:text-amber-100">You have no agents.</p>
+            <p className="text-sm text-amber-900 dark:text-amber-100">
+              You have no agents.
+            </p>
           </div>
           <button
             onClick={() => openOnboarding({ initialStep: 2, companyId: selectedCompanyId! })}
@@ -231,8 +225,7 @@ export function Dashboard() {
                     {data.budgets.activeIncidents} active budget incident{data.budgets.activeIncidents === 1 ? "" : "s"}
                   </p>
                   <p className="text-xs text-red-100/70">
-                    {data.budgets.pausedAgents} agents paused · {data.budgets.pausedProjects} projects paused ·{" "}
-                    {data.budgets.pendingApprovals} pending budget approvals
+                    {data.budgets.pausedAgents} agents paused · {data.budgets.pausedProjects} projects paused · {data.budgets.pendingApprovals} pending budget approvals
                   </p>
                 </div>
               </div>
@@ -241,55 +234,6 @@ export function Dashboard() {
               </Link>
             </div>
           ) : null}
-
-          {waitingIssues && waitingIssues.length > 0 && (
-            <div>
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3 flex items-center gap-2">
-                <HelpCircle className="h-4 w-4 text-sky-500" />
-                Waiting for you
-                <span className="ml-1 rounded-full bg-sky-100 px-2 py-0.5 text-xs font-semibold text-sky-700 dark:bg-sky-900/50 dark:text-sky-300">
-                  {waitingIssues.length}
-                </span>
-              </h3>
-              <div className="rounded-xl border border-sky-200 bg-sky-50/60 dark:border-sky-800 dark:bg-sky-950/30 divide-y divide-sky-200 dark:divide-sky-800 overflow-hidden">
-                {waitingIssues.map((issue) => {
-                  const agent = issue.assigneeAgentId ? agentMap.get(issue.assigneeAgentId) : null;
-                  return (
-                    <Link
-                      key={issue.id}
-                      to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="flex items-start gap-3 px-4 py-3 hover:bg-sky-100/60 dark:hover:bg-sky-900/30 transition-colors no-underline text-inherit block"
-                    >
-                      <HelpCircle className="mt-0.5 h-4 w-4 shrink-0 text-sky-500 dark:text-sky-400" />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 mb-0.5">
-                          <span className="text-xs font-mono text-sky-600 dark:text-sky-400 shrink-0">
-                            {issue.identifier ?? issue.id.slice(0, 8)}
-                          </span>
-                          <span className="truncate text-sm font-medium text-sky-900 dark:text-sky-100">
-                            {issue.title}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          {agent && (
-                            <span className="text-xs text-sky-600 dark:text-sky-400">Asked by {agent.name}</span>
-                          )}
-                          <span className="text-xs text-sky-500 dark:text-sky-500 shrink-0">
-                            · {timeAgo(issue.updatedAt)}
-                          </span>
-                        </div>
-                        {issue.questionData?.prompt && (
-                          <p className="mt-1 text-xs text-sky-700 dark:text-sky-300 line-clamp-2">
-                            {issue.questionData.prompt}
-                          </p>
-                        )}
-                      </div>
-                    </Link>
-                  );
-                })}
-              </div>
-            </div>
-          )}
 
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
             <MetricCard
@@ -327,13 +271,6 @@ export function Dashboard() {
                   {data.costs.monthBudgetCents > 0
                     ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
                     : "Unlimited budget"}
-                  {data.costs.burnRateCentsPerDay > 0 && (
-                    <>
-                      {" "}
-                      · {formatCents(data.costs.burnRateCentsPerDay)}/day · proj.{" "}
-                      {formatCents(data.costs.projectedMonthEndSpendCents)}
-                    </>
-                  )}
                 </span>
               }
             />
@@ -354,7 +291,7 @@ export function Dashboard() {
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
-              <RunActivityChart runs={runs ?? []} />
+              <RunActivityChart activity={data.runActivity} />
             </ChartCard>
             <ChartCard title="Issues by Priority" subtitle="Last 14 days">
               <PriorityChart issues={issues ?? []} />
@@ -363,7 +300,7 @@ export function Dashboard() {
               <IssueStatusChart issues={issues ?? []} />
             </ChartCard>
             <ChartCard title="Success Rate" subtitle="Last 14 days">
-              <SuccessRateChart runs={runs ?? []} />
+              <SuccessRateChart activity={data.runActivity} />
             </ChartCard>
           </div>
 
@@ -387,6 +324,7 @@ export function Dashboard() {
                       key={event.id}
                       event={event}
                       agentMap={agentMap}
+                      userProfileMap={userProfileMap}
                       entityNameMap={entityNameMap}
                       entityTitleMap={entityTitleMap}
                       className={animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined}
@@ -398,7 +336,9 @@ export function Dashboard() {
 
             {/* Recent Tasks */}
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">Recent Tasks</h3>
+              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+                Recent Tasks
+              </h3>
               {recentIssues.length === 0 ? (
                 <div className="border border-border p-4">
                   <p className="text-sm text-muted-foreground">No tasks yet.</p>
@@ -423,24 +363,16 @@ export function Dashboard() {
                             {issue.title}
                           </span>
                           <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
-                            <span className="hidden sm:inline-flex">
-                              <PriorityIcon priority={issue.priority} />
-                            </span>
-                            <span className="hidden sm:inline-flex">
-                              <StatusIcon status={issue.status} />
-                            </span>
+                            <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} /></span>
                             <span className="text-xs font-mono text-muted-foreground">
                               {issue.identifier ?? issue.id.slice(0, 8)}
                             </span>
-                            {issue.assigneeAgentId &&
-                              (() => {
-                                const name = agentName(issue.assigneeAgentId);
-                                return name ? (
-                                  <span className="hidden sm:inline-flex">
-                                    <Identity name={name} size="sm" />
-                                  </span>
-                                ) : null;
-                              })()}
+                            {issue.assigneeAgentId && (() => {
+                              const name = agentName(issue.assigneeAgentId);
+                              return name
+                                ? <span className="hidden sm:inline-flex"><Identity name={name} size="sm" /></span>
+                                : null;
+                            })()}
                             <span className="text-xs text-muted-foreground sm:hidden">&middot;</span>
                             <span className="text-xs text-muted-foreground shrink-0 sm:order-last">
                               {timeAgo(issue.updatedAt)}
@@ -454,6 +386,7 @@ export function Dashboard() {
               )}
             </div>
           </div>
+
         </>
       )}
     </div>

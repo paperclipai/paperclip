@@ -67,7 +67,9 @@ export class CapabilityDeniedError extends Error {
   readonly code = PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED;
 
   constructor(pluginId: string, method: string, capability: PluginCapability) {
-    super(`Plugin "${pluginId}" is missing required capability "${capability}" for method "${method}"`);
+    super(
+      `Plugin "${pluginId}" is missing required capability "${capability}" for method "${method}"`,
+    );
   }
 }
 
@@ -93,6 +95,13 @@ export interface HostServices {
     get(params: WorkerToHostMethods["state.get"][0]): Promise<WorkerToHostMethods["state.get"][1]>;
     set(params: WorkerToHostMethods["state.set"][0]): Promise<void>;
     delete(params: WorkerToHostMethods["state.delete"][0]): Promise<void>;
+  };
+
+  /** Provides restricted plugin database namespace methods. */
+  db: {
+    namespace(params: WorkerToHostMethods["db.namespace"][0]): Promise<WorkerToHostMethods["db.namespace"][1]>;
+    query(params: WorkerToHostMethods["db.query"][0]): Promise<WorkerToHostMethods["db.query"][1]>;
+    execute(params: WorkerToHostMethods["db.execute"][0]): Promise<WorkerToHostMethods["db.execute"][1]>;
   };
 
   /** Provides `entities.upsert`, `entities.list`. */
@@ -153,45 +162,36 @@ export interface HostServices {
   projects: {
     list(params: WorkerToHostMethods["projects.list"][0]): Promise<WorkerToHostMethods["projects.list"][1]>;
     get(params: WorkerToHostMethods["projects.get"][0]): Promise<WorkerToHostMethods["projects.get"][1]>;
-    listWorkspaces(
-      params: WorkerToHostMethods["projects.listWorkspaces"][0],
-    ): Promise<WorkerToHostMethods["projects.listWorkspaces"][1]>;
-    getPrimaryWorkspace(
-      params: WorkerToHostMethods["projects.getPrimaryWorkspace"][0],
-    ): Promise<WorkerToHostMethods["projects.getPrimaryWorkspace"][1]>;
-    getWorkspaceForIssue(
-      params: WorkerToHostMethods["projects.getWorkspaceForIssue"][0],
-    ): Promise<WorkerToHostMethods["projects.getWorkspaceForIssue"][1]>;
+    listWorkspaces(params: WorkerToHostMethods["projects.listWorkspaces"][0]): Promise<WorkerToHostMethods["projects.listWorkspaces"][1]>;
+    getPrimaryWorkspace(params: WorkerToHostMethods["projects.getPrimaryWorkspace"][0]): Promise<WorkerToHostMethods["projects.getPrimaryWorkspace"][1]>;
+    getWorkspaceForIssue(params: WorkerToHostMethods["projects.getWorkspaceForIssue"][0]): Promise<WorkerToHostMethods["projects.getWorkspaceForIssue"][1]>;
   };
 
-  /** Provides `issues.list`, `issues.get`, `issues.create`, `issues.update`, `issues.listComments`, `issues.createComment`. */
+  /** Provides issue read/write, relation, checkout, wakeup, summary, comment methods. */
   issues: {
     list(params: WorkerToHostMethods["issues.list"][0]): Promise<WorkerToHostMethods["issues.list"][1]>;
     get(params: WorkerToHostMethods["issues.get"][0]): Promise<WorkerToHostMethods["issues.get"][1]>;
     create(params: WorkerToHostMethods["issues.create"][0]): Promise<WorkerToHostMethods["issues.create"][1]>;
     update(params: WorkerToHostMethods["issues.update"][0]): Promise<WorkerToHostMethods["issues.update"][1]>;
-    listComments(
-      params: WorkerToHostMethods["issues.listComments"][0],
-    ): Promise<WorkerToHostMethods["issues.listComments"][1]>;
-    createComment(
-      params: WorkerToHostMethods["issues.createComment"][0],
-    ): Promise<WorkerToHostMethods["issues.createComment"][1]>;
+    getRelations(params: WorkerToHostMethods["issues.relations.get"][0]): Promise<WorkerToHostMethods["issues.relations.get"][1]>;
+    setBlockedBy(params: WorkerToHostMethods["issues.relations.setBlockedBy"][0]): Promise<WorkerToHostMethods["issues.relations.setBlockedBy"][1]>;
+    addBlockers(params: WorkerToHostMethods["issues.relations.addBlockers"][0]): Promise<WorkerToHostMethods["issues.relations.addBlockers"][1]>;
+    removeBlockers(params: WorkerToHostMethods["issues.relations.removeBlockers"][0]): Promise<WorkerToHostMethods["issues.relations.removeBlockers"][1]>;
+    assertCheckoutOwner(params: WorkerToHostMethods["issues.assertCheckoutOwner"][0]): Promise<WorkerToHostMethods["issues.assertCheckoutOwner"][1]>;
+    getSubtree(params: WorkerToHostMethods["issues.getSubtree"][0]): Promise<WorkerToHostMethods["issues.getSubtree"][1]>;
+    requestWakeup(params: WorkerToHostMethods["issues.requestWakeup"][0]): Promise<WorkerToHostMethods["issues.requestWakeup"][1]>;
+    requestWakeups(params: WorkerToHostMethods["issues.requestWakeups"][0]): Promise<WorkerToHostMethods["issues.requestWakeups"][1]>;
+    getOrchestrationSummary(params: WorkerToHostMethods["issues.summaries.getOrchestration"][0]): Promise<WorkerToHostMethods["issues.summaries.getOrchestration"][1]>;
+    listComments(params: WorkerToHostMethods["issues.listComments"][0]): Promise<WorkerToHostMethods["issues.listComments"][1]>;
+    createComment(params: WorkerToHostMethods["issues.createComment"][0]): Promise<WorkerToHostMethods["issues.createComment"][1]>;
   };
 
   /** Provides `issues.documents.list`, `issues.documents.get`, `issues.documents.upsert`, `issues.documents.delete`. */
   issueDocuments: {
-    list(
-      params: WorkerToHostMethods["issues.documents.list"][0],
-    ): Promise<WorkerToHostMethods["issues.documents.list"][1]>;
-    get(
-      params: WorkerToHostMethods["issues.documents.get"][0],
-    ): Promise<WorkerToHostMethods["issues.documents.get"][1]>;
-    upsert(
-      params: WorkerToHostMethods["issues.documents.upsert"][0],
-    ): Promise<WorkerToHostMethods["issues.documents.upsert"][1]>;
-    delete(
-      params: WorkerToHostMethods["issues.documents.delete"][0],
-    ): Promise<WorkerToHostMethods["issues.documents.delete"][1]>;
+    list(params: WorkerToHostMethods["issues.documents.list"][0]): Promise<WorkerToHostMethods["issues.documents.list"][1]>;
+    get(params: WorkerToHostMethods["issues.documents.get"][0]): Promise<WorkerToHostMethods["issues.documents.get"][1]>;
+    upsert(params: WorkerToHostMethods["issues.documents.upsert"][0]): Promise<WorkerToHostMethods["issues.documents.upsert"][1]>;
+    delete(params: WorkerToHostMethods["issues.documents.delete"][0]): Promise<WorkerToHostMethods["issues.documents.delete"][1]>;
   };
 
   /** Provides `agents.list`, `agents.get`, `agents.pause`, `agents.resume`, `agents.invoke`. */
@@ -205,15 +205,9 @@ export interface HostServices {
 
   /** Provides `agents.sessions.create`, `agents.sessions.list`, `agents.sessions.sendMessage`, `agents.sessions.close`. */
   agentSessions: {
-    create(
-      params: WorkerToHostMethods["agents.sessions.create"][0],
-    ): Promise<WorkerToHostMethods["agents.sessions.create"][1]>;
-    list(
-      params: WorkerToHostMethods["agents.sessions.list"][0],
-    ): Promise<WorkerToHostMethods["agents.sessions.list"][1]>;
-    sendMessage(
-      params: WorkerToHostMethods["agents.sessions.sendMessage"][0],
-    ): Promise<WorkerToHostMethods["agents.sessions.sendMessage"][1]>;
+    create(params: WorkerToHostMethods["agents.sessions.create"][0]): Promise<WorkerToHostMethods["agents.sessions.create"][1]>;
+    list(params: WorkerToHostMethods["agents.sessions.list"][0]): Promise<WorkerToHostMethods["agents.sessions.list"][1]>;
+    sendMessage(params: WorkerToHostMethods["agents.sessions.sendMessage"][0]): Promise<WorkerToHostMethods["agents.sessions.sendMessage"][1]>;
     close(params: WorkerToHostMethods["agents.sessions.close"][0]): Promise<void>;
   };
 
@@ -291,6 +285,10 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "state.set": "plugin.state.write",
   "state.delete": "plugin.state.write",
 
+  "db.namespace": "database.namespace.read",
+  "db.query": "database.namespace.read",
+  "db.execute": "database.namespace.write",
+
   // Entities — no specific capability required (plugin-scoped by design)
   "entities.upsert": null,
   "entities.list": null,
@@ -315,7 +313,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "telemetry.track": "telemetry.track",
 
   // Logger — always allowed
-  log: null,
+  "log": null,
 
   // Companies
   "companies.list": "companies.read",
@@ -333,6 +331,15 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.get": "issues.read",
   "issues.create": "issues.create",
   "issues.update": "issues.update",
+  "issues.relations.get": "issue.relations.read",
+  "issues.relations.setBlockedBy": "issue.relations.write",
+  "issues.relations.addBlockers": "issue.relations.write",
+  "issues.relations.removeBlockers": "issue.relations.write",
+  "issues.assertCheckoutOwner": "issues.checkout",
+  "issues.getSubtree": "issue.subtree.read",
+  "issues.requestWakeup": "issues.wakeup",
+  "issues.requestWakeups": "issues.wakeup",
+  "issues.summaries.getOrchestration": "issues.orchestration.read",
   "issues.listComments": "issue.comments.read",
   "issues.createComment": "issue.comments.create",
 
@@ -384,7 +391,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
  * @param options - Plugin ID, capabilities, and service adapters
  * @returns A handler map suitable for `WorkerStartOptions.hostHandlers`
  */
-export function createHostClientHandlers(options: HostClientFactoryOptions): HostClientHandlers {
+export function createHostClientHandlers(
+  options: HostClientFactoryOptions,
+): HostClientHandlers {
   const { pluginId, services } = options;
   const capabilitySet = new Set<PluginCapability>(options.capabilities);
 
@@ -392,7 +401,9 @@ export function createHostClientHandlers(options: HostClientFactoryOptions): Hos
    * Assert that the plugin has the required capability for a method.
    * Throws `CapabilityDeniedError` if the capability is missing.
    */
-  function requireCapability(method: WorkerToHostMethodName): void {
+  function requireCapability(
+    method: WorkerToHostMethodName,
+  ): void {
     const required = METHOD_CAPABILITY_MAP[method];
     if (required === null) return; // No capability required
     if (capabilitySet.has(required)) return;
@@ -406,7 +417,10 @@ export function createHostClientHandlers(options: HostClientFactoryOptions): Hos
    * @param handler - The actual handler implementation
    * @returns A wrapper that checks capabilities before delegating
    */
-  function gated<M extends WorkerToHostMethodName>(method: M, handler: HostHandler<M>): HostHandler<M> {
+  function gated<M extends WorkerToHostMethodName>(
+    method: M,
+    handler: HostHandler<M>,
+  ): HostHandler<M> {
     return async (params: WorkerToHostMethods[M][0]) => {
       requireCapability(method);
       return handler(params);
@@ -432,6 +446,16 @@ export function createHostClientHandlers(options: HostClientFactoryOptions): Hos
     }),
     "state.delete": gated("state.delete", async (params) => {
       return services.state.delete(params);
+    }),
+
+    "db.namespace": gated("db.namespace", async (params) => {
+      return services.db.namespace(params);
+    }),
+    "db.query": gated("db.query", async (params) => {
+      return services.db.query(params);
+    }),
+    "db.execute": gated("db.execute", async (params) => {
+      return services.db.execute(params);
     }),
 
     // Entities
@@ -476,7 +500,7 @@ export function createHostClientHandlers(options: HostClientFactoryOptions): Hos
     }),
 
     // Logger
-    log: gated("log", async (params) => {
+    "log": gated("log", async (params) => {
       return services.logger.log(params);
     }),
 
@@ -517,6 +541,33 @@ export function createHostClientHandlers(options: HostClientFactoryOptions): Hos
     }),
     "issues.update": gated("issues.update", async (params) => {
       return services.issues.update(params);
+    }),
+    "issues.relations.get": gated("issues.relations.get", async (params) => {
+      return services.issues.getRelations(params);
+    }),
+    "issues.relations.setBlockedBy": gated("issues.relations.setBlockedBy", async (params) => {
+      return services.issues.setBlockedBy(params);
+    }),
+    "issues.relations.addBlockers": gated("issues.relations.addBlockers", async (params) => {
+      return services.issues.addBlockers(params);
+    }),
+    "issues.relations.removeBlockers": gated("issues.relations.removeBlockers", async (params) => {
+      return services.issues.removeBlockers(params);
+    }),
+    "issues.assertCheckoutOwner": gated("issues.assertCheckoutOwner", async (params) => {
+      return services.issues.assertCheckoutOwner(params);
+    }),
+    "issues.getSubtree": gated("issues.getSubtree", async (params) => {
+      return services.issues.getSubtree(params);
+    }),
+    "issues.requestWakeup": gated("issues.requestWakeup", async (params) => {
+      return services.issues.requestWakeup(params);
+    }),
+    "issues.requestWakeups": gated("issues.requestWakeups", async (params) => {
+      return services.issues.requestWakeups(params);
+    }),
+    "issues.summaries.getOrchestration": gated("issues.summaries.getOrchestration", async (params) => {
+      return services.issues.getOrchestrationSummary(params);
     }),
     "issues.listComments": gated("issues.listComments", async (params) => {
       return services.issues.listComments(params);
@@ -599,6 +650,8 @@ export function createHostClientHandlers(options: HostClientFactoryOptions): Hos
  * @param method - The worker→host method name
  * @returns The required capability, or `null`
  */
-export function getRequiredCapability(method: WorkerToHostMethodName): PluginCapability | null {
+export function getRequiredCapability(
+  method: WorkerToHostMethodName,
+): PluginCapability | null {
   return METHOD_CAPABILITY_MAP[method];
 }

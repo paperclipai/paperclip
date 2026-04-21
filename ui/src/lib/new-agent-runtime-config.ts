@@ -1,3 +1,4 @@
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
 import { defaultCreateValues } from "../components/agent-config-defaults";
 
 export function buildNewAgentRuntimeConfig(input?: { heartbeatEnabled?: boolean; intervalSec?: number }) {
@@ -7,7 +8,7 @@ export function buildNewAgentRuntimeConfig(input?: { heartbeatEnabled?: boolean;
       intervalSec: input?.intervalSec ?? defaultCreateValues.intervalSec,
       wakeOnDemand: true,
       cooldownSec: 10,
-      maxConcurrentRuns: 1,
+      maxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
     },
   };
 }

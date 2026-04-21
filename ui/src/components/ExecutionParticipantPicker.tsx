@@ -1,8 +1,15 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { Agent, Issue } from "@paperclipai/shared";
+import { useQuery } from "@tanstack/react-query";
+import { accessApi } from "../api/access";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap } from "../lib/company-members";
+import { queryKeys } from "../lib/queryKeys";
 import { sortAgentsByRecency, getRecentAssigneeIds } from "../lib/recent-assignees";
-import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
+import {
+  buildExecutionPolicy,
+  stageParticipantValues,
+} from "../lib/issue-execution-policy";
 import { cn } from "../lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { User, Eye, ShieldCheck } from "lucide-react";
@@ -31,13 +38,27 @@ export function ExecutionParticipantPicker({
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
   const values = stageType === "review" ? reviewerValues : approverValues;
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(issue.companyId),
+    queryFn: () => accessApi.listUserDirectory(issue.companyId),
+    enabled: !!issue.companyId,
+  });
 
   const sortedAgents = sortAgentsByRecency(
     agents.filter((a) => a.status !== "terminated"),
     getRecentAssigneeIds(),
   );
+  const userLabelMap = useMemo(
+    () => buildCompanyUserLabelMap(companyMembers?.users),
+    [companyMembers?.users],
+  );
+  const otherUserOptions = useMemo(
+    () => buildCompanyUserInlineOptions(companyMembers?.users, { excludeUserIds: [currentUserId, issue.createdByUserId] }),
+    [companyMembers?.users, currentUserId, issue.createdByUserId],
+  );
 
-  const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId);
+  const userLabel = (userId: string | null | undefined) =>
+    formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
   const creatorUserLabel = userLabel(issue.createdByUserId);
 
   const agentName = (id: string) => {
@@ -62,7 +83,9 @@ export function ExecutionParticipantPicker({
   };
 
   const toggle = (value: string) => {
-    const next = values.includes(value) ? values.filter((v) => v !== value) : [...values, value];
+    const next = values.includes(value)
+      ? values.filter((v) => v !== value)
+      : [...values, value];
     updatePolicy(next);
   };
 
@@ -70,13 +93,7 @@ export function ExecutionParticipantPicker({
   const Icon = stageType === "review" ? Eye : ShieldCheck;
 
   return (
-    <Popover
-      open={open}
-      onOpenChange={(o) => {
-        setOpen(o);
-        if (!o) setSearch("");
-      }}
-    >
+    <Popover open={open} onOpenChange={(o) => { setOpen(o); if (!o) setSearch(""); }}>
       <PopoverTrigger asChild>
         <button
           className={cn(
@@ -88,7 +105,9 @@ export function ExecutionParticipantPicker({
         >
           <Icon className="h-3 w-3" />
           {values.length > 0 ? (
-            <span className="truncate max-w-[100px]">{values.map(participantLabel).join(", ")}</span>
+            <span className="truncate max-w-[100px]">
+              {values.map(participantLabel).join(", ")}
+            </span>
           ) : (
             <span>{label}</span>
           )}
@@ -136,6 +155,24 @@ export function ExecutionParticipantPicker({
               {creatorUserLabel ?? "Requester"}
             </button>
           )}
+          {otherUserOptions
+            .filter((option) => {
+              if (!search.trim()) return true;
+              return `${option.label} ${option.searchText ?? ""}`.toLowerCase().includes(search.toLowerCase());
+            })
+            .map((option) => (
+              <button
+                key={option.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  values.includes(option.id) && "bg-accent",
+                )}
+                onClick={() => toggle(option.id)}
+              >
+                <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+                {option.label}
+              </button>
+            ))}
           {sortedAgents
             .filter((agent) => {
               if (!search.trim()) return true;

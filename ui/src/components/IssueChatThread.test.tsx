@@ -5,7 +5,12 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssueChatThread, canStopIssueChatRun, resolveAssistantMessageFoldedState } from "./IssueChatThread";
+import {
+  IssueChatThread,
+  canStopIssueChatRun,
+  resolveAssistantMessageFoldedState,
+  resolveIssueChatHumanAuthor,
+} from "./IssueChatThread";
 
 const { markdownEditorFocusMock } = vi.hoisted(() => ({
   markdownEditorFocusMock: vi.fn(),
@@ -15,48 +20,19 @@ const { appendMock } = vi.hoisted(() => ({
   appendMock: vi.fn(async () => undefined),
 }));
 
-const { threadMessagesMock } = vi.hoisted(() => ({
-  threadMessagesMock: vi.fn(() => <div data-testid="thread-messages" />),
+const {
+  captureComposerViewportSnapshotMock,
+  restoreComposerViewportSnapshotMock,
+  shouldPreserveComposerViewportMock,
+} = vi.hoisted(() => ({
+  captureComposerViewportSnapshotMock: vi.fn(),
+  restoreComposerViewportSnapshotMock: vi.fn(),
+  shouldPreserveComposerViewportMock: vi.fn(),
 }));
-
-const { captureComposerViewportSnapshotMock, restoreComposerViewportSnapshotMock, shouldPreserveComposerViewportMock } =
-  vi.hoisted(() => ({
-    captureComposerViewportSnapshotMock: vi.fn(),
-    restoreComposerViewportSnapshotMock: vi.fn(),
-    shouldPreserveComposerViewportMock: vi.fn(),
-  }));
 
 vi.mock("@assistant-ui/react", () => ({
   AssistantRuntimeProvider: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  ThreadPrimitive: {
-    Root: ({ children, className }: { children: ReactNode; className?: string }) => (
-      <div data-testid="thread-root" className={className}>
-        {children}
-      </div>
-    ),
-    Viewport: ({ children, className }: { children: ReactNode; className?: string }) => (
-      <div data-testid="thread-viewport" className={className}>
-        {children}
-      </div>
-    ),
-    Empty: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-    Messages: () => threadMessagesMock(),
-  },
-  MessagePrimitive: {
-    Root: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-    Content: () => null,
-    Parts: () => null,
-  },
   useAui: () => ({ thread: () => ({ append: appendMock }) }),
-  useAuiState: () => false,
-  useMessage: () => ({
-    id: "message",
-    role: "assistant",
-    createdAt: new Date("2026-04-06T12:00:00.000Z"),
-    content: [],
-    metadata: { custom: {} },
-    status: { type: "complete" },
-  }),
 }));
 
 vi.mock("./transcript/useLiveRunTranscripts", () => ({
@@ -70,15 +46,9 @@ vi.mock("../lib/issue-chat-scroll", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/issue-chat-scroll")>();
   return {
     ...actual,
-    captureComposerViewportSnapshot: captureComposerViewportSnapshotMock.mockImplementation(
-      actual.captureComposerViewportSnapshot,
-    ),
-    restoreComposerViewportSnapshot: restoreComposerViewportSnapshotMock.mockImplementation(
-      actual.restoreComposerViewportSnapshot,
-    ),
-    shouldPreserveComposerViewport: shouldPreserveComposerViewportMock.mockImplementation(
-      actual.shouldPreserveComposerViewport,
-    ),
+    captureComposerViewportSnapshot: captureComposerViewportSnapshotMock.mockImplementation(actual.captureComposerViewportSnapshot),
+    restoreComposerViewportSnapshot: restoreComposerViewportSnapshotMock.mockImplementation(actual.restoreComposerViewportSnapshot),
+    shouldPreserveComposerViewport: shouldPreserveComposerViewportMock.mockImplementation(actual.shouldPreserveComposerViewport),
   };
 });
 
@@ -87,39 +57,34 @@ vi.mock("./MarkdownBody", () => ({
 }));
 
 vi.mock("./MarkdownEditor", () => ({
-  MarkdownEditor: forwardRef(
-    (
-      {
-        value = "",
-        onChange,
-        placeholder,
-        className,
-        contentClassName,
-      }: {
-        value?: string;
-        onChange?: (value: string) => void;
-        placeholder?: string;
-        className?: string;
-        contentClassName?: string;
-      },
-      ref,
-    ) => {
-      useImperativeHandle(ref, () => ({
-        focus: markdownEditorFocusMock,
-      }));
+  MarkdownEditor: forwardRef(({
+    value = "",
+    onChange,
+    placeholder,
+    className,
+    contentClassName,
+  }: {
+    value?: string;
+    onChange?: (value: string) => void;
+    placeholder?: string;
+    className?: string;
+    contentClassName?: string;
+  }, ref) => {
+    useImperativeHandle(ref, () => ({
+      focus: markdownEditorFocusMock,
+    }));
 
-      return (
-        <textarea
-          aria-label="Issue chat editor"
-          data-class-name={className}
-          data-content-class-name={contentClassName}
-          placeholder={placeholder}
-          value={value}
-          onChange={(event) => onChange?.(event.target.value)}
-        />
-      );
-    },
-  ),
+    return (
+      <textarea
+        aria-label="Issue chat editor"
+        data-class-name={className}
+        data-content-class-name={contentClassName}
+        placeholder={placeholder}
+        value={value}
+        onChange={(event) => onChange?.(event.target.value)}
+      />
+    );
+  }),
 }));
 
 vi.mock("./InlineEntitySelector", () => ({
@@ -132,6 +97,12 @@ vi.mock("./Identity", () => ({
 
 vi.mock("./OutputFeedbackButtons", () => ({
   OutputFeedbackButtons: () => null,
+}));
+
+vi.mock("@/components/ui/tooltip", () => ({
+  Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
+  TooltipContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  TooltipTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
 vi.mock("./AgentIconPicker", () => ({
@@ -156,7 +127,6 @@ describe("IssueChatThread", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     localStorage.clear();
-    threadMessagesMock.mockImplementation(() => <div data-testid="thread-messages" />);
   });
 
   afterEach(() => {
@@ -164,7 +134,6 @@ describe("IssueChatThread", () => {
     vi.useRealTimers();
     appendMock.mockReset();
     markdownEditorFocusMock.mockReset();
-    threadMessagesMock.mockReset();
     captureComposerViewportSnapshotMock.mockClear();
     restoreComposerViewportSnapshotMock.mockClear();
     shouldPreserveComposerViewportMock.mockClear();
@@ -235,29 +204,23 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("falls back to a safe transcript warning when assistant-ui throws during message rendering", () => {
+  it("renders the transcript directly from stable Paperclip messages", () => {
     const root = createRoot(container);
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    threadMessagesMock.mockImplementation(() => {
-      throw new Error("tapClientLookup: Index 8 out of bounds (length: 8)");
-    });
 
     act(() => {
       root.render(
         <MemoryRouter>
           <IssueChatThread
-            comments={[
-              {
-                id: "comment-1",
-                companyId: "company-1",
-                issueId: "issue-1",
-                authorAgentId: "agent-1",
-                authorUserId: null,
-                body: "Agent summary",
-                createdAt: new Date("2026-04-06T12:00:00.000Z"),
-                updatedAt: new Date("2026-04-06T12:00:00.000Z"),
-              },
-            ]}
+            comments={[{
+              id: "comment-1",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: "agent-1",
+              authorUserId: null,
+              body: "Agent summary",
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+            }]}
             linkedRuns={[]}
             timelineEvents={[]}
             liveRuns={[]}
@@ -269,11 +232,9 @@ describe("IssueChatThread", () => {
       );
     });
 
-    expect(container.textContent).toContain("Chat renderer hit an internal state error.");
     expect(container.textContent).toContain("Agent summary");
-    expect(consoleErrorSpy).toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Chat renderer hit an internal state error.");
 
-    consoleErrorSpy.mockRestore();
     act(() => {
       root.unmount();
     });
@@ -304,7 +265,10 @@ describe("IssueChatThread", () => {
     expect(editor?.placeholder).toBe("Reply");
 
     act(() => {
-      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
       valueSetter?.call(editor, "Draft survives refresh");
       editor?.dispatchEvent(new Event("input", { bubbles: true }));
     });
@@ -336,9 +300,7 @@ describe("IssueChatThread", () => {
       );
     });
 
-    const restoredEditor = container.querySelector(
-      'textarea[aria-label="Issue chat editor"]',
-    ) as HTMLTextAreaElement | null;
+    const restoredEditor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
     expect(restoredEditor?.value).toBe("Draft survives refresh");
 
     act(() => {
@@ -409,7 +371,10 @@ describe("IssueChatThread", () => {
     expect(submitButton).toBeDefined();
 
     act(() => {
-      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
       valueSetter?.call(editor, "Please pick this back up");
       editor?.dispatchEvent(new Event("input", { bubbles: true }));
     });
@@ -553,21 +518,19 @@ describe("IssueChatThread", () => {
             comments={[]}
             linkedRuns={[]}
             timelineEvents={[]}
-            liveRuns={[
-              {
-                id: "run-1",
-                issueId: "issue-1",
-                status: "running",
-                invocationSource: "comment",
-                triggerDetail: null,
-                startedAt: "2026-04-06T12:00:00.000Z",
-                finishedAt: null,
-                createdAt: "2026-04-06T12:00:00.000Z",
-                agentId: "agent-1",
-                agentName: "Agent 1",
-                adapterType: "codex_local",
-              },
-            ]}
+            liveRuns={[{
+              id: "run-1",
+              issueId: "issue-1",
+              status: "running",
+              invocationSource: "comment",
+              triggerDetail: null,
+              startedAt: "2026-04-06T12:00:00.000Z",
+              finishedAt: null,
+              createdAt: "2026-04-06T12:00:00.000Z",
+              agentId: "agent-1",
+              agentName: "Agent 1",
+              adapterType: "codex_local",
+            }]}
             onAdd={async () => {}}
             enableLiveTranscriptPolling={false}
           />
@@ -610,21 +573,19 @@ describe("IssueChatThread", () => {
             comments={[]}
             linkedRuns={[]}
             timelineEvents={[]}
-            liveRuns={[
-              {
-                id: "run-1",
-                issueId: "issue-1",
-                status: "running",
-                invocationSource: "comment",
-                triggerDetail: null,
-                startedAt: "2026-04-06T12:00:00.000Z",
-                finishedAt: null,
-                createdAt: "2026-04-06T12:00:00.000Z",
-                agentId: "agent-1",
-                agentName: "Agent 1",
-                adapterType: "codex_local",
-              },
-            ]}
+            liveRuns={[{
+              id: "run-1",
+              issueId: "issue-1",
+              status: "running",
+              invocationSource: "comment",
+              triggerDetail: null,
+              startedAt: "2026-04-06T12:00:00.000Z",
+              finishedAt: null,
+              createdAt: "2026-04-06T12:00:00.000Z",
+              agentId: "agent-1",
+              agentName: "Agent 1",
+              adapterType: "codex_local",
+            }]}
             onAdd={async () => {}}
             enableLiveTranscriptPolling={false}
           />
@@ -641,46 +602,67 @@ describe("IssueChatThread", () => {
   });
 
   it("folds chain-of-thought when the same message transitions from running to complete", () => {
-    expect(
-      resolveAssistantMessageFoldedState({
-        messageId: "message-1",
-        currentFolded: false,
-        isFoldable: true,
-        previousMessageId: "message-1",
-        previousIsFoldable: false,
-      }),
-    ).toBe(true);
+    expect(resolveAssistantMessageFoldedState({
+      messageId: "message-1",
+      currentFolded: false,
+      isFoldable: true,
+      previousMessageId: "message-1",
+      previousIsFoldable: false,
+    })).toBe(true);
   });
 
   it("preserves a manually opened completed message across rerenders", () => {
-    expect(
-      resolveAssistantMessageFoldedState({
-        messageId: "message-1",
-        currentFolded: false,
-        isFoldable: true,
-        previousMessageId: "message-1",
-        previousIsFoldable: true,
-      }),
-    ).toBe(false);
+    expect(resolveAssistantMessageFoldedState({
+      messageId: "message-1",
+      currentFolded: false,
+      isFoldable: true,
+      previousMessageId: "message-1",
+      previousIsFoldable: true,
+    })).toBe(false);
   });
 
   it("shows the stop-run action for active run-linked messages even without embedded run status", () => {
-    expect(
-      canStopIssueChatRun({
-        runId: "run-1",
-        runStatus: null,
-        activeRunIds: new Set(["run-1"]),
-      }),
-    ).toBe(true);
+    expect(canStopIssueChatRun({
+      runId: "run-1",
+      runStatus: null,
+      activeRunIds: new Set(["run-1"]),
+    })).toBe(true);
   });
 
   it("hides the stop-run action for completed historical runs", () => {
-    expect(
-      canStopIssueChatRun({
-        runId: "run-1",
-        runStatus: "cancelled",
-        activeRunIds: new Set<string>(),
-      }),
-    ).toBe(false);
+    expect(canStopIssueChatRun({
+      runId: "run-1",
+      runStatus: "cancelled",
+      activeRunIds: new Set<string>(),
+    })).toBe(false);
+  });
+
+  it("uses company profile data to distinguish the current user from other humans", () => {
+    const userProfileMap = new Map([
+      ["user-1", { label: "Dotta", image: "/avatars/dotta.png" }],
+      ["user-2", { label: "Alice", image: "/avatars/alice.png" }],
+    ]);
+
+    expect(resolveIssueChatHumanAuthor({
+      authorName: "You",
+      authorUserId: "user-1",
+      currentUserId: "user-1",
+      userProfileMap,
+    })).toEqual({
+      isCurrentUser: true,
+      authorName: "Dotta",
+      avatarUrl: "/avatars/dotta.png",
+    });
+
+    expect(resolveIssueChatHumanAuthor({
+      authorName: "Alice",
+      authorUserId: "user-2",
+      currentUserId: "user-1",
+      userProfileMap,
+    })).toEqual({
+      isCurrentUser: false,
+      authorName: "Alice",
+      avatarUrl: "/avatars/alice.png",
+    });
   });
 });

@@ -10,6 +10,7 @@ import {
   updateProjectWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
 } from "@paperclipai/shared";
+import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
@@ -29,6 +30,9 @@ import {
 } from "./workspace-command-authz.js";
 import { assertCanManageProjectWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { appendWithCap } from "../adapters/utils.js";
+
+const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 
 export function projectRoutes(db: Db) {
   const router = Router();
@@ -40,7 +44,9 @@ export function projectRoutes(db: Db) {
   async function resolveCompanyIdForProjectReference(req: Request) {
     const companyIdQuery = req.query.companyId;
     const requestedCompanyId =
-      typeof companyIdQuery === "string" && companyIdQuery.trim().length > 0 ? companyIdQuery.trim() : null;
+      typeof companyIdQuery === "string" && companyIdQuery.trim().length > 0
+        ? companyIdQuery.trim()
+        : null;
     if (requestedCompanyId) {
       assertCompanyAccess(req, requestedCompanyId);
       return requestedCompanyId;
@@ -97,15 +103,19 @@ export function projectRoutes(db: Db) {
     };
 
     const { workspace, ...projectData } = req.body as CreateProjectPayload;
-    assertNoAgentHostWorkspaceCommandMutation(req, [
-      ...collectProjectExecutionWorkspaceCommandPaths(projectData.executionWorkspacePolicy),
-      ...collectProjectWorkspaceCommandPaths(workspace, "workspace"),
-    ]);
+    assertNoAgentHostWorkspaceCommandMutation(
+      req,
+      [
+        ...collectProjectExecutionWorkspaceCommandPaths(projectData.executionWorkspacePolicy),
+        ...collectProjectWorkspaceCommandPaths(workspace, "workspace"),
+      ],
+    );
     if (projectData.env !== undefined) {
-      projectData.env = await secretsSvc.normalizeEnvBindingsForPersistence(companyId, projectData.env, {
-        strictMode: strictSecretsMode,
-        fieldPath: "env",
-      });
+      projectData.env = await secretsSvc.normalizeEnvBindingsForPersistence(
+        companyId,
+        projectData.env,
+        { strictMode: strictSecretsMode, fieldPath: "env" },
+      );
     }
     const project = await svc.create(companyId, projectData);
     let createdWorkspaceId: string | null = null;
@@ -211,7 +221,10 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    assertNoAgentHostWorkspaceCommandMutation(req, collectProjectWorkspaceCommandPaths(req.body));
+    assertNoAgentHostWorkspaceCommandMutation(
+      req,
+      collectProjectWorkspaceCommandPaths(req.body),
+    );
     const workspace = await svc.createWorkspace(id, req.body);
     if (!workspace) {
       res.status(422).json({ error: "Invalid project workspace payload" });
@@ -238,51 +251,56 @@ export function projectRoutes(db: Db) {
     res.status(201).json(workspace);
   });
 
-  router.patch("/projects/:id/workspaces/:workspaceId", validate(updateProjectWorkspaceSchema), async (req, res) => {
-    const id = req.params.id as string;
-    const workspaceId = req.params.workspaceId as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Project not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
-    assertNoAgentHostWorkspaceCommandMutation(req, collectProjectWorkspaceCommandPaths(req.body));
-    const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);
-    if (!workspaceExists) {
-      res.status(404).json({ error: "Project workspace not found" });
-      return;
-    }
-    const workspace = await svc.updateWorkspace(id, workspaceId, req.body);
-    if (!workspace) {
-      res.status(422).json({ error: "Invalid project workspace payload" });
-      return;
-    }
+  router.patch(
+    "/projects/:id/workspaces/:workspaceId",
+    validate(updateProjectWorkspaceSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const workspaceId = req.params.workspaceId as string;
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      assertCompanyAccess(req, existing.companyId);
+      assertNoAgentHostWorkspaceCommandMutation(
+        req,
+        collectProjectWorkspaceCommandPaths(req.body),
+      );
+      const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);
+      if (!workspaceExists) {
+        res.status(404).json({ error: "Project workspace not found" });
+        return;
+      }
+      const workspace = await svc.updateWorkspace(id, workspaceId, req.body);
+      if (!workspace) {
+        res.status(422).json({ error: "Invalid project workspace payload" });
+        return;
+      }
 
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId: existing.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "project.workspace_updated",
-      entityType: "project",
-      entityId: id,
-      details: {
-        workspaceId: workspace.id,
-        changedKeys: Object.keys(req.body).sort(),
-      },
-    });
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "project.workspace_updated",
+        entityType: "project",
+        entityId: id,
+        details: {
+          workspaceId: workspace.id,
+          changedKeys: Object.keys(req.body).sort(),
+        },
+      });
 
-    res.json(workspace);
-  });
+      res.json(workspace);
+    },
+  );
 
   async function handleProjectWorkspaceRuntimeCommand(req: Request, res: Response) {
     const id = req.params.id as string;
     const workspaceId = req.params.workspaceId as string;
-    const action = String(req.params.action ?? "")
-      .trim()
-      .toLowerCase();
+    const action = String(req.params.action ?? "").trim().toLowerCase();
     if (action !== "start" && action !== "stop" && action !== "restart" && action !== "run") {
       res.status(404).json({ error: "Workspace command action not found" });
       return;
@@ -308,21 +326,13 @@ export function projectRoutes(db: Db) {
 
     const workspaceCwd = workspace.cwd;
     if (!workspaceCwd) {
-      res
-        .status(422)
-        .json({ error: "Project workspace needs a local path before Paperclip can run workspace commands" });
+      res.status(422).json({ error: "Project workspace needs a local path before Paperclip can run workspace commands" });
       return;
     }
 
     const runtimeConfig = workspace.runtimeConfig?.workspaceRuntime ?? null;
-    const target = req.body as {
-      workspaceCommandId?: string | null;
-      runtimeServiceId?: string | null;
-      serviceIndex?: number | null;
-    };
-    const configuredServices = runtimeConfig
-      ? listConfiguredRuntimeServiceEntries({ workspaceRuntime: runtimeConfig })
-      : [];
+    const target = req.body as { workspaceCommandId?: string | null; runtimeServiceId?: string | null; serviceIndex?: number | null };
+    const configuredServices = runtimeConfig ? listConfiguredRuntimeServiceEntries({ workspaceRuntime: runtimeConfig }) : [];
     const workspaceCommand = runtimeConfig
       ? findWorkspaceCommandDefinition(runtimeConfig, target.workspaceCommandId ?? null)
       : null;
@@ -330,10 +340,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Workspace command not found for this project workspace" });
       return;
     }
-    if (
-      target.runtimeServiceId &&
-      !(workspace.runtimeServices ?? []).some((service) => service.id === target.runtimeServiceId)
-    ) {
+    if (target.runtimeServiceId && !(workspace.runtimeServices ?? []).some((service) => service.id === target.runtimeServiceId)) {
       res.status(404).json({ error: "Runtime service not found for this project workspace" });
       return;
     }
@@ -343,15 +350,15 @@ export function projectRoutes(db: Db) {
         : null;
     const selectedRuntimeServiceId = target.runtimeServiceId ?? matchedRuntimeService?.id ?? null;
     const selectedServiceIndex =
-      workspaceCommand?.kind === "service" ? workspaceCommand.serviceIndex : (target.serviceIndex ?? null);
+      workspaceCommand?.kind === "service"
+        ? workspaceCommand.serviceIndex
+        : target.serviceIndex ?? null;
     if (
-      selectedServiceIndex !== undefined &&
-      selectedServiceIndex !== null &&
-      (selectedServiceIndex < 0 || selectedServiceIndex >= configuredServices.length)
+      selectedServiceIndex !== undefined
+      && selectedServiceIndex !== null
+      && (selectedServiceIndex < 0 || selectedServiceIndex >= configuredServices.length)
     ) {
-      res
-        .status(422)
-        .json({ error: "Selected runtime service is not defined in this project workspace runtime config" });
+      res.status(422).json({ error: "Selected runtime service is not defined in this project workspace runtime config" });
       return;
     }
     if (workspaceCommand?.kind === "job" && action !== "run") {
@@ -359,9 +366,7 @@ export function projectRoutes(db: Db) {
       return;
     }
     if (workspaceCommand?.kind === "service" && action === "run") {
-      res
-        .status(422)
-        .json({ error: `Workspace service "${workspaceCommand.name}" should be started or restarted, not run` });
+      res.status(422).json({ error: `Workspace service "${workspaceCommand.name}" should be started or restarted, not run` });
       return;
     }
     if (action === "run" && !workspaceCommand) {
@@ -376,8 +381,8 @@ export function projectRoutes(db: Db) {
     const actor = getActorInfo(req);
     const recorder = workspaceOperations.createRecorder({ companyId: project.companyId });
     let runtimeServiceCount = workspace.runtimeServices?.length ?? 0;
-    const stdout: string[] = [];
-    const stderr: string[] = [];
+    let stdout = "";
+    let stderr = "";
 
     const operation = await recorder.recordOperation({
       phase: action === "stop" ? "workspace_teardown" : "workspace_provision",
@@ -439,8 +444,8 @@ export function projectRoutes(db: Db) {
         }
 
         const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
-          if (stream === "stdout") stdout.push(chunk);
-          else stderr.push(chunk);
+          if (stream === "stdout") stdout = appendWithCap(stdout, chunk, WORKSPACE_CONTROL_OUTPUT_MAX_CHARS);
+          else stderr = appendWithCap(stderr, chunk, WORKSPACE_CONTROL_OUTPUT_MAX_CHARS);
         };
 
         if (action === "stop" || action === "restart") {
@@ -481,34 +486,29 @@ export function projectRoutes(db: Db) {
           });
           runtimeServiceCount = startedServices.length;
         } else {
-          runtimeServiceCount = selectedRuntimeServiceId
-            ? Math.max(0, (workspace.runtimeServices?.length ?? 1) - 1)
-            : 0;
+          runtimeServiceCount = selectedRuntimeServiceId ? Math.max(0, (workspace.runtimeServices?.length ?? 1) - 1) : 0;
         }
 
-        const currentDesiredState: "running" | "stopped" =
-          workspace.runtimeConfig?.desiredState ??
-          ((workspace.runtimeServices ?? []).some(
-            (service) => service.status === "starting" || service.status === "running",
-          )
+        const currentDesiredState: WorkspaceRuntimeDesiredState =
+          workspace.runtimeConfig?.desiredState
+          ?? ((workspace.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running")
             ? "running"
             : "stopped");
         const nextRuntimeState: {
-          desiredState: "running" | "stopped";
-          serviceStates: Record<string, "running" | "stopped"> | null | undefined;
-        } =
-          selectedRuntimeServiceId && (selectedServiceIndex === undefined || selectedServiceIndex === null)
-            ? {
-                desiredState: currentDesiredState,
-                serviceStates: workspace.runtimeConfig?.serviceStates ?? null,
-              }
-            : buildWorkspaceRuntimeDesiredStatePatch({
-                config: { workspaceRuntime: runtimeConfig },
-                currentDesiredState,
-                currentServiceStates: workspace.runtimeConfig?.serviceStates ?? null,
-                action,
-                serviceIndex: selectedServiceIndex,
-              });
+          desiredState: WorkspaceRuntimeDesiredState;
+          serviceStates: WorkspaceRuntimeServiceStateMap | null | undefined;
+        } = selectedRuntimeServiceId && (selectedServiceIndex === undefined || selectedServiceIndex === null)
+          ? {
+              desiredState: currentDesiredState,
+              serviceStates: workspace.runtimeConfig?.serviceStates ?? null,
+            }
+          : buildWorkspaceRuntimeDesiredStatePatch({
+              config: { workspaceRuntime: runtimeConfig },
+              currentDesiredState,
+              currentServiceStates: workspace.runtimeConfig?.serviceStates ?? null,
+              action,
+              serviceIndex: selectedServiceIndex,
+            });
         await svc.updateWorkspace(project.id, workspace.id, {
           runtimeConfig: {
             desiredState: nextRuntimeState.desiredState,
@@ -518,8 +518,8 @@ export function projectRoutes(db: Db) {
 
         return {
           status: "succeeded",
-          stdout: stdout.join(""),
-          stderr: stderr.join(""),
+          stdout,
+          stderr,
           system:
             action === "stop"
               ? "Stopped project workspace runtime services.\n"
@@ -536,8 +536,7 @@ export function projectRoutes(db: Db) {
       },
     });
 
-    const updatedWorkspace =
-      (await svc.listWorkspaces(project.id)).find((entry) => entry.id === workspace.id) ?? workspace;
+    const updatedWorkspace = (await svc.listWorkspaces(project.id)).find((entry) => entry.id === workspace.id) ?? workspace;
 
     await logActivity(db, {
       companyId: project.companyId,
@@ -564,16 +563,8 @@ export function projectRoutes(db: Db) {
     });
   }
 
-  router.post(
-    "/projects/:id/workspaces/:workspaceId/runtime-services/:action",
-    validate(workspaceRuntimeControlTargetSchema),
-    handleProjectWorkspaceRuntimeCommand,
-  );
-  router.post(
-    "/projects/:id/workspaces/:workspaceId/runtime-commands/:action",
-    validate(workspaceRuntimeControlTargetSchema),
-    handleProjectWorkspaceRuntimeCommand,
-  );
+  router.post("/projects/:id/workspaces/:workspaceId/runtime-services/:action", validate(workspaceRuntimeControlTargetSchema), handleProjectWorkspaceRuntimeCommand);
+  router.post("/projects/:id/workspaces/:workspaceId/runtime-commands/:action", validate(workspaceRuntimeControlTargetSchema), handleProjectWorkspaceRuntimeCommand);
 
   router.delete("/projects/:id/workspaces/:workspaceId", async (req, res) => {
     const id = req.params.id as string;

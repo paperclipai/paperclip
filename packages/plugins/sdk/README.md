@@ -12,17 +12,17 @@ Reference: `doc/plugins/PLUGIN_SPEC.md`
 
 ## Package surface
 
-| Import                               | Purpose                                                                                            |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `@paperclipai/plugin-sdk`            | Worker entry: `definePlugin`, `runWorker`, context types, protocol helpers                         |
-| `@paperclipai/plugin-sdk/ui`         | UI entry: `usePluginData`, `usePluginAction`, `usePluginStream`, `useHostContext`, slot prop types |
-| `@paperclipai/plugin-sdk/ui/hooks`   | Hooks only                                                                                         |
-| `@paperclipai/plugin-sdk/ui/types`   | UI types and slot prop interfaces                                                                  |
-| `@paperclipai/plugin-sdk/testing`    | `createTestHarness` for unit/integration tests                                                     |
-| `@paperclipai/plugin-sdk/bundlers`   | `createPluginBundlerPresets` for worker/manifest/ui builds                                         |
-| `@paperclipai/plugin-sdk/dev-server` | `startPluginDevServer`, `getUiBuildSnapshot`                                                       |
-| `@paperclipai/plugin-sdk/protocol`   | JSON-RPC protocol types and helpers (advanced)                                                     |
-| `@paperclipai/plugin-sdk/types`      | Worker context and API types (advanced)                                                            |
+| Import | Purpose |
+|--------|--------|
+| `@paperclipai/plugin-sdk` | Worker entry: `definePlugin`, `runWorker`, context types, protocol helpers |
+| `@paperclipai/plugin-sdk/ui` | UI entry: `usePluginData`, `usePluginAction`, `usePluginStream`, `useHostContext`, slot prop types |
+| `@paperclipai/plugin-sdk/ui/hooks` | Hooks only |
+| `@paperclipai/plugin-sdk/ui/types` | UI types and slot prop interfaces |
+| `@paperclipai/plugin-sdk/testing` | `createTestHarness` for unit/integration tests |
+| `@paperclipai/plugin-sdk/bundlers` | `createPluginBundlerPresets` for worker/manifest/ui builds |
+| `@paperclipai/plugin-sdk/dev-server` | `startPluginDevServer`, `getUiBuildSnapshot` |
+| `@paperclipai/plugin-sdk/protocol` | JSON-RPC protocol types and helpers (advanced) |
+| `@paperclipai/plugin-sdk/types` | Worker context and API types (advanced) |
 
 ## Manifest entrypoints
 
@@ -66,22 +66,18 @@ const plugin = definePlugin({
     ctx.data.register("health", async () => ({ status: "ok" }));
     ctx.actions.register("ping", async () => ({ pong: true }));
 
-    ctx.tools.register(
-      "calculator",
-      {
-        displayName: "Calculator",
-        description: "Basic math",
-        parametersSchema: {
-          type: "object",
-          properties: { a: { type: "number" }, b: { type: "number" } },
-          required: ["a", "b"],
-        },
-      },
-      async (params) => {
-        const { a, b } = params as { a: number; b: number };
-        return { content: `Result: ${a + b}`, data: { result: a + b } };
-      },
-    );
+    ctx.tools.register("calculator", {
+      displayName: "Calculator",
+      description: "Basic math",
+      parametersSchema: {
+        type: "object",
+        properties: { a: { type: "number" }, b: { type: "number" } },
+        required: ["a", "b"]
+      }
+    }, async (params) => {
+      const { a, b } = params as { a: number; b: number };
+      return { content: `Result: ${a + b}`, data: { result: a + b } };
+    });
   },
 });
 
@@ -95,14 +91,14 @@ runWorker(plugin, import.meta.url);
 
 **Lifecycle (definePlugin):**
 
-| Hook                          | Purpose                                                                                              |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `setup(ctx)`                  | **Required.** Called once at startup. Register event handlers, jobs, data/actions/tools, etc.        |
-| `onHealth?()`                 | Optional. Return `{ status, message?, details? }` for health dashboard.                              |
-| `onConfigChanged?(newConfig)` | Optional. Apply new config without restart; if omitted, host restarts worker.                        |
-| `onShutdown?()`               | Optional. Clean up before process exit (limited time window).                                        |
-| `onValidateConfig?(config)`   | Optional. Return `{ ok, warnings?, errors? }` for settings UI / Test Connection.                     |
-| `onWebhook?(input)`           | Optional. Handle `POST /api/plugins/:pluginId/webhooks/:endpointKey`; required if webhooks declared. |
+| Hook | Purpose |
+|------|--------|
+| `setup(ctx)` | **Required.** Called once at startup. Register event handlers, jobs, data/actions/tools, etc. |
+| `onHealth?()` | Optional. Return `{ status, message?, details? }` for health dashboard. |
+| `onConfigChanged?(newConfig)` | Optional. Apply new config without restart; if omitted, host restarts worker. |
+| `onShutdown?()` | Optional. Clean up before process exit (limited time window). |
+| `onValidateConfig?(config)` | Optional. Return `{ ok, warnings?, errors? }` for settings UI / Test Connection. |
+| `onWebhook?(input)` | Optional. Handle `POST /api/plugins/:pluginId/webhooks/:endpointKey`; required if webhooks declared. |
 
 **Context (`ctx`) in setup:** `config`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `agents`, `goals`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
 
@@ -116,18 +112,21 @@ Subscribe in `setup` with `ctx.events.on(name, handler)` or `ctx.events.on(name,
 
 **Core domain events (subscribe with `events.subscribe`):**
 
-| Event                                                                                 | Typical entity    |
-| ------------------------------------------------------------------------------------- | ----------------- |
-| `company.created`, `company.updated`                                                  | company           |
-| `project.created`, `project.updated`                                                  | project           |
+| Event | Typical entity |
+|-------|-----------------|
+| `company.created`, `company.updated` | company |
+| `project.created`, `project.updated` | project |
 | `project.workspace_created`, `project.workspace_updated`, `project.workspace_deleted` | project_workspace |
-| `issue.created`, `issue.updated`, `issue.comment.created`                             | issue             |
-| `agent.created`, `agent.updated`, `agent.status_changed`                              | agent             |
-| `agent.run.started`, `agent.run.finished`, `agent.run.failed`, `agent.run.cancelled`  | run               |
-| `goal.created`, `goal.updated`                                                        | goal              |
-| `approval.created`, `approval.decided`                                                | approval          |
-| `cost_event.created`                                                                  | cost              |
-| `activity.logged`                                                                     | activity          |
+| `issue.created`, `issue.updated`, `issue.comment.created` | issue |
+| `issue.document.created`, `issue.document.updated`, `issue.document.deleted` | issue |
+| `issue.relations.updated`, `issue.checked_out`, `issue.released`, `issue.assignment_wakeup_requested` | issue |
+| `agent.created`, `agent.updated`, `agent.status_changed` | agent |
+| `agent.run.started`, `agent.run.finished`, `agent.run.failed`, `agent.run.cancelled` | run |
+| `goal.created`, `goal.updated` | goal |
+| `approval.created`, `approval.decided` | approval |
+| `budget.incident.opened`, `budget.incident.resolved` | budget_incident |
+| `cost_event.created` | cost |
+| `activity.logged` | activity |
 
 **Plugin-to-plugin:** Subscribe to `plugin.<pluginId>.<eventName>` (e.g. `plugin.acme.linear.sync-done`). Emit with `ctx.events.emit("sync-done", companyId, payload)`; the host namespaces it automatically.
 
@@ -145,24 +144,24 @@ Plugins can declare **scheduled jobs** that the host runs on a cron schedule. Us
 
 **Cron format** (5 fields: minute, hour, day-of-month, month, day-of-week):
 
-| Field        | Values      | Example     |
-| ------------ | ----------- | ----------- |
-| minute       | 0–59        | `0`, `*/15` |
-| hour         | 0–23        | `2`, `*`    |
-| day of month | 1–31        | `1`, `*`    |
-| month        | 1–12        | `*`         |
-| day of week  | 0–6 (Sun=0) | `*`, `1-5`  |
+| Field        | Values   | Example |
+|-------------|----------|---------|
+| minute      | 0–59     | `0`, `*/15` |
+| hour        | 0–23     | `2`, `*` |
+| day of month | 1–31   | `1`, `*` |
+| month       | 1–12     | `*` |
+| day of week | 0–6 (Sun=0) | `*`, `1-5` |
 
 Examples: `"0 * * * *"` = every hour at minute 0; `"*/5 * * * *"` = every 5 minutes; `"0 2 * * *"` = daily at 2:00.
 
 **Job handler context** (`PluginJobContext`):
 
-| Field         | Type                                | Description                               |
-| ------------- | ----------------------------------- | ----------------------------------------- |
-| `jobKey`      | string                              | Matches the manifest declaration.         |
-| `runId`       | string                              | UUID for this run.                        |
-| `trigger`     | `"schedule" \| "manual" \| "retry"` | What caused this run.                     |
-| `scheduledAt` | string                              | ISO 8601 time when the run was scheduled. |
+| Field        | Type     | Description |
+|-------------|----------|-------------|
+| `jobKey`    | string   | Matches the manifest declaration. |
+| `runId`     | string   | UUID for this run. |
+| `trigger`   | `"schedule" \| "manual" \| "retry"` | What caused this run. |
+| `scheduledAt` | string | ISO 8601 time when the run was scheduled. |
 
 Runs can be triggered by the **schedule**, **manually** from the UI/API, or as a **retry** (when an operator re-runs a job after a failure). Re-throw from the handler to mark the run as failed; the host records the failure. The host does not automatically retry—operators can trigger another run manually from the UI or API.
 
@@ -204,21 +203,21 @@ Slots are mount points for plugin React components. Launchers are host-rendered 
 
 The same set of values is used as **slot types** (where a component mounts) and **launcher placement zones** (where a launcher can appear). Hierarchy:
 
-| Slot type / placement zone | Scope  | Entity types (when context-sensitive)      |
-| -------------------------- | ------ | ------------------------------------------ |
-| `page`                     | Global | —                                          |
-| `sidebar`                  | Global | —                                          |
-| `sidebarPanel`             | Global | —                                          |
-| `settingsPage`             | Global | —                                          |
-| `dashboardWidget`          | Global | —                                          |
-| `globalToolbarButton`      | Global | —                                          |
-| `detailTab`                | Entity | `project`, `issue`, `agent`, `goal`, `run` |
-| `taskDetailView`           | Entity | (task/issue context)                       |
-| `commentAnnotation`        | Entity | `comment`                                  |
-| `commentContextMenuItem`   | Entity | `comment`                                  |
-| `projectSidebarItem`       | Entity | `project`                                  |
-| `toolbarButton`            | Entity | varies by host surface                     |
-| `contextMenuItem`          | Entity | varies by host surface                     |
+| Slot type / placement zone | Scope | Entity types (when context-sensitive) |
+|----------------------------|-------|---------------------------------------|
+| `page` | Global | — |
+| `sidebar` | Global | — |
+| `sidebarPanel` | Global | — |
+| `settingsPage` | Global | — |
+| `dashboardWidget` | Global | — |
+| `globalToolbarButton` | Global | — |
+| `detailTab` | Entity | `project`, `issue`, `agent`, `goal`, `run` |
+| `taskDetailView` | Entity | (task/issue context) |
+| `commentAnnotation` | Entity | `comment` |
+| `commentContextMenuItem` | Entity | `comment` |
+| `projectSidebarItem` | Entity | `project` |
+| `toolbarButton` | Entity | varies by host surface |
+| `contextMenuItem` | Entity | varies by host surface |
 
 **Scope** describes whether the slot requires an entity to render. **Global** slots render without a specific entity but still receive the active `companyId` through `PluginHostContext` — use it to scope data fetches to the current company. **Entity** slots additionally require `entityId` and `entityType` (e.g. a detail tab on a specific issue).
 
@@ -280,66 +279,216 @@ A per-comment context menu item rendered in the "more" dropdown menu (⋮) on ea
 
 ### Launcher actions and render options
 
-| Launcher action | Description                           |
-| --------------- | ------------------------------------- |
-| `navigate`      | Navigate to a route (plugin or host). |
-| `openModal`     | Open a modal.                         |
-| `openDrawer`    | Open a drawer.                        |
-| `openPopover`   | Open a popover.                       |
-| `performAction` | Run an action (e.g. call plugin).     |
-| `deepLink`      | Deep link to plugin or external URL.  |
+| Launcher action | Description |
+|-----------------|-------------|
+| `navigate` | Navigate to a route (plugin or host). |
+| `openModal` | Open a modal. |
+| `openDrawer` | Open a drawer. |
+| `openPopover` | Open a popover. |
+| `performAction` | Run an action (e.g. call plugin). |
+| `deepLink` | Deep link to plugin or external URL. |
 
-| Render option | Values                                                         | Description                                      |
-| ------------- | -------------------------------------------------------------- | ------------------------------------------------ |
+| Render option | Values | Description |
+|---------------|--------|-------------|
 | `environment` | `hostInline`, `hostOverlay`, `hostRoute`, `external`, `iframe` | Container the launcher expects after activation. |
-| `bounds`      | `inline`, `compact`, `default`, `wide`, `full`                 | Size hint for overlays/drawers.                  |
+| `bounds` | `inline`, `compact`, `default`, `wide`, `full` | Size hint for overlays/drawers. |
 
 ### Capabilities
 
 Declare in `manifest.capabilities`. Grouped by scope:
 
-| Scope        | Capability                      |
-| ------------ | ------------------------------- |
-| **Company**  | `companies.read`                |
-|              | `projects.read`                 |
-|              | `project.workspaces.read`       |
-|              | `issues.read`                   |
-|              | `issue.comments.read`           |
-|              | `agents.read`                   |
-|              | `goals.read`                    |
-|              | `goals.create`                  |
-|              | `goals.update`                  |
-|              | `activity.read`                 |
-|              | `costs.read`                    |
-|              | `issues.create`                 |
-|              | `issues.update`                 |
-|              | `issue.comments.create`         |
-|              | `activity.log.write`            |
-|              | `metrics.write`                 |
-|              | `telemetry.track`               |
-| **Instance** | `instance.settings.register`    |
-|              | `plugin.state.read`             |
-|              | `plugin.state.write`            |
-| **Runtime**  | `events.subscribe`              |
-|              | `events.emit`                   |
-|              | `jobs.schedule`                 |
-|              | `webhooks.receive`              |
-|              | `http.outbound`                 |
-|              | `secrets.read-ref`              |
-| **Agent**    | `agent.tools.register`          |
-|              | `agents.invoke`                 |
-|              | `agent.sessions.create`         |
-|              | `agent.sessions.list`           |
-|              | `agent.sessions.send`           |
-|              | `agent.sessions.close`          |
-| **UI**       | `ui.sidebar.register`           |
-|              | `ui.page.register`              |
-|              | `ui.detailTab.register`         |
-|              | `ui.dashboardWidget.register`   |
-|              | `ui.commentAnnotation.register` |
-|              | `ui.action.register`            |
+| Scope | Capability |
+|-------|------------|
+| **Company** | `companies.read` |
+| | `projects.read` |
+| | `project.workspaces.read` |
+| | `issues.read` |
+| | `issue.comments.read` |
+| | `issue.documents.read` |
+| | `issue.relations.read` |
+| | `issue.subtree.read` |
+| | `agents.read` |
+| | `goals.read` |
+| | `goals.create` |
+| | `goals.update` |
+| | `activity.read` |
+| | `costs.read` |
+| | `issues.orchestration.read` |
+| | `database.namespace.read` |
+| | `issues.create` |
+| | `issues.update` |
+| | `issues.checkout` |
+| | `issues.wakeup` |
+| | `issue.comments.create` |
+| | `issue.documents.write` |
+| | `issue.relations.write` |
+| | `activity.log.write` |
+| | `metrics.write` |
+| | `telemetry.track` |
+| | `database.namespace.migrate` |
+| | `database.namespace.write` |
+| **Instance** | `instance.settings.register` |
+| | `plugin.state.read` |
+| | `plugin.state.write` |
+| **Runtime** | `events.subscribe` |
+| | `events.emit` |
+| | `jobs.schedule` |
+| | `webhooks.receive` |
+| | `api.routes.register` |
+| | `http.outbound` |
+| | `secrets.read-ref` |
+| **Agent** | `agent.tools.register` |
+| | `agents.invoke` |
+| | `agent.sessions.create` |
+| | `agent.sessions.list` |
+| | `agent.sessions.send` |
+| | `agent.sessions.close` |
+| **UI** | `ui.sidebar.register` |
+| | `ui.page.register` |
+| | `ui.detailTab.register` |
+| | `ui.dashboardWidget.register` |
+| | `ui.commentAnnotation.register` |
+| | `ui.action.register` |
 
 Full list in code: import `PLUGIN_CAPABILITIES` from `@paperclipai/plugin-sdk`.
+
+### Restricted Database Namespace
+
+Trusted orchestration plugins can declare a host-owned PostgreSQL namespace:
+
+```ts
+database: {
+  migrationsDir: "migrations",
+  coreReadTables: ["issues"],
+}
+```
+
+Declare `database.namespace.migrate` and `database.namespace.read`; add
+`database.namespace.write` when the worker needs runtime writes. Migrations run
+before worker startup, are checksum-recorded, and may create or alter objects
+only inside the plugin namespace. Runtime `ctx.db.query()` allows `SELECT` from
+`ctx.db.namespace` plus manifest-whitelisted `public` core tables. Runtime
+`ctx.db.execute()` allows `INSERT`, `UPDATE`, and `DELETE` only against the
+plugin namespace.
+
+### Scoped API Routes
+
+Manifest-declared `apiRoutes` expose JSON routes under
+`/api/plugins/:pluginId/api/*` without letting a plugin claim core paths:
+
+```ts
+apiRoutes: [
+  {
+    routeKey: "initialize",
+    method: "POST",
+    path: "/issues/:issueId/smoke",
+    auth: "board-or-agent",
+    capability: "api.routes.register",
+    checkoutPolicy: "required-for-agent-in-progress",
+    companyResolution: { from: "issue", param: "issueId" },
+  },
+]
+```
+
+Implement `onApiRequest(input)` in the worker to handle the route. The host
+performs auth, company access, capability, route matching, and checkout policy
+before dispatch. The worker receives route params, query, parsed JSON body,
+sanitized headers, actor context, and `companyId`; responses are JSON `{ status?,
+headers?, body? }`.
+
+## Issue Orchestration APIs
+
+Workflow plugins can use `ctx.issues` for orchestration-grade issue operations without importing host server internals.
+
+Expanded create/update fields include blockers, billing code, board or agent assignees, labels, namespaced plugin origins, request depth, and safe execution workspace fields:
+
+```ts
+const child = await ctx.issues.create({
+  companyId,
+  parentId: missionIssueId,
+  inheritExecutionWorkspaceFromIssueId: missionIssueId,
+  title: "Implement feature slice",
+  status: "todo",
+  assigneeAgentId: workerAgentId,
+  billingCode: "mission:alpha",
+  originKind: "plugin:paperclip.missions:feature",
+  originId: "mission-alpha:feature-1",
+  blockedByIssueIds: [planningIssueId],
+});
+```
+
+If `originKind` is omitted, the host stores `plugin:<pluginKey>`. Plugins may use sub-kinds such as `plugin:<pluginKey>:feature`, but the host rejects attempts to set another plugin's namespace.
+
+Blocker relationships are also exposed as first-class helpers:
+
+```ts
+const relations = await ctx.issues.relations.get(child.id, companyId);
+await ctx.issues.relations.setBlockedBy(child.id, [planningIssueId], companyId);
+await ctx.issues.relations.addBlockers(child.id, [validationIssueId], companyId);
+await ctx.issues.relations.removeBlockers(child.id, [planningIssueId], companyId);
+```
+
+Subtree reads can include just the issue tree, or compact related data for orchestration dashboards:
+
+```ts
+const subtree = await ctx.issues.getSubtree(missionIssueId, companyId, {
+  includeRoot: true,
+  includeRelations: true,
+  includeDocuments: true,
+  includeActiveRuns: true,
+  includeAssignees: true,
+});
+```
+
+Agent-run actions can assert checkout ownership before mutating in-progress work:
+
+```ts
+await ctx.issues.assertCheckoutOwner({
+  issueId,
+  companyId,
+  actorAgentId: runCtx.agentId,
+  actorRunId: runCtx.runId,
+});
+```
+
+Plugins can request assignment wakeups through the host so budget stops, execution locks, blocker checks, and heartbeat policy still apply:
+
+```ts
+await ctx.issues.requestWakeup(child.id, companyId, {
+  reason: "mission_advance",
+  contextSource: "missions.advance",
+});
+
+await ctx.issues.requestWakeups([featureIssueId, validationIssueId], companyId, {
+  reason: "mission_advance",
+  contextSource: "missions.advance",
+  idempotencyKeyPrefix: `mission:${missionIssueId}:advance`,
+});
+```
+
+Use `ctx.issues.summaries.getOrchestration()` when a workflow needs compact reads across a root issue or subtree:
+
+```ts
+const summary = await ctx.issues.summaries.getOrchestration({
+  issueId: missionIssueId,
+  companyId,
+  includeSubtree: true,
+  billingCode: "mission:alpha",
+});
+```
+
+Required capabilities:
+
+| API | Capability |
+|-----|------------|
+| `ctx.issues.relations.get` | `issue.relations.read` |
+| `ctx.issues.relations.setBlockedBy` / `addBlockers` / `removeBlockers` | `issue.relations.write` |
+| `ctx.issues.getSubtree` | `issue.subtree.read` |
+| `ctx.issues.assertCheckoutOwner` | `issues.checkout` |
+| `ctx.issues.requestWakeup` / `requestWakeups` | `issues.wakeup` |
+| `ctx.issues.summaries.getOrchestration` | `issues.orchestration.read` |
+
+Plugin-originated mutations are logged with `actorType: "plugin"` and details fields `sourcePluginId`, `sourcePluginKey`, `initiatingActorType`, `initiatingActorId`, and `initiatingRunId` when a user or agent run initiated the plugin work.
 
 ## UI quick start
 
@@ -445,11 +594,7 @@ export function IssueLinearLink({ context }: PluginDetailTabProps) {
   });
 
   if (!data?.url) return <p>No linked Linear issue.</p>;
-  return (
-    <a href={data.url} target="_blank" rel="noopener">
-      View in Linear
-    </a>
-  );
+  return <a href={data.url} target="_blank" rel="noopener">View in Linear</a>;
 }
 ```
 
@@ -471,9 +616,7 @@ export function ChatMessages({ context }: PluginWidgetProps) {
 
   return (
     <div>
-      {events.map((e, i) => (
-        <span key={i}>{e.text}</span>
-      ))}
+      {events.map((e, i) => <span key={i}>{e.text}</span>)}
       {connected && <span className="pulse" />}
       <button onClick={close}>Stop</button>
     </div>
@@ -491,18 +634,18 @@ The current host does **not** provide a real shared component library to plugins
 
 Each slot type receives a typed props object with `context: PluginHostContext`. Import from `@paperclipai/plugin-sdk/ui`.
 
-| Slot type                | Props interface                     | `context` extras                                                                                    |
-| ------------------------ | ----------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `page`                   | `PluginPageProps`                   | —                                                                                                   |
-| `sidebar`                | `PluginSidebarProps`                | —                                                                                                   |
-| `settingsPage`           | `PluginSettingsPageProps`           | —                                                                                                   |
-| `dashboardWidget`        | `PluginWidgetProps`                 | —                                                                                                   |
-| `globalToolbarButton`    | `PluginGlobalToolbarButtonProps`    | —                                                                                                   |
-| `detailTab`              | `PluginDetailTabProps`              | `entityId: string`, `entityType: string`                                                            |
-| `toolbarButton`          | `PluginToolbarButtonProps`          | `entityId: string`, `entityType: string`                                                            |
-| `commentAnnotation`      | `PluginCommentAnnotationProps`      | `entityId: string`, `entityType: "comment"`, `parentEntityId: string`, `projectId`, `companyPrefix` |
+| Slot type | Props interface | `context` extras |
+|-----------|----------------|------------------|
+| `page` | `PluginPageProps` | — |
+| `sidebar` | `PluginSidebarProps` | — |
+| `settingsPage` | `PluginSettingsPageProps` | — |
+| `dashboardWidget` | `PluginWidgetProps` | — |
+| `globalToolbarButton` | `PluginGlobalToolbarButtonProps` | — |
+| `detailTab` | `PluginDetailTabProps` | `entityId: string`, `entityType: string` |
+| `toolbarButton` | `PluginToolbarButtonProps` | `entityId: string`, `entityType: string` |
+| `commentAnnotation` | `PluginCommentAnnotationProps` | `entityId: string`, `entityType: "comment"`, `parentEntityId: string`, `projectId`, `companyPrefix` |
 | `commentContextMenuItem` | `PluginCommentContextMenuItemProps` | `entityId: string`, `entityType: "comment"`, `parentEntityId: string`, `projectId`, `companyPrefix` |
-| `projectSidebarItem`     | `PluginProjectSidebarItemProps`     | `entityId: string`, `entityType: "project"`                                                         |
+| `projectSidebarItem` | `PluginProjectSidebarItemProps` | `entityId: string`, `entityType: "project"` |
 
 Example detail tab with entity context:
 
@@ -603,7 +746,11 @@ export function FilesLink({ context }: PluginProjectSidebarItemProps) {
   const projectId = context.entityId;
   const prefix = context.companyPrefix ? `/${context.companyPrefix}` : "";
   const projectRef = projectId; // or resolve from host; entityId is project id
-  return <a href={`${prefix}/projects/${projectRef}?tab=plugin:your-plugin:files`}>Files</a>;
+  return (
+    <a href={`${prefix}/projects/${projectRef}?tab=plugin:your-plugin:files`}>
+      Files
+    </a>
+  );
 }
 ```
 
@@ -639,7 +786,10 @@ Project-scoped example (appears only on project detail pages):
 
 ```tsx
 import { useState } from "react";
-import { useHostContext, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import {
+  useHostContext,
+  usePluginAction,
+} from "@paperclipai/plugin-sdk/ui";
 
 export function SyncToolbarButton() {
   const context = useHostContext();
@@ -682,7 +832,9 @@ export function SyncToolbarButton() {
             <p className="mt-2 text-sm text-muted-foreground">
               Queue a sync for <code>{context.projectId}</code>.
             </p>
-            {errorMessage ? <p className="mt-2 text-sm text-destructive">{errorMessage}</p> : null}
+            {errorMessage ? (
+              <p className="mt-2 text-sm text-destructive">{errorMessage}</p>
+            ) : null}
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" onClick={() => setOpen(false)}>
                 Cancel
@@ -729,11 +881,11 @@ const plugin = definePlugin({
 
 **API:**
 
-| Method                                 | Description                                                                                                   |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Method | Description |
+|--------|-------------|
 | `ctx.streams.open(channel, companyId)` | Open a named stream channel and associate it with a company. Sends a `streams.open` notification to the host. |
-| `ctx.streams.emit(channel, event)`     | Push an event to the channel. The `companyId` is automatically resolved from the prior `open()` call.         |
-| `ctx.streams.close(channel)`           | Close the channel and clear the company mapping. Sends a `streams.close` notification.                        |
+| `ctx.streams.emit(channel, event)` | Push an event to the channel. The `companyId` is automatically resolved from the prior `open()` call. |
+| `ctx.streams.close(channel)` | Close the channel and clear the company mapping. Sends a `streams.close` notification. |
 
 Stream notifications are fire-and-forget JSON-RPC messages (no `id` field). They are sent via `notifyHost()` synchronously during handler execution.
 
@@ -767,9 +919,7 @@ The agent doesn't know about streams — the worker decides what to relay. Encod
 ```ts
 ctx.actions.register("ask-agent", async (params) => {
   const { agentId, companyId, prompt } = params as {
-    agentId: string;
-    companyId: string;
-    prompt: string;
+    agentId: string; companyId: string; prompt: string;
   };
 
   const channel = `agent:${agentId}`;
@@ -781,7 +931,7 @@ ctx.actions.register("ask-agent", async (params) => {
     prompt,
     onEvent: (event) => {
       ctx.streams.emit(channel, {
-        type: event.eventType, // "chunk" | "done" | "error"
+        type: event.eventType,       // "chunk" | "done" | "error"
         text: event.message ?? "",
       });
     },
@@ -815,13 +965,7 @@ export function AgentChat({ agentId, companyId }: { agentId: string; companyId: 
 
   return (
     <div>
-      <div>
-        {events
-          .filter((e) => e.type === "chunk")
-          .map((e, i) => (
-            <span key={i}>{e.text}</span>
-          ))}
-      </div>
+      <div>{events.filter(e => e.type === "chunk").map((e, i) => <span key={i}>{e.text}</span>)}</div>
       <input value={prompt} onChange={(e) => setPrompt(e.target.value)} />
       <button onClick={send}>Send</button>
       {connected && <button onClick={close}>Stop</button>}
@@ -894,6 +1038,5 @@ const server = await startPluginDevServer({ rootDir: process.cwd() });
 ```
 
 Dev server endpoints:
-
 - `GET /__paperclip__/health` returns `{ ok, rootDir, uiDir }`
 - `GET /__paperclip__/events` streams `reload` SSE events on UI build changes

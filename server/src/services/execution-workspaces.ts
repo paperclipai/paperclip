@@ -4,7 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, issues, projects, projectWorkspaces, type workspaceRuntimeServices } from "@paperclipai/db";
+import { executionWorkspaces, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,
@@ -12,6 +12,7 @@ import type {
   ExecutionWorkspaceCloseGitReadiness,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceConfig,
+  WorkspaceRuntimeDesiredState,
   WorkspaceRuntimeService,
 } from "@paperclipai/shared";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
@@ -38,6 +39,20 @@ function readNullableString(value: unknown): string | null {
 function cloneRecord(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null;
   return { ...value };
+}
+
+function readDesiredState(value: unknown): WorkspaceRuntimeDesiredState | null {
+  return value === "running" || value === "stopped" || value === "manual" ? value : null;
+}
+
+function readServiceStates(value: unknown): ExecutionWorkspaceConfig["serviceStates"] {
+  if (!isRecord(value)) return null;
+  const entries = Object.entries(value).filter(([, state]) =>
+    state === "running" || state === "stopped" || state === "manual"
+  );
+  return entries.length > 0
+    ? Object.fromEntries(entries) as ExecutionWorkspaceConfig["serviceStates"]
+    : null;
 }
 
 async function pathExists(value: string | null | undefined) {
@@ -75,9 +90,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   }
 
   if (!(await pathExists(workspacePath))) {
-    warnings.push(
-      `Workspace path "${workspacePath}" does not exist, so Paperclip cannot inspect git status before close.`,
-    );
+    warnings.push(`Workspace path "${workspacePath}" does not exist, so Paperclip cannot inspect git status before close.`);
     return {
       git: {
         repoRoot: null,
@@ -142,9 +155,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
 
   if (repoRoot && baseRef) {
     try {
-      const counts = (
-        await runGit(["rev-list", "--left-right", "--count", `${baseRef}...HEAD`], workspacePath)
-      ).stdout.trim();
+      const counts = (await runGit(["rev-list", "--left-right", "--count", `${baseRef}...HEAD`], workspacePath)).stdout.trim();
       const [behindRaw, aheadRaw] = counts.split(/\s+/);
       behindCount = behindRaw ? Number.parseInt(behindRaw, 10) : 0;
       aheadCount = aheadRaw ? Number.parseInt(aheadRaw, 10) : 0;
@@ -187,9 +198,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   };
 }
 
-export function readExecutionWorkspaceConfig(
-  metadata: Record<string, unknown> | null | undefined,
-): ExecutionWorkspaceConfig | null {
+export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> | null | undefined): ExecutionWorkspaceConfig | null {
   const raw = isRecord(metadata?.config) ? metadata.config : null;
   if (!raw) return null;
 
@@ -198,12 +207,8 @@ export function readExecutionWorkspaceConfig(
     teardownCommand: readNullableString(raw.teardownCommand),
     cleanupCommand: readNullableString(raw.cleanupCommand),
     workspaceRuntime: cloneRecord(raw.workspaceRuntime),
-    desiredState: raw.desiredState === "running" || raw.desiredState === "stopped" ? raw.desiredState : null,
-    serviceStates: isRecord(raw.serviceStates)
-      ? (Object.fromEntries(
-          Object.entries(raw.serviceStates).filter(([, state]) => state === "running" || state === "stopped"),
-        ) as ExecutionWorkspaceConfig["serviceStates"])
-      : null,
+    desiredState: readDesiredState(raw.desiredState),
+    serviceStates: readServiceStates(raw.serviceStates),
   };
 
   const hasConfig = Object.values(config).some((value) => {
@@ -235,28 +240,16 @@ export function mergeExecutionWorkspaceConfig(
   }
 
   const nextConfig: ExecutionWorkspaceConfig = {
-    provisionCommand:
-      patch.provisionCommand !== undefined ? readNullableString(patch.provisionCommand) : current.provisionCommand,
-    teardownCommand:
-      patch.teardownCommand !== undefined ? readNullableString(patch.teardownCommand) : current.teardownCommand,
-    cleanupCommand:
-      patch.cleanupCommand !== undefined ? readNullableString(patch.cleanupCommand) : current.cleanupCommand,
-    workspaceRuntime:
-      patch.workspaceRuntime !== undefined ? cloneRecord(patch.workspaceRuntime) : current.workspaceRuntime,
+    provisionCommand: patch.provisionCommand !== undefined ? readNullableString(patch.provisionCommand) : current.provisionCommand,
+    teardownCommand: patch.teardownCommand !== undefined ? readNullableString(patch.teardownCommand) : current.teardownCommand,
+    cleanupCommand: patch.cleanupCommand !== undefined ? readNullableString(patch.cleanupCommand) : current.cleanupCommand,
+    workspaceRuntime: patch.workspaceRuntime !== undefined ? cloneRecord(patch.workspaceRuntime) : current.workspaceRuntime,
     desiredState:
       patch.desiredState !== undefined
-        ? patch.desiredState === "running" || patch.desiredState === "stopped"
-          ? patch.desiredState
-          : null
+        ? readDesiredState(patch.desiredState)
         : current.desiredState,
     serviceStates:
-      patch.serviceStates !== undefined && isRecord(patch.serviceStates)
-        ? (Object.fromEntries(
-            Object.entries(patch.serviceStates).filter(([, state]) => state === "running" || state === "stopped"),
-          ) as ExecutionWorkspaceConfig["serviceStates"])
-        : patch.serviceStates !== undefined
-          ? null
-          : current.serviceStates,
+      patch.serviceStates !== undefined ? readServiceStates(patch.serviceStates) : current.serviceStates,
   };
 
   const hasConfig = Object.values(nextConfig).some((value) => {
@@ -347,9 +340,7 @@ function toExecutionWorkspace(
   };
 }
 
-function toExecutionWorkspaceSummary(
-  row: Pick<ExecutionWorkspaceRow, "id" | "name" | "mode" | "projectWorkspaceId">,
-): ExecutionWorkspaceSummary {
+function toExecutionWorkspaceSummary(row: Pick<ExecutionWorkspaceRow, "id" | "name" | "mode" | "projectWorkspaceId">): ExecutionWorkspaceSummary {
   return {
     id: row.id,
     name: row.name,
@@ -377,9 +368,11 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
     .filter((row) => usesInheritedProjectRuntimeServices(row))
     .map((row) => row.projectWorkspaceId)
     .filter((value): value is string => Boolean(value));
-  const projectRuntimeServices = await listCurrentRuntimeServicesForProjectWorkspaces(db, companyId, [
-    ...new Set(projectWorkspaceIds),
-  ]);
+  const projectRuntimeServices = await listCurrentRuntimeServicesForProjectWorkspaces(
+    db,
+    companyId,
+    [...new Set(projectWorkspaceIds)],
+  );
 
   return new Map(
     rows.map((row) => [
@@ -409,10 +402,7 @@ export function executionWorkspaceService(db: Db) {
     }
     if (filters?.issueId) conditions.push(eq(executionWorkspaces.sourceIssueId, filters.issueId));
     if (filters?.status) {
-      const statuses = filters.status
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean);
+      const statuses = filters.status.split(",").map((value) => value.trim()).filter(Boolean);
       if (statuses.length === 1) conditions.push(eq(executionWorkspaces.status, statuses[0]!));
       else if (statuses.length > 1) conditions.push(inArray(executionWorkspaces.status, statuses));
     }
@@ -423,16 +413,13 @@ export function executionWorkspaceService(db: Db) {
   }
 
   return {
-    list: async (
-      companyId: string,
-      filters?: {
-        projectId?: string;
-        projectWorkspaceId?: string;
-        issueId?: string;
-        status?: string;
-        reuseEligible?: boolean;
-      },
-    ) => {
+    list: async (companyId: string, filters?: {
+      projectId?: string;
+      projectWorkspaceId?: string;
+      issueId?: string;
+      status?: string;
+      reuseEligible?: boolean;
+    }) => {
       const conditions = buildListConditions(companyId, filters);
       const rows = await db
         .select()
@@ -441,20 +428,20 @@ export function executionWorkspaceService(db: Db) {
         .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, companyId, rows);
       return rows.map((row) =>
-        toExecutionWorkspace(row, (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService)),
+        toExecutionWorkspace(
+          row,
+          (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
+        ),
       );
     },
 
-    listSummaries: async (
-      companyId: string,
-      filters?: {
-        projectId?: string;
-        projectWorkspaceId?: string;
-        issueId?: string;
-        status?: string;
-        reuseEligible?: boolean;
-      },
-    ) => {
+    listSummaries: async (companyId: string, filters?: {
+      projectId?: string;
+      projectWorkspaceId?: string;
+      issueId?: string;
+      status?: string;
+      reuseEligible?: boolean;
+    }) => {
       const conditions = buildListConditions(companyId, filters);
       const rows = await db
         .select({
@@ -476,10 +463,11 @@ export function executionWorkspaceService(db: Db) {
         .where(eq(executionWorkspaces.id, id))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
-      const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [
+      const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
+      return toExecutionWorkspace(
         row,
-      ]);
-      return toExecutionWorkspace(row, (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService));
+        (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
+      );
     },
 
     getCloseReadiness: async (id: string): Promise<ExecutionWorkspaceCloseReadiness | null> => {
@@ -490,11 +478,7 @@ export function executionWorkspaceService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!workspace) return null;
 
-      const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(
-        db,
-        workspace.companyId,
-        [workspace],
-      );
+      const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, workspace.companyId, [workspace]);
       const runtimeServices = (runtimeServicesByWorkspaceId.get(workspace.id) ?? []).map(toRuntimeService);
 
       const linkedIssues = await db
@@ -557,16 +541,15 @@ export function executionWorkspaceService(db: Db) {
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
-      const workspacePath =
-        readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
+      const workspacePath = readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
       const resolvedWorkspacePath = workspacePath ? path.resolve(workspacePath) : null;
       const resolvedPrimaryWorkspacePath = projectWorkspace?.cwd ? path.resolve(projectWorkspace.cwd) : null;
       const isProjectPrimaryWorkspace =
-        workspace.projectWorkspaceId != null &&
-        workspace.projectWorkspaceId === primaryProjectWorkspace?.id &&
-        resolvedWorkspacePath != null &&
-        resolvedPrimaryWorkspacePath != null &&
-        resolvedWorkspacePath === resolvedPrimaryWorkspacePath;
+        workspace.projectWorkspaceId != null
+        && workspace.projectWorkspaceId === primaryProjectWorkspace?.id
+        && resolvedWorkspacePath != null
+        && resolvedPrimaryWorkspacePath != null
+        && resolvedWorkspacePath === resolvedPrimaryWorkspacePath;
 
       const linkedIssueSummaries = linkedIssues.map((issue) => ({
         ...issue,
@@ -580,18 +563,14 @@ export function executionWorkspaceService(db: Db) {
             ? "This workspace is still linked to an open issue."
             : `This workspace is still linked to ${blockingIssues.length} open issues.`;
         if (isSharedWorkspace) {
-          warnings.push(
-            `${linkedIssueMessage} Archiving it will detach this shared workspace session from those issues, but keep the underlying project workspace available.`,
-          );
+          warnings.push(`${linkedIssueMessage} Archiving it will detach this shared workspace session from those issues, but keep the underlying project workspace available.`);
         } else {
           blockingReasons.push(linkedIssueMessage);
         }
       }
 
       if (isSharedWorkspace) {
-        warnings.push(
-          "This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.",
-        );
+        warnings.push("This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.");
       }
 
       if (runtimeServices.some((service) => service.status !== "stopped")) {
@@ -635,8 +614,7 @@ export function executionWorkspaceService(db: Db) {
         {
           kind: "archive_record",
           label: "Archive workspace record",
-          description:
-            "Keep the execution workspace history and issue linkage, but remove it from active workspace lists.",
+          description: "Keep the execution workspace history and issue linkage, but remove it from active workspace lists.",
           command: null,
         },
       ];
@@ -704,13 +682,13 @@ export function executionWorkspaceService(db: Db) {
         const resolvedWorkspacePath = path.resolve(workspacePath);
         const resolvedProjectWorkspacePath = projectWorkspace?.cwd ? path.resolve(projectWorkspace.cwd) : null;
         const containsProjectWorkspace = resolvedProjectWorkspacePath
-          ? resolvedWorkspacePath === resolvedProjectWorkspacePath ||
-            resolvedProjectWorkspacePath.startsWith(`${resolvedWorkspacePath}${path.sep}`)
+          ? (
+              resolvedWorkspacePath === resolvedProjectWorkspacePath ||
+              resolvedProjectWorkspacePath.startsWith(`${resolvedWorkspacePath}${path.sep}`)
+            )
           : false;
         if (containsProjectWorkspace) {
-          warnings.push(
-            `Paperclip will archive this workspace but keep "${workspacePath}" because it contains the project workspace.`,
-          );
+          warnings.push(`Paperclip will archive this workspace but keep "${workspacePath}" because it contains the project workspace.`);
         } else {
           plannedActions.push({
             kind: "remove_local_directory",
@@ -721,7 +699,12 @@ export function executionWorkspaceService(db: Db) {
         }
       }
 
-      const state = blockingReasons.length > 0 ? "blocked" : warnings.length > 0 ? "ready_with_warnings" : "ready";
+      const state =
+        blockingReasons.length > 0
+          ? "blocked"
+          : warnings.length > 0
+            ? "ready_with_warnings"
+            : "ready";
 
       return {
         workspaceId: workspace.id,

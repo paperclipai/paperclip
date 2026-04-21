@@ -9,6 +9,7 @@ import { queryKeys } from "../../lib/queryKeys";
 
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
+const EMPTY_RUN_LOG_CHUNKS: RunLogChunk[] = [];
 
 export interface RunTranscriptSource {
   id: string;
@@ -21,6 +22,9 @@ interface UseLiveRunTranscriptsOptions {
   runs: RunTranscriptSource[];
   companyId?: string | null;
   maxChunksPerRun?: number;
+  logPollIntervalMs?: number;
+  logReadLimitBytes?: number;
+  enableRealtimeUpdates?: boolean;
 }
 
 function readString(value: unknown): string | null {
@@ -67,7 +71,14 @@ function parsePersistedLogContent(
   return parsed;
 }
 
-export function useLiveRunTranscripts({ runs, companyId, maxChunksPerRun = 200 }: UseLiveRunTranscriptsOptions) {
+export function useLiveRunTranscripts({
+  runs,
+  companyId,
+  maxChunksPerRun = 200,
+  logPollIntervalMs = LOG_POLL_INTERVAL_MS,
+  logReadLimitBytes = LOG_READ_LIMIT_BYTES,
+  enableRealtimeUpdates = true,
+}: UseLiveRunTranscriptsOptions) {
   const runsKey = useMemo(
     () =>
       runs
@@ -83,6 +94,13 @@ export function useLiveRunTranscripts({ runs, companyId, maxChunksPerRun = 200 }
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
   const missingTerminalLogRunIdsRef = useRef(new Set<string>());
+  const transcriptCacheRef = useRef(new Map<string, {
+    adapterType: string;
+    chunks: RunLogChunk[];
+    censorUsernameInLogs: boolean;
+    parserTick: number;
+    transcript: TranscriptEntry[];
+  }>());
   // Tick counter to force transcript recomputation when dynamic parser loads
   const [parserTick, setParserTick] = useState(0);
   useEffect(() => {
@@ -99,11 +117,7 @@ export function useLiveRunTranscripts({ runs, companyId, maxChunksPerRun = 200 }
     [normalizedRuns],
   );
   const runIdsKey = useMemo(
-    () =>
-      normalizedRuns
-        .map((run) => run.id)
-        .sort((a, b) => a.localeCompare(b))
-        .join(","),
+    () => normalizedRuns.map((run) => run.id).sort((a, b) => a.localeCompare(b)).join(","),
     [normalizedRuns],
   );
 
@@ -167,6 +181,11 @@ export function useLiveRunTranscripts({ runs, companyId, maxChunksPerRun = 200 }
         missingTerminalLogRunIdsRef.current.delete(runId);
       }
     }
+    for (const runId of transcriptCacheRef.current.keys()) {
+      if (!knownRunIds.has(runId)) {
+        transcriptCacheRef.current.delete(runId);
+      }
+    }
   }, [normalizedRuns]);
 
   useEffect(() => {
@@ -180,7 +199,7 @@ export function useLiveRunTranscripts({ runs, companyId, maxChunksPerRun = 200 }
       }
       const offset = logOffsetByRunRef.current.get(run.id) ?? 0;
       try {
-        const result = await heartbeatsApi.log(run.id, offset, LOG_READ_LIMIT_BYTES);
+        const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
         if (cancelled) return;
 
         appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
@@ -214,20 +233,20 @@ export function useLiveRunTranscripts({ runs, companyId, maxChunksPerRun = 200 }
 
     void readAll();
     const activeRuns = normalizedRuns.filter((run) => !isTerminalStatus(run.status));
-    const interval =
-      activeRuns.length > 0
-        ? window.setInterval(() => {
-            void Promise.all(activeRuns.map((run) => readRunLog(run)));
-          }, LOG_POLL_INTERVAL_MS)
-        : null;
+    const interval = activeRuns.length > 0 && logPollIntervalMs > 0
+      ? window.setInterval(() => {
+          void Promise.all(activeRuns.map((run) => readRunLog(run)));
+        }, logPollIntervalMs)
+      : null;
 
     return () => {
       cancelled = true;
       if (interval !== null) window.clearInterval(interval);
     };
-  }, [normalizedRuns, runIdsKey]);
+  }, [logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey]);
 
   useEffect(() => {
+    if (!enableRealtimeUpdates) return;
     if (!companyId || activeRunIds.size === 0) return;
 
     let closed = false;
@@ -272,14 +291,12 @@ export function useLiveRunTranscripts({ runs, companyId, maxChunksPerRun = 200 }
               : readString(payload["stream"]) === "system"
                 ? "system"
                 : "stdout";
-          appendChunks(runId, [
-            {
-              ts,
-              stream,
-              chunk,
-              dedupeKey: `log:${runId}:${ts}:${stream}:${chunk}`,
-            },
-          ]);
+          appendChunks(runId, [{
+            ts,
+            stream,
+            chunk,
+            dedupeKey: `log:${runId}:${ts}:${stream}:${chunk}`,
+          }]);
           return;
         }
 
@@ -287,27 +304,23 @@ export function useLiveRunTranscripts({ runs, companyId, maxChunksPerRun = 200 }
           const seq = typeof payload["seq"] === "number" ? payload["seq"] : null;
           const eventType = readString(payload["eventType"]) ?? "event";
           const messageText = readString(payload["message"]) ?? eventType;
-          appendChunks(runId, [
-            {
-              ts: event.createdAt,
-              stream: eventType === "error" ? "stderr" : "system",
-              chunk: messageText,
-              dedupeKey: `socket:event:${runId}:${seq ?? `${eventType}:${messageText}:${event.createdAt}`}`,
-            },
-          ]);
+          appendChunks(runId, [{
+            ts: event.createdAt,
+            stream: eventType === "error" ? "stderr" : "system",
+            chunk: messageText,
+            dedupeKey: `socket:event:${runId}:${seq ?? `${eventType}:${messageText}:${event.createdAt}`}`,
+          }]);
           return;
         }
 
         if (event.type === "heartbeat.run.status") {
           const status = readString(payload["status"]) ?? "updated";
-          appendChunks(runId, [
-            {
-              ts: event.createdAt,
-              stream: isTerminalStatus(status) && status !== "succeeded" ? "stderr" : "system",
-              chunk: `run ${status}`,
-              dedupeKey: `socket:status:${runId}:${status}:${readString(payload["finishedAt"]) ?? ""}`,
-            },
-          ]);
+          appendChunks(runId, [{
+            ts: event.createdAt,
+            stream: isTerminalStatus(status) && status !== "succeeded" ? "stderr" : "system",
+            chunk: `run ${status}`,
+            dedupeKey: `socket:status:${runId}:${status}:${readString(payload["finishedAt"]) ?? ""}`,
+          }]);
         }
       };
 
@@ -341,19 +354,45 @@ export function useLiveRunTranscripts({ runs, companyId, maxChunksPerRun = 200 }
         }
       }
     };
-  }, [activeRunIds, companyId, runById]);
+  }, [activeRunIds, companyId, enableRealtimeUpdates, runById]);
 
   const transcriptByRun = useMemo(() => {
     const next = new Map<string, TranscriptEntry[]>();
     const censorUsernameInLogs = generalSettings?.censorUsernameInLogs === true;
+    const cache = transcriptCacheRef.current;
+    const currentRunIds = new Set<string>();
     for (const run of normalizedRuns) {
+      currentRunIds.add(run.id);
+      const chunks = chunksByRun.get(run.id) ?? EMPTY_RUN_LOG_CHUNKS;
+      const cached = cache.get(run.id);
+      if (
+        cached &&
+        cached.adapterType === run.adapterType &&
+        cached.chunks === chunks &&
+        cached.censorUsernameInLogs === censorUsernameInLogs &&
+        cached.parserTick === parserTick
+      ) {
+        next.set(run.id, cached.transcript);
+        continue;
+      }
+
       const adapter = getUIAdapter(run.adapterType);
-      next.set(
-        run.id,
-        buildTranscript(chunksByRun.get(run.id) ?? [], adapter, {
-          censorUsernameInLogs,
-        }),
-      );
+      const transcript = buildTranscript(chunks, adapter, {
+        censorUsernameInLogs,
+      });
+      cache.set(run.id, {
+        adapterType: run.adapterType,
+        chunks,
+        censorUsernameInLogs,
+        parserTick,
+        transcript,
+      });
+      next.set(run.id, transcript);
+    }
+    for (const runId of cache.keys()) {
+      if (!currentRunIds.has(runId)) {
+        cache.delete(runId);
+      }
     }
     return next;
   }, [chunksByRun, generalSettings?.censorUsernameInLogs, normalizedRuns, parserTick]);

@@ -442,6 +442,27 @@
       "when": 1743379200000,
       "tag": "0062_run_todos",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1776309613598,
+      "tag": "0063_tidy_join_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1776542245004,
+      "tag": "0064_wealthy_starbolt",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1776542246000,
+      "tag": "0065_plugin_database_namespaces",
+      "breakpoints": true
     }
   ]
 }

@@ -8,7 +8,7 @@ import { heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 
 const createActivitySchema = z.object({
-  actorType: z.enum(["agent", "user", "system"]).optional().default("system"),
+  actorType: z.enum(["agent", "user", "system", "plugin"]).optional().default("system"),
   actorId: z.string().min(1),
   action: z.string().min(1),
   entityType: z.string().min(1),

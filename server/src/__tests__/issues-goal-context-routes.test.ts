@@ -22,6 +22,11 @@ const mockGoalService = vi.hoisted(() => ({
   getDefaultCompanyGoal: vi.fn(),
 }));
 
+const mockDocumentsService = vi.hoisted(() => ({
+  getIssueDocumentPayload: vi.fn(),
+  getIssueDocumentByKey: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(),
@@ -30,11 +35,7 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({
     getById: vi.fn(),
   }),
-  documentService: () => ({
-    getIssueDocumentPayload: vi.fn(async () => ({})),
-  }),
-  assetService: () => ({}),
-  chatService: () => ({}),
+  documentService: () => mockDocumentsService,
   executionWorkspaceService: () => ({
     getById: vi.fn(),
   }),
@@ -141,6 +142,8 @@ describe("issue goal context routes", () => {
     });
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.listAttachments.mockResolvedValue([]);
+    mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
+    mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
     mockProjectService.getById.mockResolvedValue({
       id: legacyProjectLinkedIssue.projectId,
       companyId: "company-1",
@@ -175,7 +178,9 @@ describe("issue goal context routes", () => {
       updatedAt: new Date("2026-03-20T00:00:00Z"),
     });
     mockProjectService.listByIds.mockResolvedValue([]);
-    mockGoalService.getById.mockImplementation(async (id: string) => (id === projectGoal.id ? projectGoal : null));
+    mockGoalService.getById.mockImplementation(async (id: string) =>
+      id === projectGoal.id ? projectGoal : null,
+    );
     mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
   });
 
@@ -190,9 +195,10 @@ describe("issue goal context routes", () => {
         title: projectGoal.title,
       }),
     );
-    expect(mockIssueService.findMentionedProjectIds).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111", {
-      includeCommentBodies: false,
-    });
+    expect(mockIssueService.findMentionedProjectIds).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { includeCommentBodies: false },
+    );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
   });
 
@@ -211,6 +217,31 @@ describe("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+  });
+
+  it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {
+    mockDocumentsService.getIssueDocumentByKey.mockResolvedValue({
+      key: "continuation-summary",
+      title: "Continuation Summary",
+      body: "# Handoff",
+      latestRevisionId: "revision-1",
+      latestRevisionNumber: 1,
+      updatedAt: new Date("2026-04-19T12:00:00.000Z"),
+    });
+
+    const res = await request(await createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockDocumentsService.getIssueDocumentByKey).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "continuation-summary",
+    );
+    expect(res.body.continuationSummary).toEqual(expect.objectContaining({
+      key: "continuation-summary",
+      body: "# Handoff",
+    }));
   });
 
   it("surfaces blocker summaries on GET /issues/:id/heartbeat-context", async () => {

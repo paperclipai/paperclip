@@ -63,6 +63,7 @@ export interface Config {
   authDisableSignUp: boolean;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
+  databaseMigrationUrl: string | undefined;
   embeddedPostgresDataDir: string;
   embeddedPostgresPort: number;
   databaseBackupEnabled: boolean;
@@ -273,6 +274,7 @@ export function loadConfig(): Config {
     authDisableSignUp,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
+    databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,
     embeddedPostgresDataDir: resolveHomeAwarePath(
       fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),
     ),

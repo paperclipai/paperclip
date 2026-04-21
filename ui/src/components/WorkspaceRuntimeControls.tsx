@@ -3,7 +3,10 @@ import type {
   WorkspaceRuntimeControlTarget,
   WorkspaceRuntimeService,
 } from "@paperclipai/shared";
-import { listWorkspaceCommandDefinitions, matchWorkspaceRuntimeServiceToCommand } from "@paperclipai/shared";
+import {
+  listWorkspaceCommandDefinitions,
+  matchWorkspaceRuntimeServiceToCommand,
+} from "@paperclipai/shared";
 import { Activity, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -43,33 +46,35 @@ type LegacyWorkspaceRuntimeControlItem = WorkspaceRuntimeControlItem & {
   status?: string | null;
 };
 
-type WorkspaceRuntimeControlsProps =
-  | {
-      sections: WorkspaceRuntimeControlSections;
-      items?: never;
-      isPending?: boolean;
-      pendingRequest?: WorkspaceRuntimeControlRequest | null;
-      serviceEmptyMessage?: string;
-      jobEmptyMessage?: string;
-      emptyMessage?: never;
-      disabledHint?: string | null;
-      onAction: (request: WorkspaceRuntimeControlRequest) => void;
-      className?: string;
-    }
-  | {
-      sections?: never;
-      items: LegacyWorkspaceRuntimeControlItem[];
-      isPending?: boolean;
-      pendingRequest?: WorkspaceRuntimeControlRequest | null;
-      serviceEmptyMessage?: never;
-      jobEmptyMessage?: never;
-      emptyMessage?: string;
-      disabledHint?: string | null;
-      onAction: (request: WorkspaceRuntimeControlRequest) => void;
-      className?: string;
-    };
+type WorkspaceRuntimeControlsProps = {
+  sections: WorkspaceRuntimeControlSections;
+  items?: never;
+  isPending?: boolean;
+  pendingRequest?: WorkspaceRuntimeControlRequest | null;
+  serviceEmptyMessage?: string;
+  jobEmptyMessage?: string;
+  emptyMessage?: never;
+  disabledHint?: string | null;
+  onAction: (request: WorkspaceRuntimeControlRequest) => void;
+  className?: string;
+  square?: boolean;
+} | {
+  sections?: never;
+  items: LegacyWorkspaceRuntimeControlItem[];
+  isPending?: boolean;
+  pendingRequest?: WorkspaceRuntimeControlRequest | null;
+  serviceEmptyMessage?: never;
+  jobEmptyMessage?: never;
+  emptyMessage?: string;
+  disabledHint?: string | null;
+  onAction: (request: WorkspaceRuntimeControlRequest) => void;
+  className?: string;
+  square?: boolean;
+};
 
-export function hasRunningRuntimeServices(runtimeServices: Array<{ status: string }> | null | undefined) {
+export function hasRunningRuntimeServices(
+  runtimeServices: Array<{ status: string }> | null | undefined,
+) {
   return (runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running");
 }
 
@@ -98,7 +103,10 @@ function buildServiceItem(
   };
 }
 
-function buildJobItem(command: WorkspaceCommandDefinition, canRunJobs: boolean): WorkspaceRuntimeControlItem {
+function buildJobItem(
+  command: WorkspaceCommandDefinition,
+  canRunJobs: boolean,
+): WorkspaceRuntimeControlItem {
   return {
     key: `command:${command.id}`,
     title: command.name,
@@ -143,7 +151,9 @@ export function buildWorkspaceRuntimeControlSections(input: {
   }
 
   const otherServices = runtimeServices
-    .filter((runtimeService) => !matchedRuntimeServiceIds.has(runtimeService.id))
+    .filter((runtimeService) =>
+      !matchedRuntimeServiceIds.has(runtimeService.id)
+      && (runtimeService.status === "starting" || runtimeService.status === "running"))
     .map((runtimeService) => ({
       key: `runtime:${runtimeService.id}`,
       title: runtimeService.serviceName,
@@ -186,18 +196,13 @@ function requestMatchesPending(
   pendingRequest: WorkspaceRuntimeControlRequest | null | undefined,
   nextRequest: WorkspaceRuntimeControlRequest,
 ) {
-  return (
-    pendingRequest?.action === nextRequest.action &&
-    (pendingRequest?.workspaceCommandId ?? null) === (nextRequest.workspaceCommandId ?? null) &&
-    (pendingRequest?.runtimeServiceId ?? null) === (nextRequest.runtimeServiceId ?? null) &&
-    (pendingRequest?.serviceIndex ?? null) === (nextRequest.serviceIndex ?? null)
-  );
+  return pendingRequest?.action === nextRequest.action
+    && (pendingRequest?.workspaceCommandId ?? null) === (nextRequest.workspaceCommandId ?? null)
+    && (pendingRequest?.runtimeServiceId ?? null) === (nextRequest.runtimeServiceId ?? null)
+    && (pendingRequest?.serviceIndex ?? null) === (nextRequest.serviceIndex ?? null);
 }
 
-function buildRequest(
-  item: WorkspaceRuntimeControlItem,
-  action: WorkspaceRuntimeAction,
-): WorkspaceRuntimeControlRequest {
+function buildRequest(item: WorkspaceRuntimeControlItem, action: WorkspaceRuntimeAction): WorkspaceRuntimeControlRequest {
   return {
     action,
     workspaceCommandId: item.workspaceCommandId ?? null,
@@ -211,11 +216,13 @@ function CommandActionButtons({
   isPending,
   pendingRequest,
   onAction,
+  square,
 }: {
   item: WorkspaceRuntimeControlItem;
   isPending: boolean;
   pendingRequest: WorkspaceRuntimeControlRequest | null | undefined;
   onAction: (request: WorkspaceRuntimeControlRequest) => void;
+  square?: boolean;
 }) {
   const actions: WorkspaceRuntimeAction[] =
     item.kind === "job"
@@ -229,12 +236,18 @@ function CommandActionButtons({
       {actions.map((action) => {
         const request = buildRequest(item, action);
         const Icon = action === "stop" ? Square : action === "restart" ? RotateCcw : Play;
-        const label = action === "run" ? "Run" : action === "start" ? "Start" : action === "stop" ? "Stop" : "Restart";
+        const label = action === "run"
+          ? "Run"
+          : action === "start"
+            ? "Start"
+            : action === "stop"
+              ? "Stop"
+              : "Restart";
         const showSpinner = isPending && requestMatchesPending(pendingRequest, request);
         const disabled =
-          isPending ||
-          (action === "run" && !item.canRun) ||
-          ((action === "start" || action === "restart") && !item.canStart);
+          isPending
+          || (action === "run" && !item.canRun)
+          || ((action === "start" || action === "restart") && !item.canStart);
 
         return (
           <Button
@@ -242,7 +255,8 @@ function CommandActionButtons({
             variant={action === "stop" ? "destructive" : action === "restart" ? "outline" : "default"}
             size="sm"
             className={cn(
-              "h-9 w-full justify-start rounded-xl px-3 shadow-none sm:w-auto",
+              "h-9 w-full justify-start px-3 shadow-none sm:w-auto",
+              square ? "rounded-none" : "rounded-xl",
               action === "restart" ? "bg-background" : null,
             )}
             disabled={disabled}
@@ -266,6 +280,7 @@ function CommandSection({
   isPending,
   pendingRequest,
   onAction,
+  square,
 }: {
   title: string;
   description: string;
@@ -275,6 +290,7 @@ function CommandSection({
   isPending: boolean;
   pendingRequest: WorkspaceRuntimeControlRequest | null | undefined;
   onAction: (request: WorkspaceRuntimeControlRequest) => void;
+  square?: boolean;
 }) {
   return (
     <div className="space-y-3">
@@ -283,14 +299,14 @@ function CommandSection({
         <p className="text-xs text-muted-foreground">{description}</p>
       </div>
       {items.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border/80 bg-background/50 px-3 py-4 text-sm text-muted-foreground">
+        <div className={cn("border border-dashed border-border/80 bg-background px-3 py-4 text-sm text-muted-foreground", square ? "rounded-none" : "rounded-xl")}>
           {emptyMessage}
           {disabledHint ? <p className="mt-2 text-xs">{disabledHint}</p> : null}
         </div>
       ) : (
         <div className="space-y-3">
           {items.map((item) => (
-            <div key={item.key} className="rounded-xl border border-border/80 bg-background px-3 py-3">
+            <div key={item.key} className={cn("border border-border/80 bg-background px-3 py-3", square ? "rounded-none" : "rounded-xl")}>
               <div className="flex flex-col gap-3">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="space-y-1">
@@ -305,16 +321,12 @@ function CommandSection({
                     isPending={isPending}
                     pendingRequest={pendingRequest}
                     onAction={onAction}
+                    square={square}
                   />
                 </div>
                 <div className="space-y-1 text-xs text-muted-foreground">
                   {item.url ? (
-                    <a
-                      href={item.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 hover:underline"
-                    >
+                    <a href={item.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">
                       {item.url}
                       <ExternalLink className="h-3.5 w-3.5" />
                     </a>
@@ -326,16 +338,14 @@ function CommandSection({
                 </div>
                 {item.healthStatus && item.statusLabel !== "stopped" ? (
                   <div className="flex items-center gap-2">
-                    <span
-                      className={cn(
-                        "inline-flex items-center rounded-full border px-2.5 py-1 text-[11px]",
-                        item.healthStatus === "healthy"
-                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                          : item.healthStatus === "unhealthy"
-                            ? "border-destructive/30 bg-destructive/10 text-destructive"
-                            : "border-border text-muted-foreground",
-                      )}
-                    >
+                    <span className={cn(
+                      "inline-flex items-center rounded-full border px-2.5 py-1 text-[11px]",
+                      item.healthStatus === "healthy"
+                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                        : item.healthStatus === "unhealthy"
+                          ? "border-destructive/30 bg-destructive/10 text-destructive"
+                          : "border-border text-muted-foreground",
+                    )}>
                       {item.healthStatus}
                     </span>
                   </div>
@@ -360,6 +370,7 @@ export function WorkspaceRuntimeControls({
   disabledHint = null,
   onAction,
   className,
+  square,
 }: WorkspaceRuntimeControlsProps) {
   const resolvedSections = sections ?? {
     services: (items ?? []).map((item) => ({
@@ -370,18 +381,16 @@ export function WorkspaceRuntimeControls({
     otherServices: [],
   };
   const resolvedServiceEmptyMessage = emptyMessage ?? serviceEmptyMessage;
-  const runningCount = resolvedSections.services.filter(
+  const runningCount = [...resolvedSections.services, ...resolvedSections.otherServices].filter(
     (item) => item.statusLabel === "running" || item.statusLabel === "starting",
   ).length;
   const visibleDisabledHint = runningCount > 0 || disabledHint === null ? null : disabledHint;
 
   return (
     <div className={cn("space-y-4", className)}>
-      <div className="rounded-xl border border-border/70 bg-background/60 p-3">
+      <div className={cn("border border-border/70 bg-background p-3", square ? "rounded-none" : "rounded-xl")}>
         <div className="space-y-1">
-          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-            Workspace commands
-          </div>
+          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace commands</div>
           <div className="flex flex-wrap items-center gap-2">
             <span
               className={cn(
@@ -413,6 +422,7 @@ export function WorkspaceRuntimeControls({
         isPending={isPending}
         pendingRequest={pendingRequest}
         onAction={onAction}
+        square={square}
       />
 
       <CommandSection
@@ -423,6 +433,7 @@ export function WorkspaceRuntimeControls({
         isPending={isPending}
         pendingRequest={pendingRequest}
         onAction={onAction}
+        square={square}
       />
 
       {resolvedSections.otherServices.length > 0 ? (
@@ -434,6 +445,7 @@ export function WorkspaceRuntimeControls({
           isPending={isPending}
           pendingRequest={pendingRequest}
           onAction={onAction}
+          square={square}
         />
       ) : null}
     </div>

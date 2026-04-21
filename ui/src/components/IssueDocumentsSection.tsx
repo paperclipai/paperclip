@@ -8,6 +8,7 @@ import type {
   Issue,
   IssueDocument,
 } from "@paperclipai/shared";
+import { isSystemIssueDocumentKey } from "@paperclipai/shared";
 import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
@@ -199,6 +200,7 @@ export function IssueDocumentsSection({
   }, [issue.id, queryClient]);
 
   const syncDocumentCaches = useCallback((document: IssueDocument) => {
+    if (isSystemIssueDocumentKey(document.key)) return;
     queryClient.setQueryData<IssueDocument[] | undefined>(
       queryKeys.issues.documents(issue.id),
       (current) => {
@@ -268,7 +270,7 @@ export function IssueDocumentsSection({
   });
 
   const sortedDocuments = useMemo(() => {
-    return [...(documents ?? [])].sort((a, b) => {
+    return (documents ?? []).filter((doc) => !isSystemIssueDocumentKey(doc.key)).sort((a, b) => {
       if (a.key === "plan" && b.key !== "plan") return -1;
       if (a.key !== "plan" && b.key === "plan") return 1;
       return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();

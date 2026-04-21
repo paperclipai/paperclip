@@ -158,6 +158,8 @@ export interface WorkerStartOptions {
   };
   /** Host API version. */
   apiVersion: number;
+  /** Host-derived plugin database namespace, when declared. */
+  databaseNamespace?: string | null;
   /** Handlers for worker→host RPC calls. */
   hostHandlers: WorkerToHostHandlers;
   /** Default timeout for RPC calls (ms). Defaults to 30s. */
@@ -779,6 +781,7 @@ export function createPluginWorkerHandle(pluginId: string, options: WorkerStartO
       config: options.config,
       instanceInfo: options.instanceInfo,
       apiVersion: options.apiVersion,
+      databaseNamespace: options.databaseNamespace ?? null,
     };
 
     try {

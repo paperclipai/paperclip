@@ -32,6 +32,9 @@ const mockBoardAuthService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockStorage = vi.hoisted(() => ({
+  headObject: vi.fn(),
+}));
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
@@ -41,13 +44,12 @@ function registerModuleMocks() {
     deduplicateAgentName: vi.fn(),
     logActivity: mockLogActivity,
     notifyHireApproved: vi.fn(),
-    feedbackService: () => ({}),
-  instanceSettingsService: () => ({}),
-  assetService: () => ({}),
-  chatService: () => ({}),
-  chatProcessService: () => ({}),
-}));
+  }));
 }
+
+vi.mock("../storage/index.js", () => ({
+  getStorageService: () => mockStorage,
+}));
 
 function createDbStub() {
   const createdInvite = {
@@ -81,17 +83,35 @@ function createDbStub() {
     "feedbackDataSharingEnabled" in table;
   const select = vi.fn((selection?: unknown) => ({
     from(table: unknown) {
-      return {
+      const query = {
+        leftJoin: vi.fn().mockReturnThis(),
         where: vi.fn().mockImplementation(() => {
           if (isInvitesTable(table)) {
             return Promise.resolve([createdInvite]);
           }
-          if ((selection && typeof selection === "object" && "name" in selection) || isCompaniesTable(table)) {
-            return Promise.resolve([{ name: "Acme AI" }]);
+          if (selection && typeof selection === "object" && "objectKey" in selection) {
+            return Promise.resolve([{
+              companyId: "company-1",
+              objectKey: "company-1/assets/companies/logo-1",
+              contentType: "image/png",
+              byteSize: 3,
+              originalFilename: "logo.png",
+            }]);
+          }
+          if (
+            (selection && typeof selection === "object" && "name" in selection) ||
+            isCompaniesTable(table)
+          ) {
+            return Promise.resolve([{
+              name: "Acme AI",
+              brandColor: "#225577",
+              logoAssetId: "logo-1",
+            }]);
           }
           return Promise.resolve([]);
         }),
       };
+      return query;
     },
   }));
   return {
@@ -137,6 +157,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
     mockAccessService.canUser.mockResolvedValue(false);
     mockAgentService.getById.mockReset();
     mockLogActivity.mockResolvedValue(undefined);
+    mockStorage.headObject.mockResolvedValue({ exists: true, contentLength: 3, contentType: "image/png" });
   });
 
   it("rejects non-CEO agent callers", async () => {
@@ -156,7 +177,9 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       db,
     );
 
-    const res = await request(app).post("/api/companies/company-1/openclaw/invite-prompt").send({});
+    const res = await request(app)
+      .post("/api/companies/company-1/openclaw/invite-prompt")
+      .send({});
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Only CEO agents");
@@ -212,6 +235,8 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.companyName).toBe("Acme AI");
+    expect(res.body.companyBrandColor).toBe("#225577");
+    expect(res.body.companyLogoUrl).toBe("/api/invites/pcp_invite_test/logo");
     expect(res.body.inviteType).toBe("company_join");
     expect(res.body.allowedJoinTypes).toBe("agent");
   });
@@ -230,7 +255,9 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       db,
     );
 
-    const res = await request(app).post("/api/companies/company-1/openclaw/invite-prompt").send({});
+    const res = await request(app)
+      .post("/api/companies/company-1/openclaw/invite-prompt")
+      .send({});
 
     expect(res.status).toBe(201);
     expect((db as any).__insertValues).toHaveBeenCalledWith(
@@ -256,7 +283,9 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       db,
     );
 
-    const res = await request(app).post("/api/companies/company-1/openclaw/invite-prompt").send({});
+    const res = await request(app)
+      .post("/api/companies/company-1/openclaw/invite-prompt")
+      .send({});
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Permission denied");
