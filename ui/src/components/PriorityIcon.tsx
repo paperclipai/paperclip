@@ -34,6 +34,9 @@ export function PriorityIcon({ priority, onChange, className, showLabel }: Prior
         onChange && !showLabel && "cursor-pointer",
         className
       )}
+      title={config.label}
+      aria-label={`${config.label} priority`}
+      role="img"
     >
       <Icon className="h-3.5 w-3.5" />
     </span>
