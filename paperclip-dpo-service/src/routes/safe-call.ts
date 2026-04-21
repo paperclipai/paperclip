@@ -38,16 +38,28 @@ export function registerSafeCallRoute(app: FastifyInstance, opts: SafeCallRouteO
     }
 
     const body = renderBodyTemplate(external.bodyTemplate, { prompt: anon.anonymizedText });
-    const res = await f(external.url, {
-      method: external.method,
-      headers: { "content-type": "application/json", ...external.headers },
-      body: JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await f(external.url, {
+        method: external.method,
+        headers: { ...external.headers, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.code(502).send({ error: "external_unreachable", message });
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       return reply.code(502).send({ error: "external_failed", status: res.status, body: text });
     }
-    const json = await res.json();
+    let json: unknown;
+    try {
+      json = await res.json();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.code(502).send({ error: "external_invalid_json", message });
+    }
 
     let extracted: string | undefined;
     try {

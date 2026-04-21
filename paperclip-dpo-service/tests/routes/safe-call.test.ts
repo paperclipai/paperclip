@@ -123,4 +123,54 @@ describe("POST /safe-call", () => {
       message: expect.stringContaining("not a string"),
     });
   });
+
+  it("502 when fetch rejects (network error)", async () => {
+    const dpo = {
+      anonymize: vi.fn().mockResolvedValue({
+        mappingId: "m", anonymizedText: "x", findings: [], warnings: [],
+      }),
+      deanonymize: vi.fn(), close: vi.fn(),
+    };
+    const fetchFn = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+    app = Fastify();
+    registerAuth(app, { sharedKey: KEY });
+    registerSafeCallRoute(app, { dpo: dpo as unknown as Dpo, fetchFn });
+    await app.ready();
+    const res = await app.inject({
+      method: "POST", url: "/safe-call",
+      headers: { "x-dpo-key": KEY, "content-type": "application/json" },
+      payload: { prompt: "x", targetLlm: "g", agent: "l", external: baseExternal() },
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).toEqual({
+      error: "external_unreachable",
+      message: expect.stringContaining("ECONNREFUSED"),
+    });
+  });
+
+  it("502 when external response is not valid JSON", async () => {
+    const dpo = {
+      anonymize: vi.fn().mockResolvedValue({
+        mappingId: "m", anonymizedText: "x", findings: [], warnings: [],
+      }),
+      deanonymize: vi.fn(), close: vi.fn(),
+    };
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response("<html>not json</html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      })
+    );
+    app = Fastify();
+    registerAuth(app, { sharedKey: KEY });
+    registerSafeCallRoute(app, { dpo: dpo as unknown as Dpo, fetchFn });
+    await app.ready();
+    const res = await app.inject({
+      method: "POST", url: "/safe-call",
+      headers: { "x-dpo-key": KEY, "content-type": "application/json" },
+      payload: { prompt: "x", targetLlm: "g", agent: "l", external: baseExternal() },
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toBe("external_invalid_json");
+  });
 });
