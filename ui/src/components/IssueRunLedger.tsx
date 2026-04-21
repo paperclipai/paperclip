@@ -398,7 +398,7 @@ export function IssueRunLedgerContent({
                   ) : null}
                 </div>
 
-                <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
+                <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-4">
                   <div className="min-w-0">
                     <span className="text-foreground">Elapsed</span>{" "}
                     {duration ?? "unknown"}
@@ -410,6 +410,10 @@ export function IssueRunLedgerContent({
                   <div className="min-w-0">
                     <span className="text-foreground">Stop</span>{" "}
                     {stopStatusLabel(run, stopReason)}
+                  </div>
+                  <div className="min-w-0">
+                    <span className="text-foreground">Comments posted</span>{" "}
+                    {run.commentsPostedCount != null ? String(run.commentsPostedCount) : "—"}
                   </div>
                 </div>
 
