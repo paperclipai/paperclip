@@ -823,6 +823,7 @@ describe("agent permission routes", () => {
       assigneeAgentId: agentId,
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
+      limit: 500,
     });
     expect(res.body).toEqual([
       {
@@ -845,6 +846,7 @@ describe("agent permission routes", () => {
           finishedAt: null,
           createdAt: "2026-04-09T09:02:25.540Z",
         },
+        dependencyReady: true,
       },
     ]);
   });
