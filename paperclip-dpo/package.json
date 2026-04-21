@@ -4,7 +4,14 @@
   "description": "Paperclip Data Protection Officer — Anonymisierung vor Public-LLM-Calls",
   "type": "module",
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./keychain": {
+      "types": "./dist/keychain.d.ts",
+      "default": "./dist/keychain.js"
+    }
   },
   "main": "./dist/index.js",
   "scripts": {
