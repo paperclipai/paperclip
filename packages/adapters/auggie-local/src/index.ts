@@ -2,8 +2,24 @@ export const type = "auggie_local";
 export const label = "Auggie CLI (local)";
 export const DEFAULT_AUGGIE_LOCAL_MODEL = "auto";
 
+// Model short names come from `auggie models list --json`. Selecting "auto"
+// skips passing `--model` so Auggie chooses its account default.
 export const models = [
-  { id: DEFAULT_AUGGIE_LOCAL_MODEL, label: "Auto" },
+  { id: DEFAULT_AUGGIE_LOCAL_MODEL, label: "Auto (account default)" },
+  { id: "opus4.7", label: "Opus 4.7" },
+  { id: "opus4.6", label: "Opus 4.6" },
+  { id: "opus4.6-500k", label: "Opus 4.6 (500K)" },
+  { id: "sonnet4.6", label: "Sonnet 4.6" },
+  { id: "sonnet4.6-500k", label: "Sonnet 4.6 (500K)" },
+  { id: "haiku4.5", label: "Haiku 4.5" },
+  { id: "gpt5.4", label: "GPT-5.4" },
+  { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
+  { id: "sonnet4.5", label: "Sonnet 4.5 (legacy)" },
+  { id: "opus4.5", label: "Opus 4.5 (legacy)" },
+  { id: "sonnet4", label: "Sonnet 4 (legacy)" },
+  { id: "gpt5.2", label: "GPT-5.2 (legacy)" },
+  { id: "gpt5.1", label: "GPT-5.1 (legacy)" },
+  { id: "gpt5", label: "GPT-5 (legacy)" },
 ];
 
 export const agentConfigurationDoc = `# auggie_local agent configuration
@@ -24,7 +40,7 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - promptTemplate (string, optional): run prompt template
-- model (string, optional): Auggie model id (passed via --model). Defaults to auto.
+- model (string, optional): Auggie model short name (passed via --model, e.g. "opus4.7", "sonnet4.6", "haiku4.5", "gpt5.4", "gemini-3.1-pro-preview"). Defaults to "auto" which omits --model so Auggie uses its account default. Run \`auggie models list\` to see the authoritative list for your account.
 - command (string, optional): defaults to "auggie"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables

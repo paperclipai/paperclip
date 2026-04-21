@@ -9,7 +9,10 @@ import {
   sessionCodec as claudeSessionCodec,
   getQuotaWindows as claudeGetQuotaWindows,
 } from "@paperclipai/adapter-claude-local/server";
-import { agentConfigurationDoc as claudeAgentConfigurationDoc, models as claudeModels } from "@paperclipai/adapter-claude-local";
+import {
+  agentConfigurationDoc as claudeAgentConfigurationDoc,
+  models as claudeModels,
+} from "@paperclipai/adapter-claude-local";
 import {
   execute as codexExecute,
   listCodexSkills,
@@ -18,7 +21,10 @@ import {
   sessionCodec as codexSessionCodec,
   getQuotaWindows as codexGetQuotaWindows,
 } from "@paperclipai/adapter-codex-local/server";
-import { agentConfigurationDoc as codexAgentConfigurationDoc, models as codexModels } from "@paperclipai/adapter-codex-local";
+import {
+  agentConfigurationDoc as codexAgentConfigurationDoc,
+  models as codexModels,
+} from "@paperclipai/adapter-codex-local";
 import {
   execute as cursorExecute,
   listCursorSkills,
@@ -26,7 +32,10 @@ import {
   testEnvironment as cursorTestEnvironment,
   sessionCodec as cursorSessionCodec,
 } from "@paperclipai/adapter-cursor-local/server";
-import { agentConfigurationDoc as cursorAgentConfigurationDoc, models as cursorModels } from "@paperclipai/adapter-cursor-local";
+import {
+  agentConfigurationDoc as cursorAgentConfigurationDoc,
+  models as cursorModels,
+} from "@paperclipai/adapter-cursor-local";
 import {
   execute as geminiExecute,
   listGeminiSkills,
@@ -34,15 +43,22 @@ import {
   testEnvironment as geminiTestEnvironment,
   sessionCodec as geminiSessionCodec,
 } from "@paperclipai/adapter-gemini-local/server";
-import { agentConfigurationDoc as geminiAgentConfigurationDoc, models as geminiModels } from "@paperclipai/adapter-gemini-local";
+import {
+  agentConfigurationDoc as geminiAgentConfigurationDoc,
+  models as geminiModels,
+} from "@paperclipai/adapter-gemini-local";
 import {
   execute as auggieExecute,
   listAuggieSkills,
   syncAuggieSkills,
   testEnvironment as auggieTestEnvironment,
   sessionCodec as auggieSessionCodec,
+  listAuggieModels,
 } from "@paperclipai/adapter-auggie-local/server";
-import { agentConfigurationDoc as auggieAgentConfigurationDoc, models as auggieModels } from "@paperclipai/adapter-auggie-local";
+import {
+  agentConfigurationDoc as auggieAgentConfigurationDoc,
+  models as auggieModels,
+} from "@paperclipai/adapter-auggie-local";
 import {
   execute as openCodeExecute,
   listOpenCodeSkills,
@@ -73,9 +89,7 @@ import {
   sessionCodec as piSessionCodec,
   listPiModels,
 } from "@paperclipai/adapter-pi-local/server";
-import {
-  agentConfigurationDoc as piAgentConfigurationDoc,
-} from "@paperclipai/adapter-pi-local";
+import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
 import {
   execute as hermesExecute,
   testEnvironment as hermesTestEnvironment,
@@ -94,13 +108,23 @@ import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
-function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(ctx: T): T {
+function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
+  ctx: T,
+): T {
   const config =
-    ctx && typeof ctx === "object" && "config" in ctx && ctx.config && typeof ctx.config === "object"
+    ctx &&
+    typeof ctx === "object" &&
+    "config" in ctx &&
+    ctx.config &&
+    typeof ctx.config === "object"
       ? (ctx.config as Record<string, unknown>)
       : null;
   const agent =
-    ctx && typeof ctx === "object" && "agent" in ctx && ctx.agent && typeof ctx.agent === "object"
+    ctx &&
+    typeof ctx === "object" &&
+    "agent" in ctx &&
+    ctx.agent &&
+    typeof ctx.agent === "object"
       ? (ctx.agent as Record<string, unknown>)
       : null;
   const agentAdapterConfig =
@@ -109,9 +133,12 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
       : null;
 
   const configCommand =
-    typeof config?.command === "string" && config.command.length > 0 ? config.command : undefined;
+    typeof config?.command === "string" && config.command.length > 0
+      ? config.command
+      : undefined;
   const agentCommand =
-    typeof agentAdapterConfig?.command === "string" && agentAdapterConfig.command.length > 0
+    typeof agentAdapterConfig?.command === "string" &&
+    agentAdapterConfig.command.length > 0
       ? agentAdapterConfig.command
       : undefined;
 
@@ -203,6 +230,7 @@ const auggieLocalAdapter: ServerAdapterModule = {
   sessionCodec: auggieSessionCodec,
   sessionManagement: getAdapterSessionManagement("auggie_local") ?? undefined,
   models: auggieModels,
+  listModels: listAuggieModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
@@ -258,7 +286,8 @@ const piLocalAdapter: ServerAdapterModule = {
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: (ctx) => hermesExecute(normalizeHermesConfig(ctx) as never),
-  testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
+  testEnvironment: (ctx) =>
+    hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
   sessionCodec: hermesSessionCodec,
   listSkills: hermesListSkills,
   syncSkills: hermesSyncSkills,
@@ -334,13 +363,11 @@ const externalAdaptersReady: Promise<void> = (async () => {
           builtinFallbacks.set(externalAdapter.type, existing);
         }
       }
-      adaptersByType.set(
-        externalAdapter.type,
-        {
-          ...externalAdapter,
-          sessionManagement: getAdapterSessionManagement(externalAdapter.type) ?? undefined,
-        },
-      );
+      adaptersByType.set(externalAdapter.type, {
+        ...externalAdapter,
+        sessionManagement:
+          getAdapterSessionManagement(externalAdapter.type) ?? undefined,
+      });
     }
   } catch (err) {
     console.error("[paperclip] Failed to load external adapters:", err);
@@ -358,7 +385,10 @@ export function waitForExternalAdapters(): Promise<void> {
 }
 
 export function registerServerAdapter(adapter: ServerAdapterModule): void {
-  if (BUILTIN_ADAPTER_TYPES.has(adapter.type) && !builtinFallbacks.has(adapter.type)) {
+  if (
+    BUILTIN_ADAPTER_TYPES.has(adapter.type) &&
+    !builtinFallbacks.has(adapter.type)
+  ) {
     const existing = adaptersByType.get(adapter.type);
     if (existing) {
       builtinFallbacks.set(adapter.type, existing);
@@ -395,7 +425,9 @@ export function getServerAdapter(type: string): ServerAdapterModule {
   return findActiveServerAdapter(type) ?? processAdapter;
 }
 
-export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+export async function listAdapterModels(
+  type: string,
+): Promise<{ id: string; label: string }[]> {
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
   if (adapter.listModels) {
@@ -418,13 +450,18 @@ export function listEnabledServerAdapters(): ServerAdapterModule[] {
   const disabled = getDisabledAdapterTypesFromStore();
   const disabledSet = disabled.length > 0 ? new Set(disabled) : null;
   return disabledSet
-    ? Array.from(adaptersByType.values()).filter((a) => !disabledSet.has(a.type))
+    ? Array.from(adaptersByType.values()).filter(
+        (a) => !disabledSet.has(a.type),
+      )
     : Array.from(adaptersByType.values());
 }
 
-export async function detectAdapterModel(
-  type: string,
-): Promise<{ model: string; provider: string; source: string; candidates?: string[] } | null> {
+export async function detectAdapterModel(type: string): Promise<{
+  model: string;
+  provider: string;
+  source: string;
+  candidates?: string[];
+} | null> {
   const adapter = findActiveServerAdapter(type);
   if (!adapter?.detectModel) return null;
   const detected = await adapter.detectModel();
@@ -459,12 +496,16 @@ export function setOverridePaused(type: string, paused: boolean): boolean {
   const wasPaused = pausedOverrides.has(type);
   if (paused && !wasPaused) {
     pausedOverrides.add(type);
-    console.log(`[paperclip] Override paused for "${type}" — builtin adapter restored`);
+    console.log(
+      `[paperclip] Override paused for "${type}" — builtin adapter restored`,
+    );
     return true;
   }
   if (!paused && wasPaused) {
     pausedOverrides.delete(type);
-    console.log(`[paperclip] Override resumed for "${type}" — external adapter active`);
+    console.log(
+      `[paperclip] Override resumed for "${type}" — external adapter active`,
+    );
     return true;
   }
   return false;
@@ -484,7 +525,9 @@ export function findServerAdapter(type: string): ServerAdapterModule | null {
   return adaptersByType.get(type) ?? null;
 }
 
-export function findActiveServerAdapter(type: string): ServerAdapterModule | null {
+export function findActiveServerAdapter(
+  type: string,
+): ServerAdapterModule | null {
   if (pausedOverrides.has(type)) {
     const fallback = builtinFallbacks.get(type);
     if (fallback) return fallback;
