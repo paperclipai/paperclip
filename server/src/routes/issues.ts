@@ -167,6 +167,22 @@ function shouldImplicitlyReopenCommentForAgent(input: {
   return true;
 }
 
+function isSelfAuthoredAssigneeComment(input: {
+  actorType: "agent" | "user";
+  actorId: string;
+  assigneeAgentId: string | null | undefined;
+  runId: string | null;
+  executionRunId: string | null | undefined;
+  previousExecutionRunId?: string | null | undefined;
+}) {
+  if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
+  if (input.actorType === "agent") {
+    return input.actorId === input.assigneeAgentId;
+  }
+  return Boolean(input.runId)
+    && (input.executionRunId === input.runId || input.previousExecutionRunId === input.runId);
+}
+
 function diffExecutionParticipants(
   previousPolicy: NormalizedExecutionPolicy | null,
   nextPolicy: NormalizedExecutionPolicy | null,
@@ -1982,8 +1998,14 @@ export function issueRoutes(
 
       if (commentBody && comment) {
         const assigneeId = issue.assigneeAgentId;
-        const actorIsAgent = actor.actorType === "agent";
-        const selfComment = actorIsAgent && actor.actorId === assigneeId;
+        const selfComment = isSelfAuthoredAssigneeComment({
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          assigneeAgentId: assigneeId,
+          runId: actor.runId,
+          executionRunId: issue.executionRunId,
+          previousExecutionRunId: existing.executionRunId,
+        });
         const skipAssigneeCommentWake = selfComment || isClosed;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
@@ -2580,7 +2602,14 @@ export function issueRoutes(
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      const selfComment = isSelfAuthoredAssigneeComment({
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        assigneeAgentId: assigneeId,
+        runId: actor.runId,
+        executionRunId: currentIssue.executionRunId,
+        previousExecutionRunId: issue.executionRunId,
+      });
       const skipWake = selfComment || isClosed;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
