@@ -37,6 +37,12 @@ describe("execute (agent loop)", () => {
     });
 
     const fetchMock = vi.fn()
+      // Primary probe (GET /v1/models) — added for fallback feature
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ id: "m" }] }),
+      })
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -61,6 +67,12 @@ describe("execute (agent loop)", () => {
     });
 
     const fetchMock = vi.fn()
+      // Primary probe (GET /v1/models) — added for fallback feature
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ id: "m" }] }),
+      })
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -100,25 +112,33 @@ describe("execute (agent loop)", () => {
 
   it("stops at maxIterations", async () => {
     let callCount = 0;
-    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => {
-      callCount++;
-      return {
+    const fetchMock = vi.fn()
+      // Primary probe (GET /v1/models) — added for fallback feature
+      .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({
-          choices: [{
-            message: {
-              role: "assistant",
-              content: null,
-              tool_calls: [{
-                id: `call_${callCount}`,
-                type: "function",
-                function: { name: "paperclip_get_identity", arguments: "{}" },
-              }],
-            },
-          }],
-        }),
-      };
-    }));
+        status: 200,
+        json: async () => ({ data: [{ id: "m" }] }),
+      })
+      .mockImplementation(async () => {
+        callCount++;
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: [{
+                  id: `call_${callCount}`,
+                  type: "function",
+                  function: { name: "paperclip_get_identity", arguments: "{}" },
+                }],
+              },
+            }],
+          }),
+        };
+      });
+    vi.stubGlobal("fetch", fetchMock);
 
     const ctx = makeCtx({ maxIterations: 3 });
     const result = await execute(ctx as any);
@@ -145,6 +165,12 @@ describe("execute (post-run guard)", () => {
     });
 
     const fetchMock = vi.fn()
+      // Primary probe (GET /v1/models) — added for fallback feature
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ id: "m" }] }),
+      })
       // LLM turn 1: checkout issue
       .mockResolvedValueOnce({
         ok: true,
@@ -218,6 +244,12 @@ describe("execute (post-run guard)", () => {
     });
 
     const fetchMock = vi.fn()
+      // Primary probe (GET /v1/models) — added for fallback feature
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ id: "m" }] }),
+      })
       // LLM turn 1: checkout
       .mockResolvedValueOnce({
         ok: true,
@@ -270,7 +302,7 @@ describe("execute (post-run guard)", () => {
 
     expect(result.exitCode).toBe(0);
 
-    // Total fetch calls should be 6 (3 LLM turns + 2 tool calls + 1 stream), NOT 7 (no guard)
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    // Total fetch calls should be 7 (1 probe + 3 LLM turns + 2 tool calls + 1 stream), NOT 8 (no guard)
+    expect(fetchMock).toHaveBeenCalledTimes(7);
   });
 });

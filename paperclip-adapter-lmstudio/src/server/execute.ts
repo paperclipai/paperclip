@@ -1,5 +1,11 @@
 import { readFile } from "node:fs/promises";
-import { callChatCompletion, streamChatCompletion, ChatMessage } from "./llm-client.js";
+import {
+  callChatCompletion,
+  streamChatCompletion,
+  ChatMessage,
+  LlmClientError,
+} from "./llm-client.js";
+import { resolvePrimaryOrFallback, type Endpoint } from "./endpoint-resolver.js";
 import { dispatchTool } from "./tool-executor.js";
 import { PAPERCLIP_TOOLS } from "./tools.js";
 import { executePaperclipTool, type PaperclipContext } from "./paperclip-tools.js";
@@ -208,8 +214,11 @@ async function runPostRunGuard(params: PostRunGuardParams): Promise<void> {
 
 export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
   const config = ctx.config;
-  const url = asString(config.url, "http://localhost:1234");
-  const model = asString(config.model, "") || asString(config.defaultModel, "");
+  const primaryUrl = asString(config.url, "http://localhost:1234");
+  const primaryModel = asString(config.model, "") || asString(config.defaultModel, "");
+  const fallbackUrl = asString(config.fallbackUrl, "");
+  const fallbackModel = asString(config.fallbackModel, "");
+  const probeTimeoutMs = asNumber(config.probeTimeoutMs, 2000);
   const timeoutMs = asNumber(config.timeoutMs, 120000);
   const maxIterations = asNumber(config.maxIterations, 25);
   const maxRunSeconds = asNumber(config.maxRunSeconds, 300);
@@ -222,7 +231,7 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
     .map((p) => p.trim())
     .filter(Boolean);
 
-  if (!model) {
+  if (!primaryModel) {
     return {
       exitCode: 1,
       signal: null,
@@ -242,6 +251,63 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
     agentId: ctx.agent.id,
     companyId: ctx.agent.companyId,
   };
+
+  // Probe + Fallback-Entscheidung für diesen Heartbeat
+  const resolve = await resolvePrimaryOrFallback({
+    primaryUrl,
+    primaryModel,
+    fallbackUrl,
+    fallbackModel,
+    probeTimeoutMs,
+  });
+
+  if (!resolve.ok) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: resolve.errorMessage,
+      errorCode: "llm_unreachable",
+    };
+  }
+
+  let currentEndpoint: Endpoint = resolve.endpoint;
+  let onFallback = resolve.usingFallback;
+
+  if (onFallback) {
+    await logEvent(ctx.onLog, {
+      kind: "system",
+      text:
+        `⚠️ Primary LLM nicht erreichbar (${primaryUrl}).\n` +
+        `Fallback aktiv: ${currentEndpoint.url} / ${currentEndpoint.model}\n` +
+        `Grund: ${resolve.primaryFailureReason ?? "unbekannt"}`,
+    });
+  }
+
+  // Try a failover on a typed LlmClientError. Returns true if we switched,
+  // false if no fallback is available or error kind isn't a failover trigger.
+  // Note: we do NOT re-probe the fallback here. Probing is the entry-gate
+  // decision at heartbeat start; mid-call failover simply retries on the
+  // fallback and will fail cleanly if the fallback is also down.
+  async function maybeSwitchToFallback(err: unknown, context: string): Promise<boolean> {
+    if (onFallback) return false;
+    if (!fallbackUrl) return false;
+    if (!(err instanceof LlmClientError)) return false;
+    if (err.kind !== "network" && err.kind !== "model" && err.kind !== "timeout") return false;
+
+    currentEndpoint = { url: fallbackUrl, model: fallbackModel || primaryModel };
+    onFallback = true;
+
+    await logEvent(ctx.onLog, {
+      kind: "system",
+      text:
+        `⚠️ Primary LLM Fehler während ${context} (${primaryUrl}).\n` +
+        `Fallback aktiv: ${currentEndpoint.url} / ${currentEndpoint.model}\n` +
+        `Grund: ${err.kind} — ${err.message}`,
+    });
+
+    return true;
+  }
 
   const fileInstructions = await loadInstructionsFromFile(config, ctx.onLog);
   const systemPromptContext = fileInstructions
@@ -277,7 +343,7 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
         timedOut: true,
         errorMessage: `Run deadline exceeded: wallclock budget of ${maxRunSeconds}s reached after ${iteration} iteration(s). Kill-switch to prevent runaway LLM calls.`,
         errorCode: "run_deadline_exceeded",
-        model,
+        model: currentEndpoint.model,
         provider: "lmstudio",
         usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
       };
@@ -286,21 +352,43 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
     let response;
     try {
       response = await callChatCompletion({
-        url,
-        model,
+        url: currentEndpoint.url,
+        model: currentEndpoint.model,
         messages,
         tools: PAPERCLIP_TOOLS,
         timeoutMs,
       });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: msg.includes("timeout") || msg.includes("Abort"),
-        errorMessage: `LLM call failed: ${msg}`,
-        errorCode: "llm_error",
-      };
+      const switched = await maybeSwitchToFallback(err, "chat completion");
+      if (switched) {
+        try {
+          response = await callChatCompletion({
+            url: currentEndpoint.url,
+            model: currentEndpoint.model,
+            messages,
+            tools: PAPERCLIP_TOOLS,
+            timeoutMs,
+          });
+        } catch (err2) {
+          const msg2 = err2 instanceof Error ? err2.message : String(err2);
+          return {
+            exitCode: 1,
+            signal: null,
+            timedOut: err2 instanceof LlmClientError && err2.kind === "timeout",
+            errorMessage: `LLM call failed on fallback: ${msg2}`,
+            errorCode: "llm_error",
+          };
+        }
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: err instanceof LlmClientError && err.kind === "timeout",
+          errorMessage: `LLM call failed: ${msg}`,
+          errorCode: "llm_error",
+        };
+      }
     }
 
     if (response.usage) {
@@ -315,8 +403,8 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
       // Final text answer — stream it by asking LLM to repeat it
       try {
         finalSummary = await streamChatCompletion({
-          url,
-          model,
+          url: currentEndpoint.url,
+          model: currentEndpoint.model,
           messages: [
             ...messages.slice(0, -1),
             { role: "user", content: "Repeat your previous final answer to me verbatim." },
@@ -347,7 +435,7 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
         exitCode: 0,
         signal: null,
         timedOut: false,
-        model,
+        model: currentEndpoint.model,
         provider: "lmstudio",
         summary: finalSummary.slice(0, 500),
         usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
@@ -415,7 +503,7 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
     timedOut: false,
     errorMessage: `Max iterations (${maxIterations}) reached without final answer`,
     errorCode: "max_iterations",
-    model,
+    model: currentEndpoint.model,
     provider: "lmstudio",
     usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
   };
