@@ -54,6 +54,7 @@ import {
   Check,
   Loader2,
   ChevronDown,
+  Shield,
   X
 } from "lucide-react";
 
@@ -1077,19 +1078,24 @@ export function OnboardingWizard() {
                   )}
 
                   {(adapterType === "http" ||
-                    adapterType === "openclaw_gateway") && (
+                    adapterType === "openclaw_gateway" ||
+                    adapterType === "bastionclaw_gateway") && (
                     <div>
                       <label className="text-xs text-muted-foreground mb-1 block">
                         {adapterType === "openclaw_gateway"
                           ? "Gateway URL"
-                          : "Webhook URL"}
+                          : adapterType === "bastionclaw_gateway"
+                            ? "BastionClaw root"
+                            : "Webhook URL"}
                       </label>
                       <input
                         className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                         placeholder={
                           adapterType === "openclaw_gateway"
                             ? "ws://127.0.0.1:18789"
-                            : "https://..."
+                            : adapterType === "bastionclaw_gateway"
+                              ? "/Users/you/bastionclaw"
+                              : "https://..."
                         }
                         value={url}
                         onChange={(e) => setUrl(e.target.value)}
