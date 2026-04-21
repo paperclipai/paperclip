@@ -579,6 +579,17 @@ export interface WorkerToHostMethods {
     params: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string },
     result: void,
   ];
+  "state.list": [
+    params: { scopeKind?: string; scopeId?: string; namespace?: string },
+    result: Array<{
+      scopeKind: string;
+      scopeId: string | null;
+      namespace: string;
+      stateKey: string;
+      value: unknown;
+      updatedAt: string;
+    }>,
+  ];
 
   // Restricted plugin database namespace
   "db.namespace": [

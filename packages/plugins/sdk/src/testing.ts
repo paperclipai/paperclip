@@ -28,6 +28,8 @@ import type {
   PluginWorkspace,
   AgentSession,
   AgentSessionEvent,
+  ListStateFilter,
+  PluginStateEntry,
 } from "./types.js";
 import type {
   PluginEnvironmentValidateConfigParams,
@@ -414,7 +416,15 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const dbQueries: TestHarness["dbQueries"] = [];
   const dbExecutes: TestHarness["dbExecutes"] = [];
 
-  const state = new Map<string, unknown>();
+  interface StateEntry {
+    scopeKind: ScopeKey["scopeKind"];
+    scopeId: string | null;
+    namespace: string;
+    stateKey: string;
+    value: unknown;
+    updatedAt: string;
+  }
+  const state = new Map<string, StateEntry>();
   const entities = new Map<string, PluginEntityRecord>();
   const entityExternalIndex = new Map<string, string>();
   const companies = new Map<string, Company>();
@@ -547,15 +557,42 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     state: {
       async get(input) {
         requireCapability(manifest, capabilitySet, "plugin.state.read");
-        return state.has(stateMapKey(input)) ? state.get(stateMapKey(input)) : null;
+        const entry = state.get(stateMapKey(input));
+        return entry ? entry.value : null;
       },
       async set(input, value) {
         requireCapability(manifest, capabilitySet, "plugin.state.write");
-        state.set(stateMapKey(input), value);
+        const normalized = normalizeScope(input);
+        state.set(stateMapKey(input), {
+          scopeKind: normalized.scopeKind,
+          scopeId: normalized.scopeId ?? null,
+          namespace: normalized.namespace ?? "default",
+          stateKey: normalized.stateKey,
+          value,
+          updatedAt: new Date().toISOString(),
+        });
       },
       async delete(input) {
         requireCapability(manifest, capabilitySet, "plugin.state.write");
         state.delete(stateMapKey(input));
+      },
+      async list(filter: ListStateFilter = {}): Promise<PluginStateEntry[]> {
+        requireCapability(manifest, capabilitySet, "plugin.state.read");
+        const out: PluginStateEntry[] = [];
+        for (const entry of state.values()) {
+          if (filter.scopeKind !== undefined && entry.scopeKind !== filter.scopeKind) continue;
+          if (filter.scopeId !== undefined && entry.scopeId !== filter.scopeId) continue;
+          if (filter.namespace !== undefined && entry.namespace !== filter.namespace) continue;
+          out.push({
+            scopeKind: entry.scopeKind,
+            scopeId: entry.scopeId,
+            namespace: entry.namespace,
+            stateKey: entry.stateKey,
+            value: entry.value,
+            updatedAt: entry.updatedAt,
+          });
+        }
+        return out;
       },
     },
     entities: {
@@ -1290,7 +1327,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       return await handler(params, ctxToPass) as T;
     },
     getState(input) {
-      return state.get(stateMapKey(input));
+      return state.get(stateMapKey(input))?.value;
     },
     simulateSessionEvent(sessionId, event) {
       const cb = sessionEventCallbacks.get(sessionId);

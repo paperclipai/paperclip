@@ -62,6 +62,8 @@ import type {
   ToolResult,
   EventFilter,
   AgentSessionEvent,
+  ListStateFilter,
+  PluginStateEntry,
 } from "./types.js";
 import type {
   JsonRpcId,
@@ -528,6 +530,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             namespace: input.namespace,
             stateKey: input.stateKey,
           });
+        },
+
+        async list(filter: ListStateFilter = {}): Promise<PluginStateEntry[]> {
+          const rows = await callHost("state.list", {
+            scopeKind: filter.scopeKind,
+            scopeId: filter.scopeId,
+            namespace: filter.namespace,
+          });
+          return rows as PluginStateEntry[];
         },
       },
 
