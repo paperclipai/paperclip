@@ -115,7 +115,17 @@ export function organizationRoutes(db: Db) {
           role,
         })
         .returning();
-      return membership;
+      if (!membership) return null;
+      const [user] = await db
+        .select({ name: authUsers.name, email: authUsers.email })
+        .from(authUsers)
+        .where(eq(authUsers.id, membership.userId))
+        .limit(1);
+      return {
+        ...membership,
+        displayName: user?.name ?? null,
+        email: user?.email ?? null,
+      };
     },
 
     async removeMember(orgId: string, userId: string) {
@@ -138,10 +148,13 @@ export function organizationRoutes(db: Db) {
           organizationId: orgMemberships.organizationId,
           userId: orgMemberships.userId,
           role: orgMemberships.role,
+          displayName: authUsers.name,
+          email: authUsers.email,
           createdAt: orgMemberships.createdAt,
           updatedAt: orgMemberships.updatedAt,
         })
         .from(orgMemberships)
+        .leftJoin(authUsers, eq(authUsers.id, orgMemberships.userId))
         .where(eq(orgMemberships.organizationId, orgId))
         .orderBy(orgMemberships.createdAt);
       return rows;

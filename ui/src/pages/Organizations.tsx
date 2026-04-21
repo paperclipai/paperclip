@@ -19,6 +19,7 @@ export function Organizations() {
   const [showCreate, setShowCreate] = useState(false);
   const [newOrgName, setNewOrgName] = useState("");
   const [addMemberEmail, setAddMemberEmail] = useState("");
+  const [addMemberError, setAddMemberError] = useState<string | null>(null);
   const [attachCompanyId, setAttachCompanyId] = useState("");
 
   const sessionQuery = useQuery({
@@ -90,15 +91,25 @@ export function Organizations() {
   const addMemberMutation = useMutation({
     mutationFn: (email: string) =>
       organizationsApi.addMember(selectedOrgId!, { email }),
-    onSuccess: () => {
+    onMutate: () => {
+      setAddMemberError(null);
+    },
+    onSuccess: (member) => {
       if (!selectedOrgId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.organizations.members(selectedOrgId) });
       setAddMemberEmail("");
+      pushToast({
+        title: "Member added",
+        body: `${member.displayName || member.email || "User"} is now in this organization.`,
+        tone: "success",
+      });
     },
     onError: (err) => {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setAddMemberError(msg);
       pushToast({
         title: "Failed to add member",
-        body: err instanceof Error ? err.message : "Unknown error",
+        body: msg,
         tone: "error",
       });
     },
@@ -341,17 +352,26 @@ export function Organizations() {
               title="Members"
               count={orgMembersQuery.data?.length}
             >
+              <p className="text-xs text-muted-foreground">
+                Organization members can see this org in their switcher.
+                They don't automatically get access to the companies inside —
+                add them to each company from its settings.
+              </p>
               <div className="flex items-center gap-2">
                 <Input
                   type="email"
                   placeholder="teammate@example.com"
                   value={addMemberEmail}
-                  onChange={(e) => setAddMemberEmail(e.target.value)}
+                  onChange={(e) => {
+                    setAddMemberEmail(e.target.value);
+                    if (addMemberError) setAddMemberError(null);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && addMemberEmail.trim()) {
                       addMemberMutation.mutate(addMemberEmail.trim());
                     }
                   }}
+                  aria-invalid={!!addMemberError}
                 />
                 <Button
                   onClick={() => {
@@ -364,6 +384,9 @@ export function Organizations() {
                   {addMemberMutation.isPending ? "Adding..." : "Add"}
                 </Button>
               </div>
+              {addMemberError ? (
+                <p className="text-xs text-destructive">{addMemberError}</p>
+              ) : null}
 
               {orgMembersQuery.isLoading ? (
                 <p className="text-sm text-muted-foreground">Loading...</p>
