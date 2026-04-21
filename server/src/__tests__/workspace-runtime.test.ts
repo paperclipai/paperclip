@@ -1965,6 +1965,37 @@ describe("realizeExecutionWorkspace", () => {
     });
   });
 
+  it("archives non-runtime-owned local workspaces without expecting the directory to be removed", async () => {
+    const workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-shared-workspace-"));
+    await fs.writeFile(path.join(workspacePath, "README.md"), "shared checkout\n", "utf8");
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: "execution-workspace-1",
+        cwd: workspacePath,
+        providerType: "local_fs",
+        providerRef: null,
+        branchName: null,
+        repoUrl: null,
+        baseRef: null,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        sourceIssueId: "issue-1",
+        metadata: {
+          createdByRuntime: false,
+        },
+      },
+      projectWorkspace: {
+        cwd: workspacePath,
+        cleanupCommand: null,
+      },
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings).toEqual([]);
+    await expect(fs.stat(workspacePath)).resolves.toBeTruthy();
+  });
+
   it("records teardown and cleanup operations when a recorder is provided", async () => {
     const repoRoot = await createTempRepo();
     const { recorder, operations } = createWorkspaceOperationRecorderDouble();

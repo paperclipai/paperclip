@@ -656,6 +656,29 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  async function clearStaleExecutionLocksForRoutine(routine: typeof routines.$inferSelect, executor: Db = db) {
+    await executor.execute(sql`
+      update ${issues}
+      set
+        execution_run_id = null,
+        execution_agent_name_key = null,
+        execution_locked_at = null,
+        updated_at = now()
+      where ${issues.companyId} = ${routine.companyId}
+        and ${issues.originKind} = 'routine_execution'
+        and ${issues.originId} = ${routine.id}
+        and ${issues.hiddenAt} is null
+        and ${issues.executionRunId} is not null
+        and ${issues.status} in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')
+        and not exists (
+          select 1
+          from ${heartbeatRuns}
+          where ${heartbeatRuns.id} = ${issues.executionRunId}
+            and ${heartbeatRuns.status} in ('queued', 'running')
+        )
+    `);
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -745,6 +768,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
     const description = interpolateRoutineTemplate(input.routine.description, allVariables);
     const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
+    await clearStaleExecutionLocksForRoutine(input.routine);
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
