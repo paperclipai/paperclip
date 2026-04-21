@@ -71,6 +71,7 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 
 const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
+  listDependencyReadiness: vi.fn(),
 }));
 
 const mockSecretService = vi.hoisted(() => ({
