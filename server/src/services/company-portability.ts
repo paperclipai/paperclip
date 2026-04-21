@@ -31,6 +31,7 @@ import type {
   RoutineVariable,
 } from "@paperclipai/shared";
 import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   PROJECT_STATUSES,
@@ -47,7 +48,9 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { notFound, unprocessable } from "../errors.js";
+import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
+import { findServerAdapter } from "../adapters/index.js";
+import { forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
@@ -62,6 +65,7 @@ import { validateCron } from "./cron.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
+import { secretService } from "./secrets.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -117,6 +121,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 };
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
+const IMPORT_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
 const execFileAsync = promisify(execFile);
 let bundledSkillsCommitPromise: Promise<string | null> | null = null;
 
@@ -586,7 +591,7 @@ const RUNTIME_DEFAULT_RULES: Array<{ path: string[]; value: unknown }> = [
   { path: ["heartbeat", "wakeOnAssignment"], value: true },
   { path: ["heartbeat", "wakeOnAutomation"], value: true },
   { path: ["heartbeat", "wakeOnDemand"], value: true },
-  { path: ["heartbeat", "maxConcurrentRuns"], value: 3 },
+  { path: ["heartbeat", "maxConcurrentRuns"], value: AGENT_DEFAULT_MAX_CONCURRENT_RUNS },
 ];
 
 const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; value: unknown }>> = {
@@ -737,10 +742,20 @@ function clonePortableRecord(value: unknown) {
   return structuredClone(value) as Record<string, unknown>;
 }
 
+function parseFiniteNumberLike(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function disableImportedTimerHeartbeat(runtimeConfig: unknown) {
   const next = clonePortableRecord(runtimeConfig) ?? {};
   const heartbeat = isPlainRecord(next.heartbeat) ? { ...next.heartbeat } : {};
   heartbeat.enabled = false;
+  if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
+    heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+  }
   next.heartbeat = heartbeat;
   return next;
 }
@@ -2747,6 +2762,94 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const projects = projectService(db);
   const issues = issueService(db);
   const companySkills = companySkillService(db);
+  const secrets = secretService(db);
+  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  function assertKnownImportAdapterType(type: string | null | undefined): string {
+    const adapterType = typeof type === "string" ? type.trim() : "";
+    if (!adapterType) {
+      throw unprocessable("Adapter type is required");
+    }
+    if (!findServerAdapter(adapterType)) {
+      throw unprocessable(`Unknown adapter type: ${adapterType}`);
+    }
+    return adapterType;
+  }
+
+  async function assertImportAdapterConfigConstraints(
+    companyId: string,
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+  ) {
+    if (adapterType !== "opencode_local") return;
+    const { config: runtimeConfig } = await secrets.resolveAdapterConfigForRuntime(companyId, adapterConfig);
+    const runtimeEnv = isPlainRecord(runtimeConfig.env) ? runtimeConfig.env : {};
+    try {
+      await ensureOpenCodeModelConfiguredAndAvailable({
+        model: runtimeConfig.model,
+        command: runtimeConfig.command,
+        cwd: runtimeConfig.cwd,
+        env: runtimeEnv,
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+    }
+  }
+
+  async function prepareImportedAgentAdapter(
+    companyId: string,
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+    desiredSkills: string[],
+    mode: ImportMode,
+  ) {
+    const effectiveAdapterType = assertKnownImportAdapterType(adapterType);
+    if (mode === "agent_safe" && IMPORT_FORBIDDEN_ADAPTER_TYPES.has(effectiveAdapterType)) {
+      throw forbidden(`Adapter type "${effectiveAdapterType}" is not allowed in safe imports`);
+    }
+    const nextAdapterConfig = writePaperclipSkillSyncPreference({ ...adapterConfig }, desiredSkills);
+    delete nextAdapterConfig.promptTemplate;
+    delete nextAdapterConfig.bootstrapPromptTemplate;
+    delete nextAdapterConfig.instructionsFilePath;
+    delete nextAdapterConfig.instructionsBundleMode;
+    delete nextAdapterConfig.instructionsRootPath;
+    delete nextAdapterConfig.instructionsEntryFile;
+    const normalizedAdapterConfig = await secrets.normalizeAdapterConfigForPersistence(
+      companyId,
+      nextAdapterConfig,
+      { strictMode: strictSecretsMode },
+    );
+    await assertImportAdapterConfigConstraints(companyId, effectiveAdapterType, normalizedAdapterConfig);
+    return {
+      adapterType: effectiveAdapterType,
+      adapterConfig: normalizedAdapterConfig,
+    };
+  }
+
+  function resolveImportedAssigneeAgentId(
+    assigneeSlug: string | null | undefined,
+    importedSlugToAgentId: Map<string, string>,
+    existingSlugToAgentId: Map<string, string>,
+    agentStatusById: Map<string, string | null | undefined>,
+    warnings: string[],
+    subjectLabel: string,
+  ) {
+    if (!assigneeSlug) return null;
+    const assigneeAgentId =
+      importedSlugToAgentId.get(assigneeSlug)
+      ?? existingSlugToAgentId.get(assigneeSlug)
+      ?? null;
+    if (!assigneeAgentId) return null;
+    const assigneeStatus = agentStatusById.get(assigneeAgentId) ?? null;
+    if (assigneeStatus === "pending_approval" || assigneeStatus === "terminated") {
+      warnings.push(
+        `${subjectLabel} assignee ${assigneeSlug} is ${assigneeStatus}; imported work was left unassigned.`,
+      );
+      return null;
+    }
+    return assigneeAgentId;
+  }
 
   async function resolveSource(source: CompanyPortabilityPreview["source"]): Promise<ResolvedSource> {
     if (source.type === "inline") {
@@ -3856,7 +3959,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const warnings = [...plan.preview.warnings];
     const include = plan.include;
 
-    let targetCompany: { id: string; name: string } | null = null;
+    let targetCompany: {
+      id: string;
+      name: string;
+      requireBoardApprovalForNewAgents?: boolean | null;
+    } | null = null;
     let companyAction: "created" | "updated" | "unchanged" = "unchanged";
 
     if (input.target.mode === "new_company") {
@@ -3977,9 +4084,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const resultProjects: CompanyPortabilityImportResult["projects"] = [];
     const importedSlugToAgentId = new Map<string, string>();
     const existingSlugToAgentId = new Map<string, string>();
+    const agentStatusById = new Map<string, string | null | undefined>();
     const existingAgents = await agents.list(targetCompany.id);
     for (const existing of existingAgents) {
       existingSlugToAgentId.set(normalizeAgentUrlKey(existing.name) ?? existing.id, existing.id);
+      agentStatusById.set(existing.id, existing.status);
     }
     const importedSlugToProjectId = new Map<string, string>();
     const importedProjectWorkspaceIdByProjectSlug = new Map<string, Map<string, string>>();
@@ -4049,22 +4158,18 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
         // Apply adapter overrides from request if present
         const adapterOverride = input.adapterOverrides?.[planAgent.slug];
-        const effectiveAdapterType = adapterOverride?.adapterType ?? manifestAgent.adapterType;
         const baseAdapterConfig = adapterOverride?.adapterConfig
           ? { ...adapterOverride.adapterConfig }
           : { ...manifestAgent.adapterConfig } as Record<string, unknown>;
 
         const desiredSkills = (manifestAgent.skills ?? []).map((skillRef) => desiredSkillRefMap.get(skillRef) ?? skillRef);
-        const adapterConfigWithSkills = writePaperclipSkillSyncPreference(
+        const normalizedAdapter = await prepareImportedAgentAdapter(
+          targetCompany.id,
+          adapterOverride?.adapterType ?? manifestAgent.adapterType,
           baseAdapterConfig,
           desiredSkills,
+          mode,
         );
-        delete adapterConfigWithSkills.promptTemplate;
-        delete adapterConfigWithSkills.bootstrapPromptTemplate; // deprecated
-        delete adapterConfigWithSkills.instructionsFilePath;
-        delete adapterConfigWithSkills.instructionsBundleMode;
-        delete adapterConfigWithSkills.instructionsRootPath;
-        delete adapterConfigWithSkills.instructionsEntryFile;
         const patch = {
           name: planAgent.plannedName,
           role: manifestAgent.role,
@@ -4072,8 +4177,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           icon: manifestAgent.icon,
           capabilities: manifestAgent.capabilities,
           reportsTo: null,
-          adapterType: effectiveAdapterType,
-          adapterConfig: adapterConfigWithSkills,
+          adapterType: normalizedAdapter.adapterType,
+          adapterConfig: normalizedAdapter.adapterConfig,
           runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
           budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
           permissions: manifestAgent.permissions,
@@ -4102,6 +4207,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
+          agentStatusById.set(updated.id, updated.status ?? agentStatusById.get(updated.id) ?? null);
           importedSlugToAgentId.set(planAgent.slug, updated.id);
           existingSlugToAgentId.set(normalizeAgentUrlKey(updated.name) ?? updated.id, updated.id);
           resultAgents.push({
@@ -4114,7 +4220,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           continue;
         }
 
-        let created = await agents.create(targetCompany.id, patch);
+        const createdStatus = "idle";
+        let created = await agents.create(targetCompany.id, {
+          ...patch,
+          status: createdStatus,
+        });
         await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
         await access.setPrincipalPermission(
           targetCompany.id,
@@ -4133,6 +4243,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         } catch (err) {
           warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
         }
+        agentStatusById.set(created.id, created.status ?? createdStatus);
         importedSlugToAgentId.set(planAgent.slug, created.id);
         existingSlugToAgentId.set(normalizeAgentUrlKey(created.name) ?? created.id, created.id);
         resultAgents.push({
@@ -4275,11 +4386,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const markdownRaw = readPortableTextFile(plan.source.files, manifestIssue.path);
         const parsed = markdownRaw ? parseFrontmatterMarkdown(markdownRaw) : null;
         const description = parsed?.body || manifestIssue.description || null;
-        const assigneeAgentId = manifestIssue.assigneeAgentSlug
-          ? importedSlugToAgentId.get(manifestIssue.assigneeAgentSlug)
-            ?? existingSlugToAgentId.get(manifestIssue.assigneeAgentSlug)
-            ?? null
-          : null;
+        const assigneeAgentId = resolveImportedAssigneeAgentId(
+          manifestIssue.assigneeAgentSlug,
+          importedSlugToAgentId,
+          existingSlugToAgentId,
+          agentStatusById,
+          warnings,
+          `Task ${manifestIssue.slug}`,
+        );
         const projectId = manifestIssue.projectSlug
           ? importedSlugToProjectId.get(manifestIssue.projectSlug)
             ?? existingProjectSlugToId.get(manifestIssue.projectSlug)
@@ -4292,8 +4406,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           warnings.push(`Task ${manifestIssue.slug} references workspace key ${manifestIssue.projectWorkspaceKey}, but that workspace was not imported.`);
         }
         if (manifestIssue.recurring) {
-          if (!projectId || !assigneeAgentId) {
-            throw unprocessable(`Recurring task ${manifestIssue.slug} is missing the project or assignee required to create a routine.`);
+          if (!projectId) {
+            throw unprocessable(`Recurring task ${manifestIssue.slug} is missing the project required to create a routine.`);
           }
           const resolvedRoutine = resolvePortableRoutineDefinition(manifestIssue, parsed?.frontmatter.schedule);
           if (resolvedRoutine.errors.length > 0) {
@@ -4373,22 +4487,27 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
           continue;
         }
+        let issueStatus = manifestIssue.status && ISSUE_STATUSES.includes(manifestIssue.status as any)
+          ? manifestIssue.status as typeof ISSUE_STATUSES[number]
+          : "backlog";
+        if (!assigneeAgentId && issueStatus === "in_progress") {
+          warnings.push(`Task ${manifestIssue.slug} was downgraded to todo because its assignee could not be imported as assignable work.`);
+          issueStatus = "todo";
+        }
         await issues.create(targetCompany.id, {
           projectId,
           projectWorkspaceId,
           title: manifestIssue.title,
           description,
           assigneeAgentId,
-          status: manifestIssue.status && ISSUE_STATUSES.includes(manifestIssue.status as any)
-            ? manifestIssue.status as typeof ISSUE_STATUSES[number]
-            : "backlog",
+          status: issueStatus,
           priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
             ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
             : "medium",
           billingCode: manifestIssue.billingCode,
           assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides,
           executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings,
-          labelIds: [],
+          labelIds: manifestIssue.labelIds ?? [],
         });
       }
     }

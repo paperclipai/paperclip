@@ -729,7 +729,6 @@ describe("codex execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
-
   it("uses a worktree-isolated CODEX_HOME while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-"));
     const workspace = path.join(root, "workspace");
