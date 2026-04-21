@@ -41,6 +41,7 @@ import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./Ma
 import { ReportsToPicker } from "./ReportsToPicker";
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
+import { ProjectParentSelector } from "./ProjectParentSelector";
 
 const projectStatuses = [
   { value: "backlog", label: "Backlog" },
@@ -55,8 +56,10 @@ export function NewProjectDialog() {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
+  const [code, setCode] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("planned");
+  const [parentId, setParentId] = useState<string | null>(null);
   const [goalIds, setGoalIds] = useState<string[]>([]);
   const [targetDate, setTargetDate] = useState("");
   const [expanded, setExpanded] = useState(false);
@@ -79,6 +82,11 @@ export function NewProjectDialog() {
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && newProjectOpen,
+  });
+  const { data: parentProjects = [] } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && newProjectOpen,
   });
 
@@ -117,8 +125,10 @@ export function NewProjectDialog() {
 
   function reset() {
     setName("");
+    setCode("");
     setDescription("");
     setStatus("planned");
+    setParentId(null);
     setGoalIds([]);
     setTargetDate("");
     setExpanded(false);
@@ -151,9 +161,11 @@ export function NewProjectDialog() {
     try {
       const created = await createProject.mutateAsync({
         name: name.trim(),
+        ...(code.trim() ? { code: code.trim() } : {}),
         description: description.trim() || undefined,
         status,
         color: PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)],
+        ...(parentId ? { parentId } : {}),
         ...(leadAgentTouched || leadAgentId ? { leadAgentId } : defaultLeadAgentId ? { leadAgentId: defaultLeadAgentId } : {}),
         ...(goalIds.length > 0 ? { goalIds } : {}),
         ...(targetDate ? { targetDate } : {}),
@@ -226,7 +238,7 @@ export function NewProjectDialog() {
         </div>
 
         {/* Name */}
-        <div className="px-4 pt-4 pb-2 shrink-0">
+        <div className="space-y-2 px-4 pt-4 pb-2 shrink-0">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
             placeholder="Project name"
@@ -240,6 +252,17 @@ export function NewProjectDialog() {
             }}
             autoFocus
           />
+          <div className="flex items-center gap-2">
+            <input
+              className="w-32 rounded border border-border bg-transparent px-2 py-1 font-mono text-xs uppercase outline-none placeholder:normal-case placeholder:text-muted-foreground/50"
+              placeholder="Code"
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              maxLength={16}
+              aria-label="Project code"
+            />
+            <span className="text-xs text-muted-foreground">optional</span>
+          </div>
         </div>
 
         {/* Description */}
@@ -335,6 +358,14 @@ export function NewProjectDialog() {
             </PopoverContent>
           </Popover>
 
+          <ProjectParentSelector
+            projects={parentProjects}
+            value={parentId}
+            onChange={setParentId}
+            disablePortal
+            className="h-7 max-w-[220px] text-xs"
+          />
+
           <ReportsToPicker
             agents={(agents ?? []).filter((agent) => agent.status !== "terminated")}
             value={leadAgentId}
@@ -419,7 +450,9 @@ export function NewProjectDialog() {
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
           {createProject.isError ? (
-            <p className="text-xs text-destructive">Failed to create project.</p>
+            <p className="text-xs text-destructive">
+              {createProject.error instanceof Error ? createProject.error.message : "Failed to create project."}
+            </p>
           ) : (
             <span />
           )}

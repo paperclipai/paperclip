@@ -11,8 +11,10 @@ import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { ProjectCodeBadge } from "../components/ProjectCodeBadge";
 import { ProjectLabelPills } from "../components/ProjectLabelPills";
 import { sortProjectsByRecentActivity } from "../lib/project-recency";
+import { buildProjectHierarchyEntries, projectAncestorNames } from "../lib/project-hierarchy";
 import { formatDate, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +23,7 @@ import { ProjectStarButton } from "../components/ProjectStarButton";
 
 function buildProjectSearchText(project: {
   name: string;
+  code: string | null;
   description: string | null;
   status: string;
   goals: Array<{ title: string }>;
@@ -28,6 +31,7 @@ function buildProjectSearchText(project: {
 }) {
   return [
     project.name,
+    project.code,
     project.description,
     project.status,
     project.status.replaceAll("_", " "),
@@ -75,8 +79,15 @@ export function Projects() {
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
   const filteredProjects = useMemo(() => {
     if (!normalizedSearchQuery) return starredProjectsFirst;
-    return starredProjectsFirst.filter((project) => buildProjectSearchText(project).includes(normalizedSearchQuery));
-  }, [starredProjectsFirst, normalizedSearchQuery]);
+    return starredProjectsFirst.filter((project) => {
+      const ancestorText = projectAncestorNames(project, projects).join(" ");
+      return `${buildProjectSearchText(project)} ${ancestorText}`.toLowerCase().includes(normalizedSearchQuery);
+    });
+  }, [starredProjectsFirst, normalizedSearchQuery, projects]);
+  const projectEntries = useMemo(
+    () => buildProjectHierarchyEntries(filteredProjects, projects),
+    [filteredProjects, projects],
+  );
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Hexagon} message="Select a company to view projects." />;
@@ -139,50 +150,58 @@ export function Projects() {
         />
       )}
 
-      {filteredProjects.length > 0 && (
+      {projectEntries.length > 0 && (
         <div className="border border-border">
-          {filteredProjects.map((project) => (
-            <div
-              key={project.id}
-              className="group/project flex items-stretch border-b border-border last:border-b-0"
-            >
-              <Link
-                to={projectUrl(project)}
-                className="flex min-w-0 flex-1 items-center gap-3 px-4 py-2 no-underline text-inherit transition-colors hover:bg-accent/50"
+          {projectEntries.map(({ project, depth, ancestorNames }) => {
+            const metadata = [
+              ancestorNames.length > 0 ? ancestorNames.join(" / ") : null,
+              project.description,
+            ].filter((value): value is string => Boolean(value));
+            return (
+              <div
+                key={project.id}
+                className="group/project flex items-stretch border-b border-border last:border-b-0"
               >
-                <span
-                  className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                  style={{ backgroundColor: project.color ?? "#6366f1" }}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <div className="truncate text-sm">{project.name}</div>
-                    <ProjectLabelPills labels={project.labels} />
+                <Link
+                  to={projectUrl(project)}
+                  className="flex min-w-0 flex-1 items-center gap-3 px-4 py-2 no-underline text-inherit transition-colors hover:bg-accent/50"
+                  style={{ paddingLeft: `${1 + Math.min(depth, 6) * 1.25}rem` }}
+                >
+                  <span
+                    className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                    style={{ backgroundColor: project.color ?? "#6366f1" }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <div className="truncate text-sm">{project.name}</div>
+                      <ProjectCodeBadge code={project.code} />
+                      <ProjectLabelPills labels={project.labels} />
+                    </div>
+                    {metadata.length > 0 && (
+                      <p className="mt-0.5 truncate text-xs text-muted-foreground">{metadata.join(" - ")}</p>
+                    )}
                   </div>
-                  {project.description && (
-                    <p className="mt-0.5 truncate text-xs text-muted-foreground">{project.description}</p>
-                  )}
+                  <div className="ml-3 flex shrink-0 items-center gap-3">
+                    {project.targetDate && (
+                      <span className="text-xs text-muted-foreground">
+                        {formatDate(project.targetDate)}
+                      </span>
+                    )}
+                    <StatusBadge status={project.status} />
+                  </div>
+                </Link>
+                <div className="flex items-center px-2">
+                  <ProjectStarButton
+                    starred={starredProjectIds.includes(project.id)}
+                    projectName={project.name}
+                    onToggle={() => toggleStarred(project.id)}
+                    className="h-8 w-8"
+                    iconClassName="h-4 w-4"
+                  />
                 </div>
-                <div className="ml-3 flex shrink-0 items-center gap-3">
-                  {project.targetDate && (
-                    <span className="text-xs text-muted-foreground">
-                      {formatDate(project.targetDate)}
-                    </span>
-                  )}
-                  <StatusBadge status={project.status} />
-                </div>
-              </Link>
-              <div className="flex items-center px-2">
-                <ProjectStarButton
-                  starred={starredProjectIds.includes(project.id)}
-                  projectName={project.name}
-                  onToggle={() => toggleStarred(project.id)}
-                  className="h-8 w-8"
-                  iconClassName="h-4 w-4"
-                />
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

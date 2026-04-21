@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   createProjectSchema,
   createProjectWorkspaceSchema,
+  duplicateProjectSchema,
   findWorkspaceCommandDefinition,
   isUuidLike,
   matchWorkspaceRuntimeServiceToCommand,
@@ -146,6 +147,42 @@ export function projectRoutes(db: Db) {
       trackProjectCreated(telemetryClient);
     }
     res.status(201).json(hydratedProject ?? project);
+  });
+
+  router.post("/projects/:id/duplicate", validate(duplicateProjectSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const project = await svc.duplicate(id, req.body);
+    if (!project) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.duplicated",
+      entityType: "project",
+      entityId: project.id,
+      details: {
+        sourceProjectId: existing.id,
+        sourceProjectName: existing.name,
+        name: project.name,
+        copiedIssues: false,
+        copiedWorkspaceCount: project.workspaces.length,
+      },
+    });
+
+    res.status(201).json(project);
   });
 
   router.patch("/projects/:id", validate(updateProjectSchema), async (req, res) => {

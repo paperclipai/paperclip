@@ -19,6 +19,7 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
 import { ProjectLabelPills } from "../components/ProjectLabelPills";
+import { ProjectCodeBadge } from "../components/ProjectCodeBadge";
 import { ProjectContextContent, ProjectSourceContent } from "../components/ProjectContextContent";
 import { ProjectTasksRail } from "../components/ProjectTasksRail";
 import { StatusBadge } from "../components/StatusBadge";
@@ -877,6 +878,7 @@ export function ProjectDetail() {
               as="h2"
               className="text-xl font-bold"
             />
+            <ProjectCodeBadge code={project.code} />
             <ProjectLabelPills labels={project.labels} />
             <Tooltip>
               <TooltipTrigger asChild>

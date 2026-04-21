@@ -88,8 +88,10 @@ export const portabilitySkillManifestEntrySchema = z.object({
 export const portabilityProjectManifestEntrySchema = z.object({
   slug: z.string().min(1),
   name: z.string().min(1),
+  code: z.string().min(1).nullable().optional().default(null),
   path: z.string().min(1),
   description: z.string().nullable(),
+  parentSlug: z.string().min(1).nullable().optional().default(null),
   ownerAgentSlug: z.string().min(1).nullable(),
   leadAgentSlug: z.string().min(1).nullable(),
   targetDate: z.string().nullable(),

@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Loader2, Plus, Search, X } from "lucide-react";
+import { ChevronRight, Copy, Loader2, Plus, Search, X } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useToastActions } from "../context/ToastContext";
 import { authApi } from "../api/auth";
+import { projectQuickLinksApi } from "../api/projectQuickLinks";
 import { projectsApi } from "../api/projects";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
@@ -23,17 +25,15 @@ import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { PROJECT_COLORS, type Project } from "@paperclipai/shared";
 import { ProjectStarButton } from "./ProjectStarButton";
 import { ProjectLabelPills } from "./ProjectLabelPills";
-import {
-  buildProjectWorkspaceInput,
-  deriveProjectNameFromRepoUrl,
-  looksLikeProjectRepoUrl,
-} from "../lib/project-workspace";
+import { buildQuickProjectDraft } from "../lib/project-quick-add";
+import { ProjectCodeBadge } from "./ProjectCodeBadge";
 
 type ProjectSidebarSlot = ReturnType<typeof usePluginSlots>["slots"][number];
 
 function buildSidebarProjectSearchText(project: Project) {
   return [
     project.name,
+    project.code,
     project.urlKey,
     project.description,
     project.status,
@@ -52,6 +52,8 @@ function SortableProjectItem({
   companyPrefix,
   isMobile,
   isStarred,
+  isDuplicating,
+  onDuplicateProject,
   onToggleStarred,
   project,
   projectSidebarSlots,
@@ -62,6 +64,8 @@ function SortableProjectItem({
   companyPrefix: string | null;
   isMobile: boolean;
   isStarred: boolean;
+  isDuplicating: boolean;
+  onDuplicateProject: (project: Project) => void;
   onToggleStarred: (projectId: string) => void;
   project: Project;
   projectSidebarSlots: ProjectSidebarSlot[];
@@ -92,6 +96,7 @@ function SortableProjectItem({
             />
             <span className="flex min-w-0 flex-1 items-center gap-2">
               <span className="truncate">{project.name}</span>
+              <ProjectCodeBadge code={project.code} />
               <ProjectLabelPills labels={project.labels} variant="dense" />
             </span>
             {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
@@ -108,6 +113,25 @@ function SortableProjectItem({
             )}
             iconClassName="h-3 w-3"
           />
+          <button
+            type="button"
+            disabled={isDuplicating}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onDuplicateProject(project);
+            }}
+            className={cn(
+              "flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 opacity-0 transition-colors group-hover/project:opacity-100 focus-visible:opacity-100",
+              isDuplicating
+                ? "cursor-wait opacity-100"
+                : "hover:bg-accent/50 hover:text-foreground",
+            )}
+            title={`Duplicate ${project.name}`}
+            aria-label={`Duplicate ${project.name}`}
+          >
+            {isDuplicating ? <Loader2 className="h-3 w-3 animate-spin" /> : <Copy className="h-3 w-3" />}
+          </button>
         </div>
         {projectSidebarSlots.length > 0 && (
           <div className="ml-5 flex flex-col gap-0.5">
@@ -137,11 +161,12 @@ export function SidebarProjects() {
   const [open, setOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [quickAddOpen, setQuickAddOpen] = useState(false);
-  const [quickAddRepoUrl, setQuickAddRepoUrl] = useState("");
+  const [quickAddValue, setQuickAddValue] = useState("");
   const [quickAddError, setQuickAddError] = useState<string | null>(null);
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const { pushToast } = useToastActions();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const location = useLocation();
@@ -200,8 +225,15 @@ export function SidebarProjects() {
     },
   });
 
+  const duplicateProject = useMutation({
+    mutationFn: async (project: Project) => {
+      if (!selectedCompanyId) throw new Error("Select a company before duplicating a project.");
+      return projectsApi.duplicate(project.id, {}, selectedCompanyId);
+    },
+  });
+
   function resetQuickAdd() {
-    setQuickAddRepoUrl("");
+    setQuickAddValue("");
     setQuickAddError(null);
   }
 
@@ -225,14 +257,9 @@ export function SidebarProjects() {
     event.preventDefault();
     if (!selectedCompanyId) return;
 
-    const repoUrl = quickAddRepoUrl.trim();
-    if (!repoUrl) {
-      setQuickAddError("Repo URL is required.");
-      return;
-    }
-
-    if (!looksLikeProjectRepoUrl(repoUrl)) {
-      setQuickAddError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
+    const draft = buildQuickProjectDraft(quickAddValue);
+    if (!draft) {
+      setQuickAddError("Add a project name or link.");
       return;
     }
 
@@ -240,15 +267,28 @@ export function SidebarProjects() {
 
     try {
       const created = await createProject.mutateAsync({
-        name: deriveProjectNameFromRepoUrl(repoUrl),
+        name: draft.name,
         status: "planned",
         color: PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)],
-        workspace: buildProjectWorkspaceInput({ repoUrl }),
+        ...(draft.workspace ? { workspace: draft.workspace } : {}),
       });
+
+      if (draft.quickLink) {
+        try {
+          await projectQuickLinksApi.create(selectedCompanyId, created.id, draft.quickLink);
+        } catch (error) {
+          pushToast({
+            title: "Project created, but the link was not attached",
+            body: error instanceof Error ? error.message : "Open the project to add the link manually.",
+            tone: "warn",
+          });
+        }
+      }
 
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(created.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.projects.quickLinks(selectedCompanyId, created.id) }),
       ]);
 
       closeQuickAdd();
@@ -264,6 +304,35 @@ export function SidebarProjects() {
   function handleOpenFullProjectForm() {
     closeQuickAdd();
     openNewProject();
+  }
+
+  async function handleDuplicateProject(project: Project) {
+    if (!selectedCompanyId || duplicateProject.isPending) return;
+
+    try {
+      const duplicated = await duplicateProject.mutateAsync(project);
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(duplicated.id) }),
+      ]);
+
+      pushToast({
+        title: "Project duplicated",
+        body: "Tasks were not copied.",
+        tone: "success",
+      });
+      if (isMobile) setSidebarOpen(false);
+      navigate(`/projects/${projectRouteRef(duplicated)}/issues`, {
+        state: SIDEBAR_SCROLL_RESET_STATE,
+      });
+    } catch (error) {
+      pushToast({
+        title: "Could not duplicate project",
+        body: error instanceof Error ? error.message : "Try again from the projects page.",
+        tone: "error",
+      });
+    }
   }
 
   return (
@@ -321,9 +390,9 @@ export function SidebarProjects() {
                 <input
                   ref={quickAddInputRef}
                   className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-xs outline-none"
-                  value={quickAddRepoUrl}
+                  value={quickAddValue}
                   onChange={(event) => {
-                    setQuickAddRepoUrl(event.target.value);
+                    setQuickAddValue(event.target.value);
                     if (quickAddError) setQuickAddError(null);
                   }}
                   onKeyDown={(event) => {
@@ -332,8 +401,8 @@ export function SidebarProjects() {
                       closeQuickAdd();
                     }
                   }}
-                  placeholder="https://github.com/org/repo"
-                  aria-label="Repo URL"
+                  placeholder="Project name or link"
+                  aria-label="Project name or link"
                 />
                 <button
                   type="submit"
@@ -353,7 +422,7 @@ export function SidebarProjects() {
                   "min-w-0 text-[11px]",
                   quickAddError ? "text-destructive" : "text-muted-foreground",
                 )}>
-                  {quickAddError ?? "Paste a repo URL to create a project instantly."}
+                  {quickAddError ?? "Paste a repo/Tailscale link or type a project name."}
                 </p>
                 <button
                   type="button"
@@ -397,7 +466,9 @@ export function SidebarProjects() {
               companyId={selectedCompanyId}
               companyPrefix={selectedCompany?.issuePrefix ?? null}
               isMobile={isMobile}
+              isDuplicating={duplicateProject.isPending && duplicateProject.variables?.id === project.id}
               isStarred={starredProjectIds.includes(project.id)}
+              onDuplicateProject={handleDuplicateProject}
               onToggleStarred={toggleStarred}
               project={project}
               projectSidebarSlots={projectSidebarSlots}

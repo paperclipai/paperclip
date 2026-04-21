@@ -2603,8 +2603,10 @@ function buildManifestFromPackageFiles(
     manifest.projects.push({
       slug,
       name: asString(frontmatter.name) ?? slug,
+      code: asString(frontmatter.code) ?? asString(extension.code),
       path: projectPath,
       description: asString(frontmatter.description),
+      parentSlug: asString(extension.parentSlug),
       ownerAgentSlug: asString(frontmatter.owner),
       leadAgentSlug: asString(extension.leadAgentSlug),
       targetDate: asString(extension.targetDate),
@@ -3324,15 +3326,18 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       );
       const portableWorkspaces = await buildPortableProjectWorkspaces(slug, project.workspaces, warnings);
       projectWorkspaceKeyByProjectId.set(project.id, portableWorkspaces.workspaceKeyById);
+      const parentSlug = project.parentId ? (projectSlugById.get(project.parentId) ?? null) : null;
       files[projectPath] = buildMarkdown(
         {
           name: project.name,
+          code: project.code ?? null,
           description: project.description ?? null,
           owner: project.leadAgentId ? (idToSlug.get(project.leadAgentId) ?? null) : null,
         },
         project.description ?? "",
       );
       const extension = stripEmptyValues({
+        parentSlug,
         leadAgentSlug: project.leadAgentId ? (idToSlug.get(project.leadAgentId) ?? null) : null,
         targetDate: project.targetDate ?? null,
         color: project.color ?? null,
@@ -4291,6 +4296,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const projectWorkspaceIdByKey = new Map<string, string>();
         const projectPatch = {
           name: planProject.plannedName,
+          code: manifestProject.code,
           description: manifestProject.description,
           leadAgentId: projectLeadAgentId,
           targetDate: manifestProject.targetDate,
@@ -4373,6 +4379,22 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           await projects.update(projectId, {
             executionWorkspacePolicy: hydratedProjectExecutionWorkspacePolicy,
           });
+        }
+      }
+
+      for (const manifestProject of sourceManifest.projects) {
+        const projectId = importedSlugToProjectId.get(manifestProject.slug);
+        if (!projectId) continue;
+        const parentId = manifestProject.parentSlug
+          ? importedSlugToProjectId.get(manifestProject.parentSlug)
+            ?? existingProjectSlugToId.get(manifestProject.parentSlug)
+            ?? null
+          : null;
+        try {
+          const updated = await projects.update(projectId, { parentId });
+          if (updated) importedSlugToProjectId.set(manifestProject.slug, updated.id);
+        } catch {
+          warnings.push(`Could not assign parent project ${manifestProject.parentSlug} for imported project ${manifestProject.slug}.`);
         }
       }
     }

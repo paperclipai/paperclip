@@ -27,6 +27,8 @@ import { AgentIcon } from "./AgentIconPicker";
 import { ReportsToPicker } from "./ReportsToPicker";
 import { CompanyLabelEditor } from "./CompanyLabelEditor";
 import { ProjectLabelPills } from "./ProjectLabelPills";
+import { ProjectParentSelector } from "./ProjectParentSelector";
+import { ProjectCodeBadge } from "./ProjectCodeBadge";
 
 const PROJECT_STATUSES = [
   { value: "backlog", label: "Backlog" },
@@ -48,7 +50,9 @@ interface ProjectPropertiesProps {
 export type ProjectFieldSaveState = "idle" | "saving" | "saved" | "error";
 export type ProjectConfigFieldKey =
   | "name"
+  | "code"
   | "description"
+  | "parent"
   | "labels"
   | "status"
   | "lead_agent"
@@ -258,6 +262,11 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
+  const { data: allProjects = [] } = useQuery({
+    queryKey: companyId ? queryKeys.projects.list(companyId) : ["projects", "none"],
+    queryFn: () => projectsApi.list(companyId!),
+    enabled: Boolean(companyId),
+  });
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -311,6 +320,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const availableGoals = (allGoals ?? []).filter((g) => !linkedGoalIds.includes(g.id));
   const activeAgents = agents.filter((agent) => agent.status !== "terminated");
   const leadAgent = agents.find((agent) => agent.id === project.leadAgentId) ?? null;
+  const parentProject = project.parentId
+    ? allProjects.find((candidate) => candidate.id === project.parentId) ?? null
+    : null;
   const workspaces = project.workspaces ?? [];
   const codebase = project.codebase;
   const primaryCodebaseWorkspace = project.primaryWorkspace ?? null;
@@ -543,6 +555,21 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             <span className="text-sm">{project.name}</span>
           )}
         </PropertyRow>
+        <PropertyRow label={<FieldLabel label="Code" state={fieldState("code")} />}>
+          {onUpdate || onFieldUpdate ? (
+            <DraftInput
+              value={project.code ?? ""}
+              onCommit={(code) => commitField("code", { code })}
+              className="w-32 rounded border border-border bg-transparent px-2 py-1 font-mono text-xs uppercase outline-none"
+              placeholder="Code"
+              maxLength={16}
+            />
+          ) : project.code ? (
+            <ProjectCodeBadge code={project.code} />
+          ) : (
+            <span className="text-sm text-muted-foreground">No code</span>
+          )}
+        </PropertyRow>
         <PropertyRow
           label={<FieldLabel label="Description" state={fieldState("description")} />}
           alignStart
@@ -572,6 +599,23 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             />
           ) : (
             <StatusBadge status={project.status} />
+          )}
+        </PropertyRow>
+        <PropertyRow label={<FieldLabel label="Parent" state={fieldState("parent")} />}>
+          {onUpdate || onFieldUpdate ? (
+            <ProjectParentSelector
+              projects={allProjects}
+              value={project.parentId}
+              excludeProjectId={project.id}
+              onChange={(parentId) => commitField("parent", { parentId })}
+              className="max-w-full"
+            />
+          ) : parentProject ? (
+            <Link to={`/projects/${parentProject.urlKey}`} className="text-sm hover:underline">
+              {parentProject.name}
+            </Link>
+          ) : (
+            <span className="text-sm text-muted-foreground">No parent</span>
           )}
         </PropertyRow>
         <PropertyRow label={<FieldLabel label="Lead" state={fieldState("lead_agent")} />}>

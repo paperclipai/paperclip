@@ -41,12 +41,30 @@ const mockFeedbackService = vi.hoisted(() => ({
 
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
   );
   vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
   );
-  vi.doMock("../services/index.js", () => ({
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  const servicesIndexMock = () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     budgetService: () => mockBudgetService,
@@ -54,20 +72,41 @@ function registerModuleMocks() {
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
     logActivity: mockLogActivity,
-  }));
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
 }
 
-async function createApp(actor: Record<string, unknown>) {
+function resetCompanyRouteModules() {
   vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
   vi.doUnmock("../routes/companies.js");
+  vi.doUnmock("../routes/companies.ts");
   vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
   vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
   vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
   vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+}
+
+let companyRouteImportSeq = 0;
+
+async function createApp(actor: Record<string, unknown>) {
+  resetCompanyRouteModules();
   registerModuleMocks();
+  companyRouteImportSeq += 1;
+  const routeModulePath = `../routes/companies.ts?company-portability-routes-${companyRouteImportSeq}`;
   const [{ companyRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/companies.js"),
-    import("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/companies.ts")>,
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -82,12 +121,7 @@ async function createApp(actor: Record<string, unknown>) {
 
 describe("company portability routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/companies.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("../middleware/validate.js");
-    vi.doUnmock("../services/index.js");
+    resetCompanyRouteModules();
     registerModuleMocks();
     vi.resetAllMocks();
   });

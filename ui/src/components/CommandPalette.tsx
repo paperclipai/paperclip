@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { ProjectLabelPills } from "./ProjectLabelPills";
+import { ProjectCodeBadge } from "./ProjectCodeBadge";
 import { agentUrl, projectUrl } from "../lib/utils";
 
 export function CommandPalette() {
@@ -252,12 +253,13 @@ export function CommandPalette() {
               {projects.slice(0, 10).map((project) => (
                 <CommandItem
                   key={project.id}
-                  value={`${project.name} ${(project.labels ?? []).map((label) => label.name).join(" ")}`}
+                  value={`${project.name} ${project.code ?? ""} ${(project.labels ?? []).map((label) => label.name).join(" ")}`}
                   onSelect={() => go(projectUrl(project))}
                 >
                   <Hexagon className="mr-2 h-4 w-4" />
                   <span className="flex min-w-0 flex-1 items-center gap-2">
                     <span className="truncate">{project.name}</span>
+                    <ProjectCodeBadge code={project.code} />
                     <ProjectLabelPills labels={project.labels} variant="dense" />
                   </span>
                 </CommandItem>

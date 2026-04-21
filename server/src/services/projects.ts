@@ -13,7 +13,9 @@ import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
   hasNonAsciiContent,
+  isValidProjectCode,
   isUuidLike,
+  normalizeProjectCode,
   normalizeProjectUrlKey,
   type ProjectCodebase,
   type ProjectExecutionWorkspacePolicy,
@@ -22,7 +24,7 @@ import {
   type ProjectWorkspace,
   type WorkspaceRuntimeService,
 } from "@paperclipai/shared";
-import { unprocessable } from "../errors.js";
+import { conflict, unprocessable } from "../errors.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -51,6 +53,9 @@ type CreateWorkspaceInput = {
   isPrimary?: boolean;
 };
 type UpdateWorkspaceInput = Partial<CreateWorkspaceInput>;
+type DuplicateProjectOptions = {
+  name?: string | null;
+};
 
 interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> {
   urlKey: string;
@@ -367,6 +372,72 @@ async function syncProjectLabels(
   );
 }
 
+async function assertValidProjectParent(
+  dbOrTx: any,
+  input: {
+    companyId: string;
+    projectId?: string | null;
+    parentId?: string | null;
+  },
+) {
+  if (input.parentId === undefined || input.parentId === null) return;
+  if (input.projectId && input.parentId === input.projectId) {
+    throw unprocessable("Project cannot be its own parent");
+  }
+
+  const seen = new Set<string>();
+  let cursor: string | null = input.parentId;
+  while (cursor) {
+    if (input.projectId && cursor === input.projectId) {
+      throw unprocessable("Project cannot use one of its descendants as parent");
+    }
+    if (seen.has(cursor)) {
+      throw unprocessable("Project parent hierarchy contains a cycle");
+    }
+    seen.add(cursor);
+
+    const parent: { id: string; companyId: string; parentId: string | null } | null = await dbOrTx
+      .select({ id: projects.id, companyId: projects.companyId, parentId: projects.parentId })
+      .from(projects)
+      .where(eq(projects.id, cursor))
+      .then((rows: Array<{ id: string; companyId: string; parentId: string | null }>) => rows[0] ?? null);
+
+    if (!parent || parent.companyId !== input.companyId) {
+      throw unprocessable("Parent project must belong to the same company");
+    }
+    cursor = parent.parentId;
+  }
+}
+
+function normalizeProjectCodeForPersistence(value: string | null | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  const code = normalizeProjectCode(value);
+  if (code === null) return null;
+  if (!isValidProjectCode(code)) {
+    throw unprocessable("Project code can only contain A-Z and 0-9 and must be 16 characters or fewer");
+  }
+  return code;
+}
+
+async function assertProjectCodeAvailable(
+  dbOrTx: any,
+  input: {
+    companyId: string;
+    code: string | null | undefined;
+    projectId?: string | null;
+  },
+) {
+  if (!input.code) return;
+  const existing = await dbOrTx
+    .select({ id: projects.id })
+    .from(projects)
+    .where(and(eq(projects.companyId, input.companyId), eq(projects.code, input.code)))
+    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+  if (existing && existing.id !== input.projectId) {
+    throw conflict(`Project code ${input.code} is already used in this company`);
+  }
+}
+
 /** Resolve goalIds from input, handling the legacy goalId field. */
 function resolveGoalIds(data: { goalIds?: string[]; goalId?: string | null }): string[] | undefined {
   if (data.goalIds !== undefined) return data.goalIds;
@@ -386,6 +457,20 @@ function normalizeWorkspaceCwd(value: unknown): string | null {
   const cwd = readNonEmptyString(value);
   if (!cwd) return null;
   return cwd === REPO_ONLY_CWD_SENTINEL ? null : cwd;
+}
+
+function duplicateProjectExecutionWorkspacePolicy(
+  policy: Record<string, unknown> | null | undefined,
+  workspaceIdMap: Map<string, string>,
+): Record<string, unknown> | null {
+  if (!policy) return null;
+  const defaultWorkspaceId =
+    typeof policy.defaultProjectWorkspaceId === "string" ? policy.defaultProjectWorkspaceId : null;
+  if (!defaultWorkspaceId) return { ...policy };
+  return {
+    ...policy,
+    defaultProjectWorkspaceId: workspaceIdMap.get(defaultWorkspaceId) ?? null,
+  };
 }
 
 function deriveNameFromCwd(cwd: string): string {
@@ -541,6 +626,18 @@ export function projectService(db: Db) {
         .from(projects)
         .where(eq(projects.companyId, companyId));
       projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
+      const normalizedCode = normalizeProjectCodeForPersistence(projectData.code);
+      if (normalizedCode !== undefined) projectData.code = normalizedCode;
+      await assertProjectCodeAvailable(db, {
+        companyId,
+        code: projectData.code,
+        projectId: projectData.id ?? null,
+      });
+      await assertValidProjectParent(db, {
+        companyId,
+        projectId: projectData.id ?? null,
+        parentId: projectData.parentId,
+      });
 
       // Also write goalId to the legacy column (first goal or null)
       const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
@@ -564,6 +661,142 @@ export function projectService(db: Db) {
       return enriched!;
     },
 
+    duplicate: async (
+      id: string,
+      options: DuplicateProjectOptions = {},
+    ): Promise<ProjectWithGoals | null> => {
+      const source = await db
+        .select()
+        .from(projects)
+        .where(eq(projects.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!source) return null;
+
+      const [
+        sourceGoalLinks,
+        sourceLabelLinks,
+        sourceWorkspaceRows,
+        existingProjects,
+      ] = await Promise.all([
+        db
+          .select({ goalId: projectGoals.goalId })
+          .from(projectGoals)
+          .where(eq(projectGoals.projectId, id)),
+        db
+          .select({ labelId: projectLabels.labelId })
+          .from(projectLabels)
+          .where(eq(projectLabels.projectId, id)),
+        db
+          .select()
+          .from(projectWorkspaces)
+          .where(eq(projectWorkspaces.projectId, id))
+          .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id)),
+        db
+          .select({ id: projects.id, name: projects.name })
+          .from(projects)
+          .where(eq(projects.companyId, source.companyId)),
+      ]);
+
+      const requestedName = readNonEmptyString(options.name) ?? `${source.name} Copy`;
+      const duplicateName = resolveProjectNameForUniqueShortname(requestedName, existingProjects);
+      const primarySourceWorkspaceId = sourceWorkspaceRows.find((workspace) => workspace.isPrimary)?.id
+        ?? sourceWorkspaceRows[0]?.id
+        ?? null;
+
+      const createdRow = await db.transaction(async (tx) => {
+        const row = await tx
+          .insert(projects)
+          .values({
+            companyId: source.companyId,
+            parentId: source.parentId,
+            goalId: source.goalId,
+            name: duplicateName,
+            description: source.description,
+            status: "planned",
+            leadAgentId: source.leadAgentId,
+            targetDate: source.targetDate,
+            color: source.color,
+            env: source.env,
+            executionWorkspacePolicy: duplicateProjectExecutionWorkspacePolicy(
+              source.executionWorkspacePolicy,
+              new Map(),
+            ),
+            archivedAt: null,
+            pauseReason: null,
+            pausedAt: null,
+          })
+          .returning()
+          .then((rows) => rows[0]!);
+
+        if (sourceGoalLinks.length > 0) {
+          await tx.insert(projectGoals).values(
+            sourceGoalLinks.map((link) => ({
+              companyId: source.companyId,
+              projectId: row.id,
+              goalId: link.goalId,
+            })),
+          );
+        }
+
+        if (sourceLabelLinks.length > 0) {
+          await tx.insert(projectLabels).values(
+            sourceLabelLinks.map((link) => ({
+              companyId: source.companyId,
+              projectId: row.id,
+              labelId: link.labelId,
+            })),
+          );
+        }
+
+        const workspaceIdMap = new Map<string, string>();
+        for (const workspace of sourceWorkspaceRows) {
+          const copiedWorkspace = await tx
+            .insert(projectWorkspaces)
+            .values({
+              companyId: source.companyId,
+              projectId: row.id,
+              name: workspace.name,
+              sourceType: workspace.sourceType,
+              cwd: workspace.cwd,
+              repoUrl: workspace.repoUrl,
+              repoRef: workspace.repoRef,
+              defaultRef: workspace.defaultRef,
+              visibility: workspace.visibility,
+              setupCommand: workspace.setupCommand,
+              cleanupCommand: workspace.cleanupCommand,
+              remoteProvider: workspace.remoteProvider,
+              remoteWorkspaceRef: workspace.remoteWorkspaceRef,
+              sharedWorkspaceKey: workspace.sharedWorkspaceKey,
+              metadata: workspace.metadata,
+              isPrimary: workspace.id === primarySourceWorkspaceId,
+            })
+            .returning({ id: projectWorkspaces.id })
+            .then((rows) => rows[0] ?? null);
+          if (copiedWorkspace) workspaceIdMap.set(workspace.id, copiedWorkspace.id);
+        }
+
+        if (!source.executionWorkspacePolicy) return row;
+
+        return tx
+          .update(projects)
+          .set({
+            executionWorkspacePolicy: duplicateProjectExecutionWorkspacePolicy(
+              source.executionWorkspacePolicy,
+              workspaceIdMap,
+            ),
+            updatedAt: new Date(),
+          })
+          .where(eq(projects.id, row.id))
+          .returning()
+          .then((rows) => rows[0] ?? row);
+      });
+
+      const [withGoals] = await attachGoals(db, [createdRow]);
+      const [withLabels] = withGoals ? await attachLabels(db, [withGoals]) : [];
+      const [enriched] = withLabels ? await attachWorkspaces(db, [withLabels]) : [];
+      return enriched ?? null;
+    },
+
     update: async (
       id: string,
       data: Partial<typeof projects.$inferInsert> & { goalIds?: string[]; labelIds?: string[] },
@@ -571,12 +804,17 @@ export function projectService(db: Db) {
       const { goalIds: inputGoalIds, labelIds: inputLabelIds, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
       const existingProject = await db
-        .select({ id: projects.id, companyId: projects.companyId, name: projects.name })
+        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, parentId: projects.parentId })
         .from(projects)
         .where(eq(projects.id, id))
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
       await assertValidProjectLabelIds(existingProject.companyId, inputLabelIds ?? [], db);
+      await assertValidProjectParent(db, {
+        companyId: existingProject.companyId,
+        projectId: existingProject.id,
+        parentId: projectData.parentId,
+      });
 
       if (projectData.name !== undefined) {
         const existingShortname = normalizeProjectUrlKey(existingProject.name);
@@ -590,6 +828,15 @@ export function projectService(db: Db) {
             excludeProjectId: id,
           });
         }
+      }
+      const normalizedCode = normalizeProjectCodeForPersistence(projectData.code);
+      if (normalizedCode !== undefined) {
+        projectData.code = normalizedCode;
+        await assertProjectCodeAvailable(db, {
+          companyId: existingProject.companyId,
+          code: normalizedCode,
+          projectId: existingProject.id,
+        });
       }
 
       // Keep legacy goalId column in sync

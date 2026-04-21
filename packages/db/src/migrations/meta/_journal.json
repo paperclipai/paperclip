@@ -477,6 +477,20 @@
       "when": 1776084034244,
       "tag": "0067_spooky_ultragirl",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1776772605294,
+      "tag": "0068_dizzy_the_fallen",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1776774346677,
+      "tag": "0069_faulty_iron_man",
+      "breakpoints": true
     }
   ]
 }

@@ -22,6 +22,8 @@ export const projectsApi = {
   get: (id: string, companyId?: string) => api.get<Project>(projectPath(id, companyId)),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Project>(`/companies/${companyId}/projects`, data),
+  duplicate: (id: string, data: Record<string, unknown> = {}, companyId?: string) =>
+    api.post<Project>(projectPath(id, companyId, "/duplicate"), data),
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
     api.patch<Project>(projectPath(id, companyId), data),
   listWorkspaces: (projectId: string, companyId?: string) =>

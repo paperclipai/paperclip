@@ -59,6 +59,7 @@ import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./Ma
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { ProjectLabelPills } from "./ProjectLabelPills";
+import { ProjectCodeBadge } from "./ProjectCodeBadge";
 import { formatIssueDueDateShort } from "../lib/issue-due-date";
 
 const DRAFT_KEY = "paperclip:issue-draft";
@@ -952,7 +953,7 @@ export function NewIssueDialog() {
       orderedProjects.map((project) => ({
         id: project.id,
         label: project.name,
-        searchText: `${project.description ?? ""} ${(project.labels ?? []).map((label) => label.name).join(" ")}`,
+        searchText: `${project.code ?? ""} ${project.description ?? ""} ${(project.labels ?? []).map((label) => label.name).join(" ")}`,
       })),
     [orderedProjects],
   );
@@ -1254,6 +1255,7 @@ export function NewIssueDialog() {
                         style={{ backgroundColor: currentProject.color ?? "#6366f1" }}
                       />
                       <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                      <ProjectCodeBadge code={currentProject.code} />
                       <ProjectLabelPills labels={currentProject.labels} variant="dense" />
                     </>
                   ) : (
@@ -1270,6 +1272,7 @@ export function NewIssueDialog() {
                         style={{ backgroundColor: project?.color ?? "#6366f1" }}
                       />
                       <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                      <ProjectCodeBadge code={project?.code} />
                       <ProjectLabelPills labels={project?.labels} variant="dense" />
                     </>
                   );

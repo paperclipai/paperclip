@@ -74,29 +74,67 @@ const mockRolloutService = vi.hoisted(() => ({
   applyRelease: vi.fn(),
 }));
 
+function resetCompanyRolloutRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("../services/company-rollouts.js");
+  vi.doUnmock("../services/company-rollouts.ts");
+  vi.doUnmock("../routes/company-rollouts.js");
+  vi.doUnmock("../routes/company-rollouts.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+}
+
 function registerRouteMocks() {
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
   vi.doMock("../services/company-rollouts.js", () => ({
+    companyRolloutService: () => mockRolloutService,
+  }));
+  vi.doMock("../services/company-rollouts.ts", () => ({
     companyRolloutService: () => mockRolloutService,
   }));
 }
 
+let companyRolloutRouteImportSeq = 0;
+
 async function createApp(actor: Record<string, unknown>) {
-  vi.resetModules();
-  vi.doUnmock("../services/company-rollouts.js");
-  vi.doUnmock("../routes/company-rollouts.js");
-  vi.doUnmock("../routes/authz.js");
-  vi.doUnmock("../middleware/index.js");
-  vi.doUnmock("../middleware/validate.js");
-  vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
-  );
-  vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
-  );
+  resetCompanyRolloutRouteModules();
   registerRouteMocks();
+  companyRolloutRouteImportSeq += 1;
+  const routeModulePath = `../routes/company-rollouts.ts?company-rollouts-routes-${companyRolloutRouteImportSeq}`;
   const [{ errorHandler }, { companyRolloutRoutes }] = await Promise.all([
-    import("../middleware/index.js"),
-    import("../routes/company-rollouts.js"),
+    import("../middleware/index.ts"),
+    import(routeModulePath) as Promise<typeof import("../routes/company-rollouts.ts")>,
   ]);
   const app = express();
   app.use(express.json());
@@ -111,12 +149,7 @@ async function createApp(actor: Record<string, unknown>) {
 
 describe("company rollout routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/company-rollouts.js");
-    vi.doUnmock("../routes/company-rollouts.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("../middleware/validate.js");
+    resetCompanyRolloutRouteModules();
     registerRouteMocks();
     vi.clearAllMocks();
     mockRolloutService.createRelease.mockResolvedValue(release);

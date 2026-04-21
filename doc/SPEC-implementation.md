@@ -179,7 +179,9 @@ Invariant: at least one root `company` level goal per company.
 
 - `id` uuid pk
 - `company_id` uuid fk not null
+- `parent_id` uuid fk `projects.id` null
 - `goal_id` uuid fk `goals.id` null
+- `code` text null
 - `name` text not null
 - `description` text null
 - `status` enum: `backlog | planned | in_progress | completed | cancelled`
@@ -189,6 +191,9 @@ Invariant: at least one root `company` level goal per company.
 
 Invariant:
 
+- parent project must be in the same company
+- project parent hierarchy must not contain self-parenting or cycles
+- non-null project codes are normalized to uppercase `A-Z`/`0-9` values and are unique per company
 - project env is merged into run environment for issues in that project and overrides conflicting agent env keys before Paperclip runtime-owned keys are injected
 
 ### 7.5.1 Project context profiles and sources
@@ -388,6 +393,8 @@ Operational policy:
 - `issues(company_id, assignee_agent_id, status)`
 - `issues(company_id, parent_id)`
 - `issues(company_id, project_id)`
+- `projects(company_id, parent_id)`
+- `projects(company_id, code)` unique where `code is not null`
 - `cost_events(company_id, occurred_at)`
 - `cost_events(company_id, agent_id, occurred_at)`
 - `heartbeat_runs(company_id, agent_id, started_at desc)`

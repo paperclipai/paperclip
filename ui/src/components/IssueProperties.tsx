@@ -25,6 +25,7 @@ import { AgentIcon } from "./AgentIconPicker";
 import { CompanyLabelEditor } from "./CompanyLabelEditor";
 import { LabelPills } from "./LabelPills";
 import { ProjectLabelPills } from "./ProjectLabelPills";
+import { ProjectCodeBadge } from "./ProjectCodeBadge";
 import { IssueDueBadge } from "./IssueDueBadge";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
@@ -629,6 +630,7 @@ export function IssueProperties({
         style={{ backgroundColor: orderedProjects.find((p) => p.id === issue.projectId)?.color ?? "#6366f1" }}
       />
       <span className="min-w-0 flex-1 truncate text-sm">{projectName(issue.projectId)}</span>
+      <ProjectCodeBadge code={orderedProjects.find((project) => project.id === issue.projectId)?.code} />
       <ProjectLabelPills
         labels={orderedProjects.find((project) => project.id === issue.projectId)?.labels}
         variant="dense"
@@ -673,7 +675,7 @@ export function IssueProperties({
           .filter((p) => {
             if (!projectSearch.trim()) return true;
             const q = projectSearch.toLowerCase();
-            return `${p.name} ${(p.labels ?? []).map((label) => label.name).join(" ")}`.toLowerCase().includes(q);
+            return `${p.name} ${p.code ?? ""} ${(p.labels ?? []).map((label) => label.name).join(" ")}`.toLowerCase().includes(q);
           })
           .map((p) => (
           <button
@@ -701,6 +703,7 @@ export function IssueProperties({
               style={{ backgroundColor: p.color ?? "#6366f1" }}
             />
             <span className="min-w-0 flex-1 truncate">{p.name}</span>
+            <ProjectCodeBadge code={p.code} />
             <ProjectLabelPills labels={p.labels} variant="dense" />
           </button>
         ))}

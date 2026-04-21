@@ -863,6 +863,7 @@ export function companyRolloutService(db: Db) {
       if (action?.action !== "create" && action?.action !== "update") continue;
       const patch = {
         name: manifestProject.name,
+        code: manifestProject.code,
         description: manifestProject.description,
         leadAgentId: manifestProject.leadAgentSlug ? ids.agents.get(manifestProject.leadAgentSlug) ?? null : null,
         targetDate: manifestProject.targetDate,
@@ -888,6 +889,21 @@ export function companyRolloutService(db: Db) {
         targetEntityType: "project",
         targetEntityId: project.id,
       });
+    }
+
+    for (const manifestProject of release.manifest.projects) {
+      const action = actionByKey.get(manifestProject.slug);
+      if (action?.action !== "create" && action?.action !== "update") continue;
+      const projectId = ids.projects.get(manifestProject.slug) ?? action.targetEntityId ?? null;
+      if (!projectId) continue;
+      const parentId = manifestProject.parentSlug
+        ? ids.projects.get(manifestProject.parentSlug)
+          ?? actionByKey.get(manifestProject.parentSlug)?.targetEntityId
+          ?? null
+        : null;
+      const updated = await projects.update(projectId, { parentId });
+      if (!updated) throw unprocessable(`Project ${manifestProject.slug} parent could not be applied.`);
+      ids.projects.set(manifestProject.slug, updated.id);
     }
   }
 
