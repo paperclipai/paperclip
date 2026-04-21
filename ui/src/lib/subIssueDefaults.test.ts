@@ -61,6 +61,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     executionWorkspaceId: null,
     executionWorkspacePreference: "shared_workspace",
     executionWorkspaceSettings: null,
+    allowOutsideExecutionWindow: false,
     currentExecutionWorkspace: null,
     startedAt: null,
     completedAt: null,

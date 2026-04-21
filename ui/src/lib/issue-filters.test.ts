@@ -32,6 +32,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     executionWorkspaceId: null,
     executionWorkspacePreference: null,
     executionWorkspaceSettings: null,
+    allowOutsideExecutionWindow: false,
     startedAt: null,
     completedAt: null,
     cancelledAt: null,
