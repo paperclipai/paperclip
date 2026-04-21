@@ -710,14 +710,142 @@ async function fetchTaskStatus(
   }
 }
 
+// WORKTREE_PATCH_V3 (CEO/Board 2026-04-21): fail-loud on uncommitted work.
+//
+// Posts a comment on a Paperclip issue. Used by finalizeWorktree when it
+// detects an agent session exited with uncommitted or untracked files in
+// its worktree — the commit is an intentional authorial act the agent
+// must perform; the adapter refuses to silently drop the work AND refuses
+// to auto-commit on the agent's behalf (see V3 rationale in
+// finalizeWorktree). Instead, the adapter posts a loud comment on the
+// issue so downstream agents know why their worktree has stranded files.
+//
+// Best-effort. Failure to post a comment (API unreachable, no taskId, no
+// auth) logs to stderr and moves on; the worktree preservation path
+// still runs.
+async function postTaskComment(
+  taskId: string,
+  body: string,
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
+): Promise<boolean> {
+  const apiUrl = (process.env.PAPERCLIP_API_URL || "").trim();
+  const apiKey = (process.env.PAPERCLIP_API_KEY || "").trim();
+  if (!apiUrl || !apiKey) {
+    await onLog("stderr", `[paperclip-worktree] Skipping fail-loud comment: PAPERCLIP_API_URL/KEY not set in adapter env.\n`);
+    return false;
+  }
+  const payload = JSON.stringify({ body });
+  const res = spawnSync(
+    "curl",
+    [
+      "-sS",
+      "--max-time", "10",
+      "-X", "POST",
+      "-H", `Authorization: Bearer ${apiKey}`,
+      "-H", "Content-Type: application/json",
+      "-d", payload,
+      `${apiUrl}/api/issues/${encodeURIComponent(taskId)}/comments`,
+    ],
+    { encoding: "utf-8" },
+  );
+  if (res.status !== 0) {
+    await onLog("stderr", `[paperclip-worktree] fail-loud comment post failed (exit ${res.status}): ${(res.stderr || "").trim()}\n`);
+    return false;
+  }
+  await onLog("stdout", `[paperclip-worktree] Posted fail-loud comment on issue ${taskId}.\n`);
+  return true;
+}
+
 async function finalizeWorktree(
   wkt: ProvisionedWorktree,
   wkCfg: WorktreeConfig,
-  opts: { cleanup: boolean; removeClaudeSessionDir: boolean },
+  opts: { cleanup: boolean; removeClaudeSessionDir: boolean; taskId: string | null },
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
 ): Promise<void> {
   try {
+    // 0. WORKTREE_PATCH_V3: fail-loud on uncommitted work.
+    //
+    // Design principle: commits are an intentional authorial act by the
+    // agent. The adapter does not auto-commit — doing so would ship scratch
+    // files, half-written drafts, and content the agent explicitly chose
+    // not to commit. But the adapter must not silently drop the work
+    // either; that's how CTO's spec on issue bb0ba991 (2026-04-21) got
+    // orphaned and EM flailed looking for it. Instead: if we find
+    // uncommitted/untracked changes at session exit, we (a) log to stderr,
+    // (b) post a comment on the Paperclip issue naming the stranded
+    // files, (c) force-preserve the worktree so the next wake can recover
+    // by committing + PR'ing via the agent's pr skill flow.
+    const statusRes = runGit(
+      wkt.worktreePath,
+      ["status", "--porcelain"],
+      true,
+    );
+    const statusLines = statusRes.ok ? statusRes.stdout.trim().split("\n").filter((l) => l.length > 0) : [];
+    const hasUncommitted = statusLines.length > 0;
+
+    if (hasUncommitted) {
+      const displayLines = statusLines.slice(0, 30);
+      const truncatedNote = statusLines.length > 30 ? `\n  ... (and ${statusLines.length - 30} more)` : "";
+      const fileList = displayLines.map((l) => `  ${l}`).join("\n");
+
+      await onLog(
+        "stderr",
+        `[paperclip-worktree] FAIL-LOUD: ${wkt.branch} has uncommitted work at session exit. Adapter will not auto-commit; preserving worktree for next wake.\n${fileList}${truncatedNote}\n`,
+      );
+
+      // Force-preserve the worktree regardless of what the caller computed.
+      // The next wake on this (agent, task) will reuse the worktree and the
+      // agent can recover via its pr skill flow.
+      opts.cleanup = false;
+      opts.removeClaudeSessionDir = false;
+
+      // Post a comment on the Paperclip issue so the next wake (and any
+      // downstream agent like EM) understands why the expected file isn't
+      // on master.
+      if (opts.taskId) {
+        const commentBody = [
+          `### ⚠️ Adapter fail-loud: uncommitted work at session exit`,
+          ``,
+          `The \`${wkCfg.agentName}\` session on this issue exited with uncommitted or untracked files in its worktree. The adapter is not auto-committing — commits are an intentional author act and must be made by the agent via \`git add\` + \`git commit\` + the \`pr\` skill's appropriate flow.`,
+          ``,
+          `**Files not committed** (\`git status --porcelain\` output):`,
+          ``,
+          "```",
+          displayLines.join("\n") + truncatedNote,
+          "```",
+          ``,
+          `**Worktree preserved at:** \`${wkt.worktreePath}\``,
+          `**Branch:** \`${wkt.branch}\``,
+          ``,
+          `**Action required on the next wake of this (agent, task):**`,
+          `1. Verify the file list above matches what you intended to write.`,
+          `2. \`cd "$PAPERCLIP_WORKTREE" && git add <explicit paths> && git commit -m "<type>: <summary>"\``,
+          `3. Load the \`pr\` skill → Flow 3 (vault) or Flow 1 (iOS code) as appropriate.`,
+          `4. If any prior handoff PATCH referenced a file at this path, re-verify the path now that the file will exist on master after the PR merges.`,
+          ``,
+          `If the uncommitted files are unintentional scratch/output that should be discarded:`,
+          `1. \`cd "$PAPERCLIP_WORKTREE" && git clean -fdx\``,
+          `2. Continue with normal session work.`,
+          ``,
+          `This comment is posted by the Paperclip \`claude_local\` adapter's fail-loud safety net (WORKTREE_PATCH_V3). Your previous session did not explicitly commit or PR the work before exit.`,
+        ].join("\n");
+
+        await postTaskComment(opts.taskId, commentBody, onLog);
+      } else {
+        await onLog(
+          "stderr",
+          `[paperclip-worktree] No taskId available; skipping Paperclip comment. Files remain stranded in worktree ${wkt.worktreePath}.\n`,
+        );
+      }
+    }
+
     // 1. Detect commits: compare HEAD to origin/<base>.
+    //
+    // A session CAN have both committed and uncommitted work simultaneously
+    // (e.g., the agent committed some files and forgot others). In that case
+    // we push + PR the committed work normally — the agent's intentional
+    // commits deserve to land — and the fail-loud comment above covers
+    // the uncommitted tail.
     const headRes = runGit(wkt.worktreePath, ["rev-parse", "HEAD"], true);
     const baseRes = runGit(wkt.repoRoot, ["rev-parse", `origin/${wkt.base}`], true);
     const hasCommits = headRes.ok && baseRes.ok && headRes.stdout.length > 0 && headRes.stdout !== baseRes.stdout;
@@ -1237,14 +1365,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await finalizeWorktree(
           worktreeResult.primary,
           worktreeResult.config,
-          { cleanup, removeClaudeSessionDir: cleanup },
+          { cleanup, removeClaudeSessionDir: cleanup, taskId: worktreeResult.taskId },
           onLog,
         );
         if (worktreeResult.secondary) {
           await finalizeWorktree(
             worktreeResult.secondary,
             worktreeResult.config,
-            { cleanup, removeClaudeSessionDir: false }, // secondary has no Claude session
+            { cleanup, removeClaudeSessionDir: false, taskId: worktreeResult.taskId }, // secondary has no Claude session
             onLog,
           );
         }
