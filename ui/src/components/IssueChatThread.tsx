@@ -111,6 +111,7 @@ interface IssueChatMessageContext {
   onCancelQueued?: (commentId: string) => void;
   interruptingQueuedRunId?: string | null;
   onImageClick?: (src: string) => void;
+  resolveImageSrc?: (src: string) => string | null;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -252,6 +253,7 @@ interface IssueChatThreadProps {
   interruptingQueuedRunId?: string | null;
   stoppingRunId?: string | null;
   onImageClick?: (src: string) => void;
+  resolveImageSrc?: (src: string) => string | null;
   composerRef?: Ref<IssueChatComposerHandle>;
 }
 
@@ -460,13 +462,14 @@ function commentDateLabel(date: Date | string | undefined): string {
 }
 
 function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
-  const { onImageClick } = useContext(IssueChatCtx);
+  const { onImageClick, resolveImageSrc } = useContext(IssueChatCtx);
   return (
     <MarkdownBody
       className="text-sm leading-6"
       style={recessed ? { opacity: 0.55 } : undefined}
       softBreaks
       onImageClick={onImageClick}
+      resolveImageSrc={resolveImageSrc}
     >
       {text}
     </MarkdownBody>
@@ -1952,6 +1955,7 @@ export function IssueChatThread({
   interruptingQueuedRunId = null,
   stoppingRunId = null,
   onImageClick,
+  resolveImageSrc,
   composerRef,
 }: IssueChatThreadProps) {
   const location = useLocation();
@@ -2111,6 +2115,7 @@ export function IssueChatThread({
       onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
+      resolveImageSrc,
     }),
     [
       feedbackVoteByTargetId,
@@ -2128,6 +2133,7 @@ export function IssueChatThread({
       onCancelQueued,
       interruptingQueuedRunId,
       onImageClick,
+      resolveImageSrc,
     ],
   );
 

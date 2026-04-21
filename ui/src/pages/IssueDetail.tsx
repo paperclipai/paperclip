@@ -527,6 +527,7 @@ type IssueDetailChatTabProps = {
   onCancelQueued: (commentId: string) => void;
   interruptingQueuedRunId: string | null;
   onImageClick: (src: string) => void;
+  resolveImageSrc?: (src: string) => string | null;
 };
 
 const IssueDetailChatTab = memo(function IssueDetailChatTab({
@@ -561,6 +562,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onCancelQueued,
   interruptingQueuedRunId,
   onImageClick,
+  resolveImageSrc,
 }: IssueDetailChatTabProps) {
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
@@ -715,6 +717,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             }
           : undefined}
         onImageClick={onImageClick}
+        resolveImageSrc={resolveImageSrc}
       />
     </div>
   );
@@ -1971,6 +1974,17 @@ export function IssueDetail() {
   const imageAttachments = attachmentList.filter(isImageAttachment);
   const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
 
+  const resolveImageSrcForChat = useCallback(
+    (src: string): string | null => {
+      if (!src) return null;
+      if (/^(https?:|data:|blob:|\/)/i.test(src)) return null;
+      const bare = src.split(/[?#]/)[0].split("/").pop() ?? src;
+      const match = imageAttachments.find((a) => a.originalFilename === bare);
+      return match ? match.contentPath : null;
+    },
+    [imageAttachments],
+  );
+
   const handleChatImageClick = useCallback(
     (src: string) => {
       // Try exact contentPath match first
@@ -1981,6 +1995,11 @@ export function IssueDetail() {
         if (assetMatch) {
           idx = imageAttachments.findIndex((a) => a.assetId === assetMatch[1]);
         }
+      }
+      if (idx < 0) {
+        // Try matching by filename (bare or resolved path)
+        const bare = src.split(/[?#]/)[0].split("/").pop() ?? src;
+        idx = imageAttachments.findIndex((a) => a.originalFilename === bare);
       }
       if (idx >= 0) {
         setGalleryIndex(idx);
@@ -2653,6 +2672,7 @@ export function IssueDetail() {
               onCancelQueued={handleCancelQueuedComment}
               interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
               onImageClick={handleChatImageClick}
+              resolveImageSrc={resolveImageSrcForChat}
             />
           ) : null}
         </TabsContent>
