@@ -6,11 +6,16 @@ export const agentConfigurationDoc = `# LM Studio Adapter Konfiguration
 
 ## Felder
 
-- **url** (string): LM Studio Server-URL. Default: \`http://localhost:1234\`
-- **defaultModel** (string): Standard-Modell für alle Agents mit diesem Adapter.
-- **model** (string, optional): Modell-Override pro Agent. Überschreibt defaultModel.
-- **timeoutMs** (number): Timeout in Millisekunden. Default: \`120000\` (2 Minuten).
-- **streamingEnabled** (boolean): Token-Streaming aktivieren. Default: \`true\`.
+- **url** (string): Primary LM-Studio-URL. Default: \`http://localhost:1234\`
+- **defaultModel** (string): Primary-Modell.
+- **model** (string, optional): Modell-Override pro Agent.
+- **fallbackUrl** (string, optional): Fallback LM-Studio-URL. Leer = kein Fallback.
+- **fallbackModel** (string, optional): Fallback-Modellname. Leer = identisch mit defaultModel.
+- **probeTimeoutMs** (number): Health-Probe-Timeout vor jedem Heartbeat. Default: \`2000\`.
+- **timeoutMs** (number): Voller Call-Timeout. Default: \`120000\`.
+- **streamingEnabled** (boolean): Token-Streaming. Default: \`true\`.
+- **maxIterations** (number): Max Tool-Iterationen pro Heartbeat. Default: \`25\`.
+- **maxRunSeconds** (number): Wallclock-Budget pro Run. Default: \`300\`.
 `;
 
 export { createServerAdapter } from "./server/index.js";

@@ -65,6 +65,25 @@ export function createServerAdapter(): ServerAdapterModule {
                 : [{ value: "", label: "(LM Studio nicht erreichbar)" }],
           },
           {
+            key: "fallbackUrl",
+            label: "Fallback LM Studio URL (optional)",
+            type: "text" as const,
+            hint: "Zweite LM-Studio-Instanz (z.B. Mac), die genutzt wird, wenn der Primary nicht erreichbar ist. Leer = kein Fallback.",
+          },
+          {
+            key: "fallbackModel",
+            label: "Fallback-Modell (optional)",
+            type: "text" as const,
+            hint: "Modellname auf dem Fallback-Host. Leer = gleicher Name wie Primary-Modell.",
+          },
+          {
+            key: "probeTimeoutMs",
+            label: "Health-Probe Timeout (ms)",
+            type: "number" as const,
+            default: 2000,
+            hint: "Timeout für den kurzen Health-Check vor jedem Heartbeat. Bestimmt, wie schnell der Fallback greift, wenn der Primary-Host aus ist.",
+          },
+          {
             key: "timeoutMs",
             label: "Timeout (ms)",
             type: "number" as const,
