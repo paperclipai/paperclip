@@ -5,6 +5,7 @@ import {
   agents,
   agentWakeupRequests,
   agentRuntimeState,
+  companySkills,
   companies,
   createDb,
   heartbeatRunEvents,
@@ -58,6 +59,7 @@ describeEmbeddedPostgres("heartbeat execution window policy", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
@@ -168,7 +170,7 @@ describeEmbeddedPostgres("heartbeat execution window policy", () => {
       invocationSource: "on_demand",
       triggerDetail: "manual",
       status: "running",
-      startedAt: new Date("2026-03-19T01:00:00.000Z"),
+      startedAt: new Date(now.getTime() - 10_000),
       contextSnapshot: {},
     });
 
@@ -273,6 +275,7 @@ describeEmbeddedPostgres("heartbeat execution window policy", () => {
           heartbeat: {
             enabled: true,
             intervalSec: 60,
+            maxConcurrentRuns: 1,
             executionWindow: buildClosedWindow(now),
           },
         },
@@ -387,6 +390,7 @@ describeEmbeddedPostgres("heartbeat execution window policy", () => {
           heartbeat: {
             enabled: true,
             intervalSec: 60,
+            maxConcurrentRuns: 1,
             executionWindow: openWindow,
           },
         },
