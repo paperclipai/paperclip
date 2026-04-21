@@ -20,7 +20,7 @@ export function registerAnonymizeRoute(app: FastifyInstance, opts: AnonymizeRout
       return reply.code(400).send({ error: "bad_request", details: parsed.error.flatten() });
     }
     const result = await opts.dpo.anonymize(parsed.data);
-    if ("blocked" in result && result.blocked) {
+    if ("blocked" in result) {
       return { blocked: true, reason: result.reason };
     }
     return {
