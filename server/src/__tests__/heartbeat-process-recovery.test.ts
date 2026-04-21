@@ -926,4 +926,89 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("skips recovery enqueue when a recent queued/run heartbeat_run exists for the same issue (DLD-3430 phantom wake guard)", async () => {
+    // When a routine execution handler is in-flight for an issue, the watchdog must NOT
+    // enqueue a recovery wakeup. The routine sets executionRunId AFTER the run completes,
+    // so the hasActiveExecutionPath check passes (no active run found) — but the agent
+    // is already working on the issue via the in-flight run.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const failedRunId = randomUUID();
+    const inFlightRunId = randomUUID();
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Ceo",
+      role: "ceo",
+      status: "idle",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // The failed run that would normally trigger recovery
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      contextSnapshot: { issueId, wakeReason: "issue_assignment_recovery" },
+      startedAt: now,
+      finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+      errorCode: "process_lost",
+      error: "run failed before issue advanced",
+    });
+
+    // A RECENT in-flight run for the same issue (e.g. routine execution handler picked it up)
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+    await db.insert(heartbeatRuns).values({
+      id: inFlightRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId, wakeReason: "routine_execution" },
+      startedAt: fiveMinAgo,
+      createdAt: fiveMinAgo,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Paperclip Daily Self-improvement",
+      status: "todo",
+      assigneeAgentId: agentId,
+      identifier: `${issuePrefix}-3430`,
+      issueNumber: 3430,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Must NOT enqueue recovery — the in-flight run handles the issue
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+
+    // Verify no extra run was created for recovery
+    const allRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    expect(allRuns).toHaveLength(2); // only the two we inserted
+  });
 });

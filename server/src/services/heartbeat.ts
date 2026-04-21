@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -3738,6 +3738,29 @@ export function heartbeatService(db: Db) {
       }
 
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // Guard: skip if there's a recent queued/running heartbeat_run for this issue.
+      // Without this, the watchdog enqueues a recovery wakeup for an issue whose routine
+      // execution handler has already started a follow-up run — but hasn't yet set
+      // executionRunId (it gets set after the run completes). The phantom recovery wake
+      // fires while the agent is already in-flight (DLD-3430 cascade).
+      const recentActiveRunCutoff = new Date(Date.now() - 30 * 60 * 1000);
+      const [recentActiveRun] = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, issue.companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+            gte(heartbeatRuns.createdAt, recentActiveRunCutoff),
+          ),
+        )
+        .limit(1);
+      if (recentActiveRun) {
         result.skipped += 1;
         continue;
       }
