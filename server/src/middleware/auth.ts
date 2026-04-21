@@ -99,8 +99,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const general = await instanceSettings.getGeneral();
-    if (general.boardApiKeysEnabled) {
+    const boardApiKeysEnabled = await instanceSettings.getBoardApiKeysEnabled();
+    if (boardApiKeysEnabled) {
       const boardKey = await boardAuth.findBoardApiKeyByToken(token);
       if (boardKey) {
         const access = await boardAuth.resolveBoardAccess(boardKey.userId);
