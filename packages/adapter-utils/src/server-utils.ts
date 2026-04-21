@@ -830,6 +830,17 @@ export function renderPaperclipWakePrompt(
     );
   }
 
+  if (
+    normalized.reason === "issue_assignment_recovery" ||
+    normalized.reason === "issue_continuation_needed"
+  ) {
+    lines.push(
+      "This wake exists because the previous execution path ended before the issue reached a terminal state.",
+      "Resume the current issue first. If the remaining work will not fit in one heartbeat, narrow the scope, leave a progress comment, and split or delegate the follow-up before you hit the timeout again.",
+      "",
+    );
+  }
+
   if (normalized.comments.length > 0) {
     lines.push("New comments in order:");
   }

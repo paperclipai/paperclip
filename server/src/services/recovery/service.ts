@@ -1972,16 +1972,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
-  async function reconcileStrandedAssignedIssues() {
+  async function reconcileStrandedAssignedIssues(opts?: { issueIds?: string[] }) {
+    const scopedIssueIds = [
+      ...new Set(
+        (opts?.issueIds ?? []).flatMap((value) => {
+          const normalized = readNonEmptyString(value);
+          return normalized ? [normalized] : [];
+        }),
+      ),
+    ];
     const candidates = await db
       .select()
       .from(issues)
       .where(
-        and(
-          isNull(issues.assigneeUserId),
-          inArray(issues.status, ["todo", "in_progress"]),
-          sql`${issues.assigneeAgentId} is not null`,
-        ),
+        scopedIssueIds.length > 0
+          ? and(
+            isNull(issues.assigneeUserId),
+            inArray(issues.status, ["todo", "in_progress"]),
+            sql`${issues.assigneeAgentId} is not null`,
+            inArray(issues.id, scopedIssueIds),
+          )
+          : and(
+            isNull(issues.assigneeUserId),
+            inArray(issues.status, ["todo", "in_progress"]),
+            sql`${issues.assigneeAgentId} is not null`,
+          ),
       );
 
     const result = {

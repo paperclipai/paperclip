@@ -1189,6 +1189,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               numberHint={help.intervalSec}
               showNumber={val!.heartbeatEnabled}
             />
+            <Field label="Timeout (sec)" hint={help.timeoutSec}>
+              <input
+                type="number"
+                className={inputClass}
+                value={val!.timeoutSec}
+                onChange={(e) => set!({ timeoutSec: Number(e.target.value) })}
+              />
+            </Field>
+            <Field label="Interrupt grace period (sec)" hint={help.graceSec}>
+              <input
+                type="number"
+                className={inputClass}
+                value={val!.graceSec}
+                onChange={(e) => set!({ graceSec: Number(e.target.value) })}
+              />
+            </Field>
           </div>
         </div>
       ) : !isCreate ? (
