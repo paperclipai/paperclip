@@ -289,6 +289,22 @@ export interface AdapterConfigSchema {
   fields: ConfigFieldSchema[];
 }
 
+// ---------------------------------------------------------------------------
+// Compression configuration
+// ---------------------------------------------------------------------------
+
+export interface CompressionConfig {
+  enabled: boolean;
+  caveman?: {
+    enabled: boolean;
+    intensity: 'lite' | 'full' | 'ultra';
+    preserveCodeBlocks: boolean;
+  };
+  removeApiNotes?: boolean;
+  removeBootstrap?: boolean;
+  summarizeInstructions?: boolean;
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;

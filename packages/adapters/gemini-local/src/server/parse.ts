@@ -101,8 +101,18 @@ export function parseGeminiJsonl(stdout: string) {
       messages.push(...collectMessageText(event.message));
       const messageObj = parseObject(event.message);
       const content = Array.isArray(messageObj.content) ? messageObj.content : [];
+
       for (const partRaw of content) {
         const part = parseObject(partRaw);
+
+        // Handle tool calls (Gemini 2.5 format)
+        if (asString(part.type, "").trim() === "tool_use" || asString(part.type, "").trim() === "function_call") {
+          // Store for execution or logging
+          // For now, just log that tool calls are detected
+          console.log("Tool call detected:", part);
+          continue;
+        }
+
         if (asString(part.type, "").trim() === "question") {
           question = {
             prompt: asString(part.prompt, "").trim(),

@@ -25,6 +25,7 @@ export type {
   ConfigFieldOption,
   ConfigFieldSchema,
   AdapterConfigSchema,
+  CompressionConfig,
   ServerAdapterModule,
   QuotaWindow,
   ProviderQuotaResult,
@@ -54,3 +55,29 @@ export {
   redactTranscriptEntryPaths,
 } from "./log-redaction.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export {
+  compressPrompt,
+  compressInstructions,
+  compressWakeContext,
+  compressBootstrapPrompt,
+  compressEnvironmentNotes,
+  compressApiNotes,
+} from "./compression.js";
+export { formatCaveman } from "./caveman-formatter.js";
+export {
+  buildToolSchemas,
+  buildGeminiToolSchema,
+  buildClaudeToolSchema,
+  buildLlamaToolSchema,
+} from "./tool-schema.js";
+export {
+  buildConversationContext,
+  trimToContextWindow,
+  summarizeTurns,
+} from "./conversation-history.js";
+export {
+  createInMemorySessionStore,
+  createSqliteSessionStore,
+} from "./session-storage.js";
+export { parseResponse } from "./response-parser.js";
+export { executeToolCall } from "./tool-executor.js";
