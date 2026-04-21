@@ -102,6 +102,9 @@ export type {
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,
+  IssueReferenceSource,
+  IssueRelatedWorkItem,
+  IssueRelatedWorkSummary,
   IssueRelation,
   IssueRelationIssueSummary,
   IssueExecutionPolicy,

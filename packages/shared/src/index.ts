@@ -21,6 +21,7 @@ export {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   SYSTEM_ISSUE_DOCUMENT_KEYS,
   isSystemIssueDocumentKey,
+  ISSUE_REFERENCE_SOURCE_KINDS,
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
@@ -109,6 +110,7 @@ export {
   type IssueOriginKind,
   type IssueRelationType,
   type SystemIssueDocumentKey,
+  type IssueReferenceSourceKind,
   type IssueExecutionPolicyMode,
   type IssueExecutionStageType,
   type IssueExecutionStateStatus,
@@ -286,6 +288,9 @@ export type {
   IssueWorkProductReviewState,
   Issue,
   IssueAssigneeAdapterOverrides,
+  IssueReferenceSource,
+  IssueRelatedWorkItem,
+  IssueRelatedWorkSummary,
   IssueRelation,
   IssueRelationIssueSummary,
   IssueExecutionPolicy,
@@ -432,6 +437,16 @@ export type {
   QuotaWindow,
   ProviderQuotaResult,
 } from "./types/index.js";
+export {
+  ISSUE_REFERENCE_IDENTIFIER_RE,
+  buildIssueReferenceHref,
+  extractIssueReferenceIdentifiers,
+  extractIssueReferenceMatches,
+  findIssueReferenceMatches,
+  normalizeIssueIdentifier,
+  parseIssueReferenceHref,
+  type IssueReferenceMatch,
+} from "./issue-references.js";
 
 export {
   sidebarOrderPreferenceSchema,

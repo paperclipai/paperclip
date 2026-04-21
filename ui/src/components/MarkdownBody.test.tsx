@@ -4,7 +4,13 @@ import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { buildAgentMentionHref, buildProjectMentionHref, buildSkillMentionHref, buildUserMentionHref } from "@paperclipai/shared";
+import {
+  buildAgentMentionHref,
+  buildIssueReferenceHref,
+  buildProjectMentionHref,
+  buildSkillMentionHref,
+  buildUserMentionHref,
+} from "@paperclipai/shared";
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
 import { queryKeys } from "../lib/queryKeys";
@@ -14,7 +20,13 @@ const mockIssuesApi = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
+  Link: ({
+    children,
+    to,
+    ...props
+  }: { children: ReactNode; to: string } & React.ComponentProps<"a">) => (
+    <a href={to} {...props}>{children}</a>
+  ),
 }));
 
 vi.mock("../api/issues", () => ({
@@ -144,6 +156,7 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/PAP-1271"');
     expect(html).toContain("text-green-600");
     expect(html).toContain(">PAP-1271<");
+    expect(html).not.toContain("paperclip-mention-chip--issue");
   });
 
   it("rewrites full issue URLs to internal issue links", () => {
@@ -154,6 +167,7 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/PAP-1179"');
     expect(html).toContain("text-red-600");
     expect(html).toContain(">http://localhost:3100/PAP/issues/PAP-1179<");
+    expect(html).not.toContain("paperclip-mention-chip--issue");
   });
 
   it("rewrites issue scheme links to internal issue links", () => {
@@ -216,5 +230,16 @@ describe("MarkdownBody", () => {
 
     expect(html).toContain("<pre");
     expect(html).toContain('style="max-width:100%;overflow-x:auto"');
+  });
+
+  it("renders internal issue links and bare identifiers as issue chips", () => {
+    const html = renderMarkdown(`See PAP-42 and [linked task](${buildIssueReferenceHref("PAP-77")}) for follow-up.`, [
+      { identifier: "PAP-42", status: "done" },
+      { identifier: "PAP-77", status: "blocked" },
+    ]);
+
+    expect(html).toContain('href="/issues/PAP-42"');
+    expect(html).toContain('href="/issues/PAP-77"');
+    expect(html).toContain('data-mention-kind="issue"');
   });
 });

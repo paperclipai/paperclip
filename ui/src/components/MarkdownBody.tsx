@@ -42,7 +42,11 @@ function MarkdownIssueLink({
   });
 
   return (
-    <Link to={href} className="inline-flex items-center gap-1.5 align-baseline">
+    <Link
+      to={href}
+      className="inline-flex items-center gap-1 align-baseline font-medium"
+      data-mention-kind="issue"
+    >
       {data ? <StatusIcon status={data.status} className="h-3.5 w-3.5" /> : null}
       <span>{children}</span>
     </Link>
@@ -223,6 +227,8 @@ export function MarkdownBody({
       if (parsed) {
         const targetHref = parsed.kind === "project"
           ? `/projects/${parsed.projectId}`
+          : parsed.kind === "issue"
+            ? `/issues/${parsed.identifier}`
           : parsed.kind === "skill"
             ? `/skills/${parsed.skillId}`
             : parsed.kind === "user"

@@ -26,6 +26,7 @@ import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execu
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
+import { IssueReferencePill } from "./IssueReferencePill";
 import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
@@ -295,6 +296,30 @@ export function IssueProperties({
     if (isMainIssueWorkspace({ issue, project: issueProject })) return null;
     return runningRuntimeServiceWithUrl(issue.currentExecutionWorkspace?.runtimeServices);
   }, [issue, issueProject]);
+  const referencedIssueIdentifiers = issue.referencedIssueIdentifiers ?? [];
+  const relatedTasks = useMemo(() => {
+    const excluded = new Set<string>();
+    const addExcluded = (candidate: { id: string; identifier?: string | null }) => {
+      excluded.add(candidate.id);
+      if (candidate.identifier) excluded.add(candidate.identifier);
+    };
+
+    for (const blocker of issue.blockedBy ?? []) addExcluded(blocker);
+    for (const blocked of issue.blocks ?? []) addExcluded(blocked);
+    for (const child of childIssues) addExcluded(child);
+
+    const referencedIssues = issue.relatedWork?.outbound.map((item) => item.issue) ?? [];
+    if (referencedIssues.length > 0) {
+      return referencedIssues.filter((referenced) => {
+        const label = referenced.identifier ?? referenced.id;
+        return !excluded.has(referenced.id) && !excluded.has(label);
+      });
+    }
+
+    return referencedIssueIdentifiers
+      .filter((identifier) => !excluded.has(identifier))
+      .map((identifier) => ({ id: identifier, identifier, title: identifier }));
+  }, [childIssues, issue.blockedBy, issue.blocks, issue.relatedWork?.outbound, referencedIssueIdentifiers]);
   const projectLink = (id: string | null) => {
     if (!id) return null;
     const project = projects?.find((p) => p.id === id) ?? null;
@@ -1134,11 +1159,21 @@ export function IssueProperties({
                 onClick={onAddSubIssue}
               >
                 <Plus className="h-3 w-3" />
-                Add sub-issue
+              Add sub-issue
               </button>
             ) : null}
           </div>
         </PropertyRow>
+
+        {relatedTasks.length > 0 ? (
+          <PropertyRow label="Related Tasks">
+            <div className="flex flex-wrap gap-1">
+              {relatedTasks.map((related) => (
+                <IssueReferencePill key={related.id} issue={related} />
+              ))}
+            </div>
+          </PropertyRow>
+        ) : null}
 
         <PropertyPicker
           inline={inline}

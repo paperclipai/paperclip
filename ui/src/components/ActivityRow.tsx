@@ -1,5 +1,6 @@
 import { Link } from "@/lib/router";
 import { Identity } from "./Identity";
+import { IssueReferenceActivitySummary } from "./IssueReferenceActivitySummary";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
 import { formatActivityVerb } from "../lib/activity-format";
@@ -50,19 +51,22 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
   const actorAvatarUrl = userProfile?.image ?? null;
 
   const inner = (
-    <div className="flex gap-3">
-      <p className="flex-1 min-w-0 truncate">
-        <Identity
-          name={actorName}
-          avatarUrl={actorAvatarUrl}
-          size="xs"
-          className="align-baseline"
-        />
-        <span className="text-muted-foreground ml-1">{verb} </span>
-        {name && <span className="font-medium">{name}</span>}
-        {entityTitle && <span className="text-muted-foreground ml-1">— {entityTitle}</span>}
-      </p>
-      <span className="text-xs text-muted-foreground shrink-0 pt-0.5">{timeAgo(event.createdAt)}</span>
+    <div className="space-y-2">
+      <div className="flex gap-3">
+        <p className="flex-1 min-w-0 truncate">
+          <Identity
+            name={actorName}
+            avatarUrl={actorAvatarUrl}
+            size="xs"
+            className="align-baseline"
+          />
+          <span className="text-muted-foreground ml-1">{verb} </span>
+          {name && <span className="font-medium">{name}</span>}
+          {entityTitle && <span className="text-muted-foreground ml-1">— {entityTitle}</span>}
+        </p>
+        <span className="text-xs text-muted-foreground shrink-0 pt-0.5">{timeAgo(event.createdAt)}</span>
+      </div>
+      <IssueReferenceActivitySummary event={event} />
     </div>
   );
 
