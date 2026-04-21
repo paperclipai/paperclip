@@ -29,15 +29,22 @@
 # when you create or remove feature branches. Security branches are tracked
 # in docs/security-backports.md and discovered automatically.
 #
+# Branches that are also open as PRs upstream must NOT be listed here. The
+# script merges feature branches into master and force-pushes them, which
+# would overwrite an open PR with the union of all fork work. Use a `-dev`
+# sibling for internal rebasing and keep the PR branch name frozen on a
+# clean cherry-pick against upstream/master. Step 2b refuses to run if any
+# branch in this list is the head of an open upstream PR.
+#
 set -euo pipefail
 
 FEATURE_BRANCHES=(
-  "feature/bastionclaw-adapter"
-  "feature/company-kill-switch"
-  "feature/heartbeat-model-override"
+  "feature/bastionclaw-adapter-dev"
+  "feature/company-kill-switch-dev"
+  "feature/heartbeat-model-override-dev"
   "feature/post-import-defaults"
-  "fix/plugin-route-prefix-v2"
-  "chore/update-issue-templates"
+  "fix/plugin-route-prefix-v2-dev"
+  "chore/update-issue-templates-dev"
 )
 
 SECURITY_INDEX_FILE="docs/security-backports.md"
@@ -272,6 +279,42 @@ if $CHECK_ONLY; then
   info ""
   info "(check-only mode — skipping rebase/merge/push)"
   exit 0
+fi
+
+# 2b. Refuse to touch branches that are heads of open upstream PRs.
+# The script merges feature branches back into master and force-pushes them,
+# which would overwrite any open PR on that branch with all of fork master's
+# other work. PR branches must be maintained separately (e.g. a `-dev` sibling
+# listed here for internal rebasing, while the PR branch name stays frozen on
+# a clean cherry-pick against upstream/master).
+PR_HEAD_CONFLICTS=()
+for branch in "${FEATURE_BRANCHES[@]}"; do
+  pr_num=$(gh pr list --repo "$UPSTREAM_REPO" \
+                      --head "$branch" \
+                      --state open \
+                      --json number \
+                      --jq '.[0].number' 2>/dev/null || echo "")
+  if [[ -n "$pr_num" ]]; then
+    PR_HEAD_CONFLICTS+=("$branch|#$pr_num")
+  fi
+done
+
+if [[ ${#PR_HEAD_CONFLICTS[@]} -gt 0 ]]; then
+  error ""
+  error "Refusing to rebase: one or more FEATURE_BRANCHES is the head of an"
+  error "open upstream PR. Touching these would overwrite the PR with the"
+  error "full fork-master history."
+  error ""
+  for entry in "${PR_HEAD_CONFLICTS[@]}"; do
+    b="${entry%|*}"
+    p="${entry#*|}"
+    error "  $b  ->  $UPSTREAM_REPO PR $p"
+  done
+  error ""
+  error "Fix: create a separate internal branch for rebasing (e.g."
+  error "'\${branch}-dev') and swap it into FEATURE_BRANCHES. Leave the"
+  error "PR branch as a clean cherry-pick against upstream/master."
+  exit 1
 fi
 
 # 3. Snapshot pre-rebase state: branches that are fully merged (ahead=0)
