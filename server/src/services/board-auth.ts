@@ -141,9 +141,10 @@ export function boardAuthService(db: Db) {
         and(
           eq(boardApiKeys.keyHash, tokenHash),
           isNull(boardApiKeys.revokedAt),
+          sql`(${boardApiKeys.expiresAt} is null or ${boardApiKeys.expiresAt} > ${now})`,
         ),
       )
-      .then((rows) => rows.find((row) => !row.expiresAt || row.expiresAt.getTime() > now.getTime()) ?? null);
+      .then((rows) => rows[0] ?? null);
   }
 
   async function touchBoardApiKey(id: string) {
