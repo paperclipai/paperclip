@@ -333,6 +333,56 @@ describe("runPostDoneCleanup — unit (execFile mocked)", () => {
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 
+  it("[security] skips worktree remove + branch delete when main repo dir is outside allowed roots", async () => {
+    // cwd is a linked worktree under the allowlist, but git-common-dir resolves
+    // to a main repo outside the allowlist (e.g. /tmp/evil-repo/.git).
+    const ws = makeWorkspace({
+      cwd: `${os.homedir()}/Documents/Projects/legit-worktree`,
+      strategyType: "git_worktree",
+    });
+    const { db, updateSet } = makeMockDb(ws);
+
+    mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+      if (args.includes("rev-parse")) {
+        // Absolute git-common-dir pointing to /tmp, outside ALLOWED_ROOTS
+        cb(null, { stdout: "/tmp/evil-repo/.git\n", stderr: "" });
+      } else {
+        cb(null, { stdout: "", stderr: "" });
+      }
+    });
+
+    await runPostDoneCleanup({
+      db,
+      issueId: "issue-1",
+      issueIdentifier: "POI-1",
+      allowedRoots: ALLOWED_ROOTS,
+    });
+
+    // rev-parse was probed, but NO worktree-remove and NO branch -d must have fired.
+    const worktreeRemoveCall = mockExecFile.mock.calls.find((c: unknown[]) =>
+      Array.isArray(c[1]) && (c[1] as string[]).includes("worktree"),
+    );
+    const branchDeleteCall = mockExecFile.mock.calls.find((c: unknown[]) =>
+      Array.isArray(c[1]) && (c[1] as string[]).includes("-d"),
+    );
+    expect(worktreeRemoveCall).toBeUndefined();
+    expect(branchDeleteCall).toBeUndefined();
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "closed",
+        cleanupReason: "main_repo_not_allowed",
+        metadata: expect.objectContaining({
+          cleanup: expect.objectContaining({
+            branchDeleted: false,
+            worktreeRemoved: false,
+            skippedReason: "main_repo_not_allowed",
+          }),
+        }),
+      }),
+    );
+  });
+
   // -------------------------------------------------------------------------
   // Non-merged branch test
   // -------------------------------------------------------------------------

@@ -127,6 +127,20 @@ export async function runPostDoneCleanup(opts: RunPostDoneCleanupOpts): Promise<
     skippedReason = "git_common_dir_failed";
   }
 
+  // Re-validate mainRepoCwd against the allowlist. cwd passing the allowlist
+  // does not imply mainRepoCwd passes: a linked worktree's cwd can be under
+  // an allowed root while the main repo (.git dir parent) lives elsewhere,
+  // which would cause `git worktree remove` / `git branch -d` to run against
+  // an out-of-scope repository. Gate on mainRepoCwd as well.
+  if (mainRepoCwd && !isUnderAllowedRoot(mainRepoCwd, allowedRoots)) {
+    logger.warn(
+      { issueIdentifier, cwd, mainRepoCwd },
+      "post-done-cleanup: main repo dir is outside allowed roots, skipping git ops",
+    );
+    mainRepoCwd = null;
+    skippedReason = skippedReason ?? "main_repo_not_allowed";
+  }
+
   // Remove worktree only for git_worktree strategy.
   if (mainRepoCwd && workspace.strategyType === "git_worktree") {
     try {
