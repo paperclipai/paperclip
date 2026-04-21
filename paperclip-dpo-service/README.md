@@ -18,17 +18,27 @@ Fastify-HTTP-Gate für die `paperclip-dpo`-Library. Läuft auf dem Mac Studio, e
 cd paperclip-dpo && pnpm install && pnpm build
 cd ../paperclip-dpo-service && pnpm install && pnpm build
 
-# 2. Shared Key generieren und in macOS-Keychain ablegen
+# 2. Shared Key einmal generieren und zur Aufbewahrung in Keychain ablegen
+#    (Keychain-Eintrag ist nur zum Nachschlagen — der Service liest ihn nicht direkt,
+#     sondern bekommt ihn via Env-Var beim launchd-Install.)
 SHARED_KEY=$(./scripts/generate-shared-key.sh)
 security add-generic-password -s ai.whitestag.paperclip-dpo-key -a shared -w "$SHARED_KEY"
 
-# 3. launchd installieren
+# 3. launchd installieren — SHARED_KEY wird in die plist geschrieben
 sudo mkdir -p /var/paperclip/dpo /var/log/paperclip-dpo
 sudo chown $USER /var/paperclip/dpo /var/log/paperclip-dpo
 DPO_SHARED_KEY="$SHARED_KEY" ./scripts/install-launchd.sh
 
 # 4. Smoke-Test
 curl http://localhost:4711/health
+curl -s -H "x-dpo-key: $SHARED_KEY" -H "content-type: application/json" \
+  -d '{"text":"hi","targetLlm":"gpt-4o","agent":"smoke"}' \
+  http://localhost:4711/anonymize
+
+# 5. Key-Verteilung an andere Hosts
+#    Andere Maschinen (n8n-Host, Windows-CFO) brauchen denselben Wert.
+#    Abruf hier:
+security find-generic-password -s ai.whitestag.paperclip-dpo-key -w
 ```
 
 ## Env Vars
@@ -57,3 +67,13 @@ sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp "$(command -v 
 ## Klient-Verteilung
 
 Andere Hosts (n8n-Host, Windows-CFO) brauchen den `DPO_SHARED_KEY`-Wert für ihren `X-DPO-Key`-Header. Übertragung via 1Password / Windows-Credential-Store / n8n-Credential.
+
+## Key-Rotation
+
+Beim Rotieren des Shared-Keys:
+1. Neuen Key generieren, in Keychain updaten.
+2. `DPO_SHARED_KEY=<neuer-key> ./scripts/install-launchd.sh` — überschreibt die plist und lädt neu.
+3. Alle Klienten-Credentials aktualisieren (n8n, Windows-Host, etc.).
+4. Den alten Key aus allen Klient-Stores löschen.
+
+Der AES-Mapping-Key (Keychain `paperclip-dpo/mapping-store-key`) bleibt unberührt — er verschlüsselt bestehende Mappings und darf nicht mit dem Shared-Key verwechselt werden.
