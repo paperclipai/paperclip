@@ -200,6 +200,8 @@ If `currentParticipant` does **not** match you, do not try to advance the stage.
 **Step 9 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
+**Lessons Learned (before marking done or in_review):** Pause and ask: *Did I encounter anything non-obvious during this task — a library incompatibility, an unexpected constraint, an architectural insight, an API quirk?* If yes, save a memory entry via para-memory-files before exiting. Only capture what is genuinely surprising or not derivable from the code. Future agents and heartbeats benefit from your capture.
+
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
 
 ```json

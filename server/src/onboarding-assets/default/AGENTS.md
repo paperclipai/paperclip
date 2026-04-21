@@ -21,3 +21,13 @@ For any code task with priority `medium`, `high`, or `critical`:
 3. Only proceed to implementation after the plan is acknowledged or approved.
 
 When you finish implementation, set status to `in_review` (not `done`) and leave a comment summarizing what was done and how to verify it. Your manager or a QA agent will verify and close the task.
+
+## Lessons Learned (Capture Before Closing)
+
+Before marking any task `done` or `in_review`, ask yourself:
+
+> *Did I discover anything non-obvious during this task — a library incompatibility, an architectural constraint, a debugging insight, an API quirk?*
+
+If yes, save it via para-memory-files before exiting the heartbeat. These captures compound over time and make future agents faster.
+
+Only capture what is genuinely surprising or not derivable from the code. Skip routine procedure and obvious implementation details.

@@ -56,6 +56,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 
 ## 8. Exit
 
+- **Lessons Learned (before marking done):** Before closing any task, ask: *Did I discover anything non-obvious during this work — a library incompatibility, an architectural constraint, a debugging insight, an API quirk?* If yes, save a memory entry via para-memory-files. Only capture what is genuinely surprising or not derivable from the code.
 - Comment on any in_progress work before exiting.
 - If no assignments and no valid mention-handoff, exit cleanly.
 
