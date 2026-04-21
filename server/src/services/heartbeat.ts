@@ -34,6 +34,8 @@ import {
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { workspacePreparationService } from "./workspace-preparation.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
@@ -5142,6 +5144,71 @@ export function heartbeatService(db: Db) {
         cleanupReason: null,
       });
     }
+
+    // Prepare execution workspace directory
+    let workspacePreparationWarned = false;
+    try {
+      const workspacePreparationResult = await workspacePreparationService.prepareWorkspace({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        runId: run.id,
+        instanceRoot: resolvePaperclipInstanceRoot(),
+        executionWorkspaceCwd: executionWorkspace?.cwd ?? null,
+      });
+
+      if (workspacePreparationResult.fatalError) {
+        logger.error(
+          {
+            runId: run.id,
+            agentId: agent.id,
+            workspaceCwd: executionWorkspace?.cwd ?? null,
+            error: workspacePreparationResult.fatalError,
+          },
+          "Workspace preparation failed; run will proceed with existing cwd",
+        );
+        workspacePreparationWarned = true;
+      }
+
+      // If the service created a new workspace directory, inject it into
+      // the executionWorkspace so downstream logic picks it up.
+      if (workspacePreparationResult.wasCreated) {
+        executionWorkspace = {
+          ...executionWorkspace,
+          cwd: workspacePreparationResult.workspacePath,
+        };
+
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "agent",
+          actorId: agent.id,
+          action: "workspace_created",
+          entityType: "run",
+          entityId: run.id,
+          agentId: agent.id,
+          runId: run.id,
+          details: {
+            workspacePath: workspacePreparationResult.workspacePath,
+          },
+        });
+      }
+
+      if (workspacePreparationResult.errors?.length) {
+        for (const err of workspacePreparationResult.errors) {
+          logger.warn(
+            { runId: run.id, err },
+            "Workspace preparation warning",
+          );
+        }
+      }
+    } catch (prepError) {
+      logger.error({
+        runId: run.id,
+        agentId: agent.id,
+        error: prepError instanceof Error ? prepError.message : String(prepError),
+      }, "Workspace preparation threw unexpected error; continuing with existing workspace");
+      workspacePreparationWarned = true;
+    }
+
     if (issueId && persistedExecutionWorkspace) {
       const nextIssueWorkspaceMode = issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode);
       const shouldSwitchIssueToExistingWorkspace =
