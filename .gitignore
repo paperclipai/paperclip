@@ -61,3 +61,4 @@ tests/release-smoke/playwright-report/
 .claude/worktrees/
 .herenow
 packages/plugins/harper-cmo/
+companies/harper-agentic-company/
