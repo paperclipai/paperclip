@@ -578,10 +578,21 @@ export async function startServer(): Promise<StartedServer> {
     const heartbeat = heartbeatService(db as any);
     const routines = routineService(db as any);
   
-    // Reap orphaned running runs at startup while in-memory execution state is empty,
-    // then resume any persisted queued runs that were waiting on the previous process.
+    // Recover stale runtime state at startup while in-memory execution state is empty:
+    // 1) reset agents stuck in "running" back to "idle"
+    // 2) reap orphaned run records
+    // 3) resume persisted queued runs that were waiting on the previous process
     void heartbeat
-      .reapOrphanedRuns()
+      .reconcileStaleRunningAgentsOnStartup()
+      .then((result) => {
+        if (result.reconciled > 0) {
+          logger.warn(
+            { reconciled: result.reconciled, agentIds: result.agentIds },
+            "startup reconciliation reset stale running agents to idle",
+          );
+        }
+      })
+      .then(() => heartbeat.reapOrphanedRuns())
       .then(() => heartbeat.resumeQueuedRuns())
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");

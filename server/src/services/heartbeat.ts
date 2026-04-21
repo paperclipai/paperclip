@@ -2556,6 +2556,50 @@ export function heartbeatService(db: Db) {
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  async function reconcileStaleRunningAgentsOnStartup() {
+    const staleAgents = await db
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+      })
+      .from(agents)
+      .where(eq(agents.status, "running"));
+
+    if (staleAgents.length === 0) return { reconciled: 0, agentIds: [] as string[] };
+
+    const now = new Date();
+    const updatedAgents = await db
+      .update(agents)
+      .set({
+        status: "idle",
+        lastHeartbeatAt: now,
+        updatedAt: now,
+      })
+      .where(eq(agents.status, "running"))
+      .returning({
+        id: agents.id,
+        companyId: agents.companyId,
+      });
+
+    for (const agent of updatedAgents) {
+      publishLiveEvent({
+        companyId: agent.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: agent.id,
+          status: "idle",
+          outcome: "startup_recovery",
+          lastHeartbeatAt: now.toISOString(),
+        },
+      });
+    }
+
+    return {
+      reconciled: updatedAgents.length,
+      agentIds: updatedAgents.map((agent) => agent.id),
+    };
+  }
+
   async function resumeQueuedRuns() {
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
@@ -4621,6 +4665,8 @@ export function heartbeatService(db: Db) {
     reportRunActivity: clearDetachedRunWarning,
 
     reapOrphanedRuns,
+
+    reconcileStaleRunningAgentsOnStartup,
 
     resumeQueuedRuns,
 

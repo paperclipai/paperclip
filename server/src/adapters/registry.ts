@@ -180,9 +180,59 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+// hermes-paperclip-adapter predates the authToken field in the execution
+// context; cast is intentional until the adapter ships the updated type.
+const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["execute"];
+
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
-  execute: hermesExecute,
+  execute: async (ctx) => {
+    if (!ctx.authToken) return executeHermesLocal(ctx);
+
+    const existingConfig =
+      typeof ctx.agent.adapterConfig === "object" && ctx.agent.adapterConfig !== null
+        ? (ctx.agent.adapterConfig as Record<string, unknown>)
+        : {};
+    const existingEnv =
+      typeof existingConfig.env === "object" && existingConfig.env !== null && !Array.isArray(existingConfig.env)
+        ? (existingConfig.env as Record<string, string>)
+        : {};
+    const explicitApiKey =
+      typeof existingEnv.PAPERCLIP_API_KEY === "string" && existingEnv.PAPERCLIP_API_KEY.trim().length > 0;
+    const promptTemplate =
+      typeof existingConfig.promptTemplate === "string" && existingConfig.promptTemplate.trim().length > 0
+        ? existingConfig.promptTemplate
+        : "";
+    const authGuardPrompt = [
+      "Paperclip API safety rule:",
+      "Use Authorization: Bearer $PAPERCLIP_API_KEY on every Paperclip API request.",
+      "Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every Paperclip API request that writes or mutates data, including comments and issue updates.",
+      "Never use a board, browser, or local-board session for Paperclip API writes.",
+    ].join("\n");
+
+    const patchedConfig: Record<string, unknown> = {
+      ...existingConfig,
+      env: {
+        ...existingEnv,
+        ...(!explicitApiKey ? { PAPERCLIP_API_KEY: ctx.authToken } : {}),
+        PAPERCLIP_RUN_ID: ctx.runId,
+      },
+    };
+
+    // Only prepend the auth guard when the user already set a custom prompt.
+    // Otherwise Hermes should keep using its built-in default heartbeat prompt.
+    if (promptTemplate) {
+      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
+    }
+
+    return executeHermesLocal({
+      ...ctx,
+      agent: {
+        ...ctx.agent,
+        adapterConfig: patchedConfig,
+      },
+    });
+  },
   testEnvironment: hermesTestEnvironment,
   sessionCodec: hermesSessionCodec,
   listSkills: hermesListSkills,
