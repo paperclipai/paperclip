@@ -35,6 +35,7 @@ import {
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
+import { loadPersistedCircuitStates, purgeStaleUsageCounters } from "./services/gateway.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -677,6 +678,13 @@ export async function startServer(): Promise<StartedServer> {
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
+
+    // Restore gateway circuit breaker states from DB so open circuits survive restarts
+    void loadPersistedCircuitStates(db as any).catch((err) => {
+      logger.error({ err }, "startup gateway circuit state recovery failed");
+    });
+    let gatewayPurgeTicks = 0;
+    const GATEWAY_PURGE_EVERY_N_TICKS = Math.max(1, Math.round(3600_000 / config.heartbeatSchedulerIntervalMs));
     setInterval(() => {
       void heartbeat
         .tickTimers(new Date())
@@ -718,6 +726,15 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
+
+      // Purge gateway usage counter rows older than 7 days (once per ~hour)
+      gatewayPurgeTicks++;
+      if (gatewayPurgeTicks >= GATEWAY_PURGE_EVERY_N_TICKS) {
+        gatewayPurgeTicks = 0;
+        void purgeStaleUsageCounters(db as any).catch((err) => {
+          logger.error({ err }, "periodic gateway usage counter purge failed");
+        });
+      }
     }, config.heartbeatSchedulerIntervalMs);
   }
   
