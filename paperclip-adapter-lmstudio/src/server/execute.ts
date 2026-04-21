@@ -353,6 +353,7 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
       };
     }
 
+    const iterationStart = Date.now();
     let response;
     try {
       response = await callChatCompletion({
@@ -365,13 +366,16 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
     } catch (err) {
       const switched = await maybeSwitchToFallback(err, "chat completion");
       if (switched) {
+        // Deduct time already spent so the retry can't double the wallclock cost.
+        // Keep a 1s floor so a near-full-timeout first call still has a chance to retry.
+        const retryTimeoutMs = Math.max(1000, timeoutMs - (Date.now() - iterationStart));
         try {
           response = await callChatCompletion({
             url: currentEndpoint.url,
             model: currentEndpoint.model,
             messages,
             tools: PAPERCLIP_TOOLS,
-            timeoutMs,
+            timeoutMs: retryTimeoutMs,
           });
         } catch (err2) {
           const msg2 = err2 instanceof Error ? err2.message : String(err2);
@@ -381,6 +385,9 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
             timedOut: err2 instanceof LlmClientError && err2.kind === "timeout",
             errorMessage: `LLM call failed on fallback: ${msg2}`,
             errorCode: "llm_error",
+            model: currentEndpoint.model,
+            provider: "lmstudio",
+            usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
           };
         }
       } else {
@@ -391,6 +398,9 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
           timedOut: err instanceof LlmClientError && err.kind === "timeout",
           errorMessage: `LLM call failed: ${msg}`,
           errorCode: "llm_error",
+          model: currentEndpoint.model,
+          provider: "lmstudio",
+          usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
         };
       }
     }
