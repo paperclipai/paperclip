@@ -55,6 +55,14 @@ pnpm paperclipai agent local-cli claudecoder --company-id <company-id>
 
 This installs Paperclip skills in `~/.claude/skills`, creates an agent API key, and prints shell exports to run as that agent.
 
+## OpenRouter
+
+[OpenRouter](https://openrouter.ai) is an OpenAI-compatible hub for many models. Paperclip applies shared `OPENROUTER_*` → `OPENAI_*` env mapping for **OpenAI-compatible** CLIs (see [Codex Local](/adapters/codex-local#using-openrouter), [Cursor Local](/adapters/cursor-local#using-openrouter), [OpenCode Local](/adapters/opencode-local#using-openrouter), and [Pi Local](/adapters/pi-local#using-openrouter)).
+
+**Claude Code does not use that mapping.** It talks to Anthropic (API key, subscription login, or AWS Bedrock), not via Paperclip’s OpenRouter OpenAI bridge. If `OPENROUTER_API_KEY` is present in the server or adapter `env`, it is **ignored for Claude inference** — leave it unset for `claude_local` unless you also run another adapter on the same host that needs it.
+
+To route traffic through OpenRouter with Paperclip, pick an OpenAI-compatible adapter (for example `codex_local` or `opencode_local`) and follow the guides linked above.
+
 ## Environment Test
 
 Use the "Test Environment" button in the UI to validate the adapter config. It checks:
@@ -62,4 +70,5 @@ Use the "Test Environment" button in the UI to validate the adapter config. It c
 - Claude CLI is installed and accessible
 - Working directory is absolute and available (auto-created if missing and permitted)
 - API key/auth mode hints (`ANTHROPIC_API_KEY` vs subscription login)
+- When `OPENROUTER_API_KEY` is set: informational note that Claude Code does not use Paperclip’s OpenRouter→OpenAI mapping (see [OpenRouter](#openrouter))
 - A live hello probe (`claude --print - --output-format stream-json --verbose` with prompt `Respond with hello.`) to verify CLI readiness

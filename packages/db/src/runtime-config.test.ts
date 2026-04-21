@@ -46,6 +46,7 @@ describe("resolveDatabaseTarget", () => {
     const projectDir = path.join(tempDir, "repo");
     fs.mkdirSync(projectDir, { recursive: true });
     process.chdir(projectDir);
+    delete process.env.DATABASE_URL;
     delete process.env.PAPERCLIP_CONFIG;
     writeJson(path.join(projectDir, ".paperclip", "config.json"), {
       database: { mode: "embedded-postgres", embeddedPostgresPort: 54329 },
@@ -67,6 +68,7 @@ describe("resolveDatabaseTarget", () => {
   it("uses config postgres connection string when configured", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
     const configPath = path.join(tempDir, "instance", "config.json");
+    delete process.env.DATABASE_URL;
     process.env.PAPERCLIP_CONFIG = configPath;
     writeJson(configPath, {
       database: {
@@ -87,6 +89,7 @@ describe("resolveDatabaseTarget", () => {
   it("falls back to embedded postgres settings from config", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
     const configPath = path.join(tempDir, "instance", "config.json");
+    delete process.env.DATABASE_URL;
     process.env.PAPERCLIP_CONFIG = configPath;
     writeJson(configPath, {
       database: {

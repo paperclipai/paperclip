@@ -3,6 +3,7 @@ import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import { applyOpenRouterOpenAiEnvMapping } from "@paperclipai/adapter-utils";
 import {
   asBoolean,
   asString,
@@ -81,6 +82,7 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  applyOpenRouterOpenAiEnvMapping(env);
 
   const openaiKeyOverride = "OPENAI_API_KEY" in envConfig ? asString(envConfig.OPENAI_API_KEY, "") : null;
   if (openaiKeyOverride !== null && openaiKeyOverride.trim() === "") {

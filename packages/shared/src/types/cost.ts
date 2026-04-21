@@ -111,3 +111,14 @@ export interface CostByProject {
   cachedInputTokens: number;
   outputTokens: number;
 }
+
+/** spend grouped by task (issue) when `issue_id` is set on cost events */
+export interface CostByIssue {
+  issueId: string;
+  issueIdentifier: string | null;
+  issueTitle: string | null;
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+}

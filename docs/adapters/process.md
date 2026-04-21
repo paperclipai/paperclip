@@ -32,6 +32,10 @@ The `process` adapter executes arbitrary shell commands. Use it for simple scrip
 3. The process runs to completion
 4. Exit code determines success/failure
 
+## Using OpenRouter
+
+If your command speaks the OpenAI client protocol (many CLIs and libraries do), you can set only `OPENROUTER_API_KEY` in `adapterConfig.env` — Paperclip applies the same mapping as [Codex Local](/adapters/codex-local): it copies the key to `OPENAI_API_KEY` and defaults `OPENAI_BASE_URL` to `https://openrouter.ai/api/v1` when no OpenAI base URL is already set. See [Adapters overview](/adapters/overview#openrouter-openai-compatible-clis) and [Environment variables](/deploy/environment-variables).
+
 ## Example
 
 An agent that runs a Python script:

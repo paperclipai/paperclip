@@ -8,7 +8,7 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 ## Prerequisites
 
 - Codex CLI installed (`codex` command available)
-- `OPENAI_API_KEY` set in the environment or agent config
+- `OPENAI_API_KEY` set in the environment or agent config (or `OPENROUTER_API_KEY` — see [OpenRouter](#using-openrouter))
 
 ## Configuration Fields
 
@@ -22,6 +22,50 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 | `graceSec` | number | No | Grace period before force-kill |
 | `fastMode` | boolean | No | Enables Codex Fast mode. Currently supported on `gpt-5.4` only and burns credits faster |
 | `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only) |
+
+## Using OpenRouter
+
+[OpenRouter](https://openrouter.ai) provides access to GPT-4o, Claude, Gemini, Llama, and hundreds of other models through a single OpenAI-compatible endpoint.
+
+Set only `OPENROUTER_API_KEY` in the agent's `env` config:
+
+```json
+{
+  "model": "openai/gpt-4o",
+  "env": {
+    "OPENROUTER_API_KEY": "sk-or-v1-…"
+  }
+}
+```
+
+Paperclip automatically maps `OPENROUTER_API_KEY` → `OPENAI_API_KEY` and sets `OPENAI_BASE_URL=https://openrouter.ai/api/v1` for the Codex child process. Usage is tagged as `openrouter` in the billing ledger.
+
+Billing inference also treats the upstream as OpenRouter when **any** of `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_BASE_URL`, or `OPENROUTER_API_BASE` points at `openrouter.ai` (some CLIs only export the alternate keys). See the [deploy environment variables reference](../deploy/environment-variables.md) for the full table.
+
+You can also set the variables explicitly (this takes precedence over the auto-mapping):
+
+```json
+{
+  "model": "anthropic/claude-3-5-sonnet",
+  "env": {
+    "OPENAI_API_KEY": "sk-or-v1-…",
+    "OPENAI_BASE_URL": "https://openrouter.ai/api/v1"
+  }
+}
+```
+
+If your environment only provides an alternate base-URL key, use `OPENAI_API_BASE` or `OPENAI_API_BASE_URL` instead of `OPENAI_BASE_URL`:
+
+```json
+{
+  "env": {
+    "OPENAI_API_KEY": "sk-or-v1-…",
+    "OPENAI_API_BASE": "https://openrouter.ai/api/v1"
+  }
+}
+```
+
+See the [OpenRouter model list](https://openrouter.ai/models) for all available models. Model IDs use the `provider/model-name` format (e.g. `openai/gpt-4o`, `anthropic/claude-opus-4-5`, `google/gemini-2.0-flash`).
 
 ## Session Persistence
 

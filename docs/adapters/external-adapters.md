@@ -204,6 +204,12 @@ export async function execute(
 | `buildPaperclipEnv(agent)` | Inject `PAPERCLIP_*` environment variables |
 | `renderTemplate(template, data)` | `{{variable}}` substitution in prompt templates |
 | `asString(v)`, `asNumber(v)`, `asBoolean(v)` | Safe config value extraction |
+| `applyOpenRouterOpenAiEnvMapping(env)` | Optional: map `OPENROUTER_API_KEY` → OpenAI-compatible vars for CLIs that use the OpenAI protocol (see [Adapters overview](/adapters/overview#openrouter-openai-compatible-clis)) |
+| `inferOpenAiCompatibleBiller(env, fallback)` | Optional: detect OpenRouter for billing metadata |
+
+### OpenRouter (optional)
+
+If your runtime is OpenAI-compatible, mirror the built-in adapters: merge `config.env` into a string record, call `applyOpenRouterOpenAiEnvMapping(env)` before spawning, and use `inferOpenAiCompatibleBiller` when attaching provider/billing fields to usage. See [Creating an Adapter](/adapters/creating-an-adapter#openrouter-openai-compatible-runtimes) for the full pattern.
 
 ### src/server/test.ts
 

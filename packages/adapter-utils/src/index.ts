@@ -53,4 +53,8 @@ export {
   redactHomePathUserSegmentsInValue,
   redactTranscriptEntryPaths,
 } from "./log-redaction.js";
-export { inferOpenAiCompatibleBiller } from "./billing.js";
+export {
+  applyOpenRouterOpenAiEnvMapping,
+  DEFAULT_OPENROUTER_OPENAI_BASE_URL,
+  inferOpenAiCompatibleBiller,
+} from "./billing.js";

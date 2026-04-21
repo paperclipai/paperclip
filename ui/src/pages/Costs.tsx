@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   BudgetPolicySummary,
@@ -232,13 +233,14 @@ export function Costs() {
   const { data: spendData, isLoading: spendLoading, error: spendError } = useQuery({
     queryKey: queryKeys.costs(companyId, from || undefined, to || undefined),
     queryFn: async () => {
-      const [summary, byAgent, byProject, byAgentModel] = await Promise.all([
+      const [summary, byAgent, byProject, byIssue, byAgentModel] = await Promise.all([
         costsApi.summary(companyId, from || undefined, to || undefined),
         costsApi.byAgent(companyId, from || undefined, to || undefined),
         costsApi.byProject(companyId, from || undefined, to || undefined),
+        costsApi.byIssue(companyId, from || undefined, to || undefined),
         costsApi.byAgentModel(companyId, from || undefined, to || undefined),
       ]);
-      return { summary, byAgent, byProject, byAgentModel };
+      return { summary, byAgent, byProject, byIssue, byAgentModel };
     },
     enabled: !!selectedCompanyId && customReady,
   });
@@ -802,6 +804,38 @@ export function Costs() {
                 </Card>
 
                 <div className="space-y-4">
+                  <Card>
+                    <CardHeader className="px-5 pt-5 pb-2">
+                      <CardTitle className="text-base">By task</CardTitle>
+                      <CardDescription>Spend linked to tasks via reported cost events (issue attribution).</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-2 px-5 pb-5 pt-2">
+                      {(spendData?.byIssue.length ?? 0) === 0 ? (
+                        <p className="text-sm text-muted-foreground">No issue-attributed costs in this period.</p>
+                      ) : (
+                        spendData?.byIssue.map((row) => (
+                          <div
+                            key={row.issueId}
+                            className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
+                          >
+                            <Link
+                              to={`/issues/${row.issueIdentifier ?? row.issueId}`}
+                              className="min-w-0 truncate font-medium text-foreground hover:underline"
+                            >
+                              <span className="font-mono text-xs text-muted-foreground">
+                                {row.issueIdentifier ?? row.issueId.slice(0, 8)}
+                              </span>
+                              {row.issueTitle ? (
+                                <span className="ml-2 font-normal">{row.issueTitle}</span>
+                              ) : null}
+                            </Link>
+                            <span className="shrink-0 font-medium tabular-nums">{formatCents(row.costCents)}</span>
+                          </div>
+                        ))
+                      )}
+                    </CardContent>
+                  </Card>
+
                   <Card>
                     <CardHeader className="px-5 pt-5 pb-2">
                       <CardTitle className="text-base">By project</CardTitle>
