@@ -5,7 +5,12 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssueChatThread, canStopIssueChatRun, resolveAssistantMessageFoldedState } from "./IssueChatThread";
+import {
+  IssueChatThread,
+  canStopIssueChatRun,
+  resolveAssistantMessageFoldedState,
+  resolveIssueChatHumanAuthor,
+} from "./IssueChatThread";
 
 const { markdownEditorFocusMock } = vi.hoisted(() => ({
   markdownEditorFocusMock: vi.fn(),
@@ -13,10 +18,6 @@ const { markdownEditorFocusMock } = vi.hoisted(() => ({
 
 const { appendMock } = vi.hoisted(() => ({
   appendMock: vi.fn(async () => undefined),
-}));
-
-const { threadMessagesMock } = vi.hoisted(() => ({
-  threadMessagesMock: vi.fn(() => <div data-testid="thread-messages" />),
 }));
 
 const {
@@ -31,31 +32,7 @@ const {
 
 vi.mock("@assistant-ui/react", () => ({
   AssistantRuntimeProvider: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  ThreadPrimitive: {
-    Root: ({ children, className }: { children: ReactNode; className?: string }) => (
-      <div data-testid="thread-root" className={className}>{children}</div>
-    ),
-    Viewport: ({ children, className }: { children: ReactNode; className?: string }) => (
-      <div data-testid="thread-viewport" className={className}>{children}</div>
-    ),
-    Empty: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-    Messages: () => threadMessagesMock(),
-  },
-  MessagePrimitive: {
-    Root: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-    Content: () => null,
-    Parts: () => null,
-  },
   useAui: () => ({ thread: () => ({ append: appendMock }) }),
-  useAuiState: () => false,
-  useMessage: () => ({
-    id: "message",
-    role: "assistant",
-    createdAt: new Date("2026-04-06T12:00:00.000Z"),
-    content: [],
-    metadata: { custom: {} },
-    status: { type: "complete" },
-  }),
 }));
 
 vi.mock("./transcript/useLiveRunTranscripts", () => ({
@@ -122,6 +99,12 @@ vi.mock("./OutputFeedbackButtons", () => ({
   OutputFeedbackButtons: () => null,
 }));
 
+vi.mock("@/components/ui/tooltip", () => ({
+  Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
+  TooltipContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  TooltipTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
+}));
+
 vi.mock("./AgentIconPicker", () => ({
   AgentIcon: () => null,
 }));
@@ -144,7 +127,6 @@ describe("IssueChatThread", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     localStorage.clear();
-    threadMessagesMock.mockImplementation(() => <div data-testid="thread-messages" />);
   });
 
   afterEach(() => {
@@ -152,7 +134,6 @@ describe("IssueChatThread", () => {
     vi.useRealTimers();
     appendMock.mockReset();
     markdownEditorFocusMock.mockReset();
-    threadMessagesMock.mockReset();
     captureComposerViewportSnapshotMock.mockClear();
     restoreComposerViewportSnapshotMock.mockClear();
     shouldPreserveComposerViewportMock.mockClear();
@@ -223,12 +204,8 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("falls back to a safe transcript warning when assistant-ui throws during message rendering", () => {
+  it("renders the transcript directly from stable Paperclip messages", () => {
     const root = createRoot(container);
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    threadMessagesMock.mockImplementation(() => {
-      throw new Error("tapClientLookup: Index 8 out of bounds (length: 8)");
-    });
 
     act(() => {
       root.render(
@@ -255,11 +232,9 @@ describe("IssueChatThread", () => {
       );
     });
 
-    expect(container.textContent).toContain("Chat renderer hit an internal state error.");
     expect(container.textContent).toContain("Agent summary");
-    expect(consoleErrorSpy).toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Chat renderer hit an internal state error.");
 
-    consoleErrorSpy.mockRestore();
     act(() => {
       root.unmount();
     });
@@ -660,5 +635,34 @@ describe("IssueChatThread", () => {
       runStatus: "cancelled",
       activeRunIds: new Set<string>(),
     })).toBe(false);
+  });
+
+  it("uses company profile data to distinguish the current user from other humans", () => {
+    const userProfileMap = new Map([
+      ["user-1", { label: "Dotta", image: "/avatars/dotta.png" }],
+      ["user-2", { label: "Alice", image: "/avatars/alice.png" }],
+    ]);
+
+    expect(resolveIssueChatHumanAuthor({
+      authorName: "You",
+      authorUserId: "user-1",
+      currentUserId: "user-1",
+      userProfileMap,
+    })).toEqual({
+      isCurrentUser: true,
+      authorName: "Dotta",
+      avatarUrl: "/avatars/dotta.png",
+    });
+
+    expect(resolveIssueChatHumanAuthor({
+      authorName: "Alice",
+      authorUserId: "user-2",
+      currentUserId: "user-1",
+      userProfileMap,
+    })).toEqual({
+      isCurrentUser: false,
+      authorName: "Alice",
+      avatarUrl: "/avatars/alice.png",
+    });
   });
 });

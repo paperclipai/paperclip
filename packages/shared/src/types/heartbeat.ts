@@ -3,6 +3,7 @@ import type {
   AgentStatus,
   HeartbeatInvocationSource,
   HeartbeatRunStatus,
+  RunLivenessState,
   WakeupTriggerDetail,
   WakeupRequestStatus,
 } from "../constants.js";
@@ -38,6 +39,11 @@ export interface HeartbeatRun {
   processStartedAt: Date | null;
   retryOfRunId: string | null;
   processLossRetryCount: number;
+  livenessState: RunLivenessState | null;
+  livenessReason: string | null;
+  continuationAttempt: number;
+  lastUsefulActionAt: Date | null;
+  nextAction: string | null;
   contextSnapshot: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;

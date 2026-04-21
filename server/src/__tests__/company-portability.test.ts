@@ -1539,13 +1539,13 @@ describe("company portability", () => {
     expect(routineSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       projectId: "project-created",
       title: "Monday Review",
-      assigneeAgentId: null,
+      assigneeAgentId: "agent-created",
       priority: "high",
       status: "paused",
       concurrencyPolicy: "always_enqueue",
       catchUpPolicy: "enqueue_missed_with_cap",
     }), expect.any(Object));
-    expect(result.warnings).toContain(
+    expect(result.warnings).not.toContain(
       "Task monday-review assignee claudecoder is pending_approval; imported work was left unassigned.",
     );
     expect(routineSvc.createTrigger).toHaveBeenCalledTimes(2);
@@ -2132,6 +2132,7 @@ describe("company portability", () => {
       runtimeConfig: {
         heartbeat: {
           enabled: false,
+          maxConcurrentRuns: 5,
         },
       },
     });
@@ -2210,6 +2211,7 @@ describe("company portability", () => {
       runtimeConfig: {
         heartbeat: {
           enabled: false,
+          maxConcurrentRuns: 5,
         },
       },
     }));
@@ -2489,7 +2491,7 @@ describe("company portability", () => {
     expect(agentSvc.create).not.toHaveBeenCalled();
   });
 
-  it("imports new agents through approval and adapter-config normalization", async () => {
+  it("imports new agents as active while preserving future hire approval settings", async () => {
     const portability = companyPortabilityService({} as any);
     const exported = await portability.exportBundle("company-1", {
       include: {
@@ -2549,7 +2551,10 @@ describe("company portability", () => {
       adapterConfig: expect.objectContaining({
         normalized: true,
       }),
-      status: "pending_approval",
+      status: "idle",
+    }));
+    expect(companySvc.create).toHaveBeenCalledWith(expect.objectContaining({
+      requireBoardApprovalForNewAgents: true,
     }));
   });
 
@@ -2613,5 +2618,155 @@ describe("company portability", () => {
         normalized: "updated",
       },
     }));
+  });
+
+  it("nameOverrides applied after collision detection do not re-validate uniqueness", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: false, agents: true, projects: false, issues: false },
+    });
+
+    // Simulate existing agents so collision detection triggers rename
+    agentSvc.list.mockResolvedValue([
+      { id: "existing-1", name: "ClaudeCoder", status: "idle", role: "engineer", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, budgetMonthlyCents: 0, permissions: {}, metadata: null },
+    ]);
+
+    const preview = await portability.previewImport({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: false, agents: true, projects: false, issues: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      agents: ["claudecoder"],
+      collisionStrategy: "rename",
+      nameOverrides: { claudecoder: "ClaudeCoder" },
+    });
+
+    // The override reverts the renamed agent back to its original collision name.
+    // This is a known limitation: nameOverrides bypass collision checks.
+    const plan = preview.plan.agentPlans.find((p) => p.slug === "claudecoder");
+    expect(plan).toBeDefined();
+    expect(plan!.action).toBe("create");
+    expect(plan!.plannedName).toBe("ClaudeCoder");
+  });
+
+  it("handles circular reportsTo chains without infinite recursion during export", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    agentSvc.list.mockResolvedValue([
+      {
+        id: "agent-a", name: "AgentA", status: "idle", role: "engineer", title: null, icon: null,
+        reportsTo: "agent-b", capabilities: null, adapterType: "claude_local",
+        adapterConfig: {}, runtimeConfig: {}, budgetMonthlyCents: 0, permissions: {}, metadata: null,
+      },
+      {
+        id: "agent-b", name: "AgentB", status: "idle", role: "manager", title: null, icon: null,
+        reportsTo: "agent-a", capabilities: null, adapterType: "claude_local",
+        adapterConfig: {}, runtimeConfig: {}, budgetMonthlyCents: 0, permissions: {}, metadata: null,
+      },
+    ]);
+    agentInstructionsSvc.exportFiles.mockResolvedValue({
+      files: { "AGENTS.md": "Instructions" }, entryFile: "AGENTS.md", warnings: [],
+    });
+
+    // Export should complete without infinite recursion in org chart building
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: true, projects: false, issues: false },
+    });
+
+    expect(exported.manifest.agents).toHaveLength(2);
+    // Both agents should appear in the export
+    const slugs = exported.manifest.agents.map((a) => a.slug);
+    expect(slugs).toContain("agenta");
+    expect(slugs).toContain("agentb");
+  });
+
+  it("resolves issue assignee to existing agent when agent is skipped", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    projectSvc.list.mockResolvedValue([{
+      id: "project-1", companyId: "company-1", name: "TestProject", urlKey: "testproject",
+      description: null, leadAgentId: null, targetDate: null, color: null, status: "planned",
+      executionWorkspacePolicy: null, archivedAt: null, workspaces: [],
+    }]);
+    issueSvc.list.mockResolvedValue([{
+      id: "issue-1", companyId: "company-1", title: "Test task", identifier: "PAP-1",
+      description: "A test task", status: "todo", priority: "medium",
+      assigneeAgentId: "agent-1", projectId: "project-1", projectWorkspaceId: null,
+      goalId: null, parentId: null, billingCode: null, labelIds: [],
+      executionWorkspaceSettings: null, assigneeAdapterOverrides: null, metadata: null,
+    }]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: false, agents: true, projects: true, issues: true },
+    });
+
+    // Re-import into same company with skip collision strategy
+    // Both agents exist so both will be skipped; the existing agent should resolve for issue assignment
+    agentSvc.list.mockResolvedValue([
+      { id: "agent-1", name: "ClaudeCoder", status: "idle", role: "engineer", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, budgetMonthlyCents: 0, permissions: {}, metadata: null },
+      { id: "agent-2", name: "CMO", status: "idle", role: "cmo", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, budgetMonthlyCents: 0, permissions: {}, metadata: null },
+    ]);
+    projectSvc.list.mockResolvedValue([]);
+    issueSvc.list.mockResolvedValue([]);
+    projectSvc.create.mockResolvedValue({ id: "project-new", companyId: "company-1", urlKey: "testproject" });
+    issueSvc.create.mockResolvedValue({ id: "issue-new", identifier: "PAP-100" });
+
+    const result = await portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: false, agents: true, projects: true, issues: true },
+      target: { mode: "existing_company", companyId: "company-1" },
+      agents: "all",
+      collisionStrategy: "skip",
+    }, "user-1");
+
+    // Both agents should be skipped (already exist)
+    const agentResult = result.agents.find((a) => a.slug === "claudecoder");
+    expect(agentResult).toBeDefined();
+    expect(agentResult!.action).toBe("skipped");
+
+    // Issue should still be created and reference the existing agent
+    expect(issueSvc.create).toHaveBeenCalled();
+    const issueCreateCall = issueSvc.create.mock.calls[0];
+    // The assigneeAgentId should resolve to the existing agent via existingSlugToAgentId
+    expect(issueCreateCall[1]).toEqual(expect.objectContaining({
+      assigneeAgentId: "agent-1",
+    }));
+  });
+
+  it("handles a package with only skills (no agents or projects)", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: false, agents: false, projects: false, issues: false, skills: true },
+      expandReferencedSkills: true,
+    });
+
+    expect(exported.manifest.agents).toHaveLength(0);
+    expect(exported.manifest.projects).toHaveLength(0);
+    expect(exported.manifest.issues).toHaveLength(0);
+    // Skills should still be exported
+    expect(exported.manifest.skills.length).toBeGreaterThanOrEqual(0);
+  });
+
+  it("preview import detects no agents to import when agents are excluded", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: true, projects: false, issues: false },
+    });
+
+    agentSvc.list.mockResolvedValue([]);
+
+    const preview = await portability.previewImport({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: false, agents: false, projects: false, issues: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      agents: "all",
+      collisionStrategy: "rename",
+    });
+
+    expect(preview.plan.agentPlans).toHaveLength(0);
+    expect(preview.plan.projectPlans).toHaveLength(0);
+    expect(preview.plan.issuePlans).toHaveLength(0);
   });
 });

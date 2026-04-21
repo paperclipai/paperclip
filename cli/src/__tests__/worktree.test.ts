@@ -3,11 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  authUsers,
   companies,
   createDb,
+  issueComments,
+  issues,
   projects,
   routines,
   routineTriggers,
@@ -16,6 +20,7 @@ import {
   copyGitHooksToWorktreeGitDir,
   copySeededSecretsKey,
   pauseSeededScheduledRoutines,
+  quarantineSeededWorktreeExecutionState,
   readSourceAttachmentBody,
   rebindWorkspaceCwd,
   resolveSourceConfigPath,
@@ -47,6 +52,7 @@ import {
 const ORIGINAL_CWD = process.cwd();
 const ORIGINAL_ENV = { ...process.env };
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const itEmbeddedPostgres = embeddedPostgresSupport.supported ? it : it.skip;
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -280,6 +286,138 @@ describe("worktree helpers", () => {
     expect(full.nullifyColumns).toEqual({});
   });
 
+  itEmbeddedPostgres("quarantines copied live execution state in seeded worktree databases", async () => {
+    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-quarantine-");
+    const db = createDb(tempDb.connectionString);
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const idleAgentId = randomUUID();
+    const inProgressIssueId = randomUUID();
+    const todoIssueId = randomUUID();
+    const reviewIssueId = randomUUID();
+    const userIssueId = randomUUID();
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: "WTQ",
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values([
+        {
+          id: agentId,
+          companyId,
+          name: "CodexCoder",
+          role: "engineer",
+          status: "running",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {
+            heartbeat: { enabled: true, intervalSec: 60 },
+            wakeOnDemand: true,
+          },
+          permissions: {},
+        },
+        {
+          id: idleAgentId,
+          companyId,
+          name: "Reviewer",
+          role: "reviewer",
+          status: "idle",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: { heartbeat: { enabled: false, intervalSec: 300 } },
+          permissions: {},
+        },
+      ]);
+      await db.insert(issues).values([
+        {
+          id: inProgressIssueId,
+          companyId,
+          title: "Copied in-flight issue",
+          status: "in_progress",
+          priority: "medium",
+          assigneeAgentId: agentId,
+          issueNumber: 1,
+          identifier: "WTQ-1",
+          executionAgentNameKey: "codexcoder",
+          executionLockedAt: new Date("2026-04-18T00:00:00.000Z"),
+        },
+        {
+          id: todoIssueId,
+          companyId,
+          title: "Copied assigned todo issue",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: agentId,
+          issueNumber: 2,
+          identifier: "WTQ-2",
+        },
+        {
+          id: reviewIssueId,
+          companyId,
+          title: "Copied assigned review issue",
+          status: "in_review",
+          priority: "medium",
+          assigneeAgentId: idleAgentId,
+          issueNumber: 3,
+          identifier: "WTQ-3",
+        },
+        {
+          id: userIssueId,
+          companyId,
+          title: "Copied user issue",
+          status: "todo",
+          priority: "medium",
+          assigneeUserId: "user-1",
+          issueNumber: 4,
+          identifier: "WTQ-4",
+        },
+      ]);
+
+      await expect(quarantineSeededWorktreeExecutionState(tempDb.connectionString)).resolves.toEqual({
+        disabledTimerHeartbeats: 1,
+        resetRunningAgents: 1,
+        quarantinedInProgressIssues: 1,
+        unassignedTodoIssues: 1,
+        unassignedReviewIssues: 1,
+      });
+
+      const [quarantinedAgent] = await db.select().from(agents).where(eq(agents.id, agentId));
+      expect(quarantinedAgent?.status).toBe("idle");
+      expect(quarantinedAgent?.runtimeConfig).toMatchObject({
+        heartbeat: { enabled: false, intervalSec: 60 },
+        wakeOnDemand: true,
+      });
+
+      const [inProgressIssue] = await db.select().from(issues).where(eq(issues.id, inProgressIssueId));
+      expect(inProgressIssue?.status).toBe("blocked");
+      expect(inProgressIssue?.assigneeAgentId).toBeNull();
+      expect(inProgressIssue?.executionAgentNameKey).toBeNull();
+      expect(inProgressIssue?.executionLockedAt).toBeNull();
+
+      const [todoIssue] = await db.select().from(issues).where(eq(issues.id, todoIssueId));
+      expect(todoIssue?.status).toBe("todo");
+      expect(todoIssue?.assigneeAgentId).toBeNull();
+
+      const [reviewIssue] = await db.select().from(issues).where(eq(issues.id, reviewIssueId));
+      expect(reviewIssue?.status).toBe("in_review");
+      expect(reviewIssue?.assigneeAgentId).toBeNull();
+
+      const [userIssue] = await db.select().from(issues).where(eq(issues.id, userIssueId));
+      expect(userIssue?.status).toBe("todo");
+      expect(userIssue?.assigneeUserId).toBe("user-1");
+
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, inProgressIssueId));
+      expect(comments).toHaveLength(1);
+      expect(comments[0]?.body).toContain("Quarantined during worktree seed");
+    } finally {
+      await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+      await tempDb.cleanup();
+    }
+  }, 20_000);
+
   it("copies the source local_encrypted secrets key into the seeded worktree instance", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-secrets-"));
     const originalInlineMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
@@ -372,6 +510,97 @@ describe("worktree helpers", () => {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
+
+  itEmbeddedPostgres(
+    "seeds authenticated users into minimally cloned worktree instances",
+    async () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-auth-seed-"));
+      const worktreeRoot = path.join(tempRoot, "PAP-999-auth-seed");
+      const sourceHome = path.join(tempRoot, "source-home");
+      const sourceConfigDir = path.join(sourceHome, "instances", "source");
+      const sourceConfigPath = path.join(sourceConfigDir, "config.json");
+      const sourceEnvPath = path.join(sourceConfigDir, ".env");
+      const sourceKeyPath = path.join(sourceConfigDir, "secrets", "master.key");
+      const worktreeHome = path.join(tempRoot, ".paperclip-worktrees");
+      const originalCwd = process.cwd();
+      const sourceDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-auth-source-");
+
+      try {
+        const sourceDbClient = createDb(sourceDb.connectionString);
+        await sourceDbClient.insert(authUsers).values({
+          id: "user-existing",
+          email: "existing@paperclip.ing",
+          name: "Existing User",
+          emailVerified: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+        fs.mkdirSync(path.dirname(sourceKeyPath), { recursive: true });
+        fs.mkdirSync(worktreeRoot, { recursive: true });
+
+        const sourceConfig = buildSourceConfig();
+        sourceConfig.database = {
+          mode: "postgres",
+          embeddedPostgresDataDir: path.join(sourceConfigDir, "db"),
+          embeddedPostgresPort: 54329,
+          backup: {
+            enabled: true,
+            intervalMinutes: 60,
+            retentionDays: 30,
+            dir: path.join(sourceConfigDir, "backups"),
+          },
+          connectionString: sourceDb.connectionString,
+        };
+        sourceConfig.logging.logDir = path.join(sourceConfigDir, "logs");
+        sourceConfig.storage.localDisk.baseDir = path.join(sourceConfigDir, "storage");
+        sourceConfig.secrets.localEncrypted.keyFilePath = sourceKeyPath;
+
+        fs.writeFileSync(sourceConfigPath, JSON.stringify(sourceConfig, null, 2) + "\n", "utf8");
+        fs.writeFileSync(sourceEnvPath, "", "utf8");
+        fs.writeFileSync(sourceKeyPath, "source-master-key", "utf8");
+
+        process.chdir(worktreeRoot);
+        await worktreeInitCommand({
+          name: "PAP-999-auth-seed",
+          home: worktreeHome,
+          fromConfig: sourceConfigPath,
+          force: true,
+        });
+
+        const targetConfig = JSON.parse(
+          fs.readFileSync(path.join(worktreeRoot, ".paperclip", "config.json"), "utf8"),
+        ) as PaperclipConfig;
+        const { default: EmbeddedPostgres } = await import("embedded-postgres");
+        const targetPg = new EmbeddedPostgres({
+          databaseDir: targetConfig.database.embeddedPostgresDataDir,
+          user: "paperclip",
+          password: "paperclip",
+          port: targetConfig.database.embeddedPostgresPort,
+          persistent: true,
+          initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+          onLog: () => {},
+          onError: () => {},
+        });
+
+        await targetPg.start();
+        try {
+          const targetDb = createDb(
+            `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
+          );
+          const seededUsers = await targetDb.select().from(authUsers);
+          expect(seededUsers.some((row) => row.email === "existing@paperclip.ing")).toBe(true);
+        } finally {
+          await targetPg.stop();
+        }
+      } finally {
+        process.chdir(originalCwd);
+        await sourceDb.cleanup();
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    20000,
+  );
 
   it("avoids ports already claimed by sibling worktree instance configs", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-claimed-ports-"));

@@ -14,6 +14,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { groupBy } from "../lib/groupBy";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
@@ -461,6 +462,7 @@ export function Routines() {
   });
 
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [composerOpen]);
+  const recentProjectIds = useMemo(() => getRecentProjectIds(), [composerOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
       sortAgentsByRecency(
@@ -716,6 +718,7 @@ export function Routines() {
                     ref={assigneeSelectorRef}
                     value={draft.assigneeAgentId}
                     options={assigneeOptions}
+                    recentOptionIds={recentAssigneeIds}
                     placeholder="Assignee"
                     noneLabel="No assignee"
                     searchPlaceholder="Search assignees..."
@@ -761,11 +764,15 @@ export function Routines() {
                     ref={projectSelectorRef}
                     value={draft.projectId}
                     options={projectOptions}
+                    recentOptionIds={recentProjectIds}
                     placeholder="Project"
                     noneLabel="No project"
                     searchPlaceholder="Search projects..."
                     emptyMessage="No projects found."
-                    onChange={(projectId) => setDraft((current) => ({ ...current, projectId }))}
+                    onChange={(projectId) => {
+                      if (projectId) trackRecentProject(projectId);
+                      setDraft((current) => ({ ...current, projectId }));
+                    }}
                     onConfirm={() => descriptionEditorRef.current?.focus()}
                     renderTriggerValue={(option) =>
                       option && currentProject ? (
@@ -807,20 +814,11 @@ export function Routines() {
                 bordered={false}
                 contentClassName="min-h-[160px] text-sm text-muted-foreground"
                 onSubmit={() => {
-                  if (!createRoutine.isPending && draft.title.trim()) {
+                  if (!createRoutine.isPending && draft.title.trim() && draft.projectId && draft.assigneeAgentId) {
                     createRoutine.mutate();
                   }
                 }}
               />
-              <div className="mt-3 space-y-3">
-                <RoutineVariablesHint />
-                <RoutineVariablesEditor
-                  title={draft.title}
-                  description={draft.description}
-                  value={draft.variables}
-                  onChange={(variables) => setDraft((current) => ({ ...current, variables }))}
-                />
-              </div>
             </div>
 
             <div className="border-t border-border/60 px-5 py-3">
