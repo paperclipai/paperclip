@@ -806,7 +806,7 @@ describe("agent permission routes", () => {
       },
     ]);
 
-    const app = createApp({
+    const app = await createApp({
       type: "agent",
       agentId,
       companyId,
