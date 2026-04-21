@@ -69,6 +69,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Gemini agent",
     icon: Gem,
   },
+  auggie_local: {
+    label: "Auggie",
+    description: "Local Augment Code CLI agent",
+    icon: Terminal,
+  },
   opencode_local: {
     label: "OpenCode",
     description: "Local multi-provider agent",

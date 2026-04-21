@@ -94,6 +94,7 @@ export function agentRoutes(db: Db) {
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
+    auggie_local: "instructionsFilePath",
     hermes_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
@@ -713,6 +714,7 @@ export function agentRoutes(db: Db) {
   const LEGACY_MATERIALIZED_SKILLS_SET = new Set([
     "cursor",
     "gemini_local",
+    "auggie_local",
     "opencode_local",
     "pi_local",
   ]);

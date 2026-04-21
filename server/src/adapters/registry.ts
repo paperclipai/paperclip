@@ -36,6 +36,14 @@ import {
 } from "@paperclipai/adapter-gemini-local/server";
 import { agentConfigurationDoc as geminiAgentConfigurationDoc, models as geminiModels } from "@paperclipai/adapter-gemini-local";
 import {
+  execute as auggieExecute,
+  listAuggieSkills,
+  syncAuggieSkills,
+  testEnvironment as auggieTestEnvironment,
+  sessionCodec as auggieSessionCodec,
+} from "@paperclipai/adapter-auggie-local/server";
+import { agentConfigurationDoc as auggieAgentConfigurationDoc, models as auggieModels } from "@paperclipai/adapter-auggie-local";
+import {
   execute as openCodeExecute,
   listOpenCodeSkills,
   syncOpenCodeSkills,
@@ -186,6 +194,22 @@ const geminiLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: geminiAgentConfigurationDoc,
 };
 
+const auggieLocalAdapter: ServerAdapterModule = {
+  type: "auggie_local",
+  execute: auggieExecute,
+  testEnvironment: auggieTestEnvironment,
+  listSkills: listAuggieSkills,
+  syncSkills: syncAuggieSkills,
+  sessionCodec: auggieSessionCodec,
+  sessionManagement: getAdapterSessionManagement("auggie_local") ?? undefined,
+  models: auggieModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  agentConfigurationDoc: auggieAgentConfigurationDoc,
+};
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
   execute: openclawGatewayExecute,
@@ -265,6 +289,7 @@ function registerBuiltInAdapters() {
     piLocalAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
+    auggieLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
     processAdapter,
