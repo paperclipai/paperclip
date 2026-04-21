@@ -847,6 +847,8 @@ describe("agent permission routes", () => {
           createdAt: "2026-04-09T09:02:25.540Z",
         },
         dependencyReady: true,
+        unresolvedBlockerCount: 0,
+        unresolvedBlockerIssueIds: [],
       },
     ]);
   });
