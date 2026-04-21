@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -14,8 +14,6 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { agentRoutes } from "../routes/agents.js";
-import { errorHandler } from "../middleware/index.js";
 import { eq, inArray } from "drizzle-orm";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -31,7 +29,25 @@ function issuePrefix(id: string) {
   return `T${id.replace(/-/g, "").slice(0, 5).toUpperCase()}`;
 }
 
-function createRouteApp(db: ReturnType<typeof createDb>, actor: Record<string, unknown>) {
+let routeImportSeq = 0;
+
+async function createRouteApp(db: ReturnType<typeof createDb>, actor: Record<string, unknown>) {
+  vi.resetModules();
+  vi.doUnmock("../routes/agents.js");
+  vi.doUnmock("../routes/agents.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  routeImportSeq += 1;
+  const routeModulePath = `../routes/agents.ts?instance-agent-pause-routes-${routeImportSeq}`;
+  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+    import(routeModulePath) as Promise<typeof import("../routes/agents.ts")>,
+    import("../middleware/index.ts"),
+  ]);
+
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -155,7 +171,7 @@ describeEmbeddedPostgres("instance agent pause routes", () => {
     const runningRunId = await insertRun(db, { companyId: firstCompanyId, agentId: runningAgentId, status: "running" });
     const preservedRunId = await insertRun(db, { companyId: firstCompanyId, agentId: manualPausedId, status: "queued" });
 
-    const app = createRouteApp(db, {
+    const app = await createRouteApp(db, {
       type: "board",
       userId: "admin-user",
       source: "session",
@@ -239,7 +255,7 @@ describeEmbeddedPostgres("instance agent pause routes", () => {
       pausedAt: new Date("2026-04-20T10:00:00.000Z"),
     });
 
-    const app = createRouteApp(db, {
+    const app = await createRouteApp(db, {
       type: "board",
       userId: "admin-user",
       source: "session",
@@ -269,7 +285,7 @@ describeEmbeddedPostgres("instance agent pause routes", () => {
   it("requires instance admin access before mutating agents", async () => {
     const companyId = await insertCompany(db, { name: "Paperclip" });
     const agentId = await insertAgent(db, { companyId, name: "Builder", status: "idle" });
-    const app = createRouteApp(db, {
+    const app = await createRouteApp(db, {
       type: "board",
       userId: "board-user",
       source: "session",

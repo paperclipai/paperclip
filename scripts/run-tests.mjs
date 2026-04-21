@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,21 +13,6 @@ const vitestBin = join(
   process.platform === "win32" ? "vitest.cmd" : "vitest",
 );
 const cliArgs = process.argv.slice(2).filter((arg) => arg !== "--");
-const heartbeatRuntimeEnvKeys = [
-  "PAPERCLIP_AGENT_ID",
-  "PAPERCLIP_API_KEY",
-  "PAPERCLIP_APPROVAL_ID",
-  "PAPERCLIP_APPROVAL_STATUS",
-  "PAPERCLIP_COMPANY_ID",
-  "PAPERCLIP_LINKED_ISSUE_IDS",
-  "PAPERCLIP_RUN_ID",
-  "PAPERCLIP_TASK_ID",
-  "PAPERCLIP_WAKE_COMMENT_ID",
-  "PAPERCLIP_WAKE_PAYLOAD_JSON",
-  "PAPERCLIP_WAKE_REASON",
-  "PAPERCLIP_AGENT_JWT_SECRET",
-];
-
 const testFilePattern = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const moduleMockPattern =
   /\bvi\.(?:doMock|mock|hoisted|stub(?:Env|Global)?|unstub(?:AllEnvs|AllGlobals)?|resetModules|unmock|doUnmock)\b/;
@@ -90,9 +76,14 @@ function excludeArgsFor(filePath) {
 function runVitest(label, args, options = {}) {
   console.log(`\n[paperclip:test] ${label}`);
   const env = { ...process.env };
-  for (const key of heartbeatRuntimeEnvKeys) {
-    delete env[key];
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("PAPERCLIP_")) {
+      delete env[key];
+    }
   }
+  const isolatedHome = mkdtempSync(join(tmpdir(), "paperclip-vitest-home-"));
+  env.HOME = isolatedHome;
+  env.USERPROFILE = isolatedHome;
   const result = spawnSync(vitestBin, [
     "run",
     ...(options.noCache ? ["--no-cache"] : []),
@@ -103,6 +94,7 @@ function runVitest(label, args, options = {}) {
     env,
     stdio: "inherit",
   });
+  rmSync(isolatedHome, { recursive: true, force: true });
 
   if (result.error) {
     console.error(`[paperclip:test] Failed to start Vitest: ${result.error.message}`);
