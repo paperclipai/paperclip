@@ -12,6 +12,11 @@ const PROMPT_KEY = "promptTemplate";
 /** @deprecated Use the managed instructions bundle system instead. */
 const BOOTSTRAP_PROMPT_KEY = "bootstrapPromptTemplate";
 const LEGACY_PROMPT_TEMPLATE_PATH = "promptTemplate.legacy.md";
+const MANAGED_AGENTS_REFERENCE_REWRITES = [
+  ["$AGENT_HOME/HEARTBEAT.md", "./HEARTBEAT.md"],
+  ["$AGENT_HOME/SOUL.md", "./SOUL.md"],
+  ["$AGENT_HOME/TOOLS.md", "./TOOLS.md"],
+] as const;
 const IGNORED_INSTRUCTIONS_FILE_NAMES = new Set([".DS_Store", "Thumbs.db", "Desktop.ini"]);
 const IGNORED_INSTRUCTIONS_DIRECTORY_NAMES = new Set([
   ".git",
@@ -139,6 +144,29 @@ function resolveManagedInstructionsRoot(agent: AgentLike): string {
     agent.id,
     "instructions",
   );
+}
+
+function normalizeManagedBundleFileContent(relativePath: string, content: string): string {
+  if (normalizeRelativeFilePath(relativePath) !== ENTRY_FILE_DEFAULT) {
+    return content;
+  }
+
+  let nextContent = content;
+  for (const [legacyReference, normalizedReference] of MANAGED_AGENTS_REFERENCE_REWRITES) {
+    nextContent = nextContent.replaceAll(legacyReference, normalizedReference);
+  }
+  return nextContent;
+}
+
+async function healManagedBundleContent(rootPath: string): Promise<void> {
+  const agentsPath = resolvePathWithinRoot(rootPath, ENTRY_FILE_DEFAULT);
+  const currentContent = await fs.readFile(agentsPath, "utf8").catch(() => null);
+  if (currentContent === null) return;
+
+  const normalizedContent = normalizeManagedBundleFileContent(ENTRY_FILE_DEFAULT, currentContent);
+  if (normalizedContent === currentContent) return;
+
+  await fs.writeFile(agentsPath, normalizedContent, "utf8");
 }
 
 function resolveLegacyInstructionsPath(candidatePath: string, config: Record<string, unknown>): string {
@@ -287,46 +315,64 @@ async function recoverManagedBundleState(agent: AgentLike, state: BundleState): 
       ? ENTRY_FILE_DEFAULT
       : files[0]!;
 
+  let nextState: BundleState;
+
   if (!state.rootPath) {
-    return {
+    nextState = {
       ...state,
       mode: "managed",
       rootPath: managedRootPath,
       entryFile: recoveredEntryFile,
       resolvedEntryPath: path.resolve(managedRootPath, recoveredEntryFile),
     };
+  } else if (state.mode === "external") {
+    nextState = state;
+  } else {
+    const resolvedConfiguredRoot = path.resolve(state.rootPath);
+    const configuredRootMatchesManaged = resolvedConfiguredRoot === managedRootPath;
+    const hasEntryMismatch = recoveredEntryFile !== state.entryFile;
+
+    if (configuredRootMatchesManaged && !hasEntryMismatch) {
+      nextState = state;
+    } else {
+      const warnings = [...state.warnings];
+      if (!configuredRootMatchesManaged) {
+        warnings.push(
+          `Recovered managed instructions from disk at ${managedRootPath}; ignoring stale configured root ${state.rootPath}.`,
+        );
+      }
+      if (hasEntryMismatch) {
+        warnings.push(
+          `Recovered managed instructions entry file from disk as ${recoveredEntryFile}; previous entry ${state.entryFile} was missing.`,
+        );
+      }
+
+      nextState = {
+        ...state,
+        mode: "managed",
+        rootPath: managedRootPath,
+        entryFile: recoveredEntryFile,
+        resolvedEntryPath: path.resolve(managedRootPath, recoveredEntryFile),
+        warnings,
+      };
+    }
   }
 
-  if (state.mode === "external") return state;
-
-  const resolvedConfiguredRoot = path.resolve(state.rootPath);
-  const configuredRootMatchesManaged = resolvedConfiguredRoot === managedRootPath;
-  const hasEntryMismatch = recoveredEntryFile !== state.entryFile;
-
-  if (configuredRootMatchesManaged && !hasEntryMismatch) {
-    return state;
+  if (nextState.mode === "managed" && nextState.rootPath) {
+    try {
+      await healManagedBundleContent(nextState.rootPath);
+    } catch (err) {
+      nextState = {
+        ...nextState,
+        warnings: [
+          ...nextState.warnings,
+          `Failed to normalize managed AGENTS.md: ${err instanceof Error ? err.message : String(err)}`,
+        ],
+      };
+    }
   }
 
-  const warnings = [...state.warnings];
-  if (!configuredRootMatchesManaged) {
-    warnings.push(
-      `Recovered managed instructions from disk at ${managedRootPath}; ignoring stale configured root ${state.rootPath}.`,
-    );
-  }
-  if (hasEntryMismatch) {
-    warnings.push(
-      `Recovered managed instructions entry file from disk as ${recoveredEntryFile}; previous entry ${state.entryFile} was missing.`,
-    );
-  }
-
-  return {
-    ...state,
-    mode: "managed",
-    rootPath: managedRootPath,
-    entryFile: recoveredEntryFile,
-    resolvedEntryPath: path.resolve(managedRootPath, recoveredEntryFile),
-    warnings,
-  };
+  return nextState;
 }
 
 function toBundle(agent: AgentLike, state: BundleState, files: AgentInstructionsFileSummary[]): AgentInstructionsBundle {
@@ -417,7 +463,7 @@ function buildPersistedBundleConfig(
 async function writeBundleFiles(
   rootPath: string,
   files: Record<string, string>,
-  options?: { overwriteExisting?: boolean },
+  options?: { overwriteExisting?: boolean; normalizeManagedBundle?: boolean },
 ) {
   for (const [relativePath, content] of Object.entries(files)) {
     const normalizedPath = normalizeRelativeFilePath(relativePath);
@@ -425,7 +471,13 @@ async function writeBundleFiles(
     const existingStat = await statIfExists(absolutePath);
     if (existingStat?.isFile() && !options?.overwriteExisting) continue;
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await fs.writeFile(absolutePath, content, "utf8");
+    await fs.writeFile(
+      absolutePath,
+      options?.normalizeManagedBundle
+        ? normalizeManagedBundleFileContent(normalizedPath, content)
+        : content,
+      "utf8",
+    );
   }
 }
 
@@ -535,7 +587,11 @@ export function agentInstructionsService() {
       const legacyInstructions = await readLegacyInstructions(agent, current.config);
       if (legacyInstructions.trim().length > 0) {
         await fs.mkdir(path.dirname(entryPath), { recursive: true });
-        await fs.writeFile(entryPath, legacyInstructions, "utf8");
+        await fs.writeFile(
+          entryPath,
+          normalizeManagedBundleFileContent(entryFile, legacyInstructions),
+          "utf8",
+        );
       }
     }
 
@@ -578,12 +634,16 @@ export function agentInstructionsService() {
     const existingFiles = await listFilesRecursive(nextRootPath);
     const exported = await exportFiles(agent);
     if (existingFiles.length === 0) {
-      await writeBundleFiles(nextRootPath, exported.files);
+      await writeBundleFiles(nextRootPath, exported.files, {
+        normalizeManagedBundle: nextMode === "managed",
+      });
     }
     const refreshedFiles = existingFiles.length === 0 ? await listFilesRecursive(nextRootPath) : existingFiles;
     if (!refreshedFiles.includes(nextEntryFile)) {
       const nextEntryContent = exported.files[nextEntryFile] ?? exported.files[exported.entryFile] ?? "";
-      await writeBundleFiles(nextRootPath, { [nextEntryFile]: nextEntryContent });
+      await writeBundleFiles(nextRootPath, { [nextEntryFile]: nextEntryContent }, {
+        normalizeManagedBundle: nextMode === "managed",
+      });
     }
 
     const nextConfig = applyBundleConfig(state.config, {
@@ -701,7 +761,7 @@ export function agentInstructionsService() {
 
     const normalizedEntries = Object.entries(files).map(([relativePath, content]) => [
       normalizeRelativeFilePath(relativePath),
-      content,
+      normalizeManagedBundleFileContent(relativePath, content),
     ] as const);
     for (const [relativePath, content] of normalizedEntries) {
       const absolutePath = resolvePathWithinRoot(rootPath, relativePath);

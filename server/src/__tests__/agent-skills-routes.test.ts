@@ -437,6 +437,13 @@ describe("agent skill routes", () => {
       }),
       { entryFile: "AGENTS.md", replaceExisting: false },
     );
+    const materializedFiles = mockAgentInstructionsService.materializeManagedBundle.mock.calls.at(-1)?.[1] as
+      | Record<string, string>
+      | undefined;
+    expect(materializedFiles?.["AGENTS.md"]).toContain("`./HEARTBEAT.md`");
+    expect(materializedFiles?.["AGENTS.md"]).toContain("`./SOUL.md`");
+    expect(materializedFiles?.["AGENTS.md"]).toContain("`./TOOLS.md`");
+    expect(materializedFiles?.["AGENTS.md"]).not.toContain("$AGENT_HOME/HEARTBEAT.md");
   });
 
   it("materializes the bundled default instruction set for non-CEO agents with no prompt template", async () => {

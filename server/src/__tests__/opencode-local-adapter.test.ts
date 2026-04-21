@@ -45,6 +45,40 @@ describe("opencode_local parser", () => {
     });
     expect(parsed.costUsd).toBeCloseTo(0.003, 6);
     expect(parsed.errorMessage).toBe("model access denied");
+    expect(parsed.toolErrorMessages).toEqual([]);
+  });
+
+  it("does not treat tool_use failures as terminal adapter errors", () => {
+    const stdout = [
+      JSON.stringify({ type: "step_start", sessionID: "ses_123" }),
+      JSON.stringify({
+        type: "tool_use",
+        part: {
+          type: "tool_use",
+          tool: "read",
+          state: {
+            status: "error",
+            error: "missing file",
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "step_finish",
+        part: {
+          reason: "stop",
+          cost: 0,
+          tokens: {
+            input: 1,
+            output: 1,
+            cache: { read: 0, write: 0 },
+          },
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.errorMessage).toBeNull();
+    expect(parsed.toolErrorMessages).toEqual(["missing file"]);
   });
 });
 
