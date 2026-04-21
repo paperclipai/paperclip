@@ -3,6 +3,8 @@ import type { AdapterModel } from "@paperclipai/adapter-utils";
 import { asString, runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 
 const MODELS_CACHE_TTL_MS = 60_000;
+const DISCOVERY_MAX_ATTEMPTS = 2;
+const DISCOVERY_RETRY_DELAY_MS = 400;
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -11,6 +13,19 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function summarizeOutput(stdout: string, stderr: string): string {
+  const stderrLine = firstNonEmptyLine(stderr);
+  const stdoutLine = firstNonEmptyLine(stdout);
+  if (stderrLine && stdoutLine && stderrLine !== stdoutLine) {
+    return `stderr=${stderrLine}; stdout=${stdoutLine}`;
+  }
+  return stderrLine || stdoutLine || "";
 }
 
 function parseModelsOutput(stdout: string): AdapterModel[] {
@@ -110,30 +125,51 @@ export async function discoverPiModels(input: {
   const env = normalizeEnv(input.env);
   const runtimeEnv = normalizeEnv({ ...process.env, ...env });
 
-  const result = await runChildProcess(
-    `pi-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    command,
-    ["--list-models"],
-    {
-      cwd,
-      env: runtimeEnv,
-      timeoutSec: 20,
-      graceSec: 3,
-      onLog: async () => {},
-    },
-  );
+  for (let attempt = 1; attempt <= DISCOVERY_MAX_ATTEMPTS; attempt++) {
+    const result = await runChildProcess(
+      `pi-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command,
+      ["--list-models"],
+      {
+        cwd,
+        env: runtimeEnv,
+        timeoutSec: 20,
+        graceSec: 3,
+        onLog: async () => {},
+      },
+    );
 
-  if (result.timedOut) {
-    throw new Error("`pi --list-models` timed out.");
-  }
-  if ((result.exitCode ?? 1) !== 0) {
-    const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
-    throw new Error(detail ? `\`pi --list-models\` failed: ${detail}` : "`pi --list-models` failed.");
+    if (!result.timedOut && (result.exitCode ?? 1) === 0) {
+      // Pi outputs model list to stderr, but fall back to stdout for older versions
+      const output = result.stderr || result.stdout;
+      return sortModels(dedupeModels(parseModelsOutput(output)));
+    }
+
+    const detail = summarizeOutput(result.stdout, result.stderr);
+    const lastAttempt = attempt >= DISCOVERY_MAX_ATTEMPTS;
+
+    if (result.timedOut) {
+      if (!lastAttempt) {
+        await sleep(DISCOVERY_RETRY_DELAY_MS);
+        continue;
+      }
+      throw new Error(
+        detail
+          ? `\`pi --list-models\` timed out after ${DISCOVERY_MAX_ATTEMPTS} attempts. ${detail}`
+          : `\`pi --list-models\` timed out after ${DISCOVERY_MAX_ATTEMPTS} attempts.`,
+      );
+    }
+
+    if ((result.exitCode ?? 1) !== 0) {
+      if (!lastAttempt) {
+        await sleep(DISCOVERY_RETRY_DELAY_MS);
+        continue;
+      }
+      throw new Error(detail ? `\`pi --list-models\` failed: ${detail}` : "`pi --list-models` failed.");
+    }
   }
 
-  // Pi outputs model list to stderr, but fall back to stdout for older versions
-  const output = result.stderr || result.stdout;
-  return sortModels(dedupeModels(parseModelsOutput(output)));
+  throw new Error("`pi --list-models` failed unexpectedly.");
 }
 
 function normalizeEnv(input: unknown): Record<string, string> {
@@ -160,10 +196,17 @@ export async function discoverPiModelsCached(input: {
   pruneExpiredDiscoveryCache(now);
   const cached = discoveryCache.get(key);
   if (cached && cached.expiresAt > now) return cached.models;
-
-  const models = await discoverPiModels({ command, cwd, env });
-  discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
-  return models;
+  try {
+    const models = await discoverPiModels({ command, cwd, env });
+    discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
+    return models;
+  } catch (err) {
+    if (cached && cached.models.length > 0) {
+      // Fail open to stale cache to keep transient discovery slowness from hard-failing every run.
+      return cached.models;
+    }
+    throw err;
+  }
 }
 
 export async function ensurePiModelConfiguredAndAvailable(input: {
