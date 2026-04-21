@@ -1975,20 +1975,18 @@ export function issueService(db: Db) {
       }
       if (issueData.status && issueData.status !== "in_progress") {
         patch.checkoutRunId = null;
-        // Fix B: also clear the execution lock when leaving in_progress
         patch.executionRunId = null;
-        patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
+        patch.executionAgentNameKey = null;
       }
       if (
         (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
         (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
       ) {
         patch.checkoutRunId = null;
-        // Fix B: clear execution lock on reassignment, matching checkoutRunId clear
         patch.executionRunId = null;
-        patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
+        patch.executionAgentNameKey = null;
       }
 
       const runUpdate = async (tx: any) => {
@@ -2329,6 +2327,9 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionLockedAt: null,
+          executionAgentNameKey: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
