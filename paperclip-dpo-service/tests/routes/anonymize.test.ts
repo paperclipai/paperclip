@@ -77,6 +77,7 @@ describe("POST /anonymize", () => {
       headers: { "x-dpo-key": KEY, "content-type": "application/json" },
       payload: { text: "x", targetLlm: "gpt-4o", agent: "luna" },
     });
+    expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ blocked: true, reason: "dpo_unavailable" });
   });
 
