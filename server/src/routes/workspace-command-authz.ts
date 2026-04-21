@@ -37,6 +37,12 @@ function collectExecutionWorkspaceConfigCommandPaths(raw: unknown, prefix: strin
   if (hasOwn(raw, "cleanupCommand")) {
     paths.push(prefixPath(prefix, "cleanupCommand"));
   }
+  // workspaceRuntime carries jobs/commands/services arrays that execute on the host.
+  // Treat the entire key as a blocked path so agents cannot inject arbitrary commands
+  // that are later triggered via the /run endpoint.
+  if (hasOwn(raw, "workspaceRuntime")) {
+    paths.push(prefixPath(prefix, "workspaceRuntime"));
+  }
   return paths;
 }
 
@@ -49,18 +55,26 @@ export function assertNoAgentHostWorkspaceCommandMutation(req: Request, paths: s
 
 export function collectAgentAdapterWorkspaceCommandPaths(adapterConfig: unknown): string[] {
   if (!isRecord(adapterConfig)) return [];
-  return collectWorkspaceStrategyCommandPaths(
+  const paths = collectWorkspaceStrategyCommandPaths(
     adapterConfig.workspaceStrategy,
     "adapterConfig.workspaceStrategy",
   );
+  if (hasOwn(adapterConfig, "workspaceRuntime")) {
+    paths.push("adapterConfig.workspaceRuntime");
+  }
+  return paths;
 }
 
 export function collectProjectExecutionWorkspaceCommandPaths(policy: unknown): string[] {
   if (!isRecord(policy)) return [];
-  return collectWorkspaceStrategyCommandPaths(
+  const paths = collectWorkspaceStrategyCommandPaths(
     policy.workspaceStrategy,
     "executionWorkspacePolicy.workspaceStrategy",
   );
+  if (hasOwn(policy, "workspaceRuntime")) {
+    paths.push("executionWorkspacePolicy.workspaceRuntime");
+  }
+  return paths;
 }
 
 export function collectProjectWorkspaceCommandPaths(
@@ -68,9 +82,25 @@ export function collectProjectWorkspaceCommandPaths(
   prefix = "",
 ): string[] {
   if (!isRecord(workspacePatch)) return [];
-  return hasOwn(workspacePatch, "cleanupCommand")
-    ? [prefixPath(prefix, "cleanupCommand")]
-    : [];
+  const paths: string[] = [];
+  if (hasOwn(workspacePatch, "cleanupCommand")) {
+    paths.push(prefixPath(prefix, "cleanupCommand"));
+  }
+  // workspaceRuntime is stored nested under runtimeConfig in project workspace metadata
+  if (isRecord(workspacePatch.runtimeConfig) && hasOwn(workspacePatch.runtimeConfig, "workspaceRuntime")) {
+    paths.push(prefixPath(prefix, "runtimeConfig.workspaceRuntime"));
+  }
+  // workspaceRuntime can also be injected via the free-form metadata field because
+  // the service reads metadata.runtimeConfig.workspaceRuntime via
+  // readProjectWorkspaceRuntimeConfig — block that path explicitly.
+  if (
+    isRecord(workspacePatch.metadata) &&
+    isRecord(workspacePatch.metadata.runtimeConfig) &&
+    hasOwn(workspacePatch.metadata.runtimeConfig, "workspaceRuntime")
+  ) {
+    paths.push(prefixPath(prefix, "metadata.runtimeConfig.workspaceRuntime"));
+  }
+  return paths;
 }
 
 export function collectIssueWorkspaceCommandPaths(input: {
@@ -79,6 +109,9 @@ export function collectIssueWorkspaceCommandPaths(input: {
 }): string[] {
   const paths: string[] = [];
   if (isRecord(input.executionWorkspaceSettings)) {
+    if (hasOwn(input.executionWorkspaceSettings, "workspaceRuntime")) {
+      paths.push("executionWorkspaceSettings.workspaceRuntime");
+    }
     paths.push(
       ...collectWorkspaceStrategyCommandPaths(
         input.executionWorkspaceSettings.workspaceStrategy,
@@ -89,6 +122,9 @@ export function collectIssueWorkspaceCommandPaths(input: {
   if (isRecord(input.assigneeAdapterOverrides)) {
     const adapterConfig = input.assigneeAdapterOverrides.adapterConfig;
     if (isRecord(adapterConfig)) {
+      if (hasOwn(adapterConfig, "workspaceRuntime")) {
+        paths.push("assigneeAdapterOverrides.adapterConfig.workspaceRuntime");
+      }
       paths.push(
         ...collectWorkspaceStrategyCommandPaths(
           adapterConfig.workspaceStrategy,

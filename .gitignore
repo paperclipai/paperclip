@@ -10,7 +10,9 @@ drizzle/meta/
 coverage/
 .DS_Store
 data/
+backups/
 .paperclip/
+.gstack/
 .pnpm-store/
 tmp-*
 cli/tmp/
@@ -55,3 +57,4 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+.context/

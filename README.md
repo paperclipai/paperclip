@@ -200,6 +200,14 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
 
+**Production (Docker):** For a full production deployment with Postgres, Redis, and Nginx:
+
+```bash
+./setup.sh
+```
+
+See [`docs/deploy/guia-instalacao.md`](docs/deploy/guia-instalacao.md) for the complete guide.
+
 <br/>
 
 ## FAQ

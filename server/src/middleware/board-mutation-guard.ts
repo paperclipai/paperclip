@@ -6,6 +6,10 @@ const DEFAULT_DEV_ORIGINS = [
   "http://127.0.0.1:3100",
 ];
 
+// Parsed once at module load — makes the static trust set auditable and avoids
+// a scenario where a runtime env change silently extends CSRF trust mid-flight.
+const CONFIGURED_PUBLIC_ORIGIN = parseOrigin(process.env.PAPERCLIP_PUBLIC_URL?.trim());
+
 function parseOrigin(value: string | undefined) {
   if (!value) return null;
   try {
@@ -28,8 +32,7 @@ function trustedOriginsForRequest(req: Request) {
   // not match the public URL (for example when TLS terminates at the
   // edge and the inbound Host is an internal service name). Trust the
   // explicitly-configured PAPERCLIP_PUBLIC_URL when it's set.
-  const publicUrl = parseOrigin(process.env.PAPERCLIP_PUBLIC_URL?.trim());
-  if (publicUrl) origins.add(publicUrl);
+  if (CONFIGURED_PUBLIC_ORIGIN) origins.add(CONFIGURED_PUBLIC_ORIGIN);
   return origins;
 }
 

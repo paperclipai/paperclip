@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agentConfigRevisions, agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -116,7 +116,6 @@ export function agentRoutes(db: Db) {
     if (adapter?.supportsInstructionsBundle === false) return null;
     return DEFAULT_INSTRUCTIONS_PATH_KEYS[adapterType] ?? null;
   }
-  const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
   const KNOWN_INSTRUCTIONS_BUNDLE_KEYS = [
     "instructionsBundleMode",
     "instructionsRootPath",
@@ -668,9 +667,15 @@ export function agentRoutes(db: Db) {
   function assertNoAgentInstructionsConfigMutation(
     req: Request,
     adapterConfig: Record<string, unknown> | null | undefined,
+    adapterType?: string | null,
   ) {
     if (req.actor.type !== "agent" || !adapterConfig) return;
-    const changedSensitiveKeys = KNOWN_INSTRUCTIONS_BUNDLE_KEYS.filter((key) => adapterConfig[key] !== undefined);
+    const customKey = adapterType ? resolveInstructionsPathKey(adapterType) : null;
+    const blockedKeys: string[] = [
+      ...KNOWN_INSTRUCTIONS_BUNDLE_KEYS,
+      ...(customKey && !KNOWN_INSTRUCTIONS_BUNDLE_KEYS.includes(customKey as (typeof KNOWN_INSTRUCTIONS_BUNDLE_KEYS)[number]) ? [customKey] : []),
+    ];
+    const changedSensitiveKeys = blockedKeys.filter((key) => adapterConfig[key] !== undefined);
     if (changedSensitiveKeys.length === 0) return;
     throw forbidden(
       `Agent-authenticated callers cannot modify instructions path or bundle configuration (${changedSensitiveKeys.join(", ")})`,
@@ -1295,6 +1300,21 @@ export function agentRoutes(db: Db) {
     }
     await assertCanUpdateAgent(req, existing);
 
+    // Guard restored adapterConfig — a historical revision may contain workspaceRuntime
+    // commands written before the injection guard was added. Re-check at rollback time.
+    const revision = await db
+      .select()
+      .from(agentConfigRevisions)
+      .where(and(eq(agentConfigRevisions.agentId, id), eq(agentConfigRevisions.id, revisionId)))
+      .then((rows) => rows[0] ?? null);
+    if (revision) {
+      const restoredAdapterConfig = asRecord(revision.afterConfig?.adapterConfig);
+      assertNoAgentHostWorkspaceCommandMutation(
+        req,
+        collectAgentAdapterWorkspaceCommandPaths(restoredAdapterConfig),
+      );
+    }
+
     const actor = getActorInfo(req);
     const updated = await svc.rollbackConfigRevision(id, revisionId, {
       agentId: actor.agentId,
@@ -1328,7 +1348,6 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     assertCompanyAccess(req, agent.companyId);
 
     const state = await heartbeat.getRuntimeState(id);
@@ -1343,7 +1362,6 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     assertCompanyAccess(req, agent.companyId);
 
     const sessions = await heartbeat.listTaskSessions(id);
@@ -1403,6 +1421,7 @@ export function agentRoutes(db: Db) {
     assertNoAgentInstructionsConfigMutation(
       req,
       (hireInput.adapterConfig ?? {}) as Record<string, unknown>,
+      hireInput.adapterType,
     );
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       hireInput.adapterType,
@@ -1588,6 +1607,7 @@ export function agentRoutes(db: Db) {
     assertNoAgentInstructionsConfigMutation(
       req,
       (createInput.adapterConfig ?? {}) as Record<string, unknown>,
+      createInput.adapterType,
     );
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       createInput.adapterType,
@@ -1988,7 +2008,7 @@ export function agentRoutes(db: Db) {
         res.status(422).json({ error: "adapterConfig must be an object" });
         return;
       }
-      assertNoAgentInstructionsConfigMutation(req, adapterConfig);
+      assertNoAgentInstructionsConfigMutation(req, adapterConfig, existing.adapterType);
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectAgentAdapterWorkspaceCommandPaths(adapterConfig),

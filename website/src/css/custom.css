@@ -1,0 +1,16 @@
+:root {
+  --ifm-color-primary: #6366f1;
+  --ifm-color-primary-dark: #4f51e8;
+  --ifm-color-primary-darker: #4446e3;
+  --ifm-color-primary-darkest: #3133c3;
+  --ifm-color-primary-light: #777af4;
+  --ifm-color-primary-lighter: #8284f5;
+  --ifm-color-primary-lightest: #a5a7f8;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme="dark"] {
+  --ifm-color-primary: #818cf8;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}

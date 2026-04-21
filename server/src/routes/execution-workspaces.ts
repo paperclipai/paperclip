@@ -184,7 +184,7 @@ export function executionWorkspaceRoutes(db: Db) {
     if (
       selectedServiceIndex !== undefined
       && selectedServiceIndex !== null
-      && (selectedServiceIndex < 0 || selectedServiceIndex >= configuredServices.length)
+      && (!Number.isInteger(selectedServiceIndex) || selectedServiceIndex < 0 || selectedServiceIndex >= configuredServices.length)
     ) {
       res.status(422).json({ error: "Selected runtime service is not defined in this execution workspace runtime config" });
       return;
@@ -322,7 +322,6 @@ export function executionWorkspaceRoutes(db: Db) {
           await stopRuntimeServicesForExecutionWorkspace({
             db,
             executionWorkspaceId: existing.id,
-            workspaceCwd,
             runtimeServiceId: selectedRuntimeServiceId,
           });
         }
@@ -527,7 +526,6 @@ export function executionWorkspaceRoutes(db: Db) {
         await stopRuntimeServicesForExecutionWorkspace({
           db,
           executionWorkspaceId: existing.id,
-          workspaceCwd: existing.cwd,
         });
         const projectWorkspace = existing.projectWorkspaceId
           ? await db

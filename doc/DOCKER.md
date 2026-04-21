@@ -88,6 +88,26 @@ BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
 
 PostgreSQL data persists in a named Docker volume (`pgdata`). Paperclip data persists in `paperclip-data`.
 
+### Production stack (app + Postgres + Redis + nginx)
+
+Full production deployment with an interactive setup wizard, TLS/nginx reverse proxy, Redis, and automated backups:
+
+```sh
+./setup.sh
+```
+
+The wizard prompts for your domain, API keys, and admin credentials, writes a `.env.prod` file, builds the image locally, and starts all services. See [`docs/deploy/guia-instalacao.md`](../docs/deploy/guia-instalacao.md) for the step-by-step guide.
+
+After setup, manage the stack with:
+
+```sh
+docker compose -f docker/docker-compose.prod.yml --env-file .env.prod up -d   # start
+docker compose -f docker/docker-compose.prod.yml --env-file .env.prod down    # stop
+./scripts/backup-docker.sh                                                     # backup
+```
+
+See [`docs/deploy/backup-restore.md`](../docs/deploy/backup-restore.md) for backup retention policy and restore instructions.
+
 ### Untrusted PR review
 
 Isolated container for reviewing untrusted pull requests with Codex or Claude, without exposing your host machine. See `doc/UNTRUSTED-PR-REVIEW.md` for the full workflow.
