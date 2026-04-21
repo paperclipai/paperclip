@@ -133,6 +133,15 @@ the branch to master.
 3. Verify the server rejects the URL with an SSRF-block error
 4. Also test RFC-1918 addresses (`10.0.0.1`, `192.168.1.1`, `127.0.0.1`)
 
+Scope note (post-2026-04-21 rebase): upstream now ships its own SSRF gate
+for invite-resolution (`resolveInviteResolutionTarget()` in
+`server/src/routes/access.ts` blocks private/reserved addresses before
+`probeInviteResolutionTarget()` runs). The backport's access.ts hunk was
+dropped as redundant; the still-active portion protects the HTTP adapter
+path at `server/src/adapters/http/execute.ts` via `validateUrlNotInternal`.
+Retire this backport when issue #2554 / PR #657 is merged and the adapter
+hunk is detected as "previously applied commit" during rebase.
+
 ### `security/shell-escape-issue-title`
 1. Create an issue with title `\$(whoami)` or `test $(id)`
 2. Trigger a heartbeat run that exposes `PAPERCLIP_ISSUE_TITLE`
