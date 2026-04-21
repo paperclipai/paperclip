@@ -1,0 +1,294 @@
+{
+  "name": "Termine & Kontakte v10.0",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 📅 Termine & Kontakte v8.0\n\n**Zweck:** Exportiert täglich Kalender-Termine (ICS) und Kontakte (vCard) aus Nextcloud und schreibt sie als Obsidian-Markdown-Dateien.\n\n**Ablauf:**\n1. Trigger (täglich 00:00 Uhr)\n2. CalDAV → Termine exportieren\n3. CardDAV → Kontakte exportieren\n4. ICS → Markdown (Termine/)\n5. vCard → Markdown (Kontakte/)\n\n**Ausgabe:**\n- Termine → WHITESTAG-Vault/Termine/\n- Kontakte → WHITESTAG-Vault/Kontakte/\n\n**Dateiformat:** YYYY-MM-DD-Titel.md\n\n**v7.0:** Leerzeichen in Dateinamen → Bindestrich (sanitize-Fix)\n**v8.0:** Sticky-Note-Dokumentation, OUTPUT_BASE → WHITESTAG-Vault\n**v9.0:** $heartbeat()-Fix gegen Runner-Timeout bei vielen Kontakten\n**v10.0:** Diff-Check: nur geänderte Dateien schreiben → kein SMB-Timeout",
+        "height": 644,
+        "width": 520,
+        "color": 4
+      },
+      "id": "7d99dc5a-1c2f-4d3e-978c-3abda0cb1129",
+      "name": "Notiz: Workflow-Übersicht",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        432,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Trigger**\nLäuft täglich um 00:00 Uhr.\n\nExportiert immer den gesamten Kalender und alle Kontakte.\n\nKeine Inkrementallogik – bestehende Dateien werden überschrieben.",
+        "height": 652,
+        "width": 260,
+        "color": 5
+      },
+      "id": "dfb97ad1-70a4-47c0-8743-4d5b922c25b2",
+      "name": "Notiz: Trigger",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        960,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Konfiguration**\nEinzige Stelle zum Anpassen:\n- NEXTCLOUD_URL\n- NEXTCLOUD_USER\n- CALENDAR_NAME\n  (Name des Kalenders in Nextcloud)\n- OUTPUT_BASE\n  (Zielordner im Vault)",
+        "height": 652,
+        "width": 260,
+        "color": 5
+      },
+      "id": "b98a6894-f258-428f-9b71-ab171a65a3f8",
+      "name": "Notiz: Konfiguration",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1232,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Nextcloud-Export**\nZwei parallele HTTP-Requests:\n\n📇 **Kontakte:**\nCardDAV → /addressbooks/.../contacts?export\nFormat: vCard (.vcf)\n\n📅 **Kalender:**\nCalDAV → /calendars/.../[Name]?export\nFormat: iCalendar (.ics)\n\nCredential: NextCloud API",
+        "height": 652,
+        "width": 324,
+        "color": 5
+      },
+      "id": "05047017-9abe-4b7d-a02b-5d96c092fbcc",
+      "name": "Notiz: Export",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1504,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Konvertierung → Markdown**\n\n📇 **vCard → Markdown:**\n- Parst FN, EMAIL, TEL, ORG, NOTE, BDAY, ADR\n- Dateiname: Nachname-Vorname.md\n- Ziel: WHITESTAG-Vault/Kontakte/\n\n📅 **iCal → Markdown:**\n- Parst SUMMARY, DTSTART, DTEND, LOCATION, DESCRIPTION, RRULE\n- Dateiname: YYYY-MM-DD-Titel.md\n- Ziel: WHITESTAG-Vault/Termine/\n- Ganztägige Termine & Wiederholungen werden erkannt",
+        "height": 652,
+        "width": 604,
+        "color": 5
+      },
+      "id": "16f28638-8c5d-44d2-9771-e35b1f578caa",
+      "name": "Notiz: Konvertierung",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1840,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-version",
+              "name": "WORKFLOW_VERSION",
+              "value": "8.0",
+              "type": "string"
+            },
+            {
+              "id": "cfg-001",
+              "name": "NEXTCLOUD_URL",
+              "value": "https://nx92116.your-storageshare.de",
+              "type": "string"
+            },
+            {
+              "id": "cfg-002",
+              "name": "NEXTCLOUD_USER",
+              "value": "ws@whitestag.film",
+              "type": "string"
+            },
+            {
+              "id": "cfg-003",
+              "name": "CALENDAR_NAME",
+              "value": "personal",
+              "type": "string"
+            },
+            {
+              "id": "cfg-004",
+              "name": "OUTPUT_BASE",
+              "value": "/Volumes/WHITESTAG-ARCHIV/Obsidian/WHITESTAG-Vault",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0be71fb4-3dc3-4d9d-ac19-803cb543fee4",
+      "name": "Konfiguration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1312,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.NEXTCLOUD_URL }}/remote.php/dav/addressbooks/users/{{ $json.NEXTCLOUD_USER }}/contacts?export",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "nextCloudApi",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "5da644cb-3760-4c51-852d-fcc11155eaca",
+      "name": "Kontakte exportieren (GET)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1616,
+        288
+      ],
+      "credentials": {
+        "nextCloudApi": {
+          "id": "gYVCeM65ozmiX9uu",
+          "name": "NextCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Konfiguration').first().json.NEXTCLOUD_URL }}/remote.php/dav/calendars/{{ $('Konfiguration').first().json.NEXTCLOUD_USER }}/{{ $('Konfiguration').first().json.CALENDAR_NAME }}?export",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "nextCloudApi",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "d4e1880e-6fe3-4183-838f-72efee143455",
+      "name": "Kalender exportieren (GET)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1632,
+        464
+      ],
+      "credentials": {
+        "nextCloudApi": {
+          "id": "gYVCeM65ozmiX9uu",
+          "name": "NextCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// v10.0 – KONTAKTE: vCard → Markdown\n// Fix: Nur geänderte Kontakte schreiben → kein SMB-Timeout\n//      aktualisiert-Feld wird beim Vergleich ignoriert\n// cleanName() → Anzeigename im Markdown\n// sanitize()   → Dateiname (keine Leerzeichen, keine Sonderzeichen)\n// ============================================================\nconst fs = require('fs');\nconst outputBase = $('Konfiguration').first().json.OUTPUT_BASE;\nconst outputDir = outputBase + '/Kontakte/';\n\nfs.mkdirSync(outputDir, { recursive: true });\n\nconst rawText = $input.first().json.data || '';\n\nif (!rawText.includes('BEGIN:VCARD')) {\n  return [{ json: { error: 'Keine vCard-Daten erhalten', preview: rawText.substring(0, 200) } }];\n}\n\nconst vcardBlocks = rawText\n  .split(/(?=BEGIN:VCARD)/)\n  .map(b => b.trim())\n  .filter(b => b.startsWith('BEGIN:VCARD'));\n\nconst results = [];\n\nfor (const block of vcardBlocks) {\n  try {\n    const contact = parseVCard(block);\n    if (!contact.rawName) continue;\n\n    const displayName = cleanName(contact.rawName);\n    const filename = sanitize(contact.rawName) + '.md';\n    const fullPath = outputDir + filename;\n\n    const md = vCardToMarkdown(contact, displayName);\n\n    // Nur schreiben wenn Inhalt geändert (aktualisiert-Feld ignorieren)\n    let existing = '';\n    try { existing = fs.readFileSync(fullPath, 'utf-8'); } catch(e) {}\n\n    if (stripDate(md) !== stripDate(existing)) {\n      fs.writeFileSync(fullPath, md, 'utf-8');\n      results.push({ json: { status: 'written', filename, displayName } });\n    } else {\n      results.push({ json: { status: 'unchanged', filename, displayName } });\n    }\n  } catch (e) {\n    results.push({ json: { status: 'error', error: e.message } });\n  }\n}\n\nreturn results;\n\n// ---- Hilfsfunktionen ----\n\n// Entfernt aktualisiert-Zeile für Vergleich (ändert sich täglich)\nfunction stripDate(s) {\n  return s.replace(/^aktualisiert: .+$/m, '');\n}\n\nfunction parseVCard(text) {\n  const unfolded = text.replace(/\\r?\\n[ \\t]/g, '');\n  const lines = unfolded.split(/\\r?\\n/);\n  const c = { emails: [], phones: [], urls: [] };\n\n  for (const line of lines) {\n    const colonIdx = line.indexOf(':');\n    if (colonIdx === -1) continue;\n    const key = line.substring(0, colonIdx).toUpperCase();\n    const value = line.substring(colonIdx + 1).trim();\n    if (!value) continue;\n\n    if (key === 'FN') {\n      c.rawName = value;\n    } else if (key === 'N' && !c.rawName) {\n      const parts = value.split(';');\n      const assembled = [parts[1], parts[0]].filter(p => p.trim()).join(' ');\n      if (assembled.trim()) c.rawName = assembled;\n    } else if (key.startsWith('EMAIL')) {\n      c.emails.push(value);\n    } else if (key.startsWith('TEL')) {\n      c.phones.push(value);\n    } else if (key === 'ORG') {\n      c.org = value.replace(/;+$/, '').replace(/;/g, ', ');\n    } else if (key === 'TITLE') {\n      c.title = value;\n    } else if (key === 'NOTE') {\n      c.note = value.replace(/\\\\n/g, '\\n').replace(/\\\\,/g, ',');\n    } else if (key === 'BDAY') {\n      c.birthday = formatDate(value);\n    } else if (key.startsWith('URL') || key === 'URL') {\n      c.urls.push(value);\n    } else if (key.startsWith('ADR')) {\n      const parts = value.split(';');\n      const addr = parts.slice(2).filter(p => p.trim()).join(', ');\n      if (addr) c.address = addr;\n    } else if (key === 'NICKNAME') {\n      c.nickname = value;\n    } else if (key === 'CATEGORIES') {\n      c.categories = value;\n    }\n  }\n  return c;\n}\n\nfunction cleanName(raw) {\n  return raw\n    .replace(/,\\s*/g, ' ')\n    .replace(/-\\s+/g, '-')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction sanitize(raw) {\n  return cleanName(raw)\n    .replace(/\\s+/g, '-')\n    .replace(/[\\/\\\\?%*:|\"<>]/g, '-')\n    .replace(/-+/g, '-')\n    .replace(/^-|-$/g, '')\n    .trim();\n}\n\nfunction vCardToMarkdown(c, displayName) {\n  const today = new Date().toISOString().split('T')[0];\n  const lines = [\n    '---',\n    'type: contact',\n    `name: \"${displayName}\"`,\n    `aktualisiert: ${today}`,\n    'tags:',\n    '  - kontakt',\n  ];\n  if (c.org) lines.push(`organisation: \"${c.org}\"`);\n  if (c.emails[0]) lines.push(`email: \"${c.emails[0]}\"`);\n  if (c.phones[0]) lines.push(`telefon: \"${c.phones[0]}\"`);\n  if (c.birthday) lines.push(`geburtstag: \"${c.birthday}\"`);\n  lines.push('---', '', `# ${displayName}`, '');\n\n  if (c.title) lines.push(`**Position:** ${c.title}  `);\n  if (c.org) lines.push(`**Organisation:** ${c.org}  `);\n  if (c.emails.length) c.emails.forEach(e => lines.push(`**E-Mail:** ${e}  `));\n  if (c.phones.length) c.phones.forEach(p => lines.push(`**Telefon:** ${p}  `));\n  if (c.address) lines.push(`**Adresse:** ${c.address}  `);\n  if (c.birthday) lines.push(`**Geburtstag:** ${c.birthday}  `);\n  if (c.urls.length) c.urls.forEach(u => lines.push(`**Website:** ${u}  `));\n  if (c.note) lines.push('', '## Notizen', '', c.note);\n\n  return lines.join('\\n');\n}\n\nfunction formatDate(d) {\n  if (!d) return d;\n  if (d.includes('-')) return d.substring(0, 10);\n  if (d.length >= 8) return `${d.substring(0, 4)}-${d.substring(4, 6)}-${d.substring(6, 8)}`;\n  return d;\n}"
+      },
+      "id": "f2837012-b568-4064-88c4-a1da49823182",
+      "name": "vCard → Markdown",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// v10.0 – TERMINE: ICS → Markdown\n// Fix: Nur geänderte Termine schreiben → kein SMB-Timeout\n//      aktualisiert-Feld wird beim Vergleich ignoriert\n// Format: YYYY-MM-DD-Terminname.md\n// ============================================================\nconst fs = require('fs');\nconst outputBase = $('Konfiguration').first().json.OUTPUT_BASE;\nconst outputDir = outputBase + '/Termine/';\n\nfs.mkdirSync(outputDir, { recursive: true });\n\nconst rawText = $input.first().json.data || '';\n\nif (!rawText.includes('BEGIN:VCALENDAR')) {\n  return [{ json: { error: 'Keine ICS-Daten erhalten', preview: rawText.substring(0, 200) } }];\n}\n\nconst unfolded = rawText.replace(/\\r?\\n[ \\t]/g, '');\n\nconst eventBlocks = [];\nconst eventRegex = /BEGIN:VEVENT[\\s\\S]*?END:VEVENT/g;\nlet match;\nwhile ((match = eventRegex.exec(unfolded)) !== null) {\n  eventBlocks.push(match[0]);\n}\n\nconst results = [];\n\nfor (const block of eventBlocks) {\n  try {\n    const event = parseEvent(block);\n    if (!event.summary) continue;\n\n    const displayTitle = event.summary;\n    const datePrefix = event.startDate || 'undatiert';\n    const filename = sanitize(`${datePrefix}-${displayTitle}`) + '.md';\n    const fullPath = outputDir + filename;\n\n    const md = eventToMarkdown(event, displayTitle);\n\n    // Nur schreiben wenn Inhalt geändert (aktualisiert-Feld ignorieren)\n    let existing = '';\n    try { existing = fs.readFileSync(fullPath, 'utf-8'); } catch(e) {}\n\n    if (stripDate(md) !== stripDate(existing)) {\n      fs.writeFileSync(fullPath, md, 'utf-8');\n      results.push({ json: { status: 'written', filename, displayTitle } });\n    } else {\n      results.push({ json: { status: 'unchanged', filename, displayTitle } });\n    }\n  } catch (e) {\n    results.push({ json: { status: 'error', error: e.message } });\n  }\n}\n\nreturn results;\n\n// ---- Hilfsfunktionen ----\n\nfunction stripDate(s) {\n  return s.replace(/^aktualisiert: .+$/m, '');\n}\n\nfunction parseEvent(text) {\n  const lines = text.split(/\\r?\\n/);\n  const e = {};\n\n  for (const line of lines) {\n    const colonIdx = line.indexOf(':');\n    if (colonIdx === -1) continue;\n    const key = line.substring(0, colonIdx).split(';')[0].toUpperCase();\n    const value = line.substring(colonIdx + 1).trim();\n\n    switch (key) {\n      case 'SUMMARY':     e.summary = value.replace(/\\\\,/g, ',').replace(/\\\\n/g, '\\n'); break;\n      case 'DTSTART':     Object.assign(e, parseDateTime(value, 'start')); break;\n      case 'DTEND':       Object.assign(e, parseDateTime(value, 'end')); break;\n      case 'DURATION':    e.duration = value; break;\n      case 'LOCATION':    e.location = value.replace(/\\\\,/g, ',').replace(/\\\\n/g, ', ').replace(/\\;/g, ';'); break;\n      case 'DESCRIPTION': e.description = value.replace(/\\\\n/g, '\\n').replace(/\\\\,/g, ',').trim(); break;\n      case 'STATUS':      e.status = value; break;\n      case 'CATEGORIES':  e.categories = value.split(',').map(c => c.trim()); break;\n      case 'URL':         e.url = value; break;\n      case 'RRULE':       e.rrule = value; break;\n      case 'UID':         e.uid = value; break;\n      case 'ORGANIZER':   e.organizer = value.replace('mailto:', ''); break;\n    }\n  }\n  return e;\n}\n\nfunction parseDateTime(value, prefix) {\n  const result = {};\n  if (value.length === 8) {\n    result[prefix + 'Date'] = `${value.substring(0, 4)}-${value.substring(4, 6)}-${value.substring(6, 8)}`;\n    result[prefix + 'Time'] = null;\n    result[prefix + 'AllDay'] = true;\n    return result;\n  }\n  const d = value.substring(0, 8);\n  const t = value.substring(9, 15);\n  result[prefix + 'Date'] = `${d.substring(0, 4)}-${d.substring(4, 6)}-${d.substring(6, 8)}`;\n  result[prefix + 'Time'] = `${t.substring(0, 2)}:${t.substring(2, 4)}`;\n  result[prefix + 'AllDay'] = false;\n  return result;\n}\n\nfunction sanitize(raw) {\n  return raw\n    .replace(/,\\s*/g, '-')\n    .replace(/\\s+/g, '-')\n    .replace(/[\\/\\\\?%*:|\"<>]/g, '-')\n    .replace(/-+/g, '-')\n    .replace(/^-|-$/g, '')\n    .trim()\n    .substring(0, 120);\n}\n\nfunction eventToMarkdown(e, displayTitle) {\n  const today = new Date().toISOString().split('T')[0];\n  const lines = [\n    '---',\n    'type: termin',\n    `title: \"${displayTitle}\"`,\n    `datum: ${e.startDate || ''}`,\n    `aktualisiert: ${today}`,\n    'tags:',\n    '  - termin',\n  ];\n  if (e.startTime) lines.push(`uhrzeit_start: \"${e.startTime}\"`);\n  if (e.endTime) lines.push(`uhrzeit_ende: \"${e.endTime}\"`);\n  if (e.location) lines.push(`ort: \"${e.location.substring(0, 200)}\"`);\n  if (e.status) lines.push(`status: ${e.status.toLowerCase()}`);\n  if (e.categories?.length) lines.push(`kategorien: [${e.categories.join(', ')}]`);\n  if (e.startAllDay) lines.push('ganztaegig: true');\n  lines.push('---', '', `# ${displayTitle}`, '');\n\n  lines.push(`**Datum:** ${e.startDate}  `);\n  if (e.startTime) {\n    const timeStr = e.endTime ? `${e.startTime} – ${e.endTime} Uhr` : `${e.startTime} Uhr`;\n    lines.push(`**Uhrzeit:** ${timeStr}  `);\n  }\n  if (e.location) lines.push(`**Ort:** ${e.location}  `);\n  if (e.organizer) lines.push(`**Organisator:** ${e.organizer}  `);\n  if (e.url) lines.push(`**Link:** ${e.url}  `);\n  if (e.rrule) lines.push(`**Wiederholung:** ${parseRRule(e.rrule)}  `);\n  if (e.description) lines.push('', '## Beschreibung', '', e.description);\n\n  return lines.join('\\n');\n}\n\nfunction parseRRule(rrule) {\n  const map = { DAILY: 'täglich', WEEKLY: 'wöchentlich', MONTHLY: 'monatlich', YEARLY: 'jährlich' };\n  const freq = rrule.match(/FREQ=(\\w+)/)?.[1];\n  return freq ? (map[freq] || freq) : rrule;\n}"
+      },
+      "id": "7d46f80e-33ba-4add-9226-c1959434c23e",
+      "name": "iCal → Markdown",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {}
+          ]
+        }
+      },
+      "id": "ae2b03aa-4130-4c22-890f-48662ec6ce0c",
+      "name": "Täglich 00:00 Uhr",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        1040,
+        384
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Konfiguration": {
+      "main": [
+        [
+          {
+            "node": "Kontakte exportieren (GET)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Kalender exportieren (GET)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kontakte exportieren (GET)": {
+      "main": [
+        [
+          {
+            "node": "vCard → Markdown",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kalender exportieren (GET)": {
+      "main": [
+        [
+          {
+            "node": "iCal → Markdown",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Täglich 00:00 Uhr": {
+      "main": [
+        [
+          {
+            "node": "Konfiguration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "b9b3e293-f56a-4e80-a8e9-fa0f93f2a687",
+  "meta": {
+    "instanceId": "3ba44b62f5d02f0e3eb8ac8e69e2dbfcaa4b9bad020f8ff5eea3bbe4b29c7c07"
+  },
+  "id": "REsWgckRbvQTdHTD",
+  "tags": []
+}

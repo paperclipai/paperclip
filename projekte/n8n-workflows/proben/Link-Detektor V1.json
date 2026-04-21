@@ -1,0 +1,258 @@
+{
+  "name": "Link-Detektor V1",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "db68e568-d509-497c-b55e-f52852f6208d",
+      "name": "Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        256,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Link-Detektor V1\n\n**Zweck:** Erkennt Verknüpfungen zwischen .md-Dateien im WHITESTAG-Vault und baut fehlende Obsidian-Links ([[...]]) in den Body der Dateien ein.\n\n**Ablauf:**\n1. Manueller Trigger\n2. Konfiguration (Set-Node) – einzige Stelle zum Anpassen\n3. Index aufbauen – liest Dateinamen + Frontmatter aus `indexOrdner`\n4. Links erkennen & einbauen – scannt `scanOrdner`, sucht Treffer im Body-Text\n5. Bericht schreiben – Markdown-Bericht ins Vault\n\n**⚠️ Immer zuerst Dry-Run!**\n`dryRun: true` → nur Bericht, keine Dateien ändern\n`dryRun: false` → Dateien werden tatsächlich geändert\n\n**Was wird verlinkt:**\n- Dateinamen aus `indexOrdner` die im Body-Text vorkommen\n- `organisation`-Felder aus Kontakten (Firmennamen)\n- Kurzformen (`name`-Feld aus Kontakten)\n- Frontmatter wird NIEMALS verändert\n- Bestehende [[Links]], Code-Blöcke und Inline-Code werden übersprungen\n\n**Laufzeit:** Ca. 30–90 Sek. für 811 Buchhaltungs-Dateien",
+        "height": 680,
+        "width": 568,
+        "color": 4
+      },
+      "id": "93af8238-97bb-4f06-aaa4-1170a3b34a2a",
+      "name": "Notiz: Workflow-Übersicht",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "lde-cfg-01",
+              "name": "vaultPfad",
+              "value": "/Volumes/WHITESTAG-ARCHIV/Obsidian/WHITESTAG-Vault",
+              "type": "string"
+            },
+            {
+              "id": "lde-cfg-02",
+              "name": "scanOrdner",
+              "value": "={{ [\"Buchhaltung\"] }}",
+              "type": "array"
+            },
+            {
+              "id": "lde-cfg-03",
+              "name": "indexOrdner",
+              "value": "={{ [\"Kontakte\", \"Buchhaltung\"] }}",
+              "type": "array"
+            },
+            {
+              "id": "lde-cfg-04",
+              "name": "ausgeschlosseneOrdner",
+              "value": "={{ [\"attachments\", \"resources\", \".obsidian\", \".trash\"] }}",
+              "type": "array"
+            },
+            {
+              "id": "lde-cfg-05",
+              "name": "dryRun",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "lde-cfg-06",
+              "name": "nurErstErwaehnung",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "lde-cfg-07",
+              "name": "minBegrifflaenge",
+              "value": 5,
+              "type": "number"
+            },
+            {
+              "id": "lde-cfg-08",
+              "name": "berichtPfad",
+              "value": "/Volumes/WHITESTAG-ARCHIV/Obsidian/WHITESTAG-Vault/Analysen/Link-Erkennung.md",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4c7013dc-bd94-44bd-849e-be3e2f2cf8d9",
+      "name": "Konfiguration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        688,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Konfiguration** (Set-Node)\n\nEinzige Stelle zum Anpassen:\n\n- `vaultPfad`: Pfad zum Vault\n- `scanOrdner`: Welche Ordner werden nach Link-Kandidaten durchsucht\n- `indexOrdner`: Aus welchen Ordnern werden Link-Ziele gesammelt\n- `ausgeschlosseneOrdner`: Werden komplett ignoriert\n- `dryRun`: true = nur Bericht, false = Dateien ändern\n- `nurErstErwaehnung`: true = nur erste Nennung verlinken\n- `minBegrifflaenge`: Mindestlänge für Suchbegriffe (verhindert Kurzwort-Treffer)\n- `berichtPfad`: Wo der Bericht gespeichert wird\n\n**Empfehlung:**\nErst mit `dryRun: true` laufen lassen, Bericht prüfen, dann auf `false` umstellen.",
+        "height": 680,
+        "width": 604,
+        "color": 5
+      },
+      "id": "b0a5af71-5420-4d6c-88eb-abcc2c1a4a95",
+      "name": "Notiz: Konfiguration",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        416,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const { readdirSync, readFileSync } = require('fs');\nconst path = require('path');\nconst cfg = $('Konfiguration').first().json;\nconst vaultPfad = cfg.vaultPfad;\nconst indexOrdner = cfg.indexOrdner || [];\nconst ausgeschlossen = new Set(cfg.ausgeschlosseneOrdner || []);\nconst minLen = typeof cfg.minBegrifflaenge === 'number' ? cfg.minBegrifflaenge : 5;\n\n// Einfacher Frontmatter-Parser (key: \"value\" Zeilen)\nfunction parseFM(content) {\n  const fm = {};\n  if (!content.startsWith('---')) return fm;\n  const end = content.indexOf('---', 3);\n  if (end === -1) return fm;\n  const block = content.slice(3, end);\n  for (const line of block.split('\\n')) {\n    const m = line.match(/^(\\w+):\\s*\"?(.+?)\"?\\s*$/);\n    if (m) fm[m[1]] = m[2].trim();\n  }\n  return fm;\n}\n\n// Index: suchBegriff (lowercase) → { linkZiel, originalBegriff }\nconst indexMap = {};\n\nfunction addTerm(begriff, linkZiel) {\n  if (!begriff) return;\n  const key = begriff.toLowerCase().trim();\n  if (key.length < minLen) return;\n  if (!indexMap[key]) {\n    indexMap[key] = { linkZiel, originalBegriff: begriff.trim() };\n  }\n}\n\nfunction scanDir(dirPath) {\n  let entries;\n  try { entries = readdirSync(dirPath, { withFileTypes: true }); }\n  catch(e) { return; }\n  for (const entry of entries) {\n    if (entry.isDirectory()) {\n      if (!ausgeschlossen.has(entry.name) && !entry.name.startsWith('.')) {\n        scanDir(path.join(dirPath, entry.name));\n      }\n      continue;\n    }\n    if (!entry.name.endsWith('.md')) continue;\n    const linkZiel = entry.name.slice(0, -3);\n    // 1. Dateiname selbst als Suchbegriff\n    addTerm(linkZiel, linkZiel);\n    // 2. Frontmatter-Felder: organisation und name\n    try {\n      const content = readFileSync(path.join(dirPath, entry.name), 'utf8');\n      const fm = parseFM(content);\n      if (fm.organisation) addTerm(fm.organisation, linkZiel);\n      // name-Feld: Backslash entfernen (Format: \"Nachname\\ Vorname\")\n      if (fm.name) addTerm(fm.name.split('\\\\').join(' ').replace(/  +/g, ' '), linkZiel);\n    } catch(e) {}\n  }\n}\n\nfor (const ordner of indexOrdner) {\n  scanDir(path.join(vaultPfad, ordner));\n}\n\n// Nach Länge absteigend sortieren (längere Begriffe zuerst → verhindert Teilmatches)\nconst indexArr = Object.entries(indexMap)\n  .map(([key, val]) => ({ term: key, linkZiel: val.linkZiel, originalBegriff: val.originalBegriff }))\n  .sort((a, b) => b.term.length - a.term.length);\n\nreturn [{ json: { index: indexArr, anzahl: indexArr.length } }];"
+      },
+      "id": "ac4f5c25-37db-4e29-ba10-facbbb4ee6bc",
+      "name": "Index aufbauen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1184,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Index aufbauen**\n\nLiest alle Dateien aus `indexOrdner` und baut einen Suchindex auf.\n\n**Quellen für Suchbegriffe:**\n- Dateiname (ohne .md) → Link-Ziel = selber Dateiname\n- `organisation`-Feld im Frontmatter → Link-Ziel = Kontakt-Datei\n- `name`-Feld im Frontmatter → Link-Ziel = Kontakt-Datei\n\n**Sortierung:** Längere Begriffe zuerst, damit z.B. `ADS Abschleppdienst Schultz GmbH` vor `ADS` gefunden wird.\n\n**Mindestlänge:** Begriffe kürzer als `minBegrifflaenge` werden ignoriert.\n\n**Output:**\n- `index`: Array mit { term, linkZiel, originalBegriff }\n- `anzahl`: Anzahl Einträge im Index",
+        "height": 684,
+        "width": 396,
+        "color": 5
+      },
+      "id": "18006dea-8c25-4456-ac9a-6cf480640af6",
+      "name": "Notiz: Index aufbauen",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const { readdirSync, readFileSync, writeFileSync } = require('fs');\nconst path = require('path');\nconst cfg = $('Konfiguration').first().json;\nconst { index } = $input.first().json;\nconst vaultPfad = cfg.vaultPfad;\nconst scanOrdner = cfg.scanOrdner || [];\nconst ausgeschlossen = new Set(cfg.ausgeschlosseneOrdner || []);\nconst dryRun = cfg.dryRun !== false;\nconst nurErstErwaehnung = cfg.nurErstErwaehnung !== false;\nconst aenderungen = [];\n\n// Frontmatter vom Body trennen\nfunction getBody(content) {\n  if (!content.startsWith('---')) return { frontmatter: '', body: content };\n  const end = content.indexOf('---', 3);\n  if (end === -1) return { frontmatter: '', body: content };\n  return { frontmatter: content.slice(0, end + 3), body: content.slice(end + 3) };\n}\n\nfunction verlinken(body, indexArr) {\n  const sch = []; // Schutz-Array für geschützte Segmente\n  // Schritt 1: Schütze Code-Blöcke, Inline-Code und bestehende Links\n  let g = body\n    .replace(/```[\\s\\S]*?```/g, m => { sch.push(m); return '\\x00' + (sch.length - 1) + '\\x00'; })\n    .replace(/`[^`\\n]+`/g, m => { sch.push(m); return '\\x00' + (sch.length - 1) + '\\x00'; })\n    .replace(/\\[\\[[\\s\\S]*?\\]\\]/g, m => { sch.push(m); return '\\x00' + (sch.length - 1) + '\\x00'; })\n    .replace(/\\[.*?\\]\\(.*?\\)/g, m => { sch.push(m); return '\\x00' + (sch.length - 1) + '\\x00'; });\n\n  const hinzugefuegt = [];\n\n  // Schritt 2: Suchbegriffe im Body finden und verlinken\n  for (const { term, linkZiel, originalBegriff } of indexArr) {\n    // Schnellcheck: Suchbegriff überhaupt im Text?\n    if (!g.toLowerCase().includes(term)) continue;\n    // Sonderzeichen im Suchbegriff escapen\n    const escaped = term.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n    // Wortgrenzen: kein Buchstabe/Zahl direkt vor/nach dem Treffer\n    const flags = nurErstErwaehnung ? 'i' : 'gi';\n    const regex = new RegExp('(?<!\\\\w)' + escaped + '(?!\\\\w)', flags);\n    let matched = false;\n    const neu = g.replace(regex, match => {\n      if (nurErstErwaehnung && matched) return match;\n      matched = true;\n      // Anzeige-Text == Link-Ziel → [[Begriff]], sonst [[Ziel|Begriff]]\n      return match === linkZiel ? '[[' + match + ']]' : '[[' + linkZiel + '|' + match + ']]';\n    });\n    if (matched) {\n      // Neu eingefügte [[Links]] sofort schützen\n      g = neu.replace(/\\[\\[[\\s\\S]*?\\]\\]/g, m => { sch.push(m); return '\\x00' + (sch.length - 1) + '\\x00'; });\n      hinzugefuegt.push({ term: originalBegriff || term, linkZiel });\n    }\n  }\n\n  // Schritt 3: Schutz-Platzhalter wiederherstellen\n  const neuerBody = g.replace(/\\x00(\\d+)\\x00/g, (_, i) => sch[parseInt(i, 10)]);\n  return { neuerBody, hinzugefuegt };\n}\n\nfunction scanDir(dirPath) {\n  let entries;\n  try { entries = readdirSync(dirPath, { withFileTypes: true }); }\n  catch(e) { return; }\n  for (const entry of entries) {\n    if (entry.isDirectory()) {\n      if (!ausgeschlossen.has(entry.name) && !entry.name.startsWith('.')) {\n        scanDir(path.join(dirPath, entry.name));\n      }\n      continue;\n    }\n    if (!entry.name.endsWith('.md')) continue;\n    const filePath = path.join(dirPath, entry.name);\n    try {\n      const content = readFileSync(filePath, 'utf8');\n      const { frontmatter, body } = getBody(content);\n      const { neuerBody, hinzugefuegt } = verlinken(body, index);\n      if (hinzugefuegt.length > 0) {\n        const relPath = filePath.slice(vaultPfad.length + 1);\n        aenderungen.push({ datei: relPath, hinzugefuegt });\n        if (!dryRun) writeFileSync(filePath, frontmatter + neuerBody, 'utf8');\n      }\n    } catch(e) {}\n  }\n}\n\nfor (const ordner of scanOrdner) {\n  scanDir(path.join(vaultPfad, ordner));\n}\n\nconst gesamtLinks = aenderungen.reduce((sum, a) => sum + a.hinzugefuegt.length, 0);\nreturn [{ json: { aenderungen, gesamtLinks, geaenderteDateien: aenderungen.length, dryRun } }];"
+      },
+      "id": "acc07e7a-8594-49cc-9a29-a5225ad6bb5f",
+      "name": "Links erkennen & einbauen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1712,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Links erkennen & einbauen**\n\nScannt alle .md-Dateien aus `scanOrdner` und sucht Treffer aus dem Index.\n\n**Schutzmechanismus:**\nVor der Suche werden geschützt (Platzhalter):\n- Code-Blöcke (```...```)\n- Inline-Code (`...`)\n- Bestehende [[Wikilinks]]\n- Markdown-Links [text](url)\n\nNach jeder Verlinkung werden neu eingefügte [[Links]] ebenfalls sofort geschützt → kein Doppel-Linking.\n\n**Link-Format:**\n- Treffer = Dateiname: `[[Begriff]]`\n- Treffer ≠ Dateiname: `[[Dateiname|Begriff]]`\n  z.B. `crm-now GmbH` → `[[Mustermann-Max|crm-now GmbH]]`\n\n**dryRun: true** → Dateien werden nicht verändert, nur Treffer gesammelt\n**dryRun: false** → Dateien werden mit `writeFileSync` überschrieben\n\n**Wichtig:** Frontmatter wird nicht verändert.",
+        "height": 688,
+        "width": 588,
+        "color": 5
+      },
+      "id": "5223414f-396d-45a2-9e22-154037d18f54",
+      "name": "Notiz: Links erkennen",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1456,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const { writeFileSync, mkdirSync } = require('fs');\nconst path = require('path');\nconst cfg = $('Konfiguration').first().json;\nconst { aenderungen, gesamtLinks, geaenderteDateien, dryRun } = $input.first().json;\nconst berichtPfad = cfg.berichtPfad;\nconst today = new Date().toISOString().slice(0, 10);\nconst nowStr = new Date().toISOString().slice(0, 16).replace('T', ' ');\nconst modus = dryRun ? 'Dry-Run (keine Änderungen geschrieben)' : 'Live (Dateien wurden geändert)';\n\nlet md = '---\\n';\nmd += 'title: \"Link-Erkennung ' + nowStr + '\"\\n';\nmd += 'datum: ' + today + '\\n';\nmd += 'erstellt: ' + today + '\\n';\nmd += 'typ: Analysen\\n';\nmd += 'status: Archiviert\\n';\nmd += 'tags:\\n  - Analyse\\n  - Links\\n';\nmd += '---\\n\\n';\nmd += '# Link-Erkennung – ' + nowStr + '\\n\\n';\nmd += '**Modus:** ' + modus + '  \\n';\nmd += '**Dateien mit Treffern:** ' + geaenderteDateien + '  \\n';\nmd += '**Links gesamt:** ' + gesamtLinks + '  \\n\\n';\nmd += '---\\n\\n';\n\nif (aenderungen.length === 0) {\n  md += '_Keine Link-Kandidaten erkannt._\\n';\n} else {\n  for (const { datei, hinzugefuegt } of aenderungen) {\n    md += '## ' + datei + '\\n\\n';\n    md += '| Begriff im Text | Link-Ziel |\\n|-----------------|----------|\\n';\n    for (const { term, linkZiel } of hinzugefuegt) {\n      md += '| `' + term + '` | [[' + linkZiel + ']] |\\n';\n    }\n    md += '\\n';\n  }\n}\n\nmd += '---\\n\\n';\nmd += '*Erstellt von Link-Detektor V1 am ' + nowStr + '*\\n';\n\nmkdirSync(path.dirname(berichtPfad), { recursive: true });\nwriteFileSync(berichtPfad, md, 'utf8');\n\nreturn [{ json: { ok: true, berichtPfad, gesamtLinks, geaenderteDateien, dryRun } }];"
+      },
+      "id": "c14ab9f3-6666-4067-a967-ccc392efd986",
+      "name": "Bericht schreiben",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2304,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Bericht schreiben**\n\nErstellt `Link-Erkennung.md` unter `Analysen/` im Vault.\n\n**Bericht enthält:**\n- Modus (Dry-Run / Live)\n- Anzahl Dateien mit Treffern\n- Gesamtzahl erkannter Links\n- Pro Datei: Tabelle mit\n  gefundenem Begriff und Link-Ziel\n\n**YAML-Frontmatter** des Berichts:\n- typ: Analysen\n- status: Archiviert\n- Datum automatisch gesetzt\n\n**Workflow:**\n1. Dry-Run laufen lassen\n2. Bericht in Obsidian öffnen und prüfen\n3. Falls OK: `dryRun` auf `false` setzen\n4. Workflow erneut ausführen\n\n**Output-Felder:**\n`ok`, `berichtPfad`, `gesamtLinks`,\n`geaenderteDateien`, `dryRun`",
+        "height": 688,
+        "width": 444,
+        "color": 5
+      },
+      "id": "f5d251ae-091d-4203-ab2b-5452a93edf0d",
+      "name": "Notiz: Bericht schreiben",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2064,
+        -32
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger": {
+      "main": [
+        [
+          {
+            "node": "Konfiguration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Konfiguration": {
+      "main": [
+        [
+          {
+            "node": "Index aufbauen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Index aufbauen": {
+      "main": [
+        [
+          {
+            "node": "Links erkennen & einbauen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Links erkennen & einbauen": {
+      "main": [
+        [
+          {
+            "node": "Bericht schreiben",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "e2c02550-e885-4a00-adb7-a87548a4d78a",
+  "meta": {
+    "instanceId": "3ba44b62f5d02f0e3eb8ac8e69e2dbfcaa4b9bad020f8ff5eea3bbe4b29c7c07"
+  },
+  "id": "K7pUeVGuVtG6mOze",
+  "tags": []
+}

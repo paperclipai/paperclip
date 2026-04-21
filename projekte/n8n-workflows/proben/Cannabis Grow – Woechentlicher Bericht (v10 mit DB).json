@@ -1,0 +1,251 @@
+{
+  "name": "Cannabis Grow – Woechentlicher Bericht (v10 mit DB)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 0"
+            }
+          ]
+        }
+      },
+      "id": "0a9453ee-5980-4872-8a6f-0e298fc0b98b",
+      "name": "Jeden Sonntag 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        1264,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-01",
+              "name": "email",
+              "value": "ws@whitestag.film",
+              "type": "string"
+            },
+            {
+              "id": "cfg-02",
+              "name": "betreff_prefix",
+              "value": "Grow-Report",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "df0e1259-70db-49ee-a358-301fd350c60c",
+      "name": "Konfiguration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1536,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- ============================================================\n-- Liefert alle aktiven Pflanzen mit aktuellem Dünge- und Lichtplan\n-- Wird einmal pro Workflow-Ausführung aufgerufen (sonntags 08:00)\n-- Dünger: wochenbasierter JOIN (Canna Bio: Bio Vega, Bio Flores, Boost, Rhizotonic)\n-- Licht:  phasenbasierter JOIN (bleibt unverändert)\n-- ============================================================\n\nWITH plant_data AS (\n  SELECT\n    z.id                                                                    AS zucht_id,\n    COALESCE(z.pflanzname, s.sorte)                                         AS pflanzname,\n    z.keimstart::text,\n    COALESCE(z.medium, '')                                                  AS medium,\n    COALESCE(z.standort, '')                                                AS standort,\n    COALESCE(z.licht_watt::text, '')                                        AS licht_watt,\n    s.sorte,\n    s.thc::text,\n    s.cbd::text,\n    s.pflanztyp,\n    COALESCE(s.heilung_bei, '')                                             AS heilung_bei,\n    COALESCE(s.rauschart, '')                                               AS rauschart,\n    GREATEST(1, FLOOR(((CURRENT_DATE - z.keimstart) / 7.0) + 1)::int)     AS aktuelle_woche,\n    ARRAY[\n      s.w1,  s.w2,  s.w3,  s.w4,  s.w5,  s.w6,  s.w7,  s.w8,  s.w9,  s.w10,\n      s.w11, s.w12, s.w13, s.w14, s.w15, s.w16, s.w17, s.w18, s.w19, s.w20,\n      s.w21, s.w22, s.w23, s.w24, s.w25, s.w26, s.w27, s.w28, s.w29, s.w30\n    ]                                                                       AS phasen_array\n  FROM zucht z\n  JOIN sorten s ON z.sorten_id = s.id\n  WHERE z.aktuell = TRUE\n),\n\nplant_phase AS (\n  SELECT\n    *,\n    CASE\n      WHEN aktuelle_woche BETWEEN 1 AND 30 THEN phasen_array[aktuelle_woche]\n      ELSE 'Geerntet'\n    END AS aktuelle_phase\n  FROM plant_data\n)\n\nSELECT\n  pp.zucht_id,\n  pp.pflanzname,\n  pp.keimstart,\n  pp.medium,\n  pp.standort,\n  pp.licht_watt,\n  pp.sorte,\n  pp.thc,\n  pp.cbd,\n  pp.pflanztyp,\n  pp.heilung_bei,\n  pp.rauschart,\n  pp.aktuelle_woche,\n  pp.aktuelle_phase,\n  -- Düngeplan: JOIN nach Woche – Canna-Bio-Dosierungen\n  COALESCE(d.phase_name, 'Keine Angabe')        AS duenger_phase,\n  COALESCE(d.bio_vega_ml,   0)                  AS bio_vega_ml,\n  COALESCE(d.bio_flores_ml, 0)                  AS bio_flores_ml,\n  COALESCE(d.boost_ml,      0)                  AS boost_ml,\n  COALESCE(d.rhizotonic_ml, 0)                  AS rhizotonic_ml,\n  COALESCE(d.ec_min::text, '-')                 AS ec_min,\n  COALESCE(d.ec_max::text, '-')                 AS ec_max,\n  COALESCE(d.hinweis, '')                       AS duenger_hinweis,\n  -- Lichtplan: bleibt phasenbasiert\n  COALESCE(l.stunden_an::text, '-')             AS stunden_an,\n  COALESCE(l.stunden_aus::text, '-')            AS stunden_aus\nFROM plant_phase pp\nLEFT JOIN duenger d ON d.woche = pp.aktuelle_woche\nLEFT JOIN licht   l ON l.phase_name = pp.aktuelle_phase\nORDER BY pp.sorte;",
+        "options": {}
+      },
+      "id": "38215b54-5cb6-4a4c-ba87-9a854a42eb3d",
+      "name": "Aktive Pflanzen aus DB laden",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1872,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "7Zj0Dkm3tjruKpB4",
+          "name": "Postgres Cannabis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// E-Mail Bericht erstellen\n// Laeuft einmal für alle Items (eine Zeile pro aktiver Pflanze)\n// Gibt genau ein Item zurueck: { html, subject, toEmail }\n// ============================================================\n\nconst plants = $input.all();\nconst email  = $('Konfiguration').first().json.email;\nconst prefix = $('Konfiguration').first().json.betreff_prefix;\n\nif (!plants || plants.length === 0) {\n  return [{ json: {\n    html:    '<p>Keine aktiven Pflanzen in der Datenbank (zucht.aktuell = TRUE).</p>',\n    subject: prefix + ' – Keine aktiven Pflanzen',\n    toEmail: email\n  } }];\n}\n\nconst today = new Date();\nconst formattedDate = today.toLocaleDateString('de-DE', {\n  weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'\n});\n\n// Phasenfarben – Schlüssel müssen mit den Werten in sorten.w1-w30 und licht.phase_name übereinstimmen\nconst phaseColors = {\n  'Keimphase':        '#4a9eca',\n  'Vegetative Phase': '#5cb85c',\n  'Bluetephase':      '#f0a500',\n  'Erntephase':       '#888888',\n  'Geerntet':         '#555555'\n};\n\n// ── Tabellenzeilen ──────────────────────────────────────────\nconst tableRows = plants.map(function(item) {\n  const p  = item.json;\n  const bg = phaseColors[p.aktuelle_phase] || '#cccccc';\n\n  // Lichtangabe\n  const licht = (p.stunden_an !== '-' && p.stunden_aus !== '-')\n                ? p.stunden_an + 'h / ' + p.stunden_aus + 'h'\n                : '–';\n\n  // Canna-Bio-Dosierungen: nur Produkte mit Wert > 0 anzeigen\n  const produkte = [\n    { name: 'Bio Vega',   ml: Number(p.bio_vega_ml) },\n    { name: 'Bio Flores', ml: Number(p.bio_flores_ml) },\n    { name: 'Boost',      ml: Number(p.boost_ml) },\n    { name: 'Rhizotonic', ml: Number(p.rhizotonic_ml) }\n  ].filter(function(x) { return x.ml > 0; })\n   .map(function(x) { return '<b>' + x.name + '</b> ' + x.ml + ' ml/L'; })\n   .join(' &nbsp;|&nbsp; ');\n\n  // EC-Bereich\n  const ec = (p.ec_min && p.ec_max && p.ec_min !== '-' && p.ec_min !== '0.00')\n             ? 'EC ' + p.ec_min + '–' + p.ec_max + ' &nbsp;|&nbsp; pH 6,0–6,5'\n             : 'pH 6,0–6,5';\n\n  const duengung = produkte\n    ? produkte + '<br><small style=\"color:#777;\">' + ec + '</small>'\n    : '<i style=\"color:#999;\">Nur Wasser</i><br><small style=\"color:#777;\">' + ec + '</small>';\n\n  // Unterzeile: Wochenhinweis aus Düngeplan\n  const unterzeile = p.duenger_hinweis || '–';\n\n  return '<tr>' +\n    '<td style=\"padding:10px;border:1px solid #ddd;font-weight:bold;vertical-align:top;\">' +\n      p.pflanzname +\n      '<br><small style=\"font-weight:normal;color:#666;\">' +\n        p.sorte + ' &bull; ' + (p.pflanztyp || '') + '<br>' +\n        'THC ' + (p.thc || '?') + '% / CBD ' + (p.cbd || '?') + '%' +\n      '</small>' +\n    '</td>' +\n    '<td style=\"padding:10px;border:1px solid #ddd;text-align:center;vertical-align:top;\">' +\n      p.aktuelle_woche +\n      '<br><small style=\"color:#999;font-weight:normal;\">' + (p.duenger_phase || '') + '</small>' +\n    '</td>' +\n    '<td style=\"padding:10px;border:1px solid #ddd;background:' + bg + ';color:#fff;font-weight:bold;vertical-align:top;\">' +\n      (p.aktuelle_phase || '–') +\n    '</td>' +\n    '<td style=\"padding:10px;border:1px solid #ddd;font-size:.9em;vertical-align:top;\">' +\n      duengung +\n    '</td>' +\n    '<td style=\"padding:10px;border:1px solid #ddd;text-align:center;font-weight:bold;vertical-align:top;\">' +\n      licht +\n    '</td>' +\n    '</tr>' +\n    '<tr><td colspan=\"5\" style=\"padding:4px 10px 10px;border:1px solid #ddd;background:#f9f9f9;font-size:.82em;color:#666;\">' +\n      '<i>' + unterzeile + '</i>' +\n    '</td></tr>';\n}).join('');\n\n// ── Phasen-Legende ───────────────────────────────────────────\nconst legendItems = [\n  { name: 'Keimphase',        info: '18h/6h &ndash; Rhizotonic 2 ml/L',                           color: '#4a9eca' },\n  { name: 'Vegetative Phase', info: '18h/6h &ndash; Bio Vega 1–3 ml/L + Rhizotonic 2 ml/L',       color: '#5cb85c' },\n  { name: 'Blütephase',       info: '12h/12h &ndash; Bio Flores 2–4 ml/L + Boost 1–3 ml/L',       color: '#f0a500' },\n  { name: 'Erntephase',       info: '12h/12h &ndash; Nur Wasser (Spülen)',                         color: '#888888' }\n];\nconst legendHtml = legendItems.map(function(l) {\n  return '<li style=\"margin-bottom:5px;\"><span style=\"background:' + l.color +\n    ';color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;\">' +\n    l.name + '</span>&nbsp; ' + l.info + '</li>';\n}).join('');\n\n// ── Betreff-Wochen-Label ─────────────────────────────────────\nconst weeks  = plants.map(function(p) { return Number(p.json.aktuelle_woche); });\nconst minW   = Math.min.apply(null, weeks);\nconst maxW   = Math.max.apply(null, weeks);\nconst wLabel = minW === maxW ? 'Woche ' + minW : 'Woche ' + minW + '–' + maxW;\n\n// ── HTML-Mail zusammenbauen ──────────────────────────────────\nconst html =\n  '<!DOCTYPE html><html><head><meta charset=\"UTF-8\"></head>' +\n  '<body style=\"font-family:Arial,sans-serif;max-width:900px;margin:0 auto;padding:20px;\">' +\n  '<h2 style=\"color:#2d5a27;border-bottom:2px solid #2d5a27;padding-bottom:10px;\">' +\n    prefix + ' &ndash; ' + wLabel +\n  '</h2>' +\n  '<p style=\"color:#666;margin-top:0;\">Erstellt am: ' + formattedDate + '</p>' +\n  '<table style=\"width:100%;border-collapse:collapse;margin-top:15px;\">' +\n    '<thead><tr style=\"background:#2d5a27;color:#fff;\">' +\n      '<th style=\"padding:12px;text-align:left;\">Pflanze / Sorte</th>' +\n      '<th style=\"padding:12px;text-align:center;\">Woche</th>' +\n      '<th style=\"padding:12px;text-align:left;\">Pflanzenphase</th>' +\n      '<th style=\"padding:12px;text-align:left;\">Düngegabe (Canna Bio / 1 L)</th>' +\n      '<th style=\"padding:12px;text-align:center;\">Lichtgabe</th>' +\n    '</tr></thead>' +\n    '<tbody>' + tableRows + '</tbody>' +\n  '</table>' +\n  '<div style=\"margin-top:28px;padding:14px;background:#f0f4f0;border-radius:6px;\">' +\n    '<h3 style=\"margin-top:0;color:#2d5a27;\">Phasen-Legende</h3>' +\n    '<ul style=\"margin:0;padding-left:20px;\">' + legendHtml + '</ul>' +\n    '<p style=\"margin:10px 0 0;font-size:.82em;color:#888;\">Reihenfolge beim Anmischen: erst Rhizotonic, dann Hauptdünger, zuletzt Boost. Frisch anmischen, nicht länger als 24 h stehen lassen.</p>' +\n  '</div>' +\n  '<p style=\"margin-top:28px;font-size:.78em;color:#aaa;\">' +\n    'Automatisch generiert | Quelle: PostgreSQL Cannabis-DB' +\n  '</p>' +\n  '</body></html>';\n\nreturn [{ json: {\n  html:    html,\n  subject: prefix + ' ' + wLabel + ' – ' + formattedDate,\n  toEmail: email\n} }];"
+      },
+      "id": "2cc598f6-db9a-4e8f-b192-5afa5b1d2b25",
+      "name": "E-Mail Bericht erstellen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2288,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $json.toEmail }}",
+        "toEmail": "={{ $json.toEmail }}",
+        "subject": "={{ $json.subject }}",
+        "html": "={{ $json.html }}",
+        "options": {}
+      },
+      "id": "fa5e5688-0e2a-48f0-86bb-5c433ba3c26a",
+      "name": "E-Mail senden",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        2640,
+        160
+      ],
+      "webhookId": "798e4140-7e31-4454-af34-09589e25b3db",
+      "credentials": {
+        "smtp": {
+          "id": "Ncgdp9BzQKWY85FW",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## ⏰ Trigger\nStartet automatisch jeden **Sonntag um 08:00 Uhr**.\n\nCron: `0 8 * * 0`\n\nFür manuellen Test: oben rechts auf \"Test workflow\" klicken.",
+        "height": 496,
+        "width": 264,
+        "color": 6
+      },
+      "id": "531e5e89-086a-45d9-81fc-341228e5f9d9",
+      "name": "Notiz: Trigger",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1184,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ⚙️ Konfiguration\nZentrale Einstellungen für den gesamten Workflow:\n\n- **email** – Empfänger der Wochen-Mail\n- **betreff_prefix** – Präfix im E-Mail-Betreff (z.B. \"Grow-Report\")",
+        "height": 496,
+        "width": 274,
+        "color": 5
+      },
+      "id": "e0a3a6b6-15cd-4d9f-b721-5588eb2a0010",
+      "name": "Notiz: Konfiguration",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1456,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🗄️ Datenbankabfrage\nLädt alle aktiven Pflanzen (`aktuell = TRUE`) aus PostgreSQL.\n\n- **Dünger:** JOIN nach **Woche** → Canna-Bio-Dosierungen pro Woche\n- **Licht:** JOIN nach **Phase** (unverändert)\n- Berechnet aktuelle Woche (Tage seit Keimstart ÷ 7)\n- Ermittelt aktuelle Phase aus Phasenplan W1–W30",
+        "height": 504,
+        "width": 370,
+        "color": 3
+      },
+      "id": "e9141ac9-b870-4b34-a3b0-25b0c91943ca",
+      "name": "Notiz: Datenbankabfrage",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1744,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 📧 HTML-Bericht\nErstellt aus den DB-Daten eine formatierte HTML-Mail:\n\n- Tabelle mit allen Pflanzen (Phase farblich markiert)\n- **Canna-Bio-Dosierungen** pro Woche (Bio Vega, Bio Flores, Boost, Rhizotonic)\n- Lichtzeiten\n- Phasen-Legende + Misch-Hinweis\n\nGibt genau **1 Item** zurück: `{ html, subject, toEmail }`",
+        "height": 503,
+        "width": 402,
+        "color": 4
+      },
+      "id": "316baefa-7a7e-4757-804c-4cd3053bef0f",
+      "name": "Notiz: HTML-Bericht",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2128,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 📬 E-Mail senden\nVersendet den HTML-Bericht per SMTP.\n\n- **Von/An:** `ws@whitestag.film`\n- **Betreff:** z.B. \"Grow-Report Woche 1 – Sonntag, 5. April 2026\"\n- Credentials: *SMTP account*",
+        "height": 495,
+        "width": 290,
+        "color": 2
+      },
+      "id": "406c4233-afb4-45a2-8093-73f78d12b1e0",
+      "name": "Notiz: E-Mail senden",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2544,
+        -144
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Jeden Sonntag 08:00": {
+      "main": [
+        [
+          {
+            "node": "Konfiguration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Konfiguration": {
+      "main": [
+        [
+          {
+            "node": "Aktive Pflanzen aus DB laden",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aktive Pflanzen aus DB laden": {
+      "main": [
+        [
+          {
+            "node": "E-Mail Bericht erstellen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "E-Mail Bericht erstellen": {
+      "main": [
+        [
+          {
+            "node": "E-Mail senden",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "a323cb49-91a1-4fbc-9231-3aceb9ddc7a1",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "3ba44b62f5d02f0e3eb8ac8e69e2dbfcaa4b9bad020f8ff5eea3bbe4b29c7c07"
+  },
+  "id": "tbSuGAFimKyJnhgK",
+  "tags": []
+}

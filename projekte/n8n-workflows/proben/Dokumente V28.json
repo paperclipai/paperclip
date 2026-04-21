@@ -1,0 +1,460 @@
+{
+  "name": "Dokumente V28",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "9c4230f6-ca10-45e8-824f-52d480043448",
+      "name": "Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        19968,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Dokumente V27\n\n**Zweck:** Konvertiert Dokumente (.docx, .pdf, .txt, .rtf, .md) aus Unterordnern des Eingangsordners in Obsidian-Markdown-Dateien mit YAML-Frontmatter.\n\n**Ablauf:**\n1. Trigger (alle 30 Sek.) → Ordnerstruktur synchronisieren\n2. Erste Datei aus einem Unterordner holen\n3. Konvertierung via pandoc / pdftotext / iconv\n4. LLM analysiert Inhalt und generiert Metadaten\n5. Frontmatter schreiben + Dateien verschieben\n\n**Routing:**\n- Zielordner = Unterordner-Pfad aus Input/\n- Beispiel: Input/Buchhaltung/Rechnungsausgang → Vault/Buchhaltung/Rechnungsausgang\n- Kein Unterordner → Unsortiert/\n\n**Metadaten:**\n- `typ`: Ordnerpfad (z.B. Buchhaltung/Rechnungsausgang)\n- `subtyp`: Vom LLM erkannt (Rechnung, E-Mail, Vertrag …)\n\n**Fehler:** Originaldatei landet in Input/_fehler/\n\n**V24:** Unterordner-basiertes Routing + subtyp-Feld\n**V25:** .md-Import + resources/-Ordner wird ins Vault kopiert\n**V26:** .md-Originale werden nach Import gelöscht statt nach attachments/ verschoben\n**V27:** Status-Datei `_status.md` im Vault wird nach jedem Import aktualisiert (Restdateien, Ø-Dauer, Restzeit)",
+        "height": 640,
+        "width": 708,
+        "color": 4
+      },
+      "id": "d0df7e6a-6a44-43d0-a107-bded5b8c9796",
+      "name": "Notiz: Workflow-Übersicht",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        19408,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-01",
+              "name": "triggerIntervallSekunden",
+              "value": 30,
+              "type": "number"
+            },
+            {
+              "id": "cfg-02",
+              "name": "pfade.quelle",
+              "value": "smb://whitestag-film/L/SynologyDrive/Obsidian/Input",
+              "type": "string"
+            },
+            {
+              "id": "cfg-03",
+              "name": "pfade.ziel",
+              "value": "smb://whitestag-film/L/SynologyDrive/Obsidian/WHITESTAG-Vault",
+              "type": "string"
+            },
+            {
+              "id": "cfg-04",
+              "name": "pfade.fehler",
+              "value": "smb://whitestag-film/L/SynologyDrive/Obsidian/Input/_fehler",
+              "type": "string"
+            },
+            {
+              "id": "cfg-05",
+              "name": "ausgeschlosseneOrdner",
+              "value": "={{ [\"Onenote\", \"resources\"] }}",
+              "type": "array"
+            },
+            {
+              "id": "cfg-06",
+              "name": "tools.pandoc",
+              "value": "/opt/homebrew/bin/pandoc",
+              "type": "string"
+            },
+            {
+              "id": "cfg-07",
+              "name": "tools.pdftotext",
+              "value": "/opt/homebrew/bin/pdftotext",
+              "type": "string"
+            },
+            {
+              "id": "cfg-08",
+              "name": "tools.iconv",
+              "value": "/usr/bin/iconv",
+              "type": "string"
+            },
+            {
+              "id": "cfg-09",
+              "name": "inhaber.name",
+              "value": "Walter Schoenenbröcher",
+              "type": "string"
+            },
+            {
+              "id": "cfg-10",
+              "name": "inhaber.unternehmen",
+              "value": "WHITESTAG – VR Filmproduktion",
+              "type": "string"
+            },
+            {
+              "id": "cfg-11",
+              "name": "metatags.subtypen",
+              "value": "={{ [\"Meeting\", \"Auftrag\", \"Rechnung\", \"Angebot\", \"Vertrag\", \"E-Mail\", \"Kontakt\", \"Notiz\", \"Bericht\", \"Dokument\"] }}",
+              "type": "array"
+            },
+            {
+              "id": "cfg-12",
+              "name": "metatags.status",
+              "value": "={{ [\"Offen\", \"In Bearbeitung\", \"Abgeschlossen\", \"Archiviert\"] }}",
+              "type": "array"
+            },
+            {
+              "id": "cfg-13",
+              "name": "metatags.tagVokabular",
+              "value": "={{ [\"KI\", \"LLM\", \"Automatisierung\", \"n8n\", \"RAG\", \"Prompt-Engineering\", \"Meeting\", \"Strategie\", \"Planung\", \"Praesentation\", \"Vertrieb\", \"Marketing\", \"CRM\", \"Angebot\", \"Finanzen\", \"Buchhaltung\", \"Rechnung\", \"Recht\", \"Datenschutz\", \"DSGVO\", \"Vertrag\", \"Personal\", \"Entwicklung\", \"Software\"] }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "1d59cb9d-d188-4d1f-8926-3b1a49c0c400",
+      "name": "Konfiguration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        20208,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Konfiguration** (Set-Node)\nEinzige Stelle zum Anpassen – alle Werte als Felder direkt in der UI editierbar:\n- Pfade (Quelle, Ziel, Fehler)\n- ausgeschlosseneOrdner (Array)\n- Tool-Pfade (pandoc, pdftotext, iconv)\n- Inhaber-Name/Unternehmen\n- metatags: subtypen, status, tagVokabular\n\n⚠️ triggerIntervallSekunden muss mit dem Trigger-Node übereinstimmen",
+        "height": 644,
+        "width": 260,
+        "color": 5
+      },
+      "id": "9d436d75-42c7-496c-b925-6c438afefbd1",
+      "name": "Notiz: Konfiguration",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        20128,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const { mkdirSync, readdirSync } = require('fs');\nconst path = require('path');\nconst cfg = $('Konfiguration').first().json;\nconst ausgeschlossen = new Set(cfg.ausgeschlosseneOrdner || []);\n\n// Spiegelt die Ordnerstruktur von Input/ nach WHITESTAG-Vault/\n// Ordner die mit _ beginnen (z.B. _fehler) oder in der Ausschlussliste stehen werden uebersprungen\nfunction syncDirs(src, dst) {\n  let entries;\n  try { entries = readdirSync(src, { withFileTypes: true }); } catch(e) { return; }\n  for (const entry of entries) {\n    if (!entry.isDirectory()) continue;\n    if (entry.name.startsWith('_')) continue;\n    if (ausgeschlossen.has(entry.name)) continue;\n    mkdirSync(path.join(dst, entry.name), { recursive: true });\n    syncDirs(path.join(src, entry.name), path.join(dst, entry.name));\n  }\n}\n\ntry {\n  syncDirs(cfg.pfade.quelle, cfg.pfade.ziel);\n} catch(e) {}\n\nreturn $input.all();"
+      },
+      "id": "5d47959b-2c29-4ce9-b803-2a0289226432",
+      "name": "Ordnerstruktur synchronisieren",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20464,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Ordnerstruktur synchronisieren**\nScannt alle Unterordner in Input/ rekursiv und legt fehlende Ordner in WHITESTAG-Vault/ an.\n\nRegeln:\n- Ordner mit `_` (z.B. `_fehler`) werden übersprungen\n- Ordner aus `ausgeschlosseneOrdner` (z.B. `Onenote`, `resources`) werden übersprungen\n- Läuft bei jedem Trigger-Durchlauf\n- Workflow geht danach immer weiter",
+        "height": 644,
+        "width": 260,
+        "color": 5
+      },
+      "id": "61583a8d-2fa6-4468-b07e-d3090a141e88",
+      "name": "Notiz: Ordnerstruktur",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        20384,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const { execSync } = require('child_process');\nconst path = require('path');\nconst cfg = $('Konfiguration').first().json;\nconst startTime = Date.now();\n\n// Ausschlussmuster bauen\nconst ausgeschlossen = (cfg.ausgeschlosseneOrdner || []).map(o => `-not -path '*/${o}/*'`).join(' ');\nconst findBase = `find \"${cfg.pfade.quelle}\" -type f \\\\( -name '*.docx' -o -name '*.pdf' -o -name '*.txt' -o -name '*.rtf' -o -name '*.md' \\\\) -not -path '*/_fehler/*' ${ausgeschlossen}`;\n\n// Erste Datei holen\nlet filePath = '';\ntry {\n  filePath = execSync(`${findBase} -print -quit 2>/dev/null`, { encoding: 'utf8', stdio: 'pipe' }).trim();\n} catch(e) { return []; }\n\nif (!filePath) return [];\n\n// Gesamtzahl verbleibender Dateien zählen (inkl. aktuelle)\n// maxBuffer auf 10MB erhöhen – bei vielen Dateien sonst Buffer-Overflow → leere Ausgabe\nlet verbleibend = 0;\ntry {\n  const liste = execSync(`${findBase} 2>/dev/null`, { encoding: 'utf8', stdio: 'pipe', maxBuffer: 10 * 1024 * 1024 }).trim();\n  verbleibend = liste ? liste.split('\\n').length : 0;\n} catch(e) { verbleibend = 0; }\n\nconst fileName   = filePath.split('/').pop();\nconst lastDot    = fileName.lastIndexOf('.');\nconst baseName   = lastDot > 0 ? fileName.slice(0, lastDot) : fileName;\nconst ext        = lastDot > 0 ? fileName.slice(lastDot + 1).toLowerCase() : '';\nconst uid        = Date.now() + '_' + Math.random().toString(36).slice(2);\nconst mdTempPath = '/tmp/c2md_' + uid + '.md';\nconst anlagenDir = path.dirname(filePath) + '/' + baseName;\n\nconst relDir = path.dirname(filePath).slice(cfg.pfade.quelle.length + 1);\nconst typ = relDir || 'Unsortiert';\n\nlet command;\nif      (ext === 'pdf')  command = `\"${cfg.tools.pdftotext}\" -layout \"${filePath}\" \"${mdTempPath}\"`;\nelse if (ext === 'docx') command = `\"${cfg.tools.pandoc}\" -f docx -t markdown --wrap=none \"${filePath}\" -o \"${mdTempPath}\"`;\nelse if (ext === 'rtf')  command = `\"${cfg.tools.pandoc}\" -f rtf -t markdown --wrap=none \"${filePath}\" -o \"${mdTempPath}\"`;\nelse if (ext === 'txt')  command = `\"${cfg.tools.iconv}\" -f UTF-8 -t UTF-8 \"${filePath}\" 2>/dev/null | sed 's/^\\\\xef\\\\xbb\\\\xbf//' > \"${mdTempPath}\"`;\nelse                     command = `cp \"${filePath}\" \"${mdTempPath}\"`;\n\nreturn [{ json: { filePath, fileName, baseName, ext, mdTempPath, command, anlagenDir, typ, verbleibend, startTime } }];"
+      },
+      "id": "9b538cff-2b52-4568-bbcc-539ac394027f",
+      "name": "Datei suchen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20720,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Datei suchen**\n`-print -quit` → find stoppt nach erstem Treffer sofort.\n\nNeu in V24:\n- Sucht rekursiv in allen Unterordnern\n- `_fehler`, `Onenote`, `resources` werden ausgeschlossen\n- Ausschlussliste steuerbar über `ausgeschlosseneOrdner` in Konfiguration\n- `typ` = relativer Unterordner-Pfad\n  (z.B. `Buchhaltung/Rechnungsausgang`)\n- Kein Unterordner → `Unsortiert`\n\nNeu in V25:\n- `.md`-Dateien werden erkannt und importiert",
+        "height": 640,
+        "color": 5
+      },
+      "id": "d125a7e3-bb04-4cf5-a55a-14212ff46480",
+      "name": "Notiz: Datei suchen",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        20656,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const { execSync } = require('child_process');\nconst { mkdirSync, renameSync, existsSync } = require('fs');\nconst cfg = $('Konfiguration').first().json;\nconst results = [];\n\nfor (const item of $input.all()) {\n  const { filePath, fileName, baseName, ext, mdTempPath, command, anlagenDir, typ } = item.json;\n  try {\n    // Konvertierung ausfuehren (pandoc / pdftotext / iconv / cp)\n    execSync(command, { encoding: 'utf8', shell: '/bin/bash', stdio: 'pipe' });\n    results.push({ json: { filePath, fileName, baseName, ext, mdTempPath, anlagenDir, typ } });\n  } catch(e) {\n    // Bei Fehler: Originaldatei in _fehler verschieben – fs.renameSync vermeidet Shell-Sonderzeichen-Probleme\n    try {\n      mkdirSync(cfg.pfade.fehler, { recursive: true });\n      renameSync(filePath, cfg.pfade.fehler + '/' + fileName);\n    } catch(e2) {}\n  }\n}\n\nreturn results;"
+      },
+      "id": "730057b5-01a6-4653-95ca-97756ea116d0",
+      "name": "Datei konvertieren",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20976,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Datei konvertieren**\n- .pdf → pdftotext (nur Text, kein OCR)\n- .docx → pandoc\n- .rtf → pandoc\n- .txt → iconv (UTF-8 + BOM-Strip)\n\nFehler → Datei geht nach _fehler/\n(via fs.renameSync – sicher bei Sonderzeichen)",
+        "height": 640,
+        "color": 5
+      },
+      "id": "b900ae91-3d06-4f68-9417-6b0cf4917e5c",
+      "name": "Notiz: Datei konvertieren",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        20912,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const { execSync } = require('child_process');\nconst cfg   = $('Konfiguration').first().json;\nconst today = new Date().toISOString().slice(0, 10);\n\n// System-Prompt wird einmal gebaut und fuer alle Items wiederverwendet\nconst systemPrompt =\n  'Du analysierst Dokumente fuer eine Obsidian-Wissensdatenbank. Gib ausschliesslich valides JSON zurueck - kein Markdown, keine Erklaerung.\\n\\n' +\n  'VAULT-INHABER (wichtig fuer Rechnungs-Routing):\\n' +\n  '  Name: ' + cfg.inhaber.name + '\\n' +\n  '  Unternehmen: ' + cfg.inhaber.unternehmen + '\\n\\n' +\n  // Rechnungsausgang = WHITESTAG ist Absender, Rechnungseingang = WHITESTAG ist Empfaenger\n  'RECHNUNGS-ROUTING (PFLICHT – Briefkopf und Empfaenger genau pruefen):\\n' +\n  '  Rechnungsausgang (ABSENDER = ' + cfg.inhaber.unternehmen + ' / ' + cfg.inhaber.name + '):\\n' +\n  '    rechnungsadressat: \"' + cfg.inhaber.unternehmen + '\"\\n' +\n  '    rechnungsempfaenger: Kundenname aus dem Dokument\\n' +\n  '    kunde: \"\" (immer leer bei Rechnungen)\\n' +\n  '  Rechnungseingang (EMPFAENGER = ' + cfg.inhaber.unternehmen + ' / ' + cfg.inhaber.name + '):\\n' +\n  '    rechnungsadressat: Absenderfirma aus dem Dokument\\n' +\n  '    rechnungsempfaenger: \"' + cfg.inhaber.unternehmen + '\"\\n' +\n  '    kunde: \"\" (immer leer bei Rechnungen)\\n\\n' +\n  // E-Mail-spezifische Felder – nur befuellen wenn subtyp = E-Mail\n  'E-MAIL-FELDER (nur befuellen wenn subtyp = E-Mail):\\n' +\n  '  von: Vollstaendige Absenderadresse inkl. Name\\n' +\n  '  an: Vollstaendige Empfaengeradresse inkl. Name\\n' +\n  '  anhaenge: Array der Dateinamen aller Attachments; sonst []\\n' +\n  '  kunde: Die Gegenseite (nicht-WHITESTAG-Partei) aus Von/An\\n' +\n  '  teilnehmer: immer [] bei E-Mails\\n\\n' +\n  'Felder:\\n' +\n  '- title: Praegnanter, konkreter Titel (NICHT generisch) – bei E-Mails: Subject-Zeile\\n' +\n  '- datum: Datum IM Dokument als YYYY-MM-DD; falls nicht erkennbar: heutiges Datum\\n' +\n  '- subtyp: Konkreter Untertyp basierend auf Inhalt. Eines von: ' + cfg.metatags.subtypen.join(' | ') + '\\n' +\n  '- status: Eines von: ' + cfg.metatags.status.join(' | ') + '\\n' +\n  '- tags: Array mit 2-5 Schlagwoertern aus: ' + cfg.metatags.tagVokabular.join(', ') + '\\n' +\n  '- kunde: Firmen- oder Kundenname – bei Rechnungen immer leer lassen\\n' +\n  '- projekt: Konkreter Projektname, sonst leerer String\\n' +\n  '- rechnungsnummer: Rechnungsnummer aus dem Dokument, sonst leerer String\\n' +\n  '- rechnungsadressat: Nur bei Rechnungen: Rechnungssteller/Absender; sonst leerer String\\n' +\n  '- rechnungsempfaenger: Nur bei Rechnungen: Rechnungsempfaenger; sonst leerer String\\n' +\n  '- von: Nur bei E-Mails: Absender; sonst leerer String\\n' +\n  '- an: Nur bei E-Mails: Empfaenger; sonst leerer String\\n' +\n  '- anhaenge: Nur bei E-Mails: Array der Anhang-Dateinamen; sonst []\\n' +\n  '- teilnehmer: Array aller genannten Personen (nur bei Meetings), sonst []\\n' +\n  '- zusammenfassung: 2 konkrete Saetze – WAS wird besprochen oder entschieden';\n\nconst results = [];\n\nfor (const item of $input.all()) {\n  const { filePath, fileName, baseName, ext, mdTempPath, anlagenDir, typ, verbleibend, startTime } = item.json;\n\n  // Nur ersten 4000 Bytes lesen – reicht fuer Metadaten-Erkennung und spart LLM-Tokens\n  const mdContent = execSync(\n    `head -c 4000 \"${mdTempPath}\" 2>/dev/null || echo \"\"`,\n    { encoding: 'utf8', stdio: 'pipe' }\n  );\n\n  const userPrompt =\n    'Dateiname: ' + fileName + '\\n' +\n    'Dokumenttyp (aus Eingangsordner): ' + typ + '\\n' +\n    'Heutiges Datum: ' + today + '\\n\\n' +\n    'Dokumentinhalt (Auszug):\\n' + mdContent.slice(0, 2500);\n\n  results.push({ json: { filePath, fileName, baseName, ext, mdTempPath, anlagenDir, typ, verbleibend, startTime, systemPrompt, userPrompt } });\n}\n\nreturn results;"
+      },
+      "id": "a4da13c5-a661-448b-9cd7-a1b01586c09f",
+      "name": "Inhalt lesen und Anfrage vorbereiten",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        21248,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Inhalt lesen & Prompt bauen**\nLiest max. 4.000 Bytes (≈2.500 Zeichen) des konvertierten Textes.\n\nSystem-Prompt enthält:\n- Vault-Inhaber-Identität\n- Rechnungs-Routing-Regeln\n- E-Mail-Felder (wenn subtyp = E-Mail)\n- subtyp statt typ (LLM bestimmt Untertyp)",
+        "height": 640,
+        "width": 260,
+        "color": 5
+      },
+      "id": "00081562-2698-4365-bba3-75c21c068ba8",
+      "name": "Notiz: Prompt vorbereiten",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        21168,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.userPrompt }}",
+        "options": {
+          "systemMessage": "={{ $json.systemPrompt }}"
+        }
+      },
+      "id": "4b3cb25e-0c42-4b2b-97d6-1d8512c8c882",
+      "name": "LLM Analyse und Ordner",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        21520,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**LLM Analyse**\nAI Agent ruft das Chat Model auf.\nErwartet reines JSON als Antwort.\n\n⚠️ OpenAI Chat Model:\n- responsesApiEnabled: false (PFLICHT)\n- Credential: LM Studio M4 Max",
+        "height": 640,
+        "width": 400,
+        "color": 3
+      },
+      "id": "53f3d6ad-108b-443d-8915-dc754995f57d",
+      "name": "Notiz: LLM",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        21440,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gemma-4-31b-it",
+          "mode": "list",
+          "cachedResultName": "gemma-4-31b-it"
+        },
+        "responsesApiEnabled": false,
+        "options": {
+          "maxTokens": 900,
+          "temperature": 0.1
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        21520,
+        992
+      ],
+      "id": "f8ebb5fc-9542-4c79-a172-e83ed6d75991",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "ZQZf8rLgC1tmLzlg",
+          "name": "LM Studio M4 Max"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const { execSync } = require('child_process');\nconst { writeFileSync, readFileSync, existsSync, statSync, mkdirSync, renameSync, copyFileSync, unlinkSync, readdirSync } = require('fs');\nconst path = require('path');\nconst cfg      = $('Konfiguration').first().json;\nconst fileData = $('Inhalt lesen und Anfrage vorbereiten').item.json;\nconst today    = new Date().toISOString().slice(0, 10);\nconst esc      = s => (s || '').toString().replace(/\"/g, \"'\"); // Anführungszeichen in YAML escapen\n\n// ── LLM-Antwort parsen ───────────────────────────────────────\n// Markdown-Codeblöcke entfernen falls LLM diese trotz Anweisung liefert\nlet meta = {};\ntry {\n  const raw     = ($input.item.json.output || '').trim();\n  const jsonStr = raw.replace(/^```json?\\s*/i, '').replace(/\\s*```$/i, '').trim();\n  meta = JSON.parse(jsonStr);\n} catch(e) {\n  meta = {}; // Fallback: leere Metadaten, Defaults greifen unten\n}\n\n// ── Zielordner bestimmen ─────────────────────────────────────\n// Ordnerstruktur aus Input/ wird 1:1 in WHITESTAG-Vault/ gespiegelt\nconst targetDir       = cfg.pfade.ziel + '/' + fileData.typ;\nconst attachmentsDir  = targetDir + '/attachments';\nconst mdFinalPath     = targetDir + '/' + fileData.baseName + '.md';\nconst attachFinalPath = attachmentsDir + '/' + fileData.fileName;\n\n// E-Mail-Erkennung via subtyp (vom LLM)\nconst istEmailSubtyp  = (meta.subtyp || '').toLowerCase() === 'e-mail';\n\n// ── YAML Frontmatter aufbauen ────────────────────────────────\nconst tagsYaml = Array.isArray(meta.tags) && meta.tags.length\n  ? meta.tags.map(t => '  - ' + t).join('\\n')\n  : '  - Unsortiert';\n\n// teilnehmer nur bei Meetings sinnvoll, nicht bei E-Mails\nconst teilnehmerYaml = !istEmailSubtyp && Array.isArray(meta.teilnehmer) && meta.teilnehmer.length\n  ? '\\nteilnehmer:\\n' + meta.teilnehmer.map(t => '  - \"' + esc(t) + '\"').join('\\n')\n  : '';\n\n// anhaenge nur bei E-Mails befuellen\nconst anhaengeYaml = istEmailSubtyp && Array.isArray(meta.anhaenge) && meta.anhaenge.length\n  ? 'anhaenge:\\n' + meta.anhaenge.map(a => '  - \"' + esc(a) + '\"').join('\\n') + '\\n'\n  : '';\n\nconst frontmatter =\n  '---\\n' +\n  'title: \"'                + esc(meta.title || fileData.baseName) + '\"\\n' +\n  'datum: '                 + (meta.datum  || today) + '\\n' +\n  'erstellt: '              + today + '\\n' +\n  'typ: '                   + fileData.typ + '\\n' +\n  'subtyp: '                + (meta.subtyp || '') + '\\n' +\n  'status: '                + (meta.status || 'Archiviert') + '\\n' +\n  'tags:\\n'                 + tagsYaml + '\\n' +\n  'kunde: \"'                + esc(meta.kunde)   + '\"\\n' +\n  'projekt: \"'              + esc(meta.projekt) + '\"\\n' +\n  // Rechnungsfelder – nur wenn vorhanden\n  (meta.rechnungsnummer     ? 'rechnungsnummer: \"'     + esc(meta.rechnungsnummer)     + '\"\\n' : '') +\n  (meta.rechnungsadressat   ? 'rechnungsadressat: \"'   + esc(meta.rechnungsadressat)   + '\"\\n' : '') +\n  (meta.rechnungsempfaenger ? 'rechnungsempfaenger: \"' + esc(meta.rechnungsempfaenger) + '\"\\n' : '') +\n  // E-Mail-Felder – nur wenn vorhanden\n  (meta.von                 ? 'von: \"'                 + esc(meta.von)                 + '\"\\n' : '') +\n  (meta.an                  ? 'an: \"'                  + esc(meta.an)                  + '\"\\n' : '') +\n  anhaengeYaml +\n  teilnehmerYaml + '\\n' +\n  'zusammenfassung: \"'      + esc(meta.zusammenfassung) + '\"\\n' +\n  'quelle: \"'               + fileData.fileName + '\"\\n' +\n  '---\\n\\n';\n\n// ── Frontmatter + Originalinhalt in Temp-Datei schreiben ─────\nconst originalContent = readFileSync(fileData.mdTempPath, 'utf8');\nwriteFileSync(fileData.mdTempPath, frontmatter + originalContent, 'utf8');\n\n// ── Zielverzeichnisse erstellen ──────────────────────────────\n// mkdirSync statt Shell-mkdir – kein Problem mit Sonderzeichen\nmkdirSync(targetDir,      { recursive: true });\nmkdirSync(attachmentsDir, { recursive: true });\n\n// ── MD-Datei verschieben ─────────────────────────────────────\n// /tmp → SMB-Share = geraeteuebergreifend: copyFileSync + unlinkSync statt renameSync\n// renameSync wuerde EXDEV (cross-device link not permitted) werfen\ncopyFileSync(fileData.mdTempPath, mdFinalPath);\nunlinkSync(fileData.mdTempPath);\n\n// ── Originaldatei verschieben oder löschen (Race-Condition-Schutz) ───\n// .md-Originale werden gelöscht (Inhalt ist bereits im Vault mit Frontmatter)\n// Alle anderen Formate (.docx, .pdf, .txt, .rtf) → nach attachments/ verschieben\nif (existsSync(fileData.filePath)) {\n  if (fileData.ext === 'md') {\n    unlinkSync(fileData.filePath);\n  } else {\n    mkdirSync(attachmentsDir, { recursive: true });\n    renameSync(fileData.filePath, attachFinalPath);\n  }\n}\n\n// ── Anlagen-Ordner mitverschieben (E-Mail-Attachments) ───────\n// Erwartet: Ordner mit gleichem Namen wie die .txt-Datei (ohne Extension)\nif (fileData.anlagenDir && existsSync(fileData.anlagenDir) && statSync(fileData.anlagenDir).isDirectory()) {\n  // Alle Dateien im Anlagen-Ordner einzeln verschieben – renameSync ist sicher bei Sonderzeichen\n  for (const f of readdirSync(fileData.anlagenDir)) {\n    const src = path.join(fileData.anlagenDir, f);\n    const dst = path.join(attachmentsDir, f);\n    if (statSync(src).isFile()) {\n      renameSync(src, dst); // ueberschreibt gleichnamige Dateien\n    }\n  }\n  // Leeren Ordner entfernen\n  try { execSync(`rmdir \"${fileData.anlagenDir}\"`, { stdio: 'pipe' }); } catch(e) {}\n}\n\n// ── resources/-Ordner kopieren (Onenote-Bilder) ──────────────\nconst sourceResourcesDir = path.dirname(fileData.filePath) + '/resources';\nconst targetResourcesDir = targetDir + '/resources';\nif (existsSync(sourceResourcesDir) && statSync(sourceResourcesDir).isDirectory()) {\n  mkdirSync(targetResourcesDir, { recursive: true });\n  for (const f of readdirSync(sourceResourcesDir)) {\n    const src = path.join(sourceResourcesDir, f);\n    const dst = path.join(targetResourcesDir, f);\n    if (statSync(src).isFile() && !existsSync(dst)) {\n      copyFileSync(src, dst);\n    }\n  }\n}\n\n// ── Status-Datei aktualisieren ───────────────────────────────\nconst statusPath  = cfg.pfade.ziel + '/_status.md';\n// Dauer: Zeit zwischen startTime (Datei suchen) und jetzt\nconst dauerSek    = fileData.startTime ? Math.max(1, Math.round((Date.now() - fileData.startTime) / 1000)) : 1;\n// Verbleibend: gezählte Dateien minus aktuelle (die gerade fertig wird)\nconst verbleibend = Math.max(0, (fileData.verbleibend || 1) - 1);\n\n// Rollender Durchschnitt: letzte Messungen aus Status-Datei lesen\nlet messungen = [];\ntry {\n  const prev = readFileSync(statusPath, 'utf8');\n  const match = prev.match(/<!--messungen:(.*?)-->/);\n  if (match) messungen = JSON.parse(match[1]);\n} catch(e) {}\nmessungen.push(dauerSek);\nif (messungen.length > 20) messungen = messungen.slice(-20);\nconst avgSek = Math.round(messungen.reduce((a, b) => a + b, 0) / messungen.length);\nconst restSek = verbleibend * avgSek;\nconst restMin = Math.round(restSek / 60);\nconst now = new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' });\n\nconst statusContent =\n  '# Import-Status\\n\\n' +\n  `**Verbleibend:** ${verbleibend} Dateien\\n` +\n  `**Ø Dauer:** ${avgSek} Sek./Datei\\n` +\n  `**Geschätzte Restzeit:** ~${restMin} Minuten\\n` +\n  `**Zuletzt verarbeitet:** ${fileData.fileName} (${now})\\n\\n` +\n  `<!--messungen:${JSON.stringify(messungen)}-->`;\ntry { writeFileSync(statusPath, statusContent, 'utf8'); } catch(e) {}\n\nreturn { json: { ok: true, datei: fileData.fileName, zielordner: fileData.typ, subtyp: meta.subtyp || '', kunde: meta.kunde || '', verbleibend, dauerSek } };"
+      },
+      "id": "f354a479-d90c-4304-ae77-11802338b657",
+      "name": "Metadaten schreiben und verschieben",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        22032,
+        848
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Metadaten schreiben & verschieben**\n- YAML Frontmatter wird vor den konvertierten Inhalt gesetzt\n- `typ` = Unterordner-Pfad aus Input/ (z.B. Buchhaltung/Rechnungsausgang)\n- `subtyp` = LLM-Erkennung (Rechnung, E-Mail, …)\n- .md → WHITESTAG-Vault/[typ]/\n- Original → WHITESTAG-Vault/[typ]/attachments/\n- Anlagen-Ordner (E-Mail) → ebenfalls nach attachments/\n\n✅ /tmp → SMB: copyFileSync + unlinkSync (kein EXDEV)\n✅ SMB → SMB: renameSync (gleiche Partition)\n✅ Alle Datei-Ops via fs-API – sicher bei $, (, ) und anderen Sonderzeichen in Dateinamen.",
+        "height": 632,
+        "width": 424,
+        "color": 5
+      },
+      "id": "8583ae6d-ea1b-4e19-acd7-70756f9d292e",
+      "name": "Notiz: Schreiben und verschieben",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        21856,
+        464
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger": {
+      "main": [
+        [
+          {
+            "node": "Konfiguration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Konfiguration": {
+      "main": [
+        [
+          {
+            "node": "Ordnerstruktur synchronisieren",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ordnerstruktur synchronisieren": {
+      "main": [
+        [
+          {
+            "node": "Datei suchen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Datei suchen": {
+      "main": [
+        [
+          {
+            "node": "Datei konvertieren",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Datei konvertieren": {
+      "main": [
+        [
+          {
+            "node": "Inhalt lesen und Anfrage vorbereiten",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inhalt lesen und Anfrage vorbereiten": {
+      "main": [
+        [
+          {
+            "node": "LLM Analyse und Ordner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Analyse und Ordner": {
+      "main": [
+        [
+          {
+            "node": "Metadaten schreiben und verschieben",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "LLM Analyse und Ordner",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "6fee6dd9-7545-4d07-ae64-848a2dabb0c2",
+  "meta": {
+    "instanceId": "3ba44b62f5d02f0e3eb8ac8e69e2dbfcaa4b9bad020f8ff5eea3bbe4b29c7c07"
+  },
+  "id": "sd5ul8uHOLn8LNk2",
+  "tags": []
+}
