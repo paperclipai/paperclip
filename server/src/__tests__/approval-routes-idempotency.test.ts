@@ -29,29 +29,73 @@ const mockSecretService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  approvalService: () => mockApprovalService,
-  heartbeatService: () => mockHeartbeatService,
-  issueApprovalService: () => mockIssueApprovalService,
-  logActivity: mockLogActivity,
-  secretService: () => mockSecretService,
-}));
-
 function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+
+  const servicesIndexMock = () => ({
     approvalService: () => mockApprovalService,
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => mockIssueApprovalService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
-  }));
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
 }
 
+function resetApprovalRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../routes/approvals.js");
+  vi.doUnmock("../routes/approvals.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+}
+
+let approvalRouteImportSeq = 0;
+
 async function createApp(actorOverrides: Record<string, unknown> = {}) {
+  resetApprovalRouteModules();
   registerModuleMocks();
+  approvalRouteImportSeq += 1;
+  const routeModulePath = `../routes/approvals.ts?approval-routes-idempotency-${approvalRouteImportSeq}`;
   const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/approvals.js")>("../routes/approvals.js"),
+    import("../middleware/index.ts"),
+    import(routeModulePath) as Promise<typeof import("../routes/approvals.ts")>,
   ]);
   const app = express();
   app.use(express.json());
@@ -72,10 +116,13 @@ async function createApp(actorOverrides: Record<string, unknown> = {}) {
 }
 
 async function createAgentApp() {
+  resetApprovalRouteModules();
   registerModuleMocks();
+  approvalRouteImportSeq += 1;
+  const routeModulePath = `../routes/approvals.ts?approval-routes-idempotency-${approvalRouteImportSeq}`;
   const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/approvals.js")>("../routes/approvals.js"),
+    import("../middleware/index.ts"),
+    import(routeModulePath) as Promise<typeof import("../routes/approvals.ts")>,
   ]);
   const app = express();
   app.use(express.json());
@@ -96,18 +143,7 @@ async function createAgentApp() {
 
 describe("approval routes idempotent retries", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/approvals.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("../middleware/validate.js");
-    vi.doMock("../routes/authz.js", async () =>
-      vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
-    );
-    vi.doMock("../middleware/validate.js", async () =>
-      vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
-    );
+    resetApprovalRouteModules();
     registerModuleMocks();
     vi.resetAllMocks();
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });

@@ -218,7 +218,7 @@ export async function createApp(
     });
   });
   if (opts.betterAuthHandler) {
-    app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
+    app.all(/^\/api\/auth(?:\/.*)?$/, opts.betterAuthHandler);
   }
   app.use(llmRoutes(db));
 

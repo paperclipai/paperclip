@@ -26,28 +26,77 @@ const mockBoardAuthService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
+  vi.doMock("../routes/access.js", async () =>
+    vi.importActual<typeof import("../routes/access.ts")>("../routes/access.ts"),
+  );
+  vi.doMock("../routes/access.ts", async () =>
+    vi.importActual<typeof import("../routes/access.ts")>("../routes/access.ts"),
+  );
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+
+  const servicesIndexMock = () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     boardAuthService: () => mockBoardAuthService,
     logActivity: mockLogActivity,
     notifyHireApproved: vi.fn(),
     deduplicateAgentName: vi.fn((name: string) => name),
-  }));
-  vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
-  );
-  vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
-  );
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
 }
 
-async function createApp(actor: any, db: any = {} as any) {
+function resetAccessRouteModules() {
   vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
+  vi.doUnmock("../routes/access.js");
+  vi.doUnmock("../routes/access.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../board-claim.js");
+  vi.doUnmock("../board-claim.ts");
+  vi.doUnmock("../adapters/index.js");
+  vi.doUnmock("../adapters/index.ts");
+}
+
+let accessRouteImportSeq = 0;
+
+async function createApp(actor: any, db: any = {} as any) {
+  resetAccessRouteModules();
   registerModuleMocks();
+  accessRouteImportSeq += 1;
+  const routeModulePath = `../routes/access.ts?cli-auth-routes-${accessRouteImportSeq}`;
   const [{ accessRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/access.js"),
-    import("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/access.ts")>,
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());

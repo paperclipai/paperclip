@@ -22,11 +22,13 @@ function registerModuleMocks() {
     trackErrorHandlerCrash: vi.fn(),
   }));
 
-  vi.doMock("../telemetry.js", () => ({
+  const telemetryMock = () => ({
     getTelemetryClient: mockGetTelemetryClient,
-  }));
+  });
+  vi.doMock("../telemetry.js", telemetryMock);
+  vi.doMock("../telemetry.ts", telemetryMock);
 
-  vi.doMock("../services/index.js", () => ({
+  const servicesIndexMock = () => ({
     accessService: () => ({
       canUser: vi.fn(),
       hasPermission: vi.fn(),
@@ -49,7 +51,42 @@ function registerModuleMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
-  }));
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
+}
+
+function resetIssueRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("../attachment-types.js");
+  vi.doUnmock("../attachment-types.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/issue-assignment-wakeup.js");
+  vi.doUnmock("../services/issue-assignment-wakeup.ts");
+  vi.doUnmock("../services/issue-execution-policy.js");
+  vi.doUnmock("../services/issue-execution-policy.ts");
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../routes/issues.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../routes/issues-checkout-wakeup.js");
+  vi.doUnmock("../routes/issues-checkout-wakeup.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
 }
 
 function makeIssue(status: "todo" | "done") {
@@ -66,10 +103,11 @@ function makeIssue(status: "todo" | "done") {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  vi.resetModules();
+  resetIssueRouteModules();
+  registerModuleMocks();
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
+    import("../routes/issues.ts"),
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -84,13 +122,7 @@ async function createApp(actor: Record<string, unknown>) {
 
 describe("issue telemetry routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
-    vi.doUnmock("../telemetry.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
+    resetIssueRouteModules();
     registerModuleMocks();
     vi.resetAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });

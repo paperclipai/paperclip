@@ -1,6 +1,6 @@
-import express from "express";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Request, Response } from "express";
 
 /**
  * Regression test for https://github.com/paperclipai/paperclip/issues/2898
@@ -10,19 +10,30 @@ import { describe, expect, it, vi } from "vitest";
  * silently fail to match, causing every `/api/auth/*` request to fall
  * through and return 404.
  *
- * The correct Express 5 syntax for a named catch-all is `{*paramName}`.
- * These tests verify that the better-auth handler is invoked for both
- * shallow and deep auth sub-paths.
+ * Paperclip mounts the better-auth handler with a regex catch-all so Express
+ * does not rewrite the request URL and every auth sub-path reaches the handler.
  */
 describe("Express 5 /api/auth wildcard route", () => {
+  let createExpressApp: typeof import("express").default;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
+    vi.doUnmock("express");
+    createExpressApp = (await vi.importActual<typeof import("express")>("express")).default;
+  });
+
   function buildApp() {
-    const app = express();
+    const app = createExpressApp();
     let callCount = 0;
-    const handler = (_req: express.Request, res: express.Response) => {
+    const handler = (_req: Request, res: Response) => {
       callCount += 1;
       res.status(200).json({ ok: true });
     };
-    app.all("/api/auth/{*authPath}", handler);
+    app.all(/^\/api\/auth(?:\/.*)?$/, handler);
     return {
       app,
       getCallCount: () => callCount,
@@ -54,8 +65,8 @@ describe("Express 5 /api/auth wildcard route", () => {
 
   it("invokes the handler for every matched sub-path", async () => {
     const { app, getCallCount } = buildApp();
-    await request(app).post("/api/auth/sign-out");
-    await request(app).get("/api/auth/session");
+    expect((await request(app).post("/api/auth/sign-out")).status).toBe(200);
+    expect((await request(app).get("/api/auth/session")).status).toBe(200);
     expect(getCallCount()).toBe(2);
   });
 });

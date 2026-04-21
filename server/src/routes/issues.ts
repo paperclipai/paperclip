@@ -79,19 +79,36 @@ const ACTIVE_AGENT_RUN_STATUSES = new Set<HeartbeatRunStatus>(["queued", "runnin
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+const DATE_ONLY_QUERY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+function isValidDateOnlyQuery(value: string) {
+  const match = DATE_ONLY_QUERY_RE.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < 1000 || month < 1 || month > 12 || day < 1 || day > 31) return false;
+
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+  );
+}
 
 function parseDateOnlyQuery(value: unknown, name: string, res: Response): string | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== "string" || value.trim().length === 0) {
+  if (typeof value !== "string") {
     res.status(400).json({ error: `${name} must be a valid YYYY-MM-DD date` });
     return undefined;
   }
-  const parsed = issueDueDateSchema.safeParse(value.trim());
-  if (!parsed.success) {
+  const trimmed = value.trim();
+  if (!isValidDateOnlyQuery(trimmed)) {
     res.status(400).json({ error: `${name} must be a valid YYYY-MM-DD date` });
     return undefined;
   }
-  return parsed.data;
+  return issueDueDateSchema.parse(trimmed);
 }
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
@@ -2375,7 +2392,8 @@ export function issueRoutes(
 
         let mentionedIds: string[] = [];
         try {
-          mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
+          const resolvedMentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
+          mentionedIds = Array.isArray(resolvedMentionedIds) ? resolvedMentionedIds : [];
         } catch (err) {
           logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
         }
@@ -2534,9 +2552,10 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const attachments = await svc.listAttachments(id);
+    const resolvedIssueId = existing.id;
+    const attachments = await svc.listAttachments(resolvedIssueId);
 
-    const issue = await svc.remove(id);
+    const issue = await svc.remove(resolvedIssueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -2546,7 +2565,7 @@ export function issueRoutes(
       try {
         await storage.deleteObject(attachment.companyId, attachment.objectKey);
       } catch (err) {
-        logger.warn({ err, issueId: id, attachmentId: attachment.id }, "failed to delete attachment object during issue delete");
+        logger.warn({ err, issueId: resolvedIssueId, attachmentId: attachment.id }, "failed to delete attachment object during issue delete");
       }
     }
 
@@ -3051,7 +3070,8 @@ export function issueRoutes(
 
       let mentionedIds: string[] = [];
       try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+        const resolvedMentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+        mentionedIds = Array.isArray(resolvedMentionedIds) ? resolvedMentionedIds : [];
       } catch (err) {
         logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
       }

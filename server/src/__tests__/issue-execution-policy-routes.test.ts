@@ -31,7 +31,16 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
+  const sharedTelemetryMock = () => ({
+    trackAgentTaskCompleted: vi.fn(),
+    trackErrorHandlerCrash: vi.fn(),
+  });
+
+  const telemetryMock = () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  });
+
+  const servicesIndexMock = () => ({
     accessService: () => ({
       canUser: vi.fn(async () => false),
       hasPermission: vi.fn(async () => false),
@@ -63,7 +72,71 @@ function registerModuleMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
-  }));
+  });
+
+  vi.doMock("@paperclipai/shared/telemetry", sharedTelemetryMock);
+  vi.doMock("../telemetry.js", telemetryMock);
+  vi.doMock("../telemetry.ts", telemetryMock);
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
+  vi.doMock("../services/issue-assignment-wakeup.js", async () =>
+    vi.importActual<typeof import("../services/issue-assignment-wakeup.ts")>(
+      "../services/issue-assignment-wakeup.ts",
+    ),
+  );
+  vi.doMock("../services/issue-assignment-wakeup.ts", async () =>
+    vi.importActual<typeof import("../services/issue-assignment-wakeup.ts")>(
+      "../services/issue-assignment-wakeup.ts",
+    ),
+  );
+  vi.doMock("../services/issue-execution-policy.js", async () =>
+    vi.importActual<typeof import("../services/issue-execution-policy.ts")>("../services/issue-execution-policy.ts"),
+  );
+  vi.doMock("../services/issue-execution-policy.ts", async () =>
+    vi.importActual<typeof import("../services/issue-execution-policy.ts")>("../services/issue-execution-policy.ts"),
+  );
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.js", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.ts", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/issues-checkout-wakeup.js", async () =>
+    vi.importActual<typeof import("../routes/issues-checkout-wakeup.ts")>("../routes/issues-checkout-wakeup.ts"),
+  );
+  vi.doMock("../routes/issues-checkout-wakeup.ts", async () =>
+    vi.importActual<typeof import("../routes/issues-checkout-wakeup.ts")>("../routes/issues-checkout-wakeup.ts"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../attachment-types.js", async () =>
+    vi.importActual<typeof import("../attachment-types.ts")>("../attachment-types.ts"),
+  );
+  vi.doMock("../attachment-types.ts", async () =>
+    vi.importActual<typeof import("../attachment-types.ts")>("../attachment-types.ts"),
+  );
 }
 
 type TestActor =
@@ -85,9 +158,40 @@ type TestActor =
     };
 
 async function createApp(actor?: TestActor) {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/issue-assignment-wakeup.js");
+  vi.doUnmock("../services/issue-assignment-wakeup.ts");
+  vi.doUnmock("../services/issue-execution-policy.js");
+  vi.doUnmock("../services/issue-execution-policy.ts");
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../routes/issues.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../routes/issues-checkout-wakeup.js");
+  vi.doUnmock("../routes/issues-checkout-wakeup.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../attachment-types.js");
+  vi.doUnmock("../attachment-types.ts");
+  registerModuleMocks();
+  issueRouteImportSeq += 1;
+  const routeModulePath = `../routes/issues.ts?issue-execution-policy-routes-${issueRouteImportSeq}`;
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
-    import("../middleware/index.js"),
-    import("../routes/issues.js"),
+    import("../middleware/index.ts"),
+    import(routeModulePath) as Promise<typeof import("../routes/issues.ts")>,
   ]);
   const app = express();
   app.use(express.json());
@@ -106,12 +210,38 @@ async function createApp(actor?: TestActor) {
   return app;
 }
 
+let issueRouteImportSeq = 0;
+
 describe("issue execution policy routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("@paperclipai/db");
+    vi.doUnmock("@paperclipai/shared");
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../telemetry.ts");
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/index.ts");
+    vi.doUnmock("../services/issue-assignment-wakeup.js");
+    vi.doUnmock("../services/issue-assignment-wakeup.ts");
+    vi.doUnmock("../services/issue-execution-policy.js");
+    vi.doUnmock("../services/issue-execution-policy.ts");
     vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/issues.ts");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../routes/authz.ts");
+    vi.doUnmock("../routes/issues-checkout-wakeup.js");
+    vi.doUnmock("../routes/issues-checkout-wakeup.ts");
+    vi.doUnmock("../routes/workspace-command-authz.js");
+    vi.doUnmock("../routes/workspace-command-authz.ts");
     vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/index.ts");
+    vi.doUnmock("../middleware/validate.js");
+    vi.doUnmock("../middleware/validate.ts");
+    vi.doUnmock("../middleware/logger.js");
+    vi.doUnmock("../middleware/logger.ts");
+    vi.doUnmock("../attachment-types.js");
+    vi.doUnmock("../attachment-types.ts");
     registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });

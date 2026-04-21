@@ -2022,7 +2022,15 @@ export function agentRoutes(
     res.json(result.bundle);
   });
 
-  router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {
+  router.patch(
+    "/agents/:id",
+    (req, _res, next) => {
+      const rawBody = asRecord(req.body);
+      assertNoAgentInstructionsConfigMutation(req, asRecord(rawBody?.adapterConfig));
+      next();
+    },
+    validate(updateAgentSchema),
+    async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {

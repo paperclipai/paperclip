@@ -8,14 +8,6 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockListServerAdapters = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/agents.js", () => ({
-  agentService: () => mockAgentService,
-}));
-
-vi.mock("../adapters/index.js", () => ({
-  listServerAdapters: mockListServerAdapters,
-}));
-
 function registerModuleMocks() {
   vi.doMock("../services/agents.js", () => ({
     agentService: () => mockAgentService,
@@ -45,6 +37,8 @@ async function createApp(actor: Record<string, unknown>) {
 describe("llm routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/agents.js");
+    vi.doUnmock("../adapters/index.js");
     vi.doUnmock("../routes/llms.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();

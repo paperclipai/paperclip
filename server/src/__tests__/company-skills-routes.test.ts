@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -19,43 +19,57 @@ const mockCompanySkillService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackSkillImported = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
-
-vi.mock("@paperclipai/shared/telemetry", () => ({
-  trackSkillImported: mockTrackSkillImported,
-  trackErrorHandlerCrash: vi.fn(),
-}));
-
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: mockGetTelemetryClient,
-}));
-
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  companySkillService: () => mockCompanySkillService,
-  logActivity: mockLogActivity,
-}));
+let routeImportSeq = 0;
 
 function registerModuleMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackSkillImported: mockTrackSkillImported,
     trackErrorHandlerCrash: vi.fn(),
   }));
-  vi.doMock("../telemetry.js", () => ({
+  const telemetryMock = () => ({
     getTelemetryClient: mockGetTelemetryClient,
-  }));
-  vi.doMock("../services/index.js", () => ({
+  });
+  vi.doMock("../telemetry.js", telemetryMock);
+  vi.doMock("../telemetry.ts", telemetryMock);
+
+  const servicesIndexMock = () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     companySkillService: () => mockCompanySkillService,
     logActivity: mockLogActivity,
-  }));
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
+}
+
+function resetCompanySkillRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("../routes/company-skills.js");
+  vi.doUnmock("../routes/company-skills.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
 }
 
 async function createApp(actor: Record<string, unknown>) {
+  resetCompanySkillRouteModules();
+  registerModuleMocks();
+  routeImportSeq += 1;
+  const routeModulePath = `../routes/company-skills.ts?company-skills-routes-${routeImportSeq}`;
   const [{ companySkillRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/company-skills.js")>("../routes/company-skills.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/company-skills.ts")>,
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -70,11 +84,7 @@ async function createApp(actor: Record<string, unknown>) {
 
 describe("company skill mutation permissions", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/company-skills.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("../middleware/validate.js");
+    resetCompanySkillRouteModules();
     registerModuleMocks();
     vi.resetAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
@@ -90,6 +100,11 @@ describe("company skill mutation permissions", () => {
     mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    resetCompanySkillRouteModules();
+    vi.resetAllMocks();
   });
 
   it("allows local board operators to mutate company skills", async () => {
@@ -288,6 +303,13 @@ describe("company skill mutation permissions", () => {
   });
 
   it("returns a blocking error when attempting to delete a skill still used by agents", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    });
     const { unprocessable } = await import("../errors.js");
     mockCompanySkillService.deleteSkill.mockImplementationOnce(async () => {
       throw unprocessable(
@@ -295,14 +317,7 @@ describe("company skill mutation permissions", () => {
       );
     });
 
-    const res = await request(await createApp({
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    }))
-      .delete("/api/companies/company-1/skills/skill-1");
+    const res = await request(app).delete("/api/companies/company-1/skills/skill-1");
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(res.body).toEqual({

@@ -6,14 +6,53 @@ const mockDashboardService = vi.hoisted(() => ({
   summary: vi.fn(),
 }));
 
-vi.mock("../services/dashboard.js", () => ({
-  dashboardService: () => mockDashboardService,
-}));
+function registerModuleMocks() {
+  vi.doMock("../services/dashboard.js", () => ({
+    dashboardService: () => mockDashboardService,
+  }));
+  vi.doMock("../services/dashboard.ts", () => ({
+    dashboardService: () => mockDashboardService,
+  }));
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+}
+
+let dashboardRouteImportSeq = 0;
 
 async function createApp(actor: Record<string, unknown>) {
+  vi.resetModules();
+  vi.doUnmock("../services/dashboard.js");
+  vi.doUnmock("../services/dashboard.ts");
+  vi.doUnmock("../routes/dashboard.js");
+  vi.doUnmock("../routes/dashboard.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  registerModuleMocks();
+  dashboardRouteImportSeq += 1;
+  const routeModulePath = `../routes/dashboard.ts?dashboard-routes-${dashboardRouteImportSeq}`;
   const [{ errorHandler }, { dashboardRoutes }] = await Promise.all([
-    import("../middleware/index.js"),
-    import("../routes/dashboard.js"),
+    import("../middleware/index.ts"),
+    import(routeModulePath) as Promise<typeof import("../routes/dashboard.ts")>,
   ]);
   const app = express();
   app.use((req, _res, next) => {
@@ -27,7 +66,19 @@ async function createApp(actor: Record<string, unknown>) {
 
 describe("dashboard routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doUnmock("../services/dashboard.js");
+    vi.doUnmock("../services/dashboard.ts");
+    vi.doUnmock("../routes/dashboard.js");
+    vi.doUnmock("../routes/dashboard.ts");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../routes/authz.ts");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/index.ts");
+    vi.doUnmock("../middleware/logger.js");
+    vi.doUnmock("../middleware/logger.ts");
+    registerModuleMocks();
+    vi.resetAllMocks();
   });
 
   it("allows same-company agents to read the dashboard summary", async () => {

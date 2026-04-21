@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -22,48 +22,8 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(async () => null),
 }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => ({
-    canUser: vi.fn(async () => true),
-    hasPermission: vi.fn(async () => true),
-  }),
-  agentService: () => ({
-    getById: vi.fn(async () => null),
-    resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
-      ambiguous: false,
-      agent: { id: raw },
-    })),
-  }),
-  documentService: () => ({}),
-  executionWorkspaceService: () => ({}),
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
-  goalService: () => ({}),
-  heartbeatService: () => mockHeartbeatService,
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
-  issueApprovalService: () => ({}),
-  issueService: () => mockIssueService,
-  logActivity: vi.fn(async () => undefined),
-  projectService: () => ({}),
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({}),
-}));
-
 function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
+  const servicesIndexMock = () => ({
     accessService: () => ({
       canUser: vi.fn(async () => true),
       hasPermission: vi.fn(async () => true),
@@ -101,21 +61,129 @@ function registerModuleMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
+  });
+
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackAgentTaskCompleted: vi.fn(),
+    trackErrorHandlerCrash: vi.fn(),
   }));
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+  vi.doMock("../telemetry.ts", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
+  vi.doMock("../routes/issues.js", async () =>
+    vi.importActual<typeof import("../routes/issues.ts")>("../routes/issues.ts"),
+  );
+  vi.doMock("../routes/issues.ts", async () =>
+    vi.importActual<typeof import("../routes/issues.ts")>("../routes/issues.ts"),
+  );
   vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.js", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.ts", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/issues-checkout-wakeup.js", async () =>
+    vi.importActual<typeof import("../routes/issues-checkout-wakeup.ts")>("../routes/issues-checkout-wakeup.ts"),
+  );
+  vi.doMock("../routes/issues-checkout-wakeup.ts", async () =>
+    vi.importActual<typeof import("../routes/issues-checkout-wakeup.ts")>("../routes/issues-checkout-wakeup.ts"),
+  );
+  vi.doMock("../services/issue-assignment-wakeup.js", async () =>
+    vi.importActual<typeof import("../services/issue-assignment-wakeup.ts")>(
+      "../services/issue-assignment-wakeup.ts",
+    ),
+  );
+  vi.doMock("../services/issue-assignment-wakeup.ts", async () =>
+    vi.importActual<typeof import("../services/issue-assignment-wakeup.ts")>(
+      "../services/issue-assignment-wakeup.ts",
+    ),
+  );
+  vi.doMock("../services/issue-execution-policy.js", async () =>
+    vi.importActual<typeof import("../services/issue-execution-policy.ts")>("../services/issue-execution-policy.ts"),
+  );
+  vi.doMock("../services/issue-execution-policy.ts", async () =>
+    vi.importActual<typeof import("../services/issue-execution-policy.ts")>("../services/issue-execution-policy.ts"),
   );
   vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../attachment-types.js", async () =>
+    vi.importActual<typeof import("../attachment-types.ts")>("../attachment-types.ts"),
+  );
+  vi.doMock("../attachment-types.ts", async () =>
+    vi.importActual<typeof import("../attachment-types.ts")>("../attachment-types.ts"),
   );
 }
 
-async function createApp() {
+function resetIssueRouteModules() {
   vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../attachment-types.js");
+  vi.doUnmock("../attachment-types.ts");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/issue-assignment-wakeup.js");
+  vi.doUnmock("../services/issue-assignment-wakeup.ts");
+  vi.doUnmock("../services/issue-execution-policy.js");
+  vi.doUnmock("../services/issue-execution-policy.ts");
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../routes/issues.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../routes/issues-checkout-wakeup.js");
+  vi.doUnmock("../routes/issues-checkout-wakeup.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+}
+
+let issueRouteImportSeq = 0;
+
+async function createApp() {
+  resetIssueRouteModules();
   registerModuleMocks();
+  issueRouteImportSeq += 1;
+  const routeModulePath = `../routes/issues.ts?issue-update-comment-wakeup-routes-${issueRouteImportSeq}`;
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
-    import("../middleware/index.js"),
-    import("../routes/issues.js"),
+    import("../middleware/index.ts"),
+    import(routeModulePath) as Promise<typeof import("../routes/issues.ts")>,
   ]);
   const app = express();
   app.use(express.json());
@@ -163,6 +231,11 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    resetIssueRouteModules();
+    vi.resetAllMocks();
   });
 
   it("updates and clears issue due dates", async () => {

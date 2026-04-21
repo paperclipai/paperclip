@@ -15,50 +15,6 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => ({
-    canUser: vi.fn(async () => true),
-    hasPermission: vi.fn(async () => true),
-  }),
-  agentService: () => ({
-    getById: vi.fn(async () => null),
-  }),
-  documentService: () => ({}),
-  executionWorkspaceService: () => ({
-    getById: vi.fn(async () => null),
-  }),
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
-  goalService: () => ({}),
-  heartbeatService: () => ({
-    wakeup: vi.fn(async () => undefined),
-    reportRunActivity: vi.fn(async () => undefined),
-    getRun: vi.fn(async () => null),
-    getActiveRunForAgent: vi.fn(async () => null),
-    cancelRun: vi.fn(async () => null),
-  }),
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
-  issueApprovalService: () => ({}),
-  issueService: () => mockIssueService,
-  logActivity: vi.fn(async () => undefined),
-  projectService: () => ({}),
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({}),
-}));
-
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () =>
     vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),

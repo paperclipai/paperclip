@@ -47,6 +47,14 @@ export function activityRoutes(db: Db) {
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
+    if (
+      req.actor.source !== "local_implicit" &&
+      !req.actor.isInstanceAdmin &&
+      !(req.actor.companyIds ?? []).includes(companyId)
+    ) {
+      res.status(403).json({ error: "User does not have access to this company" });
+      return;
+    }
     assertCompanyAccess(req, companyId);
     const event = await svc.create({
       companyId,

@@ -3,8 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
-import { afterEach, describe, expect, it } from "vitest";
-import { installStaticUiRoutes } from "../app.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const tempDirs: string[] = [];
 
@@ -32,7 +31,13 @@ async function writeIndex(uiDist: string, scriptName: string) {
   await writeFile(path.join(uiDist, "index.html"), indexHtml(scriptName), "utf-8");
 }
 
-function createApp(uiDist: string) {
+async function createApp(uiDist: string) {
+  vi.resetModules();
+  vi.doUnmock("../app.js");
+  vi.doUnmock("../app.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  const { installStaticUiRoutes } = await vi.importActual<typeof import("../app.ts")>("../app.ts");
   const app = express();
   installStaticUiRoutes(app, uiDist);
   return app;
@@ -40,12 +45,15 @@ function createApp(uiDist: string) {
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  vi.resetModules();
+  vi.doUnmock("../app.js");
+  vi.doUnmock("../app.ts");
 });
 
 describe("static UI routes", () => {
   it("serves the current index.html for root and bookmarked SPA routes", async () => {
     const uiDist = await createUiDist("old.js");
-    const app = createApp(uiDist);
+    const app = await createApp(uiDist);
 
     await writeIndex(uiDist, "new.js");
 
@@ -64,7 +72,7 @@ describe("static UI routes", () => {
 
   it("does not serve fallback HTML for missing static assets", async () => {
     const uiDist = await createUiDist("index.js");
-    const app = createApp(uiDist);
+    const app = await createApp(uiDist);
 
     const res = await request(app).get("/assets/old-bundle.js").set("Accept", "*/*");
 

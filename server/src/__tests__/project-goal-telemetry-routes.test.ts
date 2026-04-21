@@ -26,46 +26,84 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockTelemetryTrack = vi.hoisted(() => vi.fn());
 
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: mockGetTelemetryClient,
-}));
-
-vi.mock("../services/index.js", () => ({
-  goalService: () => mockGoalService,
-  logActivity: mockLogActivity,
-  projectService: () => mockProjectService,
-  secretService: () => mockSecretService,
-  workspaceOperationService: () => mockWorkspaceOperationService,
-}));
-
 vi.mock("../services/workspace-runtime.js", () => ({
   startRuntimeServicesForWorkspaceControl: vi.fn(),
   stopRuntimeServicesForProjectWorkspace: vi.fn(),
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.js", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.ts", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/workspace-runtime-service-authz.js", async () =>
+    vi.importActual<typeof import("../routes/workspace-runtime-service-authz.ts")>(
+      "../routes/workspace-runtime-service-authz.ts",
+    ),
+  );
+  vi.doMock("../routes/workspace-runtime-service-authz.ts", async () =>
+    vi.importActual<typeof import("../routes/workspace-runtime-service-authz.ts")>(
+      "../routes/workspace-runtime-service-authz.ts",
+    ),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
   vi.doMock("../telemetry.js", () => ({
     getTelemetryClient: mockGetTelemetryClient,
   }));
+  vi.doMock("../telemetry.ts", () => ({
+    getTelemetryClient: mockGetTelemetryClient,
+  }));
 
-  vi.doMock("../services/index.js", () => ({
+  const servicesIndexMock = () => ({
     goalService: () => mockGoalService,
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,
     secretService: () => mockSecretService,
     workspaceOperationService: () => mockWorkspaceOperationService,
-  }));
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
 
   vi.doMock("../services/workspace-runtime.js", () => ({
     startRuntimeServicesForWorkspaceControl: vi.fn(),
     stopRuntimeServicesForProjectWorkspace: vi.fn(),
   }));
+  vi.doMock("../services/workspace-runtime.ts", () => ({
+    startRuntimeServicesForWorkspaceControl: vi.fn(),
+    stopRuntimeServicesForProjectWorkspace: vi.fn(),
+  }));
 }
 
+let projectGoalRouteImportSeq = 0;
+
 async function createApp(routeType: "project" | "goal") {
-  const { errorHandler } = await vi.importActual<typeof import("../middleware/index.js")>(
-    "../middleware/index.js",
-  );
+  projectGoalRouteImportSeq += 1;
+  const { errorHandler } = await import("../middleware/index.ts");
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -79,14 +117,12 @@ async function createApp(routeType: "project" | "goal") {
     next();
   });
   if (routeType === "project") {
-    const { projectRoutes } = await vi.importActual<typeof import("../routes/projects.js")>(
-      "../routes/projects.js",
-    );
+    const routeModulePath = `../routes/projects.ts?project-goal-telemetry-${projectGoalRouteImportSeq}`;
+    const { projectRoutes } = await import(routeModulePath) as typeof import("../routes/projects.ts");
     app.use("/api", projectRoutes({} as any));
   } else {
-    const { goalRoutes } = await vi.importActual<typeof import("../routes/goals.js")>(
-      "../routes/goals.js",
-    );
+    const routeModulePath = `../routes/goals.ts?project-goal-telemetry-${projectGoalRouteImportSeq}`;
+    const { goalRoutes } = await import(routeModulePath) as typeof import("../routes/goals.ts");
     app.use("/api", goalRoutes({} as any));
   }
   app.use(errorHandler);
@@ -96,13 +132,29 @@ async function createApp(routeType: "project" | "goal") {
 describe("project and goal telemetry routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../telemetry.ts");
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/index.ts");
     vi.doUnmock("../services/workspace-runtime.js");
+    vi.doUnmock("../services/workspace-runtime.ts");
     vi.doUnmock("../routes/projects.js");
+    vi.doUnmock("../routes/projects.ts");
     vi.doUnmock("../routes/goals.js");
+    vi.doUnmock("../routes/goals.ts");
     vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../routes/authz.ts");
+    vi.doUnmock("../routes/workspace-command-authz.js");
+    vi.doUnmock("../routes/workspace-command-authz.ts");
+    vi.doUnmock("../routes/workspace-runtime-service-authz.js");
+    vi.doUnmock("../routes/workspace-runtime-service-authz.ts");
     vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/index.ts");
+    vi.doUnmock("../middleware/validate.js");
+    vi.doUnmock("../middleware/validate.ts");
+    vi.doUnmock("../middleware/logger.js");
+    vi.doUnmock("../middleware/logger.ts");
     registerModuleMocks();
     vi.resetAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: mockTelemetryTrack });

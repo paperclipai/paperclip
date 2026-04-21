@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIssueService = vi.hoisted(() => ({
@@ -17,7 +17,7 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
+  const servicesIndexMock = () => ({
     accessService: () => ({
       canUser: vi.fn(),
       hasPermission: vi.fn(),
@@ -39,6 +39,9 @@ function registerModuleMocks() {
     heartbeatService: () => ({
       wakeup: mockWakeup,
       reportRunActivity: vi.fn(async () => undefined),
+      getRun: vi.fn(async () => null),
+      getActiveRunForAgent: vi.fn(async () => null),
+      cancelRun: vi.fn(async () => null),
     }),
     instanceSettingsService: () => ({
       get: vi.fn(),
@@ -57,13 +60,129 @@ function registerModuleMocks() {
     workProductService: () => ({
       listForIssue: vi.fn(async () => []),
     }),
+  });
+
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackAgentTaskCompleted: vi.fn(),
+    trackErrorHandlerCrash: vi.fn(),
   }));
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+  vi.doMock("../telemetry.ts", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
+  vi.doMock("../routes/issues.js", async () =>
+    vi.importActual<typeof import("../routes/issues.ts")>("../routes/issues.ts"),
+  );
+  vi.doMock("../routes/issues.ts", async () =>
+    vi.importActual<typeof import("../routes/issues.ts")>("../routes/issues.ts"),
+  );
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.js", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.ts", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/issues-checkout-wakeup.js", async () =>
+    vi.importActual<typeof import("../routes/issues-checkout-wakeup.ts")>("../routes/issues-checkout-wakeup.ts"),
+  );
+  vi.doMock("../routes/issues-checkout-wakeup.ts", async () =>
+    vi.importActual<typeof import("../routes/issues-checkout-wakeup.ts")>("../routes/issues-checkout-wakeup.ts"),
+  );
+  vi.doMock("../services/issue-assignment-wakeup.js", async () =>
+    vi.importActual<typeof import("../services/issue-assignment-wakeup.ts")>(
+      "../services/issue-assignment-wakeup.ts",
+    ),
+  );
+  vi.doMock("../services/issue-assignment-wakeup.ts", async () =>
+    vi.importActual<typeof import("../services/issue-assignment-wakeup.ts")>(
+      "../services/issue-assignment-wakeup.ts",
+    ),
+  );
+  vi.doMock("../services/issue-execution-policy.js", async () =>
+    vi.importActual<typeof import("../services/issue-execution-policy.ts")>("../services/issue-execution-policy.ts"),
+  );
+  vi.doMock("../services/issue-execution-policy.ts", async () =>
+    vi.importActual<typeof import("../services/issue-execution-policy.ts")>("../services/issue-execution-policy.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../attachment-types.js", async () =>
+    vi.importActual<typeof import("../attachment-types.ts")>("../attachment-types.ts"),
+  );
+  vi.doMock("../attachment-types.ts", async () =>
+    vi.importActual<typeof import("../attachment-types.ts")>("../attachment-types.ts"),
+  );
 }
 
+function resetIssueRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../attachment-types.js");
+  vi.doUnmock("../attachment-types.ts");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/issue-assignment-wakeup.js");
+  vi.doUnmock("../services/issue-assignment-wakeup.ts");
+  vi.doUnmock("../services/issue-execution-policy.js");
+  vi.doUnmock("../services/issue-execution-policy.ts");
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../routes/issues.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../routes/issues-checkout-wakeup.js");
+  vi.doUnmock("../routes/issues-checkout-wakeup.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+}
+
+let issueRouteImportSeq = 0;
+
 async function createApp() {
+  resetIssueRouteModules();
+  registerModuleMocks();
+  issueRouteImportSeq += 1;
+  const routeModulePath = `../routes/issues.ts?issue-dependency-wakeups-routes-${issueRouteImportSeq}`;
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/issues.ts")>,
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -84,19 +203,7 @@ async function createApp() {
 
 describe("issue dependency wakeups in issue routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("../middleware/validate.js");
-    vi.doUnmock("../services/index.js");
-    vi.doMock("../routes/authz.js", async () =>
-      vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
-    );
-    vi.doMock("../middleware/validate.js", async () =>
-      vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
-    );
-    registerModuleMocks();
+    resetIssueRouteModules();
     vi.resetAllMocks();
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getComment.mockResolvedValue(null);
@@ -108,6 +215,11 @@ describe("issue dependency wakeups in issue routes", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    resetIssueRouteModules();
+    vi.resetAllMocks();
   });
 
   it("wakes dependents when the final blocker transitions to done", async () => {

@@ -1,45 +1,52 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import { companyRoutes } from "../routes/companies.js";
 
-vi.mock("../services/index.js", () => ({
-  companyService: () => ({
-    list: vi.fn(),
-    stats: vi.fn(),
-    getById: vi.fn(),
-    create: vi.fn(),
-    update: vi.fn(),
-    archive: vi.fn(),
-    remove: vi.fn(),
-  }),
-  companyPortabilityService: () => ({
-    exportBundle: vi.fn(),
-    previewExport: vi.fn(),
-    previewImport: vi.fn(),
-    importBundle: vi.fn(),
-  }),
-  accessService: () => ({
-    canUser: vi.fn(),
-    ensureMembership: vi.fn(),
-  }),
-  budgetService: () => ({
-    upsertPolicy: vi.fn(),
-  }),
-  agentService: () => ({
-    getById: vi.fn(),
-  }),
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(),
-    listFeedbackTraces: vi.fn(),
-    getFeedbackTraceById: vi.fn(),
-    saveIssueVote: vi.fn(),
-  }),
-  logActivity: vi.fn(),
-}));
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    companyService: () => ({
+      list: vi.fn(),
+      stats: vi.fn(),
+      getById: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      archive: vi.fn(),
+      remove: vi.fn(),
+    }),
+    companyPortabilityService: () => ({
+      exportBundle: vi.fn(),
+      previewExport: vi.fn(),
+      previewImport: vi.fn(),
+      importBundle: vi.fn(),
+    }),
+    accessService: () => ({
+      canUser: vi.fn(),
+      ensureMembership: vi.fn(),
+    }),
+    budgetService: () => ({
+      upsertPolicy: vi.fn(),
+    }),
+    agentService: () => ({
+      getById: vi.fn(),
+    }),
+    feedbackService: () => ({
+      listIssueVotesForUser: vi.fn(),
+      listFeedbackTraces: vi.fn(),
+      getFeedbackTraceById: vi.fn(),
+      saveIssueVote: vi.fn(),
+    }),
+    logActivity: vi.fn(),
+  }));
+}
 
 describe("company routes malformed issue path guard", () => {
   it("returns a clear error when companyId is missing for issues list path", async () => {
+    vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/companies.js");
+    registerModuleMocks();
+    const { companyRoutes } = await import("../routes/companies.js");
+
     const app = express();
     app.use((req, _res, next) => {
       (req as any).actor = {

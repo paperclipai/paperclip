@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -25,33 +25,8 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  documentService: () => mockDocumentsService,
-  executionWorkspaceService: () => ({}),
-  feedbackService: () => ({}),
-  goalService: () => ({}),
-  heartbeatService: () => ({
-    wakeup: vi.fn(async () => undefined),
-    reportRunActivity: vi.fn(async () => undefined),
-  }),
-  instanceSettingsService: () => ({
-    getExperimental: vi.fn(async () => ({})),
-    getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
-  }),
-  issueApprovalService: () => ({}),
-  issueService: () => mockIssueService,
-  logActivity: mockLogActivity,
-  projectService: () => ({}),
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({}),
-}));
-
-function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
+function createServiceIndexMock() {
+  return {
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     documentService: () => mockDocumentsService,
@@ -74,27 +49,48 @@ function registerModuleMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
-  }));
+  };
+}
+
+function unmockRouteModules() {
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/routines.js");
+  vi.doUnmock("../services/routines.ts");
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../routes/issues.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+}
+
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", createServiceIndexMock);
+  vi.doMock("../services/index.ts", createServiceIndexMock);
 }
 
 async function createApp() {
   vi.resetModules();
-  vi.doUnmock("../services/index.js");
-  vi.doUnmock("../services/routines.js");
-  vi.doUnmock("../routes/issues.js");
-  vi.doUnmock("../routes/authz.js");
-  vi.doUnmock("../middleware/index.js");
-  vi.doUnmock("../middleware/validate.js");
+  unmockRouteModules();
   vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
   );
   vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
   );
   registerModuleMocks();
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
+    import("../routes/issues.ts"),
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -116,12 +112,7 @@ async function createApp() {
 describe("issue document revision routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../services/routines.js");
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("../middleware/validate.js");
+    unmockRouteModules();
     registerModuleMocks();
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue({
@@ -170,6 +161,12 @@ describe("issue document revision routes", () => {
       },
     });
     mockLogActivity.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    unmockRouteModules();
+    vi.resetAllMocks();
   });
 
   it("returns revision snapshots including title and format", async () => {

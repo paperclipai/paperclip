@@ -29,7 +29,7 @@ import {
 import { accessService } from "../services/access.js";
 
 function routineServiceWithTestHeartbeat(
-  actual: typeof import("../services/routines.js"),
+  actual: typeof import("../services/routines.ts"),
   db: ReturnType<typeof createDb>,
 ) {
   return actual.routineService(db, {
@@ -73,7 +73,15 @@ function routineServiceWithTestHeartbeat(
 
 function registerRoutineServiceMock() {
   vi.doMock("../services/routines.js", async () => {
-    const actual = await vi.importActual<typeof import("../services/routines.js")>("../services/routines.js");
+    const actual = await vi.importActual<typeof import("../services/routines.ts")>("../services/routines.ts");
+
+    return {
+      ...actual,
+      routineService: (db: ReturnType<typeof createDb>) => routineServiceWithTestHeartbeat(actual, db),
+    };
+  });
+  vi.doMock("../services/routines.ts", async () => {
+    const actual = await vi.importActual<typeof import("../services/routines.ts")>("../services/routines.ts");
 
     return {
       ...actual,
@@ -82,19 +90,50 @@ function registerRoutineServiceMock() {
   });
   vi.doMock("../services/index.js", async () => {
     const [actualIndex, actualRoutines] = await Promise.all([
-      vi.importActual<typeof import("../services/index.js")>("../services/index.js"),
-      vi.importActual<typeof import("../services/routines.js")>("../services/routines.js"),
+      vi.importActual<typeof import("../services/index.ts")>("../services/index.ts"),
+      vi.importActual<typeof import("../services/routines.ts")>("../services/routines.ts"),
     ]);
     return {
       ...actualIndex,
       routineService: (db: ReturnType<typeof createDb>) => routineServiceWithTestHeartbeat(actualRoutines, db),
     };
   });
+  vi.doMock("../services/index.ts", async () => {
+    const [actualIndex, actualRoutines] = await Promise.all([
+      vi.importActual<typeof import("../services/index.ts")>("../services/index.ts"),
+      vi.importActual<typeof import("../services/routines.ts")>("../services/routines.ts"),
+    ]);
+    return {
+      ...actualIndex,
+      routineService: (db: ReturnType<typeof createDb>) => routineServiceWithTestHeartbeat(actualRoutines, db),
+    };
+  });
+}
+
+function registerRouteActuals() {
   vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
   );
   vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
   );
 }
 
@@ -110,6 +149,7 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("routine routes end-to-end", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let routineRouteImportSeq = 0;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-e2e-");
@@ -141,30 +181,93 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
 
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("@paperclipai/db");
+    vi.doUnmock("@paperclipai/shared");
     vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../errors.js");
+    vi.doUnmock("../errors.ts");
     vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../telemetry.ts");
     vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/access.ts");
     vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/issues.ts");
     vi.doUnmock("../services/companies.js");
+    vi.doUnmock("../services/companies.ts");
     vi.doUnmock("../services/projects.js");
+    vi.doUnmock("../services/projects.ts");
     vi.doUnmock("../services/company-skills.js");
+    vi.doUnmock("../services/company-skills.ts");
     vi.doUnmock("../services/assets.js");
+    vi.doUnmock("../services/assets.ts");
     vi.doUnmock("../services/agent-instructions.js");
+    vi.doUnmock("../services/agent-instructions.ts");
     vi.doUnmock("../services/workspace-runtime.js");
+    vi.doUnmock("../services/workspace-runtime.ts");
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/index.ts");
     vi.doUnmock("../services/routines.js");
+    vi.doUnmock("../services/routines.ts");
     vi.doUnmock("../routes/routines.js");
+    vi.doUnmock("../routes/routines.ts");
     vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../routes/authz.ts");
     vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/index.ts");
+    vi.doUnmock("../middleware/validate.js");
+    vi.doUnmock("../middleware/validate.ts");
+    vi.doUnmock("../middleware/logger.js");
+    vi.doUnmock("../middleware/logger.ts");
     registerRoutineServiceMock();
+    registerRouteActuals();
   });
 
   async function createApp(actor: Record<string, unknown>) {
     vi.resetModules();
+    vi.doUnmock("@paperclipai/db");
+    vi.doUnmock("@paperclipai/shared");
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../errors.js");
+    vi.doUnmock("../errors.ts");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../telemetry.ts");
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/access.ts");
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/issues.ts");
+    vi.doUnmock("../services/companies.js");
+    vi.doUnmock("../services/companies.ts");
+    vi.doUnmock("../services/projects.js");
+    vi.doUnmock("../services/projects.ts");
+    vi.doUnmock("../services/company-skills.js");
+    vi.doUnmock("../services/company-skills.ts");
+    vi.doUnmock("../services/assets.js");
+    vi.doUnmock("../services/assets.ts");
+    vi.doUnmock("../services/agent-instructions.js");
+    vi.doUnmock("../services/agent-instructions.ts");
+    vi.doUnmock("../services/workspace-runtime.js");
+    vi.doUnmock("../services/workspace-runtime.ts");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/index.ts");
+    vi.doUnmock("../services/routines.js");
+    vi.doUnmock("../services/routines.ts");
+    vi.doUnmock("../routes/routines.js");
+    vi.doUnmock("../routes/routines.ts");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../routes/authz.ts");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/index.ts");
+    vi.doUnmock("../middleware/validate.js");
+    vi.doUnmock("../middleware/validate.ts");
+    vi.doUnmock("../middleware/logger.js");
+    vi.doUnmock("../middleware/logger.ts");
     registerRoutineServiceMock();
+    registerRouteActuals();
+    routineRouteImportSeq += 1;
+    const routeModulePath = `../routes/routines.ts?routines-e2e-${routineRouteImportSeq}`;
     const [{ routineRoutes }, { errorHandler }] = await Promise.all([
-      import("../routes/routines.js"),
-      import("../middleware/index.js"),
+      import(routeModulePath) as Promise<typeof import("../routes/routines.ts")>,
+      import("../middleware/index.ts"),
     ]);
     const app = express();
     app.use(express.json());
@@ -286,7 +389,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       payload: { origin: "e2e-test" },
     });
 
-    expect(runRes.status).toBe(202);
+    expect(runRes.status, JSON.stringify(runRes.body)).toBe(202);
     expect(runRes.body.status).toBe("issue_created");
     expect(runRes.body.source).toBe("manual");
     expect(runRes.body.linkedIssueId).toBeTruthy();
@@ -378,7 +481,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       variables: { repo: "paperclip" },
     });
 
-    expect(runRes.status).toBe(202);
+    expect(runRes.status, JSON.stringify(runRes.body)).toBe(202);
     expect(runRes.body.triggerPayload).toEqual({
       variables: {
         repo: "paperclip",

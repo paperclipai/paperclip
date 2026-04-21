@@ -59,28 +59,46 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  agentService: () => mockAgentService,
-  agentInstructionsService: () => mockAgentInstructionsService,
-  accessService: () => mockAccessService,
-  approvalService: () => mockApprovalService,
-  companySkillService: () => mockCompanySkillService,
-  budgetService: () => mockBudgetService,
-  heartbeatService: () => mockHeartbeatService,
-  issueApprovalService: () => mockIssueApprovalService,
-  issueService: () => ({}),
-  logActivity: mockLogActivity,
-  secretService: () => mockSecretService,
-  syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
-  workspaceOperationService: () => ({}),
-}));
-
-vi.mock("../services/instance-settings.js", () => ({
-  instanceSettingsService: () => mockInstanceSettingsService,
-}));
-
 function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
+  vi.doMock("../routes/agents.js", async () =>
+    vi.importActual<typeof import("../routes/agents.ts")>("../routes/agents.ts"),
+  );
+  vi.doMock("../routes/agents.ts", async () =>
+    vi.importActual<typeof import("../routes/agents.ts")>("../routes/agents.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../adapters/index.js", async () =>
+    vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts"),
+  );
+  vi.doMock("../adapters/index.ts", async () =>
+    vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts"),
+  );
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackAgentCreated: vi.fn(),
+    trackErrorHandlerCrash: vi.fn(),
+  }));
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+
+  const servicesIndexMock = () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
@@ -94,11 +112,45 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
     workspaceOperationService: () => ({}),
-  }));
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
 
   vi.doMock("../services/instance-settings.js", () => ({
     instanceSettingsService: () => mockInstanceSettingsService,
   }));
+  vi.doMock("../services/instance-settings.ts", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+  }));
+}
+
+function resetAgentRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("../routes/agents.js");
+  vi.doUnmock("../routes/agents.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/agent-service-health.js");
+  vi.doUnmock("../services/agent-service-health.ts");
+  vi.doUnmock("../services/default-agent-instructions.js");
+  vi.doUnmock("../services/default-agent-instructions.ts");
+  vi.doUnmock("../services/instance-settings.js");
+  vi.doUnmock("../services/instance-settings.ts");
+  vi.doUnmock("../adapters/index.js");
+  vi.doUnmock("../adapters/index.ts");
 }
 
 const externalAdapter: ServerAdapterModule = {
@@ -115,9 +167,12 @@ const externalAdapter: ServerAdapterModule = {
 const missingAdapterType = "missing_adapter_validation_test";
 
 async function createApp() {
+  resetAgentRouteModules();
+  registerModuleMocks();
+  const routeModulePath = "../routes/agents.ts?agent-adapter-validation-routes";
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/agents.ts")>,
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -137,19 +192,16 @@ async function createApp() {
 }
 
 async function unregisterTestAdapter(type: string) {
-  const { unregisterServerAdapter } = await import("../adapters/index.js");
+  const { unregisterServerAdapter } = await import("../adapters/index.ts");
   unregisterServerAdapter(type);
 }
 
 describe("agent routes adapter validation", () => {
   beforeEach(async () => {
-    vi.resetModules();
-    vi.doUnmock("../routes/agents.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("../routes/agents.js");
+    resetAgentRouteModules();
     registerModuleMocks();
     vi.resetAllMocks();
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({ censorUsernameInLogs: false });
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockResolvedValue([]);
     mockAccessService.canUser.mockResolvedValue(true);
@@ -188,13 +240,14 @@ describe("agent routes adapter validation", () => {
   afterEach(async () => {
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
+    resetAgentRouteModules();
   });
 
   it("creates agents for dynamically registered external adapter types", async () => {
-    const { registerServerAdapter } = await import("../adapters/index.js");
+    const app = await createApp();
+    const { registerServerAdapter } = await import("../adapters/index.ts");
     registerServerAdapter(externalAdapter);
 
-    const app = await createApp();
     const res = await request(app)
       .post("/api/companies/company-1/agents")
       .send({

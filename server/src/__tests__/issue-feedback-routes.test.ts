@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockFeedbackService = vi.hoisted(() => ({
   getFeedbackTraceById: vi.fn(),
@@ -51,16 +51,16 @@ const mockRoutineService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 function registerModuleMocks() {
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  const sharedTelemetryMock = () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
-  }));
+  });
 
-  vi.doMock("../telemetry.js", () => ({
+  const telemetryMock = () => ({
     getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
-  }));
+  });
 
-  vi.doMock("../services/index.js", () => ({
+  const servicesIndexMock = () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     documentService: () => ({}),
@@ -75,14 +75,54 @@ function registerModuleMocks() {
     projectService: () => ({}),
     routineService: () => mockRoutineService,
     workProductService: () => ({}),
-  }));
+  });
+
+  vi.doMock("@paperclipai/shared/telemetry", sharedTelemetryMock);
+  vi.doMock("../telemetry.js", telemetryMock);
+  vi.doMock("../telemetry.ts", telemetryMock);
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
+}
+
+function resetIssueRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../attachment-types.js");
+  vi.doUnmock("../attachment-types.ts");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../routes/issues.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../routes/issues-checkout-wakeup.js");
+  vi.doUnmock("../routes/issues-checkout-wakeup.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/issue-assignment-wakeup.js");
+  vi.doUnmock("../services/issue-assignment-wakeup.ts");
+  vi.doUnmock("../services/issue-execution-policy.js");
+  vi.doUnmock("../services/issue-execution-policy.ts");
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  vi.resetModules();
+  resetIssueRouteModules();
+  registerModuleMocks();
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
+    import("../routes/issues.ts"),
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -97,12 +137,7 @@ async function createApp(actor: Record<string, unknown>) {
 
 describe("issue feedback trace routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
-    vi.doUnmock("../telemetry.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../middleware/index.js");
+    resetIssueRouteModules();
     registerModuleMocks();
     vi.clearAllMocks();
     mockFeedbackExportService.flushPendingFeedbackTraces.mockResolvedValue({
@@ -125,6 +160,11 @@ describe("issue feedback trace routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    resetIssueRouteModules();
+    vi.resetAllMocks();
   });
 
   it("flushes a newly shared feedback trace immediately after saving the vote", async () => {

@@ -26,33 +26,52 @@ const mockAgentService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  boardAuthService: () => ({}),
-  deduplicateAgentName: (candidate: string) => candidate,
-  logActivity: mockLogActivity,
-  notifyHireApproved: mockNotifyHireApproved,
-}));
-
 function registerModuleMocks() {
-  vi.doMock("../adapters/index.js", async () => {
-    const actual = await vi.importActual<typeof import("../adapters/index.js")>(
-      "../adapters/index.js",
+  const adaptersIndexMock = async () => {
+    const actual = await vi.importActual<typeof import("../adapters/index.ts")>(
+      "../adapters/index.ts",
     );
     return {
       ...actual,
       findServerAdapter: (type: string) =>
         type === missingAdapterType ? null : actual.findServerAdapter(type),
     };
-  });
+  };
+  vi.doMock("../adapters/index.js", adaptersIndexMock);
+  vi.doMock("../adapters/index.ts", adaptersIndexMock);
+  vi.doMock("../routes/access.js", async () =>
+    vi.importActual<typeof import("../routes/access.ts")>("../routes/access.ts"),
+  );
+  vi.doMock("../routes/access.ts", async () =>
+    vi.importActual<typeof import("../routes/access.ts")>("../routes/access.ts"),
+  );
   vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
   );
   vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
   );
   vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    boardAuthService: () => ({}),
+    deduplicateAgentName: (candidate: string) => candidate,
+    logActivity: mockLogActivity,
+    notifyHireApproved: mockNotifyHireApproved,
+  }));
+  vi.doMock("../services/index.ts", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     boardAuthService: () => ({}),
@@ -153,10 +172,32 @@ function baseJoinRequest(overrides: Row = {}) {
   };
 }
 
+let accessRouteImportSeq = 0;
+
 async function createApp(db: unknown) {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("../adapters/index.js");
+  vi.doUnmock("../adapters/index.ts");
+  vi.doUnmock("../routes/access.js");
+  vi.doUnmock("../routes/access.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  registerModuleMocks();
+  accessRouteImportSeq += 1;
+  const routeModulePath = `../routes/access.ts?invite-adapter-validation-routes-${accessRouteImportSeq}`;
   const [{ accessRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/access.ts")>,
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -183,12 +224,22 @@ async function createApp(db: unknown) {
 describe("invite adapter validation routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("@paperclipai/db");
+    vi.doUnmock("@paperclipai/shared");
     vi.doUnmock("../adapters/index.js");
+    vi.doUnmock("../adapters/index.ts");
     vi.doUnmock("../routes/access.js");
+    vi.doUnmock("../routes/access.ts");
     vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../routes/authz.ts");
     vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/index.ts");
     vi.doUnmock("../middleware/validate.js");
+    vi.doUnmock("../middleware/validate.ts");
+    vi.doUnmock("../middleware/logger.js");
+    vi.doUnmock("../middleware/logger.ts");
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/index.ts");
     registerModuleMocks();
     vi.clearAllMocks();
     mockAccessService.ensureMembership.mockResolvedValue(undefined);

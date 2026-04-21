@@ -10,30 +10,64 @@ const mockSidebarPreferenceService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  sidebarPreferenceService: () => mockSidebarPreferenceService,
-  logActivity: mockLogActivity,
-}));
-
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
   );
   vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
   );
-  vi.doMock("../services/index.js", () => ({
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+
+  const servicesIndexMock = () => ({
     sidebarPreferenceService: () => mockSidebarPreferenceService,
     logActivity: mockLogActivity,
-  }));
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
 }
 
-async function createApp(actor: Record<string, unknown>) {
+function resetSidebarRouteModules() {
   vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
+  vi.doUnmock("../routes/sidebar-preferences.js");
+  vi.doUnmock("../routes/sidebar-preferences.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+}
+
+let sidebarRouteImportSeq = 0;
+
+async function createApp(actor: Record<string, unknown>) {
+  resetSidebarRouteModules();
   registerModuleMocks();
+  sidebarRouteImportSeq += 1;
+  const routeModulePath = `../routes/sidebar-preferences.ts?sidebar-preferences-routes-${sidebarRouteImportSeq}`;
   const [{ sidebarPreferenceRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/sidebar-preferences.js"),
-    import("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/sidebar-preferences.ts")>,
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -53,6 +87,8 @@ const ORDERED_IDS = [
 
 describe("sidebar preference routes", () => {
   beforeEach(() => {
+    resetSidebarRouteModules();
+    registerModuleMocks();
     vi.clearAllMocks();
     mockSidebarPreferenceService.getCompanyOrder.mockResolvedValue({
       orderedIds: ORDERED_IDS,

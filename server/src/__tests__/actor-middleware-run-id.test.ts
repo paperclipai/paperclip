@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   boardAuthServiceMock,
@@ -12,23 +12,57 @@ const {
   verifyLocalAgentJwtMock: vi.fn(),
 }));
 
-vi.mock("../agent-auth-jwt.js", () => ({
-  verifyLocalAgentJwt: verifyLocalAgentJwtMock,
-}));
+function registerModuleMocks() {
+  vi.doMock("../middleware/auth.js", async () =>
+    vi.importActual<typeof import("../middleware/auth.ts")>("../middleware/auth.ts"),
+  );
+  vi.doMock("../middleware/auth.ts", async () =>
+    vi.importActual<typeof import("../middleware/auth.ts")>("../middleware/auth.ts"),
+  );
+  vi.doMock("../agent-auth-jwt.js", () => ({
+    verifyLocalAgentJwt: verifyLocalAgentJwtMock,
+  }));
+  vi.doMock("../agent-auth-jwt.ts", () => ({
+    verifyLocalAgentJwt: verifyLocalAgentJwtMock,
+  }));
 
-vi.mock("../services/board-auth.js", () => ({
-  boardAuthService: boardAuthServiceMock,
-}));
+  vi.doMock("../services/board-auth.js", () => ({
+    boardAuthService: boardAuthServiceMock,
+  }));
+  vi.doMock("../services/board-auth.ts", () => ({
+    boardAuthService: boardAuthServiceMock,
+  }));
 
-vi.mock("../middleware/logger.js", () => ({
-  logger: {
-    warn: loggerWarnMock,
-    info: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+  vi.doMock("../middleware/logger.js", () => ({
+    logger: {
+      warn: loggerWarnMock,
+      info: vi.fn(),
+      error: vi.fn(),
+    },
+  }));
+  vi.doMock("../middleware/logger.ts", () => ({
+    logger: {
+      warn: loggerWarnMock,
+      info: vi.fn(),
+      error: vi.fn(),
+    },
+  }));
+}
 
-import { actorMiddleware } from "../middleware/auth.ts";
+function resetActorMiddlewareModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("drizzle-orm");
+  vi.doUnmock("../agent-auth-jwt.js");
+  vi.doUnmock("../agent-auth-jwt.ts");
+  vi.doUnmock("../services/board-auth.js");
+  vi.doUnmock("../services/board-auth.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../middleware/auth.js");
+  vi.doUnmock("../middleware/auth.ts");
+}
 
 function createDbStub(resultSets: Array<unknown[]>) {
   const queue = [...resultSets];
@@ -48,7 +82,14 @@ function createDbStub(resultSets: Array<unknown[]>) {
   };
 }
 
-function createApp(db: ReturnType<typeof createDbStub>) {
+let authImportSeq = 0;
+
+async function createApp(db: ReturnType<typeof createDbStub>) {
+  resetActorMiddlewareModules();
+  registerModuleMocks();
+  authImportSeq += 1;
+  const authModulePath = `../middleware/auth.ts?actor-middleware-run-id-${authImportSeq}`;
+  const { actorMiddleware } = await import(authModulePath) as typeof import("../middleware/auth.ts");
   const app = express();
   app.use(actorMiddleware(db as never, { deploymentMode: "authenticated" }));
   app.get("/whoami", (req, res) => {
@@ -59,6 +100,8 @@ function createApp(db: ReturnType<typeof createDbStub>) {
 
 describe("actorMiddleware agent run id normalization", () => {
   beforeEach(() => {
+    resetActorMiddlewareModules();
+    registerModuleMocks();
     vi.resetAllMocks();
     boardAuthServiceMock.mockReturnValue({
       findBoardApiKeyByToken: vi.fn(async () => null),
@@ -72,8 +115,13 @@ describe("actorMiddleware agent run id normalization", () => {
     });
   });
 
+  afterEach(() => {
+    resetActorMiddlewareModules();
+    vi.resetAllMocks();
+  });
+
   it("preserves a known agent-owned run id and its status", async () => {
-    const app = createApp(createDbStub([
+    const app = await createApp(createDbStub([
       [],
       [{ id: "agent-1", companyId: "company-1", status: "active" }],
       [{ id: "run-1", companyId: "company-1", agentId: "agent-1", status: "failed" }],
@@ -97,7 +145,7 @@ describe("actorMiddleware agent run id normalization", () => {
   });
 
   it("drops a missing run id instead of surfacing it to routes", async () => {
-    const app = createApp(createDbStub([
+    const app = await createApp(createDbStub([
       [],
       [{ id: "agent-1", companyId: "company-1", status: "active" }],
       [],
@@ -121,7 +169,7 @@ describe("actorMiddleware agent run id normalization", () => {
   });
 
   it("drops run ids that belong to another company", async () => {
-    const app = createApp(createDbStub([
+    const app = await createApp(createDbStub([
       [],
       [{ id: "agent-1", companyId: "company-1", status: "active" }],
       [{ id: "run-foreign-company", companyId: "company-2", agentId: "agent-1", status: "running" }],
@@ -144,7 +192,7 @@ describe("actorMiddleware agent run id normalization", () => {
   });
 
   it("drops run ids that belong to another agent", async () => {
-    const app = createApp(createDbStub([
+    const app = await createApp(createDbStub([
       [],
       [{ id: "agent-1", companyId: "company-1", status: "active" }],
       [{ id: "run-foreign-agent", companyId: "company-1", agentId: "agent-2", status: "running" }],

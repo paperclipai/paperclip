@@ -91,11 +91,35 @@ const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../routes/agents.js", async () =>
+    vi.importActual<typeof import("../routes/agents.ts")>("../routes/agents.ts"),
+  );
+  vi.doMock("../routes/agents.ts", async () =>
+    vi.importActual<typeof import("../routes/agents.ts")>("../routes/agents.ts"),
+  );
   vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.js", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.ts", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
   );
   vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
   );
 
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -106,8 +130,11 @@ function registerModuleMocks() {
   vi.doMock("../telemetry.js", () => ({
     getTelemetryClient: mockGetTelemetryClient,
   }));
+  vi.doMock("../telemetry.ts", () => ({
+    getTelemetryClient: mockGetTelemetryClient,
+  }));
 
-  vi.doMock("../services/index.js", () => ({
+  const servicesIndexMock = () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
@@ -119,9 +146,42 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
-    syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
+    syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => mockWorkspaceOperationService,
-  }));
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
+}
+
+function resetAgentRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("../routes/agents.js");
+  vi.doUnmock("../routes/agents.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/agent-service-health.js");
+  vi.doUnmock("../services/agent-service-health.ts");
+  vi.doUnmock("../services/default-agent-instructions.js");
+  vi.doUnmock("../services/default-agent-instructions.ts");
+  vi.doUnmock("../services/instance-settings.js");
+  vi.doUnmock("../services/instance-settings.ts");
+  vi.doUnmock("../adapters/index.js");
+  vi.doUnmock("../adapters/index.ts");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("@paperclipai/shared/telemetry");
 }
 
 function createDbStub() {
@@ -140,19 +200,16 @@ function createDbStub() {
   };
 }
 
+let agentRouteImportSeq = 0;
+
 async function createApp(actor: Record<string, unknown>) {
-  vi.resetModules();
-  vi.doUnmock("../routes/agents.js");
-  vi.doUnmock("../routes/authz.js");
-  vi.doUnmock("../middleware/index.js");
-  vi.doUnmock("../middleware/validate.js");
-  vi.doUnmock("../services/index.js");
-  vi.doUnmock("../telemetry.js");
-  vi.doUnmock("@paperclipai/shared/telemetry");
+  resetAgentRouteModules();
   registerModuleMocks();
+  agentRouteImportSeq += 1;
+  const routeModulePath = `../routes/agents.ts?agent-permissions-routes-${agentRouteImportSeq}`;
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/agents.js"),
-    import("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/agents.ts")>,
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -167,16 +224,10 @@ async function createApp(actor: Record<string, unknown>) {
 
 describe("agent permission routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/agents.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("../middleware/validate.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../telemetry.js");
-    vi.doUnmock("@paperclipai/shared/telemetry");
+    resetAgentRouteModules();
     registerModuleMocks();
     vi.resetAllMocks();
+    mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockAgentService.getById.mockResolvedValue(baseAgent);
     mockAgentService.list.mockResolvedValue([baseAgent]);

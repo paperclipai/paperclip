@@ -95,7 +95,32 @@ const mockBudgetService = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+
+  const servicesIndexMock = () => ({
     budgetService: () => mockBudgetService,
     costService: () => mockCostService,
     financeService: () => mockFinanceService,
@@ -103,18 +128,50 @@ function registerModuleMocks() {
     agentService: () => mockAgentService,
     heartbeatService: () => mockHeartbeatService,
     logActivity: mockLogActivity,
-  }));
+  });
 
-  vi.doMock("../services/quota-windows.js", () => ({
+  const quotaWindowsMock = () => ({
     fetchAllQuotaWindows: mockFetchAllQuotaWindows,
-  }));
+  });
+
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
+  vi.doMock("../services/quota-windows.js", quotaWindowsMock);
+  vi.doMock("../services/quota-windows.ts", quotaWindowsMock);
 }
 
-async function createApp() {
+function resetCostRouteModules() {
   vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
+  vi.doUnmock("../routes/costs.js");
+  vi.doUnmock("../routes/costs.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/quota-windows.js");
+  vi.doUnmock("../services/quota-windows.ts");
+}
+
+let costRouteImportSeq = 0;
+
+async function createApp() {
+  resetCostRouteModules();
+  registerModuleMocks();
+  costRouteImportSeq += 1;
+  const routeModulePath = `../routes/costs.ts?costs-service-${costRouteImportSeq}`;
   const [{ costRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/costs.js")>("../routes/costs.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/costs.ts")>,
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -128,10 +185,13 @@ async function createApp() {
 }
 
 async function createAppWithActor(actor: any) {
-  vi.resetModules();
+  resetCostRouteModules();
+  registerModuleMocks();
+  costRouteImportSeq += 1;
+  const routeModulePath = `../routes/costs.ts?costs-service-${costRouteImportSeq}`;
   const [{ costRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/costs.js")>("../routes/costs.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/costs.ts")>,
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -145,16 +205,17 @@ async function createAppWithActor(actor: any) {
 }
 
 async function loadCostParsers() {
-  const { parseCostDateRange, parseCostLimit } = await import("../routes/costs.js");
+  resetCostRouteModules();
+  registerModuleMocks();
+  costRouteImportSeq += 1;
+  const routeModulePath = `../routes/costs.ts?costs-service-${costRouteImportSeq}`;
+  const { parseCostDateRange, parseCostLimit } =
+    await import(routeModulePath) as typeof import("../routes/costs.ts");
   return { parseCostDateRange, parseCostLimit };
 }
 
 beforeEach(() => {
-  vi.resetModules();
-  vi.doUnmock("../services/index.js");
-  vi.doUnmock("../services/quota-windows.js");
-  vi.doUnmock("../routes/costs.js");
-  vi.doUnmock("../middleware/index.js");
+  resetCostRouteModules();
   registerModuleMocks();
   vi.clearAllMocks();
   mockCompanyService.update.mockResolvedValue({

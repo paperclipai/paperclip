@@ -1,10 +1,22 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterAll, describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import request from "supertest";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 
-const mockReadPersistedDevServerStatus = vi.hoisted(() => vi.fn());
+const originalDevServerStatusFile = process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+
+function resetHealthRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("../routes/health.js");
+  vi.doUnmock("../routes/health.ts");
+  vi.doUnmock("../dev-server-status.js");
+  vi.doUnmock("../dev-server-status.ts");
+  vi.doUnmock("../services/instance-settings.js");
+  vi.doUnmock("../services/instance-settings.ts");
+  vi.doUnmock("../version.js");
+  vi.doUnmock("../version.ts");
+}
 
 async function createHealthApp(
   db?: Db,
@@ -16,16 +28,10 @@ async function createHealthApp(
   },
   actor?: Record<string, unknown>,
 ) {
-  vi.resetModules();
-  vi.doUnmock("../routes/health.js");
-  vi.doUnmock("../dev-server-status.js");
-  vi.doMock("../dev-server-status.js", () => ({
-    readPersistedDevServerStatus: mockReadPersistedDevServerStatus,
-    toDevServerHealthStatus: vi.fn(),
-  }));
+  resetHealthRouteModules();
   const [{ serverVersion }, { healthRoutes }] = await Promise.all([
-    import("../version.js"),
-    import("../routes/health.js"),
+    vi.importActual<typeof import("../version.js")>("../version.js"),
+    vi.importActual<typeof import("../routes/health.js")>("../routes/health.js"),
   ]);
   const app = express();
   if (actor) {
@@ -40,12 +46,16 @@ async function createHealthApp(
 
 describe("GET /health", () => {
   beforeEach(() => {
+    delete process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
     vi.clearAllMocks();
-    mockReadPersistedDevServerStatus.mockReturnValue(undefined);
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
+  afterAll(() => {
+    if (originalDevServerStatusFile === undefined) {
+      delete process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+    } else {
+      process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = originalDevServerStatusFile;
+    }
   });
 
   it("returns 200 with status ok", async () => {

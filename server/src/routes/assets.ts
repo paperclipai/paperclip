@@ -21,6 +21,7 @@ const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
 function sanitizeSvgBuffer(input: Buffer): Buffer | null {
   const raw = input.toString("utf8").trim();
   if (!raw) return null;
+  if (!/^<svg[\s>]/i.test(raw)) return null;
 
   const baseDom = new JSDOM("");
   const domPurify = createDOMPurify(

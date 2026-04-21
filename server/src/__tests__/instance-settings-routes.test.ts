@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(),
@@ -11,28 +11,81 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  instanceSettingsService: () => mockInstanceSettingsService,
-  logActivity: mockLogActivity,
-}));
-
 function registerModuleMocks() {
+  vi.doMock("../routes/instance-settings.js", async () =>
+    vi.importActual<typeof import("../routes/instance-settings.ts")>("../routes/instance-settings.ts"),
+  );
+  vi.doMock("../routes/instance-settings.ts", async () =>
+    vi.importActual<typeof import("../routes/instance-settings.ts")>("../routes/instance-settings.ts"),
+  );
   vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
   );
   vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
   );
-  vi.doMock("../services/index.js", () => ({
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../errors.js", async () =>
+    vi.importActual<typeof import("../errors.ts")>("../errors.ts"),
+  );
+  vi.doMock("../errors.ts", async () =>
+    vi.importActual<typeof import("../errors.ts")>("../errors.ts"),
+  );
+  const servicesIndexMock = () => ({
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
-  }));
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
+}
+
+let routeImportSeq = 0;
+
+function resetInstanceSettingsRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
+  vi.doUnmock("../routes/instance-settings.js");
+  vi.doUnmock("../routes/instance-settings.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
 }
 
 async function createApp(actor: any) {
+  resetInstanceSettingsRouteModules();
+  registerModuleMocks();
+  routeImportSeq += 1;
+  const routeModulePath = `../routes/instance-settings.ts?instance-settings-routes-${routeImportSeq}`;
   const [{ instanceSettingsRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/instance-settings.js")>("../routes/instance-settings.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/instance-settings.ts")>,
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -47,12 +100,7 @@ async function createApp(actor: any) {
 
 describe("instance settings routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/instance-settings.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("../middleware/validate.js");
-    registerModuleMocks();
+    resetInstanceSettingsRouteModules();
     vi.resetAllMocks();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockInstanceSettingsService.getExperimental.mockReset();
@@ -85,6 +133,11 @@ describe("instance settings routes", () => {
       },
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
+  });
+
+  afterEach(() => {
+    resetInstanceSettingsRouteModules();
+    vi.resetAllMocks();
   });
 
   it("allows local board users to read and update experimental settings", async () => {

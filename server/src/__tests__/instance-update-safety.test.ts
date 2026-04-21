@@ -16,32 +16,6 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockListAdapterPlugins = vi.hoisted(() => vi.fn());
 
-vi.mock("@paperclipai/db", () => ({
-  runDatabaseBackup: mockRunDatabaseBackup,
-  plugins: {
-    id: "id",
-    pluginKey: "pluginKey",
-    packageName: "packageName",
-    version: "version",
-    status: "status",
-    packagePath: "packagePath",
-    updatedAt: "updatedAt",
-  },
-}));
-
-vi.mock("../services/instance-settings.js", () => ({
-  instanceSettingsService: () => mockInstanceSettingsService,
-}));
-
-vi.mock("../services/index.js", () => ({
-  instanceSettingsService: () => mockInstanceSettingsService,
-  logActivity: mockLogActivity,
-}));
-
-vi.mock("../services/adapter-plugin-store.js", () => ({
-  listAdapterPlugins: mockListAdapterPlugins,
-}));
-
 function registerModuleMocks() {
   vi.doMock("@paperclipai/db", () => ({
     runDatabaseBackup: mockRunDatabaseBackup,
@@ -58,19 +32,23 @@ function registerModuleMocks() {
   vi.doMock("../services/instance-settings.js", () => ({
     instanceSettingsService: () => mockInstanceSettingsService,
   }));
+  vi.doMock("../services/instance-settings.ts", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+  }));
   vi.doMock("../services/index.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+    logActivity: mockLogActivity,
+  }));
+  vi.doMock("../services/index.ts", () => ({
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
   }));
   vi.doMock("../services/adapter-plugin-store.js", () => ({
     listAdapterPlugins: mockListAdapterPlugins,
   }));
-  vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
-  );
-  vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
-  );
+  vi.doMock("../services/adapter-plugin-store.ts", () => ({
+    listAdapterPlugins: mockListAdapterPlugins,
+  }));
 }
 
 function createTempRoot() {
@@ -128,6 +106,16 @@ describe("instance update safety service", () => {
 
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("@paperclipai/db");
+    vi.doUnmock("../services/instance-settings.js");
+    vi.doUnmock("../services/instance-settings.ts");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/index.ts");
+    vi.doUnmock("../services/adapter-plugin-store.js");
+    vi.doUnmock("../services/adapter-plugin-store.ts");
+    vi.doUnmock("../services/instance-update-safety.js");
+    vi.doUnmock("../services/instance-update-safety.ts");
+    registerModuleMocks();
     vi.clearAllMocks();
     tempRoots = [];
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
@@ -254,10 +242,27 @@ describe("instance update safety routes", () => {
 
   async function createRouteApp(actor: Record<string, unknown>, service: Record<string, unknown>) {
     vi.resetModules();
+    vi.doUnmock("@paperclipai/db");
+    vi.doUnmock("../services/instance-settings.js");
+    vi.doUnmock("../services/instance-settings.ts");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/index.ts");
+    vi.doUnmock("../services/adapter-plugin-store.js");
+    vi.doUnmock("../services/adapter-plugin-store.ts");
+    vi.doUnmock("../services/instance-update-safety.js");
+    vi.doUnmock("../services/instance-update-safety.ts");
+    vi.doUnmock("../routes/instance-update-safety.js");
+    vi.doUnmock("../routes/instance-update-safety.ts");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../routes/authz.ts");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/index.ts");
+    vi.doUnmock("../middleware/validate.js");
+    vi.doUnmock("../middleware/validate.ts");
     registerModuleMocks();
     const [{ instanceUpdateSafetyRoutes }, { errorHandler }] = await Promise.all([
-      import("../routes/instance-update-safety.js"),
-      import("../middleware/index.js"),
+      import("../routes/instance-update-safety.ts"),
+      import("../middleware/index.ts"),
     ]);
     const app = express();
     app.use(express.json());

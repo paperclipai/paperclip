@@ -37,62 +37,17 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
-vi.mock("@paperclipai/shared/telemetry", () => ({
-  trackAgentTaskCompleted: vi.fn(),
-  trackErrorHandlerCrash: vi.fn(),
-}));
-
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
-}));
-
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => ({
-    getById: vi.fn(async () => null),
-  }),
-  documentService: () => ({}),
-  executionWorkspaceService: () => mockExecutionWorkspaceService,
-  feedbackService: () => ({
-    listIssueVotesForUser: vi.fn(async () => []),
-    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-  }),
-  goalService: () => ({
-    getDefaultCompanyGoal: vi.fn(async () => null),
-    getById: vi.fn(async () => null),
-  }),
-  heartbeatService: () => mockHeartbeatService,
-  instanceSettingsService: () => ({
-    get: vi.fn(async () => ({
-      id: "instance-settings-1",
-      general: {
-        censorUsernameInLogs: false,
-        feedbackDataSharingPreference: "prompt",
-      },
-    })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
-  issueApprovalService: () => ({}),
-  issueService: () => mockIssueService,
-  logActivity: mockLogActivity,
-  projectService: () => mockProjectService,
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
-  workProductService: () => ({}),
-}));
-
 function registerServiceMocks() {
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  const sharedTelemetryMock = () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
-  }));
+  });
 
-  vi.doMock("../telemetry.js", () => ({
+  const telemetryMock = () => ({
     getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
-  }));
+  });
 
-  vi.doMock("../services/index.js", () => ({
+  const servicesIndexMock = () => ({
     accessService: () => mockAccessService,
     agentService: () => ({
       getById: vi.fn(async () => null),
@@ -126,28 +81,53 @@ function registerServiceMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
-  }));
+  });
+  vi.doMock("@paperclipai/shared/telemetry", sharedTelemetryMock);
+  vi.doMock("../telemetry.js", telemetryMock);
+  vi.doMock("../telemetry.ts", telemetryMock);
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
+}
+
+function resetIssueRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/issue-assignment-wakeup.js");
+  vi.doUnmock("../services/issue-assignment-wakeup.ts");
+  vi.doUnmock("../services/issue-execution-policy.js");
+  vi.doUnmock("../services/issue-execution-policy.ts");
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../routes/issues.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../routes/issues-checkout-wakeup.js");
+  vi.doUnmock("../routes/issues-checkout-wakeup.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../attachment-types.js");
+  vi.doUnmock("../attachment-types.ts");
 }
 
 async function createApp() {
-  vi.resetModules();
-  vi.doUnmock("@paperclipai/shared/telemetry");
-  vi.doUnmock("../telemetry.js");
-  vi.doUnmock("../services/index.js");
-  vi.doUnmock("../routes/issues.js");
-  vi.doUnmock("../routes/authz.js");
-  vi.doUnmock("../middleware/index.js");
-  vi.doUnmock("../middleware/validate.js");
-  vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
-  );
-  vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
-  );
+  resetIssueRouteModules();
   registerServiceMocks();
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
+    import("../routes/issues.ts"),
+    import("../middleware/index.ts"),
   ]);
   const app = express();
   app.use(express.json());
@@ -196,14 +176,7 @@ function makeClosedWorkspace() {
 
 describe("closed isolated workspace issue routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
-    vi.doUnmock("../telemetry.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("../middleware/validate.js");
+    resetIssueRouteModules();
     registerServiceMocks();
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());

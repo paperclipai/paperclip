@@ -26,7 +26,14 @@ const mockGoalService = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackAgentTaskCompleted: vi.fn(),
+    trackErrorHandlerCrash: vi.fn(),
+  }));
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+  const servicesIndexMock = () => ({
     accessService: () => ({
       canUser: vi.fn(),
       hasPermission: vi.fn(),
@@ -69,10 +76,58 @@ function registerModuleMocks() {
     workProductService: () => ({
       listForIssue: vi.fn(async () => []),
     }),
-  }));
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
+}
+
+function resetIssueRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../routes/issues.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../routes/issues-checkout-wakeup.js");
+  vi.doUnmock("../routes/issues-checkout-wakeup.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/issue-assignment-wakeup.js");
+  vi.doUnmock("../services/issue-assignment-wakeup.ts");
+  vi.doUnmock("../services/issue-execution-policy.js");
+  vi.doUnmock("../services/issue-execution-policy.ts");
+  vi.doUnmock("../attachment-types.js");
+  vi.doUnmock("../attachment-types.ts");
+}
+
+function registerRouteActuals() {
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+  );
 }
 
 async function createApp() {
+  resetIssueRouteModules();
+  registerRouteActuals();
   registerModuleMocks();
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
@@ -142,11 +197,9 @@ const companyGoal = {
 
 describe("issue goal context routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("../services/index.js");
+    resetIssueRouteModules();
+    registerRouteActuals();
+    registerModuleMocks();
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
     mockIssueService.getAncestors.mockResolvedValue([]);

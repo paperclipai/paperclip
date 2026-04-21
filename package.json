@@ -15,7 +15,7 @@
     "typecheck": "pnpm run preflight:workspace-links && pnpm -r typecheck",
     "test": "pnpm run test:run",
     "test:watch": "pnpm run preflight:workspace-links && vitest",
-    "test:run": "pnpm run preflight:workspace-links && vitest run",
+    "test:run": "pnpm run preflight:workspace-links && node scripts/run-tests.mjs",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",

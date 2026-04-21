@@ -31,6 +31,31 @@ let setOverridePaused: typeof import("../adapters/registry.js").setOverridePause
 let adapterRoutes: typeof import("../routes/adapters.js").adapterRoutes;
 let errorHandler: typeof import("../middleware/index.js").errorHandler;
 
+function resetAdapterRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/adapter-utils");
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("../adapters/index.js");
+  vi.doUnmock("../adapters/index.ts");
+  vi.doUnmock("../adapters/registry.js");
+  vi.doUnmock("../adapters/registry.ts");
+  vi.doUnmock("../adapters/plugin-loader.js");
+  vi.doUnmock("../adapters/plugin-loader.ts");
+  vi.doUnmock("../adapters/builtin-adapter-types.js");
+  vi.doUnmock("../adapters/builtin-adapter-types.ts");
+  vi.doUnmock("../services/adapter-plugin-store.js");
+  vi.doUnmock("../services/adapter-plugin-store.ts");
+  vi.doUnmock("../routes/adapters.js");
+  vi.doUnmock("../routes/adapters.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+}
+
 function createApp() {
   const app = express();
   app.use(express.json());
@@ -51,20 +76,10 @@ function createApp() {
 
 describe("adapter routes", () => {
   beforeEach(async () => {
-    vi.resetModules();
-    vi.doUnmock("../adapters/index.js");
-    vi.doUnmock("../adapters/registry.js");
-    vi.doUnmock("../routes/adapters.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doMock("../adapters/index.js", async () =>
-      vi.importActual<typeof import("../adapters/index.js")>("../adapters/index.js"),
-    );
-    vi.doMock("../adapters/registry.js", async () =>
-      vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
-    );
+    resetAdapterRouteModules();
     const [adapters, registry] = await Promise.all([
-      vi.importActual<typeof import("../adapters/index.js")>("../adapters/index.js"),
-      vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
+      import("../adapters/index.ts"),
+      import("../adapters/registry.ts"),
     ]);
     registerServerAdapter = adapters.registerServerAdapter;
     unregisterServerAdapter = adapters.unregisterServerAdapter;
@@ -73,8 +88,8 @@ describe("adapter routes", () => {
     unregisterServerAdapter("claude_local");
     registerServerAdapter(overridingConfigSchemaAdapter);
     const [routes, middleware] = await Promise.all([
-      vi.importActual<typeof import("../routes/adapters.js")>("../routes/adapters.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      import("../routes/adapters.ts"),
+      import("../middleware/index.ts"),
     ]);
     adapterRoutes = routes.adapterRoutes;
     errorHandler = middleware.errorHandler;

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import { MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
@@ -10,29 +10,68 @@ const { createAssetMock, getAssetByIdMock, logActivityMock } = vi.hoisted(() => 
   logActivityMock: vi.fn(),
 }));
 
-vi.mock("../services/index.js", () => ({
-  assetService: vi.fn(() => ({
-    create: createAssetMock,
-    getById: getAssetByIdMock,
-  })),
-  logActivity: logActivityMock,
-}));
-
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
   );
   vi.doMock("../attachment-types.js", async () =>
-    vi.importActual<typeof import("../attachment-types.js")>("../attachment-types.js"),
+    vi.importActual<typeof import("../attachment-types.ts")>("../attachment-types.ts"),
   );
-  vi.doMock("../services/index.js", () => ({
+  vi.doMock("../attachment-types.ts", async () =>
+    vi.importActual<typeof import("../attachment-types.ts")>("../attachment-types.ts"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  const servicesIndexMock = () => ({
     assetService: vi.fn(() => ({
       create: createAssetMock,
       getById: getAssetByIdMock,
     })),
     logActivity: logActivityMock,
-  }));
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
 }
+
+function resetAssetRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../routes/assets.js");
+  vi.doUnmock("../routes/assets.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../attachment-types.js");
+  vi.doUnmock("../attachment-types.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+}
+
+let assetRouteImportSeq = 0;
 
 function createAsset() {
   const now = new Date("2026-01-01T00:00:00.000Z");
@@ -95,13 +134,11 @@ function createStorageService(contentType = "image/png"): TestStorageService {
 }
 
 async function createApp(storage: ReturnType<typeof createStorageService>) {
-  vi.resetModules();
-  vi.doUnmock("../services/index.js");
-  vi.doUnmock("../routes/assets.js");
-  vi.doUnmock("../routes/authz.js");
-  vi.doUnmock("../attachment-types.js");
+  resetAssetRouteModules();
   registerModuleMocks();
-  const { assetRoutes } = await import("../routes/assets.js");
+  assetRouteImportSeq += 1;
+  const routeModulePath = `../routes/assets.ts?assets-test-${assetRouteImportSeq}`;
+  const { assetRoutes } = await import(routeModulePath) as typeof import("../routes/assets.ts");
   const app = express();
   app.use((req, _res, next) => {
     req.actor = {
@@ -115,13 +152,17 @@ async function createApp(storage: ReturnType<typeof createStorageService>) {
   return app;
 }
 
+afterEach(() => {
+  resetAssetRouteModules();
+  createAssetMock.mockReset();
+  getAssetByIdMock.mockReset();
+  logActivityMock.mockReset();
+});
+
 describe("POST /api/companies/:companyId/assets/images", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/assets.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../attachment-types.js");
+    resetAssetRouteModules();
+    registerModuleMocks();
     createAssetMock.mockReset();
     getAssetByIdMock.mockReset();
     logActivityMock.mockReset();
@@ -165,7 +206,7 @@ describe("POST /api/companies/:companyId/assets/images", () => {
       .field("namespace", "issues/drafts")
       .attach("file", Buffer.from("hello"), { filename: "note.txt", contentType: "text/plain" });
 
-    expect(res.status).toBe(201);
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(text.__calls.putFileInputs[0]).toMatchObject({
       companyId: "company-1",
       namespace: "assets/issues/drafts",
@@ -178,11 +219,8 @@ describe("POST /api/companies/:companyId/assets/images", () => {
 
 describe("POST /api/companies/:companyId/logo", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/assets.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../attachment-types.js");
+    resetAssetRouteModules();
+    registerModuleMocks();
     createAssetMock.mockReset();
     getAssetByIdMock.mockReset();
     logActivityMock.mockReset();
@@ -265,7 +303,7 @@ describe("POST /api/companies/:companyId/logo", () => {
       .post("/api/companies/company-1/logo")
       .attach("file", file, "too-large.png");
 
-    expect(res.status).toBe(422);
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(res.body.error).toBe(`Image exceeds ${MAX_ATTACHMENT_BYTES} bytes`);
   });
 
@@ -288,7 +326,7 @@ describe("POST /api/companies/:companyId/logo", () => {
 
     const res = await request(app)
       .post("/api/companies/company-1/logo")
-      .attach("file", Buffer.from("not actually svg"), "logo.svg");
+      .attach("file", Buffer.from("not actually svg"), { filename: "logo.svg", contentType: "image/svg+xml" });
 
     expect(res.status).toBe(422);
     expect(res.body.error).toBe("SVG could not be sanitized");

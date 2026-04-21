@@ -39,16 +39,6 @@ const mockFeedbackService = vi.hoisted(() => ({
   saveIssueVote: vi.fn(),
 }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  budgetService: () => mockBudgetService,
-  companyPortabilityService: () => mockCompanyPortabilityService,
-  companyService: () => mockCompanyService,
-  feedbackService: () => mockFeedbackService,
-  logActivity: mockLogActivity,
-}));
-
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,

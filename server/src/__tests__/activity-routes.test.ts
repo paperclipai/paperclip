@@ -20,20 +20,61 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
-  vi.doMock("../services/activity.js", () => ({
-    activityService: () => mockActivityService,
-  }));
-  vi.doMock("../services/index.js", () => ({
-    issueService: () => mockIssueService,
-    heartbeatService: () => mockHeartbeatService,
-  }));
   vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
   );
   vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
   );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+
+  const activityServiceMock = () => ({
+    activityService: () => mockActivityService,
+  });
+  const servicesIndexMock = () => ({
+    issueService: () => mockIssueService,
+    heartbeatService: () => mockHeartbeatService,
+  });
+  vi.doMock("../services/activity.js", activityServiceMock);
+  vi.doMock("../services/activity.ts", activityServiceMock);
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
 }
+
+function resetActivityRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("../redaction.js");
+  vi.doUnmock("../redaction.ts");
+  vi.doUnmock("../routes/activity.js");
+  vi.doUnmock("../routes/activity.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../services/activity.js");
+  vi.doUnmock("../services/activity.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+}
+
+let activityRouteImportSeq = 0;
 
 async function createApp(actor: Record<string, unknown> = {
   type: "board",
@@ -42,17 +83,13 @@ async function createApp(actor: Record<string, unknown> = {
   source: "session",
   isInstanceAdmin: false,
 }) {
-  vi.resetModules();
-  vi.doUnmock("../routes/activity.js");
-  vi.doUnmock("../routes/authz.js");
-  vi.doUnmock("../middleware/index.js");
-  vi.doUnmock("../middleware/validate.js");
-  vi.doUnmock("../services/activity.js");
-  vi.doUnmock("../services/index.js");
+  resetActivityRouteModules();
   registerModuleMocks();
+  activityRouteImportSeq += 1;
+  const routeModulePath = `../routes/activity.ts?activity-routes-${activityRouteImportSeq}`;
   const [{ errorHandler }, { activityRoutes }] = await Promise.all([
-    import("../middleware/index.js"),
-    import("../routes/activity.js"),
+    import("../middleware/index.ts"),
+    import(routeModulePath) as Promise<typeof import("../routes/activity.ts")>,
   ]);
   const app = express();
   app.use(express.json());
@@ -67,6 +104,8 @@ async function createApp(actor: Record<string, unknown> = {
 
 describe("activity routes", () => {
   beforeEach(() => {
+    resetActivityRouteModules();
+    registerModuleMocks();
     vi.clearAllMocks();
   });
 

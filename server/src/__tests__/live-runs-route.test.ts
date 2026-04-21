@@ -8,7 +8,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
+  const servicesIndexMock = () => ({
     accessService: () => ({}),
     agentInstructionsService: () => ({}),
     agentService: () => ({ getChainOfCommand: vi.fn(async () => []), getById: vi.fn(async () => null) }),
@@ -23,10 +23,9 @@ function registerModuleMocks() {
     secretService: () => ({}),
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
     workspaceOperationService: () => ({}),
-  }));
-  vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
-  );
+  });
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
 }
 
 function createLiveRunsDbStub(rows: unknown[]) {
@@ -41,13 +40,19 @@ function createLiveRunsDbStub(rows: unknown[]) {
 async function createApp(actor: Record<string, unknown>, rows: unknown[] = []) {
   vi.resetModules();
   vi.doUnmock("../routes/agents.js");
+  vi.doUnmock("../routes/agents.ts");
   vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
   vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
   vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
   registerModuleMocks();
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/agents.js"),
-    import("../middleware/index.js"),
+    import("../routes/agents.ts"),
+    import("../middleware/index.ts"),
   ]);
   const db = createLiveRunsDbStub(rows);
   const app = express();

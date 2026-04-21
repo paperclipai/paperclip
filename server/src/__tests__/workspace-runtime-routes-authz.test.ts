@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockProjectService = vi.hoisted(() => ({
   create: vi.fn(),
@@ -26,13 +26,25 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockAssertCanManageProjectWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
 const mockAssertCanManageExecutionWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
+let routeImportSeq = 0;
+const routeImportSalt = `${process.pid}-${Date.now()}`;
 
 function registerModuleMocks() {
   vi.doMock("../telemetry.js", () => ({
     getTelemetryClient: mockGetTelemetryClient,
   }));
+  vi.doMock("../telemetry.ts", () => ({
+    getTelemetryClient: mockGetTelemetryClient,
+  }));
 
   vi.doMock("../services/index.js", () => ({
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
+    logActivity: mockLogActivity,
+    projectService: () => mockProjectService,
+    secretService: () => mockSecretService,
+    workspaceOperationService: () => mockWorkspaceOperationService,
+  }));
+  vi.doMock("../services/index.ts", () => ({
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,
@@ -46,16 +58,50 @@ function registerModuleMocks() {
     stopRuntimeServicesForExecutionWorkspace: vi.fn(),
     stopRuntimeServicesForProjectWorkspace: vi.fn(),
   }));
+  vi.doMock("../services/workspace-runtime.ts", () => ({
+    cleanupExecutionWorkspaceArtifacts: vi.fn(),
+    startRuntimeServicesForWorkspaceControl: vi.fn(),
+    stopRuntimeServicesForExecutionWorkspace: vi.fn(),
+    stopRuntimeServicesForProjectWorkspace: vi.fn(),
+  }));
 
   vi.doMock("../routes/workspace-runtime-service-authz.js", () => ({
+    assertCanManageProjectWorkspaceRuntimeServices: mockAssertCanManageProjectWorkspaceRuntimeServices,
+    assertCanManageExecutionWorkspaceRuntimeServices: mockAssertCanManageExecutionWorkspaceRuntimeServices,
+  }));
+  vi.doMock("../routes/workspace-runtime-service-authz.ts", () => ({
     assertCanManageProjectWorkspaceRuntimeServices: mockAssertCanManageProjectWorkspaceRuntimeServices,
     assertCanManageExecutionWorkspaceRuntimeServices: mockAssertCanManageExecutionWorkspaceRuntimeServices,
   }));
 }
 
 async function createProjectApp(actor: Record<string, unknown>) {
-  const { projectRoutes } = await import("../routes/projects.js");
-  const { errorHandler } = await import("../middleware/index.js");
+  vi.resetModules();
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/workspace-runtime.js");
+  vi.doUnmock("../services/workspace-runtime.ts");
+  vi.doUnmock("../routes/workspace-runtime-service-authz.js");
+  vi.doUnmock("../routes/workspace-runtime-service-authz.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../routes/projects.js");
+  vi.doUnmock("../routes/projects.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  registerModuleMocks();
+  routeImportSeq += 1;
+  const routeModulePath = `../routes/projects.ts?workspace-runtime-authz-${routeImportSalt}-${routeImportSeq}`;
+  const [{ projectRoutes }, { errorHandler }] = await Promise.all([
+    import(routeModulePath) as Promise<typeof import("../routes/projects.ts")>,
+    import("../middleware/index.ts"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -68,8 +114,32 @@ async function createProjectApp(actor: Record<string, unknown>) {
 }
 
 async function createExecutionWorkspaceApp(actor: Record<string, unknown>) {
-  const { executionWorkspaceRoutes } = await import("../routes/execution-workspaces.js");
-  const { errorHandler } = await import("../middleware/index.js");
+  vi.resetModules();
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/workspace-runtime.js");
+  vi.doUnmock("../services/workspace-runtime.ts");
+  vi.doUnmock("../routes/workspace-runtime-service-authz.js");
+  vi.doUnmock("../routes/workspace-runtime-service-authz.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../routes/execution-workspaces.js");
+  vi.doUnmock("../routes/execution-workspaces.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  registerModuleMocks();
+  routeImportSeq += 1;
+  const routeModulePath = `../routes/execution-workspaces.ts?workspace-runtime-authz-${routeImportSalt}-${routeImportSeq}`;
+  const [{ executionWorkspaceRoutes }, { errorHandler }] = await Promise.all([
+    import(routeModulePath) as Promise<typeof import("../routes/execution-workspaces.ts")>,
+    import("../middleware/index.ts"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -148,6 +218,26 @@ describe("workspace runtime service route authorization", () => {
 
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../telemetry.ts");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/index.ts");
+    vi.doUnmock("../services/workspace-runtime.js");
+    vi.doUnmock("../services/workspace-runtime.ts");
+    vi.doUnmock("../routes/workspace-runtime-service-authz.js");
+    vi.doUnmock("../routes/workspace-runtime-service-authz.ts");
+    vi.doUnmock("../routes/workspace-command-authz.js");
+    vi.doUnmock("../routes/workspace-command-authz.ts");
+    vi.doUnmock("../routes/projects.js");
+    vi.doUnmock("../routes/projects.ts");
+    vi.doUnmock("../routes/execution-workspaces.js");
+    vi.doUnmock("../routes/execution-workspaces.ts");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../routes/authz.ts");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/index.ts");
+    vi.doUnmock("../middleware/validate.js");
+    vi.doUnmock("../middleware/validate.ts");
     registerModuleMocks();
     vi.clearAllMocks();
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
@@ -228,8 +318,32 @@ describe("workspace runtime service route authorization", () => {
     mockAssertCanManageExecutionWorkspaceRuntimeServices.mockResolvedValue(undefined);
   });
 
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../telemetry.ts");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/index.ts");
+    vi.doUnmock("../services/workspace-runtime.js");
+    vi.doUnmock("../services/workspace-runtime.ts");
+    vi.doUnmock("../routes/workspace-runtime-service-authz.js");
+    vi.doUnmock("../routes/workspace-runtime-service-authz.ts");
+    vi.doUnmock("../routes/workspace-command-authz.js");
+    vi.doUnmock("../routes/workspace-command-authz.ts");
+    vi.doUnmock("../routes/projects.js");
+    vi.doUnmock("../routes/projects.ts");
+    vi.doUnmock("../routes/execution-workspaces.js");
+    vi.doUnmock("../routes/execution-workspaces.ts");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../routes/authz.ts");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../middleware/index.ts");
+    vi.doUnmock("../middleware/validate.js");
+    vi.doUnmock("../middleware/validate.ts");
+    vi.resetAllMocks();
+  });
+
   it("rejects agent callers for project workspace runtime service mutations when workspace auth denies access", async () => {
-    const { forbidden } = await import("../errors.js");
     mockProjectService.getById.mockResolvedValue(buildProject({
       id: projectId,
       workspaces: [{
@@ -256,9 +370,6 @@ describe("workspace runtime service route authorization", () => {
         updatedAt: new Date(),
       }],
     }));
-    mockAssertCanManageProjectWorkspaceRuntimeServices.mockRejectedValue(
-      forbidden("Missing permission to manage workspace runtime services"),
-    );
     const app = await createProjectApp({
       type: "agent",
       agentId: "agent-1",
@@ -266,6 +377,10 @@ describe("workspace runtime service route authorization", () => {
       source: "agent_key",
       runId: "run-1",
     });
+    const { forbidden } = await import("../errors.js");
+    mockAssertCanManageProjectWorkspaceRuntimeServices.mockRejectedValue(
+      forbidden("Missing permission to manage workspace runtime services"),
+    );
 
     const res = await request(app)
       .post(`/api/projects/${projectId}/workspaces/${workspaceId}/runtime-services/start`)
@@ -345,11 +460,7 @@ describe("workspace runtime service route authorization", () => {
   });
 
   it("rejects agent callers for execution workspace runtime service mutations when workspace auth denies access", async () => {
-    const { forbidden } = await import("../errors.js");
     mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({ id: executionWorkspaceId }));
-    mockAssertCanManageExecutionWorkspaceRuntimeServices.mockRejectedValue(
-      forbidden("Missing permission to manage workspace runtime services"),
-    );
     const app = await createExecutionWorkspaceApp({
       type: "agent",
       agentId: "agent-1",
@@ -357,6 +468,10 @@ describe("workspace runtime service route authorization", () => {
       source: "agent_key",
       runId: "run-1",
     });
+    const { forbidden } = await import("../errors.js");
+    mockAssertCanManageExecutionWorkspaceRuntimeServices.mockRejectedValue(
+      forbidden("Missing permission to manage workspace runtime services"),
+    );
 
     const res = await request(app)
       .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-services/restart`)

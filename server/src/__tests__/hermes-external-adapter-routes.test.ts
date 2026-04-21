@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
-import { errorHandler } from "../middleware/index.js";
 
 const records = vi.hoisted(() => ({ items: [] as Array<Record<string, unknown>> }));
 const mockLoadExternalAdapterPackage = vi.hoisted(() => vi.fn());
@@ -19,28 +18,70 @@ const mockAddAdapterPlugin = vi.hoisted(() =>
   }),
 );
 
-vi.mock("../adapters/plugin-loader.js", () => ({
-  buildExternalAdapters: mockBuildExternalAdapters,
-  loadExternalAdapterPackage: mockLoadExternalAdapterPackage,
-  getUiParserSource: vi.fn(() => undefined),
-  getOrExtractUiParserSource: vi.fn(() => undefined),
-  reloadExternalAdapter: vi.fn(async () => null),
-}));
+function registerModuleMocks() {
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  const pluginLoaderMock = () => ({
+    buildExternalAdapters: mockBuildExternalAdapters,
+    loadExternalAdapterPackage: mockLoadExternalAdapterPackage,
+    getUiParserSource: vi.fn(() => undefined),
+    getOrExtractUiParserSource: vi.fn(() => undefined),
+    reloadExternalAdapter: vi.fn(async () => null),
+  });
+  vi.doMock("../adapters/plugin-loader.js", pluginLoaderMock);
+  vi.doMock("../adapters/plugin-loader.ts", pluginLoaderMock);
 
-vi.mock("../services/adapter-plugin-store.js", () => ({
-  listAdapterPlugins: vi.fn(() => records.items),
-  addAdapterPlugin: mockAddAdapterPlugin,
-  removeAdapterPlugin: vi.fn((type: string) => {
-    records.items = records.items.filter((item) => item.type !== type);
-  }),
-  getAdapterPluginByType: vi.fn((type: string) => records.items.find((item) => item.type === type)),
-  getAdapterPluginsDir: vi.fn(() => "/tmp/paperclip-adapter-plugins-test"),
-  getDisabledAdapterTypes: vi.fn(() => []),
-  setAdapterDisabled: vi.fn(() => true),
-}));
+  const adapterPluginStoreMock = () => ({
+    listAdapterPlugins: vi.fn(() => records.items),
+    addAdapterPlugin: mockAddAdapterPlugin,
+    removeAdapterPlugin: vi.fn((type: string) => {
+      records.items = records.items.filter((item) => item.type !== type);
+    }),
+    getAdapterPluginByType: vi.fn((type: string) => records.items.find((item) => item.type === type)),
+    getAdapterPluginsDir: vi.fn(() => "/tmp/paperclip-adapter-plugins-test"),
+    getDisabledAdapterTypes: vi.fn(() => []),
+    setAdapterDisabled: vi.fn(() => true),
+  });
+  vi.doMock("../services/adapter-plugin-store.js", adapterPluginStoreMock);
+  vi.doMock("../services/adapter-plugin-store.ts", adapterPluginStoreMock);
+}
+
+function resetAdapterRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/adapter-utils");
+  vi.doUnmock("../adapters/plugin-loader.js");
+  vi.doUnmock("../adapters/plugin-loader.ts");
+  vi.doUnmock("../services/adapter-plugin-store.js");
+  vi.doUnmock("../services/adapter-plugin-store.ts");
+  vi.doUnmock("../routes/adapters.js");
+  vi.doUnmock("../routes/adapters.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../..");
+let adapterRouteImportSeq = 0;
 
 const hermesExternalAdapter: ServerAdapterModule = {
   type: "hermes_local",
@@ -66,7 +107,14 @@ const hermesExternalAdapter: ServerAdapterModule = {
 };
 
 async function createApp() {
-  const { adapterRoutes } = await import("../routes/adapters.js");
+  resetAdapterRouteModules();
+  registerModuleMocks();
+  adapterRouteImportSeq += 1;
+  const routeModulePath = `../routes/adapters.ts?hermes-external-adapter-routes-${adapterRouteImportSeq}`;
+  const [{ adapterRoutes }, { errorHandler }] = await Promise.all([
+    import(routeModulePath) as Promise<typeof import("../routes/adapters.ts")>,
+    import("../middleware/index.ts"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -86,6 +134,8 @@ async function createApp() {
 
 describe("Hermes external adapter loading", () => {
   beforeEach(async () => {
+    resetAdapterRouteModules();
+    registerModuleMocks();
     vi.clearAllMocks();
     records.items = [];
     mockLoadExternalAdapterPackage.mockResolvedValue(hermesExternalAdapter);
@@ -94,9 +144,11 @@ describe("Hermes external adapter loading", () => {
   });
 
   afterEach(async () => {
+    resetAdapterRouteModules();
     records.items = [];
     const { unregisterServerAdapter } = await import("../adapters/index.js");
     unregisterServerAdapter("hermes_local");
+    vi.resetAllMocks();
   });
 
   it("installs hermes_local through Adapter Manager as an external adapter with run-scoped auth support", async () => {

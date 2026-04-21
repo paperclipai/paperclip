@@ -59,16 +59,75 @@ const mockRoutineService = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  vi.doMock("../routes/authz.js", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/authz.ts", async () =>
+    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.js", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/workspace-command-authz.ts", async () =>
+    vi.importActual<typeof import("../routes/workspace-command-authz.ts")>("../routes/workspace-command-authz.ts"),
+  );
+  vi.doMock("../routes/issues-checkout-wakeup.js", async () =>
+    vi.importActual<typeof import("../routes/issues-checkout-wakeup.ts")>("../routes/issues-checkout-wakeup.ts"),
+  );
+  vi.doMock("../routes/issues-checkout-wakeup.ts", async () =>
+    vi.importActual<typeof import("../routes/issues-checkout-wakeup.ts")>("../routes/issues-checkout-wakeup.ts"),
+  );
+  vi.doMock("../middleware/index.js", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/index.ts", async () =>
+    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
+  );
+  vi.doMock("../middleware/validate.js", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/validate.ts", async () =>
+    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
+  );
+  vi.doMock("../middleware/logger.js", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../middleware/logger.ts", async () =>
+    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
+  );
+  vi.doMock("../services/issue-assignment-wakeup.js", async () =>
+    vi.importActual<typeof import("../services/issue-assignment-wakeup.ts")>(
+      "../services/issue-assignment-wakeup.ts",
+    ),
+  );
+  vi.doMock("../services/issue-assignment-wakeup.ts", async () =>
+    vi.importActual<typeof import("../services/issue-assignment-wakeup.ts")>(
+      "../services/issue-assignment-wakeup.ts",
+    ),
+  );
+  vi.doMock("../services/issue-execution-policy.js", async () =>
+    vi.importActual<typeof import("../services/issue-execution-policy.ts")>("../services/issue-execution-policy.ts"),
+  );
+  vi.doMock("../services/issue-execution-policy.ts", async () =>
+    vi.importActual<typeof import("../services/issue-execution-policy.ts")>("../services/issue-execution-policy.ts"),
+  );
+  vi.doMock("../attachment-types.js", async () =>
+    vi.importActual<typeof import("../attachment-types.ts")>("../attachment-types.ts"),
+  );
+  vi.doMock("../attachment-types.ts", async () =>
+    vi.importActual<typeof import("../attachment-types.ts")>("../attachment-types.ts"),
+  );
+
+  const sharedTelemetryMock = () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
-  }));
+  });
 
-  vi.doMock("../telemetry.js", () => ({
+  const telemetryMock = () => ({
     getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
-  }));
+  });
 
-  vi.doMock("../services/index.js", () => ({
+  const servicesIndexMock = () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     documentService: () => ({}),
@@ -83,13 +142,45 @@ function registerModuleMocks() {
     projectService: () => ({}),
     routineService: () => mockRoutineService,
     workProductService: () => ({}),
-  }));
-  vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
-  );
-  vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.js")>("../middleware/validate.js"),
-  );
+  });
+  vi.doMock("@paperclipai/shared/telemetry", sharedTelemetryMock);
+  vi.doMock("../telemetry.js", telemetryMock);
+  vi.doMock("../telemetry.ts", telemetryMock);
+  vi.doMock("../services/index.js", servicesIndexMock);
+  vi.doMock("../services/index.ts", servicesIndexMock);
+}
+
+function resetIssueRouteModules() {
+  vi.resetModules();
+  vi.doUnmock("@paperclipai/db");
+  vi.doUnmock("@paperclipai/shared");
+  vi.doUnmock("@paperclipai/shared/telemetry");
+  vi.doUnmock("../errors.js");
+  vi.doUnmock("../errors.ts");
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../routes/issues.ts");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../routes/authz.ts");
+  vi.doUnmock("../routes/workspace-command-authz.js");
+  vi.doUnmock("../routes/workspace-command-authz.ts");
+  vi.doUnmock("../routes/issues-checkout-wakeup.js");
+  vi.doUnmock("../routes/issues-checkout-wakeup.ts");
+  vi.doUnmock("../middleware/index.js");
+  vi.doUnmock("../middleware/index.ts");
+  vi.doUnmock("../middleware/validate.js");
+  vi.doUnmock("../middleware/validate.ts");
+  vi.doUnmock("../middleware/logger.js");
+  vi.doUnmock("../middleware/logger.ts");
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/index.ts");
+  vi.doUnmock("../services/issue-assignment-wakeup.js");
+  vi.doUnmock("../services/issue-assignment-wakeup.ts");
+  vi.doUnmock("../services/issue-execution-policy.js");
+  vi.doUnmock("../services/issue-execution-policy.ts");
+  vi.doUnmock("../attachment-types.js");
+  vi.doUnmock("../attachment-types.ts");
+  vi.doUnmock("../telemetry.js");
+  vi.doUnmock("../telemetry.ts");
 }
 
 function createApp() {
@@ -98,19 +189,16 @@ function createApp() {
   return app;
 }
 
+let issueRouteImportSeq = 0;
+
 async function installActor(app: express.Express, actor?: Record<string, unknown>) {
-  vi.resetModules();
-  vi.doUnmock("../routes/issues.js");
-  vi.doUnmock("../routes/authz.js");
-  vi.doUnmock("../middleware/index.js");
-  vi.doUnmock("../middleware/validate.js");
-  vi.doUnmock("../services/index.js");
-  vi.doUnmock("../telemetry.js");
-  vi.doUnmock("@paperclipai/shared/telemetry");
+  resetIssueRouteModules();
   registerModuleMocks();
+  issueRouteImportSeq += 1;
+  const routeModulePath = `../routes/issues.ts?issue-comment-reopen-routes-${issueRouteImportSeq}`;
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
+    import(routeModulePath) as Promise<typeof import("../routes/issues.ts")>,
+    import("../middleware/index.ts"),
   ]);
   app.use((req, _res, next) => {
     (req as any).actor = actor ?? {
@@ -134,7 +222,7 @@ async function normalizePolicy(input: {
     participants: Array<{ type: "agent"; agentId: string } | { type: "user"; userId: string }>;
   }>;
 }) {
-  const { normalizeIssueExecutionPolicy } = await import("../services/issue-execution-policy.js");
+  const { normalizeIssueExecutionPolicy } = await import("../services/issue-execution-policy.ts");
   return normalizeIssueExecutionPolicy(input);
 }
 
@@ -151,16 +239,16 @@ function makeIssue(status: "todo" | "done" | "blocked") {
   };
 }
 
+async function waitForCommentWakePipeline() {
+  await vi.waitFor(() => {
+    expect(mockIssueService.findMentionedAgents).toHaveBeenCalled();
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 describe("issue comment reopen routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("../middleware/validate.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../telemetry.js");
-    vi.doUnmock("@paperclipai/shared/telemetry");
+    resetIssueRouteModules();
     registerModuleMocks();
     vi.resetAllMocks();
     mockIssueService.getById.mockReset();
@@ -271,6 +359,7 @@ describe("issue comment reopen routes", () => {
         details: expect.not.objectContaining({ reopened: true }),
       }),
     );
+    await waitForCommentWakePipeline();
   });
 
   it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
@@ -305,6 +394,7 @@ describe("issue comment reopen routes", () => {
         }),
       }),
     );
+    await waitForCommentWakePipeline();
   });
 
   it("resolves assignee shortnames before updating an issue", async () => {
@@ -329,6 +419,7 @@ describe("issue comment reopen routes", () => {
         assigneeAgentId: "33333333-3333-4333-8333-333333333333",
       }),
     );
+    await waitForCommentWakePipeline();
   });
 
   it("rejects ambiguous assignee shortnames", async () => {
@@ -394,6 +485,7 @@ describe("issue comment reopen routes", () => {
         }),
       }),
     );
+    await waitForCommentWakePipeline();
   });
 
   it("records agent and run attribution when an agent posts a comment", async () => {
@@ -443,6 +535,7 @@ describe("issue comment reopen routes", () => {
         action: "issue.comment_added",
       }),
     );
+    await waitForCommentWakePipeline();
   });
 
   it("interrupts an active run before a combined comment update", async () => {
@@ -485,6 +578,7 @@ describe("issue comment reopen routes", () => {
         }),
       }),
     );
+    await waitForCommentWakePipeline();
   });
 
   it("writes decision ids into executionState and inserts the decision inside the transaction", async () => {
@@ -553,6 +647,7 @@ describe("issue comment reopen routes", () => {
         body: "Approved for ship",
       }),
     );
+    await waitForCommentWakePipeline();
   });
 
   it("coerces executor handoff patches into workflow-controlled review wakes", async () => {
@@ -680,21 +775,23 @@ describe("issue comment reopen routes", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "execution_changes_requested",
-        payload: expect.objectContaining({
-          issueId: "11111111-1111-4111-8111-111111111111",
-          executionStage: expect.objectContaining({
-            wakeRole: "executor",
-            stageType: "review",
-            lastDecisionOutcome: "changes_requested",
-            allowedActions: ["address_changes", "resubmit"],
+    await vi.waitFor(() => {
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "execution_changes_requested",
+          payload: expect.objectContaining({
+            issueId: "11111111-1111-4111-8111-111111111111",
+            executionStage: expect.objectContaining({
+              wakeRole: "executor",
+              stageType: "review",
+              lastDecisionOutcome: "changes_requested",
+              allowedActions: ["address_changes", "resubmit"],
+            }),
           }),
         }),
-      }),
-    );
+      );
+    });
   });
 
   it("nulls agent run links on comment writes when no normalized run id is available", async () => {
@@ -725,6 +822,7 @@ describe("issue comment reopen routes", () => {
         runId: null,
       }),
     );
+    await waitForCommentWakePipeline();
   });
 
   it("rejects checkout when the normalized agent run is not active", async () => {
