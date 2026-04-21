@@ -130,6 +130,22 @@ export function Organizations() {
     },
   });
 
+  const updateMemberRoleMutation = useMutation({
+    mutationFn: (input: { userId: string; role: "owner" | "admin" | "member" }) =>
+      organizationsApi.updateMember(selectedOrgId!, input.userId, { role: input.role }),
+    onSuccess: () => {
+      if (!selectedOrgId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.organizations.members(selectedOrgId) });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update member role",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
   const attachCompanyMutation = useMutation({
     mutationFn: (companyId: string) =>
       organizationsApi.attachCompany(selectedOrgId!, companyId),
@@ -408,9 +424,27 @@ export function Organizations() {
                             {member.email}
                           </span>
                         ) : null}
-                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                          {member.role}
-                        </span>
+                        {isOwner && member.userId !== pageSelectedOrg.ownerUserId ? (
+                          <select
+                            className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] font-medium outline-none"
+                            value={member.role}
+                            disabled={updateMemberRoleMutation.isPending}
+                            onChange={(e) =>
+                              updateMemberRoleMutation.mutate({
+                                userId: member.userId,
+                                role: e.target.value as "owner" | "admin" | "member",
+                              })
+                            }
+                          >
+                            <option value="member">member</option>
+                            <option value="admin">admin</option>
+                            <option value="owner">owner</option>
+                          </select>
+                        ) : (
+                          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            {member.role}
+                          </span>
+                        )}
                       </div>
                       <Button
                         size="icon-sm"

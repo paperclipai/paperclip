@@ -56,6 +56,12 @@ export const organizationsApi = {
     data: { userId?: string; email?: string; role?: string },
   ) => api.post<OrgMember>(`/organizations/${organizationId}/members`, data),
 
+  updateMember: (
+    organizationId: string,
+    userId: string,
+    data: { role: "owner" | "admin" | "member" },
+  ) => api.patch<OrgMember>(`/organizations/${organizationId}/members/${userId}`, data),
+
   removeMember: (organizationId: string, userId: string) =>
     api.delete<OrgMember>(`/organizations/${organizationId}/members/${userId}`),
 };

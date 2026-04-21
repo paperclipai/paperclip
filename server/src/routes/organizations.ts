@@ -29,6 +29,10 @@ const addOrgMemberSchema = z
     message: "Provide either userId or email",
   });
 
+const updateOrgMemberSchema = z.object({
+  role: z.enum(["owner", "admin", "member"]),
+});
+
 export function organizationRoutes(db: Db) {
   const router = Router();
 
@@ -123,6 +127,30 @@ export function organizationRoutes(db: Db) {
         .limit(1);
       return {
         ...membership,
+        displayName: user?.name ?? null,
+        email: user?.email ?? null,
+      };
+    },
+
+    async updateMemberRole(orgId: string, userId: string, role: string) {
+      const [updated] = await db
+        .update(orgMemberships)
+        .set({ role, updatedAt: new Date() })
+        .where(
+          and(
+            eq(orgMemberships.organizationId, orgId),
+            eq(orgMemberships.userId, userId),
+          ),
+        )
+        .returning();
+      if (!updated) return null;
+      const [user] = await db
+        .select({ name: authUsers.name, email: authUsers.email })
+        .from(authUsers)
+        .where(eq(authUsers.id, updated.userId))
+        .limit(1);
+      return {
+        ...updated,
         displayName: user?.name ?? null,
         email: user?.email ?? null,
       };
@@ -370,6 +398,39 @@ export function organizationRoutes(db: Db) {
       const membership = await svc.addMember(orgId, resolvedUserId, req.body.role);
 
       res.status(201).json(membership);
+    },
+  );
+
+  // ── Update organization member role ──────────────────────────────────
+  router.patch(
+    "/organizations/:id/members/:userId",
+    validate(updateOrgMemberSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const orgId = req.params.id as string;
+      const org = await svc.getById(orgId);
+      if (!org) {
+        res.status(404).json({ error: "Organization not found" });
+        return;
+      }
+
+      await assertOrgOwner(req, orgId);
+
+      const targetUserId = req.params.userId as string;
+      const nextRole = req.body.role as "owner" | "admin" | "member";
+
+      // The org's designated owner always stays at role "owner" — they're the
+      // root of trust for this org.
+      if (targetUserId === org.ownerUserId && nextRole !== "owner") {
+        throw forbidden("Cannot change the organization owner's role");
+      }
+
+      const updated = await svc.updateMemberRole(orgId, targetUserId, nextRole);
+      if (!updated) {
+        res.status(404).json({ error: "Membership not found" });
+        return;
+      }
+      res.json(updated);
     },
   );
 
