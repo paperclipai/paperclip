@@ -130,3 +130,4 @@ export function createDpo(opts: DpoOptions): Dpo {
 
 export { safeExternalLlm } from "./safe-external-llm.js";
 export type { SafeExternalLlmOptions, SafeExternalLlmResult } from "./safe-external-llm.js";
+export { MappingNotFoundError } from "./errors.js";

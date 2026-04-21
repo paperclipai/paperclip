@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { MappingStore } from "../src/mapping-store.js";
+import { MappingNotFoundError } from "../src/errors.js";
 import type { MappingEntry } from "../src/types.js";
 
 let dir: string;
@@ -44,11 +45,11 @@ describe("MappingStore", () => {
     expect(raw.toString("binary")).not.toContain("GEHEIMNIS_TOKEN");
   });
 
-  it("liefert leeres Array für unbekannte mappingId", () => {
-    expect(store.read("does-not-exist")).toEqual([]);
+  it("wirft MappingNotFoundError für unbekannte mappingId", () => {
+    expect(() => store.read("does-not-exist")).toThrow(MappingNotFoundError);
   });
 
-  it("löscht abgelaufene Mappings via cleanup()", () => {
+  it("löscht abgelaufene Mappings und Sessions via cleanup()", () => {
     store.write(
       "map-3",
       "t",
@@ -57,7 +58,7 @@ describe("MappingStore", () => {
     );
     expect(store.read("map-3")).toHaveLength(1);
     store.cleanup();
-    expect(store.read("map-3")).toEqual([]);
+    expect(() => store.read("map-3")).toThrow(MappingNotFoundError);
   });
 
   it("trennt Mappings nach tenantId", () => {
@@ -66,5 +67,14 @@ describe("MappingStore", () => {
     ], 86400);
     expect(store.readByTenant("tenant-a")).toHaveLength(1);
     expect(store.readByTenant("tenant-b")).toHaveLength(0);
+  });
+
+  it("throws MappingNotFoundError when mappingId unknown", () => {
+    expect(() => store.read("unknown-id")).toThrow(/mapping not found/);
+  });
+
+  it("read of known-but-empty mapping returns empty array (no throw)", () => {
+    store.write("empty-id", "tenant", [], 86400);
+    expect(store.read("empty-id")).toEqual([]);
   });
 });

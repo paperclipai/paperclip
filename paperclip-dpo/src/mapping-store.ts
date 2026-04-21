@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import type { Database as DB } from "better-sqlite3";
 import type { MappingEntry, FindingType } from "./types.js";
+import { MappingNotFoundError } from "./errors.js";
 
 interface Row {
   mapping_id: string;
@@ -45,6 +46,13 @@ export class MappingStore {
       );
       CREATE INDEX IF NOT EXISTS idx_mappings_tenant ON mappings(tenant_id);
       CREATE INDEX IF NOT EXISTS idx_mappings_cleanup ON mappings(created_at, ttl_seconds);
+      CREATE TABLE IF NOT EXISTS sessions (
+        mapping_id  TEXT PRIMARY KEY,
+        tenant_id   TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        ttl_seconds INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_cleanup ON sessions(created_at, ttl_seconds);
     `);
   }
 
@@ -59,8 +67,13 @@ export class MappingStore {
         (mapping_id, tenant_id, pseudonym, plaintext_enc, plaintext_iv, plaintext_tag, type, created_at, ttl_seconds)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    const sessionStmt = this.db.prepare(`
+      INSERT OR REPLACE INTO sessions (mapping_id, tenant_id, created_at, ttl_seconds)
+      VALUES (?, ?, ?, ?)
+    `);
     const now = Math.floor(Date.now() / 1000);
     const tx = this.db.transaction((entries: MappingEntry[]) => {
+      sessionStmt.run(mappingId, tenantId, now, ttlSeconds);
       for (const m of entries) {
         const { ciphertext, iv, tag } = this.encrypt(m.plaintext);
         stmt.run(mappingId, tenantId, m.pseudonym, ciphertext, iv, tag, m.type, now, ttlSeconds);
@@ -70,6 +83,12 @@ export class MappingStore {
   }
 
   read(mappingId: string): MappingEntry[] {
+    const session = this.db.prepare<[string], { mapping_id: string }>(
+      `SELECT mapping_id FROM sessions WHERE mapping_id = ?`,
+    ).get(mappingId);
+    if (!session) {
+      throw new MappingNotFoundError(mappingId);
+    }
     const rows = this.db.prepare<[string], Row>(`
       SELECT * FROM mappings WHERE mapping_id = ?
     `).all(mappingId);
@@ -93,10 +112,13 @@ export class MappingStore {
 
   cleanup(): number {
     const now = Math.floor(Date.now() / 1000);
-    const result = this.db.prepare(`
+    const mappingsResult = this.db.prepare(`
       DELETE FROM mappings WHERE (created_at + ttl_seconds) <= ?
     `).run(now);
-    return result.changes;
+    const sessionsResult = this.db.prepare(`
+      DELETE FROM sessions WHERE (created_at + ttl_seconds) <= ?
+    `).run(now);
+    return mappingsResult.changes + sessionsResult.changes;
   }
 
   close(): void {
