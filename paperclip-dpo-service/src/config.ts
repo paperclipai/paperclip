@@ -5,7 +5,6 @@ const Schema = z.object({
   DPO_BIND: z.string().default("0.0.0.0"),
   DPO_SHARED_KEY: z.string().min(32, "DPO_SHARED_KEY must be at least 32 chars"),
   DPO_MAPPING_DB: z.string(),
-  DPO_MAPPING_KEY_REF: z.string().default("keychain:ai.whitestag.paperclip-dpo.mapping"),
   DPO_AUDIT_DIR: z.string(),
   DPO_CLASSIFIER_URL: z.string().default("http://localhost:1234"),
   DPO_CLASSIFIER_MODEL: z.string().default("gemma-4-26b"),
@@ -19,7 +18,6 @@ export interface ServiceConfig {
   bind: string;
   sharedKey: string;
   mappingDbPath: string;
-  mappingKeyRef: string;
   auditDir: string;
   classifier: { url: string; model: string; timeoutMs: number };
   telegram?: { botToken: string; chatId: string };
@@ -35,7 +33,6 @@ export function loadConfig(env: NodeJS.ProcessEnv | Record<string, string | unde
     bind: parsed.DPO_BIND,
     sharedKey: parsed.DPO_SHARED_KEY,
     mappingDbPath: parsed.DPO_MAPPING_DB,
-    mappingKeyRef: parsed.DPO_MAPPING_KEY_REF,
     auditDir: parsed.DPO_AUDIT_DIR,
     classifier: {
       url: parsed.DPO_CLASSIFIER_URL,
