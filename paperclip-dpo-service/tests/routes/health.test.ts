@@ -33,6 +33,15 @@ describe("GET /health", () => {
     expect(res.json()).toEqual({ status: "ok", classifier: "unreachable" });
   });
 
+  it("reports classifier unreachable on non-2xx response", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(new Response("no", { status: 503 }));
+    registerHealthRoute(app, { classifierUrl: "http://x:1234", fetchFn });
+    await app.ready();
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "ok", classifier: "unreachable" });
+  });
+
   it("caches result for 10s", async () => {
     const fetchFn = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
     registerHealthRoute(app, { classifierUrl: "http://x:1234", fetchFn });

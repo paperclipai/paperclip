@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
 
+export type ClassifierStatus = "reachable" | "unreachable";
+
 export interface HealthOptions {
   classifierUrl: string;
   fetchFn?: typeof fetch;
@@ -12,9 +14,9 @@ export function registerHealthRoute(app: FastifyInstance, opts: HealthOptions): 
   const f = opts.fetchFn ?? fetch;
   const timeout = opts.pingTimeoutMs ?? 3_000;
   let cachedAt = 0;
-  let cached: "reachable" | "unreachable" = "unreachable";
+  let cached: ClassifierStatus = "unreachable";
 
-  async function probe(): Promise<"reachable" | "unreachable"> {
+  async function probe(): Promise<ClassifierStatus> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeout);
     try {
