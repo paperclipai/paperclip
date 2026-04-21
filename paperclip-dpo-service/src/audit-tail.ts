@@ -12,27 +12,49 @@ export interface AuditEntryLite {
 
 export interface AuditTailerOptions {
   dir: string;
-  day: string;
+  /** Optionaler fester Tag (YYYY-MM-DD). Fehlt er, wird immer das aktuelle Datum genutzt. */
+  day?: string;
+  now?: () => Date;
 }
 
 export class AuditTailer {
-  private readonly path: string;
+  private readonly dir: string;
+  private readonly fixedDay: string | undefined;
+  private readonly now: () => Date;
+  private currentDay = "";
   private offset = 0;
   private buffer = "";
 
   constructor(opts: AuditTailerOptions) {
-    this.path = join(opts.dir, `dpo-${opts.day}.jsonl`);
+    this.dir = opts.dir;
+    this.fixedDay = opts.day;
+    this.now = opts.now ?? (() => new Date());
+  }
+
+  private today(): string {
+    return this.fixedDay ?? this.now().toISOString().slice(0, 10);
+  }
+
+  private pathFor(day: string): string {
+    return join(this.dir, `dpo-${day}.jsonl`);
   }
 
   poll(): AuditEntryLite[] {
+    const day = this.today();
+    if (day !== this.currentDay) {
+      this.currentDay = day;
+      this.offset = 0;
+      this.buffer = "";
+    }
+    const path = this.pathFor(day);
     let size = 0;
     try {
-      size = statSync(this.path).size;
+      size = statSync(path).size;
     } catch {
       return [];
     }
     if (size <= this.offset) return [];
-    const fd = openSync(this.path, "r");
+    const fd = openSync(path, "r");
     try {
       const len = size - this.offset;
       const buf = Buffer.alloc(len);

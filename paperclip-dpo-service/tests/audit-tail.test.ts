@@ -35,4 +35,19 @@ describe("AuditTailer", () => {
     const entries = tailer.poll();
     expect(entries).toHaveLength(1);
   });
+
+  it("switches to new day's file when date changes", () => {
+    const file1 = join(dir, "dpo-2026-04-21.jsonl");
+    const file2 = join(dir, "dpo-2026-04-22.jsonl");
+    writeFileSync(file1, JSON.stringify({ ts: "2026-04-21T23:59:00Z", blocked: false }) + "\n");
+    writeFileSync(file2, JSON.stringify({ ts: "2026-04-22T00:01:00Z", blocked: true, blockedReason: "art_9_data_detected" }) + "\n");
+    let day = "2026-04-21";
+    const tailer = new AuditTailer({ dir, now: () => new Date(`${day}T12:00:00Z`) });
+    expect(tailer.poll()).toHaveLength(1);
+    // roll over
+    day = "2026-04-22";
+    const entries = tailer.poll();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].blockedReason).toBe("art_9_data_detected");
+  });
 });

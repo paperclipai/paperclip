@@ -36,7 +36,7 @@ async function main(): Promise<void> {
     : (msg: string) => console.error("[ALERT]", msg);
 
   const monitor = new Monitor({ alertFn });
-  const tailer = new AuditTailer({ dir: cfg.auditDir, day: new Date().toISOString().slice(0, 10) });
+  const tailer = new AuditTailer({ dir: cfg.auditDir });
   const probe = makeClassifierProbe({ url: cfg.classifier.url, timeoutMs: 3000 });
   const stopRunner = startMonitorRunner({ tailer, classifierProbe: probe, monitor });
 
