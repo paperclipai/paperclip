@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -862,5 +862,103 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
+  });
+
+  describe("pre-flight assignee-status check (AKS-1350)", () => {
+    it("creates issue when assignee status is idle", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      await db.update(agents).set({ status: "idle" }).where(eq(agents.id, agentId));
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("issue_created");
+      expect(run.linkedIssueId).toBeTruthy();
+    });
+
+    it("creates issue when assignee status is running", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      await db.update(agents).set({ status: "running" }).where(eq(agents.id, agentId));
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("issue_created");
+      expect(run.linkedIssueId).toBeTruthy();
+    });
+
+    it("skips issue creation and emits log when assignee is paused with pauseReason=manual", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      await db.update(agents)
+        .set({ status: "paused", pauseReason: "manual", pausedAt: new Date() })
+        .where(eq(agents.id, agentId));
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("assignee_paused");
+      expect(run.linkedIssueId).toBeNull();
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toHaveLength(0);
+    });
+
+    it("skips issue creation and emits log when assignee is paused with pauseReason=budget_exhausted_auto", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      await db.update(agents)
+        .set({ status: "paused", pauseReason: "budget_exhausted_auto", pausedAt: new Date() })
+        .where(eq(agents.id, agentId));
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("assignee_paused");
+      expect(run.linkedIssueId).toBeNull();
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toHaveLength(0);
+    });
+
+    it("produces zero new issues across consecutive ticks while assignee is paused", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      await db.update(agents)
+        .set({ status: "paused", pauseReason: "budget_exhausted_auto", pausedAt: new Date() })
+        .where(eq(agents.id, agentId));
+      await svc.runRoutine(routine.id, { source: "manual" });
+      await svc.runRoutine(routine.id, { source: "manual" });
+      await svc.runRoutine(routine.id, { source: "manual" });
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toHaveLength(0);
+    });
+
+    it("resumes issue creation on the first tick after assignee is unpaused", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      await db.update(agents)
+        .set({ status: "paused", pauseReason: "budget_exhausted_auto", pausedAt: new Date() })
+        .where(eq(agents.id, agentId));
+      const skippedRun = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(skippedRun.status).toBe("assignee_paused");
+      await db.update(agents)
+        .set({ status: "idle", pauseReason: null, pausedAt: null })
+        .where(eq(agents.id, agentId));
+      const resumedRun = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(resumedRun.status).toBe("issue_created");
+      expect(resumedRun.linkedIssueId).toBeTruthy();
+    });
+
+    it("skips issue creation when assignee agent no longer exists in DB (null-record guard)", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      // routines.assigneeAgentId has a RESTRICT FK to agents, blocking normal deletion.
+      // Wrap in a transaction so ALTER TABLE DISABLE TRIGGER and DELETE share one connection
+      // (pool connections are not sticky across separate execute/delete calls).
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`ALTER TABLE routines DISABLE TRIGGER ALL`);
+        await tx.delete(agents).where(eq(agents.id, agentId));
+        await tx.execute(sql`ALTER TABLE routines ENABLE TRIGGER ALL`);
+      });
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("assignee_not_found");
+      expect(run.linkedIssueId).toBeNull();
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toHaveLength(0);
+    });
   });
 });
