@@ -341,6 +341,27 @@ describe("shouldResetTaskSessionForModelChange", () => {
       }),
     ).toBe(false);
   });
+
+  it("does not reset when configured model is missing", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: null,
+        taskSessionParams: {
+          sessionId: "thread-1",
+          __paperclipConfiguredModel: "gpt-5.4-mini",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reset when task session params are missing", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: null,
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("deriveTaskKeyWithHeartbeatFallback", () => {

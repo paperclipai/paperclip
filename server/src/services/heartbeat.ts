@@ -1219,13 +1219,9 @@ function attachConfiguredModelToSessionParams(
   sessionParams: Record<string, unknown> | null | undefined,
   configuredModel: string | null,
 ) {
-  if (!sessionParams) return null;
-  const next = { ...sessionParams };
-  if (configuredModel) {
-    next[SESSION_CONFIGURED_MODEL_KEY] = configuredModel;
-  } else {
-    delete next[SESSION_CONFIGURED_MODEL_KEY];
-  }
+  if (!configuredModel) return sessionParams ?? null;
+  const next = { ...(sessionParams ?? {}) };
+  next[SESSION_CONFIGURED_MODEL_KEY] = configuredModel;
   return next;
 }
 
@@ -1243,6 +1239,15 @@ export function shouldResetTaskSessionForModelChange(input: {
   if (!configuredModel || !taskSessionParams) return false;
   const sessionModel = readConfiguredModelFromSessionParams(taskSessionParams);
   return !!sessionModel && sessionModel !== configuredModel;
+}
+
+function stripConfiguredModelFromSessionParams(
+  sessionParams: Record<string, unknown> | null | undefined,
+) {
+  if (!sessionParams) return null;
+  const next = { ...sessionParams };
+  delete next[SESSION_CONFIGURED_MODEL_KEY];
+  return next;
 }
 
 function shouldAutoCheckoutIssueForWake(input: {
@@ -4102,7 +4107,9 @@ export function heartbeatService(db: Db) {
     const modelSessionResetReason = modelChangedSinceTaskSession && taskSessionConfiguredModel
       ? `configured model changed from "${taskSessionConfiguredModel}" to "${configuredModel}"`
       : null;
-    const sessionResetReason = modelSessionResetReason ?? wakeSessionResetReason;
+    const sessionResetReason = [modelSessionResetReason, wakeSessionResetReason]
+      .filter((value): value is string => Boolean(value))
+      .join("; ") || null;
     const taskSessionForRun = resetTaskSession ? null : taskSession;
     const explicitResumeSessionParams = normalizeSessionParams(
       sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
@@ -4464,7 +4471,7 @@ export function heartbeatService(db: Db) {
     );
     let runtimeSessionIdForAdapter =
       readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
-    let runtimeSessionParamsForAdapter = runtimeSessionParams;
+    let runtimeSessionParamsForAdapter = stripConfiguredModelFromSessionParams(runtimeSessionParams);
 
     const sessionCompaction = await evaluateSessionCompaction({
       agent,
