@@ -153,6 +153,8 @@ describe("execute — fallback behavior", () => {
       .mockResolvedValueOnce(okModelsResponse())
       // LLM turn 1 on primary: connection drops mid-call
       .mockRejectedValueOnce(connRefused())
+      // Fallback probe (triggered by maybeSwitchToFallback)
+      .mockResolvedValueOnce(okModelsResponse())
       // LLM turn 1 retry on fallback: final text
       .mockResolvedValueOnce({
         ok: true,
@@ -169,6 +171,25 @@ describe("execute — fallback behavior", () => {
 
     expect(result.exitCode).toBe(0);
     expect(findEvent(ctx.logs, "system", "Fallback aktiv")).not.toBeNull();
+  });
+
+  it("fails cleanly on mid-call error when fallback probe also fails", async () => {
+    const fetchMock = vi.fn()
+      // Primary probe ok
+      .mockResolvedValueOnce(okModelsResponse())
+      // LLM turn 1 on primary: connection drops
+      .mockRejectedValueOnce(connRefused())
+      // Fallback probe also fails
+      .mockRejectedValueOnce(connRefused());
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("llm_error");
+    // No meta event — switch never happened because probe failed
+    expect(findEvent(ctx.logs, "system", "Fallback aktiv")).toBeNull();
   });
 
   it("sticky: once on fallback, stays on fallback for rest of heartbeat", async () => {

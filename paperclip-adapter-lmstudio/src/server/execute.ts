@@ -4,6 +4,7 @@ import {
   streamChatCompletion,
   ChatMessage,
   LlmClientError,
+  probeEndpoint,
 } from "./llm-client.js";
 import { resolvePrimaryOrFallback, type Endpoint } from "./endpoint-resolver.js";
 import { dispatchTool } from "./tool-executor.js";
@@ -286,14 +287,17 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
 
   // Try a failover on a typed LlmClientError. Returns true if we switched,
   // false if no fallback is available or error kind isn't a failover trigger.
-  // Note: we do NOT re-probe the fallback here. Probing is the entry-gate
-  // decision at heartbeat start; mid-call failover simply retries on the
-  // fallback and will fail cleanly if the fallback is also down.
   async function maybeSwitchToFallback(err: unknown, context: string): Promise<boolean> {
     if (onFallback) return false;
     if (!fallbackUrl) return false;
     if (!(err instanceof LlmClientError)) return false;
     if (err.kind !== "network" && err.kind !== "model" && err.kind !== "timeout") return false;
+
+    // Probe fallback briefly to be sure it's up before switching.
+    // Fails fast (probeTimeoutMs) rather than risking a full timeoutMs wait
+    // on a doomed POST if the fallback is also down.
+    const probe = await probeEndpoint(fallbackUrl, probeTimeoutMs);
+    if (!probe.ok) return false;
 
     currentEndpoint = { url: fallbackUrl, model: fallbackModel || primaryModel };
     onFallback = true;
