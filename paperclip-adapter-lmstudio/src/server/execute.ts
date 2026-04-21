@@ -222,8 +222,17 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
   const probeTimeoutMs = asNumber(config.probeTimeoutMs, 2000);
   const timeoutMs = asNumber(config.timeoutMs, 120000);
   const maxIterations = asNumber(config.maxIterations, 25);
-  const maxRunSeconds = asNumber(config.maxRunSeconds, 300);
-  const runDeadlineMs = Date.now() + maxRunSeconds * 1000;
+  const maxRunSeconds = asNumber(config.maxRunSeconds, asNumber(config.timeoutSec, 300));
+  const runStart = Date.now();
+  const runDeadlineMs = runStart + maxRunSeconds * 1000;
+
+  function remainingRunMs(): number {
+    return Math.max(0, runDeadlineMs - Date.now());
+  }
+
+  function callTimeoutMs(): number {
+    return Math.max(1000, Math.min(timeoutMs, remainingRunMs() || timeoutMs));
+  }
 
   // Parse comma-separated list of additional paths the agent is allowed to write to.
   // Useful for pointing at an Obsidian vault on an external volume.
@@ -361,14 +370,15 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
         model: currentEndpoint.model,
         messages,
         tools: PAPERCLIP_TOOLS,
-        timeoutMs,
+        timeoutMs: callTimeoutMs(),
       });
     } catch (err) {
       const switched = await maybeSwitchToFallback(err, "chat completion");
       if (switched) {
         // Deduct time already spent so the retry can't double the wallclock cost.
         // Keep a 1s floor so a near-full-timeout first call still has a chance to retry.
-        const retryTimeoutMs = Math.max(1000, timeoutMs - (Date.now() - iterationStart));
+        const retryBudget = Math.max(1000, timeoutMs - (Date.now() - iterationStart));
+        const retryTimeoutMs = Math.min(retryBudget, callTimeoutMs());
         try {
           response = await callChatCompletion({
             url: currentEndpoint.url,
@@ -423,7 +433,7 @@ export async function execute(ctx: ExecutionContext): Promise<ExecutionResult> {
             ...messages.slice(0, -1),
             { role: "user", content: "Repeat your previous final answer to me verbatim." },
           ],
-          timeoutMs,
+          timeoutMs: callTimeoutMs(),
           onToken: async (token) => {
             await ctx.onLog("stdout", token);
           },
