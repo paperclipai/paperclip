@@ -5946,8 +5946,61 @@ export function heartbeatService(db: Db) {
         const deferredContextSeed = parseObject(deferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
         const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
-        const shouldReopenDeferredCommentWake =
-          deferredCommentIds.length > 0 && (issue.status === "done" || issue.status === "cancelled");
+        const issueIsTerminal = issue.status === "done" || issue.status === "cancelled";
+
+        // POI-237 Option 1 — deferred-wake freshness guard. When a comment-bearing
+        // deferred wake targets a terminal issue, only allow the implicit reopen if
+        // at least one deferred comment was created AFTER the last terminal
+        // transition. Otherwise treat the wake as stale (it was enqueued while the
+        // issue was still active and the run has since closed it) and drop it.
+        if (deferredCommentIds.length > 0 && issueIsTerminal) {
+          const closureRow = await tx
+            .select({ createdAt: activityLog.createdAt })
+            .from(activityLog)
+            .where(
+              and(
+                eq(activityLog.companyId, issue.companyId),
+                eq(activityLog.entityType, "issue"),
+                eq(activityLog.entityId, issue.id),
+                eq(activityLog.action, "issue.updated"),
+                sql`${activityLog.details} ->> 'status' in ('done','cancelled')`,
+              ),
+            )
+            .orderBy(desc(activityLog.createdAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+          const closedAt = closureRow?.createdAt ?? null;
+          if (closedAt) {
+            const commentRows = await tx
+              .select({ id: issueComments.id, createdAt: issueComments.createdAt })
+              .from(issueComments)
+              .where(
+                and(
+                  eq(issueComments.issueId, issue.id),
+                  inArray(issueComments.id, deferredCommentIds),
+                ),
+              );
+            const anyFresh = commentRows.some(
+              (row) => row.createdAt.getTime() > closedAt.getTime(),
+            );
+            if (!anyFresh) {
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  status: "failed",
+                  finishedAt: new Date(),
+                  error: "deferred_comment_wake_terminal_skipped",
+                  updatedAt: new Date(),
+                })
+                .where(eq(agentWakeupRequests.id, deferred.id));
+              continue;
+            }
+          }
+          // No audit entry — lenient fallback: treat as fresh and proceed with reopen.
+        }
+
+        const shouldReopenDeferredCommentWake = deferredCommentIds.length > 0 && issueIsTerminal;
         let reopenedActivity: LogActivityInput | null = null;
 
         if (shouldReopenDeferredCommentWake) {
