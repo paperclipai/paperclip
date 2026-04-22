@@ -75,6 +75,26 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
 ];
+const PAPERCLIP_CHILD_EXECUTION_ENV_KEYS = [
+  "AGENT_HOME",
+  "PAPERCLIP_AGENT_ID",
+  "PAPERCLIP_API_KEY",
+  "PAPERCLIP_API_URL",
+  "PAPERCLIP_APPROVAL_ID",
+  "PAPERCLIP_APPROVAL_STATUS",
+  "PAPERCLIP_COMPANY_ID",
+  "PAPERCLIP_LINKED_ISSUE_IDS",
+  "PAPERCLIP_RUN_ID",
+  "PAPERCLIP_TASK_ID",
+  "PAPERCLIP_WAKE_COMMENT_ID",
+  "PAPERCLIP_WAKE_PAYLOAD_JSON",
+  "PAPERCLIP_WAKE_REASON",
+  "PAPERCLIP_WORKSPACES_JSON",
+] as const;
+const PAPERCLIP_CHILD_EXECUTION_ENV_PREFIXES = [
+  "PAPERCLIP_RUNTIME_",
+  "PAPERCLIP_WORKSPACE_",
+] as const;
 
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
@@ -778,6 +798,26 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   return vars;
 }
 
+function stripInheritedPaperclipChildEnv(
+  parentEnv: NodeJS.ProcessEnv,
+  childEnv: Record<string, string>,
+): NodeJS.ProcessEnv {
+  const sanitized: NodeJS.ProcessEnv = { ...parentEnv };
+
+  for (const key of PAPERCLIP_CHILD_EXECUTION_ENV_KEYS) {
+    if (!(key in childEnv)) delete sanitized[key];
+  }
+
+  for (const key of Object.keys(sanitized)) {
+    if (key in childEnv) continue;
+    if (PAPERCLIP_CHILD_EXECUTION_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      delete sanitized[key];
+    }
+  }
+
+  return sanitized;
+}
+
 export function defaultPathForPlatform() {
   if (process.platform === "win32") {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
@@ -1302,7 +1342,10 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const rawMerged: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
+    const rawMerged: NodeJS.ProcessEnv = {
+      ...stripInheritedPaperclipChildEnv(process.env, opts.env),
+      ...opts.env,
+    };
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".
