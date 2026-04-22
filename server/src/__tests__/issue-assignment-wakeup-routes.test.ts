@@ -26,6 +26,17 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(async () => null),
 }));
 
+const mockIssueReferenceService = vi.hoisted(() => ({
+  syncIssue: vi.fn(async () => undefined),
+  listIssueReferenceSummary: vi.fn(async () => ({ inbound: [], outbound: [] })),
+  diffIssueReferenceSummary: vi.fn(() => ({
+    addedReferencedIssues: [],
+    removedReferencedIssues: [],
+    currentReferencedIssues: [],
+  })),
+  emptySummary: vi.fn(() => ({ inbound: [], outbound: [] })),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(async () => true),
@@ -72,6 +83,7 @@ vi.mock("../services/index.js", () => ({
     listCompanyIds: vi.fn(async () => [COMPANY_ID]),
   }),
   issueApprovalService: () => ({}),
+  issueReferenceService: () => mockIssueReferenceService,
   issueService: () => mockIssueService,
   ISSUE_LIST_DEFAULT_LIMIT: 500,
   ISSUE_LIST_MAX_LIMIT: 1000,
@@ -133,6 +145,7 @@ function registerModuleMocks() {
       listCompanyIds: vi.fn(async () => [COMPANY_ID]),
     }),
     issueApprovalService: () => ({}),
+    issueReferenceService: () => mockIssueReferenceService,
     issueService: () => mockIssueService,
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     ISSUE_LIST_MAX_LIMIT: 1000,
@@ -205,6 +218,14 @@ describe("issue assignment wakeups", () => {
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueReferenceService.syncIssue.mockResolvedValue(undefined);
+    mockIssueReferenceService.listIssueReferenceSummary.mockResolvedValue({ inbound: [], outbound: [] });
+    mockIssueReferenceService.diffIssueReferenceSummary.mockReturnValue({
+      addedReferencedIssues: [],
+      removedReferencedIssues: [],
+      currentReferencedIssues: [],
+    });
+    mockIssueReferenceService.emptySummary.mockReturnValue({ inbound: [], outbound: [] });
   });
 
   it("does not enqueue a follow-up wake when an agent self-assigns during issue creation", async () => {
