@@ -3386,6 +3386,7 @@ export function heartbeatService(db: Db) {
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      model: typeof heartbeat.model === "string" && heartbeat.model.trim().length > 0 ? heartbeat.model.trim() : null,
     };
   }
 
@@ -5000,8 +5001,11 @@ export function heartbeatService(db: Db) {
       runScopedMentionedSkillKeys,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
+    const heartbeatModelOverride =
+      run.invocationSource === "timer" ? parseHeartbeatPolicy(agent).model : null;
     const runtimeConfig = {
       ...effectiveResolvedConfig,
+      ...(heartbeatModelOverride ? { model: heartbeatModelOverride } : {}),
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({

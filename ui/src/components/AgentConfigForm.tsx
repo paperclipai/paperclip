@@ -909,6 +909,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 numberHint={help.intervalSec}
                 showNumber={eff("heartbeat", "enabled", heartbeat.enabled === true)}
               />
+              <Field label="Heartbeat model" hint={help.heartbeatModel}>
+                <input
+                  type="text"
+                  className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-sm"
+                  placeholder="e.g. claude-haiku-4-5 (empty = use agent model)"
+                  value={eff("heartbeat", "model", (heartbeat.model as string) ?? "") as string}
+                  onChange={(e) => mark("heartbeat", "model", e.target.value || null)}
+                />
+              </Field>
             </div>
             <CollapsibleSection
               title="Advanced Run Policy"
