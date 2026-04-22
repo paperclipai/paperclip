@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   assets,
   companies,
@@ -33,6 +34,7 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { logActivity } from "./activity-log.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
@@ -1204,6 +1206,71 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
+  // CLI-126: shared pre-check that drains a stale execution run before write-path ownership assertion.
+  // Runs in its own SELECT FOR UPDATE transaction to be atomic. Returns drain metadata if a drain
+  // occurred (null if executionRunId was absent or the run is still active). Callers must log the
+  // `issue.execution_run_auto_drained` activity AFTER this transaction commits.
+  async function drainStaleExecutionRunIfNeeded(issueId: string): Promise<{
+    drainedRunId: string;
+    companyId: string;
+    drainedAgentNameKey: string | null;
+  } | null> {
+    let drained: { drainedRunId: string; companyId: string; drainedAgentNameKey: string | null } | null = null;
+
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM issues WHERE id = ${issueId} FOR UPDATE`);
+
+      const row = await tx
+        .select({
+          companyId: issues.companyId,
+          executionRunId: issues.executionRunId,
+          executionAgentNameKey: issues.executionAgentNameKey,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!row?.executionRunId) return;
+
+      const lockRun = await tx
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, row.executionRunId))
+        .then((rows) => rows[0] ?? null);
+
+      // Active execution run — do not drain.
+      if (lockRun && (lockRun.status === "queued" || lockRun.status === "running")) return;
+
+      const now = new Date();
+
+      await tx
+        .update(issues)
+        .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
+        .where(and(eq(issues.id, issueId), eq(issues.executionRunId, row.executionRunId)));
+
+      // Cancel any deferred wakeup requests linked to this issue so they do not re-lock it.
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: "Execution run drain: linked run is no longer active",
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, row.companyId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          ),
+        );
+
+      drained = { drainedRunId: row.executionRunId, companyId: row.companyId, drainedAgentNameKey: row.executionAgentNameKey };
+    });
+
+    return drained;
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -2112,38 +2179,23 @@ export function issueService(db: Db) {
 
       const now = new Date();
 
-      // Fix C: staleness detection — if executionRunId references a run that is no
-      // longer queued or running, clear it before applying the execution lock condition
-      // so a dead lock can't produce a spurious 409.
-      // Wrapped in a transaction with SELECT FOR UPDATE to make the read + clear atomic,
-      // matching the existing pattern in enqueueWakeup().
-      await db.transaction(async (tx) => {
-        await tx.execute(
-          sql`select id from issues where id = ${id} for update`,
-        );
-        const preCheckRow = await tx
-          .select({ executionRunId: issues.executionRunId })
-          .from(issues)
-          .where(eq(issues.id, id))
-          .then((rows) => rows[0] ?? null);
-        if (!preCheckRow?.executionRunId) return;
-        const lockRun = await tx
-          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, preCheckRow.executionRunId))
-          .then((rows) => rows[0] ?? null);
-        if (!lockRun || (lockRun.status !== "queued" && lockRun.status !== "running")) {
-          await tx
-            .update(issues)
-            .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
-            .where(
-              and(
-                eq(issues.id, id),
-                eq(issues.executionRunId, preCheckRow.executionRunId),
-              ),
-            );
-        }
-      });
+      // Use the shared stale-execution-run drain before applying the execution lock condition,
+      // so a dead lock can't produce a spurious 409. Wakeup cancellation and activity logging
+      // are included in the helper and its post-commit call below.
+      const checkoutDrained = await drainStaleExecutionRunIfNeeded(id);
+      if (checkoutDrained) {
+        await logActivity(db, {
+          companyId: checkoutDrained.companyId,
+          actorType: "agent",
+          actorId: agentId,
+          agentId,
+          runId: checkoutRunId,
+          action: "issue.execution_run_auto_drained",
+          entityType: "issue",
+          entityId: id,
+          details: { drainedRunId: checkoutDrained.drainedRunId, drainedAgentNameKey: checkoutDrained.drainedAgentNameKey },
+        });
+      }
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
@@ -2272,6 +2324,23 @@ export function issueService(db: Db) {
     },
 
     assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {
+      // CLI-126: drain any stale execution run before checking ownership so comment/PATCH
+      // write paths self-recover instead of emitting a spurious 409.
+      const ownerDrained = await drainStaleExecutionRunIfNeeded(id);
+      if (ownerDrained) {
+        await logActivity(db, {
+          companyId: ownerDrained.companyId,
+          actorType: "agent",
+          actorId: actorAgentId,
+          agentId: actorAgentId,
+          runId: actorRunId,
+          action: "issue.execution_run_auto_drained",
+          entityType: "issue",
+          entityId: id,
+          details: { drainedRunId: ownerDrained.drainedRunId, drainedAgentNameKey: ownerDrained.drainedAgentNameKey },
+        });
+      }
+
       const current = await db
         .select({
           id: issues.id,
