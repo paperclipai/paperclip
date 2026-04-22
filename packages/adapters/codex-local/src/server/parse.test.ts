@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isCodexUnknownSessionError, parseCodexJsonl } from "./parse.js";
+import {
+  isCodexTransientUpstreamError,
+  isCodexUnknownSessionError,
+  parseCodexJsonl,
+} from "./parse.js";
 
 describe("parseCodexJsonl", () => {
   it("captures session id, assistant summary, usage, and error message", () => {
@@ -79,5 +83,38 @@ describe("isCodexUnknownSessionError", () => {
 
   it("does not classify unrelated Codex failures as stale sessions", () => {
     expect(isCodexUnknownSessionError("", "model overloaded")).toBe(false);
+  });
+});
+
+describe("isCodexTransientUpstreamError", () => {
+  it("classifies the remote-compaction high-demand failure as transient upstream", () => {
+    expect(
+      isCodexTransientUpstreamError({
+        errorMessage:
+          "Error running remote compact task: We're currently experiencing high demand, which may cause temporary errors.",
+      }),
+    ).toBe(true);
+    expect(
+      isCodexTransientUpstreamError({
+        stderr: "We're currently experiencing high demand, which may cause temporary errors.",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify deterministic compaction errors as transient", () => {
+    expect(
+      isCodexTransientUpstreamError({
+        errorMessage: [
+          "Error running remote compact task: {",
+          '  "error": {',
+          '    "message": "Unknown parameter: \'prompt_cache_retention\'.",',
+          '    "type": "invalid_request_error",',
+          '    "param": "prompt_cache_retention",',
+          '    "code": "unknown_parameter"',
+          "  }",
+          "}",
+        ].join("\n"),
+      }),
+    ).toBe(false);
   });
 });

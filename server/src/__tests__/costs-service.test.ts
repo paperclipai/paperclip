@@ -1,6 +1,15 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll } from "vitest";
+import { randomUUID } from "node:crypto";
+import { createDb, companies, agents, costEvents, financeEvents, projects } from "@paperclipai/db";
+import { costService } from "../services/costs.ts";
+import { financeService } from "../services/finance.ts";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 
 function makeDb(overrides: Record<string, unknown> = {}) {
   const selectChain = {
@@ -71,24 +80,26 @@ const mockBudgetService = vi.hoisted(() => ({
   resolveIncident: vi.fn(),
 }));
 
-vi.mock("../services/index.js", () => ({
-  budgetService: () => mockBudgetService,
-  costService: () => mockCostService,
-  financeService: () => mockFinanceService,
-  companyService: () => mockCompanyService,
-  agentService: () => mockAgentService,
-  heartbeatService: () => mockHeartbeatService,
-  logActivity: mockLogActivity,
-}));
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    budgetService: () => mockBudgetService,
+    costService: () => mockCostService,
+    financeService: () => mockFinanceService,
+    companyService: () => mockCompanyService,
+    agentService: () => mockAgentService,
+    heartbeatService: () => mockHeartbeatService,
+    logActivity: mockLogActivity,
+  }));
 
-vi.mock("../services/quota-windows.js", () => ({
-  fetchAllQuotaWindows: mockFetchAllQuotaWindows,
-}));
+  vi.doMock("../services/quota-windows.js", () => ({
+    fetchAllQuotaWindows: mockFetchAllQuotaWindows,
+  }));
+}
 
 async function createApp() {
   const [{ costRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/costs.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/costs.js")>("../routes/costs.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -103,8 +114,8 @@ async function createApp() {
 
 async function createAppWithActor(actor: any) {
   const [{ costRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/costs.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/costs.js")>("../routes/costs.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -124,10 +135,22 @@ async function loadCostParsers() {
 
 beforeEach(() => {
   vi.resetModules();
-  vi.resetAllMocks();
+  vi.doUnmock("../services/index.js");
+  vi.doUnmock("../services/quota-windows.js");
+  vi.doUnmock("../routes/costs.js");
+  vi.doUnmock("../middleware/index.js");
+  registerModuleMocks();
+  vi.clearAllMocks();
   mockCompanyService.update.mockResolvedValue({
     id: "company-1",
     name: "Paperclip",
+    budgetMonthlyCents: 100,
+    spentMonthlyCents: 0,
+  });
+  mockAgentService.getById.mockResolvedValue({
+    id: "agent-1",
+    companyId: "company-1",
+    name: "Budget Agent",
     budgetMonthlyCents: 100,
     spentMonthlyCents: 0,
   });
@@ -169,7 +192,13 @@ describe("cost routes", () => {
       .get("/api/companies/company-1/costs/finance-summary")
       .query({ from: "2026-02-01T00:00:00.000Z", to: "2026-02-28T23:59:59.999Z" });
     expect(res.status).toBe(200);
-    expect(mockFinanceService.summary).toHaveBeenCalled();
+    expect(res.body).toEqual({
+      debitCents: 0,
+      creditCents: 0,
+      netCents: 0,
+      estimatedDebitCents: 0,
+      eventCount: 0,
+    });
   });
 
   it("returns 400 for invalid finance event list limits", async () => {
@@ -200,13 +229,6 @@ describe("cost routes", () => {
   });
 
   it("rejects agent budget updates for board users outside the agent company", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      id: "agent-1",
-      companyId: "company-1",
-      name: "Budget Agent",
-      budgetMonthlyCents: 100,
-      spentMonthlyCents: 0,
-    });
     const app = await createAppWithActor({
       type: "board",
       userId: "board-user",
@@ -221,5 +243,242 @@ describe("cost routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent budget updates from the target agent without changing the budget policy", async () => {
+    const app = await createAppWithActor({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch("/api/agents/agent-1/budgets")
+      .send({ budgetMonthlyCents: 2500 });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Board access required" });
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent budget updates from another same-company agent without changing the budget policy", async () => {
+    const app = await createAppWithActor({
+      type: "agent",
+      agentId: "agent-2",
+      companyId: "company-1",
+      runId: "run-2",
+    });
+
+    const res = await request(app)
+      .patch("/api/agents/agent-1/budgets")
+      .send({ budgetMonthlyCents: 2500 });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Board access required" });
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("allows authorized board users to update an agent budget and budget policy", async () => {
+    mockAgentService.update.mockResolvedValueOnce({
+      id: "agent-1",
+      companyId: "company-1",
+      name: "Budget Agent",
+      budgetMonthlyCents: 2500,
+      spentMonthlyCents: 0,
+    });
+    const app = await createAppWithActor({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "admin" }],
+    });
+
+    const res = await request(app)
+      .patch("/api/agents/agent-1/budgets")
+      .send({ budgetMonthlyCents: 2500 });
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith("agent-1", { budgetMonthlyCents: 2500 });
+    expect(mockBudgetService.upsertPolicy).toHaveBeenCalledWith(
+      "company-1",
+      {
+        scopeType: "agent",
+        scopeId: "agent-1",
+        amount: 2500,
+        windowKind: "calendar_month_utc",
+      },
+      "board-user",
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        actorType: "user",
+        actorId: "board-user",
+        agentId: null,
+        action: "agent.budget_updated",
+        entityType: "agent",
+        entityId: "agent-1",
+        details: { budgetMonthlyCents: 2500 },
+      }),
+    );
+  });
+});
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
+  let db!: ReturnType<typeof createDb>;
+  let costs!: ReturnType<typeof costService>;
+  let finance!: ReturnType<typeof financeService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-costs-service-");
+    db = createDb(tempDb.connectionString);
+    costs = costService(db);
+    finance = financeService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(financeEvents);
+    await db.delete(costEvents);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Overflow Project",
+      status: "active",
+    });
+
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        projectId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 2_000_000_000,
+        cachedInputTokens: 0,
+        outputTokens: 200_000_000,
+        costCents: 2_000_000_000,
+        occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        projectId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 2_000_000_000,
+        cachedInputTokens: 10,
+        outputTokens: 200_000_000,
+        costCents: 2_000_000_000,
+        occurredAt: new Date("2026-04-11T00:00:00.000Z"),
+      },
+    ]);
+
+    const range = {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    };
+
+    const [byAgentRow] = await costs.byAgent(companyId, range);
+    const [byProjectRow] = await costs.byProject(companyId, range);
+    const [byAgentModelRow] = await costs.byAgentModel(companyId, range);
+
+    expect(byAgentRow?.costCents).toBe(4_000_000_000);
+    expect(byAgentRow?.inputTokens).toBe(4_000_000_000);
+    expect(byProjectRow?.costCents).toBe(4_000_000_000);
+    expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
+  });
+
+  it("aggregates finance event sums above int32 without raising Postgres integer overflow", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(financeEvents).values([
+      {
+        companyId,
+        biller: "openai",
+        eventKind: "invoice",
+        amountCents: 2_000_000_000,
+        currency: "USD",
+        direction: "debit",
+        estimated: false,
+        occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        biller: "openai",
+        eventKind: "invoice",
+        amountCents: 2_000_000_000,
+        currency: "USD",
+        direction: "debit",
+        estimated: true,
+        occurredAt: new Date("2026-04-11T00:00:00.000Z"),
+      },
+    ]);
+
+    const range = {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    };
+
+    const summary = await finance.summary(companyId, range);
+    const [byKindRow] = await finance.byKind(companyId, range);
+
+    expect(summary.debitCents).toBe(4_000_000_000);
+    expect(summary.estimatedDebitCents).toBe(2_000_000_000);
+    expect(byKindRow?.debitCents).toBe(4_000_000_000);
+    expect(byKindRow?.netCents).toBe(4_000_000_000);
   });
 });

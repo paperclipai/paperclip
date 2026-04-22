@@ -95,6 +95,7 @@ export interface RoutineRun {
   triggeredAt: Date;
   idempotencyKey: string | null;
   triggerPayload: Record<string, unknown> | null;
+  dispatchFingerprint: string | null;
   linkedIssueId: string | null;
   coalescedIntoRunId: string | null;
   failureReason: string | null;
@@ -129,7 +130,7 @@ export interface RoutineExecutionIssueOrigin {
 }
 
 export interface RoutineListItem extends Routine {
-  triggers: Pick<RoutineTrigger, "id" | "kind" | "label" | "enabled" | "nextRunAt" | "lastFiredAt" | "lastResult">[];
+  triggers: Pick<RoutineTrigger, "id" | "kind" | "label" | "enabled" | "cronExpression" | "timezone" | "nextRunAt" | "lastFiredAt" | "lastResult">[];
   lastRun: RoutineRunSummary | null;
   activeIssue: RoutineIssueSummary | null;
 }

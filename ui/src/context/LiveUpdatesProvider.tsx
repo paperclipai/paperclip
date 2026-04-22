@@ -1,12 +1,16 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import type { Agent, Issue, LiveEvent } from "@paperclipai/shared";
+import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import type { Agent, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
+import type { CompanyUserDirectoryResponse } from "../api/access";
+import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
-import { useToast } from "./ToastContext";
+import { useToastActions } from "./ToastContext";
+import { upsertIssueCommentInPages } from "../lib/optimistic-issue-comments";
+import { clearIssueExecutionRun, removeLiveRunById } from "../lib/optimistic-issue-runs";
 import { queryKeys } from "../lib/queryKeys";
 import { toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
@@ -16,6 +20,7 @@ const TOAST_COOLDOWN_MAX = 3;
 const RECONNECT_SUPPRESS_MS = 2000;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 
 type LiveUpdatesSocketLike = {
   readyState: number;
@@ -50,6 +55,19 @@ function resolveAgentName(
   return agent?.name ?? null;
 }
 
+function resolveUserName(
+  queryClient: QueryClient,
+  companyId: string,
+  userId: string,
+): string | null {
+  const directory = queryClient.getQueryData<CompanyUserDirectoryResponse>(
+    queryKeys.access.companyUserDirectory(companyId),
+  );
+  if (!directory) return null;
+  const entry = directory.users.find((u) => u.principalId === userId);
+  return entry?.user?.name?.trim() || entry?.user?.email?.trim() || null;
+}
+
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return text.slice(0, max - 1) + "\u2026";
@@ -66,7 +84,7 @@ function resolveActorLabel(
   }
   if (actorType === "system") return "System";
   if (actorType === "user" && actorId) {
-    return "Board";
+    return resolveUserName(queryClient, companyId, actorId) ?? "Board";
   }
   return "Someone";
 }
@@ -83,6 +101,7 @@ interface VisibleRouteOptions {
 }
 
 interface VisibleIssueRouteContext {
+  routeIssueRef: string;
   issueRefs: Set<string>;
   assigneeAgentId: string | null;
   runIds: Set<string>;
@@ -189,6 +208,7 @@ function resolveVisibleIssueRouteContext(
   }
 
   return {
+    routeIssueRef: issueRef,
     issueRefs,
     assigneeAgentId: issue?.assigneeAgentId ?? null,
     runIds,
@@ -241,6 +261,46 @@ function shouldSuppressRunStatusToastForVisibleIssue(
   return !!agentId && !!context.assigneeAgentId && agentId === context.assigneeAgentId;
 }
 
+function invalidateVisibleIssueRunQueries(
+  queryClient: QueryClient,
+  pathname: string,
+  payload: Record<string, unknown>,
+  options?: VisibleRouteOptions,
+): boolean {
+  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  if (!context) return false;
+
+  const runId = readString(payload.runId);
+  const agentId = readString(payload.agentId);
+  const matchesVisibleIssue =
+    (runId !== null && context.runIds.has(runId)) ||
+    (!!agentId && !!context.assigneeAgentId && agentId === context.assigneeAgentId);
+  if (!matchesVisibleIssue) return false;
+
+  const status = readString(payload.status);
+  if (runId && status && TERMINAL_RUN_STATUSES.has(status)) {
+    queryClient.setQueryData(
+      queryKeys.issues.liveRuns(context.routeIssueRef),
+      (current: LiveRunForIssue[] | undefined) => removeLiveRunById(current, runId),
+    );
+    queryClient.setQueryData(
+      queryKeys.issues.activeRun(context.routeIssueRef),
+      (current: ActiveRunForIssue | null | undefined) => (current?.id === runId ? null : current),
+    );
+    queryClient.setQueryData(
+      queryKeys.issues.detail(context.routeIssueRef),
+      (current: Issue | undefined) => clearIssueExecutionRun(current, runId),
+    );
+  }
+
+  queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(context.routeIssueRef) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(context.routeIssueRef) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(context.routeIssueRef) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(context.routeIssueRef) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(context.routeIssueRef) });
+  return true;
+}
+
 function shouldSuppressAgentStatusToastForVisibleIssue(
   queryClient: QueryClient,
   pathname: string,
@@ -252,6 +312,95 @@ function shouldSuppressAgentStatusToastForVisibleIssue(
 
   const agentId = readString(payload.agentId);
   return !!agentId && agentId === context.assigneeAgentId;
+}
+
+function shouldDeferIssueRefetchForVisibleAgentActivity(
+  queryClient: QueryClient,
+  pathname: string,
+  payload: Record<string, unknown>,
+  options?: VisibleRouteOptions,
+): boolean {
+  const entityType = readString(payload.entityType);
+  const entityId = readString(payload.entityId);
+  const actorType = readString(payload.actorType);
+  const action = readString(payload.action);
+  const details = readRecord(payload.details);
+
+  if (entityType !== "issue" || !entityId) return false;
+  if (actorType !== "agent" && actorType !== "system") return false;
+  if (action !== "issue.updated") return false;
+  if (readString(details?.source) === "comment") return false;
+
+  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  if (!context) return false;
+
+  return overlaps(context.issueRefs, buildIssueRefsForPayload(entityId, details));
+}
+
+function shouldDeferVisibleIssueCommentActivity(
+  queryClient: QueryClient,
+  pathname: string,
+  payload: Record<string, unknown>,
+  options?: VisibleRouteOptions,
+): boolean {
+  const entityType = readString(payload.entityType);
+  const entityId = readString(payload.entityId);
+  const action = readString(payload.action);
+  const details = readRecord(payload.details);
+
+  if (entityType !== "issue" || !entityId) return false;
+  if (action !== "issue.comment_added") return false;
+
+  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  if (!context) return false;
+
+  return overlaps(context.issueRefs, buildIssueRefsForPayload(entityId, details));
+}
+
+async function hydrateVisibleIssueComment(
+  queryClient: QueryClient,
+  pathname: string,
+  payload: Record<string, unknown>,
+  options?: VisibleRouteOptions,
+) {
+  const entityType = readString(payload.entityType);
+  const action = readString(payload.action);
+  const details = readRecord(payload.details);
+  const commentId = readString(details?.commentId);
+
+  if (entityType !== "issue" || action !== "issue.comment_added" || !commentId) return false;
+
+  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  if (!context) return false;
+
+  const entityId = readString(payload.entityId);
+  if (!entityId || !overlaps(context.issueRefs, buildIssueRefsForPayload(entityId, details))) {
+    return false;
+  }
+
+  try {
+    const comment = await issuesApi.getComment(context.routeIssueRef, commentId);
+    queryClient.setQueryData<InfiniteData<IssueComment[], string | null> | undefined>(
+      queryKeys.issues.comments(context.routeIssueRef),
+      (current) => {
+        if (!current) {
+          return {
+            pages: [[comment]],
+            pageParams: [null],
+          };
+        }
+
+        return {
+          ...current,
+          pages: upsertIssueCommentInPages(current.pages, comment),
+        };
+      },
+    );
+    return true;
+  } catch {
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(context.routeIssueRef) });
+    return false;
+  }
 }
 
 const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
@@ -481,6 +630,7 @@ function invalidateActivityQueries(
   companyId: string,
   payload: Record<string, unknown>,
   currentActor: { userId: string | null; agentId: string | null },
+  options?: { pathname?: string; isForegrounded?: boolean },
 ) {
   queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
@@ -504,13 +654,35 @@ function invalidateActivityQueries(
           (action === "issue.updated" && readString(details?.source) === "comment")) &&
         ((actorType === "user" && !!currentActor.userId && actorId === currentActor.userId) ||
           (actorType === "agent" && !!currentActor.agentId && actorId === currentActor.agentId));
+      const visibleIssueAgentActivity =
+        !!options?.pathname &&
+        shouldDeferIssueRefetchForVisibleAgentActivity(
+          queryClient,
+          options.pathname,
+          payload,
+          { isForegrounded: options.isForegrounded },
+        );
+      const visibleIssueCommentActivity =
+        !!options?.pathname &&
+        shouldDeferVisibleIssueCommentActivity(
+          queryClient,
+          options.pathname,
+          payload,
+          { isForegrounded: options.isForegrounded },
+        );
       const issueRefs = resolveIssueQueryRefs(queryClient, companyId, entityId, details);
       for (const ref of issueRefs) {
-        const invalidationOptions = selfCommentActivity ? { refetchType: "inactive" as const } : undefined;
+        const invalidationOptions =
+          (selfCommentActivity || visibleIssueAgentActivity || visibleIssueCommentActivity)
+            ? { refetchType: "inactive" as const }
+            : undefined;
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), ...invalidationOptions });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
         if (action === "issue.comment_added") {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
+        }
+        if (action?.startsWith("issue.thread_interaction_")) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), ...invalidationOptions });
         }
       }
     }
@@ -622,6 +794,7 @@ function handleLiveEvent(
 
   if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
+    invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     if (event.type === "heartbeat.run.status") {
       const toast = buildRunStatusToast(payload, nameOf);
       if (
@@ -655,7 +828,10 @@ function handleLiveEvent(
   }
 
   if (event.type === "activity.logged") {
-    invalidateActivityQueries(queryClient, expectedCompanyId, payload, currentActor);
+    invalidateActivityQueries(queryClient, expectedCompanyId, payload, currentActor, { pathname });
+    if (shouldDeferVisibleIssueCommentActivity(queryClient, pathname, payload)) {
+      void hydrateVisibleIssueComment(queryClient, pathname, payload);
+    }
     const action = readString(payload.action);
     const toast =
       buildActivityToast(queryClient, expectedCompanyId, payload, currentActor) ??
@@ -712,8 +888,12 @@ export const __liveUpdatesTestUtils = {
   buildAgentStatusToast,
   buildRunStatusToast,
   closeSocketQuietly,
+  hydrateVisibleIssueComment,
   invalidateActivityQueries,
+  invalidateVisibleIssueRunQueries,
   resolveLiveCompanyId,
+  shouldDeferIssueRefetchForVisibleAgentActivity,
+  shouldDeferVisibleIssueCommentActivity,
   shouldSuppressActivityToastForVisibleIssue,
   shouldSuppressRunStatusToastForVisibleIssue,
   shouldSuppressAgentStatusToastForVisibleIssue,
@@ -722,7 +902,7 @@ export const __liveUpdatesTestUtils = {
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const location = useLocation();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
   const pathnameRef = useRef(location.pathname);

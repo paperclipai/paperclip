@@ -49,32 +49,52 @@ const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
-
-vi.mock("@paperclipai/shared/telemetry", () => ({
-  trackAgentTaskCompleted: vi.fn(),
-  trackErrorHandlerCrash: vi.fn(),
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
 
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
-}));
+function registerModuleMocks() {
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackAgentTaskCompleted: vi.fn(),
+    trackErrorHandlerCrash: vi.fn(),
+  }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  documentService: () => ({}),
-  executionWorkspaceService: () => ({}),
-  feedbackService: () => mockFeedbackService,
-  goalService: () => ({}),
-  heartbeatService: () => mockHeartbeatService,
-  instanceSettingsService: () => mockInstanceSettingsService,
-  issueApprovalService: () => ({}),
-  issueService: () => mockIssueService,
-  logActivity: mockLogActivity,
-  projectService: () => ({}),
-  routineService: () => mockRoutineService,
-  workProductService: () => ({}),
-}));
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+  }));
+
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    documentService: () => ({}),
+    executionWorkspaceService: () => ({}),
+    feedbackService: () => mockFeedbackService,
+    goalService: () => ({}),
+    heartbeatService: () => mockHeartbeatService,
+    instanceSettingsService: () => mockInstanceSettingsService,
+    issueApprovalService: () => ({}),
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
+    }),
+    issueService: () => mockIssueService,
+    issueThreadInteractionService: () => mockIssueThreadInteractionService,
+    logActivity: mockLogActivity,
+    projectService: () => ({}),
+    routineService: () => mockRoutineService,
+    workProductService: () => ({}),
+  }));
+}
 
 async function createApp(actor: Record<string, unknown>) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
@@ -95,7 +115,13 @@ async function createApp(actor: Record<string, unknown>) {
 describe("issue feedback trace routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.resetAllMocks();
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.clearAllMocks();
     mockFeedbackExportService.flushPendingFeedbackTraces.mockResolvedValue({
       attempted: 1,
       sent: 1,
@@ -172,7 +198,6 @@ describe("issue feedback trace routes", () => {
     });
 
     const res = await request(app).get("/api/feedback-traces/trace-1");
-
     expect(res.status).toBe(403);
     expect(mockFeedbackService.getFeedbackTraceById).not.toHaveBeenCalled();
   });

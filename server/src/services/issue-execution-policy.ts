@@ -174,6 +174,42 @@ function buildCompletedState(previous: IssueExecutionState | null, currentStage:
   };
 }
 
+function buildStateWithCompletedStages(input: {
+  previous: IssueExecutionState | null;
+  completedStageIds: string[];
+  returnAssignee: IssueExecutionStagePrincipal | null;
+}): IssueExecutionState {
+  return {
+    status: input.previous?.status ?? PENDING_STATUS,
+    currentStageId: input.previous?.currentStageId ?? null,
+    currentStageIndex: input.previous?.currentStageIndex ?? null,
+    currentStageType: input.previous?.currentStageType ?? null,
+    currentParticipant: input.previous?.currentParticipant ?? null,
+    returnAssignee: input.previous?.returnAssignee ?? input.returnAssignee,
+    completedStageIds: input.completedStageIds,
+    lastDecisionId: input.previous?.lastDecisionId ?? null,
+    lastDecisionOutcome: input.previous?.lastDecisionOutcome ?? null,
+  };
+}
+
+function buildSkippedStageCompletedState(input: {
+  previous: IssueExecutionState | null;
+  completedStageIds: string[];
+  returnAssignee: IssueExecutionStagePrincipal | null;
+}): IssueExecutionState {
+  return {
+    status: COMPLETED_STATUS,
+    currentStageId: null,
+    currentStageIndex: null,
+    currentStageType: null,
+    currentParticipant: null,
+    returnAssignee: input.previous?.returnAssignee ?? input.returnAssignee,
+    completedStageIds: input.completedStageIds,
+    lastDecisionId: input.previous?.lastDecisionId ?? null,
+    lastDecisionOutcome: input.previous?.lastDecisionOutcome ?? null,
+  };
+}
+
 function buildPendingState(input: {
   previous: IssueExecutionState | null;
   stage: IssueExecutionStage;
@@ -234,6 +270,18 @@ function clearExecutionStatePatch(input: {
     input.patch.status = "in_progress";
     Object.assign(input.patch, patchForPrincipal(input.returnAssignee));
   }
+}
+
+function canAutoSkipPendingStage(input: {
+  stage: IssueExecutionStage;
+  returnAssignee: IssueExecutionStagePrincipal | null;
+  requestedStatus?: string;
+}) {
+  if (input.requestedStatus !== "done" || input.stage.type !== "review" || !input.returnAssignee) {
+    return false;
+  }
+  return input.stage.participants.length > 0 &&
+    input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
 }
 
 export function applyIssueExecutionPolicyTransition(input: TransitionInput): TransitionResult {
@@ -431,27 +479,61 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
     return { patch };
   }
 
-  const pendingStage =
+  let pendingStage =
     existingState?.status === CHANGES_REQUESTED_STATUS && currentStage
       ? currentStage
       : nextPendingStage(input.policy, existingState);
   if (!pendingStage) return { patch };
 
   const returnAssignee = existingState?.returnAssignee ?? currentAssignee;
-  const participant = selectStageParticipant(pendingStage, {
+  const skippedStageIds = [...(existingState?.completedStageIds ?? [])];
+  let participant = selectStageParticipant(pendingStage, {
     preferred:
       existingState?.status === CHANGES_REQUESTED_STATUS
         ? explicitAssignee ?? existingState.currentParticipant ?? null
         : explicitAssignee,
     exclude: returnAssignee,
   });
+  while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee, requestedStatus })) {
+    skippedStageIds.push(pendingStage.id);
+    pendingStage = nextPendingStage(
+      input.policy,
+      buildStateWithCompletedStages({
+        previous: existingState,
+        completedStageIds: skippedStageIds,
+        returnAssignee,
+      }),
+    );
+    if (!pendingStage) {
+      patch.executionState = buildSkippedStageCompletedState({
+        previous: existingState,
+        completedStageIds: skippedStageIds,
+        returnAssignee,
+      });
+      return { patch };
+    }
+    participant = selectStageParticipant(pendingStage, {
+      preferred:
+        existingState?.status === CHANGES_REQUESTED_STATUS
+          ? explicitAssignee ?? existingState.currentParticipant ?? null
+          : explicitAssignee,
+      exclude: returnAssignee,
+    });
+  }
   if (!participant) {
     throw unprocessable(`No eligible ${pendingStage.type} participant is configured for this issue`);
   }
 
   buildPendingStagePatch({
     patch,
-    previous: existingState,
+    previous:
+      skippedStageIds.length === (existingState?.completedStageIds ?? []).length
+        ? existingState
+        : buildStateWithCompletedStages({
+            previous: existingState,
+            completedStageIds: skippedStageIds,
+            returnAssignee,
+          }),
     policy: input.policy,
     stage: pendingStage,
     participant,

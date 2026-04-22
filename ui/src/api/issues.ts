@@ -1,4 +1,5 @@
 import type {
+  AskUserQuestionsAnswer,
   Approval,
   DocumentRevision,
   FeedbackTargetType,
@@ -9,6 +10,7 @@ import type {
   IssueComment,
   IssueDocument,
   IssueLabel,
+  IssueThreadInteraction,
   IssueWorkProduct,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
@@ -32,6 +34,7 @@ export const issuesApi = {
       inboxArchivedByUserId?: string;
       unreadForUserId?: string;
       labelId?: string;
+      workspaceId?: string;
       executionWorkspaceId?: string;
       originKind?: string;
       originId?: string;
@@ -51,6 +54,7 @@ export const issuesApi = {
     if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
     if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
     if (filters?.labelId) params.set("labelId", filters.labelId);
+    if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
     if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
     if (filters?.originKind) params.set("originKind", filters.originKind);
     if (filters?.originId) params.set("originId", filters.originId);
@@ -97,6 +101,26 @@ export const issuesApi = {
     const qs = params.toString();
     return api.get<IssueComment[]>(`/issues/${id}/comments${qs ? `?${qs}` : ""}`);
   },
+  listInteractions: (id: string) =>
+    api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+  createInteraction: (id: string, data: Record<string, unknown>) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions`, data),
+  acceptInteraction: (
+    id: string,
+    interactionId: string,
+    data?: { selectedClientKeys?: string[] },
+  ) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}),
+  rejectInteraction: (id: string, interactionId: string, reason?: string) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/reject`, reason ? { reason } : {}),
+  respondToInteraction: (
+    id: string,
+    interactionId: string,
+    data: { answers: AskUserQuestionsAnswer[]; summaryMarkdown?: string | null },
+  ) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/respond`, data),
+  getComment: (id: string, commentId: string) =>
+    api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
   listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
   listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
     const params = new URLSearchParams();
@@ -126,7 +150,12 @@ export const issuesApi = {
         ...(interrupt === undefined ? {} : { interrupt }),
       },
     ),
-  listDocuments: (id: string) => api.get<IssueDocument[]>(`/issues/${id}/documents`),
+  cancelComment: (id: string, commentId: string) =>
+    api.delete<IssueComment>(`/issues/${id}/comments/${commentId}`),
+  listDocuments: (id: string, options?: { includeSystem?: boolean }) =>
+    api.get<IssueDocument[]>(
+      `/issues/${id}/documents${options?.includeSystem ? "?includeSystem=true" : ""}`,
+    ),
   getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>
     api.put<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`, data),

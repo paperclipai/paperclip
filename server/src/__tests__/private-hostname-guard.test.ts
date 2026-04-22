@@ -1,11 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
+import { privateHostnameGuard } from "../middleware/private-hostname-guard.js";
 
 const unknownHostname = "blocked-host.invalid";
 
-async function createApp(opts: { enabled: boolean; allowedHostnames?: string[]; bindHost?: string }) {
-  const { privateHostnameGuard } = await import("../middleware/private-hostname-guard.js");
+function createApp(opts: { enabled: boolean; allowedHostnames?: string[]; bindHost?: string }) {
   const app = express();
   app.use(
     privateHostnameGuard({
@@ -24,39 +24,56 @@ async function createApp(opts: { enabled: boolean; allowedHostnames?: string[]; 
 }
 
 describe("privateHostnameGuard", () => {
-  beforeEach(() => {
-    vi.resetModules();
-  });
-
   it("allows requests when disabled", async () => {
-    const app = await createApp({ enabled: false });
+    const app = createApp({ enabled: false });
     const res = await request(app).get("/api/health").set("Host", "dotta-macbook-pro:3100");
     expect(res.status).toBe(200);
   });
 
   it("allows loopback hostnames", async () => {
-    const app = await createApp({ enabled: true });
+    const app = createApp({ enabled: true });
     const res = await request(app).get("/api/health").set("Host", "localhost:3100");
     expect(res.status).toBe(200);
   });
 
   it("allows explicitly configured hostnames", async () => {
-    const app = await createApp({ enabled: true, allowedHostnames: ["dotta-macbook-pro"] });
+    const app = createApp({ enabled: true, allowedHostnames: ["dotta-macbook-pro"] });
     const res = await request(app).get("/api/health").set("Host", "dotta-macbook-pro:3100");
     expect(res.status).toBe(200);
   });
 
   it("blocks unknown hostnames with remediation command", async () => {
-    const app = await createApp({ enabled: true, allowedHostnames: ["some-other-host"] });
+    const app = createApp({ enabled: true, allowedHostnames: ["some-other-host"] });
     const res = await request(app).get("/api/health").set("Host", `${unknownHostname}:3100`);
     expect(res.status).toBe(403);
     expect(res.body?.error).toContain(`please run pnpm paperclipai allowed-hostname ${unknownHostname}`);
   });
 
   it("blocks unknown hostnames on page routes with plain-text remediation command", async () => {
-    const app = await createApp({ enabled: true, allowedHostnames: ["some-other-host"] });
-    const res = await request(app).get("/dashboard").set("Host", `${unknownHostname}:3100`);
-    expect(res.status).toBe(403);
-    expect(res.text).toContain(`please run pnpm paperclipai allowed-hostname ${unknownHostname}`);
+    const middleware = privateHostnameGuard({
+      enabled: true,
+      allowedHostnames: ["some-other-host"],
+      bindHost: "0.0.0.0",
+    });
+    const req = {
+      path: "/dashboard",
+      header: (name: string) => (name.toLowerCase() === "host" ? `${unknownHostname}:3100` : undefined),
+      accepts: () => "html",
+    } as any;
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      type: vi.fn().mockReturnThis(),
+      send: vi.fn(),
+      json: vi.fn(),
+    } as any;
+    const next = vi.fn();
+
+    middleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.send).toHaveBeenCalledWith(
+      expect.stringContaining(`please run pnpm paperclipai allowed-hostname ${unknownHostname}`),
+    );
   }, 20_000);
 });

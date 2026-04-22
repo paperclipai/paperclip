@@ -19,18 +19,28 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 
-function registerRouteMocks() {
-  vi.doMock("../services/activity.js", () => ({
-    activityService: () => mockActivityService,
-  }));
+vi.mock("../services/activity.js", () => ({
+  activityService: () => mockActivityService,
+  normalizeActivityLimit: (limit: number | undefined) => {
+    if (!Number.isFinite(limit)) return 100;
+    return Math.max(1, Math.min(500, Math.floor(limit ?? 100)));
+  },
+}));
 
-  vi.doMock("../services/index.js", () => ({
-    issueService: () => mockIssueService,
-    heartbeatService: () => mockHeartbeatService,
-  }));
-}
+vi.mock("../services/index.js", () => ({
+  issueService: () => mockIssueService,
+  heartbeatService: () => mockHeartbeatService,
+}));
 
-async function createApp() {
+async function createApp(
+  actor: Record<string, unknown> = {
+    type: "board",
+    userId: "user-1",
+    companyIds: ["company-1"],
+    source: "session",
+    isInstanceAdmin: false,
+  },
+) {
   const [{ errorHandler }, { activityRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/activity.js"),
@@ -38,13 +48,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "user-1",
-      companyIds: ["company-1"],
-      source: "session",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", activityRoutes({} as any));
@@ -55,8 +59,39 @@ async function createApp() {
 describe("activity routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerRouteMocks();
     vi.clearAllMocks();
+  });
+
+  it("limits company activity lists by default", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/activity");
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledWith({
+      companyId: "company-1",
+      agentId: undefined,
+      entityType: undefined,
+      entityId: undefined,
+      limit: 100,
+    });
+  });
+
+  it("caps requested company activity list limits", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/activity?limit=5000&entityType=issue");
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledWith({
+      companyId: "company-1",
+      agentId: undefined,
+      entityType: "issue",
+      entityId: undefined,
+      limit: 500,
+    });
   });
 
   it("resolves issue identifiers before loading runs", async () => {
@@ -106,6 +141,15 @@ describe("activity routes", () => {
     const res = await request(app).get("/api/heartbeat-runs/run-2/issues");
 
     expect(res.status).toBe(403);
+    expect(mockActivityService.issuesForRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects anonymous heartbeat run issue lookups before run existence checks", async () => {
+    const app = await createApp({ type: "none", source: "none" });
+    const res = await request(app).get("/api/heartbeat-runs/missing-run/issues");
+
+    expect(res.status).toBe(401);
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
     expect(mockActivityService.issuesForRun).not.toHaveBeenCalled();
   });
 });
