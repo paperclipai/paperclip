@@ -16,6 +16,7 @@ import {
   type RunLivenessState,
 } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   agentRuntimeState,
   agentTaskSessions,
