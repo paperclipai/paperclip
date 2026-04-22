@@ -36,21 +36,26 @@ Disabling persistence loses all data on pod restart. Don't.
 
 ## Secrets
 
-The chart creates a Secret containing the agent JWT and an optional master key seed:
+By default the chart renders a Secret with an auto-generated `agentJwtSecret`. Provide one explicitly to keep the value stable across `helm upgrade`:
 
 ```sh
 helm install paperclip deploy/helm/paperclip \
   --set secret.agentJwtSecret=$(openssl rand -hex 32)
 ```
 
-Or bring your own pre-existing Secret with both keys and point the chart at it:
+`masterKey` is a base64-encoded seed written to `/paperclip/instances/<instanceId>/secrets/master.key` on first boot. Ignored on subsequent boots once the file exists on the PVC. Leave empty to let Paperclip generate its own.
+
+### Under GitOps
+
+The in-chart Secret is incompatible with any reconciler that re-renders templates (ArgoCD, Flux): `randAlphaNum` is non-deterministic, so each reconcile produces a new value, the app stays `OutOfSync`, and `selfHeal` thrashes pods. Create the Secret out-of-band and point the chart at it:
 
 ```sh
+kubectl -n paperclip create secret generic paperclip-credentials \
+  --from-literal=agentJwtSecret=$(openssl rand -hex 32)
+
 helm install paperclip deploy/helm/paperclip \
   --set secret.existingSecret=paperclip-credentials
 ```
-
-`masterKey` is a base64-encoded seed written to `/paperclip/instances/<instanceId>/secrets/master.key` on first boot. Ignored on subsequent boots once the file exists on the PVC. Leave empty to let Paperclip generate its own.
 
 See [Secrets](secrets) for how Paperclip uses the master key.
 
