@@ -36,6 +36,7 @@ const mockFindServerAdapter = vi.hoisted(() => vi.fn());
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
   agentInstructionsService: () => mockAgentInstructionsService,
+  agentServiceHealthService: () => ({ get: vi.fn() }),
   accessService: () => mockAccessService,
   approvalService: () => ({}),
   companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
@@ -58,6 +59,7 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => mockAgentInstructionsService,
+    agentServiceHealthService: () => ({ get: vi.fn() }),
     accessService: () => mockAccessService,
     approvalService: () => ({}),
     companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
