@@ -33,6 +33,7 @@ export const companiesApi = {
         | "status"
         | "budgetMonthlyCents"
         | "requireBoardApprovalForNewAgents"
+        | "projectFoldersEnabled"
         | "feedbackDataSharingEnabled"
         | "brandColor"
         | "logoAssetId"

@@ -272,6 +272,7 @@ const storybookProject: Project = {
   goalId: "goal-company",
   goalIds: ["goal-company"],
   goals: [{ id: "goal-company", title: "We're building Paperclip" }],
+  folderId: null,
   name: "Board UI",
   description: "Control-plane interface, Storybook review surfaces, and operator workflows.",
   status: "in_progress",

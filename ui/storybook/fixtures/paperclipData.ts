@@ -42,6 +42,7 @@ export const storybookCompanies: Company[] = [
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
     brandColor: "#0f766e",
+    projectFoldersEnabled: false,
     logoAssetId: null,
     logoUrl: null,
     createdAt: new Date("2026-04-01T09:00:00.000Z"),
@@ -64,6 +65,7 @@ export const storybookCompanies: Company[] = [
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
     brandColor: "#4f46e5",
+    projectFoldersEnabled: false,
     logoAssetId: null,
     logoUrl: null,
     createdAt: new Date("2026-04-03T09:00:00.000Z"),
@@ -86,6 +88,7 @@ export const storybookCompanies: Company[] = [
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
     brandColor: "#c2410c",
+    projectFoldersEnabled: false,
     logoAssetId: null,
     logoUrl: null,
     createdAt: new Date("2026-04-05T09:00:00.000Z"),
@@ -575,6 +578,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     goals: storybookGoals
       .filter((goal) => goal.id === "goal-company" || goal.id === "goal-board-ux")
       .map(({ id, title }) => ({ id, title })),
+    folderId: null,
     name: "Board UI",
     description: "Navigation, command, and operator layout polish.",
     status: "in_progress",

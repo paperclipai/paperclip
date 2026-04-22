@@ -76,6 +76,7 @@ describe("issueDetailBreadcrumb", () => {
         goalId: null,
         goalIds: [],
         goals: [],
+        folderId: null,
         name: "Paperclip App",
         description: null,
         status: "in_progress",

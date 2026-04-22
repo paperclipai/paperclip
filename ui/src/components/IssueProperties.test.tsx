@@ -273,6 +273,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     goalId: null,
     goalIds: [],
     goals: [],
+    folderId: null,
     name: "Project",
     description: null,
     status: "in_progress",

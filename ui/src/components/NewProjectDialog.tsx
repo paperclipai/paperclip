@@ -4,6 +4,7 @@ import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { accessApi } from "../api/access";
 import { projectsApi } from "../api/projects";
+import { projectFoldersApi } from "../api/projectFolders";
 import { agentsApi } from "../api/agents";
 import { goalsApi } from "../api/goals";
 import { assetsApi } from "../api/assets";
@@ -24,6 +25,7 @@ import {
   Minimize2,
   Target,
   Calendar,
+  Folder,
   Plus,
   X,
   HelpCircle,
@@ -57,12 +59,22 @@ export function NewProjectDialog() {
   const [goalIds, setGoalIds] = useState<string[]>([]);
   const [targetDate, setTargetDate] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const [folderId, setFolderId] = useState<string | null>(null);
   const [workspaceLocalPath, setWorkspaceLocalPath] = useState("");
   const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
 
   const [statusOpen, setStatusOpen] = useState(false);
   const [goalOpen, setGoalOpen] = useState(false);
+  const [folderOpen, setFolderOpen] = useState(false);
+
+  const foldersEnabled = selectedCompany?.projectFoldersEnabled ?? false;
+
+  const { data: folders } = useQuery({
+    queryKey: queryKeys.projectFolders.list(selectedCompanyId!),
+    queryFn: () => projectFoldersApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && newProjectOpen && foldersEnabled,
+  });
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
 
   const { data: goals } = useQuery({
@@ -107,6 +119,7 @@ export function NewProjectDialog() {
     setDescription("");
     setStatus("planned");
     setGoalIds([]);
+    setFolderId(null);
     setTargetDate("");
     setExpanded(false);
     setWorkspaceLocalPath("");
@@ -168,6 +181,7 @@ export function NewProjectDialog() {
         color: PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)],
         ...(goalIds.length > 0 ? { goalIds } : {}),
         ...(targetDate ? { targetDate } : {}),
+        ...(folderId ? { folderId } : {}),
       });
 
       if (localPath || repoUrl) {
@@ -424,6 +438,46 @@ export function NewProjectDialog() {
               placeholder="Target date"
             />
           </div>
+
+          {/* Folder picker — only shown when feature is enabled */}
+          {foldersEnabled && (
+            <Popover open={folderOpen} onOpenChange={setFolderOpen}>
+              <PopoverTrigger asChild>
+                <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
+                  <Folder className="h-3 w-3 text-muted-foreground" />
+                  <span className="max-w-[120px] truncate">
+                    {folderId ? ((folders ?? []).find((f) => f.id === folderId)?.name ?? "Folder") : "Folder"}
+                  </span>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-48 p-1" align="start">
+                <button
+                  className={cn(
+                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground",
+                    folderId === null && "bg-accent",
+                  )}
+                  onClick={() => { setFolderId(null); setFolderOpen(false); }}
+                >
+                  No folder
+                </button>
+                {(folders ?? []).map((folder) => (
+                  <button
+                    key={folder.id}
+                    className={cn(
+                      "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 truncate",
+                      folderId === folder.id && "bg-accent",
+                    )}
+                    onClick={() => { setFolderId(folder.id); setFolderOpen(false); }}
+                  >
+                    {folder.name}
+                  </button>
+                ))}
+                {(folders ?? []).length === 0 && (
+                  <div className="px-2 py-1.5 text-xs text-muted-foreground">No folders yet.</div>
+                )}
+              </PopoverContent>
+            </Popover>
+          )}
         </div>
 
         {/* Footer */}
