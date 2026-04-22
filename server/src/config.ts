@@ -46,6 +46,7 @@ if (!isSameFile && existsSync(CWD_ENV_PATH)) {
 maybeRepairLegacyWorktreeConfigAndEnvFiles();
 
 const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
+const TAILSCALE_DETECT_DISABLE_VALUES = new Set(["1", "true", "yes"]);
 
 type DatabaseMode = "embedded-postgres" | "postgres";
 
@@ -92,6 +93,8 @@ export interface Config {
 function detectTailnetBindHost(): string | undefined {
   const explicit = process.env.PAPERCLIP_TAILNET_BIND_HOST?.trim();
   if (explicit) return explicit;
+  const detectDisabled = process.env.PAPERCLIP_DISABLE_TAILSCALE_DETECT?.trim().toLowerCase();
+  if (detectDisabled && TAILSCALE_DETECT_DISABLE_VALUES.has(detectDisabled)) return undefined;
 
   try {
     const stdout = execFileSync("tailscale", ["ip", "-4"], {

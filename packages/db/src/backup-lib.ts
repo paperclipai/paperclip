@@ -483,7 +483,8 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const backupEngine = opts.backupEngine ?? "auto";
-  const canUsePgDump = !hasBackupTransforms(opts);
+  const hasTransforms = hasBackupTransforms(opts);
+  const canUsePgDump = !hasTransforms;
   const includeMigrationJournal = opts.includeMigrationJournal === true;
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
@@ -861,7 +862,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit(`-- Data for: ${schema_name}.${tablename} (${count[0]!.n} rows)`);
 
       const nullifiedColumns = nullifiedColumnsByTable.get(tablename) ?? new Set<string>();
-      if (backupEngine !== "javascript" && nullifiedColumns.size === 0) {
+      if (backupEngine !== "javascript" && !hasTransforms && nullifiedColumns.size === 0) {
         emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
         await writer.writeRaw("\n");
         const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
