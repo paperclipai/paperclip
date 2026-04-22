@@ -11,7 +11,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-function registerRouteMocks() {
+function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
@@ -19,9 +19,9 @@ function registerRouteMocks() {
 }
 
 async function createApp(actor: any) {
-  const [{ instanceSettingsRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/instance-settings.js"),
-    import("../middleware/index.js"),
+  const [{ errorHandler }, { instanceSettingsRoutes }] = await Promise.all([
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/instance-settings.js")>("../routes/instance-settings.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -37,8 +37,18 @@ async function createApp(actor: any) {
 describe("instance settings routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerRouteMocks();
-    vi.clearAllMocks();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/instance-settings.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.resetAllMocks();
+    mockInstanceSettingsService.getGeneral.mockReset();
+    mockInstanceSettingsService.getExperimental.mockReset();
+    mockInstanceSettingsService.updateGeneral.mockReset();
+    mockInstanceSettingsService.updateExperimental.mockReset();
+    mockInstanceSettingsService.listCompanyIds.mockReset();
+    mockLogActivity.mockReset();
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
@@ -155,7 +165,27 @@ describe("instance settings routes", () => {
     const res = await request(app).get("/api/instance/settings/general");
 
     expect(res.status).toBe(200);
-    expect(mockInstanceSettingsService.getGeneral).toHaveBeenCalled();
+    expect(res.body).toEqual({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "prompt",
+    });
+  });
+
+  it("rejects signed-in users without company access from reading general settings", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-2",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [],
+      memberships: [],
+    });
+
+    const res = await request(app).get("/api/instance/settings/general");
+
+    expect(res.status).toBe(403);
+    expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
   });
 
   it("rejects non-admin board users from updating general settings", async () => {

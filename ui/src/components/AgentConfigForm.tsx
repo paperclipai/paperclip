@@ -6,6 +6,7 @@ import type {
   CompanySecret,
   EnvBinding,
 } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { secretsApi } from "../api/secrets";
@@ -44,6 +45,8 @@ import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-confi
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
+import { buildAgentUpdatePatch, type AgentConfigOverlay } from "../lib/agent-config-patch";
+import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 
 /* ---- Create mode values ---- */
 
@@ -84,15 +87,7 @@ type AgentConfigFormProps = {
 
 /* ---- Edit mode overlay (dirty tracking) ---- */
 
-interface Overlay {
-  identity: Record<string, unknown>;
-  adapterType?: string;
-  adapterConfig: Record<string, unknown>;
-  heartbeat: Record<string, unknown>;
-  runtime: Record<string, unknown>;
-}
-
-const emptyOverlay: Overlay = {
+const emptyOverlay: AgentConfigOverlay = {
   identity: {},
   adapterConfig: {},
   heartbeat: {},
@@ -102,7 +97,7 @@ const emptyOverlay: Overlay = {
 /** Stable empty object used as fallback for missing env config to avoid new-object-per-render. */
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
-function isOverlayDirty(o: Overlay): boolean {
+function isOverlayDirty(o: AgentConfigOverlay): boolean {
   return (
     Object.keys(o.identity).length > 0 ||
     o.adapterType !== undefined ||
@@ -206,7 +201,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   });
 
   // ---- Edit mode: overlay for dirty tracking ----
-  const [overlay, setOverlay] = useState<Overlay>(emptyOverlay);
+  const [overlay, setOverlay] = useState<AgentConfigOverlay>(emptyOverlay);
   const agentRef = useRef<Agent | null>(null);
 
   // Clear overlay when agent data refreshes (after save)
@@ -222,14 +217,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const isDirty = !isCreate && isOverlayDirty(overlay);
 
   /** Read effective value: overlay if dirty, else original */
-  function eff<T>(group: keyof Omit<Overlay, "adapterType">, field: string, original: T): T {
+  function eff<T>(group: keyof Omit<AgentConfigOverlay, "adapterType">, field: string, original: T): T {
     const o = overlay[group];
     if (field in o) return o[field] as T;
     return original;
   }
 
   /** Mark field dirty in overlay */
-  function mark(group: keyof Omit<Overlay, "adapterType">, field: string, value: unknown) {
+  function mark(group: keyof Omit<AgentConfigOverlay, "adapterType">, field: string, value: unknown) {
     setOverlay((prev) => ({
       ...prev,
       [group]: { ...prev[group], [field]: value },
@@ -243,48 +238,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const handleSave = useCallback(() => {
     if (isCreate || !isDirty) return;
-    const agent = props.agent;
-    const patch: Record<string, unknown> = {};
-
-    if (Object.keys(overlay.identity).length > 0) {
-      Object.assign(patch, overlay.identity);
-    }
-    if (overlay.adapterType !== undefined) {
-      patch.adapterType = overlay.adapterType;
-      // When adapter type changes, replace adapter-specific fields but preserve
-      // adapter-agnostic fields (env, promptTemplate, etc.) that are shared
-      // across all adapter types.
-      const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
-      const adapterAgnosticKeys = [
-        "env",
-        "promptTemplate",
-        "instructionsFilePath",
-        "cwd",
-        "timeoutSec",
-        "graceSec",
-        "bootstrapPromptTemplate",
-      ];
-      const preserved: Record<string, unknown> = {};
-      for (const key of adapterAgnosticKeys) {
-        if (key in existing) {
-          preserved[key] = existing[key];
-        }
-      }
-      patch.adapterConfig = { ...preserved, ...overlay.adapterConfig };
-    } else if (Object.keys(overlay.adapterConfig).length > 0) {
-      const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
-      patch.adapterConfig = { ...existing, ...overlay.adapterConfig };
-    }
-    if (Object.keys(overlay.heartbeat).length > 0) {
-      const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
-      const existingHb = (existingRc.heartbeat ?? {}) as Record<string, unknown>;
-      patch.runtimeConfig = { ...existingRc, heartbeat: { ...existingHb, ...overlay.heartbeat } };
-    }
-    if (Object.keys(overlay.runtime).length > 0) {
-      Object.assign(patch, overlay.runtime);
-    }
-
-    props.onSave(patch);
+    props.onSave(buildAgentUpdatePatch(props.agent, overlay));
   }, [isCreate, isDirty, overlay, props]);
 
   useEffect(() => {
@@ -312,8 +266,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const adapterType = isCreate
     ? props.values.adapterType
     : overlay.adapterType ?? props.agent.adapterType;
-  const NONLOCAL_TYPES = new Set(["process", "http", "openclaw_gateway"]);
-  const isLocal = !NONLOCAL_TYPES.has(adapterType);
+  const getCapabilities = useAdapterCapabilities();
+  const adapterCaps = getCapabilities(adapterType);
+  const isLocal = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
   
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
@@ -331,6 +286,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(selectedCompanyId),
   });
   const models = fetchedModels ?? externalModels ?? [];
+  const adapterCommandField =
+    adapterType === "hermes_local" ? "hermesCommand" : "command";
   const {
     data: detectedModelData,
     refetch: refetchDetectedModel,
@@ -386,7 +343,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       return uiAdapter.buildAdapterConfig(val!);
     }
     const base = config as Record<string, unknown>;
-    return { ...base, ...overlay.adapterConfig };
+    const next = { ...base, ...overlay.adapterConfig };
+    if (adapterType === "hermes_local") {
+      const hermesCommand =
+        typeof next.hermesCommand === "string" && next.hermesCommand.length > 0
+          ? next.hermesCommand
+          : typeof next.command === "string" && next.command.length > 0
+            ? next.command
+            : undefined;
+      if (hermesCommand) {
+        next.hermesCommand = hermesCommand;
+      }
+    }
+    return next;
   }
 
   const testEnvironment = useMutation({
@@ -688,12 +657,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   value={
                     isCreate
                       ? val!.command
-                      : eff("adapterConfig", "command", String(config.command ?? ""))
+                      : eff(
+                          "adapterConfig",
+                          adapterCommandField,
+                          String(
+                            (adapterType === "hermes_local"
+                              ? config.hermesCommand ?? config.command
+                              : config.command) ?? "",
+                          ),
+                        )
                   }
                   onCommit={(v) =>
                     isCreate
                       ? set!({ command: v })
-                      : mark("adapterConfig", "command", v || null)
+                      : mark("adapterConfig", adapterCommandField, v || null)
                   }
                   immediate
                   className={inputClass}
@@ -943,7 +920,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   value={eff(
                     "heartbeat",
                     "maxConcurrentRuns",
-                    Number(heartbeat.maxConcurrentRuns ?? 1),
+                    Number(heartbeat.maxConcurrentRuns ?? AGENT_DEFAULT_MAX_CONCURRENT_RUNS),
                   )}
                   onCommit={(v) => mark("heartbeat", "maxConcurrentRuns", v)}
                   immediate

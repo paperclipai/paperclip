@@ -27,6 +27,8 @@ import type {
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
+  IssueThreadInteraction,
+  CreateIssueThreadInteraction,
   Agent,
   Goal,
 } from "@paperclipai/shared";
@@ -34,6 +36,12 @@ export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 
 import type {
   PluginEvent,
+  PluginIssueCheckoutOwnership,
+  PluginIssueOrchestrationSummary,
+  PluginIssueRelationSummary,
+  PluginIssueSubtree,
+  PluginIssueWakeupBatchResult,
+  PluginIssueWakeupResult,
   PluginJobContext,
   PluginWorkspace,
   ToolRunContext,
@@ -41,6 +49,8 @@ import type {
 } from "./types.js";
 import type {
   PluginHealthDiagnostics,
+  PluginApiRequestInput,
+  PluginApiResponse,
   PluginConfigValidationResult,
   PluginWebhookInput,
 } from "./define-plugin.js";
@@ -219,6 +229,8 @@ export interface InitializeParams {
   };
   /** Host API version. */
   apiVersion: number;
+  /** Host-derived plugin database namespace, when the manifest declares database access. */
+  databaseNamespace?: string | null;
 }
 
 /**
@@ -374,6 +386,8 @@ export interface HostToWorkerMethods {
   runJob: [params: RunJobParams, result: void];
   /** @see PLUGIN_SPEC.md §13.7 */
   handleWebhook: [params: PluginWebhookInput, result: void];
+  /** Scoped plugin API route dispatch. */
+  handleApiRequest: [params: PluginApiRequestInput, result: PluginApiResponse];
   /** @see PLUGIN_SPEC.md §13.8 */
   getData: [params: GetDataParams, result: unknown];
   /** @see PLUGIN_SPEC.md §13.9 */
@@ -399,6 +413,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "onEvent",
   "runJob",
   "handleWebhook",
+  "handleApiRequest",
   "getData",
   "performAction",
   "executeTool",
@@ -430,6 +445,20 @@ export interface WorkerToHostMethods {
   "state.delete": [
     params: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string },
     result: void,
+  ];
+
+  // Restricted plugin database namespace
+  "db.namespace": [
+    params: Record<string, never>,
+    result: string,
+  ];
+  "db.query": [
+    params: { sql: string; params?: unknown[] },
+    result: unknown[],
+  ];
+  "db.execute": [
+    params: { sql: string; params?: unknown[] },
+    result: { rowCount: number },
   ];
 
   // Entities
@@ -569,6 +598,8 @@ export interface WorkerToHostMethods {
       companyId: string;
       projectId?: string;
       assigneeAgentId?: string;
+      originKind?: string;
+      originId?: string;
       status?: string;
       limit?: number;
       offset?: number;
@@ -588,8 +619,23 @@ export interface WorkerToHostMethods {
       inheritExecutionWorkspaceFromIssueId?: string;
       title: string;
       description?: string;
+      status?: string;
       priority?: string;
       assigneeAgentId?: string;
+      assigneeUserId?: string | null;
+      requestDepth?: number;
+      billingCode?: string | null;
+      originKind?: string | null;
+      originId?: string | null;
+      originRunId?: string | null;
+      blockedByIssueIds?: string[];
+      labelIds?: string[];
+      executionWorkspaceId?: string | null;
+      executionWorkspacePreference?: string | null;
+      executionWorkspaceSettings?: Record<string, unknown> | null;
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
     },
     result: Issue,
   ];
@@ -601,6 +647,99 @@ export interface WorkerToHostMethods {
     },
     result: Issue,
   ];
+  "issues.relations.get": [
+    params: { issueId: string; companyId: string },
+    result: PluginIssueRelationSummary,
+  ];
+  "issues.relations.setBlockedBy": [
+    params: {
+      issueId: string;
+      companyId: string;
+      blockedByIssueIds: string[];
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
+    },
+    result: PluginIssueRelationSummary,
+  ];
+  "issues.relations.addBlockers": [
+    params: {
+      issueId: string;
+      companyId: string;
+      blockerIssueIds: string[];
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
+    },
+    result: PluginIssueRelationSummary,
+  ];
+  "issues.relations.removeBlockers": [
+    params: {
+      issueId: string;
+      companyId: string;
+      blockerIssueIds: string[];
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
+    },
+    result: PluginIssueRelationSummary,
+  ];
+  "issues.assertCheckoutOwner": [
+    params: {
+      issueId: string;
+      companyId: string;
+      actorAgentId: string;
+      actorRunId: string;
+    },
+    result: PluginIssueCheckoutOwnership,
+  ];
+  "issues.getSubtree": [
+    params: {
+      issueId: string;
+      companyId: string;
+      includeRoot?: boolean;
+      includeRelations?: boolean;
+      includeDocuments?: boolean;
+      includeActiveRuns?: boolean;
+      includeAssignees?: boolean;
+    },
+    result: PluginIssueSubtree,
+  ];
+  "issues.requestWakeup": [
+    params: {
+      issueId: string;
+      companyId: string;
+      reason?: string;
+      contextSource?: string;
+      idempotencyKey?: string | null;
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
+    },
+    result: PluginIssueWakeupResult,
+  ];
+  "issues.requestWakeups": [
+    params: {
+      issueIds: string[];
+      companyId: string;
+      reason?: string;
+      contextSource?: string;
+      idempotencyKeyPrefix?: string | null;
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
+    },
+    result: PluginIssueWakeupBatchResult[],
+  ];
+  "issues.summaries.getOrchestration": [
+    params: {
+      issueId: string;
+      companyId: string;
+      includeSubtree?: boolean;
+      billingCode?: string | null;
+    },
+    result: PluginIssueOrchestrationSummary,
+  ];
   "issues.listComments": [
     params: { issueId: string; companyId: string },
     result: IssueComment[],
@@ -608,6 +747,15 @@ export interface WorkerToHostMethods {
   "issues.createComment": [
     params: { issueId: string; body: string; companyId: string; authorAgentId?: string },
     result: IssueComment,
+  ];
+  "issues.createInteraction": [
+    params: {
+      issueId: string;
+      companyId: string;
+      interaction: CreateIssueThreadInteraction;
+      authorAgentId?: string | null;
+    },
+    result: IssueThreadInteraction,
   ];
 
   // Issue Documents

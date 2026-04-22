@@ -16,7 +16,7 @@ const mockAgentService = vi.hoisted(() => ({
 const mockTrackAgentTaskCompleted = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
-function registerRouteMocks() {
+function registerModuleMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentTaskCompleted: mockTrackAgentTaskCompleted,
     trackErrorHandlerCrash: vi.fn(),
@@ -42,6 +42,19 @@ function registerRouteMocks() {
     }),
     instanceSettingsService: () => ({}),
     issueApprovalService: () => ({}),
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
+    }),
     issueService: () => mockIssueService,
     logActivity: vi.fn(async () => undefined),
     projectService: () => ({}),
@@ -66,9 +79,9 @@ function makeIssue(status: "todo" | "done") {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
+  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -84,7 +97,13 @@ async function createApp(actor: Record<string, unknown>) {
 describe("issue telemetry routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerRouteMocks();
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
     vi.resetAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
@@ -96,12 +115,13 @@ describe("issue telemetry routes", () => {
     }));
   });
 
-  it("emits task-completed telemetry with the agent role", async () => {
+  it("emits task-completed telemetry with the agent role, adapter type, and model", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
       role: "engineer",
       adapterType: "codex_local",
+      adapterConfig: { model: "claude-sonnet-4-6" },
     });
 
     const app = await createApp({
@@ -118,6 +138,9 @@ describe("issue telemetry routes", () => {
     await vi.waitFor(() => {
       expect(mockTrackAgentTaskCompleted).toHaveBeenCalledWith(expect.anything(), {
         agentRole: "engineer",
+        agentId: "agent-1",
+        adapterType: "codex_local",
+        model: "claude-sonnet-4-6",
       });
     });
   }, 10_000);

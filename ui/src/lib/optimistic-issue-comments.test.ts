@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Issue } from "@paperclipai/shared";
 import {
+  applyLocalQueuedIssueCommentState,
   applyOptimisticIssueFieldUpdate,
   applyOptimisticIssueFieldUpdateToCollection,
   applyOptimisticIssueCommentUpdate,
@@ -10,6 +11,8 @@ import {
   isQueuedIssueComment,
   matchesIssueRef,
   mergeIssueComments,
+  removeIssueCommentFromPages,
+  takeOptimisticIssueComment,
   upsertIssueComment,
   upsertIssueCommentInPages,
 } from "./optimistic-issue-comments";
@@ -99,6 +102,30 @@ describe("optimistic issue comments", () => {
     );
 
     expect(merged.map((comment) => comment.id)).toEqual(["optimistic-1", "comment-2"]);
+  });
+
+  it("can take one optimistic queued comment back out of the queue", () => {
+    const first = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "First",
+      authorUserId: "board-1",
+      clientStatus: "queued",
+      queueTargetRunId: "run-1",
+    });
+    const second = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Second",
+      authorUserId: "board-1",
+      clientStatus: "queued",
+      queueTargetRunId: "run-1",
+    });
+
+    const result = takeOptimisticIssueComment([first, second], first.clientId);
+
+    expect(result.comment?.body).toBe("First");
+    expect(result.comments.map((comment) => comment.clientId)).toEqual([second.clientId]);
   });
 
   it("upserts confirmed comments without creating duplicates", () => {
@@ -250,6 +277,52 @@ describe("optimistic issue comments", () => {
     expect(nextPages[1]?.map((comment) => comment.id)).toEqual(["comment-1"]);
   });
 
+  it("removes a confirmed queued comment from paged caches", () => {
+    const nextPages = removeIssueCommentFromPages(
+      [
+        [
+          {
+            id: "comment-3",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "Newest",
+            createdAt: new Date("2026-03-28T14:00:03.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:03.000Z"),
+          },
+        ],
+        [
+          {
+            id: "comment-2",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "Middle",
+            createdAt: new Date("2026-03-28T14:00:02.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:02.000Z"),
+          },
+          {
+            id: "comment-1",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorAgentId: null,
+            authorUserId: "board-1",
+            body: "Oldest",
+            createdAt: new Date("2026-03-28T14:00:01.000Z"),
+            updatedAt: new Date("2026-03-28T14:00:01.000Z"),
+          },
+        ],
+      ],
+      "comment-2",
+    );
+
+    expect(nextPages).toHaveLength(2);
+    expect(nextPages[0]?.map((comment) => comment.id)).toEqual(["comment-3"]);
+    expect(nextPages[1]?.map((comment) => comment.id)).toEqual(["comment-1"]);
+  });
+
   it("applies optimistic reopen and reassignment updates to the issue cache", () => {
     const next = applyOptimisticIssueCommentUpdate(
       {
@@ -312,6 +385,22 @@ describe("optimistic issue comments", () => {
         projectWorkspaceId: "workspace-1",
         goalId: null,
         parentId: null,
+        ancestors: [
+          {
+            id: "issue-9",
+            identifier: "PAP-9",
+            title: "Old parent",
+            description: null,
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+            projectId: null,
+            goalId: null,
+            project: null,
+            goal: null,
+          },
+        ],
         title: "Fix property pane",
         description: null,
         status: "todo",
@@ -449,6 +538,7 @@ describe("optimistic issue comments", () => {
         assigneeUserId: "board-2",
         labelIds: ["label-2"],
         blockedByIssueIds: ["issue-3"],
+        parentId: "issue-4",
         projectId: "project-2",
         executionWorkspaceId: "exec-2",
       },
@@ -460,6 +550,8 @@ describe("optimistic issue comments", () => {
     expect(next?.labelIds).toEqual(["label-2"]);
     expect(next?.labels?.map((label) => label.id)).toEqual(["label-2"]);
     expect(next?.blockedBy?.map((relation) => relation.id)).toEqual(["issue-3"]);
+    expect(next?.parentId).toBe("issue-4");
+    expect(next?.ancestors).toBeUndefined();
     expect(next?.projectId).toBe("project-2");
     expect(next?.project).toBeNull();
     expect(next?.executionWorkspaceId).toBe("exec-2");
@@ -612,5 +704,73 @@ describe("optimistic issue comments", () => {
         runId: null,
       }),
     ).toBe(false);
+  });
+
+  it("keeps a confirmed queued comment queued while the target run is still live", () => {
+    const comment = {
+      id: "comment-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId: "board-1",
+      body: "Follow up after the active run",
+      createdAt: new Date("2026-03-28T16:20:05.000Z"),
+      updatedAt: new Date("2026-03-28T16:20:05.000Z"),
+    };
+
+    const result = applyLocalQueuedIssueCommentState(comment, {
+      queuedTargetRunId: "run-1",
+      targetRunIsLive: true,
+      runningRunId: "run-1",
+    });
+
+    expect(result).toMatchObject({
+      id: "comment-1",
+      clientStatus: "queued",
+      queueState: "queued",
+      queueTargetRunId: "run-1",
+    });
+  });
+
+  it("does not keep local queued state after the target run is no longer live", () => {
+    const comment = {
+      id: "comment-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId: "board-1",
+      body: "Follow up after the active run",
+      createdAt: new Date("2026-03-28T16:20:05.000Z"),
+      updatedAt: new Date("2026-03-28T16:20:05.000Z"),
+    };
+
+    const result = applyLocalQueuedIssueCommentState(comment, {
+      queuedTargetRunId: "run-1",
+      targetRunIsLive: false,
+      runningRunId: null,
+    });
+
+    expect(result).toBe(comment);
+  });
+
+  it("does not keep local queued state when a different run is live", () => {
+    const comment = {
+      id: "comment-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId: "board-1",
+      body: "Follow up after the active run",
+      createdAt: new Date("2026-03-28T16:20:05.000Z"),
+      updatedAt: new Date("2026-03-28T16:20:05.000Z"),
+    };
+
+    const result = applyLocalQueuedIssueCommentState(comment, {
+      queuedTargetRunId: "run-1",
+      targetRunIsLive: true,
+      runningRunId: "run-2",
+    });
+
+    expect(result).toBe(comment);
   });
 });

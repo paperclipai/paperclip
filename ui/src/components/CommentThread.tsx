@@ -134,6 +134,11 @@ function parseReassignment(target: string): CommentReassignment | null {
   return null;
 }
 
+function shouldImplicitlyReopenComment(issueStatus: string | undefined, assigneeValue: string) {
+  const resumesToTodo = issueStatus === "done" || issueStatus === "cancelled" || issueStatus === "blocked";
+  return resumesToTodo && assigneeValue.startsWith("agent:");
+}
+
 function humanizeValue(value: string | null): string {
   if (!value) return "None";
   return value.replace(/_/g, " ");
@@ -369,7 +374,7 @@ function CommentCard({
           <CopyMarkdownButton text={comment.body} />
         </span>
       </div>
-      <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+      <MarkdownBody className="text-sm" softBreaks>{comment.body}</MarkdownBody>
       {companyId && !isPending ? (
         <div className="mt-2 space-y-2">
           <PluginSlotOutlet
@@ -647,6 +652,7 @@ export function CommentThread({
   pendingApprovalAction = null,
   onVote,
   onAdd,
+  issueStatus,
   agentMap,
   currentUserId,
   imageUploadHandler,
@@ -663,7 +669,6 @@ export function CommentThread({
   composerDisabledReason = null,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
-  const [reopen, setReopen] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
@@ -784,14 +789,17 @@ export function CommentThread({
     if (!trimmed) return;
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : null;
+    const reopen = shouldImplicitlyReopenComment(
+      issueStatus,
+      hasReassignment ? reassignTarget : currentAssigneeValue,
+    ) ? true : undefined;
     const submittedBody = trimmed;
 
     setSubmitting(true);
     setBody("");
     try {
-      await onAdd(submittedBody, reopen ? true : undefined, reassignment ?? undefined);
+      await onAdd(submittedBody, reopen, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
-      setReopen(true);
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch {
       setBody((current) =>
@@ -935,15 +943,6 @@ export function CommentThread({
                 </Button>
               </div>
             )}
-            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={reopen}
-                onChange={(e) => setReopen(e.target.checked)}
-                className="rounded border-border"
-              />
-              Re-open
-            </label>
             {enableReassign && reassignOptions.length > 0 && (
               <InlineEntitySelector
                 value={reassignTarget}

@@ -12,6 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import type { InboxIssueColumn } from "../lib/inbox";
 import { cn } from "../lib/utils";
@@ -50,12 +51,12 @@ export function issueActivityText(issue: Issue): string {
 function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
   return columns
     .map((column) => {
-      if (column === "assignee") return "minmax(7.5rem, 9.5rem)";
-      if (column === "project") return "minmax(6.5rem, 8.5rem)";
-      if (column === "workspace") return "minmax(9rem, 12rem)";
-      if (column === "parent") return "minmax(5rem, 7rem)";
-      if (column === "labels") return "minmax(8rem, 10rem)";
-      return "minmax(4rem, 5.5rem)";
+      if (column === "assignee") return "minmax(6rem, 8rem)";
+      if (column === "project") return "minmax(4.5rem, 7rem)";
+      if (column === "workspace") return "minmax(6rem, 9rem)";
+      if (column === "parent") return "minmax(3.5rem, 5.5rem)";
+      if (column === "labels") return "minmax(3rem, 6rem)";
+      return "minmax(3.5rem, 4.5rem)";
     })
     .join(" ");
 }
@@ -66,24 +67,27 @@ export function IssueColumnPicker({
   onToggleColumn,
   onResetColumns,
   title,
+  iconOnly = false,
 }: {
   availableColumns: InboxIssueColumn[];
   visibleColumnSet: ReadonlySet<InboxIssueColumn>;
   onToggleColumn: (column: InboxIssueColumn, enabled: boolean) => void;
   onResetColumns: () => void;
   title: string;
+  iconOnly?: boolean;
 }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
           type="button"
-          variant="ghost"
-          size="sm"
-          className="hidden h-8 shrink-0 px-2 text-xs sm:inline-flex"
+          variant={iconOnly ? "outline" : "ghost"}
+          size={iconOnly ? "icon" : "sm"}
+          className={iconOnly ? "h-8 w-8 shrink-0" : "hidden h-8 shrink-0 px-2 text-xs sm:inline-flex"}
+          title="Columns"
         >
-          <Columns3 className="mr-1 h-3.5 w-3.5" />
-          Columns
+          <Columns3 className={iconOnly ? "h-3.5 w-3.5" : "mr-1 h-3.5 w-3.5"} />
+          {!iconOnly && "Columns"}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
@@ -189,26 +193,34 @@ export function InboxIssueTrailingColumns({
   columns,
   projectName,
   projectColor,
+  workspaceId,
   workspaceName,
   assigneeName,
+  assigneeUserName,
+  assigneeUserAvatarUrl,
   currentUserId,
   parentIdentifier,
   parentTitle,
   assigneeContent,
+  onFilterWorkspace,
 }: {
   issue: Issue;
   columns: InboxIssueColumn[];
   projectName: string | null;
   projectColor: string | null;
+  workspaceId?: string | null;
   workspaceName: string | null;
   assigneeName: string | null;
+  assigneeUserName?: string | null;
+  assigneeUserAvatarUrl?: string | null;
   currentUserId: string | null;
   parentIdentifier: string | null;
   parentTitle: string | null;
   assigneeContent?: ReactNode;
+  onFilterWorkspace?: (workspaceId: string) => void;
 }) {
   const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
-  const userLabel = formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
+  const userLabel = assigneeUserName ?? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
 
   return (
     <span
@@ -235,8 +247,13 @@ export function InboxIssueTrailingColumns({
 
           if (issue.assigneeUserId) {
             return (
-              <span key={column} className="min-w-0 truncate text-xs font-medium text-muted-foreground">
-                {userLabel}
+              <span key={column} className="min-w-0 text-xs text-foreground">
+                <Identity
+                  name={userLabel}
+                  avatarUrl={assigneeUserAvatarUrl}
+                  size="sm"
+                  className="min-w-0"
+                />
               </span>
             );
           }
@@ -276,20 +293,22 @@ export function InboxIssueTrailingColumns({
         if (column === "labels") {
           if ((issue.labels ?? []).length > 0) {
             return (
-              <span key={column} className="flex min-w-0 items-center gap-1 overflow-hidden text-[11px]">
+              <span key={column} className="flex min-w-0 items-center gap-1 overflow-hidden">
                 {(issue.labels ?? []).slice(0, 2).map((label) => (
                   <span
                     key={label.id}
-                    className="inline-flex min-w-0 max-w-full items-center font-medium"
+                    className="inline-flex min-w-0 max-w-full shrink-0 items-center rounded-full border px-1.5 py-0 text-[10px] font-medium"
                     style={{
+                      borderColor: label.color,
                       color: pickTextColorForPillBg(label.color, 0.12),
+                      backgroundColor: `${label.color}1f`,
                     }}
                   >
                     <span className="truncate">{label.name}</span>
                   </span>
                 ))}
                 {(issue.labels ?? []).length > 2 ? (
-                  <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
+                  <span className="shrink-0 text-[10px] font-medium text-muted-foreground">
                     +{(issue.labels ?? []).length - 2}
                   </span>
                 ) : null}
@@ -307,7 +326,28 @@ export function InboxIssueTrailingColumns({
 
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              {workspaceName}
+              {workspaceId && onFilterWorkspace ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="truncate rounded-sm text-left text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onFilterWorkspace(workspaceId);
+                      }}
+                    >
+                      {workspaceName}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={6}>
+                    Filter by workspace
+                  </TooltipContent>
+                </Tooltip>
+              ) : (
+                workspaceName
+              )}
             </span>
           );
         }

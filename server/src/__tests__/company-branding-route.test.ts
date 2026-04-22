@@ -39,17 +39,15 @@ const mockFeedbackService = vi.hoisted(() => ({
   saveIssueVote: vi.fn(),
 }));
 
-function registerServiceMocks() {
-  vi.doMock("../services/index.js", () => ({
-    accessService: () => mockAccessService,
-    agentService: () => mockAgentService,
-    budgetService: () => mockBudgetService,
-    companyPortabilityService: () => mockCompanyPortabilityService,
-    companyService: () => mockCompanyService,
-    feedbackService: () => mockFeedbackService,
-    logActivity: mockLogActivity,
-  }));
-}
+vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
+  agentService: () => mockAgentService,
+  budgetService: () => mockBudgetService,
+  companyPortabilityService: () => mockCompanyPortabilityService,
+  companyService: () => mockCompanyService,
+  feedbackService: () => mockFeedbackService,
+  logActivity: mockLogActivity,
+}));
 
 function createCompany() {
   const now = new Date("2026-03-19T02:00:00.000Z");
@@ -73,8 +71,8 @@ function createCompany() {
 
 async function createApp(actor: Record<string, unknown>) {
   const [{ companyRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/companies.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/companies.js")>("../routes/companies.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -90,7 +88,9 @@ async function createApp(actor: Record<string, unknown>) {
 describe("PATCH /api/companies/:companyId/branding", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerServiceMocks();
+    vi.doUnmock("../routes/companies.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
     vi.resetAllMocks();
   });
 

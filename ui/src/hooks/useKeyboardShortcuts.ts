@@ -1,9 +1,14 @@
 import { useEffect } from "react";
-import { isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
+import {
+  focusPageSearchShortcutTarget,
+  hasBlockingShortcutDialog,
+  isKeyboardShortcutTextInputTarget,
+} from "../lib/keyboardShortcuts";
 
 interface ShortcutHandlers {
   enabled?: boolean;
   onNewIssue?: () => void;
+  onSearch?: () => void;
   onToggleSidebar?: () => void;
   onTogglePanel?: () => void;
   onShowShortcuts?: () => void;
@@ -12,6 +17,7 @@ interface ShortcutHandlers {
 export function useKeyboardShortcuts({
   enabled = true,
   onNewIssue,
+  onSearch,
   onToggleSidebar,
   onTogglePanel,
   onShowShortcuts,
@@ -26,6 +32,19 @@ export function useKeyboardShortcuts({
 
       // Don't fire shortcuts when typing in inputs
       if (isKeyboardShortcutTextInputTarget(e.target)) {
+        return;
+      }
+
+      // / → Page search when available, otherwise quick search
+      if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (hasBlockingShortcutDialog()) {
+          return;
+        }
+
+        e.preventDefault();
+        if (!focusPageSearchShortcutTarget()) {
+          onSearch?.();
+        }
         return;
       }
 
@@ -57,5 +76,5 @@ export function useKeyboardShortcuts({
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [enabled, onNewIssue, onToggleSidebar, onTogglePanel, onShowShortcuts]);
+  }, [enabled, onNewIssue, onSearch, onToggleSidebar, onTogglePanel, onShowShortcuts]);
 }

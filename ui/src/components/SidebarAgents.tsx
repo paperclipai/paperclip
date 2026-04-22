@@ -8,6 +8,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { heartbeatsApi } from "../api/heartbeats";
+import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { useAgentOrder } from "../hooks/useAgentOrder";
@@ -105,6 +106,7 @@ export function SidebarAgents() {
               <NavLink
                 key={agent.id}
                 to={activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent)}
+                state={SIDEBAR_SCROLL_RESET_STATE}
                 onClick={() => {
                   if (isMobile) setSidebarOpen(false);
                 }}

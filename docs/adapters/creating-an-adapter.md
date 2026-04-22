@@ -203,6 +203,43 @@ export const sessionCodec: AdapterSessionCodec = {
 };
 ```
 
+## Capability Flags
+
+Adapters can declare what "local" capabilities they support by setting optional fields on the `ServerAdapterModule`. The server and UI use these flags to decide which features to enable for agents using the adapter (instructions bundle editor, skills sync, JWT auth, etc.).
+
+| Flag | Type | Default | What it controls |
+|------|------|---------|------------------|
+| `supportsLocalAgentJwt` | `boolean` | `false` | Whether heartbeat generates a local JWT for the agent |
+| `supportsInstructionsBundle` | `boolean` | `false` | Managed instructions bundle (AGENTS.md) — server-side resolution + UI editor |
+| `instructionsPathKey` | `string` | `"instructionsFilePath"` | The `adapterConfig` key that holds the instructions file path |
+| `requiresMaterializedRuntimeSkills` | `boolean` | `false` | Whether runtime skill entries must be written to disk before execution |
+
+These flags are exposed via `GET /api/adapters` in a `capabilities` object, along with a derived `supportsSkills` flag (true when `listSkills` or `syncSkills` is defined).
+
+### Example
+
+```ts
+export function createServerAdapter(): ServerAdapterModule {
+  return {
+    type: "my_k8s_adapter",
+    execute: myExecute,
+    testEnvironment: myTestEnvironment,
+    listSkills: myListSkills,
+    syncSkills: mySyncSkills,
+
+    // Capability flags
+    supportsLocalAgentJwt: true,
+    supportsInstructionsBundle: true,
+    instructionsPathKey: "instructionsFilePath",
+    requiresMaterializedRuntimeSkills: true,
+  };
+}
+```
+
+With these flags set, the Paperclip UI will automatically show the instructions bundle editor, skills management tab, and working directory field for agents using this adapter — no Paperclip source changes required.
+
+If capability flags are not set, the server falls back to legacy hardcoded lists for built-in adapter types. External adapters that omit the flags will default to `false` for all capabilities.
+
 ## Skills Injection
 
 Make Paperclip skills discoverable to your agent runtime without writing to the agent's working directory:

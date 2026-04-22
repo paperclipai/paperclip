@@ -21,8 +21,40 @@ const mockIssueService = vi.hoisted(() => ({
 const mockFeedbackExportService = vi.hoisted(() => ({
   flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 1, sent: 1, failed: 0 })),
 }));
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(),
+  hasPermission: vi.fn(),
+}));
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+const mockHeartbeatService = vi.hoisted(() => ({
+  wakeup: vi.fn(async () => undefined),
+  reportRunActivity: vi.fn(async () => undefined),
+  getRun: vi.fn(async () => null),
+  getActiveRunForAgent: vi.fn(async () => null),
+  cancelRun: vi.fn(async () => null),
+}));
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({
+    id: "instance-settings-1",
+    general: {
+      censorUsernameInLogs: false,
+      feedbackDataSharingPreference: "prompt",
+    },
+  })),
+  listCompanyIds: vi.fn(async () => ["company-1"]),
+}));
+const mockRoutineService = vi.hoisted(() => ({
+  syncRunStatusForIssue: vi.fn(async () => undefined),
+}));
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+}));
 
-function registerServiceMocks() {
+function registerModuleMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
@@ -33,41 +65,33 @@ function registerServiceMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
-    accessService: () => ({
-      canUser: vi.fn(),
-      hasPermission: vi.fn(),
-    }),
-    agentService: () => ({
-      getById: vi.fn(),
-    }),
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => mockFeedbackService,
     goalService: () => ({}),
-    heartbeatService: () => ({
-      wakeup: vi.fn(async () => undefined),
-      reportRunActivity: vi.fn(async () => undefined),
-      getRun: vi.fn(async () => null),
-      getActiveRunForAgent: vi.fn(async () => null),
-      cancelRun: vi.fn(async () => null),
-    }),
-    instanceSettingsService: () => ({
-      get: vi.fn(async () => ({
-        id: "instance-settings-1",
-        general: {
-          censorUsernameInLogs: false,
-          feedbackDataSharingPreference: "prompt",
-        },
-      })),
-      listCompanyIds: vi.fn(async () => ["company-1"]),
-    }),
+    heartbeatService: () => mockHeartbeatService,
+    instanceSettingsService: () => mockInstanceSettingsService,
     issueApprovalService: () => ({}),
-    issueService: () => mockIssueService,
-    logActivity: vi.fn(async () => undefined),
-    projectService: () => ({}),
-    routineService: () => ({
-      syncRunStatusForIssue: vi.fn(async () => undefined),
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
     }),
+    issueService: () => mockIssueService,
+    issueThreadInteractionService: () => mockIssueThreadInteractionService,
+    logActivity: mockLogActivity,
+    projectService: () => ({}),
+    routineService: () => mockRoutineService,
     workProductService: () => ({}),
   }));
 }
@@ -91,13 +115,33 @@ async function createApp(actor: Record<string, unknown>) {
 describe("issue feedback trace routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    registerServiceMocks();
-    vi.resetAllMocks();
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.clearAllMocks();
     mockFeedbackExportService.flushPendingFeedbackTraces.mockResolvedValue({
       attempted: 1,
       sent: 1,
       failed: 0,
     });
+    mockHeartbeatService.wakeup.mockResolvedValue(undefined);
+    mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
+    mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockInstanceSettingsService.get.mockResolvedValue({
+      id: "instance-settings-1",
+      general: {
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      },
+    });
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+    mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+    mockLogActivity.mockResolvedValue(undefined);
   });
 
   it("flushes a newly shared feedback trace immediately after saving the vote", async () => {
@@ -154,7 +198,6 @@ describe("issue feedback trace routes", () => {
     });
 
     const res = await request(app).get("/api/feedback-traces/trace-1");
-
     expect(res.status).toBe(403);
     expect(mockFeedbackService.getFeedbackTraceById).not.toHaveBeenCalled();
   });

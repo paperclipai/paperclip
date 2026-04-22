@@ -3,10 +3,14 @@ import path from "node:path";
 import pc from "picocolors";
 import {
   AUTH_BASE_URL_MODES,
+  BIND_MODES,
   DEPLOYMENT_EXPOSURES,
   DEPLOYMENT_MODES,
   SECRET_PROVIDERS,
   STORAGE_PROVIDERS,
+  inferBindModeFromHost,
+  resolveRuntimeBind,
+  type BindMode,
   type AuthBaseUrlMode,
   type DeploymentExposure,
   type DeploymentMode,
@@ -23,6 +27,7 @@ import { promptLogging } from "../prompts/logging.js";
 import { defaultSecretsConfig } from "../prompts/secrets.js";
 import { defaultStorageConfig, promptStorage } from "../prompts/storage.js";
 import { promptServer } from "../prompts/server.js";
+import { buildPresetServerConfig } from "../config/server-bind.js";
 import {
   describeLocalInstancePaths,
   expandHomePrefix,
@@ -46,9 +51,13 @@ type OnboardOptions = {
   run?: boolean;
   yes?: boolean;
   invokedByRun?: boolean;
+  bind?: BindMode;
 };
 
 type OnboardDefaults = Pick<PaperclipConfig, "database" | "logging" | "server" | "auth" | "storage" | "secrets">;
+
+const TAILNET_BIND_WARNING =
+  "No Tailscale address was detected during setup. The saved config will stay on loopback until Tailscale is available or PAPERCLIP_TAILNET_BIND_HOST is set.";
 
 const ONBOARD_ENV_KEYS = [
   "PAPERCLIP_PUBLIC_URL",
@@ -59,6 +68,9 @@ const ONBOARD_ENV_KEYS = [
   "PAPERCLIP_DB_BACKUP_DIR",
   "PAPERCLIP_DEPLOYMENT_MODE",
   "PAPERCLIP_DEPLOYMENT_EXPOSURE",
+  "PAPERCLIP_BIND",
+  "PAPERCLIP_BIND_HOST",
+  "PAPERCLIP_TAILNET_BIND_HOST",
   "HOST",
   "PORT",
   "SERVE_UI",
@@ -104,29 +116,62 @@ function resolvePathFromEnv(rawValue: string | undefined): string | null {
   return path.resolve(expandHomePrefix(rawValue.trim()));
 }
 
-function quickstartDefaultsFromEnv(): {
+function describeServerBinding(server: Pick<PaperclipConfig["server"], "bind" | "customBindHost" | "host" | "port">): string {
+  const bind = server.bind ?? inferBindModeFromHost(server.host);
+  const detail =
+    bind === "custom"
+      ? server.customBindHost ?? server.host
+      : bind === "tailnet"
+        ? "detected tailscale address"
+        : server.host;
+  return `${bind}${detail ? ` (${detail})` : ""}:${server.port}`;
+}
+
+function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
   defaults: OnboardDefaults;
   usedEnvKeys: string[];
   ignoredEnvKeys: Array<{ key: string; reason: string }>;
 } {
+  const preferTrustedLocal = opts?.preferTrustedLocal ?? false;
   const instanceId = resolvePaperclipInstanceId();
   const defaultStorage = defaultStorageConfig();
   const defaultSecrets = defaultSecretsConfig();
   const databaseUrl = process.env.DATABASE_URL?.trim() || undefined;
-  const publicUrl =
-    process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
-    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim() ||
-    process.env.BETTER_AUTH_URL?.trim() ||
-    process.env.BETTER_AUTH_BASE_URL?.trim() ||
-    undefined;
-  const deploymentMode =
-    parseEnumFromEnv<DeploymentMode>(process.env.PAPERCLIP_DEPLOYMENT_MODE, DEPLOYMENT_MODES) ?? "local_trusted";
+  const publicUrl = preferTrustedLocal
+    ? undefined
+    : (
+      process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
+      process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim() ||
+      process.env.BETTER_AUTH_URL?.trim() ||
+      process.env.BETTER_AUTH_BASE_URL?.trim() ||
+      undefined
+    );
+  const deploymentMode = preferTrustedLocal
+    ? "local_trusted"
+    : (parseEnumFromEnv<DeploymentMode>(process.env.PAPERCLIP_DEPLOYMENT_MODE, DEPLOYMENT_MODES) ?? "local_trusted");
   const deploymentExposureFromEnv = parseEnumFromEnv<DeploymentExposure>(
     process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE,
     DEPLOYMENT_EXPOSURES,
   );
   const deploymentExposure =
     deploymentMode === "local_trusted" ? "private" : (deploymentExposureFromEnv ?? "private");
+  const bindFromEnv = parseEnumFromEnv<BindMode>(process.env.PAPERCLIP_BIND, BIND_MODES);
+  const customBindHostFromEnv = process.env.PAPERCLIP_BIND_HOST?.trim() || undefined;
+  const hostFromEnv = process.env.HOST?.trim() || undefined;
+  const configuredBindHost = customBindHostFromEnv ?? hostFromEnv;
+  const bind = preferTrustedLocal
+    ? "loopback"
+    : (
+      deploymentMode === "local_trusted"
+        ? "loopback"
+        : (bindFromEnv ?? (configuredBindHost ? inferBindModeFromHost(configuredBindHost) : "lan"))
+    );
+  const resolvedBind = resolveRuntimeBind({
+    bind,
+    host: hostFromEnv ?? (bind === "loopback" ? "127.0.0.1" : "0.0.0.0"),
+    customBindHost: customBindHostFromEnv,
+    tailnetBindHost: process.env.PAPERCLIP_TAILNET_BIND_HOST?.trim(),
+  });
   const authPublicBaseUrl = publicUrl;
   const authBaseUrlModeFromEnv = parseEnumFromEnv<AuthBaseUrlMode>(
     process.env.PAPERCLIP_AUTH_BASE_URL_MODE,
@@ -183,7 +228,9 @@ function quickstartDefaultsFromEnv(): {
     server: {
       deploymentMode,
       exposure: deploymentExposure,
-      host: process.env.HOST ?? "127.0.0.1",
+      bind: resolvedBind.bind,
+      ...(resolvedBind.customBindHost ? { customBindHost: resolvedBind.customBindHost } : {}),
+      host: resolvedBind.host,
       port: Number(process.env.PORT) || 3100,
       allowedHostnames: Array.from(new Set([...allowedHostnamesFromEnv, ...(hostnameFromPublicUrl ? [hostnameFromPublicUrl] : [])])),
       serveUi: parseBooleanFromEnv(process.env.SERVE_UI) ?? true,
@@ -220,10 +267,47 @@ function quickstartDefaultsFromEnv(): {
     },
   };
   const ignoredEnvKeys: Array<{ key: string; reason: string }> = [];
+  if (preferTrustedLocal) {
+    const forcedLocalReason = "Ignored because --yes quickstart forces trusted local loopback defaults";
+    for (const key of [
+      "PAPERCLIP_DEPLOYMENT_MODE",
+      "PAPERCLIP_DEPLOYMENT_EXPOSURE",
+      "PAPERCLIP_BIND",
+      "PAPERCLIP_BIND_HOST",
+      "HOST",
+      "PAPERCLIP_AUTH_BASE_URL_MODE",
+      "PAPERCLIP_AUTH_PUBLIC_BASE_URL",
+      "PAPERCLIP_PUBLIC_URL",
+      "BETTER_AUTH_URL",
+      "BETTER_AUTH_BASE_URL",
+    ] as const) {
+      if (process.env[key] !== undefined) {
+        ignoredEnvKeys.push({ key, reason: forcedLocalReason });
+      }
+    }
+  }
   if (deploymentMode === "local_trusted" && process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE !== undefined) {
     ignoredEnvKeys.push({
       key: "PAPERCLIP_DEPLOYMENT_EXPOSURE",
       reason: "Ignored because deployment mode local_trusted always forces private exposure",
+    });
+  }
+  if (deploymentMode === "local_trusted" && process.env.PAPERCLIP_BIND !== undefined) {
+    ignoredEnvKeys.push({
+      key: "PAPERCLIP_BIND",
+      reason: "Ignored because deployment mode local_trusted always uses loopback reachability",
+    });
+  }
+  if (deploymentMode === "local_trusted" && process.env.PAPERCLIP_BIND_HOST !== undefined) {
+    ignoredEnvKeys.push({
+      key: "PAPERCLIP_BIND_HOST",
+      reason: "Ignored because deployment mode local_trusted always uses loopback reachability",
+    });
+  }
+  if (deploymentMode === "local_trusted" && process.env.HOST !== undefined) {
+    ignoredEnvKeys.push({
+      key: "HOST",
+      reason: "Ignored because deployment mode local_trusted always uses loopback reachability",
     });
   }
 
@@ -239,6 +323,10 @@ function canCreateBootstrapInviteImmediately(config: Pick<PaperclipConfig, "data
 }
 
 export async function onboard(opts: OnboardOptions): Promise<void> {
+  if (opts.bind && !["loopback", "lan", "tailnet"].includes(opts.bind)) {
+    throw new Error(`Unsupported bind preset for onboard: ${opts.bind}. Use loopback, lan, or tailnet.`);
+  }
+
   printPaperclipCliBanner();
   p.intro(pc.bgCyan(pc.black(" paperclipai onboard ")));
   const configPath = resolveConfigPath(opts.config);
@@ -293,7 +381,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
         `Database: ${existingConfig.database.mode}`,
         existingConfig.llm ? `LLM: ${existingConfig.llm.provider}` : "LLM: not configured",
         `Logging: ${existingConfig.logging.mode} -> ${existingConfig.logging.logDir}`,
-        `Server: ${existingConfig.server.deploymentMode}/${existingConfig.server.exposure} @ ${existingConfig.server.host}:${existingConfig.server.port}`,
+        `Server: ${existingConfig.server.deploymentMode}/${existingConfig.server.exposure} @ ${describeServerBinding(existingConfig.server)}`,
         `Allowed hosts: ${existingConfig.server.allowedHostnames.length > 0 ? existingConfig.server.allowedHostnames.join(", ") : "(loopback only)"}`,
         `Auth URL mode: ${existingConfig.auth.baseUrlMode}${existingConfig.auth.publicBaseUrl ? ` (${existingConfig.auth.publicBaseUrl})` : ""}`,
         `Storage: ${existingConfig.storage.provider}`,
@@ -336,7 +424,13 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
 
   let setupMode: SetupMode = "quickstart";
   if (opts.yes) {
-    p.log.message(pc.dim("`--yes` enabled: using Quickstart defaults."));
+    p.log.message(
+      pc.dim(
+        opts.bind
+          ? `\`--yes\` enabled: using Quickstart defaults with bind=${opts.bind}.`
+          : "`--yes` enabled: using Quickstart defaults.",
+      ),
+    );
   } else {
     const setupModeChoice = await p.select({
       message: "Choose setup path",
@@ -365,7 +459,9 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   if (tc) trackInstallStarted(tc);
 
   let llm: PaperclipConfig["llm"] | undefined;
-  const { defaults: derivedDefaults, usedEnvKeys, ignoredEnvKeys } = quickstartDefaultsFromEnv();
+  const { defaults: derivedDefaults, usedEnvKeys, ignoredEnvKeys } = quickstartDefaultsFromEnv({
+    preferTrustedLocal: opts.yes === true && !opts.bind,
+  });
   let {
     database,
     logging,
@@ -374,6 +470,19 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     storage,
     secrets,
   } = derivedDefaults;
+
+  if (opts.bind === "loopback" || opts.bind === "lan" || opts.bind === "tailnet") {
+    const preset = buildPresetServerConfig(opts.bind, {
+      port: server.port,
+      allowedHostnames: server.allowedHostnames,
+      serveUi: server.serveUi,
+    });
+    server = preset.server;
+    auth = preset.auth;
+    if (opts.bind === "tailnet" && server.host === "127.0.0.1") {
+      p.log.warn(TAILNET_BIND_WARNING);
+    }
+  }
 
   if (setupMode === "advanced") {
     p.log.step(pc.bold("Database"));
@@ -462,7 +571,13 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     );
   } else {
     p.log.step(pc.bold("Quickstart"));
-    p.log.message(pc.dim("Using quickstart defaults."));
+    p.log.message(
+      pc.dim(
+        opts.bind
+          ? `Using quickstart defaults with bind=${opts.bind}.`
+          : `Using quickstart defaults: ${server.deploymentMode}/${server.exposure} @ ${describeServerBinding(server)}.`,
+      ),
+    );
     if (usedEnvKeys.length > 0) {
       p.log.message(pc.dim(`Environment-aware defaults active (${usedEnvKeys.length} env var(s) detected).`));
     } else {
@@ -521,7 +636,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
       `Database: ${database.mode}`,
       llm ? `LLM: ${llm.provider}` : "LLM: not configured",
       `Logging: ${logging.mode} -> ${logging.logDir}`,
-      `Server: ${server.deploymentMode}/${server.exposure} @ ${server.host}:${server.port}`,
+      `Server: ${server.deploymentMode}/${server.exposure} @ ${describeServerBinding(server)}`,
       `Allowed hosts: ${server.allowedHostnames.length > 0 ? server.allowedHostnames.join(", ") : "(loopback only)"}`,
       `Auth URL mode: ${auth.baseUrlMode}${auth.publicBaseUrl ? ` (${auth.publicBaseUrl})` : ""}`,
       `Storage: ${storage.provider}`,

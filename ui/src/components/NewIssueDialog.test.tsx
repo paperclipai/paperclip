@@ -77,7 +77,7 @@ vi.mock("../context/CompanyContext", () => ({
 }));
 
 vi.mock("../context/ToastContext", () => ({
-  useToast: () => toastState,
+  useToastActions: () => toastState,
 }));
 
 vi.mock("../api/issues", () => ({
@@ -220,18 +220,6 @@ async function flush() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
-}
-
-async function waitForValue<T>(getValue: () => T | null | undefined, attempts = 10): Promise<T> {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const value = getValue();
-    if (value != null) {
-      return value;
-    }
-    await flush();
-  }
-
-  throw new Error("Timed out waiting for value");
 }
 
 function renderDialog(container: HTMLDivElement) {
@@ -384,6 +372,43 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("submits the parent assignee when a sub-issue opens with inherited defaults", async () => {
+    dialogState.newIssueDefaults = {
+      parentId: "issue-1",
+      parentIdentifier: "PAP-1",
+      parentTitle: "Parent issue",
+      title: "Child issue",
+      projectId: "project-1",
+      goalId: "goal-1",
+      assigneeAgentId: "agent-1",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Sub-Issue"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Child issue",
+        parentId: "issue-1",
+        goalId: "goal-1",
+        projectId: "project-1",
+        assigneeAgentId: "agent-1",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
   it("keeps the mobile dialog bounded with an internal flexible scroll region", async () => {
     const { root } = renderDialog(container);
     await flush();
@@ -394,10 +419,15 @@ describe("NewIssueDialog", () => {
     expect(dialogContent?.className).toContain("h-[calc(100dvh-2rem)]");
     expect(dialogContent?.className).toContain("overflow-hidden");
 
+    const titleInput = container.querySelector('textarea[placeholder="Issue title"]');
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
-    const descriptionScrollRegion = descriptionInput?.parentElement?.parentElement;
-    expect(descriptionScrollRegion?.className).toContain("flex-1");
-    expect(descriptionScrollRegion?.className).toContain("overflow-y-auto");
+    const bodyScrollRegion = Array.from(container.querySelectorAll("div")).find((element) =>
+      typeof element.className === "string" && element.className.includes("overscroll-contain"),
+    );
+    expect(bodyScrollRegion?.className).toContain("flex-1");
+    expect(bodyScrollRegion?.className).toContain("overflow-y-auto");
+    expect(bodyScrollRegion?.contains(titleInput ?? null)).toBe(true);
+    expect(bodyScrollRegion?.contains(descriptionInput ?? null)).toBe(true);
 
     act(() => root.unmount());
   });
@@ -452,13 +482,13 @@ describe("NewIssueDialog", () => {
 
     expect(container.textContent).not.toContain("will no longer use the parent issue workspace");
 
-    const modeSelect = await waitForValue(
-      () => container.querySelector("select") as HTMLSelectElement | null,
-    );
+    const selects = Array.from(container.querySelectorAll("select"));
+    const modeSelect = selects[0] as HTMLSelectElement | undefined;
+    expect(modeSelect).not.toBeUndefined();
 
     await act(async () => {
-      modeSelect.value = "shared_workspace";
-      modeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      modeSelect!.value = "shared_workspace";
+      modeSelect!.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await flush();
 

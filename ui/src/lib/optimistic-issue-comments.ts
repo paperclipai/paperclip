@@ -12,6 +12,11 @@ export interface OptimisticIssueComment extends IssueComment {
 }
 
 export type IssueTimelineComment = IssueComment | OptimisticIssueComment;
+export type LocallyQueuedIssueComment<T extends IssueComment> = T & {
+  clientStatus: "queued";
+  queueState: "queued";
+  queueTargetRunId: string;
+};
 
 function toTimestamp(value: Date | string) {
   return new Date(value).getTime();
@@ -82,6 +87,26 @@ export function isQueuedIssueComment(params: {
   return toTimestamp(params.comment.createdAt) >= toTimestamp(params.activeRunStartedAt);
 }
 
+export function applyLocalQueuedIssueCommentState<T extends IssueComment>(
+  comment: T,
+  params: {
+    queuedTargetRunId?: string | null;
+    targetRunIsLive: boolean;
+    runningRunId?: string | null;
+  },
+): T | LocallyQueuedIssueComment<T> {
+  const queuedTargetRunId = params.queuedTargetRunId ?? null;
+  if (!queuedTargetRunId || !params.targetRunIsLive) return comment;
+  if (params.runningRunId && params.runningRunId !== queuedTargetRunId) return comment;
+
+  return {
+    ...comment,
+    clientStatus: "queued",
+    queueState: "queued",
+    queueTargetRunId: queuedTargetRunId,
+  };
+}
+
 export function mergeIssueComments(
   comments: IssueComment[] | undefined,
   optimisticComments: OptimisticIssueComment[],
@@ -94,6 +119,21 @@ export function mergeIssueComments(
     }
   }
   return sortIssueComments(merged);
+}
+
+export function takeOptimisticIssueComment(
+  comments: OptimisticIssueComment[],
+  clientId: string,
+): { comments: OptimisticIssueComment[]; comment: OptimisticIssueComment | null } {
+  const index = comments.findIndex((comment) => comment.clientId === clientId);
+  if (index === -1) {
+    return { comments, comment: null };
+  }
+
+  return {
+    comments: comments.filter((comment) => comment.clientId !== clientId),
+    comment: comments[index] ?? null,
+  };
 }
 
 export function flattenIssueCommentPages(
@@ -135,7 +175,7 @@ export function applyOptimisticIssueCommentUpdate(
   if (!issue) return issue;
   const nextIssue: Issue = { ...issue };
 
-  if (params.reopen === true && (issue.status === "done" || issue.status === "cancelled")) {
+  if (params.reopen === true && (issue.status === "done" || issue.status === "cancelled" || issue.status === "blocked")) {
     nextIssue.status = "todo";
   }
 
@@ -169,6 +209,7 @@ export function applyOptimisticIssueFieldUpdate(
   assign("assigneeAgentId");
   assign("assigneeUserId");
   assign("projectId");
+  assign("parentId");
   assign("projectWorkspaceId");
   assign("executionWorkspaceId");
   assign("executionWorkspacePreference");
@@ -192,6 +233,10 @@ export function applyOptimisticIssueFieldUpdate(
 
   if (hasOwn("projectId")) {
     nextIssue.project = issue.project?.id === nextIssue.projectId ? issue.project : null;
+  }
+
+  if (hasOwn("parentId")) {
+    nextIssue.ancestors = undefined;
   }
 
   if (hasOwn("executionWorkspaceId")) {
@@ -248,4 +293,17 @@ export function upsertIssueCommentInPages(
 
   nextPages[0] = sortIssueCommentsDesc([...nextPages[0]!, nextComment]);
   return nextPages;
+}
+
+export function removeIssueCommentFromPages(
+  pages: ReadonlyArray<ReadonlyArray<IssueComment>> | undefined,
+  commentId: string,
+): IssueComment[][] {
+  if (!pages || pages.length === 0) {
+    return [];
+  }
+
+  return pages
+    .map((page) => page.filter((comment) => comment.id !== commentId))
+    .filter((page) => page.length > 0);
 }
