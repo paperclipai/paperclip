@@ -5245,7 +5245,7 @@ export function heartbeatService(db: Db) {
     silenceWindowMs?: number;
   }) {
     const minAgeMs = opts?.minAgeMs ?? 10 * 60 * 1000;
-    const silenceWindowMs = opts?.silenceWindowMs ?? 8 * 60 * 1000;
+    const silenceWindowMs = opts?.silenceWindowMs ?? 15 * 60 * 1000;
     const now = new Date();
     const ageCutoff = new Date(now.getTime() - minAgeMs);
     const silenceCutoff = new Date(now.getTime() - silenceWindowMs);
@@ -5317,6 +5317,118 @@ export function heartbeatService(db: Db) {
     return { stalled: stalledIds.length, runIds: stalledIds };
   }
 
+  // Adapter-aware model rotation. When an agent accumulates N+ failures on
+  // the current model within the rotation window (default 30 min) AND has
+  // zero successes, swap it to the next model in the per-adapter ladder.
+  // Runs on every scheduler tick so reaction time is ~10s vs the
+  // self-healer\'s 5-min granularity.
+  const HEALTHY_MODELS_BY_ADAPTER: Record<string, string[]> = {
+    gemini_local: ["auto", "gemini-2.5-pro", "gemini-2.5-flash"],
+    // opencode_local ladder: fallbacks here are for non-critical agents
+    // (Deployer, Designers, Content). big-pickle is pool-limited so it
+    // falls back to your direct-key models which have dedicated capacity.
+    opencode_local: [
+      "byteplus/kimi-k2.5",
+      "byteplus/glm-4-7",
+      "byteplus/ark-code-latest",
+      "byteplus/gpt-oss-120b",
+      "minimax-coding-plan/MiniMax-M2.7-highspeed",
+      "minimax-coding-plan/MiniMax-M2.7",
+      "minimax-coding-plan/MiniMax-M2.5",
+      "opencode/big-pickle",
+      "zai-coding-plan/glm-5",
+    ],
+    // codex_local ladder: both models use your ChatGPT Pro account (dedicated).
+    // gpt-5.4 is primary (top capability, fast mode). 5.3-codex is the
+    // code-specialized fallback.
+    codex_local: ["gpt-5.4", "gpt-5.3-codex"],
+  };
+
+  async function rotateFailingAgentModels(opts?: {
+    failureWindowMs?: number;
+    minConsecutiveFailures?: number;
+    recentFailureLookbackMs?: number;
+  }): Promise<{ rotated: number; paused: number }> {
+    const failureWindowMs = opts?.failureWindowMs ?? 30 * 60 * 1000;
+    const minFailures = opts?.minConsecutiveFailures ?? 2;
+    const recentLookbackMs = opts?.recentFailureLookbackMs ?? 20 * 60 * 1000;
+    const failureCutoff = new Date(Date.now() - failureWindowMs).toISOString();
+    const recentCutoff = new Date(Date.now() - recentLookbackMs).toISOString();
+
+    // Count failures since the agent's adapter_config was last updated
+    // (which includes model swaps). This means a newly-swapped agent gets
+    // a fresh failure budget on its new model before we re-swap.
+    // Also require the adapter_config to have been stable for at least
+    // 60s so the swap has had a chance to take effect.
+    const candidatesResult = await db.execute(sql`
+      SELECT a.id::text AS id, a.name, a.adapter_type,
+             a.adapter_config->>'model' AS current_model,
+             COUNT(h.id) FILTER (WHERE h.status='failed'
+                                  AND h.error_code IN ('stalled','timeout','process_lost','adapter_failed')) AS fails,
+             COUNT(h.id) FILTER (WHERE h.status='succeeded') AS oks
+      FROM agents a
+      LEFT JOIN heartbeat_runs h ON h.agent_id = a.id
+        AND h.created_at > GREATEST(a.updated_at, ${failureCutoff}::text::timestamptz)
+      WHERE a.status != 'paused' AND (a.adapter_config->>'model') IS NOT NULL
+        AND a.updated_at < NOW() - interval '60 seconds'
+      GROUP BY a.id, a.name, a.adapter_type, a.adapter_config, a.updated_at
+      HAVING COUNT(h.id) FILTER (WHERE h.status='failed'
+                                  AND h.error_code IN ('stalled','timeout','process_lost','adapter_failed')) >= ${minFailures}
+         AND COUNT(h.id) FILTER (WHERE h.status='succeeded') = 0
+    `);
+    const rows = ((candidatesResult as unknown) as { rows?: Array<Record<string, string>> }).rows
+      ?? ((candidatesResult as unknown) as Array<Record<string, string>>);
+    let rotated = 0;
+    let paused = 0;
+    for (const row of rows) {
+      const adapterType = row.adapter_type;
+      const currentModel = row.current_model;
+      const ladder = HEALTHY_MODELS_BY_ADAPTER[adapterType];
+      if (!ladder) continue;
+      const historyResult = await db.execute(sql`
+        SELECT DISTINCT a.adapter_config->>'model' AS model
+        FROM heartbeat_runs h
+        JOIN agents a ON a.id = h.agent_id
+        WHERE h.agent_id = ${row.id}::uuid
+          AND h.status = 'failed'
+          AND h.error_code IN ('stalled','timeout','process_lost','adapter_failed')
+          AND h.created_at > ${recentCutoff}
+      `);
+      const histRows = ((historyResult as unknown) as { rows?: Array<{ model: string }> }).rows
+        ?? ((historyResult as unknown) as Array<{ model: string }>);
+      const skipSet = new Set(histRows.map((r) => r.model).filter(Boolean));
+      skipSet.add(currentModel);
+      let startIdx = ladder.indexOf(currentModel);
+      let target: string | null = null;
+      for (let off = 1; off <= ladder.length; off++) {
+        const cand = ladder[(startIdx + off + ladder.length) % ladder.length];
+        if (!skipSet.has(cand)) {
+          target = cand;
+          break;
+        }
+      }
+      if (!target) {
+        await db.execute(sql`
+          UPDATE agents SET status='paused', pause_reason='all_models_failed',
+                           paused_at=NOW(), updated_at=NOW()
+          WHERE id = ${row.id}::uuid AND status != 'paused'
+        `);
+        paused += 1;
+        logger.warn({ agentId: row.id, name: row.name }, "rotateFailingAgentModels: paused — all ladder models exhausted");
+        continue;
+      }
+      await db.execute(sql`
+        UPDATE agents
+        SET adapter_config = jsonb_set(adapter_config, '{model}', to_jsonb(${target}::text)),
+            updated_at = NOW()
+        WHERE id = ${row.id}::uuid
+      `);
+      rotated += 1;
+      logger.info({ agentId: row.id, name: row.name, from: currentModel, to: target, fails: row.fails }, "rotateFailingAgentModels: swapped");
+    }
+    return { rotated, paused };
+  }
+
   // Prune long-lived telemetry rows that accumulate indefinitely.
   // agent_wakeup_requests grows ~10-20k/day (most are short-lived coalesced
   // entries) and is the largest row-count table in the schema. Keeping rows
@@ -5384,9 +5496,9 @@ export function heartbeatService(db: Db) {
       )
       .limit(500);
 
-    if (stale.length === 0) return { reconciled: 0 };
-
     const now = new Date();
+
+    // Layer 1: wakeup has terminal run — reconcile to matching status.
     for (const row of stale) {
       const mappedStatus =
         row.runStatus === "succeeded"
@@ -5399,8 +5511,47 @@ export function heartbeatService(db: Db) {
         error: row.runError ?? null,
       });
     }
-    logger.warn({ reconciledCount: stale.length }, "reconciled stale agent_wakeup_requests");
-    return { reconciled: stale.length };
+
+    // Layer 2: dispatch-lost — wakeup is claimed/queued but NO run was ever
+    // created (OOM at spawn, adapter error before run-row insert, process
+    // died). Before this fix these piled up and blocked next-wakeup dispatch
+    // for the same agent. If it\'s been >5 min since the wakeup was created
+    // with no run materialising, mark it skipped so the agent can resume.
+    const dispatchLostCutoff = new Date(now.getTime() - 5 * 60 * 1000);
+    const dispatchLost = await db
+      .select({
+        wakeupId: agentWakeupRequests.id,
+        agentId: agentWakeupRequests.agentId,
+        wakeupStatus: agentWakeupRequests.status,
+        createdAt: agentWakeupRequests.createdAt,
+      })
+      .from(agentWakeupRequests)
+      .leftJoin(heartbeatRuns, eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId))
+      .where(
+        and(
+          inArray(agentWakeupRequests.status, ["queued", "claimed"]),
+          lt(agentWakeupRequests.createdAt, dispatchLostCutoff),
+          isNull(heartbeatRuns.id),
+        ),
+      )
+      .limit(500);
+
+    for (const row of dispatchLost) {
+      await setWakeupStatus(row.wakeupId, "skipped", {
+        finishedAt: now,
+        error: "dispatch-lost: wakeup stuck >5min with no run created",
+      });
+      logger.warn(
+        { wakeupId: row.wakeupId, agentId: row.agentId, wakeupStatus: row.wakeupStatus },
+        "reclaimed dispatch-lost wakeup (no run created)",
+      );
+    }
+
+    const total = stale.length + dispatchLost.length;
+    if (total > 0) {
+      logger.warn({ withRun: stale.length, dispatchLost: dispatchLost.length }, "reconciled stale agent_wakeup_requests");
+    }
+    return { reconciled: total };
   }
 
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
@@ -5637,6 +5788,8 @@ export function heartbeatService(db: Db) {
     enforceRunTimeouts,
 
     enforceStallTimeouts,
+
+    rotateFailingAgentModels,
 
     reconcileStaleWakeupRequests,
 

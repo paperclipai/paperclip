@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -604,93 +604,173 @@ export async function startServer(): Promise<StartedServer> {
     // SIGTERMed twice, etc. Single-flight the entire tick body.
     let tickInFlight = false;
     let consecutiveTickSkips = 0;
+    let tickSkipEscalationEmittedAt = 0;
+
+    // Wrap an individual tick sub-task in a per-task timeout. If a sub-task
+    // hangs (e.g. DB lock waiter), we log it and move on instead of poisoning
+    // the whole tick for 90s. Returns a promise that always resolves.
+    const withSubTaskTimeout = <T>(
+      name: string,
+      subTaskMs: number,
+      fn: () => Promise<T>,
+    ): Promise<void> => {
+      return new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          if (done) return;
+          logger.error({ subTask: name, subTaskMs }, "scheduler sub-task timed out");
+          finish();
+        }, subTaskMs);
+        fn()
+          .catch((err) => {
+            logger.error({ err, subTask: name }, "scheduler sub-task failed");
+          })
+          .finally(() => {
+            clearTimeout(timer);
+            finish();
+          });
+      });
+    };
+
+    // Emit a single ESCALATION issue when scheduler ticks are being starved.
+    // Previous bug: 2,220 consecutive skips over 18h went unnoticed because
+    // the only signal was a log line. De-dupe emissions to once per 15 min.
+    const maybeEscalateTickSkips = async (skips: number) => {
+      if (skips < 6) return;
+      const now = Date.now();
+      if (now - tickSkipEscalationEmittedAt < 15 * 60 * 1000) return;
+      tickSkipEscalationEmittedAt = now;
+      try {
+        const rows = await (db as any)
+          .select({ id: companies.id })
+          .from(companies)
+          .where(eq(companies.status, "active"));
+        for (const row of rows as Array<{ id: string }>) {
+          await (db as any).execute(sql`
+            INSERT INTO issues (company_id, title, description, status, priority, origin_kind)
+            VALUES (
+              ${row.id}::uuid,
+              ${"[ESCALATION] Scheduler tick starving — " + skips + " consecutive skips"},
+              ${"Paperclip scheduler tick has been locked by an in-flight run for " +
+                skips +
+                " intervals. Force-release + per-sub-task timeouts are active, but this indicates a chronic hang (leaked DB txn, stuck query, etc). Investigate: SELECT * FROM pg_stat_activity WHERE datname='''paperclip''' AND state != '''idle''' ORDER BY query_start;"},
+              '''todo''',
+              '''critical''',
+              '''manual'''
+            )
+          `);
+        }
+        logger.warn({ skips, companies: rows.length }, "emitted tick-skip escalation issues");
+      } catch (err) {
+        logger.error({ err }, "failed to emit tick-skip escalation");
+      }
+    };
+
     setInterval(() => {
       if (tickInFlight) {
         consecutiveTickSkips += 1;
         if (consecutiveTickSkips === 1 || consecutiveTickSkips % 20 === 0) {
           logger.warn({ consecutiveTickSkips }, "scheduler tick skipped — previous tick still running");
         }
+        void maybeEscalateTickSkips(consecutiveTickSkips);
         return;
       }
       consecutiveTickSkips = 0;
       tickInFlight = true;
 
-      const tickPromises: Promise<unknown>[] = [];
+      const subTaskMs = 30_000;
+      const tickPromises: Promise<void>[] = [];
 
       tickPromises.push(
-        heartbeat
-          .tickTimers(new Date())
-          .then((result) => {
-            if (result.enqueued > 0) {
-              logger.info({ ...result }, "heartbeat timer tick enqueued runs");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "heartbeat timer tick failed");
-          }),
-      );
-
-      tickPromises.push(
-        routines
-          .tickScheduledTriggers(new Date())
-          .then((result) => {
-            if (result.triggered > 0) {
-              logger.info({ ...result }, "routine scheduler tick enqueued runs");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "routine scheduler tick failed");
-          }),
-      );
-
-      // Enforce per-run max duration — terminates runs whose child process hangs
-      // (e.g. adapter stalled on a model API) and marks them failed with
-      // errorCode="timeout". Default 60 min. Runs alongside reapOrphanedRuns.
-      tickPromises.push(
-        heartbeat.enforceRunTimeouts().catch((err) => {
-          logger.error({ err }, "enforceRunTimeouts failed");
+        withSubTaskTimeout("tickTimers", subTaskMs, async () => {
+          const result = await heartbeat.tickTimers(new Date());
+          if (result.enqueued > 0) {
+            logger.info({ ...result }, "heartbeat timer tick enqueued runs");
+          }
         }),
       );
 
-      // Aggressive no-progress detector: runs >10m old with zero events in
-      // last 8m get killed immediately. Stops stuck-opencode budget bleed.
       tickPromises.push(
-        heartbeat.enforceStallTimeouts().catch((err) => {
-          logger.error({ err }, "enforceStallTimeouts failed");
+        withSubTaskTimeout("routineScheduledTriggers", subTaskMs, async () => {
+          const result = await routines.tickScheduledTriggers(new Date());
+          if (result.triggered > 0) {
+            logger.info({ ...result }, "routine scheduler tick enqueued runs");
+          }
         }),
       );
 
-      // Sync wakeup_requests whose linked run reached a terminal state but
-      // weren't updated (e.g. direct DB cancels, upgrade path bugs).
+      // Enforce per-run max duration (default 60 min) — terminates runs whose
+      // child process hangs and marks them failed with errorCode="timeout".
       tickPromises.push(
-        heartbeat.reconcileStaleWakeupRequests().catch((err) => {
-          logger.error({ err }, "reconcileStaleWakeupRequests failed");
+        withSubTaskTimeout("enforceRunTimeouts", subTaskMs, async () => {
+          await heartbeat.enforceRunTimeouts();
         }),
       );
 
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-      // persisted queued work is still being driven forward.
+      // Aggressive no-progress detector: >10m old + zero events in last 8m → kill.
       tickPromises.push(
-        heartbeat
-          .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-          .then(() => heartbeat.resumeQueuedRuns())
-          .then(async () => {
-            const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-            if (
-              reconciled.dispatchRequeued > 0 ||
-              reconciled.continuationRequeued > 0 ||
-              reconciled.escalated > 0
-            ) {
-              logger.warn({ ...reconciled }, "periodic stranded-issue reconciliation changed assigned issue state");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "periodic heartbeat recovery failed");
-          }),
+        withSubTaskTimeout("enforceStallTimeouts", subTaskMs, async () => {
+          await heartbeat.enforceStallTimeouts();
+        }),
       );
 
-      void Promise.allSettled(tickPromises).finally(() => {
+      // Adapter-aware model rotation — swap failing agents to a known-good
+      // model in their adapter's ladder. Runs every tick (10s) so recovery
+      // from a flaky provider takes ~10s not 5 min (self-healer cadence).
+      tickPromises.push(
+        withSubTaskTimeout("rotateFailingAgentModels", subTaskMs, async () => {
+          const result = await heartbeat.rotateFailingAgentModels();
+          if (result.rotated > 0 || result.paused > 0) {
+            logger.info({ ...result }, "model rotation tick applied swaps");
+          }
+        }),
+      );
+
+      // Sync wakeup_requests whose linked run reached a terminal state.
+      tickPromises.push(
+        withSubTaskTimeout("reconcileStaleWakeupRequests", subTaskMs, async () => {
+          await heartbeat.reconcileStaleWakeupRequests();
+        }),
+      );
+
+      // Reap orphaned runs (5-min staleness) + resume queued + reconcile stranded.
+      tickPromises.push(
+        withSubTaskTimeout("heartbeatRecovery", subTaskMs, async () => {
+          await heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 });
+          await heartbeat.resumeQueuedRuns();
+          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+          if (
+            reconciled.dispatchRequeued > 0 ||
+            reconciled.continuationRequeued > 0 ||
+            reconciled.escalated > 0
+          ) {
+            logger.warn({ ...reconciled }, "periodic stranded-issue reconciliation changed assigned issue state");
+          }
+        }),
+      );
+
+      // Outer backstop: with 6 sub-tasks × 30s each, worst-case tick is 30s
+      // (since they run in parallel). 90s outer gives margin for GC / event
+      // loop jitter. If even this fires, something is wrong with the runtime.
+      const tickTimeoutMs = 90_000;
+      let tickReleased = false;
+      const releaseLock = (reason: string) => {
+        if (tickReleased) return;
+        tickReleased = true;
         tickInFlight = false;
+        if (reason !== "completed") {
+          logger.error({ reason, tickTimeoutMs }, "scheduler tick force-released — outer timeout fired");
+        }
+      };
+      const timeoutHandle = setTimeout(() => releaseLock("timeout"), tickTimeoutMs);
+      void Promise.allSettled(tickPromises).finally(() => {
+        clearTimeout(timeoutHandle);
+        releaseLock("completed");
       });
     }, config.heartbeatSchedulerIntervalMs);
 

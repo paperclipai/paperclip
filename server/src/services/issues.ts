@@ -1545,35 +1545,12 @@ export function issueService(db: Db) {
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
         }
-        // Serialise identifier allocation per-company with an explicit row
-        // lock so two concurrent creates cannot both land on the same
-        // issue_number. Under READ COMMITTED the existing GREATEST-based
-        // self-correction was insufficient — duplicate_key on
-        // issues_identifier_idx still fired 5 times in a 40s window on
-        // 2026-04-18. The FOR UPDATE forces the second transaction to wait
-        // until the first has committed its INSERT, so the re-read of
-        // companies.issue_counter reflects the advance.
-        await tx.execute(
-          sql`select id from ${companies} where id = ${companyId} for update`,
-        );
-
-        const [maxRow] = await tx
-          .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
-          .from(issues)
-          .where(eq(issues.companyId, companyId));
-        const currentMax = maxRow?.maxNum ?? 0;
-
-        const [company] = await tx
-          .update(companies)
-          .set({
-            issueCounter: sql`greatest(${companies.issueCounter}, ${currentMax}) + 1`,
-          })
-          .where(eq(companies.id, companyId))
-          .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
-
-        const issueNumber = company.issueCounter;
-        const identifier = `${company.issuePrefix}-${issueNumber}`;
-
+        // Identifier allocation is handled atomically by the DB-level
+        // BEFORE-INSERT trigger `issues_allocate_identifier_before_insert`
+        // which updates `companies.issue_counter` in one lock-free UPDATE
+        // and fills NEW.issue_number + NEW.identifier. No app-side
+        // SELECT FOR UPDATE is needed. The trigger is the single source of
+        // truth for every insert path (app, psql, migrations, self-healer).
         const values = {
           ...issueData,
           originKind: issueData.originKind ?? "manual",
@@ -1588,8 +1565,6 @@ export function issueService(db: Db) {
           ...(executionWorkspacePreference ? { executionWorkspacePreference } : {}),
           ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
           companyId,
-          issueNumber,
-          identifier,
         } as typeof issues.$inferInsert;
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
