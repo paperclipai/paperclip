@@ -209,7 +209,7 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
-export const ROUTINE_STATUSES = ["active", "paused", "archived"] as const;
+export const ROUTINE_STATUSES = ["active", "paused", "paused_with_backlog", "archived"] as const;
 export type RoutineStatus = (typeof ROUTINE_STATUSES)[number];
 
 export const ROUTINE_CONCURRENCY_POLICIES = ["coalesce_if_active", "always_enqueue", "skip_if_active"] as const;

@@ -872,6 +872,45 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           return updated ?? createdRun;
         }
 
+        // R3 dedup-on-enqueue: for auto_gc_enabled routines, coalesce into an
+        // existing blocked issue with the same title rather than stacking duplicates.
+        if (!activeIssue && input.routine.autoGcEnabled) {
+          const blockedDuplicate = await txDb
+            .select({ id: issues.id, originRunId: issues.originRunId })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, input.routine.companyId),
+                eq(issues.originKind, "routine_execution"),
+                eq(issues.originId, input.routine.id),
+                eq(issues.status, "blocked"),
+                eq(issues.title, title),
+                isNull(issues.hiddenAt),
+              ),
+            )
+            .orderBy(desc(issues.updatedAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+          if (blockedDuplicate) {
+            const updated = await finalizeRun(createdRun.id, {
+              status: "coalesced",
+              linkedIssueId: blockedDuplicate.id,
+              coalescedIntoRunId: blockedDuplicate.originRunId,
+              completedAt: triggeredAt,
+            }, txDb);
+            await updateRoutineTouchedState({
+              routineId: input.routine.id,
+              triggerId: input.trigger?.id ?? null,
+              triggeredAt,
+              status: "coalesced",
+              issueId: blockedDuplicate.id,
+              nextRunAt,
+            }, txDb);
+            return updated ?? createdRun;
+          }
+        }
+
         try {
           createdIssue = await issueSvc.create(input.routine.companyId, {
             projectId,
@@ -1154,6 +1193,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           concurrencyPolicy: input.concurrencyPolicy,
           catchUpPolicy: input.catchUpPolicy,
           variables,
+          autoGcEnabled: input.autoGcEnabled ?? false,
           createdByAgentId: actor.agentId ?? null,
           createdByUserId: actor.userId ?? null,
           updatedByAgentId: actor.agentId ?? null,
@@ -1174,9 +1214,28 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (patch.status === "active") {
         assertRoutineCanEnable(patch.status, nextAssigneeAgentId);
       }
-      const nextStatus = patch.assigneeAgentId === undefined
+      let nextStatus = patch.assigneeAgentId === undefined
         ? requestedStatus
         : normalizeDraftRoutineStatus(requestedStatus, nextAssigneeAgentId);
+
+      // paused_with_backlog guard: active → paused transition must check for outstanding todo issues
+      if (nextStatus === "paused" && existing.status === "active") {
+        const hasPendingIssue = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.originKind, "routine_execution"),
+              eq(issues.originId, existing.id),
+              eq(issues.status, "todo"),
+              isNull(issues.hiddenAt),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows.length > 0);
+        if (hasPendingIssue) nextStatus = "paused_with_backlog";
+      }
+
       const nextVariables = syncRoutineVariablesWithTemplate(
         [nextTitle, nextDescription],
         patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
@@ -1215,6 +1274,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           concurrencyPolicy: patch.concurrencyPolicy ?? existing.concurrencyPolicy,
           catchUpPolicy: patch.catchUpPolicy ?? existing.catchUpPolicy,
           variables: nextVariables,
+          autoGcEnabled: patch.autoGcEnabled ?? existing.autoGcEnabled,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
           updatedAt: new Date(),

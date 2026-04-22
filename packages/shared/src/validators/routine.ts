@@ -59,6 +59,7 @@ export const createRoutineSchema = z.object({
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional().default("skip_missed"),
   variables: z.array(routineVariableSchema).optional().default([]),
+  autoGcEnabled: z.boolean().optional().default(false),
 });
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;

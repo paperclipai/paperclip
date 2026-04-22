@@ -37,6 +37,7 @@ export const routines = pgTable(
     createdByUserId: text("created_by_user_id"),
     updatedByAgentId: uuid("updated_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     updatedByUserId: text("updated_by_user_id"),
+    autoGcEnabled: boolean("auto_gc_enabled").notNull().default(false),
     lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
     lastEnqueuedAt: timestamp("last_enqueued_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

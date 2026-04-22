@@ -33,6 +33,7 @@ import {
   heartbeatService,
   instanceSettingsService,
   reconcilePersistedRuntimeServicesOnStartup,
+  routineGcService,
   routineService,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
@@ -741,8 +742,27 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+
+    // Nightly routine GC — runs once per day at approximately 02:00 UTC.
+    // Dry-run mode is active when GC_DRY_RUN=true (recommended for first 48h post-deploy).
+    const gc = routineGcService(db as any);
+    let lastGcDay = -1;
+    setInterval(() => {
+      const day = new Date().getUTCDate();
+      const hour = new Date().getUTCHours();
+      if (hour === 2 && day !== lastGcDay) {
+        lastGcDay = day;
+        void gc.runGc()
+          .then((result) => {
+            logger.info({ ...result }, "routine-gc: nightly run complete");
+          })
+          .catch((err) => {
+            logger.error({ err }, "routine-gc: nightly run failed");
+          });
+      }
+    }, 60_000);
   }
-  
+
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
