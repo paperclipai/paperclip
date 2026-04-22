@@ -71,14 +71,16 @@ vi.mock("../api/instanceSettings", () => ({
 vi.mock("./IssueRow", () => ({
   IssueRow: ({
     issue,
+    assignedToCurrentUser,
     desktopMetaLeading,
     desktopTrailing,
   }: {
     issue: Issue;
+    assignedToCurrentUser?: boolean;
     desktopMetaLeading?: ReactNode;
     desktopTrailing?: ReactNode;
   }) => (
-    <div data-testid="issue-row">
+    <div data-testid="issue-row" data-assigned-to-current-user={assignedToCurrentUser ? "true" : undefined}>
       <span>{issue.title}</span>
       {desktopMetaLeading}
       {desktopTrailing}
@@ -468,6 +470,74 @@ describe("IssuesList", () => {
       expect((parentRow?.parentElement as HTMLDivElement | null)?.style.containIntrinsicSize).toBe("");
       expect((childRow?.parentElement as HTMLDivElement | null)?.style.contentVisibility).toBe("auto");
       expect((childRow?.parentElement as HTMLDivElement | null)?.style.containIntrinsicSize).toBe("44px");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("marks list rows assigned to the current board user", async () => {
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-1", userId: "board-user" },
+      user: { id: "board-user", email: null, name: null },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "mine", title: "Mine", assigneeUserId: "board-user" }),
+          createIssue({ id: "theirs", title: "Theirs", assigneeUserId: "other-user" }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultViewMode="list"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const rows = Array.from(container.querySelectorAll('[data-testid="issue-row"]'));
+      const mine = rows.find((row) => row.textContent?.includes("Mine"));
+      const theirs = rows.find((row) => row.textContent?.includes("Theirs"));
+      expect(mine?.getAttribute("data-assigned-to-current-user")).toBe("true");
+      expect(theirs?.hasAttribute("data-assigned-to-current-user")).toBe(false);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("marks list rows assigned to visible company agents", async () => {
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-1", userId: "board-user" },
+      user: { id: "board-user", email: null, name: null },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "agent-work", title: "Agent work", assigneeAgentId: "agent-steward" }),
+          createIssue({ id: "other-work", title: "Other work", assigneeAgentId: "agent-other" }),
+        ]}
+        agents={[{ id: "agent-steward", name: "Paperclip Steward" }]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        defaultViewMode="list"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const rows = Array.from(container.querySelectorAll('[data-testid="issue-row"]'));
+      const agentWork = rows.find((row) => row.textContent?.includes("Agent work"));
+      const otherWork = rows.find((row) => row.textContent?.includes("Other work"));
+      expect(agentWork?.getAttribute("data-assigned-to-current-user")).toBe("true");
+      expect(otherWork?.hasAttribute("data-assigned-to-current-user")).toBe(false);
     });
 
     act(() => {

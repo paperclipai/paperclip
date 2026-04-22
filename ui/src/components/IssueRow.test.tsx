@@ -179,6 +179,24 @@ describe("IssueRow", () => {
     });
   });
 
+  it("uses the current-actor assignment highlight when requested", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue({ assigneeUserId: "board-user" })} assignedToCurrentUser />);
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(link?.getAttribute("data-assigned-to-current-user")).toBe("true");
+    expect(link?.className).toContain("border-l-4");
+    expect(link?.className).toContain("border-l-cyan-500");
+    expect(link?.className).toContain("bg-cyan-500");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders titleSuffix inline after the issue title", () => {
     const root = createRoot(container);
     const issue = createIssue({ title: "Parent task" });

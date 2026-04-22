@@ -7,12 +7,6 @@ import { AgentIcon } from "./AgentIconPicker";
 
 type AgentSummary = Pick<Agent, "id" | "name"> & { icon?: string | null };
 
-function initials(name: string) {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
-  return name.slice(0, 2).toUpperCase();
-}
-
 export function IssueAssigneeIcon({
   issue,
   agents,
@@ -36,11 +30,7 @@ export function IssueAssigneeIcon({
         title={`Assigned to ${label}`}
         aria-label={`Assigned to ${label}`}
       >
-        {agent?.icon ? (
-          <AgentIcon icon={agent.icon} className="h-3.5 w-3.5" />
-        ) : (
-          <span className="text-[10px] font-semibold">{initials(label)}</span>
-        )}
+        <AgentIcon icon={agent?.icon} className="h-3.5 w-3.5" />
       </span>
     );
   }

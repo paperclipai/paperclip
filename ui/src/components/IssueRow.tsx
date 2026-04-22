@@ -23,6 +23,7 @@ interface IssueRowProps {
   desktopTrailing?: ReactNode;
   trailingMeta?: ReactNode;
   titleSuffix?: ReactNode;
+  assignedToCurrentUser?: boolean;
   unreadState?: UnreadState | null;
   onMarkRead?: () => void;
   onArchive?: () => void;
@@ -41,6 +42,7 @@ export function IssueRow({
   desktopTrailing,
   trailingMeta,
   titleSuffix,
+  assignedToCurrentUser = false,
   unreadState = null,
   onMarkRead,
   onArchive,
@@ -61,10 +63,14 @@ export function IssueRow({
       disableIssueQuicklook
       issuePrefetch={issue}
       data-inbox-issue-link
+      data-assigned-to-current-user={assignedToCurrentUser ? "true" : undefined}
       onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
       className={cn(
         "group flex items-start gap-2 border-b border-border py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
-        selected ? "hover:bg-transparent" : "hover:bg-accent/50",
+        assignedToCurrentUser
+          ? "border-l-4 border-l-cyan-500 bg-cyan-500/15 hover:bg-cyan-500/20 dark:border-l-cyan-300 dark:bg-cyan-400/15 dark:hover:bg-cyan-400/20"
+          : selected ? "hover:bg-transparent" : "hover:bg-accent/50",
+        assignedToCurrentUser && selected && "hover:bg-cyan-500/15 dark:hover:bg-cyan-400/15",
         className,
       )}
     >

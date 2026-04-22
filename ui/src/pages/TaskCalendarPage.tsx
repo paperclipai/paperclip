@@ -37,6 +37,7 @@ import {
   monthLabel,
   visibleMonthRange,
 } from "../lib/issue-date-ranges";
+import { isIssueAssignedToCurrentActor } from "../lib/assignees";
 import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -93,12 +94,16 @@ function CalendarTaskCard({
   agents,
   isLive = false,
   isOverlay = false,
+  currentUserId,
+  currentActorAgentIds,
   dragProps,
 }: {
   issue: Issue;
   agents?: AgentOption[];
   isLive?: boolean;
   isOverlay?: boolean;
+  currentUserId?: string | null;
+  currentActorAgentIds?: string[];
   dragProps?: {
     setNodeRef: CalendarDragProps["setNodeRef"];
     attributes: CalendarDragProps["attributes"];
@@ -107,17 +112,25 @@ function CalendarTaskCard({
     isDragging?: CalendarDragProps["isDragging"];
   };
 }) {
+  const assignedToCurrentUser = isIssueAssignedToCurrentActor(issue, {
+    currentUserId,
+    currentAgentIds: currentActorAgentIds,
+  });
+
   return (
     <div
       ref={dragProps?.setNodeRef}
       style={dragProps?.style}
       {...dragProps?.attributes}
       {...dragProps?.listeners}
+      data-assigned-to-current-user={assignedToCurrentUser ? "true" : undefined}
       className={cn(
         "rounded-md border border-border bg-card px-2 py-1.5 text-left text-xs transition-shadow",
+        assignedToCurrentUser && "border-cyan-500/70 border-l-4 border-l-cyan-500 bg-cyan-500/15 ring-1 ring-cyan-500/50 dark:border-cyan-300/60 dark:border-l-cyan-300 dark:bg-cyan-400/15 dark:ring-cyan-300/40",
         dragProps && "cursor-grab active:cursor-grabbing",
         dragProps?.isDragging && !isOverlay && "opacity-30",
         isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:bg-accent/40",
+        assignedToCurrentUser && !isOverlay && "hover:bg-cyan-500/20 dark:hover:bg-cyan-400/20",
       )}
     >
       <Link
@@ -138,7 +151,7 @@ function CalendarTaskCard({
               <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
             </span>
           ) : null}
-          <IssueAssigneeIcon issue={issue} agents={agents} className="-mr-0.5" />
+          <IssueAssigneeIcon issue={issue} agents={agents} currentUserId={currentUserId} className="-mr-0.5" />
         </div>
       </Link>
     </div>
@@ -149,10 +162,14 @@ function DraggableCalendarTask({
   issue,
   agents,
   isLive,
+  currentUserId,
+  currentActorAgentIds,
 }: {
   issue: Issue;
   agents?: AgentOption[];
   isLive?: boolean;
+  currentUserId?: string | null;
+  currentActorAgentIds?: string[];
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: issue.id,
@@ -165,6 +182,8 @@ function DraggableCalendarTask({
       issue={issue}
       agents={agents}
       isLive={isLive}
+      currentUserId={currentUserId}
+      currentActorAgentIds={currentActorAgentIds}
       dragProps={{ attributes, listeners, setNodeRef, style, isDragging }}
     />
   );
@@ -175,6 +194,8 @@ function CalendarDayCell({
   issues,
   agents,
   liveIssueIds,
+  currentUserId,
+  currentActorAgentIds,
   selected,
   onSelectDate,
 }: {
@@ -182,6 +203,8 @@ function CalendarDayCell({
   issues: Issue[];
   agents?: AgentOption[];
   liveIssueIds?: Set<string>;
+  currentUserId?: string | null;
+  currentActorAgentIds?: string[];
   selected: boolean;
   onSelectDate: (date: string) => void;
 }) {
@@ -217,6 +240,8 @@ function CalendarDayCell({
             issue={issue}
             agents={agents}
             isLive={liveIssueIds?.has(issue.id) === true}
+            currentUserId={currentUserId}
+            currentActorAgentIds={currentActorAgentIds}
           />
         ))}
         {hiddenCount > 0 ? (
@@ -229,6 +254,41 @@ function CalendarDayCell({
           </button>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function CalendarAgendaTaskRow({
+  issue,
+  currentUserId,
+  currentActorAgentIds,
+}: {
+  issue: Issue;
+  currentUserId?: string | null;
+  currentActorAgentIds?: string[];
+}) {
+  const assignedToCurrentUser = isIssueAssignedToCurrentActor(issue, {
+    currentUserId,
+    currentAgentIds: currentActorAgentIds,
+  });
+
+  return (
+    <div
+      data-assigned-to-current-user={assignedToCurrentUser ? "true" : undefined}
+      className={cn(
+        "flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent/50",
+        assignedToCurrentUser && "border-l-4 border-l-cyan-500 bg-cyan-500/15 ring-1 ring-inset ring-cyan-500/50 hover:bg-cyan-500/20 dark:border-l-cyan-300 dark:bg-cyan-400/15 dark:ring-cyan-300/40 dark:hover:bg-cyan-400/20",
+      )}
+    >
+      <Link
+        to={`/issues/${issue.identifier ?? issue.id}`}
+        className="flex min-w-0 flex-1 items-center gap-2 text-inherit no-underline"
+      >
+        <StatusIcon status={issue.status} />
+        <PriorityIcon priority={issue.priority} />
+        <span className="min-w-0 flex-1 truncate">{issue.title}</span>
+        <IssueDueBadge issue={issue} compact />
+      </Link>
     </div>
   );
 }
@@ -270,6 +330,7 @@ export function TaskCalendarPage() {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const currentActorAgentIds = useMemo(() => agents?.map((agent) => agent.id) ?? [], [agents]);
 
   const calendarQueryKey = useMemo(
     () => [
@@ -418,6 +479,8 @@ export function TaskCalendarPage() {
                 day={day}
                 issues={issuesByDate.get(day.date) ?? []}
                 agents={agents}
+                currentUserId={currentUserId}
+                currentActorAgentIds={currentActorAgentIds}
                 selected={selectedDate === day.date}
                 onSelectDate={setSelectedDate}
               />
@@ -425,7 +488,15 @@ export function TaskCalendarPage() {
           </div>
         </div>
         <DragOverlay>
-          {activeIssue ? <CalendarTaskCard issue={activeIssue} agents={agents} isOverlay /> : null}
+          {activeIssue ? (
+            <CalendarTaskCard
+              issue={activeIssue}
+              agents={agents}
+              currentUserId={currentUserId}
+              currentActorAgentIds={currentActorAgentIds}
+              isOverlay
+            />
+          ) : null}
         </DragOverlay>
       </DndContext>
 
@@ -443,16 +514,12 @@ export function TaskCalendarPage() {
         {selectedIssues.length > 0 ? (
           <div className="space-y-1">
             {selectedIssues.map((issue) => (
-              <Link
+              <CalendarAgendaTaskRow
                 key={issue.id}
-                to={`/issues/${issue.identifier ?? issue.id}`}
-                className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm text-inherit no-underline transition-colors hover:bg-accent/50"
-              >
-                <StatusIcon status={issue.status} />
-                <PriorityIcon priority={issue.priority} />
-                <span className="min-w-0 flex-1 truncate">{issue.title}</span>
-                <IssueDueBadge issue={issue} compact />
-              </Link>
+                issue={issue}
+                currentUserId={currentUserId}
+                currentActorAgentIds={currentActorAgentIds}
+              />
             ))}
           </div>
         ) : (

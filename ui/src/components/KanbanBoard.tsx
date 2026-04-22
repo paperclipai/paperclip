@@ -19,7 +19,9 @@ import {
 } from "@dnd-kit/sortable";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
-import { Identity } from "./Identity";
+import { IssueAssigneeIcon } from "./IssueAssigneeIcon";
+import { isIssueAssignedToCurrentActor } from "../lib/assignees";
+import { cn } from "../lib/utils";
 import type { Issue } from "@paperclipai/shared";
 
 const boardStatuses = [
@@ -39,12 +41,14 @@ function statusLabel(status: string): string {
 interface Agent {
   id: string;
   name: string;
+  icon?: string | null;
 }
 
 interface KanbanBoardProps {
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  currentUserId?: string | null;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
 
@@ -55,11 +59,15 @@ function KanbanColumn({
   issues,
   agents,
   liveIssueIds,
+  currentUserId,
+  currentActorAgentIds,
 }: {
   status: string;
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  currentUserId?: string | null;
+  currentActorAgentIds?: string[];
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
@@ -96,6 +104,8 @@ function KanbanColumn({
               issue={issue}
               agents={agents}
               isLive={liveIssueIds?.has(issue.id)}
+              currentUserId={currentUserId}
+              currentActorAgentIds={currentActorAgentIds}
             />
           ))}
         </SortableContext>
@@ -111,11 +121,15 @@ function KanbanCard({
   agents,
   isLive,
   isOverlay,
+  currentUserId,
+  currentActorAgentIds,
 }: {
   issue: Issue;
   agents?: Agent[];
   isLive?: boolean;
   isOverlay?: boolean;
+  currentUserId?: string | null;
+  currentActorAgentIds?: string[];
 }) {
   const {
     attributes,
@@ -131,10 +145,10 @@ function KanbanCard({
     transition,
   };
 
-  const agentName = (id: string | null) => {
-    if (!id || !agents) return null;
-    return agents.find((a) => a.id === id)?.name ?? null;
-  };
+  const assignedToCurrentUser = isIssueAssignedToCurrentActor(issue, {
+    currentUserId,
+    currentAgentIds: currentActorAgentIds,
+  });
 
   return (
     <div
@@ -142,9 +156,14 @@ function KanbanCard({
       style={style}
       {...attributes}
       {...listeners}
-      className={`rounded-md border bg-card p-2.5 cursor-grab active:cursor-grabbing transition-shadow ${
-        isDragging && !isOverlay ? "opacity-30" : ""
-      } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"}`}
+      data-assigned-to-current-user={assignedToCurrentUser ? "true" : undefined}
+      className={cn(
+        "rounded-md border bg-card p-2.5 cursor-grab active:cursor-grabbing transition-shadow",
+        assignedToCurrentUser && "border-cyan-500/70 border-l-4 border-l-cyan-500 bg-cyan-500/15 ring-1 ring-cyan-500/50 dark:border-cyan-300/60 dark:border-l-cyan-300 dark:bg-cyan-400/15 dark:ring-cyan-300/40",
+        isDragging && !isOverlay && "opacity-30",
+        isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm",
+        assignedToCurrentUser && !isOverlay && "hover:bg-cyan-500/20 dark:hover:bg-cyan-400/20",
+      )}
     >
       <Link
         to={`/issues/${issue.identifier ?? issue.id}`}
@@ -169,16 +188,7 @@ function KanbanCard({
         <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
         <div className="flex items-center gap-2">
           <PriorityIcon priority={issue.priority} />
-          {issue.assigneeAgentId && (() => {
-            const name = agentName(issue.assigneeAgentId);
-            return name ? (
-              <Identity name={name} size="xs" />
-            ) : (
-              <span className="text-xs text-muted-foreground font-mono">
-                {issue.assigneeAgentId.slice(0, 8)}
-              </span>
-            );
-          })()}
+          <IssueAssigneeIcon issue={issue} agents={agents} currentUserId={currentUserId} />
         </div>
       </Link>
     </div>
@@ -191,9 +201,11 @@ export function KanbanBoard({
   issues,
   agents,
   liveIssueIds,
+  currentUserId,
   onUpdateIssue,
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
+  const currentActorAgentIds = useMemo(() => agents?.map((agent) => agent.id) ?? [], [agents]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
@@ -268,12 +280,20 @@ export function KanbanBoard({
             issues={columnIssues[status] ?? []}
             agents={agents}
             liveIssueIds={liveIssueIds}
+            currentUserId={currentUserId}
+            currentActorAgentIds={currentActorAgentIds}
           />
         ))}
       </div>
       <DragOverlay>
         {activeIssue ? (
-          <KanbanCard issue={activeIssue} agents={agents} isOverlay />
+          <KanbanCard
+            issue={activeIssue}
+            agents={agents}
+            currentUserId={currentUserId}
+            currentActorAgentIds={currentActorAgentIds}
+            isOverlay
+          />
         ) : null}
       </DragOverlay>
     </DndContext>
