@@ -15,8 +15,8 @@ const vitestBin = join(
 const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const cliArgs = process.argv.slice(2).filter((arg) => arg !== "--");
 const testFilePattern = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
-const moduleMockPattern =
-  /\bvi\.(?:doMock|mock|hoisted|stub(?:Env|Global)?|unstub(?:AllEnvs|AllGlobals)?|resetModules|unmock|doUnmock)\b/;
+const explicitModuleMockPattern = /\bvi\.(?:doMock|mock|hoisted)\b/;
+const internalModuleUnmockPattern = /\bvi\.(?:doUnmock|unmock)\(\s*["'](?:\.\.\/|@paperclipai\/)/;
 const globalTestHookPattern = /\bset[A-Za-z0-9_]+ForTest\(/;
 const pluginSdkEntry = join(repoRoot, "packages", "plugins", "sdk", "dist", "index.js");
 
@@ -41,7 +41,11 @@ function discoverServerMockTests() {
     .filter((filePath) => testFilePattern.test(filePath))
     .filter((filePath) => {
       const source = readFileSync(filePath, "utf8");
-      return moduleMockPattern.test(source) || globalTestHookPattern.test(source);
+      return (
+        explicitModuleMockPattern.test(source) ||
+        internalModuleUnmockPattern.test(source) ||
+        globalTestHookPattern.test(source)
+      );
     })
     .map((filePath) => relative(repoRoot, filePath))
     .sort();
