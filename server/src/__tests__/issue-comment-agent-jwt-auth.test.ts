@@ -237,7 +237,7 @@ describe("issue comment agent JWT auth (POI-238)", () => {
     mockDb.transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx));
   });
 
-  it("returns 200 with authorAgentId when a valid agent JWT is used (regression guard)", async () => {
+  it("returns 201 with authorAgentId when a valid agent JWT is used (regression guard)", async () => {
     const app = await installActor(createApp(), AGENT_ACTOR);
 
     const res = await request(app)
@@ -267,7 +267,7 @@ describe("issue comment agent JWT auth (POI-238)", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("returns 200 with local-board attribution for anonymous non-agent POSTs (backward-compat guard)", async () => {
+  it("returns 201 with local-board attribution for anonymous non-agent POSTs (backward-compat guard)", async () => {
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-2",
       issueId: ISSUE_ID,

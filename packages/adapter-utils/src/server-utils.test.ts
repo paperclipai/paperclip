@@ -427,17 +427,16 @@ describe("postIssueComment", () => {
     fetchSpy.mockRestore();
   });
 
-  it("throws AgentJwtError and retries once on 401 agent_jwt_required, surfacing on second failure", async () => {
+  it("throws AgentJwtError immediately on 401 agent_jwt_required without retrying the same token", async () => {
     const jwtErrBody = JSON.stringify({ error: "agent_jwt_required", reason: "missing_or_expired" });
     const fetchSpy = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(jwtErrBody, { status: 401 }))
       .mockResolvedValueOnce(new Response(jwtErrBody, { status: 401 }));
 
     await expect(
       postIssueComment("http://localhost:3100", "expired-jwt", "run-id-1", "issue-123", "hello"),
     ).rejects.toBeInstanceOf(AgentJwtError);
 
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
     fetchSpy.mockRestore();
   });
 

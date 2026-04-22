@@ -1501,11 +1501,12 @@ export class AgentJwtError extends Error {
 }
 
 /**
- * Posts a comment to a Paperclip issue with a single retry on transient failure.
+ * Posts a comment to a Paperclip issue.
  *
  * On `401 agent_jwt_required` the error is surfaced explicitly rather than swallowed
- * so the agent loop can surface the authentication problem. A second 401 after the
- * retry throws `AgentJwtError`.
+ * so the caller can re-mint a JWT or surface the authentication problem. We do not
+ * retry here because the helper has no way to refresh the token; repeating the same
+ * request would only add an extra round-trip on genuine expiry.
  */
 export async function postIssueComment(
   apiUrl: string,
@@ -1549,14 +1550,5 @@ export async function postIssueComment(
     };
   }
 
-  try {
-    return await attempt();
-  } catch (err) {
-    if (err instanceof AgentJwtError) {
-      // Single retry with same token — handles transient 401s.
-      // Genuinely expired JWTs will fail again and surface to the agent loop.
-      return await attempt();
-    }
-    throw err;
-  }
+  return await attempt();
 }
