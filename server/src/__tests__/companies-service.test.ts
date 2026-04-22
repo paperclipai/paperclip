@@ -7,6 +7,9 @@ import {
   createDb,
   financeEvents,
   heartbeatRuns,
+  issueLabels,
+  labels,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -33,6 +36,8 @@ describeEmbeddedPostgres("company service remove", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueLabels);
+    await db.delete(labels);
     await db.delete(financeEvents);
     await db.delete(costEvents);
     await db.delete(heartbeatRuns);
@@ -46,7 +51,9 @@ describeEmbeddedPostgres("company service remove", () => {
 
   it("deletes finance and cost rows before heartbeat runs", async () => {
     const companyId = randomUUID();
+    const labelId = randomUUID();
     const agentId = randomUUID();
+    const issueId = randomUUID();
     const runId = randomUUID();
     const costEventId = randomUUID();
 
@@ -69,10 +76,27 @@ describeEmbeddedPostgres("company service remove", () => {
       permissions: {},
     });
 
+    await db.insert(labels).values({
+      id: labelId,
+      companyId,
+      name: "cleanup",
+      color: "#123456",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: `D${companyId.replace(/-/g, "").slice(0, 5).toUpperCase()}-1`,
+      title: "Delete dependency issue",
+      status: "open",
+      source: "manual",
+    });
+
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
       agentId,
+      issueId: issueId,
       invocationSource: "assignment",
       status: "completed",
     });
@@ -97,6 +121,12 @@ describeEmbeddedPostgres("company service remove", () => {
       biller: "anthropic",
       amountCents: 42,
       occurredAt: new Date("2026-04-17T12:00:00.000Z"),
+    });
+
+    await db.insert(issueLabels).values({
+      issueId,
+      labelId,
+      companyId,
     });
 
     const removed = await companyService(db).remove(companyId);
