@@ -1240,6 +1240,7 @@ export function IssueDetail() {
       if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
       mergeIssueResponseIntoCaches(issueRefs, nextIssue);
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.collaborators(issueId!) });
       invalidateIssueCollections();
     },
     onError: (err, _variables, context) => {
