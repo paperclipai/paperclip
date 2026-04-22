@@ -168,9 +168,9 @@ pdb:
 
 # -- Ingress NetworkPolicy restricting which namespaces may reach the pod.
 networkPolicy:
-  # -- Create a NetworkPolicy. Defaults to allowing from `ingress-nginx` and `cloudflare` namespaces only.
+  # -- Create a NetworkPolicy. Defaults to allowing from `ingress-nginx` and `cloudflare` namespaces only — **same-namespace pods (sidecars, scrapers, `kubectl debug` pods) are also blocked**, so extend `allowFromNamespaces` or disable the policy for any in-cluster tooling that needs to reach the service.
   enabled: true
-  # -- Namespaces whose pods may reach the Paperclip service port.
+  # -- Namespaces whose pods may reach the Paperclip service port. Add an entry for the release namespace if you need same-namespace traffic (e.g. Prometheus scrape, debug pods).
   # @default -- `ingress-nginx` and `cloudflare` namespaces.
   allowFromNamespaces:
     - namespaceSelector:
