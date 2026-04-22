@@ -6,14 +6,6 @@ import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
-  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
-  ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
-  type BillingType,
-  type ExecutionWorkspace,
-  type ExecutionWorkspaceConfig,
-  type RunLivenessState,
-} from "@paperclipai/shared";
-import {
   activityLog,
   agents,
   agentRuntimeState,
@@ -5858,8 +5850,8 @@ export function heartbeatService(db: Db) {
     };
     type PromotionResult =
       | null
-      | { run: null; skippedTerminalWakes: TerminalSkipEntry[] }
-      | { run: typeof heartbeatRuns.$inferSelect; skippedTerminalWakes: TerminalSkipEntry[] };
+      | { run: null; skippedTerminalWakes: TerminalSkipEntry[]; reopenedActivity: LogActivityInput | null }
+      | { run: typeof heartbeatRuns.$inferSelect; skippedTerminalWakes: TerminalSkipEntry[]; reopenedActivity: LogActivityInput | null };
 
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
@@ -5937,7 +5929,7 @@ export function heartbeatService(db: Db) {
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
-        if (!deferred) break;
+        if (!deferred) return terminalSkipWakes.length > 0 ? { run: null, skippedTerminalWakes: terminalSkipWakes, reopenedActivity: null } : null;
 
         const deferredAgent = await tx
           .select()
@@ -5971,10 +5963,10 @@ export function heartbeatService(db: Db) {
         const issueIsTerminal = issue.status === "done" || issue.status === "cancelled";
 
         // POI-237 Option 1 — deferred-wake freshness guard. When a comment-bearing
-        // deferred wake targets a terminal issue, only allow the implicit reopen if
-        // at least one deferred comment was created AFTER the last terminal
-        // transition. Otherwise treat the wake as stale (it was enqueued while the
-        // issue was still active and the run has since closed it) and drop it.
+        // deferred wake targets a terminal issue, only allow promotion if at least one
+        // deferred comment was created AFTER the last terminal transition. Stale wakes
+        // (enqueued before the issue closed) are dropped. Fresh wakes fall through to
+        // the normal promotion path below.
         if (deferredCommentIds.length > 0 && issueIsTerminal) {
           const closureRow = await tx
             .select({ createdAt: activityLog.createdAt })
@@ -6016,38 +6008,54 @@ export function heartbeatService(db: Db) {
                   updatedAt: new Date(),
                 })
                 .where(eq(agentWakeupRequests.id, deferred.id));
+              terminalSkipWakes.push({
+                companyId: issue.companyId,
+                issueId: issue.id,
+                issueStatus: issue.status,
+                identifier: issue.identifier,
+                agentId: deferred.agentId,
+                runId: run.id,
+              });
               continue;
             }
           }
-          // No audit entry — lenient fallback: treat as fresh and proceed with reopen.
+          // No audit entry — lenient fallback: treat as fresh and proceed with promotion.
         }
 
-        const shouldReopenDeferredCommentWake = deferredCommentIds.length > 0 && issueIsTerminal;
+        // Fresh comment on a terminal issue: reopen to "todo" so the agent
+        // receives it in an actionable state. Activity log entry is emitted
+        // after the transaction so it uses the outer db (not the tx snapshot).
         let reopenedActivity: LogActivityInput | null = null;
-
-        // Terminal tasks must never be mutated by a stale deferred comment wake.
-        // Drop the wake, mark it failed, record a skip signal, and continue to
-        // the next deferred item so non-comment wakes on the same issue can still
-        // be promoted in the same heartbeat cycle.
-        if (deferredCommentIds.length > 0 && isTerminalIssue) {
-          await tx
-            .update(agentWakeupRequests)
-            .set({
-              status: "failed",
-              finishedAt: new Date(),
-              error: "deferred_comment_wake_terminal_skipped",
-              updatedAt: new Date(),
-            })
-            .where(eq(agentWakeupRequests.id, deferred.id));
-          terminalSkipWakes.push({
-            companyId: issue.companyId,
-            issueId: issue.id,
-            issueStatus: issue.status,
-            identifier: issue.identifier,
-            agentId: deferred.agentId,
-            runId: run.id,
-          });
-          continue;
+        if (deferredCommentIds.length > 0 && issueIsTerminal) {
+          const reopenedFromStatus = issue.status;
+          const reopenedIssue = await issuesSvc.update(
+            issue.id,
+            { status: "todo", executionState: null, allowTerminalReopen: true },
+            tx,
+          );
+          if (reopenedIssue) {
+            issue = { ...issue, identifier: reopenedIssue.identifier, status: reopenedIssue.status, executionRunId: reopenedIssue.executionRunId };
+            if (!readNonEmptyString(promotedContextSeed.reopenedFrom)) {
+              promotedContextSeed.reopenedFrom = reopenedFromStatus;
+            }
+            reopenedActivity = {
+              companyId: issue.companyId,
+              actorType: "system",
+              actorId: "heartbeat",
+              agentId: deferred.agentId,
+              runId: run.id,
+              action: "issue.updated",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                status: "todo",
+                reopened: true,
+                reopenedFrom: reopenedFromStatus,
+                source: "deferred_comment_wake",
+                identifier: issue.identifier,
+              },
+            };
+          }
         }
 
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
@@ -6119,6 +6127,7 @@ export function heartbeatService(db: Db) {
           kind: "promoted" as const,
           run: newRun,
           skippedTerminalWakes: terminalSkipWakes,
+          reopenedActivity,
         };
       }
 
@@ -6269,6 +6278,10 @@ export function heartbeatService(db: Db) {
         },
       });
       return;
+    }
+
+    if (promotionResult?.reopenedActivity) {
+      await logActivity(db, promotionResult.reopenedActivity);
     }
 
     const promotedRun = promotionResult?.run ?? null;
