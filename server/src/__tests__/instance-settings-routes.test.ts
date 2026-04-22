@@ -1,6 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { errorHandler } from "../middleware/index.ts";
+import { instanceSettingsRoutes } from "../routes/instance-settings.ts";
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(),
@@ -11,82 +13,17 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-function registerModuleMocks() {
-  vi.doMock("../routes/instance-settings.js", async () =>
-    vi.importActual<typeof import("../routes/instance-settings.ts")>("../routes/instance-settings.ts"),
-  );
-  vi.doMock("../routes/instance-settings.ts", async () =>
-    vi.importActual<typeof import("../routes/instance-settings.ts")>("../routes/instance-settings.ts"),
-  );
-  vi.doMock("../routes/authz.js", async () =>
-    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
-  );
-  vi.doMock("../routes/authz.ts", async () =>
-    vi.importActual<typeof import("../routes/authz.ts")>("../routes/authz.ts"),
-  );
-  vi.doMock("../middleware/index.js", async () =>
-    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
-  );
-  vi.doMock("../middleware/index.ts", async () =>
-    vi.importActual<typeof import("../middleware/index.ts")>("../middleware/index.ts"),
-  );
-  vi.doMock("../middleware/validate.js", async () =>
-    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
-  );
-  vi.doMock("../middleware/validate.ts", async () =>
-    vi.importActual<typeof import("../middleware/validate.ts")>("../middleware/validate.ts"),
-  );
-  vi.doMock("../middleware/logger.js", async () =>
-    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
-  );
-  vi.doMock("../middleware/logger.ts", async () =>
-    vi.importActual<typeof import("../middleware/logger.ts")>("../middleware/logger.ts"),
-  );
-  vi.doMock("../errors.js", async () =>
-    vi.importActual<typeof import("../errors.ts")>("../errors.ts"),
-  );
-  vi.doMock("../errors.ts", async () =>
-    vi.importActual<typeof import("../errors.ts")>("../errors.ts"),
-  );
-  const servicesIndexMock = () => ({
+function servicesIndexMock() {
+  return {
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
-  });
-  vi.doMock("../services/index.js", servicesIndexMock);
-  vi.doMock("../services/index.ts", servicesIndexMock);
+  };
 }
 
-let routeImportSeq = 0;
+vi.mock("../services/index.js", servicesIndexMock);
+vi.mock("../services/index.ts", servicesIndexMock);
 
-function resetInstanceSettingsRouteModules() {
-  vi.resetModules();
-  vi.doUnmock("@paperclipai/db");
-  vi.doUnmock("@paperclipai/shared");
-  vi.doUnmock("../errors.js");
-  vi.doUnmock("../errors.ts");
-  vi.doUnmock("../routes/instance-settings.js");
-  vi.doUnmock("../routes/instance-settings.ts");
-  vi.doUnmock("../routes/authz.js");
-  vi.doUnmock("../routes/authz.ts");
-  vi.doUnmock("../middleware/index.js");
-  vi.doUnmock("../middleware/index.ts");
-  vi.doUnmock("../middleware/validate.js");
-  vi.doUnmock("../middleware/validate.ts");
-  vi.doUnmock("../middleware/logger.js");
-  vi.doUnmock("../middleware/logger.ts");
-  vi.doUnmock("../services/index.js");
-  vi.doUnmock("../services/index.ts");
-}
-
-async function createApp(actor: any) {
-  resetInstanceSettingsRouteModules();
-  registerModuleMocks();
-  routeImportSeq += 1;
-  const routeModulePath = `../routes/instance-settings.ts?instance-settings-routes-${routeImportSeq}`;
-  const [{ instanceSettingsRoutes }, { errorHandler }] = await Promise.all([
-    import(routeModulePath) as Promise<typeof import("../routes/instance-settings.ts")>,
-    import("../middleware/index.ts"),
-  ]);
+function createApp(actor: any) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -100,7 +37,6 @@ async function createApp(actor: any) {
 
 describe("instance settings routes", () => {
   beforeEach(() => {
-    resetInstanceSettingsRouteModules();
     vi.resetAllMocks();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockInstanceSettingsService.getExperimental.mockReset();
@@ -136,12 +72,11 @@ describe("instance settings routes", () => {
   });
 
   afterEach(() => {
-    resetInstanceSettingsRouteModules();
     vi.resetAllMocks();
   });
 
   it("allows local board users to read and update experimental settings", async () => {
-    const app = await createApp({
+    const app = createApp({
       type: "board",
       userId: "local-board",
       source: "local_implicit",
@@ -167,7 +102,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows local board users to update guarded dev-server auto-restart", async () => {
-    const app = await createApp({
+    const app = createApp({
       type: "board",
       userId: "local-board",
       source: "local_implicit",
@@ -185,7 +120,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows local board users to read and update general settings", async () => {
-    const app = await createApp({
+    const app = createApp({
       type: "board",
       userId: "local-board",
       source: "local_implicit",
@@ -218,7 +153,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows non-admin board users to read general settings", async () => {
-    const app = await createApp({
+    const app = createApp({
       type: "board",
       userId: "user-1",
       source: "session",
@@ -237,7 +172,7 @@ describe("instance settings routes", () => {
   });
 
   it("rejects non-admin board users from updating general settings", async () => {
-    const app = await createApp({
+    const app = createApp({
       type: "board",
       userId: "user-1",
       source: "session",
@@ -254,7 +189,7 @@ describe("instance settings routes", () => {
   });
 
   it("rejects agent callers", async () => {
-    const app = await createApp({
+    const app = createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",

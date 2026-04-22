@@ -14,8 +14,8 @@ const vitestBin = join(
 );
 const cliArgs = process.argv.slice(2).filter((arg) => arg !== "--");
 const testFilePattern = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
-const moduleMockPattern =
-  /\bvi\.(?:doMock|mock|hoisted|stub(?:Env|Global)?|unstub(?:AllEnvs|AllGlobals)?|resetModules|unmock|doUnmock)\b/;
+const explicitModuleMockPattern = /\bvi\.(?:doMock|mock|hoisted)\b/;
+const internalModuleUnmockPattern = /\bvi\.(?:doUnmock|unmock)\(\s*["'](?:\.\.\/|@paperclipai\/)/;
 
 function walkFiles(dirPath) {
   const files = [];
@@ -36,7 +36,10 @@ function discoverServerMockTests() {
 
   return walkFiles(serverTestsDir)
     .filter((filePath) => testFilePattern.test(filePath))
-    .filter((filePath) => moduleMockPattern.test(readFileSync(filePath, "utf8")))
+    .filter((filePath) => {
+      const source = readFileSync(filePath, "utf8");
+      return explicitModuleMockPattern.test(source) || internalModuleUnmockPattern.test(source);
+    })
     .map((filePath) => relative(repoRoot, filePath))
     .sort();
 }
