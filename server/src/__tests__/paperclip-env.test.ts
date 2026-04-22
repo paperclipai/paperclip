@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { buildPaperclipEnv } from "../adapters/utils.js";
+import { buildChildProcessEnv, buildPaperclipEnv } from "../adapters/utils.js";
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
@@ -54,5 +54,61 @@ describe("buildPaperclipEnv", () => {
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
     expect(env.PAPERCLIP_API_URL).toBe("http://[::1]:3101");
+  });
+});
+
+describe("buildChildProcessEnv", () => {
+  it("strips inherited worktree env from non-worktree child runs", () => {
+    const env = buildChildProcessEnv(
+      {
+        PAPERCLIP_AGENT_ID: "agent-1",
+        PAPERCLIP_COMPANY_ID: "company-1",
+        PAPERCLIP_WORKSPACE_SOURCE: "agent_home",
+      },
+      {
+        PATH: process.env.PATH,
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_WORKTREE_NAME: "PAP-884-ai-commits-component",
+        PAPERCLIP_HOME: "/tmp/worktree-paperclip-home",
+        PAPERCLIP_CONFIG: "/tmp/worktree-paperclip-home/config.json",
+        PAPERCLIP_INSTANCE_ID: "pap-884-ai-commits-component",
+        PAPERCLIP_CONTEXT: "/tmp/worktree-paperclip-home/context.json",
+      },
+    );
+
+    expect(env.PAPERCLIP_IN_WORKTREE).toBeUndefined();
+    expect(env.PAPERCLIP_WORKTREE_NAME).toBeUndefined();
+    expect(env.PAPERCLIP_HOME).toBeUndefined();
+    expect(env.PAPERCLIP_CONFIG).toBeUndefined();
+    expect(env.PAPERCLIP_INSTANCE_ID).toBeUndefined();
+    expect(env.PAPERCLIP_CONTEXT).toBeUndefined();
+    expect(env.PAPERCLIP_WORKSPACE_SOURCE).toBe("agent_home");
+  });
+
+  it("preserves inherited worktree env when the child run explicitly resolves to a worktree", () => {
+    const env = buildChildProcessEnv(
+      {
+        PAPERCLIP_AGENT_ID: "agent-1",
+        PAPERCLIP_COMPANY_ID: "company-1",
+        PAPERCLIP_WORKSPACE_STRATEGY: "git_worktree",
+        PAPERCLIP_WORKSPACE_WORKTREE_PATH: "/tmp/worktrees/SUP-137-sanitize-worktree-env",
+      },
+      {
+        PATH: process.env.PATH,
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_WORKTREE_NAME: "SUP-137-sanitize-worktree-env",
+        PAPERCLIP_HOME: "/tmp/worktree-paperclip-home",
+        PAPERCLIP_CONFIG: "/tmp/worktree-paperclip-home/config.json",
+        PAPERCLIP_INSTANCE_ID: "sup-137-sanitize-worktree-env",
+        PAPERCLIP_CONTEXT: "/tmp/worktree-paperclip-home/context.json",
+      },
+    );
+
+    expect(env.PAPERCLIP_IN_WORKTREE).toBe("true");
+    expect(env.PAPERCLIP_WORKTREE_NAME).toBeUndefined();
+    expect(env.PAPERCLIP_HOME).toBe("/tmp/worktree-paperclip-home");
+    expect(env.PAPERCLIP_CONFIG).toBe("/tmp/worktree-paperclip-home/config.json");
+    expect(env.PAPERCLIP_INSTANCE_ID).toBe("sup-137-sanitize-worktree-env");
+    expect(env.PAPERCLIP_CONTEXT).toBeUndefined();
   });
 });
