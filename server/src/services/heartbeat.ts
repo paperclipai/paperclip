@@ -6,6 +6,7 @@ import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, or, sql } fro
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   agentRuntimeState,
   agentTaskSessions,
@@ -4327,31 +4328,66 @@ export function heartbeatService(db: Db) {
         const deferredContextSeed = parseObject(deferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
         const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
-        const isTerminalIssue = issue.status === "done" || issue.status === "cancelled";
+        const issueIsTerminal = issue.status === "done" || issue.status === "cancelled";
 
-        // Terminal tasks must never be mutated by a stale deferred comment wake.
-        // Drop the wake, mark it failed, record a skip signal, and continue to
-        // the next deferred item so non-comment wakes on the same issue can still
-        // be promoted in the same heartbeat cycle.
-        if (deferredCommentIds.length > 0 && isTerminalIssue) {
-          await tx
-            .update(agentWakeupRequests)
-            .set({
-              status: "failed",
-              finishedAt: new Date(),
-              error: "deferred_comment_wake_terminal_skipped",
-              updatedAt: new Date(),
-            })
-            .where(eq(agentWakeupRequests.id, deferred.id));
-          terminalSkipWakes.push({
-            companyId: issue.companyId,
-            issueId: issue.id,
-            issueStatus: issue.status,
-            identifier: issue.identifier,
-            agentId: deferred.agentId,
-            runId: run.id,
-          });
-          continue;
+        // POI-237 Option 1 — deferred-wake freshness guard. When a comment-bearing
+        // deferred wake targets a terminal issue, only allow promotion if at least one
+        // deferred comment was created AFTER the last terminal transition. Stale wakes
+        // (enqueued before the issue closed) are dropped. Fresh wakes fall through to
+        // the normal promotion path below.
+        if (deferredCommentIds.length > 0 && issueIsTerminal) {
+          const closureRow = await tx
+            .select({ createdAt: activityLog.createdAt })
+            .from(activityLog)
+            .where(
+              and(
+                eq(activityLog.companyId, issue.companyId),
+                eq(activityLog.entityType, "issue"),
+                eq(activityLog.entityId, issue.id),
+                eq(activityLog.action, "issue.updated"),
+                sql`${activityLog.details} ->> 'status' in ('done','cancelled')`,
+              ),
+            )
+            .orderBy(desc(activityLog.createdAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+          const closedAt = closureRow?.createdAt ?? null;
+          if (closedAt) {
+            const commentRows = await tx
+              .select({ id: issueComments.id, createdAt: issueComments.createdAt })
+              .from(issueComments)
+              .where(
+                and(
+                  eq(issueComments.issueId, issue.id),
+                  inArray(issueComments.id, deferredCommentIds),
+                ),
+              );
+            const anyFresh = commentRows.some(
+              (row) => row.createdAt.getTime() > closedAt.getTime(),
+            );
+            if (!anyFresh) {
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  status: "failed",
+                  finishedAt: new Date(),
+                  error: "deferred_comment_wake_terminal_skipped",
+                  updatedAt: new Date(),
+                })
+                .where(eq(agentWakeupRequests.id, deferred.id));
+              terminalSkipWakes.push({
+                companyId: issue.companyId,
+                issueId: issue.id,
+                issueStatus: issue.status,
+                identifier: issue.identifier,
+                agentId: deferred.agentId,
+                runId: run.id,
+              });
+              continue;
+            }
+          }
+          // No audit entry — lenient fallback: treat as fresh and proceed with promotion.
         }
 
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
