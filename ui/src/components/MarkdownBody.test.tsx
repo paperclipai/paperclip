@@ -4,7 +4,13 @@ import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { buildAgentMentionHref, buildProjectMentionHref, buildSkillMentionHref, buildUserMentionHref } from "@paperclipai/shared";
+import {
+  buildAgentMentionHref,
+  buildIssueReferenceHref,
+  buildProjectMentionHref,
+  buildSkillMentionHref,
+  buildUserMentionHref,
+} from "@paperclipai/shared";
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
 import { queryKeys } from "../lib/queryKeys";
@@ -14,7 +20,13 @@ const mockIssuesApi = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
+  Link: ({
+    children,
+    to,
+    ...props
+  }: { children: ReactNode; to: string } & React.ComponentProps<"a">) => (
+    <a href={to} {...props}>{children}</a>
+  ),
 }));
 
 vi.mock("../api/issues", () => ({
@@ -144,6 +156,7 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/PAP-1271"');
     expect(html).toContain("text-green-600");
     expect(html).toContain(">PAP-1271<");
+    expect(html).not.toContain("paperclip-mention-chip--issue");
   });
 
   it("rewrites full issue URLs to internal issue links", () => {
@@ -154,6 +167,7 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/PAP-1179"');
     expect(html).toContain("text-red-600");
     expect(html).toContain(">http://localhost:3100/PAP/issues/PAP-1179<");
+    expect(html).not.toContain("paperclip-mention-chip--issue");
   });
 
   it("rewrites issue scheme links to internal issue links", () => {
@@ -211,10 +225,66 @@ describe("MarkdownBody", () => {
     expect(html).toContain('style="overflow-wrap:anywhere;word-break:break-word"');
   });
 
+  it("opens external links in a new tab with safe rel attributes", () => {
+    const html = renderMarkdown("[docs](https://example.com/docs)");
+
+    expect(html).toContain('href="https://example.com/docs"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
+  });
+
+  it("opens GitHub links in a new tab", () => {
+    const html = renderMarkdown("[pr](https://github.com/paperclipai/paperclip/pull/4099)");
+
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
+  });
+
+  it("does not set target on relative internal links", () => {
+    const html = renderMarkdown("[settings](/company/settings)");
+
+    expect(html).toContain('href="/company/settings"');
+    expect(html).not.toContain('target="_blank"');
+    expect(html).toContain('rel="noreferrer"');
+  });
+
+  it("prefixes GitHub markdown links with the GitHub icon", () => {
+    const html = renderMarkdown("[https://github.com/paperclipai/paperclip/pull/4099](https://github.com/paperclipai/paperclip/pull/4099)");
+
+    expect(html).toContain('<a href="https://github.com/paperclipai/paperclip/pull/4099"');
+    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-[-0.125em]"');
+    expect(html).toContain(">https://github.com/paperclipai/paperclip/pull/4099</a>");
+  });
+
+  it("prefixes GitHub autolinks with the GitHub icon", () => {
+    const html = renderMarkdown("See https://github.com/paperclipai/paperclip/issues/1778");
+
+    expect(html).toContain('<a href="https://github.com/paperclipai/paperclip/issues/1778"');
+    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-[-0.125em]"');
+  });
+
+  it("does not prefix non-GitHub markdown links with the GitHub icon", () => {
+    const html = renderMarkdown("[docs](https://example.com/docs)");
+
+    expect(html).toContain('<a href="https://example.com/docs"');
+    expect(html).not.toContain("lucide-github");
+  });
+
   it("keeps fenced code blocks width-bounded and horizontally scrollable", () => {
     const html = renderMarkdown("```text\nGET /heartbeat-runs/ca5d23fc-c15b-4826-8ff1-2b6dd11be096/log?offset=2062357&limitBytes=256000\n```");
 
     expect(html).toContain("<pre");
     expect(html).toContain('style="max-width:100%;overflow-x:auto"');
+  });
+
+  it("renders internal issue links and bare identifiers as issue chips", () => {
+    const html = renderMarkdown(`See PAP-42 and [linked task](${buildIssueReferenceHref("PAP-77")}) for follow-up.`, [
+      { identifier: "PAP-42", status: "done" },
+      { identifier: "PAP-77", status: "blocked" },
+    ]);
+
+    expect(html).toContain('href="/issues/PAP-42"');
+    expect(html).toContain('href="/issues/PAP-77"');
+    expect(html).toContain('data-mention-kind="issue"');
   });
 });
