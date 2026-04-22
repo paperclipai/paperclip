@@ -159,12 +159,12 @@ affinity: {}
 # -- Priority class name.
 priorityClassName: ""
 
-# -- PodDisruptionBudget blocking voluntary disruptions when only one replica is available.
+# -- PodDisruptionBudget. Uses `maxUnavailable` rather than `minAvailable` so node drains and cluster upgrades remain possible on the single-replica StatefulSet (a `minAvailable: 1` budget would block every voluntary eviction).
 pdb:
   # -- Create a PodDisruptionBudget.
   enabled: true
-  # -- Minimum number of pods that must remain available during disruptions.
-  minAvailable: 1
+  # -- Maximum number of pods that may be unavailable during voluntary disruptions. `1` lets a single-replica StatefulSet be drained.
+  maxUnavailable: 1
 
 # -- Ingress NetworkPolicy restricting which namespaces may reach the pod.
 networkPolicy:
