@@ -42,7 +42,7 @@ import { queryKeys } from "../lib/queryKeys";
 
 const ACTIVE_DATED_STATUS_FILTER = "backlog,todo,in_progress,in_review,blocked";
 const MAX_VISIBLE_DAY_TASKS = 3;
-const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const weekdayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 type AgentOption = {
   id: string;
