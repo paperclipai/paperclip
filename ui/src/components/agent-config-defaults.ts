@@ -57,9 +57,10 @@ export const adapterConfigDefaults: Record<string, AdapterDefaultOverrides> = {
     dangerouslySkipPermissions: DEFAULT_CLAUDE_LOCAL_SKIP_PERMISSIONS,
   },
   opencode_local: {
-    // OpenCode shares the skip-permissions default with Claude
-    dangerouslySkipPermissions: DEFAULT_CLAUDE_LOCAL_SKIP_PERMISSIONS,
+    // OpenCode requires headless permission bypass just like Claude
+    dangerouslySkipPermissions: true,
     model: "",
+  },
   },
   codex_local: {
     model: DEFAULT_CODEX_LOCAL_MODEL,
