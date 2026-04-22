@@ -1,42 +1,49 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  appendWithByteCap,
-  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
-  renderPaperclipWakePrompt,
-  runningProcesses,
-  runChildProcess,
-  stringifyPaperclipWakePayload,
-} from "./server-utils.js";
+import { asBoolean, runChildProcess } from "./server-utils.js";
 
-function isPidAlive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
+describe("asBoolean", () => {
+  it("returns boolean true when value is true", () => {
+    expect(asBoolean(true, false)).toBe(true);
+  });
 
-async function waitForPidExit(pid: number, timeoutMs = 2_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!isPidAlive(pid)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return !isPidAlive(pid);
-}
+  it("returns boolean false when value is false", () => {
+    expect(asBoolean(false, true)).toBe(false);
+  });
 
-async function waitForTextMatch(read: () => string, pattern: RegExp, timeoutMs = 1_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = read();
-    const match = value.match(pattern);
-    if (match) return match;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  return read().match(pattern);
-}
+  it("coerces string 'true' to true", () => {
+    expect(asBoolean("true", false)).toBe(true);
+  });
+
+  it("coerces string 'false' to false", () => {
+    expect(asBoolean("false", true)).toBe(false);
+  });
+
+  it("coerces case-insensitive string booleans", () => {
+    expect(asBoolean("True", false)).toBe(true);
+    expect(asBoolean("FALSE", true)).toBe(false);
+    expect(asBoolean("TRUE", false)).toBe(true);
+  });
+
+  it("returns fallback for undefined", () => {
+    expect(asBoolean(undefined, true)).toBe(true);
+    expect(asBoolean(undefined, false)).toBe(false);
+  });
+
+  it("returns fallback for null", () => {
+    expect(asBoolean(null, true)).toBe(true);
+  });
+
+  it("returns fallback for non-boolean strings", () => {
+    expect(asBoolean("yes", false)).toBe(false);
+    expect(asBoolean("1", false)).toBe(false);
+  });
+
+  it("returns fallback for numbers", () => {
+    expect(asBoolean(0, true)).toBe(true);
+    expect(asBoolean(1, false)).toBe(false);
+  });
+});
 
 describe("runChildProcess", () => {
   it("does not arm a timeout when timeoutSec is 0", async () => {
